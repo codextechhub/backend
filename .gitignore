@@ -1,0 +1,12 @@
+# -- django --
+*.log
+*.pot
+*.pyc
+__pycache__/
+db.sqlite3
+
+# -- folder --
+Others/
+*cx/
+.qodo/
+frontend_2/

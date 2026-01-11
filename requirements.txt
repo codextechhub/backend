@@ -1,0 +1,6 @@
+PyMySQL~=1.1.0
+Django>=5.0
+djangorestframework
+djangorestframework-simplejwt
+django-cors-headers
+Pillow
