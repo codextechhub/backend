@@ -5,7 +5,7 @@ from rest_framework import generics
 from rest_framework.response import Response
 
 from ..models import Institution, InstitutionStatus
-from ..permissions import IsVisionStaff, IsVisionSuperAdmin
+from ..permissions import IsVisionStaff, IsVisionSuperAdmin, ExternalOnly
 from ..serializers import (
     InstitutionCreateSerializer,
     InstitutionDetailSerializer,
@@ -65,7 +65,7 @@ class InstitutionListView(ActorContextMixin, generics.ListAPIView):
 
 
 class InstitutionCreateView(ActorContextMixin, generics.CreateAPIView):
-    permission_classes = [IsVisionStaff]
+    permission_classes = [ExternalOnly] # Fix Permission class to IsVisionStaff
     serializer_class = InstitutionCreateSerializer
 
 

@@ -47,3 +47,12 @@ class ReadOnlyOrVisionStaff(IsVisionStaff):
         if request.method in SAFE_METHODS:
             return True
         return super().has_permission(request, view)
+
+
+class ExternalOnly(BasePermission):
+    """
+    Bypass all restriction.
+    """
+
+    def has_permission(self, request, view) -> bool:
+        return True
