@@ -90,6 +90,7 @@ class Institution(TimeStampedModel):
     Attributes:
         institution_name (str): Display name of the institution.
         institution_slug (str): URL-safe unique identifier for the institution (lowercase, hyphen-separated).
+        institution_group (str): Optional grouping identifier (e.g., subsidiary/parent group).
         category (str): Classification of institution (e.g., School, College, Organization).
         institution_type (str): Type of institution (e.g., Public, Private).
         plan_tier (str): Subscription tier level (e.g., Starter, Pro, Enterprise).
@@ -132,6 +133,7 @@ class Institution(TimeStampedModel):
         validators=[slug_validator],
         help_text="URL-safe unique institution identifier. Lowercase, hyphen-separated.",
     )
+    institution_group = models.CharField(max_length=80, blank=True, default="")  # e.g., subsidiary/parent group
 
     category = models.CharField(max_length=80)            # e.g., School/College/Org
     institution_type = models.CharField(max_length=80)    # e.g., Public/Private
@@ -236,20 +238,6 @@ class InstitutionBranding(TimeStampedModel):
     Attributes:
         institution (OneToOneField): Reference to the Institution instance. Cascade delete
             ensures branding is removed when institution is deleted.
-        logo_asset_ref (CharField): Reference/path to the institution's logo asset.
-            Max length 512 characters.
-        primary_color (CharField): Primary brand color (hex or color name).
-            Max length 32 characters.
-        secondary_color (CharField): Secondary brand color for UI elements.
-            Max length 32 characters.
-        accent_color (CharField): Accent color for highlights and CTAs.
-            Max length 32 characters.
-        background_color (CharField): Default background color for the theme.
-            Max length 32 characters.
-        text_color (CharField): Default text/foreground color.
-            Max length 32 characters.
-        theme_pack_key (CharField): Identifier for a predefined theme pack or
-            custom theme configuration. Max length 80 characters.
     """
 
     institution = models.OneToOneField(
@@ -258,16 +246,7 @@ class InstitutionBranding(TimeStampedModel):
         related_name="branding",
     )
 
-    logo_asset_ref = models.CharField(max_length=512, blank=True, default="")
-
-    # Token-style fields (kept explicit per ER diagram; could also be JSONField)
-    primary_color = models.CharField(max_length=32, blank=True, default="")
-    secondary_color = models.CharField(max_length=32, blank=True, default="")
-    accent_color = models.CharField(max_length=32, blank=True, default="")
-    background_color = models.CharField(max_length=32, blank=True, default="")
-    text_color = models.CharField(max_length=32, blank=True, default="")
-
-    theme_pack_key = models.CharField(max_length=80, blank=True, default="")
+    logo = models.ImageField(upload_to="institution_logos/", null=True, blank=True)
 
     class Meta:
         db_table = "institution_branding"

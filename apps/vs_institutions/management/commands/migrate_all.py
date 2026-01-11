@@ -5,8 +5,9 @@ class Command(BaseCommand):
     help = 'Run migrations for all product databases'
 
     def handle(self, *args, **options):
-        self.stdout.write('Migrating cx_db...')
+        self.stdout.write(self.style.NOTICE('Making Migrations cx_db...'))
         call_command('makemigrations')
+        self.stdout.write(self.style.NOTICE('Now Migrating cx_db...'))
         call_command('migrate', database='default')
 
         self.stdout.write(self.style.SUCCESS('All migrations complete!'))
