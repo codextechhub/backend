@@ -8,6 +8,7 @@ from .views.institutions import (
     InstitutionUpdateView,
 )
 from .views.lifecycle import InstitutionTransitionView
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .views.ops import (
     InstitutionReactivateView,
     InstitutionResetConfigView,
@@ -16,6 +17,10 @@ from .views.ops import (
 )
 
 urlpatterns = [
+    # Authentication
+    path("token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
+    path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+
     # Institutions (separate list/create views)
     path("institutions/", InstitutionListView.as_view(), name="institution-list"),
     path("institutions/create/", InstitutionCreateView.as_view(), name="institution-create"),
