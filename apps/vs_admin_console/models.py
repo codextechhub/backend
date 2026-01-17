@@ -1,10 +1,10 @@
-# backend/apps/vision_admin_console/models.py
 from __future__ import annotations
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
+
 from vs_institutions.models import Institution
 
 
