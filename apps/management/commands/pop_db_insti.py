@@ -9,7 +9,7 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from ...models import (
+from ...vs_institutions.models import (
     RESERVED_TENANT_SLUGS,
     AuditEvent,
     ContactInfo,
