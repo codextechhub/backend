@@ -63,6 +63,7 @@ INSTALLED_APPS = [
 
     # apps
     "vs_institutions",
+    'vs_admin_console',
 ]
 
 MIDDLEWARE = [
