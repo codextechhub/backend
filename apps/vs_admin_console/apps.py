@@ -1,0 +1,6 @@
+from django.apps import AppConfig
+
+
+class VsAdminConsoleConfig(AppConfig):
+    default_auto_field = "django.db.models.BigAutoField"
+    name = "vs_admin_console"
