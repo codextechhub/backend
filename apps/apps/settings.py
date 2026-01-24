@@ -27,6 +27,8 @@ SECRET_KEY = "django-insecure-i7@+=ild@90+jm5dew6h%1#rcpmvb0%83j^5$hqvlc2^*hihwd
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
+AUTH_USER_MODEL = "vs_institutions.User"
+
 ALLOWED_HOSTS = []
 
 REST_FRAMEWORK = {
