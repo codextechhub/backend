@@ -1,0 +1,291 @@
+openapi: 3.0.3
+info:
+  title: CodeX Vision API
+  version: "1.0.0"
+servers:
+  - url: /api/v1
+tags:
+  - name: Institutions
+    description: Tenant & Institution Management (Vision staff)
+
+paths:
+  /institutions:
+    get:
+      tags: [Institutions]
+      summary: List institutions (Vision Admin Console)
+      description: >
+        Returns institutions with lifecycle + provisioning indicators for ops visibility.
+        Lifecycle states include Created → Configuring → Data Importing → Ready → Live. 
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+          description: Search by name or slug
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+        - in: query
+          name: page_size
+          schema: { type: integer, minimum: 1, maximum: 200, default: 20 }
+      responses:
+        "200":
+          description: Institution list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaginatedInstitutionsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+    post:
+      tags: [Institutions]
+      summary: Create institution (queues provisioning)
+      description: >
+        Creates an institution record (slug uniqueness enforced) and queues provisioning
+        as an observable async job (Queued → Running → Succeeded/Failed).
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInstitutionRequest"
+            examples:
+              example:
+                value:
+                  institution_name: "Greenfield College"
+                  category: "College"
+                  institution_type: "Private"
+                  country: "NG"
+                  region: "Lagos"
+                  plan_tier: "STANDARD"
+                  institution_slug: "greenfield-college"
+                  institution_group: "Greenfield Group"
+                  localization:
+                    timezone: "Africa/Lagos"
+                    currency: "NGN"
+                  primary_contact:
+                    full_name: "Amina Bello"
+                    email: "admin@greenfield.edu.ng"
+                    phone: "+2348012345678"
+                  modules:
+                    - "STUDENTS"
+                    - "STAFF"
+                    - "ATTENDANCE"
+      responses:
+        "201":
+          description: Created; provisioning queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateInstitutionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Slug conflict (already exists)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ApiError"
+              examples:
+                slug_conflict:
+                  value:
+                    code: conflict
+                    message: "Slug already exists."
+                    details:
+                      institution_slug:
+                        - "Slug already exists. Try: greenfield-college-2, greenfield-college-lagos"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /institutions/{institution_id}:
+    get:
+      tags: [Institutions]
+      summary: Get institution detail (includes provisioning + lifecycle)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - in: path
+          name: institution_id
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: Institution detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InstitutionDetail"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  responses:
+    BadRequest:
+      description: Validation / malformed request
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+          examples:
+            validation:
+              value:
+                code: validation_error
+                message: "One or more fields are invalid."
+                details:
+                  primary_contact.email:
+                    - "Enter a valid email address."
+    Unauthorized:
+      description: Missing/invalid JWT
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+          examples:
+            unauthorized:
+              value:
+                code: unauthorized
+                message: "Authentication credentials were not provided or are invalid."
+    Forbidden:
+      description: Authenticated but not allowed (RBAC)
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+          examples:
+            forbidden:
+              value:
+                code: forbidden
+                message: "You do not have permission to perform this action."
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+          examples:
+            not_found:
+              value:
+                code: not_found
+                message: "Institution not found."
+
+  schemas:
+    ApiError:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: validation_error }
+        message: { type: string, example: "One or more fields are invalid." }
+        details:
+          type: object
+          additionalProperties: true
+
+    CreateInstitutionRequest:
+      type: object
+      required:
+        - institution_name
+        - category
+        - institution_type
+        - country
+        - region
+        - plan_tier
+        - primary_contact
+      properties:
+        institution_name: { type: string, minLength: 2 }
+        category:
+          type: string
+          description: "e.g., School/College/Organization"
+        institution_type:
+          type: string
+          description: "e.g., Public/Private"
+        country: { type: string, minLength: 2, maxLength: 2, description: "ISO 3166-1 alpha-2" }
+        region: { type: string }
+        plan_tier: { type: string, example: STANDARD }
+        institution_slug:
+          type: string
+          description: "Auto-generated from name; editable before create; must be unique."
+        institution_group:
+          type: string
+          nullable: true
+          description: "Optional grouping (subsidiaries)."
+        localization:
+          type: object
+          nullable: true
+          properties:
+            timezone: { type: string, example: "Africa/Lagos" }
+            currency: { type: string, example: "NGN" }
+        primary_contact:
+          type: object
+          required: [full_name, email, phone]
+          properties:
+            full_name: { type: string }
+            email: { type: string, format: email }
+            phone: { type: string }
+        modules:
+          type: array
+          items:
+            type: string
+            enum: [STUDENTS, STAFF, FINANCE, PROCUREMENT, ATTENDANCE, ANALYTICS]
+          description: "Optional initial module enablement (plan restrictions may apply)."
+
+    CreateInstitutionResponse:
+      type: object
+      required: [institution, provisioning]
+      properties:
+        institution:
+          type: object
+          required: [institution_id, institution_slug, status]
+          properties:
+            institution_id: { type: string, format: uuid }
+            institution_slug: { type: string }
+            status:
+              type: string
+              enum: [CREATED, CONFIGURING, DATA_IMPORTING, READY, LIVE, SUSPENDED, DELETED]
+            created_at: { type: string, format: date-time }
+        provisioning:
+          type: object
+          required: [provisioning_id, provisioning_status]
+          properties:
+            provisioning_id: { type: string, format: uuid }
+            provisioning_status:
+              type: string
+              enum: [QUEUED, RUNNING, SUCCEEDED, FAILED, ROLLEDBACK]
+            last_error_code: { type: string, nullable: true }
+            last_error_message: { type: string, nullable: true }
+
+    InstitutionDetail:
+      allOf:
+        - $ref: "#/components/schemas/CreateInstitutionResponse"
+        - type: object
+          properties:
+            metadata:
+              type: object
+              properties:
+                institution_name: { type: string }
+                category: { type: string }
+                institution_type: { type: string }
+                country: { type: string }
+                region: { type: string }
+                plan_tier: { type: string }
+
+    PaginatedInstitutionsResponse:
+      type: object
+      required: [count, page, page_size, results]
+      properties:
+        count: { type: integer }
+        page: { type: integer }
+        page_size: { type: integer }
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/InstitutionDetail"
