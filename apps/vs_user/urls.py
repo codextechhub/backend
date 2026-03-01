@@ -4,6 +4,7 @@ from .views import (
     # Users
     UserAccountViewSet,
     UserCreateView,
+    AdminCreateAccountView,
 
     # Temp password
     TemporaryPasswordIssueViewSet,
@@ -46,6 +47,9 @@ urlpatterns = [
     # USERS
     # (ModelViewSet via path using `.as_view({})`)
     # -------------------------------------------------------------------------
+    
+    path(
+        'admin-create', AdminCreateAccountView.as_view(), name='admin-create-account'),
     path(
         'user/create', UserCreateView.as_view(), name='user-create'),
     path(

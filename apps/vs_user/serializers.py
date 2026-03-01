@@ -159,6 +159,33 @@ class UserAccountCreateSerializer(serializers.ModelSerializer):
                 {"email": "This email is already used under the applicable uniqueness policy."}
             )
 
+# create acct directly with password (admin console use case) - bypass temp password flow and email
+class AdminCreateAccountSerializer(serializers.ModelSerializer):
+    """
+    Admin create with direct password set (bypassing temp password flow).
+    Use with caution and enforce strict permissions on the view.
+    """
+    password = serializers.CharField(write_only=True, trim_whitespace=False)
+
+    class Meta:
+        model = UserAccount
+        fields = (
+            "institution",
+            "email",
+            "user_type",
+            "status",
+            "full_name",
+            "phone",
+            "password",
+        )
+
+    def create(self, validated_data):
+        password = validated_data.pop("password")
+        user = UserAccount.objects.create(**validated_data)
+        user.set_password(password)
+        user.must_change_password = False  # Since admin is setting it directly
+        user.save()
+        return user
 
 class UserAccountUpdateSerializer(serializers.ModelSerializer):
     """

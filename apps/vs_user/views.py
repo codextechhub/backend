@@ -35,6 +35,7 @@ from .serializers import (
     UserAccountReadSerializer,
     UserAccountCreateSerializer,
     UserAccountUpdateSerializer,
+    AdminCreateAccountSerializer,
     # Auth
     LoginRequestSerializer,
     TokenRefreshSerializer,
@@ -172,6 +173,15 @@ class UserAccountViewSet(viewsets.ModelViewSet):
             request=self.request,
             metadata={"via": "UserAccountViewSet.create"},
         )
+        
+class AdminCreateAccountView(generics.CreateAPIView):
+    """
+    Admin endpoint to create a user with a temporary password (FR-IDA-002).
+    This is separate from the regular UserAccountViewSet create to enforce temp password flow.
+    """
+    queryset = UserAccount.objects.all()
+    serializer_class = AdminCreateAccountSerializer
+    permission_classes = [AllowAny]
 
 
 # -----------------------------------------------------------------------------
