@@ -104,7 +104,7 @@ class UserAccount(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     # Password lifecycle (FR-IDA-002)
     must_change_password = models.BooleanField(
-        default=False,
+        default=True,
         help_text="If True, user must change password before accessing protected features.",
     )
     password_changed_at = models.DateTimeField(null=True, blank=True)
