@@ -80,9 +80,6 @@ class UserAccount(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         SUSPENDED = "SUSPENDED", "Suspended"
         LOCKED = "LOCKED", "Locked (security)"
         DELETED = "DELETED", "Deleted (soft)"
-        
-    # Globally-unique principal for Django auth internals / JWT subject
-    login_id = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
 
     # Institution binding (tenant context)
     institution = models.ForeignKey(
@@ -94,7 +91,7 @@ class UserAccount(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         help_text="NULL only for Vision staff accounts.",
     )
 
-    email = models.EmailField(max_length=254, unique=False)  # enforce case-insensitive unique via constraint
+    email = models.EmailField(max_length=254, unique=True)  # enforce case-insensitive unique via constraint
     user_type = models.CharField(max_length=32, choices=UserType.choices)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.INVITED)
 
@@ -104,7 +101,7 @@ class UserAccount(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     # Password lifecycle (FR-IDA-002)
     must_change_password = models.BooleanField(
-        default=True,
+        default=False,
         help_text="If True, user must change password before accessing protected features.",
     )
     password_changed_at = models.DateTimeField(null=True, blank=True)
@@ -114,7 +111,7 @@ class UserAccount(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     phone = models.CharField(max_length=32, default="", unique=True, null=True, blank=True,)
     full_name = models.CharField(max_length=160, blank=True, default="")
     
-    USERNAME_FIELD = "login_id"
+    USERNAME_FIELD = "email"
     REQUIRED_FIELDS: list[str] = []
 
     objects = UserAccountManager()
@@ -163,8 +160,6 @@ class UserAccount(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     @property
     def is_suspended(self) -> bool:
         return self.status == self.Status.SUSPENDED
-    
-    
     
     def __str__(self):
         return f"{self.email} ({self.user_type})"
