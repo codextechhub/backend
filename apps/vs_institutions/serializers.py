@@ -74,13 +74,7 @@ class InstitutionBrandingSerializer(serializers.ModelSerializer):
         model = InstitutionBranding
         fields = [
             "id",
-            "logo_asset_ref",
-            "primary_color",
-            "secondary_color",
-            "accent_color",
-            "background_color",
-            "text_color",
-            "theme_pack_key",
+            "logo",
             "created_at",
             "updated_at",
         ]
@@ -250,14 +244,14 @@ class InstitutionDetailSerializer(serializers.ModelSerializer):
     lifecycle_events = InstitutionLifecycleEventSerializer(many=True, read_only=True)
     operation_events = InstitutionOperationEventSerializer(many=True, read_only=True)
     audit_events = AuditEventSerializer(many=True, read_only=True)
-
-    primary_admin = serializers.SerializerMethodField()
+    primary_admin = InstitutionPrimaryAdminReadSerializer(read_only=True)
 
     class Meta:
         model = Institution
         fields = [
             "id",
             "institution_name",
+            "institution_group",
             "institution_slug",
             "category",
             "institution_type",
@@ -285,18 +279,18 @@ class InstitutionDetailSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = fields
 
-    def get_primary_admin(self, obj: Institution) -> Optional[Dict[str, Any]]:
-        link = getattr(obj, "primary_admin_link", None)
-        if not link:
-            return None
-        return {
-            "id": link.id,
-            "role_label": link.role_label,
-            "invite_status": link.invite_status,
-            "invite_queued_at": link.invite_queued_at,
-            "invite_sent_at": link.invite_sent_at,
-            "contact": ContactInfoSerializer(link.contact).data,
-        }
+    # def get_primary_admin(self, obj: Institution) -> Optional[Dict[str, Any]]:
+    #     link = getattr(obj, "primary_admin_link", None)
+    #     if not link:
+    #         return None
+    #     return {
+    #         "id": link.id,
+    #         "role_label": link.role_label,
+    #         "invite_status": link.invite_status,
+    #         "invite_queued_at": link.invite_queued_at,
+    #         "invite_sent_at": link.invite_sent_at,
+    #         "contact": ContactInfoSerializer(link.contact).data,
+    #     }
 
 
 # -----------------------------------------------------------------------------
@@ -468,6 +462,7 @@ class InstitutionUpdateSerializer(serializers.ModelSerializer):
         model = Institution
         fields = [
             "institution_name",
+            "institution_group",
             "category",
             "institution_type",
             "plan_tier",
