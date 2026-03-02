@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.db.models import Q
 from rest_framework import generics
 from rest_framework.response import Response
+# from rest_framework.permissions import AllowAny
 
 from ..models import Institution, InstitutionStatus
 from ..permissions import IsVisionStaff, IsVisionSuperAdmin, ExternalOnly
@@ -30,7 +31,7 @@ class InstitutionListView(ActorContextMixin, generics.ListAPIView):
 
     queryset = (
         Institution.objects.all()
-        .select_related("branding", "provisioning", "primary_admin_link__contact")
+        .select_related("branding", "provisioning", "primary_admin")
         .prefetch_related("module_settings")
     )
 
@@ -60,12 +61,12 @@ class InstitutionListView(ActorContextMixin, generics.ListAPIView):
 
         ordering = (self.request.query_params.get("ordering") or "").strip()
         allowed = {"created_at", "-created_at", "updated_at", "-updated_at", "institution_name", "-institution_name"}
-        qs = qs.order_by(ordering) if ordering in allowed else qs.order_by("-created_at")
+        qs = qs.order_by(ordering) if ordering in allowed else qs.order_by("created_at")
         return qs
 
 
 class InstitutionCreateView(ActorContextMixin, generics.CreateAPIView):
-    permission_classes = [ExternalOnly] # Fix Permission class to IsVisionStaff
+    permission_classes = [IsVisionStaff]
     serializer_class = InstitutionCreateSerializer
 
 
@@ -75,7 +76,7 @@ class InstitutionDetailView(ActorContextMixin, generics.RetrieveAPIView):
 
     queryset = (
         Institution.objects.all()
-        .select_related("branding", "provisioning", "primary_admin_link__contact")
+        .select_related("branding", "provisioning", "primary_admin")
         .prefetch_related("module_settings", "lifecycle_events", "operation_events", "audit_events")
     )
     lookup_field = "id"
@@ -91,7 +92,7 @@ class InstitutionUpdateView(ActorContextMixin, generics.UpdateAPIView):
 
     queryset = (
         Institution.objects.all()
-        .select_related("branding", "provisioning", "primary_admin_link__contact")
+        .select_related("branding", "provisioning", "primary_admin__contact")
         .prefetch_related("module_settings")
     )
     lookup_field = "id"
