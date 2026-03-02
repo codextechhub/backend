@@ -440,7 +440,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
         AuditEvent.objects.create(
             institution=institution,
             actor_id=str(self.context.get("actor_id", "system")),
-            action="TENANT_CREATE",
+            action="INSTITUTION_CREATE",
             resource_type="Institution",
             resource_id=str(institution.id),
             outcome=OperationOutcome.SUCCEEDED,
@@ -525,7 +525,7 @@ class InstitutionUpdateSerializer(serializers.ModelSerializer):
         AuditEvent.objects.create(
             institution=instance,
             actor_id=actor_id,
-            action="TENANT_UPDATE",
+            action="INSTITUTION_UPDATE",
             resource_type="Institution",
             resource_id=str(instance.id),
             outcome=OperationOutcome.SUCCEEDED,
@@ -596,6 +596,9 @@ class InstitutionSuspendSerializer(serializers.Serializer):
         if not reason:
             raise serializers.ValidationError({"reason": "Suspension reason is required."})
 
+        if institution.status == InstitutionStatus.SUSPENDED:
+                raise serializers.ValidationError("Duplicate suspension: institution is already suspended.")
+        
         try:
             institution.suspend(actor_id=actor_id, reason=reason)
             outcome = OperationOutcome.SUCCEEDED
@@ -620,7 +623,7 @@ class InstitutionSuspendSerializer(serializers.Serializer):
             AuditEvent.objects.create(
                 institution=institution,
                 actor_id=actor_id,
-                action="TENANT_SUSPEND",
+                action="INSTITUTION_SUSPEND",
                 resource_type="Institution",
                 resource_id=str(institution.id),
                 outcome=outcome,
@@ -638,6 +641,9 @@ class InstitutionReactivateSerializer(serializers.Serializer):
         actor_id = str(self.context.get("actor_id", "system"))
         reason = self.validated_data.get("reason", "")
 
+        if institution.status == InstitutionStatus.READY or institution.status == InstitutionStatus.LIVE:
+                raise serializers.ValidationError("Invalid reactivation: institution is not suspended.")
+        
         institution.reactivate(actor_id=actor_id, reason=reason)
 
         InstitutionOperationEvent.objects.create(
@@ -671,7 +677,7 @@ class InstitutionSoftDeleteSerializer(serializers.Serializer):
         reason = self.validated_data["reason"].strip()
 
         if institution.status == InstitutionStatus.DELETED_SOFT:
-            return institution
+                raise serializers.ValidationError("Invalid soft delete: institution is already soft deleted.")
 
         institution.soft_delete(actor_id=actor_id, reason=reason)
 
