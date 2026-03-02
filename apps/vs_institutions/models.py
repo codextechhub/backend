@@ -482,7 +482,7 @@ class InstitutionPrimaryAdmin(TimeStampedModel):
     institution = models.OneToOneField(
         Institution,
         on_delete=models.CASCADE,
-        related_name="primary_admin_link",
+        related_name="primary_admin",
     )
     contact = models.ForeignKey(
         ContactInfo,
