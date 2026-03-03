@@ -48,7 +48,7 @@ def _slug_is_unique(slug: str, exclude_institution_id: Optional[str] = None) -> 
     qs = Institution.objects.all()
     if exclude_institution_id:
         qs = qs.exclude(id=exclude_institution_id)
-    return not qs.filter(institution_slug=slug).exists()
+    return not qs.filter(slug=slug).exists()
 
 
 # -----------------------------------------------------------------------------
@@ -220,10 +220,10 @@ class InstitutionListSerializer(serializers.ModelSerializer):
         model = Institution
         fields = [
             "id",
-            "institution_name",
-            "institution_slug",
+            "name",
+            "slug",
             "category",
-            "institution_type",
+            "_type",
             "plan_tier",
             "country",
             "region",
@@ -250,11 +250,11 @@ class InstitutionDetailSerializer(serializers.ModelSerializer):
         model = Institution
         fields = [
             "id",
-            "institution_name",
-            "institution_group",
-            "institution_slug",
+            "name",
+            "group",
+            "slug",
             "category",
-            "institution_type",
+            "_type",
             "plan_tier",
             "country",
             "region",
@@ -310,7 +310,6 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
     NOTE: true provisioning execution + invite sending typically belongs in services/tasks.
     """
 
-    institution_slug = serializers.CharField(required=False, allow_blank=True)
     branding = InstitutionBrandingSerializer(required=False)
     primary_admin = InstitutionPrimaryAdminWriteSerializer(required=False)
     module_settings = InstitutionModuleSettingSerializer(many=True, required=False)
@@ -318,25 +317,27 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Institution
         fields = [
-            "institution_name",
-            "institution_slug",
+            "name",
+            "slug",
+            "group",
+            "email",
+            "website",
+            "phone_number",
             "category",
-            "institution_type",
+            "_type",
             "plan_tier",
             "country",
-            "region",
+            "state",
+            "city",
             "timezone",
             "currency",
-            "primary_contact_name",
-            "primary_contact_email",
-            "primary_contact_phone",
             # optional nested
             "branding",
             "primary_admin",
             "module_settings",
         ]
 
-    def validate_institution_slug(self, value: str) -> str:
+    def validate_slug(self, value: str) -> str:
         # If user provided slug, normalize it and validate constraints.
         if value is None:
             return ""
@@ -355,21 +356,21 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         # Auto-generate slug if not provided
-        raw_slug = (attrs.get("institution_slug") or "").strip()
+        raw_slug = (attrs.get("slug") or "").strip()
         if not raw_slug:
-            base = _normalize_slug(attrs.get("institution_name", ""))
+            base = _normalize_slug(attrs.get("name", ""))
             if not base:
                 raise serializers.ValidationError(
-                    {"institution_slug": "Unable to generate slug from institution_name. Provide institution_slug explicitly."}
+                    {"slug": "Unable to generate slug from name. Provide slug explicitly."}
                 )
             if base in RESERVED_TENANT_SLUGS:
                 base = f"{base}-institution"
             if not _slug_is_unique(base):
                 suggestions = [s for s in _build_slug_suggestions(base) if _slug_is_unique(s)]
                 raise serializers.ValidationError(
-                    {"institution_slug": {"message": "Generated slug conflicts.", "suggestions": suggestions}}
+                    {"slug": {"message": "Generated slug conflicts.", "suggestions": suggestions}}
                 )
-            attrs["institution_slug"] = base
+            attrs["slug"] = base
 
         # Example: if module_settings provided, ensure module_key uniqueness in payload
         ms = attrs.get("module_settings") or []
@@ -386,7 +387,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
         module_settings_data = validated_data.pop("module_settings", [])
 
         # Create Institution
-        institution = Institution.objects.create(**validated_data, status=InstitutionStatus.CREATED)
+        institution = Institution.objects.create(**validated_data, status=InstitutionStatus.PENDING)
 
         # Create system-owned provisioning record (Queued)
         ProvisioningRecord.objects.create(
@@ -397,8 +398,8 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
         # Record initial lifecycle event (Created -> Created is noisy; record as "Created")
         InstitutionLifecycleEvent.objects.create(
             institution=institution,
-            from_state=InstitutionStatus.CREATED,
-            to_state=InstitutionStatus.CREATED,
+            from_state=InstitutionStatus.PENDING,
+            to_state=InstitutionStatus.PENDING,
             actor_id=str(self.context.get("actor_id", "system")),
             reason="Institution created",
         )
@@ -425,7 +426,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
                 phone=primary_admin_data.get("phone", ""),
             )
             # Link model lives in models.py; import inside to avoid circular
-            from .models import InstitutionPrimaryAdmin  # noqa: WPS433
+            from .models import InstitutionPrimaryAdmin
 
             InstitutionPrimaryAdmin.objects.create(
                 institution=institution,
@@ -461,18 +462,10 @@ class InstitutionUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Institution
         fields = [
-            "institution_name",
-            "institution_group",
             "category",
-            "institution_type",
+            "_type",
             "plan_tier",
-            "country",
-            "region",
-            "timezone",
             "currency",
-            "primary_contact_name",
-            "primary_contact_email",
-            "primary_contact_phone",
             "branding",
             "module_settings",
         ]
