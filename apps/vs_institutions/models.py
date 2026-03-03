@@ -91,7 +91,7 @@ class Institution(TimeStampedModel):
 
     Attributes:
         institution_name (str): Display name of the institution.
-        institution_slug (str): URL-safe unique identifier for the institution (lowercase, hyphen-separated).
+        slug (str): URL-safe unique identifier for the institution (lowercase, hyphen-separated).
         institution_group (str): Optional grouping identifier (e.g., subsidiary/parent group).
         category (str): Classification of institution (e.g., School, College, Organization).
         institution_type (str): Type of institution (e.g., Public, Private).
@@ -113,12 +113,12 @@ class Institution(TimeStampedModel):
         reactivate(): Restore institution from suspended/inactive state.
         soft_delete(): Perform soft-delete operation with audit trail.
         transition(): Core method handling state transitions with validation and event recording.
-        clean(): Validate institution_slug against reserved slugs list.
+        clean(): Validate slug against reserved slugs list.
 
     Meta:
         - Database table: "institution"
-        - Indexes on: institution_slug, (status, created_at)
-        - Constraint: institution_slug cannot be empty string
+        - Indexes on: slug, (status, created_at)
+        - Constraint: slug cannot be empty string
         - Includes soft-delete support via deleted_at field
         - Inherits created_at, updated_at from TimeStampedModel
 
@@ -128,7 +128,6 @@ class Institution(TimeStampedModel):
         domain helpers and audit trails via InstitutionLifecycleEvent.
     """
 
-    v_id = models.AutoField()
     name = models.CharField(max_length=255)
     slug = models.SlugField(
         primary_key=True,
@@ -166,23 +165,22 @@ class Institution(TimeStampedModel):
     deleted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        db_table = "institution"
         indexes = [
-            models.Index(fields=["institution_slug"]),
+            models.Index(fields=["slug"]),
             models.Index(fields=["status", "created_at"]),
         ]
         constraints = [
             models.CheckConstraint(
-                check=~Q(institution_slug=""),
-                name="institution_slug_not_empty",
+                check=~Q(slug=""),
+                name="slug_not_empty",
             ),
         ]
 
     def clean(self):
         super().clean()
-        slug = (self.institution_slug or "").strip().lower()
+        slug = (self.slug or "").strip().lower()
         if slug in RESERVED_TENANT_SLUGS:
-            raise ValidationError({"institution_slug": "This slug is reserved. Choose another."})
+            raise ValidationError({"slug": "This slug is reserved. Choose another."})
 
     # --- Domain-ish helpers (kept lightweight; services can enforce heavy rules) ---
 
@@ -248,9 +246,6 @@ class InstitutionBranding(TimeStampedModel):
 
     logo = models.ImageField(upload_to="institution_logos/", null=True, blank=True)
 
-    class Meta:
-        db_table = "institution_branding"
-
 
 class InstitutionModuleSetting(TimeStampedModel):
     """
@@ -286,7 +281,6 @@ class InstitutionModuleSetting(TimeStampedModel):
     changed_by_actor_id = models.CharField(max_length=120, blank=True, default="")
 
     class Meta:
-        db_table = "institution_module_setting"
         constraints = [
             models.UniqueConstraint(
                 fields=["institution", "module_key"],
@@ -331,7 +325,6 @@ class InstitutionLifecycleEvent(TimeStampedModel):
     occurred_at = models.DateTimeField(default=timezone.now, db_index=True)
 
     class Meta:
-        db_table = "institution_lifecycle_event"
         indexes = [
             models.Index(fields=["institution", "occurred_at"]),
             models.Index(fields=["institution", "to_state"]),
@@ -398,7 +391,6 @@ class ProvisioningRecord(TimeStampedModel):
     rollback_completed_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        db_table = "provisioning_record"
         indexes = [
             models.Index(fields=["institution", "provisioning_status"]),
         ]
@@ -444,7 +436,6 @@ class ContactInfo(TimeStampedModel):
     phone = models.CharField(max_length=32, blank=True, default="")
 
     class Meta:
-        db_table = "contact_info"
         indexes = [
             models.Index(fields=["email"]),
         ]
@@ -502,7 +493,6 @@ class InstitutionPrimaryAdmin(TimeStampedModel):
     invite_sent_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        db_table = "institution_primary_admin"
         indexes = [
             models.Index(fields=["institution", "invite_status"]),
         ]
@@ -562,7 +552,6 @@ class InstitutionOperationEvent(TimeStampedModel):
     occurred_at = models.DateTimeField(default=timezone.now, db_index=True)
 
     class Meta:
-        db_table = "institution_operation_event"
         indexes = [
             models.Index(fields=["institution", "operation_type", "occurred_at"]),
         ]
@@ -638,7 +627,6 @@ class AuditEvent(TimeStampedModel):
     occurred_at = models.DateTimeField(default=timezone.now, db_index=True)
 
     class Meta:
-        db_table = "audit_event"
         indexes = [
             models.Index(fields=["institution", "occurred_at"]),
             models.Index(fields=["action", "occurred_at"]),
