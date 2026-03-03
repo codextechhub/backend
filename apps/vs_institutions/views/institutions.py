@@ -38,17 +38,17 @@ class InstitutionListView(ActorContextMixin, generics.ListAPIView):
     def get_queryset(self):
         qs = super().get_queryset()
 
-        user = getattr(self.request, "user", None)
-        is_super = bool(getattr(user, "is_superuser", False))
-
-        include_deleted = (self.request.query_params.get("include_deleted") or "").lower() in ("1", "true", "yes")
-        if not (include_deleted and is_super):
-            qs = qs.exclude(status=InstitutionStatus.DELETED_SOFT)
+        # user = getattr(self.request, "user", None)
+        # is_super = bool(getattr(user, "is_superuser", False))
 
         status_param = (self.request.query_params.get("status") or "").strip()
         if status_param:
             statuses = [s.strip() for s in status_param.split(",") if s.strip()]
             qs = qs.filter(status__in=statuses)
+
+        active_param = (self.request.query_params.get("active") or "").strip().lower()
+        if active_param in ("1", "true", "yes"):
+            qs = qs.filter(status=InstitutionStatus.ACTIVE)
 
         q = (self.request.query_params.get("q") or "").strip()
         if q:
