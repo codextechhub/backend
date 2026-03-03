@@ -50,6 +50,10 @@ class InstitutionListView(ActorContextMixin, generics.ListAPIView):
         if active_param in ("1", "true", "yes"):
             qs = qs.filter(status=InstitutionStatus.ACTIVE)
 
+        pending_param = (self.request.query_params.get("pending") or "").strip().lower()
+        if pending_param in ("1", "true", "yes"):
+            qs = qs.filter(status=InstitutionStatus.PENDING)
+
         q = (self.request.query_params.get("q") or "").strip()
         if q:
             qs = qs.filter(
