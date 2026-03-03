@@ -65,10 +65,12 @@ class InstitutionListView(ActorContextMixin, generics.ListAPIView):
         q = (self.request.query_params.get("q") or "").strip()
         if q:
             qs = qs.filter(
-                Q(institution_name__icontains=q)
-                | Q(institution_slug__icontains=q)
+                Q(name__icontains=q)
+                | Q(slug__icontains=q)
                 | Q(country__icontains=q)
-                | Q(region__icontains=q)
+                | Q(state__icontains=q)
+                | Q(city__icontains=q)
+                | Q(email__icontains=q)
             )
 
         ordering = (self.request.query_params.get("ordering") or "").strip()
@@ -91,7 +93,7 @@ class InstitutionDetailView(ActorContextMixin, generics.RetrieveAPIView):
         .select_related("branding", "provisioning", "primary_admin")
         .prefetch_related("module_settings", "lifecycle_events", "operation_events", "audit_events")
     )
-    lookup_field = "id"
+    lookup_field = "slug"
 
 
 class InstitutionUpdateView(ActorContextMixin, generics.UpdateAPIView):
@@ -107,7 +109,7 @@ class InstitutionUpdateView(ActorContextMixin, generics.UpdateAPIView):
         .select_related("branding", "provisioning", "primary_admin__contact")
         .prefetch_related("module_settings")
     )
-    lookup_field = "id"
+    lookup_field = "slug"
 
     def update(self, request, *args, **kwargs):
         resp = super().update(request, *args, **kwargs)
@@ -122,4 +124,4 @@ class InstitutionHardDeleteView(ActorContextMixin, generics.DestroyAPIView):
     """
     permission_classes = [IsVisionSuperAdmin]
     queryset = Institution.objects.all()
-    lookup_field = "id"
+    lookup_field = "slug"
