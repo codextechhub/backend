@@ -38,14 +38,10 @@ RESERVED_TENANT_SLUGS = {
 # -----------------------------------------------------------------------------
 
 class InstitutionStatus(models.TextChoices):
-    CREATED = "CREATED", "Created"
-    CONFIGURING = "CONFIGURING", "Configuring"
-    DATA_IMPORTING = "DATA_IMPORTING", "Data Importing"
-    READY = "READY", "Ready"
-    LIVE = "LIVE", "Live"
+    ACTIVE = "ACTIVE", "Active",
+    PENDING = "PENDING", "Pending Activation",
     SUSPENDED = "SUSPENDED", "Suspended"
-    DELETED_SOFT = "DELETED_SOFT", "Soft Deleted"
-    LOCKED = "LOCKED", "Locked (Intervention Required)"
+    INACTIVE = "INACTIVE", "Inactive"
 
 
 class ProvisioningStatus(models.TextChoices):
@@ -74,6 +70,12 @@ class OperationType(models.TextChoices):
 class OperationOutcome(models.TextChoices):
     SUCCEEDED = "SUCCEEDED", "Succeeded"
     FAILED = "FAILED", "Failed"
+
+
+class PlanTier(models.TextChoices):
+    STARTER = "STARTER", "Starter"
+    PRO = "PRO", "Pro"
+    ENTERPRISE = "ENTERPRISE", "Enterprise"
 
 
 # -----------------------------------------------------------------------------
@@ -126,34 +128,35 @@ class Institution(TimeStampedModel):
         domain helpers and audit trails via InstitutionLifecycleEvent.
     """
 
-    institution_name = models.CharField(max_length=255)
-    institution_slug = models.SlugField(
+    v_id = models.AutoField()
+    name = models.CharField(max_length=255)
+    slug = models.SlugField(
+        primary_key=True,
         max_length=80,
         unique=True,
         validators=[slug_validator],
         help_text="URL-safe unique institution identifier. Lowercase, hyphen-separated.",
     )
-    institution_group = models.CharField(max_length=80, blank=True, default="")  # e.g., subsidiary/parent group
+    group = models.CharField(max_length=80, blank=True, default="")  # e.g., subsidiary/parent group
+    email = models.EmailField(blank=True, default="")  # Optional general contact email for the institution
+    website = models.URLField(blank=True, default="")  # Optional official website URL for the institution
+    phone_number = models.CharField(max_length=15, blank=True, default="")  # Optional general contact phone number
 
     category = models.CharField(max_length=80)            # e.g., School/College/Org
-    institution_type = models.CharField(max_length=80)    # e.g., Public/Private
-    plan_tier = models.CharField(max_length=80)           # e.g., Starter/Pro/Enterprise
+    _type = models.CharField(max_length=80)    # e.g., Public/Private
+    plan_tier = models.CharField(max_length=80, default=PlanTier.STARTER, choices=PlanTier.choices)           # e.g., Starter/Pro/Enterprise
 
     country = models.CharField(max_length=80)
-    region = models.CharField(max_length=120)
+    state = models.CharField(max_length=120)
+    city = models.CharField(max_length=120)
 
     timezone = models.CharField(max_length=64, blank=True, default="")
     currency = models.CharField(max_length=8, blank=True, default="")
 
-    # Primary contact (institution business contact, separate from login identity)
-    primary_contact_name = models.CharField(max_length=120, blank=True, default="")
-    primary_contact_email = models.EmailField(blank=True, default="")
-    primary_contact_phone = models.CharField(max_length=32, blank=True, default="")
-
     status = models.CharField(
         max_length=32,
         choices=InstitutionStatus.choices,
-        default=InstitutionStatus.CREATED,
+        default=InstitutionStatus.PENDING,
         db_index=True,
     )
 
@@ -184,20 +187,17 @@ class Institution(TimeStampedModel):
     # --- Domain-ish helpers (kept lightweight; services can enforce heavy rules) ---
 
     def mark_live(self, *, actor_id: str, reason: str = ""):
-        self.transition(to_state=InstitutionStatus.LIVE, actor_id=actor_id, reason=reason)
+        self.transition(to_state=InstitutionStatus.ACTIVE, actor_id=actor_id, reason=reason)
 
     def suspend(self, *, actor_id: str, reason: str):
         self.transition(to_state=InstitutionStatus.SUSPENDED, actor_id=actor_id, reason=reason)
 
     def reactivate(self, *, actor_id: str, reason: str = ""):
-        # Reactivate usually returns to READY or LIVE depending on your policy.
-        # Here we default to READY unless already Live-ish.
-        target = InstitutionStatus.READY if self.status != InstitutionStatus.LIVE else InstitutionStatus.LIVE
-        self.transition(to_state=target, actor_id=actor_id, reason=reason)
+        self.transition(to_state=InstitutionStatus.ACTIVE, actor_id=actor_id, reason=reason)
 
     def soft_delete(self, *, actor_id: str, reason: str):
         self.deleted_at = timezone.now()
-        self.transition(to_state=InstitutionStatus.DELETED_SOFT, actor_id=actor_id, reason=reason)
+        self.transition(to_state=InstitutionStatus.INACTIVE, actor_id=actor_id, reason=reason)
 
     def transition(self, *, to_state: str, actor_id: str, reason: str = ""):
         """Records lifecycle event and updates current status."""
@@ -206,11 +206,11 @@ class Institution(TimeStampedModel):
             return
 
         # Minimal guardrails (full policy typically lives in LifecycleService)
-        if from_state == InstitutionStatus.DELETED_SOFT:
-            raise ValidationError("Cannot transition a soft-deleted institution without restore policy.")
-        if from_state == InstitutionStatus.LOCKED and to_state not in (InstitutionStatus.LOCKED,):
-            # You might allow super-admin override in a service layer.
-            raise ValidationError("Institution is locked. Resolve provisioning/ops issue first.")
+        # if from_state == InstitutionStatus.DELETED_SOFT:
+        #     raise ValidationError("Cannot transition a soft-deleted institution without restore policy.")
+        # if from_state == InstitutionStatus.LOCKED and to_state not in (InstitutionStatus.LOCKED,):
+        #     # You might allow super-admin override in a service layer.
+        #     raise ValidationError("Institution is locked. Resolve provisioning/ops issue first.")
 
         self.status = to_state
         if to_state == InstitutionStatus.LIVE and self.activated_at is None:
