@@ -531,31 +531,9 @@ class InstitutionUpdateSerializer(serializers.ModelSerializer):
 # Lifecycle & Operations serializers (write)
 # -----------------------------------------------------------------------------
 
-_ALLOWED_TRANSITIONS: Dict[str, Tuple[str, ...]] = {
-    InstitutionStatus.CREATED: (InstitutionStatus.CONFIGURING, InstitutionStatus.LOCKED),
-    InstitutionStatus.CONFIGURING: (InstitutionStatus.DATA_IMPORTING, InstitutionStatus.LOCKED),
-    InstitutionStatus.DATA_IMPORTING: (InstitutionStatus.READY, InstitutionStatus.LOCKED),
-    InstitutionStatus.READY: (InstitutionStatus.LIVE, InstitutionStatus.LOCKED),
-    InstitutionStatus.LIVE: (InstitutionStatus.SUSPENDED, InstitutionStatus.LOCKED),
-    InstitutionStatus.SUSPENDED: (InstitutionStatus.READY, InstitutionStatus.LIVE),
-    InstitutionStatus.LOCKED: (InstitutionStatus.LOCKED,),
-    InstitutionStatus.DELETED_SOFT: (InstitutionStatus.DELETED_SOFT,),
-}
-
-
 class InstitutionStateTransitionSerializer(serializers.Serializer):
     to_state = serializers.ChoiceField(choices=InstitutionStatus.choices)
     reason = serializers.CharField(required=False, allow_blank=True, default="")
-
-    def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
-        institution: Institution = self.context["institution"]
-        to_state = attrs["to_state"]
-        allowed = _ALLOWED_TRANSITIONS.get(institution.status, tuple())
-        if to_state not in allowed:
-            raise serializers.ValidationError(
-                {"to_state": f"Invalid transition from {institution.status} to {to_state}."}
-            )
-        return attrs
 
     @transaction.atomic
     def save(self, **kwargs) -> Institution:
@@ -590,7 +568,7 @@ class InstitutionSuspendSerializer(serializers.Serializer):
             raise serializers.ValidationError({"reason": "Suspension reason is required."})
 
         if institution.status == InstitutionStatus.SUSPENDED:
-                raise serializers.ValidationError("Duplicate suspension: institution is already suspended.")
+                raise serializers.ValidationError("Institution is already suspended.")
         
         try:
             institution.suspend(actor_id=actor_id, reason=reason)
