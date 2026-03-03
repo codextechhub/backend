@@ -54,6 +54,14 @@ class InstitutionListView(ActorContextMixin, generics.ListAPIView):
         if pending_param in ("1", "true", "yes"):
             qs = qs.filter(status=InstitutionStatus.PENDING)
 
+        suspended_param = (self.request.query_params.get("suspended") or "").strip().lower()
+        if suspended_param in ("1", "true", "yes"):
+            qs = qs.filter(status=InstitutionStatus.SUSPENDED)
+        
+        inactive_param = (self.request.query_params.get("inactive") or "").strip().lower()
+        if inactive_param in ("1", "true", "yes"):
+            qs = qs.filter(status=InstitutionStatus.INACTIVE)
+
         q = (self.request.query_params.get("q") or "").strip()
         if q:
             qs = qs.filter(
