@@ -25,7 +25,7 @@ class ActorContextMixin:
 class _InstitutionOpBaseView(ActorContextMixin, generics.GenericAPIView):
     """Base for institution operation views."""
     queryset = Institution.objects.all()
-    lookup_field = "id"
+    lookup_field = "slug"
 
     def _run(self, request, serializer_class):
         institution = self.get_object()

@@ -20,7 +20,7 @@ class InstitutionTransitionView(ActorContextMixin, generics.GenericAPIView):
     permission_classes = [IsVisionStaff]
     serializer_class = InstitutionStateTransitionSerializer
     queryset = Institution.objects.all()
-    lookup_field = "id"
+    lookup_field = "slug"
 
     def post(self, request, *args, **kwargs):
         institution = self.get_object()
