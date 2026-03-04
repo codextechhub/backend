@@ -11,7 +11,6 @@ from .models import (
     ContactInfo,
     InviteStatus,
     OperationOutcome,
-    OperationType,
     ProvisioningRecord,
     ProvisioningStatus,
     RESERVED_TENANT_SLUGS,
@@ -19,7 +18,6 @@ from .models import (
     InstitutionBranding,
     InstitutionLifecycleEvent,
     InstitutionModuleSetting,
-    InstitutionOperationEvent,
     InstitutionStatus,
 )
 
@@ -44,10 +42,10 @@ def _build_slug_suggestions(base_slug: str, max_suggestions: int = 5) -> List[st
     return [f"{base_slug}-{i}" for i in range(2, 2 + max_suggestions)]
 
 
-def _slug_is_unique(slug: str, exclude_institution_id: Optional[str] = None) -> bool:
+def _slug_is_unique(slug: str, exclude_institution_slug: Optional[str] = None) -> bool:
     qs = Institution.objects.all()
-    if exclude_institution_id:
-        qs = qs.exclude(id=exclude_institution_id)
+    if exclude_institution_slug:
+        qs = qs.exclude(slug=exclude_institution_slug)
     return not qs.filter(slug=slug).exists()
 
 
@@ -59,26 +57,25 @@ class ContactInfoSerializer(serializers.ModelSerializer):
     class Meta:
         model = ContactInfo
         fields = [
-            "id",
             "full_name",
             "email",
             "phone",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = [ "created_at", "updated_at"]
 
 
 class InstitutionBrandingSerializer(serializers.ModelSerializer):
     class Meta:
         model = InstitutionBranding
         fields = [
-            "id",
+            
             "logo",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = [ "created_at", "updated_at"]
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         # Minimal “token” validation hooks; keep it light and let BrandingService enforce deeper rules.
@@ -90,7 +87,7 @@ class InstitutionModuleSettingSerializer(serializers.ModelSerializer):
     class Meta:
         model = InstitutionModuleSetting
         fields = [
-            "id",
+            
             "module_key",
             "enabled",
             "effective_from",
@@ -98,7 +95,7 @@ class InstitutionModuleSettingSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = [ "created_at", "updated_at"]
 
     def validate_module_key(self, value: str) -> str:
         value = (value or "").strip()
@@ -111,7 +108,7 @@ class ProvisioningRecordSerializer(serializers.ModelSerializer):
     class Meta:
         model = ProvisioningRecord
         fields = [
-            "id",
+            
             "provisioning_status",
             "last_error_code",
             "last_error_message",
@@ -130,7 +127,7 @@ class InstitutionLifecycleEventSerializer(serializers.ModelSerializer):
     class Meta:
         model = InstitutionLifecycleEvent
         fields = [
-            "id",
+            
             "from_state",
             "to_state",
             "actor_id",
@@ -142,34 +139,15 @@ class InstitutionLifecycleEventSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class InstitutionOperationEventSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = InstitutionOperationEvent
-        fields = [
-            "id",
-            "operation_type",
-            "actor_id",
-            "reason",
-            "confirmation_token",
-            "outcome",
-            "error_code",
-            "error_message",
-            "occurred_at",
-            "created_at",
-            "updated_at",
-        ]
-        read_only_fields = fields
-
-
 class AuditEventSerializer(serializers.ModelSerializer):
     class Meta:
         model = AuditEvent
         fields = [
-            "id",
+            
             "actor_id",
             "action",
             "resource_type",
-            "resource_id",
+            "resource_slug",
             "before_hash",
             "after_hash",
             "outcome",
@@ -219,37 +197,24 @@ class InstitutionListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Institution
         fields = [
-            "id",
             "name",
             "slug",
-            "category",
             "_type",
-            "plan_tier",
             "country",
-            "region",
-            "timezone",
-            "currency",
+            "state",
+            "city",
             "status",
-            "activated_at",
-            "created_at",
-            "updated_at",
         ]
         read_only_fields = fields
 
 
 class InstitutionDetailSerializer(serializers.ModelSerializer):
     branding = InstitutionBrandingSerializer(read_only=True)
-    module_settings = InstitutionModuleSettingSerializer(many=True, read_only=True)
-    provisioning = ProvisioningRecordSerializer(read_only=True)
-    lifecycle_events = InstitutionLifecycleEventSerializer(many=True, read_only=True)
-    operation_events = InstitutionOperationEventSerializer(many=True, read_only=True)
-    audit_events = AuditEventSerializer(many=True, read_only=True)
     primary_admin = InstitutionPrimaryAdminReadSerializer(read_only=True)
 
     class Meta:
         model = Institution
         fields = [
-            "id",
             "name",
             "group",
             "slug",
@@ -257,40 +222,13 @@ class InstitutionDetailSerializer(serializers.ModelSerializer):
             "_type",
             "plan_tier",
             "country",
-            "region",
-            "timezone",
-            "currency",
-            "primary_contact_name",
-            "primary_contact_email",
-            "primary_contact_phone",
+            "state",
             "status",
-            "activated_at",
-            "deleted_at",
-            "created_at",
-            "updated_at",
             # Nested
             "branding",
-            "module_settings",
-            "provisioning",
             "primary_admin",
-            "lifecycle_events",
-            "operation_events",
-            "audit_events",
         ]
         read_only_fields = fields
-
-    # def get_primary_admin(self, obj: Institution) -> Optional[Dict[str, Any]]:
-    #     link = getattr(obj, "primary_admin_link", None)
-    #     if not link:
-    #         return None
-    #     return {
-    #         "id": link.id,
-    #         "role_label": link.role_label,
-    #         "invite_status": link.invite_status,
-    #         "invite_queued_at": link.invite_queued_at,
-    #         "invite_sent_at": link.invite_sent_at,
-    #         "contact": ContactInfoSerializer(link.contact).data,
-    #     }
 
 
 # -----------------------------------------------------------------------------
@@ -398,7 +336,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
         # Record initial lifecycle event (Created -> Created is noisy; record as "Created")
         InstitutionLifecycleEvent.objects.create(
             institution=institution,
-            from_state=InstitutionStatus.PENDING,
+            from_state="",
             to_state=InstitutionStatus.PENDING,
             actor_id=str(self.context.get("actor_id", "system")),
             reason="Institution created",
@@ -431,7 +369,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
             InstitutionPrimaryAdmin.objects.create(
                 institution=institution,
                 contact=contact,
-                role_label=primary_admin_data.get("role_label", ""),
+                role_label=primary_admin_data.get("role_label", "Institution_Admin"),
                 invite_status=InviteStatus.QUEUED,
                 invite_queued_at=None,
                 invite_sent_at=None,
@@ -443,7 +381,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
             actor_id=str(self.context.get("actor_id", "system")),
             action="INSTITUTION_CREATE",
             resource_type="Institution",
-            resource_id=str(institution.id),
+            resource_slug=str(institution.slug),
             outcome=OperationOutcome.SUCCEEDED,
         )
 
@@ -520,7 +458,7 @@ class InstitutionUpdateSerializer(serializers.ModelSerializer):
             actor_id=actor_id,
             action="INSTITUTION_UPDATE",
             resource_type="Institution",
-            resource_id=str(instance.id),
+            resource_slug=str(instance.id),
             outcome=OperationOutcome.SUCCEEDED,
         )
 
@@ -530,6 +468,13 @@ class InstitutionUpdateSerializer(serializers.ModelSerializer):
 # -----------------------------------------------------------------------------
 # Lifecycle & Operations serializers (write)
 # -----------------------------------------------------------------------------
+
+TransitionChoiceField = {
+    "ACTIVE": "INSTITUTION_ACTIVATED",
+    "SUSPENDED": "INSTITUTION_SUSPENDED",
+    "INACTIVE": "INSTITUTION_DEACTIVATED",
+    "PENDING": "INSTITUTION_PENDING",
+}
 
 class InstitutionStateTransitionSerializer(serializers.Serializer):
     to_state = serializers.ChoiceField(choices=InstitutionStatus.choices)
@@ -542,132 +487,17 @@ class InstitutionStateTransitionSerializer(serializers.Serializer):
         to_state = self.validated_data["to_state"]
         reason = self.validated_data.get("reason", "")
 
+        if institution.status == to_state:
+            raise serializers.ValidationError(f"Institution is already {to_state}.")
+        
         institution.transition(to_state=to_state, actor_id=actor_id, reason=reason)
 
         AuditEvent.objects.create(
             institution=institution,
             actor_id=actor_id,
-            action="TENANT_STATE_TRANSITION",
+            action=f"{TransitionChoiceField.get(to_state, f'INSTITUTION_{to_state}')}",
             resource_type="Institution",
-            resource_id=str(institution.id),
-            outcome=OperationOutcome.SUCCEEDED,
-        )
-        return institution
-
-
-class InstitutionSuspendSerializer(serializers.Serializer):
-    reason = serializers.CharField()
-
-    @transaction.atomic
-    def save(self, **kwargs) -> Institution:
-        institution: Institution = self.context["institution"]
-        actor_id = str(self.context.get("actor_id", "system"))
-        reason = self.validated_data["reason"].strip()
-
-        if not reason:
-            raise serializers.ValidationError({"reason": "Suspension reason is required."})
-
-        if institution.status == InstitutionStatus.SUSPENDED:
-                raise serializers.ValidationError("Institution is already suspended.")
-        
-        try:
-            institution.suspend(actor_id=actor_id, reason=reason)
-            outcome = OperationOutcome.SUCCEEDED
-            error_code = ""
-            error_message = ""
-        except DjangoValidationError as e:
-            outcome = OperationOutcome.FAILED
-            error_code = "VALIDATION_ERROR"
-            error_message = str(e)
-            raise
-        finally:
-            InstitutionOperationEvent.objects.create(
-                institution=institution,
-                operation_type=OperationType.SUSPEND,
-                actor_id=actor_id,
-                reason=reason,
-                confirmation_token="",
-                outcome=outcome,
-                error_code=error_code,
-                error_message=error_message,
-            )
-            AuditEvent.objects.create(
-                institution=institution,
-                actor_id=actor_id,
-                action="INSTITUTION_SUSPEND",
-                resource_type="Institution",
-                resource_id=str(institution.id),
-                outcome=outcome,
-            )
-
-        return institution
-
-
-class InstitutionReactivateSerializer(serializers.Serializer):
-    reason = serializers.CharField(required=False, allow_blank=True, default="")
-
-    @transaction.atomic
-    def save(self, **kwargs) -> Institution:
-        institution: Institution = self.context["institution"]
-        actor_id = str(self.context.get("actor_id", "system"))
-        reason = self.validated_data.get("reason", "")
-
-        if institution.status == InstitutionStatus.READY or institution.status == InstitutionStatus.LIVE:
-                raise serializers.ValidationError("Invalid reactivation: institution is not suspended.")
-        
-        institution.reactivate(actor_id=actor_id, reason=reason)
-
-        InstitutionOperationEvent.objects.create(
-            institution=institution,
-            operation_type=OperationType.REACTIVATE,
-            actor_id=actor_id,
-            reason=reason,
-            confirmation_token="",
-            outcome=OperationOutcome.SUCCEEDED,
-            error_code="",
-            error_message="",
-        )
-        AuditEvent.objects.create(
-            institution=institution,
-            actor_id=actor_id,
-            action="TENANT_REACTIVATE",
-            resource_type="Institution",
-            resource_id=str(institution.id),
-            outcome=OperationOutcome.SUCCEEDED,
-        )
-        return institution
-
-
-class InstitutionSoftDeleteSerializer(serializers.Serializer):
-    reason = serializers.CharField()
-
-    @transaction.atomic
-    def save(self, **kwargs) -> Institution:
-        institution: Institution = self.context["institution"]
-        actor_id = str(self.context.get("actor_id", "system"))
-        reason = self.validated_data["reason"].strip()
-
-        if institution.status == InstitutionStatus.DELETED_SOFT:
-                raise serializers.ValidationError("Invalid soft delete: institution is already soft deleted.")
-
-        institution.soft_delete(actor_id=actor_id, reason=reason)
-
-        InstitutionOperationEvent.objects.create(
-            institution=institution,
-            operation_type=OperationType.SOFT_DELETE,
-            actor_id=actor_id,
-            reason=reason,
-            confirmation_token="",
-            outcome=OperationOutcome.SUCCEEDED,
-            error_code="",
-            error_message="",
-        )
-        AuditEvent.objects.create(
-            institution=institution,
-            actor_id=actor_id,
-            action="TENANT_SOFT_DELETE",
-            resource_type="Institution",
-            resource_id=str(institution.id),
+            resource_slug=str(institution.slug),
             outcome=OperationOutcome.SUCCEEDED,
         )
         return institution
@@ -697,22 +527,12 @@ class InstitutionResetConfigSerializer(serializers.Serializer):
         InstitutionBranding.objects.filter(institution=institution).delete()
         InstitutionModuleSetting.objects.filter(institution=institution).update(enabled=False, changed_by_actor_id=actor_id)
 
-        InstitutionOperationEvent.objects.create(
-            institution=institution,
-            operation_type=OperationType.RESET,
-            actor_id=actor_id,
-            reason=self.validated_data.get("reason", ""),
-            confirmation_token=token[:128],  # never store secrets; token here is “typed phrase”
-            outcome=OperationOutcome.SUCCEEDED,
-            error_code="",
-            error_message="",
-        )
         AuditEvent.objects.create(
             institution=institution,
             actor_id=actor_id,
             action="TENANT_RESET_CONFIG",
             resource_type="Institution",
-            resource_id=str(institution.id),
+            resource_slug=str(institution.slug),
             outcome=OperationOutcome.SUCCEEDED,
         )
         return institution
