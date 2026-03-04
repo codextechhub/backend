@@ -66,17 +66,46 @@ class InstitutionListView(ActorContextMixin, generics.ListAPIView):
         if q:
             qs = qs.filter(
                 Q(name__icontains=q)
-                | Q(slug__icontains=q)
-                | Q(country__icontains=q)
                 | Q(state__icontains=q)
                 | Q(city__icontains=q)
-                | Q(email__icontains=q)
+                | Q(_type__iexact=q)
+                | Q(status__iexact=q)
             )
 
         ordering = (self.request.query_params.get("ordering") or "").strip()
         allowed = {"created_at", "-created_at", "updated_at", "-updated_at", "institution_name", "-institution_name"}
         qs = qs.order_by(ordering) if ordering in allowed else qs.order_by("created_at")
         return qs
+
+
+class InstitutionCountView(generics.GenericAPIView):
+    permission_classes = [IsVisionStaff]
+
+    def get(self, request, *args, **kwargs):
+        param = "all"
+        count = Institution.objects.count()  # Default count of all institutions
+
+        active_param = (self.request.query_params.get("active") or "").strip().lower()
+        if active_param in ("1", "true", "yes"):
+            param = "active"
+            count = Institution.objects.filter(status=InstitutionStatus.ACTIVE).count()
+
+        inactive_param = (self.request.query_params.get("inactive") or "").strip().lower()
+        if inactive_param in ("1", "true", "yes"):
+            param = "inactive"
+            count = Institution.objects.filter(status=InstitutionStatus.INACTIVE).count()
+
+        suspended_param = (self.request.query_params.get("suspended") or "").strip().lower()
+        if suspended_param in ("1", "true", "yes"):
+            param = "suspended"
+            count = Institution.objects.filter(status=InstitutionStatus.SUSPENDED).count()
+
+        pending_param = (self.request.query_params.get("pending") or "").strip().lower()
+        if pending_param in ("1", "true", "yes"):
+            param = "pending"
+            count = Institution.objects.filter(status=InstitutionStatus.PENDING).count()
+        
+        return Response({f"{param.capitalize()} count": count})
 
 
 class InstitutionCreateView(ActorContextMixin, generics.CreateAPIView):
@@ -90,8 +119,7 @@ class InstitutionDetailView(ActorContextMixin, generics.RetrieveAPIView):
 
     queryset = (
         Institution.objects.all()
-        .select_related("branding", "provisioning", "primary_admin")
-        .prefetch_related("module_settings", "lifecycle_events", "operation_events", "audit_events")
+        .select_related("branding", "primary_admin")
     )
     lookup_field = "slug"
 
@@ -115,13 +143,3 @@ class InstitutionUpdateView(ActorContextMixin, generics.UpdateAPIView):
         resp = super().update(request, *args, **kwargs)
         institution = self.get_object()
         return Response(InstitutionDetailSerializer(institution, context=self.get_serializer_context()).data)
-
-
-class InstitutionHardDeleteView(ActorContextMixin, generics.DestroyAPIView):
-    """
-    Hard delete as a dedicated endpoint. Super admin only.
-    NOTE: replace instance.delete() with DeletionService for storage cleanup/reporting.
-    """
-    permission_classes = [IsVisionSuperAdmin]
-    queryset = Institution.objects.all()
-    lookup_field = "slug"
