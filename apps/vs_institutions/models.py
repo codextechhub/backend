@@ -59,14 +59,6 @@ class InviteStatus(models.TextChoices):
     FAILED = "FAILED", "Failed"
 
 
-class OperationType(models.TextChoices):
-    SUSPEND = "SUSPEND", "Suspend"
-    REACTIVATE = "REACTIVATE", "Reactivate"
-    SOFT_DELETE = "SOFT_DELETE", "Soft Delete"
-    HARD_DELETE = "HARD_DELETE", "Hard Delete"
-    RESET = "RESET", "Reset Config"
-
-
 class OperationOutcome(models.TextChoices):
     SUCCEEDED = "SUCCEEDED", "Succeeded"
     FAILED = "FAILED", "Failed"
@@ -90,19 +82,20 @@ class Institution(TimeStampedModel):
     canonical institution identity, lifecycle management, and key metadata.
 
     Attributes:
-        institution_name (str): Display name of the institution.
+        name (str): Display name of the institution.
         slug (str): URL-safe unique identifier for the institution (lowercase, hyphen-separated).
-        institution_group (str): Optional grouping identifier (e.g., subsidiary/parent group).
+        group (str): Optional grouping identifier (e.g., subsidiary/parent group).
+        email (str): Optional general contact email for the institution.
+        website (str): Optional official website URL for the institution.
+        phone_number (str): Optional general contact phone number for the institution.
         category (str): Classification of institution (e.g., School, College, Organization).
-        institution_type (str): Type of institution (e.g., Public, Private).
+        _type (str): Type of institution (e.g., Public, Private).
         plan_tier (str): Subscription tier level (e.g., Starter, Pro, Enterprise).
         country (str): Country where the institution is located.
-        region (str): Geographic region of the institution.
+        state (str): State/region where the institution is located.
+        city (str): City where the institution is located.
         timezone (str, optional): IANA timezone identifier for the institution.
         currency (str, optional): ISO 4217 currency code for billing/transactions.
-        primary_contact_name (str, optional): Name of primary business contact.
-        primary_contact_email (str, optional): Email of primary business contact.
-        primary_contact_phone (str, optional): Phone of primary business contact.
         status (str): Current lifecycle status of the institution (see InstitutionStatus choices).
         activated_at (datetime, optional): Timestamp when institution transitioned to LIVE status.
         deleted_at (datetime, optional): Timestamp of soft-delete operation, null if active.
@@ -129,6 +122,7 @@ class Institution(TimeStampedModel):
     """
 
     name = models.CharField(max_length=255)
+    address = models.CharField(max_length=255, blank=True, default="")  # Optional full address field for convenience/search
     slug = models.SlugField(
         primary_key=True,
         max_length=80,
@@ -136,16 +130,17 @@ class Institution(TimeStampedModel):
         validators=[slug_validator],
         help_text="URL-safe unique institution identifier. Lowercase, hyphen-separated.",
     )
+    # main_branch = models.BooleanField(default=False, help_text="Indicates if this institution is the main branch in a group.")  # For future multi-branch support
     group = models.CharField(max_length=80, blank=True, default="")  # e.g., subsidiary/parent group
     email = models.EmailField(blank=True, default="")  # Optional general contact email for the institution
     website = models.URLField(blank=True, default="")  # Optional official website URL for the institution
     phone_number = models.CharField(max_length=15, blank=True, default="")  # Optional general contact phone number
 
-    category = models.CharField(max_length=80)            # e.g., School/College/Org
-    _type = models.CharField(max_length=80)    # e.g., Public/Private
-    plan_tier = models.CharField(max_length=80, default=PlanTier.STARTER, choices=PlanTier.choices)           # e.g., Starter/Pro/Enterprise
+    category = models.CharField(max_length=80)  # e.g., School/College/Org
+    _type = models.CharField(max_length=80)  # e.g., Public/Private
+    plan_tier = models.CharField(max_length=80, default=PlanTier.STARTER, choices=PlanTier.choices)  # e.g., Starter/Pro/Enterprise
 
-    country = models.CharField(max_length=80)
+    country = models.CharField(max_length=80, default="Nigeria")
     state = models.CharField(max_length=120)
     city = models.CharField(max_length=120)
 
@@ -176,6 +171,9 @@ class Institution(TimeStampedModel):
             ),
         ]
 
+    def __str__(self):
+        return self.slug
+    
     def clean(self):
         super().clean()
         slug = (self.slug or "").strip().lower()
@@ -211,7 +209,7 @@ class Institution(TimeStampedModel):
         #     raise ValidationError("Institution is locked. Resolve provisioning/ops issue first.")
 
         self.status = to_state
-        if to_state == InstitutionStatus.LIVE and self.activated_at is None:
+        if to_state == InstitutionStatus.ACTIVE and self.activated_at is None:
             self.activated_at = timezone.now()
 
         self.save(update_fields=["status", "activated_at", "updated_at", "deleted_at"])
@@ -481,7 +479,7 @@ class InstitutionPrimaryAdmin(TimeStampedModel):
         related_name="primary_admin_for_institutions",
     )
 
-    role_label = models.CharField(max_length=80, blank=True, default="")
+    role_label = models.CharField(max_length=80, blank=True, default="Institution_Admin")
 
     invite_status = models.CharField(
         max_length=16,
@@ -499,63 +497,8 @@ class InstitutionPrimaryAdmin(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
-# Operational + Audit trails
+# Audit trails
 # -----------------------------------------------------------------------------
-
-class InstitutionOperationEvent(TimeStampedModel):
-    """
-    Immutable audit log for institution-level operational events.
-
-    Captures all state-changing operations performed on institutions (suspend, reactivate, 
-    delete, reset) with complete traceability including the actor, reason, confirmation 
-    evidence, and outcome details. Designed as an append-only event log for compliance 
-    and audit trail purposes.
-
-    Attributes:
-        institution: Foreign key reference to the affected Institution.
-        operation_type: Type of operation performed (suspend, reactivate, delete, reset).
-        actor_id: Identifier of the user or system that triggered the operation.
-        reason: Optional narrative explanation or justification for the operation.
-        confirmation_token: Hashed or reference token of user confirmation (never raw secrets).
-        outcome: Result status of the operation (success, failed, pending, etc.).
-        error_code: Machine-readable error classification if operation failed.
-        error_message: Human-readable error details if operation failed.
-        occurred_at: Timestamp when the event was recorded (indexed for query performance).
-
-    Meta:
-        db_table: institution_operation_event
-        indexes: Composite index on (institution, operation_type, occurred_at) for 
-                 efficient querying of operation history filtered by type and date range.
-    """
-
-    institution = models.ForeignKey(
-        Institution,
-        on_delete=models.CASCADE,
-        related_name="operation_events",
-    )
-
-    operation_type = models.CharField(max_length=16, choices=OperationType.choices)
-    actor_id = models.CharField(max_length=120)
-    reason = models.TextField(blank=True, default="")
-
-    confirmation_token = models.CharField(
-        max_length=128,
-        blank=True,
-        default="",
-        help_text="Stores typed confirmation phrase/token or hash reference (never store raw secrets).",
-    )
-
-    outcome = models.CharField(max_length=16, choices=OperationOutcome.choices)
-    error_code = models.CharField(max_length=80, blank=True, default="")
-    error_message = models.TextField(blank=True, default="")
-
-    occurred_at = models.DateTimeField(default=timezone.now, db_index=True)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["institution", "operation_type", "occurred_at"]),
-        ]
-
 
 class AuditEvent(TimeStampedModel):
     """
@@ -618,7 +561,7 @@ class AuditEvent(TimeStampedModel):
     actor_id = models.CharField(max_length=120)
     action = models.CharField(max_length=120)          # e.g., TENANT_CREATE, TENANT_SUSPEND
     resource_type = models.CharField(max_length=80)    # e.g., Institution, InstitutionBranding
-    resource_id = models.CharField(max_length=64)      # stringified UUID or natural key
+    resource_slug = models.CharField(max_length=64)      # stringified Slug or natural key
 
     before_hash = models.CharField(max_length=128, blank=True, default="")
     after_hash = models.CharField(max_length=128, blank=True, default="")
@@ -630,5 +573,5 @@ class AuditEvent(TimeStampedModel):
         indexes = [
             models.Index(fields=["institution", "occurred_at"]),
             models.Index(fields=["action", "occurred_at"]),
-            models.Index(fields=["resource_type", "resource_id"]),
+            models.Index(fields=["resource_type", "resource_slug"]),
         ]
