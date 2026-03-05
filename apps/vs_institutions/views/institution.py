@@ -3,10 +3,9 @@ from __future__ import annotations
 from django.db.models import Q
 from rest_framework import generics
 from rest_framework.response import Response
-# from rest_framework.permissions import AllowAny
 
 from ..models import Institution, InstitutionStatus
-from ..permissions import IsVisionStaff, IsVisionSuperAdmin, ExternalOnly
+from ..permissions import IsVisionStaff
 from ..serializers import (
     InstitutionCreateSerializer,
     InstitutionDetailSerializer,
@@ -31,15 +30,12 @@ class InstitutionListView(ActorContextMixin, generics.ListAPIView):
 
     queryset = (
         Institution.objects.all()
-        .select_related("branding", "provisioning", "primary_admin")
-        .prefetch_related("module_settings")
+        .select_related("branding",)
+        .prefetch_related("module_settings", "branches")
     )
 
     def get_queryset(self):
         qs = super().get_queryset()
-
-        # user = getattr(self.request, "user", None)
-        # is_super = bool(getattr(user, "is_superuser", False))
 
         status_param = (self.request.query_params.get("status") or "").strip()
         if status_param:
@@ -50,14 +46,6 @@ class InstitutionListView(ActorContextMixin, generics.ListAPIView):
         if active_param in ("1", "true", "yes"):
             qs = qs.filter(status=InstitutionStatus.ACTIVE)
 
-        pending_param = (self.request.query_params.get("pending") or "").strip().lower()
-        if pending_param in ("1", "true", "yes"):
-            qs = qs.filter(status=InstitutionStatus.PENDING)
-
-        suspended_param = (self.request.query_params.get("suspended") or "").strip().lower()
-        if suspended_param in ("1", "true", "yes"):
-            qs = qs.filter(status=InstitutionStatus.SUSPENDED)
-        
         inactive_param = (self.request.query_params.get("inactive") or "").strip().lower()
         if inactive_param in ("1", "true", "yes"):
             qs = qs.filter(status=InstitutionStatus.INACTIVE)
@@ -66,14 +54,16 @@ class InstitutionListView(ActorContextMixin, generics.ListAPIView):
         if q:
             qs = qs.filter(
                 Q(name__icontains=q)
-                | Q(state__icontains=q)
-                | Q(city__icontains=q)
                 | Q(_type__iexact=q)
                 | Q(status__iexact=q)
-            )
+                | Q(branches__state__icontains=q)
+                | Q(branches__city__icontains=q)
+                | Q(branches__country__icontains=q)
+                | Q(branches__name__icontains=q)
+            ).distinct()
 
         ordering = (self.request.query_params.get("ordering") or "").strip()
-        allowed = {"created_at", "-created_at", "updated_at", "-updated_at", "institution_name", "-institution_name"}
+        allowed = {"created_at", "-created_at", "updated_at", "-updated_at", "name", "-name"}
         qs = qs.order_by(ordering) if ordering in allowed else qs.order_by("created_at")
         return qs
 
@@ -83,7 +73,7 @@ class InstitutionCountView(generics.GenericAPIView):
 
     def get(self, request, *args, **kwargs):
         param = "all"
-        count = Institution.objects.count()  # Default count of all institutions
+        count = Institution.objects.count()
 
         active_param = (self.request.query_params.get("active") or "").strip().lower()
         if active_param in ("1", "true", "yes"):
@@ -95,16 +85,6 @@ class InstitutionCountView(generics.GenericAPIView):
             param = "inactive"
             count = Institution.objects.filter(status=InstitutionStatus.INACTIVE).count()
 
-        suspended_param = (self.request.query_params.get("suspended") or "").strip().lower()
-        if suspended_param in ("1", "true", "yes"):
-            param = "suspended"
-            count = Institution.objects.filter(status=InstitutionStatus.SUSPENDED).count()
-
-        pending_param = (self.request.query_params.get("pending") or "").strip().lower()
-        if pending_param in ("1", "true", "yes"):
-            param = "pending"
-            count = Institution.objects.filter(status=InstitutionStatus.PENDING).count()
-        
         return Response({f"{param.capitalize()} count": count})
 
 
@@ -119,7 +99,8 @@ class InstitutionDetailView(ActorContextMixin, generics.RetrieveAPIView):
 
     queryset = (
         Institution.objects.all()
-        .select_related("branding", "primary_admin")
+        .select_related("branding")
+        .prefetch_related("branches")
     )
     lookup_field = "slug"
 
@@ -134,12 +115,14 @@ class InstitutionUpdateView(ActorContextMixin, generics.UpdateAPIView):
 
     queryset = (
         Institution.objects.all()
-        .select_related("branding", "provisioning", "primary_admin__contact")
-        .prefetch_related("module_settings")
+        .select_related("branding")
+        .prefetch_related("module_settings", "branches")
     )
     lookup_field = "slug"
 
     def update(self, request, *args, **kwargs):
         resp = super().update(request, *args, **kwargs)
         institution = self.get_object()
-        return Response(InstitutionDetailSerializer(institution, context=self.get_serializer_context()).data)
+        return Response(
+            InstitutionDetailSerializer(institution, context=self.get_serializer_context()).data
+        )
