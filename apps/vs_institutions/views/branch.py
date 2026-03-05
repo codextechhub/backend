@@ -3,8 +3,9 @@ from __future__ import annotations
 from django.db.models import Q
 from rest_framework import generics
 from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated, AllowAny
 
-from ..models import Branch, BranchStatus
+from ..models import Branch, BranchStatus, Institution
 from ..permissions import IsVisionStaff
 from ..serializers import (
     BranchCreateSerializer,
@@ -121,6 +122,12 @@ class BranchCreateView(ActorContextMixin, generics.CreateAPIView):
     permission_classes = [IsVisionStaff]
     serializer_class = BranchCreateSerializer
 
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        i_slug = self.kwargs["i_slug"]
+        ctx["institution"] = Institution.objects.filter(slug=i_slug).first()
+        return ctx
+
 
 class BranchDetailView(ActorContextMixin, generics.RetrieveAPIView):
     permission_classes = [IsVisionStaff]
@@ -135,9 +142,9 @@ class BranchDetailView(ActorContextMixin, generics.RetrieveAPIView):
         If institution slug is in the URL, scope branch lookup to that institution.
         """
         qs = super().get_queryset()
-        institution_slug = self.kwargs.get("institution_slug")
-        if institution_slug:
-            qs = qs.filter(institution__slug=institution_slug)
+        i_slug = self.kwargs.get("i_slug")   # "s" for "slug" to keep it short in URL
+        if i_slug:
+            qs = qs.filter(institution__slug=i_slug)
         return qs
 
 
@@ -153,9 +160,9 @@ class BranchUpdateView(ActorContextMixin, generics.UpdateAPIView):
 
     def get_queryset(self):
         qs = super().get_queryset()
-        institution_slug = self.kwargs.get("institution_slug")
-        if institution_slug:
-            qs = qs.filter(institution__slug=institution_slug)
+        i_slug = self.kwargs.get("i_slug")  # "s" for "slug" to keep it short in URL
+        if i_slug:
+            qs = qs.filter(institution__slug=i_slug)
         return qs
 
     def update(self, request, *args, **kwargs):
