@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from django.core.exceptions import ValidationError
 from django.core.validators import RegexValidator
-from django.db import models
-from django.db.models import Q
+from django.db import models, transaction
+from django.db.models import Q, Max
 from django.utils import timezone
 
 
@@ -38,25 +38,23 @@ RESERVED_TENANT_SLUGS = {
 # -----------------------------------------------------------------------------
 
 class InstitutionStatus(models.TextChoices):
-    ACTIVE = "ACTIVE", "Active",
-    PENDING = "PENDING", "Pending Activation",
-    SUSPENDED = "SUSPENDED", "Suspended"
-    INACTIVE = "INACTIVE", "Inactive"
+    ACTIVE = "Active", "Active"
+    INACTIVE = "Inactive", "Inactive"
+    DELETED = "Deleted", "Deleted"
+    
 
-
-class ProvisioningStatus(models.TextChoices):
-    QUEUED = "QUEUED", "Queued"
-    RUNNING = "RUNNING", "Running"
-    SUCCEEDED = "SUCCEEDED", "Succeeded"
-    FAILED = "FAILED", "Failed"
-    ROLLED_BACK = "ROLLED_BACK", "Rolled Back"
-    ROLLBACK_FAILED = "ROLLBACK_FAILED", "Rollback Failed"
+class BranchStatus(models.TextChoices):
+    ACTIVE = "Active", "Active"
+    PENDING = "Pending", "Pending Activation"
+    SUSPENDED = "Suspended", "Suspended"
+    INACTIVE = "Inactive", "Inactive"
+    CLOSED = "Closed", "Closed"
 
 
 class InviteStatus(models.TextChoices):
-    QUEUED = "QUEUED", "Queued"
-    SENT = "SENT", "Sent"
-    FAILED = "FAILED", "Failed"
+    QUEUED = "Queued", "Queued"
+    SENT = "Sent", "Sent"
+    FAILED = "Failed", "Failed"
 
 
 class OperationOutcome(models.TextChoices):
@@ -76,53 +74,41 @@ class PlanTier(models.TextChoices):
 
 class Institution(TimeStampedModel):
     """
-    Institution model representing the core institution entity in a multi-institution SaaS application.
+    Institution model representing the tenant identity within the system.
 
-    Derived from system diagrams as the TENANT (core) entity, responsible for holding
-    canonical institution identity, lifecycle management, and key metadata.
+    The Institution is the stable, canonical entity that serves as the primary tenant.
+    Multiple Branch objects are associated with each Institution to carry location-specific
+    and contact data, following a multi-tenant architecture pattern.
 
     Attributes:
-        name (str): Display name of the institution.
-        slug (str): URL-safe unique identifier for the institution (lowercase, hyphen-separated).
-        group (str): Optional grouping identifier (e.g., subsidiary/parent group).
-        email (str): Optional general contact email for the institution.
-        website (str): Optional official website URL for the institution.
-        phone_number (str): Optional general contact phone number for the institution.
-        category (str): Classification of institution (e.g., School, College, Organization).
-        _type (str): Type of institution (e.g., Public, Private).
-        plan_tier (str): Subscription tier level (e.g., Starter, Pro, Enterprise).
-        country (str): Country where the institution is located.
-        state (str): State/region where the institution is located.
-        city (str): City where the institution is located.
-        timezone (str, optional): IANA timezone identifier for the institution.
-        currency (str, optional): ISO 4217 currency code for billing/transactions.
-        status (str): Current lifecycle status of the institution (see InstitutionStatus choices).
-        activated_at (datetime, optional): Timestamp when institution transitioned to LIVE status.
-        deleted_at (datetime, optional): Timestamp of soft-delete operation, null if active.
+        name (CharField): Human-readable institution name.
+        slug (SlugField): URL-safe, unique identifier for the institution. Primary key.
+            Must be lowercase and hyphen-separated. Cannot be blank or reserved.
+        category (CharField): Type classification (e.g., School, College, Organization).
+        _type (CharField): Operational classification (e.g., Public, Private).
+        plan_tier (CharField): Subscription tier for feature access and limitations.
+            Defaults to PlanTier.STARTER.
+        status (CharField): Current operational status of the institution.
+            Defaults to InstitutionStatus.ACTIVE. Indexed for query performance.
+        activated_at (DateTimeField): Timestamp when the institution became active.
+            Nullable for pending activations.
+        deleted_at (DateTimeField): Soft delete timestamp. Nullable for active institutions.
 
-    Methods:
-        mark_live(): Transition institution to LIVE status.
-        suspend(): Transition institution to SUSPENDED status with reason.
-        reactivate(): Restore institution from suspended/inactive state.
-        soft_delete(): Perform soft-delete operation with audit trail.
-        transition(): Core method handling state transitions with validation and event recording.
-        clean(): Validate slug against reserved slugs list.
+    Indexes:
+        - slug: Optimizes primary key lookups and slug-based queries.
+        - (status, created_at): Supports filtered list queries by institution status and creation date.
 
-    Meta:
-        - Database table: "institution"
-        - Indexes on: slug, (status, created_at)
-        - Constraint: slug cannot be empty string
-        - Includes soft-delete support via deleted_at field
-        - Inherits created_at, updated_at from TimeStampedModel
+    Constraints:
+        - slug cannot be empty string.
+        - slug must not match reserved tenant slugs (validated in clean()).
 
-    Note:
-        Heavy business logic and advanced state transition policies are delegated to
-        service layer components (e.g., LifecycleService). This model provides lightweight
-        domain helpers and audit trails via InstitutionLifecycleEvent.
+    Notes:
+        - Use select_related() or prefetch_related() when accessing main_branch in views
+          for optimal query performance.
+        - Supports soft deletes via deleted_at field for audit trail preservation.
     """
 
     name = models.CharField(max_length=255)
-    address = models.CharField(max_length=255, blank=True, default="")  # Optional full address field for convenience/search
     slug = models.SlugField(
         primary_key=True,
         max_length=80,
@@ -130,33 +116,17 @@ class Institution(TimeStampedModel):
         validators=[slug_validator],
         help_text="URL-safe unique institution identifier. Lowercase, hyphen-separated.",
     )
-    # main_branch = models.BooleanField(default=False, help_text="Indicates if this institution is the main branch in a group.")  # For future multi-branch support
-    group = models.CharField(max_length=80, blank=True, default="")  # e.g., subsidiary/parent group
-    email = models.EmailField(blank=True, default="")  # Optional general contact email for the institution
-    website = models.URLField(blank=True, default="")  # Optional official website URL for the institution
-    phone_number = models.CharField(max_length=15, blank=True, default="")  # Optional general contact phone number
 
-    category = models.CharField(max_length=80)  # e.g., School/College/Org
-    _type = models.CharField(max_length=80)  # e.g., Public/Private
-    plan_tier = models.CharField(max_length=80, default=PlanTier.STARTER, choices=PlanTier.choices)  # e.g., Starter/Pro/Enterprise
-
-    country = models.CharField(max_length=80, default="Nigeria")
-    state = models.CharField(max_length=120)
-    city = models.CharField(max_length=120)
-
-    timezone = models.CharField(max_length=64, blank=True, default="")
-    currency = models.CharField(max_length=8, blank=True, default="")
+    _type = models.CharField(max_length=80)      # e.g., Public/Private
 
     status = models.CharField(
-        max_length=32,
+        max_length=16,
         choices=InstitutionStatus.choices,
-        default=InstitutionStatus.PENDING,
+        default=InstitutionStatus.ACTIVE,
         db_index=True,
     )
 
     activated_at = models.DateTimeField(null=True, blank=True)
-
-    # Soft-delete markers (kept explicit for query clarity)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
@@ -165,63 +135,197 @@ class Institution(TimeStampedModel):
             models.Index(fields=["status", "created_at"]),
         ]
         constraints = [
-            models.CheckConstraint(
-                check=~Q(slug=""),
-                name="slug_not_empty",
-            ),
+            models.CheckConstraint(check=~Q(slug=""), name="slug_not_empty"),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.slug
-    
+
     def clean(self):
         super().clean()
         slug = (self.slug or "").strip().lower()
         if slug in RESERVED_TENANT_SLUGS:
             raise ValidationError({"slug": "This slug is reserved. Choose another."})
 
-    # --- Domain-ish helpers (kept lightweight; services can enforce heavy rules) ---
+    # --- Branch helpers ---
 
-    def mark_live(self, *, actor_id: str, reason: str = ""):
-        self.transition(to_state=InstitutionStatus.ACTIVE, actor_id=actor_id, reason=reason)
+    @property
+    def main_branch(self):
+        """
+        Returns the main branch.
+        Note: use select_related/prefetch_related in views for performance.
+        """
+        return self.branches.filter(is_main=True).first()
+
+
+class Branch(TimeStampedModel):
+    """
+    Django model representing an institution branch/campus location.
+    A Branch tracks location-specific information for an Institution. Each institution
+    can have multiple branches, with exactly one designated as the main branch (is_main=True).
+    Branches have a lifecycle managed through status transitions (PENDING → ACTIVE → SUSPENDED/INACTIVE → CLOSED).
+    All status transitions are logged in the BranchLifecycle model for audit purposes.
+    Key Features:
+    - Location & contact information (address, email, website, phone, timezone, currency)
+    - Status tracking with lifecycle logging via transition() methods
+    - Enforced constraints: one main branch per institution, unique code per institution
+    - Automatic timestamp management (created_at, updated_at, deleted_at)
+    - Indexed queries for common lookups (institution + is_main, institution + status, institution + code)
+    Attributes:
+        institution (ForeignKey): Parent institution this branch belongs to
+        name (CharField): Display name (e.g., 'Lekki Campus')
+        code (AutoField): Auto-incrementing identifier unique within the institution
+        is_main (BooleanField): Marks the primary branch for the institution
+        address, email, website, phone_number (str): Contact details
+        country, state, city (str): Geographic location
+        timezone, currency (str): Operational preferences
+        status (CharField): Current state (PENDING, ACTIVE, SUSPENDED, INACTIVE, CLOSED)
+        opened_at, closed_at, activated_at (DateTimeField): Lifecycle timestamps
+    Methods:
+        mark_active(): Transition to ACTIVE status
+        suspend(): Transition to SUSPENDED status with reason
+        reactivate(): Return to ACTIVE from suspended/inactive state
+        mark_inactive(): Transition to INACTIVE status
+        transition(): Core state machine for managing status changes and logging
+        clean(): Validates business rules (auto-sets closed_at if status=CLOSED)
+    """
+
+    institution = models.ForeignKey(
+        Institution,
+        on_delete=models.CASCADE,
+        related_name="branches",
+        db_index=True,
+    )
+
+    name = models.CharField(max_length=255, help_text="Branch display name, e.g., 'Lekki Campus'")
+    code = models.PositiveIntegerField(
+        editable=False,
+        null=False,
+        help_text="Branch code unique per institution (1..N).",
+        db_index=True,
+    )
+    is_main = models.BooleanField(
+        default=False,
+        help_text="Marks the primary/main branch for this institution.",
+    )
+
+    category = models.CharField(max_length=80)  # e.g., School/College/Org
+    plan_tier = models.CharField(
+        max_length=80,
+        default=PlanTier.STARTER,
+        choices=PlanTier.choices,
+    )
+
+    # Branch contact/location info
+    address = models.CharField(max_length=255, blank=True, default="")
+    email = models.EmailField(blank=True, default="")
+    website = models.URLField(blank=True, default="")
+    phone_number = models.CharField(max_length=15, blank=True, default="")
+
+    country = models.CharField(max_length=80, default="Nigeria")
+    state = models.CharField(max_length=120, blank=True, default="")
+    city = models.CharField(max_length=120, blank=True, default="")
+    timezone = models.CharField(max_length=64, blank=True, default="")
+    currency = models.CharField(max_length=8, blank=True, default="")
+
+    status = models.CharField(
+        max_length=16,
+        choices=BranchStatus.choices,
+        default=BranchStatus.PENDING,
+        db_index=True,
+    )
+
+    opened_at = models.DateTimeField(null=True, blank=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+
+    activated_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["institution", "is_main"]),
+            models.Index(fields=["institution", "status"]),
+            models.Index(fields=["institution", "code"]),
+        ]
+        constraints = [
+            # Optional: if code is supplied, enforce uniqueness within institution
+            models.UniqueConstraint(
+                fields=["institution", "code"],
+                condition=~Q(code=0),  # AutoField starts at 1, so code=0 can represent "not set"
+                name="uniq_branch_code_per_institution_when_present",
+            ),
+
+            # Enforce only ONE main branch per institution
+            models.UniqueConstraint(
+                fields=["institution"],
+                condition=Q(is_main=True),
+                name="uniq_one_main_branch_per_institution",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.institution.slug}:{self.code}"
+
+    def clean(self):
+        super().clean()
+
+        # Closed implies closed_at (optional policy)
+        if self.status == BranchStatus.CLOSED and self.closed_at is None:
+            self.closed_at = timezone.now()
+    
+    @staticmethod
+    def allocate_next_code(*, institution: Institution) -> int:
+        """
+        Allocates the next branch code per institution safely.
+        Uses row locking to prevent duplicate codes under concurrency.
+        """
+        # Lock rows for this institution so two creates don't pick the same Max(code)
+        qs = Branch.objects.select_for_update().filter(institution=institution)
+        current_max = qs.aggregate(m=Max("code"))["m"] or 0
+        return current_max + 1
+
+    def save(self, *args, **kwargs):
+        # Allocate code only on first save if missing/zero.
+        if not self.code:
+            with transaction.atomic():
+                self.code = Branch.allocate_next_code(institution=self.institution)
+                super().save(*args, **kwargs)
+            return
+        return super().save(*args, **kwargs)
+    
+    # --- Lifecycle helpers ---
+
+    def mark_active(self, *, actor_id: str, reason: str = ""):
+        self.transition(to_state=BranchStatus.ACTIVE, actor_id=actor_id, reason=reason)
 
     def suspend(self, *, actor_id: str, reason: str):
-        self.transition(to_state=InstitutionStatus.SUSPENDED, actor_id=actor_id, reason=reason)
+        self.transition(to_state=BranchStatus.SUSPENDED, actor_id=actor_id, reason=reason)
 
     def reactivate(self, *, actor_id: str, reason: str = ""):
-        self.transition(to_state=InstitutionStatus.ACTIVE, actor_id=actor_id, reason=reason)
+        self.transition(to_state=BranchStatus.ACTIVE, actor_id=actor_id, reason=reason)
 
-    def soft_delete(self, *, actor_id: str, reason: str):
-        self.deleted_at = timezone.now()
-        self.transition(to_state=InstitutionStatus.INACTIVE, actor_id=actor_id, reason=reason)
+    def mark_inactive(self, *, actor_id: str, reason: str):
+        self.transition(to_state=BranchStatus.INACTIVE, actor_id=actor_id, reason=reason)
 
     def transition(self, *, to_state: str, actor_id: str, reason: str = ""):
-        """Records lifecycle event and updates current status."""
         from_state = self.status
         if from_state == to_state:
             return
 
-        # Minimal guardrails (full policy typically lives in LifecycleService)
-        # if from_state == InstitutionStatus.DELETED_SOFT:
-        #     raise ValidationError("Cannot transition a soft-deleted institution without restore policy.")
-        # if from_state == InstitutionStatus.LOCKED and to_state not in (InstitutionStatus.LOCKED,):
-        #     # You might allow super-admin override in a service layer.
-        #     raise ValidationError("Institution is locked. Resolve provisioning/ops issue first.")
-
         self.status = to_state
-        if to_state == InstitutionStatus.ACTIVE and self.activated_at is None:
+        if to_state == BranchStatus.ACTIVE and self.activated_at is None:
             self.activated_at = timezone.now()
 
         self.save(update_fields=["status", "activated_at", "updated_at", "deleted_at"])
 
-        InstitutionLifecycleEvent.objects.create(
-            institution=self,
+        BranchLifecycle.objects.create(
+            branch=self,
             from_state=from_state,
             to_state=to_state,
             actor_id=actor_id,
             reason=reason or "",
         )
-
 
 class InstitutionBranding(TimeStampedModel):
     """
@@ -291,31 +395,31 @@ class InstitutionModuleSetting(TimeStampedModel):
         ]
 
 
-class InstitutionLifecycleEvent(TimeStampedModel):
+class BranchLifecycle():
     """
-    Represents an event in the lifecycle of an institution, capturing state transitions.
+    Represents an event in the lifecycle of a branch, capturing state transitions.
 
     Attributes:
-        institution (ForeignKey): A reference to the related Institution.
-        from_state (str): The state from which the institution is transitioning.
-        to_state (str): The state to which the institution is transitioning.
+        branch (ForeignKey): A reference to the related Branch.
+        from_state (str): The state from which the branch is transitioning.
+        to_state (str): The state to which the branch is transitioning.
         actor_id (str): Identifier for the actor responsible for the transition.
         reason (str): An optional text field providing the reason for the transition.
         occurred_at (datetime): The timestamp when the event occurred, indexed for performance.
 
     Meta:
         db_table (str): Specifies the database table name for this model.
-        indexes (list): Defines indexes for efficient querying on institution and state transitions.
+        indexes (list): Defines indexes for efficient querying on branch and state transitions.
     """
 
-    institution = models.ForeignKey(
-        Institution,
+    branch = models.ForeignKey(
+        Branch,
         on_delete=models.CASCADE,
         related_name="lifecycle_events",
     )
 
-    from_state = models.CharField(max_length=32, choices=InstitutionStatus.choices)
-    to_state = models.CharField(max_length=32, choices=InstitutionStatus.choices)
+    from_state = models.CharField(max_length=32, choices=BranchStatus.choices)
+    to_state = models.CharField(max_length=32, choices=BranchStatus.choices)
 
     actor_id = models.CharField(max_length=120)
     reason = models.TextField(blank=True, default="")
@@ -324,96 +428,15 @@ class InstitutionLifecycleEvent(TimeStampedModel):
 
     class Meta:
         indexes = [
-            models.Index(fields=["institution", "occurred_at"]),
-            models.Index(fields=["institution", "to_state"]),
+            models.Index(fields=["branch", "occurred_at"]),
+            models.Index(fields=["branch", "to_state"]),
         ]
-
-
-class ProvisioningRecord(TimeStampedModel):
-    """
-    Represents the provisioning attempts for an institution.
-
-    This model maintains a one-to-one relationship with the Institution model, 
-    tracking the status and details of the latest provisioning attempt.
-
-    Attributes:
-        institution (OneToOneField): A reference to the associated Institution instance. 
-            Deletion cascades to remove the provisioning record when the institution is deleted.
-        provisioning_status (str): Current status of the provisioning attempt (e.g., QUEUED, RUNNING, SUCCEEDED, FAILED).
-        last_error_code (str): Code representing the last error encountered during provisioning, if any.
-        last_error_message (str): Detailed message regarding the last error encountered during provisioning.
-        queued_at (datetime): Timestamp indicating when the provisioning attempt was queued.
-        started_at (datetime, optional): Timestamp indicating when the provisioning attempt started.
-        completed_at (datetime, optional): Timestamp indicating when the provisioning attempt completed.
-        rollback_status (str): Status of the rollback operation if the provisioning attempt failed.
-        rollback_completed_at (datetime, optional): Timestamp indicating when the rollback was completed, if applicable.
-
-    Meta:
-        db_table (str): Specifies the name of the database table for this model.
-        indexes (list): Indexes to optimize queries based on institution and provisioning status.
-
-    Methods:
-        mark_running(): Updates the provisioning status to RUNNING and sets the started_at timestamp.
-        mark_succeeded(): Updates the provisioning status to SUCCEEDED and sets the completed_at timestamp.
-        mark_failed(code: str = "", message: str = ""): Updates the provisioning status to FAILED, 
-            records the last error code and message, and sets the completed_at timestamp.
-    """
-
-    institution = models.OneToOneField(
-        Institution,
-        on_delete=models.CASCADE,
-        related_name="provisioning",
-    )
-
-    provisioning_status = models.CharField(
-        max_length=32,
-        choices=ProvisioningStatus.choices,
-        default=ProvisioningStatus.QUEUED,
-        db_index=True,
-    )
-
-    last_error_code = models.CharField(max_length=80, blank=True, default="")
-    last_error_message = models.TextField(blank=True, default="")
-
-    queued_at = models.DateTimeField(default=timezone.now)
-    started_at = models.DateTimeField(null=True, blank=True)
-    completed_at = models.DateTimeField(null=True, blank=True)
-
-    rollback_status = models.CharField(
-        max_length=32,
-        choices=ProvisioningStatus.choices,
-        blank=True,
-        default="",
-        help_text="Optional status reflecting rollback outcome if provisioning failed.",
-    )
-    rollback_completed_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        indexes = [
-            models.Index(fields=["institution", "provisioning_status"]),
-        ]
-
-    def mark_running(self):
-        self.provisioning_status = ProvisioningStatus.RUNNING
-        self.started_at = self.started_at or timezone.now()
-        self.save(update_fields=["provisioning_status", "started_at", "updated_at"])
-
-    def mark_succeeded(self):
-        self.provisioning_status = ProvisioningStatus.SUCCEEDED
-        self.completed_at = timezone.now()
-        self.save(update_fields=["provisioning_status", "completed_at", "updated_at"])
-
-    def mark_failed(self, code: str = "", message: str = ""):
-        self.provisioning_status = ProvisioningStatus.FAILED
-        self.last_error_code = code or ""
-        self.last_error_message = message or ""
-        self.completed_at = timezone.now()
-        self.save(update_fields=["provisioning_status", "last_error_code", "last_error_message", "completed_at", "updated_at"])
 
 
 # -----------------------------------------------------------------------------
 # Primary Admin linkage
 # -----------------------------------------------------------------------------
+
 
 class ContactInfo(TimeStampedModel):
     """
@@ -439,17 +462,17 @@ class ContactInfo(TimeStampedModel):
         ]
 
 
-class InstitutionPrimaryAdmin(TimeStampedModel):
+class BranchPrimaryAdmin(TimeStampedModel):
     """
-    InstitutionPrimaryAdmin model for managing primary administrators of institutions.
+    BranchPrimaryAdmin model for managing primary administrators of branches.
 
-    This model establishes a one-to-one relationship between an Institution and its
+    This model establishes a one-to-one relationship between a Branch and its
     primary administrator contact. It tracks the administrative assignment, role details,
     and invitation lifecycle for the primary admin.
 
     Attributes:
-        institution (OneToOneField): The institution this admin is assigned to.
-            Cascade delete ensures cleanup when institution is removed.
+        branch (OneToOneField): The branch this admin is assigned to.
+            Cascade delete ensures cleanup when branch is removed.
         contact (ForeignKey): The contact information of the primary administrator.
             Protected delete prevents accidental removal of referenced contacts.
         role_label (CharField): Optional label describing the admin's role or title.
@@ -463,23 +486,22 @@ class InstitutionPrimaryAdmin(TimeStampedModel):
         TimeStampedModel: Provides created_at and updated_at timestamps.
 
     Meta:
-        db_table: Explicitly names the database table as 'institution_primary_admin'.
         indexes: Composite index on (institution, invite_status) for efficient queries
             on invitation status by institution.
     """
 
-    institution = models.OneToOneField(
-        Institution,
+    branch = models.OneToOneField(
+        Branch,
         on_delete=models.CASCADE,
         related_name="primary_admin",
     )
     contact = models.ForeignKey(
         ContactInfo,
         on_delete=models.PROTECT,
-        related_name="primary_admin_for_institutions",
+        related_name="primary_admin_for_branches",
     )
 
-    role_label = models.CharField(max_length=80, blank=True, default="Institution_Admin")
+    role_label = models.CharField(max_length=80, blank=True, default="BR_AD")
 
     invite_status = models.CharField(
         max_length=16,
@@ -492,7 +514,7 @@ class InstitutionPrimaryAdmin(TimeStampedModel):
 
     class Meta:
         indexes = [
-            models.Index(fields=["institution", "invite_status"]),
+            models.Index(fields=["branch", "invite_status"]),
         ]
 
 
@@ -529,12 +551,13 @@ class AuditEvent(TimeStampedModel):
             Stored as a string representation (typically a UUID or natural key) to
             support lookups and correlation with the actual resource.
         
-        before_hash (str): Cryptographic hash of the resource state prior to the action.
-            Stored as a compact reference rather than full payload data to minimize
-            storage overhead while maintaining integrity verification capability.
-        
-        after_hash (str): Cryptographic hash of the resource state after the action.
-            Enables detection of unexpected state changes and data corruption.
+        before_change (TextField): Optional snapshot of the resource state before the change.
+            Can be stored as JSON or a stringified representation. Useful for auditing
+            the exact changes made, especially for critical operations.
+
+        diff_change (TextField): Optional field capturing the difference between before and after states.
+            This can be a JSON diff or a string representation of the changes, allowing for easier 
+            analysis of what was modified without needing to store the entire before/after states.   
         
         outcome (str): The result status of the operation. Must be one of the predefined
             OperationOutcome choices (e.g., SUCCESS, FAILURE, PARTIAL). Allows filtering
@@ -563,8 +586,8 @@ class AuditEvent(TimeStampedModel):
     resource_type = models.CharField(max_length=80)    # e.g., Institution, InstitutionBranding
     resource_slug = models.CharField(max_length=64)      # stringified Slug or natural key
 
-    before_hash = models.CharField(max_length=128, blank=True, default="")
-    after_hash = models.CharField(max_length=128, blank=True, default="")
+    before_change = models.TextField(blank=True, default="")  # optional JSON or stringified state snapshot before the change
+    diff_change = models.TextField(blank=True, default="")   # optional JSON or stringified diff of the change for easier analysis (could be generated from before/after hashes)
 
     outcome = models.CharField(max_length=16, choices=OperationOutcome.choices)
     occurred_at = models.DateTimeField(default=timezone.now, db_index=True)
