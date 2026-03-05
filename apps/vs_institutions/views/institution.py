@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.db.models import Q
 from rest_framework import generics
 from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from ..models import Institution, InstitutionStatus
 from ..permissions import IsVisionStaff
@@ -89,7 +90,7 @@ class InstitutionCountView(generics.GenericAPIView):
 
 
 class InstitutionCreateView(ActorContextMixin, generics.CreateAPIView):
-    permission_classes = [IsVisionStaff]
+    permission_classes = [AllowAny]  # Allow any authenticated user to create an institution (or change to IsVisionStaff if you want to restrict)
     serializer_class = InstitutionCreateSerializer
 
 
