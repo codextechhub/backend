@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from time import timezone
+from django.utils import timezone
 from typing import Any, Dict, List, Optional, Tuple
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
@@ -168,268 +168,6 @@ class BranchPrimaryAdminReadSerializer(serializers.Serializer):
     contact = ContactInfoSerializer()
 
 
-# class InstitutionListSerializer(serializers.ModelSerializer):
-#     class Meta:
-#         model = Institution
-#         fields = [
-#             "name",
-#             "slug",
-#             "_type",
-#             "country",
-#             "state",
-#             "city",
-#             "status",
-#         ]
-#         read_only_fields = fields
-
-
-# class InstitutionDetailSerializer(serializers.ModelSerializer):
-#     branding = InstitutionBrandingSerializer(read_only=True)
-#     primary_admin = BranchPrimaryAdminReadSerializer(read_only=True)
-
-#     class Meta:
-#         model = Institution
-#         fields = [
-#             "name",
-#             ,
-#             "slug",
-#             "category",
-#             "_type",
-#             "plan_tier",
-#             "country",
-#             "state",
-#             "status",
-#             # Nested
-#             "branding",
-#             "primary_admin",
-#         ]
-#         read_only_fields = fields
-
-
-# class InstitutionCreateSerializer(serializers.ModelSerializer):
-#     """
-#     Creates a institution and its initial system-owned companions:
-#       - ProvisioningRecord (Queued)
-#       - Lifecycle event (Created)
-#     Optional nested:
-#       - Branding
-#       - Primary admin (ContactInfo + BranchPrimaryAdmin link)
-#       - Initial module settings
-
-#     NOTE: true provisioning execution + invite sending typically belongs in services/tasks.
-#     """
-
-#     branding = InstitutionBrandingSerializer(required=False)
-#     primary_admin = BranchPrimaryAdminWriteSerializer(required=False)
-#     module_settings = InstitutionModuleSettingSerializer(many=True, required=False)
-
-#     class Meta:
-#         model = Institution
-#         fields = [
-#             "name",
-#             "slug",
-#             ,
-#             "email",
-#             "website",
-#             "phone_number",
-#             "category",
-#             "_type",
-#             "plan_tier",
-#             "country",
-#             "state",
-#             "city",
-#             "timezone",
-#             "currency",
-#             # optional nested
-#             "branding",
-#             "primary_admin",
-#             "module_settings",
-#         ]
-
-#     def validate_slug(self, value: str) -> str:
-#         # If user provided slug, normalize it and validate constraints.
-#         if value is None:
-#             return ""
-#         normalized = _normalize_slug(value)
-#         if not normalized:
-#             # allow empty here because we can auto-generate; strict check in validate()
-#             return ""
-#         if normalized in RESERVED_TENANT_SLUGS:
-#             raise serializers.ValidationError("This slug is reserved. Choose another.")
-#         if not _slug_is_unique(normalized):
-#             suggestions = _build_slug_suggestions(normalized)
-#             raise serializers.ValidationError(
-#                 {"message": "Slug already exists.", "suggestions": suggestions}
-#             )
-#         return normalized
-
-#     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
-#         # Auto-generate slug if not provided
-#         raw_slug = (attrs.get("slug") or "").strip()
-#         if not raw_slug:
-#             base = _normalize_slug(attrs.get("name", ""))
-#             if not base:
-#                 raise serializers.ValidationError(
-#                     {"slug": "Unable to generate slug from name. Provide slug explicitly."}
-#                 )
-#             if base in RESERVED_TENANT_SLUGS:
-#                 base = f"{base}-institution"
-#             if not _slug_is_unique(base):
-#                 suggestions = [s for s in _build_slug_suggestions(base) if _slug_is_unique(s)]
-#                 raise serializers.ValidationError(
-#                     {"slug": {"message": "Generated slug conflicts.", "suggestions": suggestions}}
-#                 )
-#             attrs["slug"] = base
-
-#         # Example: if module_settings provided, ensure module_key uniqueness in payload
-#         ms = attrs.get("module_settings") or []
-#         keys = [m.get("module_key") for m in ms if m.get("module_key")]
-#         if len(keys) != len(set(keys)):
-#             raise serializers.ValidationError({"module_settings": "Duplicate module_key values in request payload."})
-
-#         return attrs
-
-#     @transaction.atomic
-#     def create(self, validated_data: Dict[str, Any]) -> Institution:
-#         branding_data = validated_data.pop("branding", None)
-#         primary_admin_data = validated_data.pop("primary_admin", None)
-#         module_settings_data = validated_data.pop("module_settings", [])
-
-#         # Create Institution
-#         institution = Institution.objects.create(**validated_data, status=InstitutionStatus.PENDING)
-
-#         # Record initial lifecycle event (Created -> Created is noisy; record as "Created")
-#         BranchLifecycle.objects.create(
-#             institution=institution,
-#             from_state="",
-#             to_state=InstitutionStatus.PENDING,
-#             actor_id=str(self.context.get("actor_id", "system")),
-#             reason="Institution created",
-#         )
-
-#         # Optional branding
-#         if branding_data:
-#             InstitutionBranding.objects.create(institution=institution, **branding_data)
-
-#         # Optional module settings (bulk upsert-friendly approach)
-#         for ms in module_settings_data:
-#             InstitutionModuleSetting.objects.create(
-#                 institution=institution,
-#                 module_key=ms["module_key"],
-#                 enabled=ms.get("enabled", False),
-#                 effective_from=ms.get("effective_from"),
-#                 changed_by_actor_id=str(self.context.get("actor_id", "")),
-#             )
-
-#         # Optional primary admin assignment (ContactInfo + link)
-#         if primary_admin_data:
-#             contact = ContactInfo.objects.create(
-#                 full_name=primary_admin_data["full_name"],
-#                 email=primary_admin_data["email"],
-#                 phone=primary_admin_data.get("phone", ""),
-#             )
-#             # Link model lives in models.py; import inside to avoid circular
-#             from .models import BranchPrimaryAdmin
-
-#             BranchPrimaryAdmin.objects.create(
-#                 institution=institution,
-#                 contact=contact,
-#                 role_label=primary_admin_data.get("role_label", "Institution_Admin"),
-#                 invite_status=InviteStatus.QUEUED,
-#                 invite_queued_at=None,
-#                 invite_sent_at=None,
-#             )
-
-#         # Audit record (optional: keep this minimal; real audit service may do more)
-#         AuditEvent.objects.create(
-#             institution=institution,
-#             actor_id=str(self.context.get("actor_id", "system")),
-#             action="INSTITUTION_CREATE",
-#             resource_type="Institution",
-#             resource_slug=str(institution.slug),
-#             outcome=OperationOutcome.SUCCEEDED,
-#         )
-
-#         return institution
-
-
-# class InstitutionUpdateSerializer(serializers.ModelSerializer):
-#     """
-#     Updates institution metadata and optionally branding/module settings.
-#     Keep destructive ops and lifecycle transitions in dedicated serializers.
-#     """
-
-#     branding = InstitutionBrandingSerializer(required=False)
-#     module_settings = InstitutionModuleSettingSerializer(many=True, required=False)
-
-#     class Meta:
-#         model = Institution
-#         fields = [
-#             "category",
-#             "_type",
-#             "plan_tier",
-#             "currency",
-#             "branding",
-#             "module_settings",
-#         ]
-
-#     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
-#         # Example policy hook: disallow plan_tier changes when Live unless approved
-#         institution: Institution = self.instance
-#         if institution and institution.status == InstitutionStatus.LIVE and "plan_tier" in attrs:
-#             # If you want to allow this with approval, remove/relax.
-#             raise serializers.ValidationError({"plan_tier": "Plan tier changes are restricted once institution is Live."})
-
-#         ms = attrs.get("module_settings") or []
-#         keys = [m.get("module_key") for m in ms if m.get("module_key")]
-#         if len(keys) != len(set(keys)):
-#             raise serializers.ValidationError({"module_settings": "Duplicate module_key values in request payload."})
-#         return attrs
-
-#     @transaction.atomic
-#     def update(self, instance: Institution, validated_data: Dict[str, Any]) -> Institution:
-#         branding_data = validated_data.pop("branding", None)
-#         module_settings_data = validated_data.pop("module_settings", None)
-
-#         for attr, value in validated_data.items():
-#             setattr(instance, attr, value)
-#         instance.full_clean()
-#         instance.save()
-
-#         actor_id = str(self.context.get("actor_id", "system"))
-
-#         # Branding upsert
-#         if branding_data is not None:
-#             InstitutionBranding.objects.update_or_create(
-#                 institution=instance,
-#                 defaults=branding_data,
-#             )
-
-#         # Module settings upsert (per institution+module_key)
-#         if module_settings_data is not None:
-#             for ms in module_settings_data:
-#                 InstitutionModuleSetting.objects.update_or_create(
-#                     institution=instance,
-#                     module_key=ms["module_key"],
-#                     defaults={
-#                         "enabled": ms.get("enabled", False),
-#                         "effective_from": ms.get("effective_from"),
-#                         "changed_by_actor_id": actor_id,
-#                     },
-#                 )
-
-#         AuditEvent.objects.create(
-#             institution=instance,
-#             actor_id=actor_id,
-#             action="INSTITUTION_UPDATE",
-#             resource_type="Institution",
-#             resource_slug=str(instance.id),
-#             outcome=OperationOutcome.SUCCEEDED,
-#         )
-
-#         return instance
-
-
 # -----------------------------------------------------------------------------
 # Branch serializers (read)
 # -----------------------------------------------------------------------------
@@ -507,10 +245,16 @@ class BranchCreateSerializer(serializers.ModelSerializer):
     - you can optionally auto-set opened_at if not provided.
     """
 
+    primary_admin_data = BranchPrimaryAdminWriteSerializer(required=False)
+    institution = serializers.SlugRelatedField(
+        slug_field="slug",
+        read_only=True,
+    )
+
     class Meta:
         model = Branch
         fields = [
-            "institution",  # FK
+            "institution",
             "name",
             "is_main",
             "category",
@@ -527,11 +271,14 @@ class BranchCreateSerializer(serializers.ModelSerializer):
             "timezone",
             "currency",
             "opened_at",
+
+            # optional nested
+            "primary_admin_data",
         ]
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         # Example: if is_main=True, ensure no other main branch exists (friendly error before DB constraint)
-        institution = attrs.get("institution")
+        institution = self.context.get("institution")
         is_main = attrs.get("is_main", False)
         if institution and is_main:
             if Branch.objects.filter(institution=institution, is_main=True).exists():
@@ -541,8 +288,12 @@ class BranchCreateSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def create(self, validated_data: Dict[str, Any]) -> Branch:
+        primary_admin_data = validated_data.pop("primary_admin_data", None)
+        institution = self.context.get("institution")
+        
         # Set default lifecycle state if you want it always created as pending
         branch = Branch.objects.create(
+            institution=institution,
             **validated_data,
             status=BranchStatus.PENDING,
         )
@@ -559,6 +310,25 @@ class BranchCreateSerializer(serializers.ModelSerializer):
             actor_id=str(self.context.get("actor_id", "system")),
             reason="Branch created",
         )
+
+        # Optional primary admin assignment (ContactInfo + link)
+        if primary_admin_data:
+            contact = ContactInfo.objects.create(
+                full_name=primary_admin_data["full_name"],
+                email=primary_admin_data["email"],
+                phone=primary_admin_data.get("phone", ""),
+            )
+            # Link model lives in models.py; import inside to avoid circular
+            from .models import BranchPrimaryAdmin
+
+            BranchPrimaryAdmin.objects.create(
+                branch = branch,
+                contact=contact,
+                role_label=primary_admin_data.get("role_label", "BR_AD"),
+                invite_status=InviteStatus.QUEUED,
+                invite_queued_at=timezone.now(),
+                invite_sent_at=None,
+            )
 
         return branch
 
@@ -682,11 +452,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
     Those can remain here, while Branch creation handles the location/contact fields.
     """
 
-    # Create an initial branch in same request
-    main_branch = BranchCreateSerializer(required=False)
-
     branding = InstitutionBrandingSerializer(required=False)
-    primary_admin = BranchPrimaryAdminWriteSerializer(required=False)
     module_settings = InstitutionModuleSettingSerializer(many=True, required=False)
 
     class Meta:
@@ -697,8 +463,6 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
             "_type",
 
             # optional nested
-            "main_branch",
-            "primary_admin",
             "branding",
             "module_settings",
         ]
@@ -728,52 +492,17 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
                 suggestions = [s for s in _build_slug_suggestions(base) if _slug_is_unique(s)]
                 raise serializers.ValidationError({"slug": {"message": "Generated slug conflicts.", "suggestions": suggestions}})
             attrs["slug"] = base
-
-        # Optional: enforce that nested main_branch, if provided, is_main must be True
-        mb = attrs.get("main_branch")
-        if mb and mb.get("is_main") is False:
-            raise serializers.ValidationError({"main_branch": {"is_main": "main_branch must have is_main=true."}})
-
+            
         return attrs
 
     @transaction.atomic
     def create(self, validated_data: Dict[str, Any]) -> Institution:
-        main_branch_data = validated_data.pop("main_branch", None)
-
         branding_data = validated_data.pop("branding", None)
-        primary_admin_data = validated_data.pop("primary_admin", None)
         module_settings_data = validated_data.pop("module_settings", [])
 
         institution = Institution.objects.create(
             **validated_data,
             status=InstitutionStatus.ACTIVE,
-        )
-
-        # Create main branch (recommended: always have one)
-        if main_branch_data:
-            # Ensure institution FK is set correctly
-            main_branch_data["institution"] = institution
-            # Ensure is_main=True for main_branch payload
-            main_branch_data["is_main"] = True
-            branch = BranchCreateSerializer(context=self.context).create(main_branch_data)
-        else:
-            # If not provided, create a minimal default main branch
-            branch = Branch.objects.create(
-                institution=institution,
-                name=f"{institution.name}",
-                is_main=True,
-                category="",
-                plan_tier=PlanTier.STARTER,
-                status=BranchStatus.PENDING,
-                opened_at=timezone.now(),
-            )
-
-        BranchLifecycle.objects.create(
-            branch = branch,
-            from_state="",
-            to_state=institution.status,
-            actor_id=str(self.context.get("actor_id", "system")),
-            reason="Institution created",
         )
 
         # Optional branding
@@ -788,25 +517,6 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
                 enabled=ms.get("enabled", False),
                 effective_from=ms.get("effective_from"),
                 changed_by_actor_id=str(self.context.get("actor_id", "")),
-            )
-
-        # Optional primary admin assignment (ContactInfo + link)
-        if primary_admin_data:
-            contact = ContactInfo.objects.create(
-                full_name=primary_admin_data["full_name"],
-                email=primary_admin_data["email"],
-                phone=primary_admin_data.get("phone", ""),
-            )
-            # Link model lives in models.py; import inside to avoid circular
-            from .models import BranchPrimaryAdmin
-
-            BranchPrimaryAdmin.objects.create(
-                branch = branch,
-                contact=contact,
-                role_label=primary_admin_data.get("role_label", "BR_AD"),
-                invite_status=InviteStatus.QUEUED,
-                invite_queued_at=timezone.now(),
-                invite_sent_at=None,
             )
 
         return institution
