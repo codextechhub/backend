@@ -3,9 +3,9 @@ from __future__ import annotations
 from rest_framework import generics
 from rest_framework.response import Response
 
-from ..models import Institution
+from ..models import Branch
 from ..permissions import IsVisionStaff
-from ..serializers import InstitutionDetailSerializer, InstitutionStateTransitionSerializer
+from ..serializers import BranchDetailSerializer, BranchStateTransitionSerializer
 
 
 class ActorContextMixin:
@@ -16,16 +16,16 @@ class ActorContextMixin:
         return ctx
 
 
-class InstitutionTransitionView(ActorContextMixin, generics.GenericAPIView):
+class BranchTransitionView(ActorContextMixin, generics.GenericAPIView):
     permission_classes = [IsVisionStaff]
-    serializer_class = InstitutionStateTransitionSerializer
-    queryset = Institution.objects.all()
-    lookup_field = "slug"
+    serializer_class = BranchStateTransitionSerializer
+    queryset = Branch.objects.all()
+    lookup_field = "code"
 
     def post(self, request, *args, **kwargs):
-        institution = self.get_object()
-        serializer = self.get_serializer(data=request.data, context={**self.get_serializer_context(), "institution": institution})
+        branch = self.get_object()
+        serializer = self.get_serializer(data=request.data, context={**self.get_serializer_context(), "branch": branch})
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        institution.refresh_from_db()
-        return Response(InstitutionDetailSerializer(institution, context=self.get_serializer_context()).data)
+        branch.refresh_from_db()
+        return Response(BranchDetailSerializer(branch, context=self.get_serializer_context()).data)
