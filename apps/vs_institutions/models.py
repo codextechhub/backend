@@ -395,7 +395,7 @@ class InstitutionModuleSetting(TimeStampedModel):
         ]
 
 
-class BranchLifecycle():
+class BranchLifecycle(models.Model):
     """
     Represents an event in the lifecycle of a branch, capturing state transitions.
 
@@ -422,7 +422,7 @@ class BranchLifecycle():
     to_state = models.CharField(max_length=32, choices=BranchStatus.choices)
 
     actor_id = models.CharField(max_length=120)
-    reason = models.TextField(blank=True, default="")
+    reason = models.TextField(blank=True, default=None)
 
     occurred_at = models.DateTimeField(default=timezone.now, db_index=True)
 
