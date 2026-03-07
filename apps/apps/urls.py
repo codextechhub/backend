@@ -21,5 +21,6 @@ urlpatterns = [
     path("v-api/i/", include("vs_institutions.urls")),
     path("v-api/admin/", include("vs_admin_console.urls")),
     path("v-api/users/", include("vs_user.urls")),
+    path("v-api/audit/", include("vs_audit.urls")),
     # path("admin/", admin.site.urls),
 ]
