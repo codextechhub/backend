@@ -3,7 +3,6 @@ from django.urls import path
 from .views import (
     # Users
     UserAccountViewSet,
-    UserCreateView,
     AdminCreateAccountView,
 
     # Temp password
@@ -50,8 +49,6 @@ urlpatterns = [
     
     path(
         'admin-create', AdminCreateAccountView.as_view(), name='admin-create-account'),
-    path(
-        'user/create', UserCreateView.as_view(), name='user-create'),
     path(
         "users/",
         UserAccountViewSet.as_view({"get": "list", "post": "create"}),

@@ -69,6 +69,7 @@ INSTALLED_APPS = [
     "vs_institutions",
     'vs_admin_console',
     'vs_user',
+    'vs_rbac',
 ]
 
 MIDDLEWARE = [
