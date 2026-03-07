@@ -27,16 +27,16 @@ urlpatterns = [
 
     # --------- Institutions ---------
     # Institutions (separate list/create views)
-    path("institutions/", InstitutionListView.as_view(), name="institution-list"),
-    path("institutions/create/", InstitutionCreateView.as_view(), name="institution-create"),
-    path("institutions/count/", InstitutionCountView.as_view(), name="institution-count-param"),
+    path("", InstitutionListView.as_view(), name="institution-list"),
+    path("create/", InstitutionCreateView.as_view(), name="institution-create"),
+    path("count/", InstitutionCountView.as_view(), name="institution-count-param"),
 
     # Institution record access (separate detail/update/delete views)
-    path("institutions/<str:slug>/", InstitutionDetailView.as_view(), name="institution-detail"),
-    path("institutions/<str:slug>/update/", InstitutionUpdateView.as_view(), name="institution-update"),
+    path("<str:slug>/", InstitutionDetailView.as_view(), name="institution-detail"),
+    path("<str:slug>/update/", InstitutionUpdateView.as_view(), name="institution-update"),
 
     # Lifecycle / Reset
-    path("institutions/<str:slug>/reset-config/", InstitutionResetConfigView.as_view(), name="institution-reset-config"),
+    path("<str:slug>/reset-config/", InstitutionResetConfigView.as_view(), name="institution-reset-config"),
 
     # --------- Branches ---------
     # Branches (separate list/create views)
