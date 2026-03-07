@@ -128,14 +128,6 @@ def _record_attempt(*, email_entered: str, institution_context: str, user: UserA
 # USERS (FR-IDA-001)
 # -----------------------------------------------------------------------------
 
-class UserCreateView(generics.CreateAPIView):
-    """
-    Create a new Global User. This view accepts a POST request with the user's data.
-    """
-    queryset = UserAccount.objects.all()
-    serializer_class = UserAccountCreateSerializer
-    permission_classes = [AllowAny]
-
 class UserAccountViewSet(viewsets.ModelViewSet):
     """
     /users/

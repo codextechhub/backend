@@ -54,7 +54,6 @@ class UserAccountReadSerializer(serializers.ModelSerializer):
         model = UserAccount
         fields = (
             "id",
-            "login_id",
             "institution",
             "email",
             "user_type",
