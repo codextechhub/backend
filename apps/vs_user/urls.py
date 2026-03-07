@@ -50,8 +50,6 @@ urlpatterns = [
     path(
         'admin-create/', AdminCreateAccountView.as_view(), name='admin-create-account'),
     path(
-        'create/', UserCreateView.as_view(), name='user-create'),
-    path(
         "",
         UserAccountViewSet.as_view({"get": "list", "post": "create"}),
         name="users-list-create",
