@@ -70,6 +70,7 @@ INSTALLED_APPS = [
     'vs_admin_console',
     'vs_user',
     'vs_rbac',
+    'vs_audit',
 ]
 
 MIDDLEWARE = [
