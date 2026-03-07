@@ -165,7 +165,7 @@ class Branch(TimeStampedModel):
     can have multiple branches, with exactly one designated as the main branch (is_main=True).
     Branches have a lifecycle managed through status transitions (PENDING → ACTIVE → SUSPENDED/INACTIVE → CLOSED).
     All status transitions are logged in the BranchLifecycle model for audit purposes.
-    Key Features:
+    ### Key Features:
     - Location & contact information (address, email, website, phone, timezone, currency)
     - Status tracking with lifecycle logging via transition() methods
     - Enforced constraints: one main branch per institution, unique code per institution
