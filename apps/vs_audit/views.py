@@ -14,12 +14,10 @@ from .models import (
 from .serializers import (
     AuditEventListSerializer,
     AuditEventDetailSerializer,
-    AuditEventCreateSerializer,
     EntityAuditTrailSerializer,
     EntityAuditTrailDetailSerializer,
     AuditExportJobListSerializer,
     AuditExportJobDetailSerializer,
-    AuditExportJobCreateSerializer,
     ComplianceRuleListSerializer,
     ComplianceRuleDetailSerializer,
     ComplianceRuleCreateUpdateSerializer,
@@ -71,17 +69,14 @@ class AuditEventListView(generics.ListAPIView):
     permission_classes = [IsVisionStaff]
 
     def get_queryset(self):
-        queryset = AuditEvent.objects.select_related(
-            "institution",
-            "actor_user",
-        ).all()
+        queryset = AuditEvent.objects.select_related("actor_user").all()
 
         # Validate incoming filters first
         filter_serializer = AuditEventFilterSerializer(data=self.request.query_params)
         filter_serializer.is_valid(raise_exception=True)
         filters = filter_serializer.validated_data
 
-        institution_id = filters.get("institution_id")
+        i_slug = filters.get("i_slug")
         module_key = filters.get("module_key")
         action_type = filters.get("action_type")
         severity = filters.get("severity")
@@ -94,8 +89,8 @@ class AuditEventListView(generics.ListAPIView):
         date_to = filters.get("date_to")
         search = filters.get("search")
 
-        if institution_id:
-            queryset = queryset.filter(institution_id=institution_id)
+        if i_slug:
+            queryset = queryset.filter(i_slug=i_slug)
 
         if module_key:
             queryset = queryset.filter(module_key=module_key)
@@ -135,7 +130,7 @@ class AuditEventListView(generics.ListAPIView):
                 Q(actor_label__icontains=search)
             )
 
-        return queryset.order_by("-event_at", "-created_at")
+        return queryset.order_by("-event_at")
 
 
 class AuditEventDetailView(generics.RetrieveAPIView):
@@ -146,25 +141,11 @@ class AuditEventDetailView(generics.RetrieveAPIView):
     """
 
     queryset = AuditEvent.objects.select_related(
-        "institution",
         "actor_user",
     ).all()
     serializer_class = AuditEventDetailSerializer
     permission_classes = [IsVisionStaff]
     lookup_field = "id"
-
-
-class AuditEventCreateView(generics.CreateAPIView):
-    """
-    POST /audit/events/create/
-
-    Creates a new audit event.
-    In many real systems this may be internal-only or service-only.
-    """
-
-    queryset = AuditEvent.objects.all()
-    serializer_class = AuditEventCreateSerializer
-    permission_classes = [IsVisionStaff]
 
 
 # -----------------------------------------------------------------------------
@@ -174,36 +155,22 @@ class AuditEventCreateView(generics.CreateAPIView):
 class EntityAuditTrailDetailView(APIView):
     """
     GET /audit/entity-trails/<str:entity_type>/<str:entity_id>/
-    Optional query param: ?institution_id=<uuid>
-
-    Returns:
-    {
-        "trail": {...},
-        "events": [...]
-    }
     """
 
     permission_classes = [IsVisionStaff]
 
     def get(self, request, entity_type, entity_id):
-        institution_id = request.query_params.get("institution_id")
-
-        trail_qs = EntityAuditTrail.objects.select_related("institution").filter(
+        trail_qs = EntityAuditTrail.objects.filter(
             entity_type=entity_type,
             entity_id=entity_id,
         )
 
         event_qs = AuditEvent.objects.select_related(
-            "institution",
             "actor_user",
         ).filter(
             entity_type=entity_type,
             entity_id=entity_id,
         )
-
-        if institution_id:
-            trail_qs = trail_qs.filter(institution_id=institution_id)
-            event_qs = event_qs.filter(institution_id=institution_id)
 
         trail = trail_qs.first()
         if not trail:
@@ -242,15 +209,10 @@ class AuditExportJobListView(generics.ListAPIView):
 
     def get_queryset(self):
         queryset = AuditExportJob.objects.select_related(
-            "institution",
             "requested_by",
         ).all()
 
-        institution_id = self.request.query_params.get("institution_id")
         status_value = self.request.query_params.get("status")
-
-        if institution_id:
-            queryset = queryset.filter(institution_id=institution_id)
 
         if status_value:
             queryset = queryset.filter(status=status_value)
@@ -264,25 +226,11 @@ class AuditExportJobDetailView(generics.RetrieveAPIView):
     """
 
     queryset = AuditExportJob.objects.select_related(
-        "institution",
         "requested_by",
     ).all()
     serializer_class = AuditExportJobDetailSerializer
     permission_classes = [IsVisionStaff]
     lookup_field = "id"
-
-
-class AuditExportJobCreateView(generics.CreateAPIView):
-    """
-    POST /audit/exports/create/
-
-    Creates an export job request.
-    Actual CSV generation can happen in a background worker later.
-    """
-
-    queryset = AuditExportJob.objects.all()
-    serializer_class = AuditExportJobCreateSerializer
-    permission_classes = [IsVisionStaff]
 
 
 # -----------------------------------------------------------------------------
@@ -302,12 +250,12 @@ class ComplianceRuleListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         queryset = ComplianceRule.objects.select_related("institution").all()
 
-        institution_id = self.request.query_params.get("institution_id")
+        i_slug = self.request.query_params.get("i_slug")
         rule_type = self.request.query_params.get("rule_type")
         is_active = self.request.query_params.get("is_active")
 
-        if institution_id:
-            queryset = queryset.filter(institution_id=institution_id)
+        if i_slug:
+            queryset = queryset.filter(i_slug=i_slug)
 
         if rule_type:
             queryset = queryset.filter(rule_type=rule_type)
