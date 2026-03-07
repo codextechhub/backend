@@ -48,14 +48,16 @@ urlpatterns = [
     # -------------------------------------------------------------------------
     
     path(
-        'admin-create', AdminCreateAccountView.as_view(), name='admin-create-account'),
+        'admin-create/', AdminCreateAccountView.as_view(), name='admin-create-account'),
     path(
-        "users/",
+        'create/', UserCreateView.as_view(), name='user-create'),
+    path(
+        "",
         UserAccountViewSet.as_view({"get": "list", "post": "create"}),
         name="users-list-create",
     ),
     path(
-        "users/<int:pk>/",
+        "<int:pk>/",
         UserAccountViewSet.as_view({"get": "retrieve", "patch": "partial_update", "put": "update"}),
         name="users-detail",
     ),

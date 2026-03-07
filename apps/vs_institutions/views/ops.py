@@ -7,10 +7,7 @@ from ..models import Institution
 from ..permissions import IsVisionStaff, IsVisionSuperAdmin
 from ..serializers import (
     InstitutionDetailSerializer,
-    InstitutionReactivateSerializer,
     InstitutionResetConfigSerializer,
-    InstitutionSoftDeleteSerializer,
-    InstitutionSuspendSerializer,
 )
 
 
@@ -25,7 +22,7 @@ class ActorContextMixin:
 class _InstitutionOpBaseView(ActorContextMixin, generics.GenericAPIView):
     """Base for institution operation views."""
     queryset = Institution.objects.all()
-    lookup_field = "id"
+    lookup_field = "slug"
 
     def _run(self, request, serializer_class):
         institution = self.get_object()
@@ -37,27 +34,6 @@ class _InstitutionOpBaseView(ActorContextMixin, generics.GenericAPIView):
         serializer.save()
         institution.refresh_from_db()
         return Response(InstitutionDetailSerializer(institution, context=self.get_serializer_context()).data)
-
-
-class InstitutionSuspendView(_InstitutionOpBaseView):
-    permission_classes = [IsVisionStaff]
-
-    def post(self, request, *args, **kwargs):
-        return self._run(request, InstitutionSuspendSerializer)
-
-
-class InstitutionReactivateView(_InstitutionOpBaseView):
-    permission_classes = [IsVisionStaff]
-
-    def post(self, request, *args, **kwargs):
-        return self._run(request, InstitutionReactivateSerializer)
-
-
-class InstitutionSoftDeleteView(_InstitutionOpBaseView):
-    permission_classes = [IsVisionStaff]
-
-    def post(self, request, *args, **kwargs):
-        return self._run(request, InstitutionSoftDeleteSerializer)
 
 
 class InstitutionResetConfigView(_InstitutionOpBaseView):

@@ -108,7 +108,7 @@ class UserAccount(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     last_login_at = models.DateTimeField(null=True, blank=True)
 
     # Convenience: for customer support / notifications
-    phone = models.CharField(max_length=32, default="", unique=True, null=True, blank=True,)
+    phone = models.CharField(max_length=32, default="", unique=False, null=True, blank=True,)
     full_name = models.CharField(max_length=160, blank=True, default="")
     
     USERNAME_FIELD = "email"

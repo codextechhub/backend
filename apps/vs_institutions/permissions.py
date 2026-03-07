@@ -17,7 +17,7 @@ class IsVisionStaff(BasePermission):
         # Common patterns:
         # - user.is_staff for internal users
         # - user.is_superuser for super admins
-        return bool(getattr(user, "is_staff", False) or getattr(user, "is_superuser", False))
+        return bool((getattr(user, "is_staff", False) or getattr(user, "is_superuser", False)) and getattr(user, "status")=="ACTIVE")
 
 
 class IsVisionSuperAdmin(BasePermission):
@@ -31,7 +31,7 @@ class IsVisionSuperAdmin(BasePermission):
         user = getattr(request, "user", None)
         if not user or not user.is_authenticated:
             return False
-        return bool(getattr(user, "is_superuser", False))
+        return bool(getattr(user, "is_superuser", False) and getattr(user, "status")=="ACTIVE")
 
 
 class ReadOnlyOrVisionStaff(IsVisionStaff):

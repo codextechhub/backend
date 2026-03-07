@@ -169,10 +169,7 @@ class AdminCreateAccountSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserAccount
         fields = (
-            "institution",
             "email",
-            "user_type",
-            "status",
             "full_name",
             "phone",
             "password",
@@ -180,10 +177,15 @@ class AdminCreateAccountSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         password = validated_data.pop("password")
-        user = UserAccount.objects.create(**validated_data)
-        user.set_password(password)
-        user.must_change_password = False  # Since admin is setting it directly
-        user.save()
+        print(f"Admin creating user with email: {validated_data['email']}")
+        user = UserAccount.objects.create_superuser(email=validated_data["email"], 
+                                                    password=password, 
+                                                    full_name=validated_data.get("full_name", "Admin User"), 
+                                                    phone=validated_data.get("phone", ""),
+                                                    institution=None,
+                                                    user_type=UserAccount.UserType.VISION_STAFF,
+                                                    status=UserAccount.Status.ACTIVE,
+                                                    password_changed_at=timezone.now())
         return user
 
 class UserAccountUpdateSerializer(serializers.ModelSerializer):

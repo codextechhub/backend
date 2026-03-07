@@ -1,19 +1,23 @@
 from django.urls import path
 
-from .views.institutions import (
+from .views.institution import (
     InstitutionCreateView,
     InstitutionDetailView,
-    InstitutionHardDeleteView,
     InstitutionListView,
     InstitutionUpdateView,
+    InstitutionCountView,
 )
-from .views.lifecycle import InstitutionTransitionView
+from .views.branch import (
+    BranchListView, 
+    BranchCountView, 
+    BranchCreateView, 
+    BranchDetailView, 
+    BranchUpdateView
+)
+from .views.lifecycle import BranchTransitionView
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .views.ops import (
-    InstitutionReactivateView,
     InstitutionResetConfigView,
-    InstitutionSoftDeleteView,
-    InstitutionSuspendView,
 )
 
 urlpatterns = [
@@ -21,21 +25,27 @@ urlpatterns = [
     path("token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
     path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
 
+    # --------- Institutions ---------
     # Institutions (separate list/create views)
-    path("institutions/", InstitutionListView.as_view(), name="institution-list"),
-    path("institutions/create/", InstitutionCreateView.as_view(), name="institution-create"),
+    path("", InstitutionListView.as_view(), name="institution-list"),
+    path("create/", InstitutionCreateView.as_view(), name="institution-create"),
+    path("count/", InstitutionCountView.as_view(), name="institution-count-param"),
 
     # Institution record access (separate detail/update/delete views)
-    path("institutions/<uuid:id>/", InstitutionDetailView.as_view(), name="institution-detail"),
-    path("institutions/<uuid:id>/update/", InstitutionUpdateView.as_view(), name="institution-update"),
-    path("institutions/<uuid:id>/hard-delete/", InstitutionHardDeleteView.as_view(), name="institution-hard-delete"),
+    path("<str:slug>/", InstitutionDetailView.as_view(), name="institution-detail"),
+    path("<str:slug>/update/", InstitutionUpdateView.as_view(), name="institution-update"),
 
-    # Lifecycle
-    path("institutions/<uuid:id>/transition/", InstitutionTransitionView.as_view(), name="institution-transition"),
+    # Lifecycle / Reset
+    path("<str:slug>/reset-config/", InstitutionResetConfigView.as_view(), name="institution-reset-config"),
 
-    # Operations / danger zone
-    path("institutions/<uuid:id>/suspend/", InstitutionSuspendView.as_view(), name="institution-suspend"),
-    path("institutions/<uuid:id>/reactivate/", InstitutionReactivateView.as_view(), name="institution-reactivate"),
-    path("institutions/<uuid:id>/soft-delete/", InstitutionSoftDeleteView.as_view(), name="institution-soft-delete"),
-    path("institutions/<uuid:id>/reset-config/", InstitutionResetConfigView.as_view(), name="institution-reset-config"),
+    # --------- Branches ---------
+    # Branches (separate list/create views)
+    path("branches/", BranchListView.as_view(), name="branch-list"),
+    path("<str:i_slug>/branches/create/", BranchCreateView.as_view(), name="branch-create"),
+    path("branches/count/", BranchCountView.as_view(), name="branch-count-param"),
+
+    # Branch record access (separate detail/update/delete views)
+    path("<str:i_slug>/branches/<int:code>/", BranchDetailView.as_view(), name="branch-detail"),
+    path("<str:i_slug>/branches/<int:code>/update/", BranchUpdateView.as_view(), name="branch-update"),
+    path("<str:i_slug>/branches/<int:code>/transition/", BranchTransitionView.as_view(), name="branch-transition"),
 ]
