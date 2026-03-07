@@ -61,14 +61,12 @@ class AuditEventListSerializer(serializers.ModelSerializer):
     - we avoid dumping all JSON snapshots on every row
     """
 
-    institution = InstitutionSlimSerializer(read_only=True)
     actor_user = UserSlimSerializer(read_only=True)
 
     class Meta:
         model = AuditEvent
         fields = (
             "id",
-            "institution",
             "module_key",
             "action_type",
             "severity",
@@ -91,14 +89,12 @@ class AuditEventDetailSerializer(serializers.ModelSerializer):
     This includes snapshots and metadata.
     """
 
-    institution = InstitutionSlimSerializer(read_only=True)
     actor_user = UserSlimSerializer(read_only=True)
 
     class Meta:
         model = AuditEvent
         fields = (
             "id",
-            "institution",
             "module_key",
             "action_type",
             "severity",
@@ -111,89 +107,10 @@ class AuditEventDetailSerializer(serializers.ModelSerializer):
             "entity_label",
             "summary",
             "before_data",
-            "after_data",
-            "metadata",
-            "event_at",
-            "created_at",
-            "updated_at",
-        )
-
-
-class AuditEventCreateSerializer(serializers.ModelSerializer):
-    """
-    Use this when creating a new audit event manually or from a service.
-
-    Notes:
-    - actor_user is optional because system/service actions may not have a real user
-    - institution is optional because some events are global/platform-level
-    """
-
-    class Meta:
-        model = AuditEvent
-        fields = (
-            "institution",
-            "module_key",
-            "action_type",
-            "severity",
-            "status",
-            "actor_type",
-            "actor_user",
-            "actor_label",
-            "entity_type",
-            "entity_id",
-            "entity_label",
-            "summary",
-            "before_data",
-            "after_data",
+            "diff_data",
             "metadata",
             "event_at",
         )
-
-    def validate(self, attrs):
-        """
-        Cross-field validation.
-
-        This is where we check relationships between fields,
-        not just one field at a time.
-        """
-
-        actor_type = attrs.get("actor_type")
-        actor_user = attrs.get("actor_user")
-        actor_label = attrs.get("actor_label")
-        entity_type = attrs.get("entity_type")
-        entity_id = attrs.get("entity_id")
-        summary = attrs.get("summary")
-
-        if actor_type == AuditActorType.USER and not actor_user and not actor_label:
-            raise serializers.ValidationError(
-                {"actor_user": "User actor type requires actor_user or actor_label."}
-            )
-
-        if not entity_type:
-            raise serializers.ValidationError(
-                {"entity_type": "This field is required."}
-            )
-
-        if not entity_id:
-            raise serializers.ValidationError(
-                {"entity_id": "This field is required."}
-            )
-
-        if not summary:
-            raise serializers.ValidationError(
-                {"summary": "This field is required."}
-            )
-
-        return attrs
-
-    def create(self, validated_data):
-        """
-        Create a new audit event.
-
-        Since the model itself is immutable after creation,
-        this serializer is only for creating rows, not updating them.
-        """
-        return AuditEvent.objects.create(**validated_data)
 
 
 # -----------------------------------------------------------------------------
@@ -205,21 +122,16 @@ class EntityAuditTrailSerializer(serializers.ModelSerializer):
     Serializer for the summary trail table/model.
     """
 
-    institution = InstitutionSlimSerializer(read_only=True)
-
     class Meta:
         model = EntityAuditTrail
         fields = (
             "id",
-            "institution",
             "entity_type",
             "entity_id",
             "entity_label",
             "event_count",
             "first_event_at",
             "last_event_at",
-            "created_at",
-            "updated_at",
         )
 
 
@@ -248,14 +160,12 @@ class AuditExportJobListSerializer(serializers.ModelSerializer):
     Lighter serializer for export history listing.
     """
 
-    institution = InstitutionSlimSerializer(read_only=True)
     requested_by = UserSlimSerializer(read_only=True)
 
     class Meta:
         model = AuditExportJob
         fields = (
             "id",
-            "institution",
             "requested_by",
             "export_format",
             "status",
@@ -273,14 +183,12 @@ class AuditExportJobDetailSerializer(serializers.ModelSerializer):
     Full serializer for one export job.
     """
 
-    institution = InstitutionSlimSerializer(read_only=True)
     requested_by = UserSlimSerializer(read_only=True)
 
     class Meta:
         model = AuditExportJob
         fields = (
             "id",
-            "institution",
             "requested_by",
             "export_format",
             "status",
@@ -293,40 +201,6 @@ class AuditExportJobDetailSerializer(serializers.ModelSerializer):
             "started_at",
             "completed_at",
             "expires_at",
-            "created_at",
-            "updated_at",
-        )
-
-
-class AuditExportJobCreateSerializer(serializers.ModelSerializer):
-    """
-    Use this when a user requests a CSV export.
-
-    Usually:
-    - requested_by should come from request.user in the view
-    - institution may come from current institution context
-    """
-
-    class Meta:
-        model = AuditExportJob
-        fields = (
-            "institution",
-            "export_format",
-            "filter_payload",
-        )
-
-    def validate_export_format(self, value):
-        if value != ExportFormat.CSV:
-            raise serializers.ValidationError("Only CSV export is currently supported.")
-        return value
-
-    def create(self, validated_data):
-        request = self.context.get("request")
-        user = getattr(request, "user", None)
-
-        return AuditExportJob.objects.create(
-            requested_by=user if user and user.is_authenticated else None,
-            **validated_data,
         )
 
 
@@ -428,7 +302,6 @@ class AuditEventFilterSerializer(serializers.Serializer):
     - then apply them in the view/queryset
     """
 
-    institution_id = serializers.UUIDField(required=False)
     module_key = serializers.ChoiceField(
         choices=AuditModuleKey.choices,
         required=False,
