@@ -23,6 +23,14 @@ from .models import (
     InstitutionStatus,
     PlanTier,
 )
+from vs_audit.models import (
+    AuditEvent, 
+    EntityAuditTrail,
+    AuditModuleKey,
+    AuditActionType
+)
+
+from vs_audit.services import AuditDiffService
 
 
 # -----------------------------------------------------------------------------
@@ -150,7 +158,7 @@ class BranchPrimaryAdminWriteSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=120)
     email = serializers.EmailField()
     phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
-    role_label = serializers.CharField(max_length=80, required=False, allow_blank=True, default="")
+    role_label = serializers.CharField(max_length=80, required=False, allow_blank=True, default="IN_AD")
 
     def validate_full_name(self, value: str) -> str:
         if not value.strip():
@@ -218,12 +226,6 @@ class BranchDetailSerializer(serializers.ModelSerializer):
 
             "status",
             "opened_at",
-            "activated_at",
-            "closed_at",
-            "deleted_at",
-
-            "created_at",
-            "updated_at",
 
             # Nested read
             "primary_admin",
@@ -246,15 +248,10 @@ class BranchCreateSerializer(serializers.ModelSerializer):
     """
 
     primary_admin_data = BranchPrimaryAdminWriteSerializer(required=False)
-    institution = serializers.SlugRelatedField(
-        slug_field="slug",
-        read_only=True,
-    )
 
     class Meta:
         model = Branch
         fields = [
-            "institution",
             "name",
             "is_main",
             "category",
@@ -329,6 +326,30 @@ class BranchCreateSerializer(serializers.ModelSerializer):
                 invite_queued_at=timezone.now(),
                 invite_sent_at=None,
             )
+        else:
+            raise serializers.ValidationError({"primary_admin_data": "Primary admin information is required to create a branch."})
+        
+        audit_e = AuditEvent.objects.create(
+            module_key=AuditModuleKey.BRANCH,
+            action_type=AuditActionType.CREATE,
+            actor_user=self.context.get("actor_id", "system"),
+            entity_type="Branch",
+            entity_id=str(branch.code),
+            entity_label=branch.name,
+            before_data={},
+            diff_data=AuditDiffService.from_instances(
+                before_instance=None, 
+                after_instance=branch,
+                exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deleted_at"],
+            )['diff'],
+        )
+
+        trail = EntityAuditTrail.objects.create(
+            entity_type="Branch",
+            entity_id=str(branch.code),
+            entity_label=branch.name,
+        )
+        trail.register_event(audit_e)
 
         return branch
 
@@ -374,10 +395,49 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def update(self, instance: Branch, validated_data: Dict[str, Any]) -> Branch:
+        before_instance = AuditDiffService.model_instance_to_dict(
+            instance,
+            exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deleted_at"],
+        )
+        
+        changes = 0
         for attr, value in validated_data.items():
-            setattr(instance, attr, value)
+            if getattr(instance, attr) != value:  
+                changes += 1
+                setattr(instance, attr, value)
+        
+        if changes == 0:
+            raise serializers.ValidationError({"detail": "No changes detected in update payload."})
+        
         instance.full_clean()
         instance.save()
+        
+        after_instance = AuditDiffService.model_instance_to_dict(
+            instance,
+            exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deleted_at"],
+        )
+
+        audit_e = AuditEvent.objects.create(
+            module_key=AuditModuleKey.BRANCH,
+            action_type=AuditActionType.UPDATE,
+            actor_user=self.context.get("actor_id", "system"),
+            entity_type="Branch",
+            entity_id=str(instance.code),
+            entity_label=instance.name,
+            before_data=before_instance,
+            diff_data=AuditDiffService.diff_dicts(
+                before_data=before_instance,
+                after_data=after_instance,
+            )
+        )
+
+        trail, _ = EntityAuditTrail.objects.get_or_create(
+            entity_type="Branch",
+            entity_id=str(instance.code),
+            defaults={"entity_label": instance.name},
+        )
+        _.register_event(audit_e) if _ else trail.register_event(audit_e)
+
         return instance
 
 
@@ -452,6 +512,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
     Those can remain here, while Branch creation handles the location/contact fields.
     """
 
+    slug = serializers.CharField(required=False, allow_blank=True)
     branding = InstitutionBrandingSerializer(required=False)
     module_settings = InstitutionModuleSettingSerializer(many=True, required=False)
 
@@ -503,6 +564,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
         institution = Institution.objects.create(
             **validated_data,
             status=InstitutionStatus.ACTIVE,
+            activated_at=timezone.now(),
         )
 
         # Optional branding
@@ -518,6 +580,28 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
                 effective_from=ms.get("effective_from"),
                 changed_by_actor_id=str(self.context.get("actor_id", "")),
             )
+
+        audit_e = AuditEvent.objects.create(
+            module_key=AuditModuleKey.INSTITUTION,
+            action_type=AuditActionType.CREATE,
+            actor_user=self.context.get("actor_id", "system"),
+            entity_type="Institution",
+            entity_id=str(institution.slug),
+            entity_label=institution.name,
+            before_data={},
+            diff_data=AuditDiffService.from_instances(
+                before_instance=None, 
+                after_instance=institution,
+                exclude_fields=["created_at", "updated_at", "activated_at", "deleted_at"],
+            )['diff'],
+        )
+
+        trail = EntityAuditTrail.objects.create(
+            entity_type="Institution",
+            entity_id=str(institution.slug),
+            entity_label=institution.name,
+        )
+        trail.register_event(audit_e)
 
         return institution
 
@@ -554,8 +638,15 @@ class InstitutionUpdateSerializer(serializers.ModelSerializer):
         branding_data = validated_data.pop("branding", None)
         module_settings_data = validated_data.pop("module_settings", None)
 
+        changes = 0
         for attr, value in validated_data.items():
-            setattr(instance, attr, value)
+            if getattr(instance, attr) != value:  
+                changes += 1
+                setattr(instance, attr, value)
+        
+        if changes == 0:
+            raise serializers.ValidationError({"detail": "No changes detected in update payload."})
+        
         instance.full_clean()
         instance.save()
 
@@ -597,7 +688,7 @@ TransitionChoiceField = {
 }
 
 class BranchStateTransitionSerializer(serializers.Serializer):
-    to_state = serializers.ChoiceField(choices=BranchStatus.choices)
+    to_state = serializers.ChoiceField(choices=TransitionChoiceField)
     reason = serializers.CharField(required=False, allow_blank=True, default="")
 
     @transaction.atomic
@@ -607,11 +698,11 @@ class BranchStateTransitionSerializer(serializers.Serializer):
         to_state = self.validated_data["to_state"]
         reason = self.validated_data.get("reason", "")
 
-        if to_state not in TransitionChoiceField:
+        if to_state not in TransitionChoiceField.keys():
             raise serializers.ValidationError(f"Invalid to_state: {to_state}")
         
         if branch.status == to_state:
-            raise serializers.ValidationError(f"Branch is already {to_state}.")
+            raise serializers.ValidationError(f"Branch is already {to_state}.", code=400)
         
         branch.transition(to_state=to_state, actor_id=actor_id, reason=reason)
 

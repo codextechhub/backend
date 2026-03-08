@@ -14,7 +14,7 @@ from django.db.models.functions import Lower
 from django.utils import timezone
 
 # Institution lives in Module 1 (Institution Management)
-from vs_institutions.models import Institution
+from vs_institutions.models import Institution, Branch
 
 class TimeStampedModel(models.Model):
     created_at = models.DateTimeField(default=timezone.now, editable=False)
@@ -68,8 +68,8 @@ class UserAccount(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     """
 
     class UserType(models.TextChoices):
-        VISION_STAFF = "VISION_STAFF", "Vision Staff"
-        INSTITUTION_ADMIN = "INSTITUTION_ADMIN", "Institution Admin"
+        VISION_STAFF = "VS_STAFF", "Vision Staff"
+        INSTITUTION_ADMIN = "IN_AD", "Institution Admin"
         STAFF = "STAFF", "Staff"
         STUDENT = "STUDENT", "Student"
         PARENT = "PARENT", "Parent/Guardian"
@@ -81,9 +81,8 @@ class UserAccount(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         LOCKED = "LOCKED", "Locked (security)"
         DELETED = "DELETED", "Deleted (soft)"
 
-    # Institution binding (tenant context)
-    institution = models.ForeignKey(
-        Institution,
+    branch = models.ForeignKey(
+        Branch,
         on_delete=models.PROTECT,
         related_name="users",
         null=True,
@@ -118,35 +117,22 @@ class UserAccount(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     
     class Meta:
         constraints = [
-            # Case-insensitive unique email per institution (institution-bound users)
-            models.UniqueConstraint(
-                Lower("email"),
-                "institution",
-                name="uq_user_email_lower_per_institution",
-                condition=Q(institution__isnull=False),
-            ),
-            # Case-insensitive unique email among Vision staff (institution NULL)
-            models.UniqueConstraint(
-                Lower("email"),
-                name="uq_vision_staff_email_lower",
-                condition=Q(user_type="VISION_STAFF"),
-            ),
             # Enforce institution binding rules
             models.CheckConstraint(
                 check=(
-                    Q(user_type="VISION_STAFF", institution__isnull=True)
-                    | ~Q(user_type="VISION_STAFF")
+                    Q(user_type="VS_STAFF", branch__isnull=True)
+                    | ~Q(user_type="VS_STAFF")
                 ),
-                name="ck_user_institution_binding",
+                name="ck_user_branch_binding",
             ),
         ]
     
     def clean(self):
         super().clean()
         
-        if self.user_type != self.UserType.VISION_STAFF and self.institution_id is None:
+        if self.user_type != self.UserType.VISION_STAFF and self.branch_id is None:
             raise ValidationError("Non-Vision staff users must be associated with an institution.")
-        if self.user_type == self.UserType.VISION_STAFF and self.institution_id is not None:
+        if self.user_type == self.UserType.VISION_STAFF and self.branch_id is not None:
             raise ValidationError("Vision staff users cannot be associated with an institution.")
         
     def mark_password_change(self):
@@ -164,19 +150,7 @@ class UserAccount(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     def __str__(self):
         return f"{self.email} ({self.user_type})"
 
-# class UserProfile(TimeStampedModel):
-#     """
-#     Optional: keep profile separate so identity remains lean.
-#     """
-#     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="profile")
-#     avatar_asset_ref = models.CharField(max_length=255, blank=True, default="")
-#     date_of_birth = models.DateField(null=True, blank=True)
-#     address = models.TextField(blank=True, default="")
-#     metadata = models.JSONField(default=dict, blank=True)
 
-#     def __str__(self) -> str:
-#         return f"Profile<{self.user_id}>"
-    
 # -----------------------------------------------------------------------------
 # Temporary password issuance (FR-IDA-002)
 # -----------------------------------------------------------------------------

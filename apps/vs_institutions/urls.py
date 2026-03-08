@@ -32,7 +32,7 @@ urlpatterns = [
     path("count/", InstitutionCountView.as_view(), name="institution-count-param"),
 
     # Institution record access (separate detail/update/delete views)
-    path("<str:slug>/", InstitutionDetailView.as_view(), name="institution-detail"),
+    path("<str:slug>/detail/", InstitutionDetailView.as_view(), name="institution-detail"),
     path("<str:slug>/update/", InstitutionUpdateView.as_view(), name="institution-update"),
 
     # Lifecycle / Reset
@@ -45,7 +45,7 @@ urlpatterns = [
     path("branches/count/", BranchCountView.as_view(), name="branch-count-param"),
 
     # Branch record access (separate detail/update/delete views)
-    path("<str:i_slug>/branches/<int:code>/", BranchDetailView.as_view(), name="branch-detail"),
+    path("<str:i_slug>/branches/<int:code>/detail/", BranchDetailView.as_view(), name="branch-detail"),
     path("<str:i_slug>/branches/<int:code>/update/", BranchUpdateView.as_view(), name="branch-update"),
     path("<str:i_slug>/branches/<int:code>/transition/", BranchTransitionView.as_view(), name="branch-transition"),
 ]

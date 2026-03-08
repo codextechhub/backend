@@ -38,23 +38,23 @@ RESERVED_TENANT_SLUGS = {
 # -----------------------------------------------------------------------------
 
 class InstitutionStatus(models.TextChoices):
-    ACTIVE = "Active", "Active"
-    INACTIVE = "Inactive", "Inactive"
-    DELETED = "Deleted", "Deleted"
+    ACTIVE = "ACTIVE", "Active"
+    INACTIVE = "INACTIVE", "Inactive"
+    DELETED = "DELETED", "Deleted"
     
 
 class BranchStatus(models.TextChoices):
-    ACTIVE = "Active", "Active"
-    PENDING = "Pending", "Pending Activation"
-    SUSPENDED = "Suspended", "Suspended"
-    INACTIVE = "Inactive", "Inactive"
-    CLOSED = "Closed", "Closed"
+    ACTIVE = "ACTIVE", "Active"
+    PENDING = "PENDING", "Pending Activation"
+    SUSPENDED = "SUSPENDED", "Suspended"
+    INACTIVE = "INACTIVE", "Inactive"
+    CLOSED = "CLOSED", "Closed"
 
 
 class InviteStatus(models.TextChoices):
-    QUEUED = "Queued", "Queued"
-    SENT = "Sent", "Sent"
-    FAILED = "Failed", "Failed"
+    QUEUED = "QUEUED", "Queued"
+    SENT = "SENT", "Sent"
+    FAILED = "FAILED", "Failed"
 
 
 class OperationOutcome(models.TextChoices):
@@ -239,7 +239,6 @@ class Branch(TimeStampedModel):
     closed_at = models.DateTimeField(null=True, blank=True)
 
     activated_at = models.DateTimeField(null=True, blank=True)
-    updated_at = models.DateTimeField(auto_now=True)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:

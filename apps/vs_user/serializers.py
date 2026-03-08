@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from rest_framework import serializers
 
-from vs_institutions.models import Institution
+from vs_institutions.models import Institution, Branch
 from .models import (
     UserAccount,
     TemporaryPasswordIssue,
@@ -54,7 +54,7 @@ class UserAccountReadSerializer(serializers.ModelSerializer):
         model = UserAccount
         fields = (
             "id",
-            "institution",
+            "branch",
             "email",
             "user_type",
             "status",
@@ -81,9 +81,9 @@ class UserAccountCreateSerializer(serializers.ModelSerializer):
       4) set must_change_password=True
       5) emit AuthEventLog / audit event
     """
-    institution_id = serializers.PrimaryKeyRelatedField(
+    branch_id = serializers.PrimaryKeyRelatedField(
         source="institution",
-        queryset=Institution.objects.all(),
+        queryset=Branch.objects.all(),
         required=False,
         allow_null=True,
         help_text="Required for institution users; must be null for Vision staff.",
@@ -105,7 +105,7 @@ class UserAccountCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserAccount
         fields = (
-            "institution_id",
+            "branch_id",
             "email",
             "user_type",
             "status",
@@ -117,18 +117,18 @@ class UserAccountCreateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         user_type = attrs.get("user_type")
-        institution = attrs.get("institution")
+        branch = attrs.get("branch")
 
         # Enforce your model rule in serializer too (nice UX)
         if user_type == UserAccount.UserType.VISION_STAFF:
-            if institution is not None:
+            if branch is not None:
                 raise serializers.ValidationError(
-                    {"institution_id": "Vision staff users cannot be associated with an institution."}
+                    {"branch_id": "Vision staff users cannot be associated with an branch."}
                 )
         else:
-            if institution is None:
+            if branch is None:
                 raise serializers.ValidationError(
-                    {"institution_id": "Non-Vision staff users must be associated with an institution."}
+                    {"branch_id": "Non-Vision staff users must be associated with an branch."}
                 )
 
         # Temp password channel rules (FR-IDA-002)
@@ -153,7 +153,7 @@ class UserAccountCreateSerializer(serializers.ModelSerializer):
                 user = UserAccount.objects.create(**validated_data)
                 return user
         except IntegrityError:
-            # Most common: email uniqueness constraints (case-insensitive per institution / staff)
+            # Most common: email uniqueness constraints (case-insensitive per branch / staff)
             raise serializers.ValidationError(
                 {"email": "This email is already used under the applicable uniqueness policy."}
             )
@@ -177,12 +177,12 @@ class AdminCreateAccountSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         password = validated_data.pop("password")
-        print(f"Admin creating user with email: {validated_data['email']}")
+        
         user = UserAccount.objects.create_superuser(email=validated_data["email"], 
                                                     password=password, 
                                                     full_name=validated_data.get("full_name", "Admin User"), 
                                                     phone=validated_data.get("phone", ""),
-                                                    institution=None,
+                                                    branch=None,
                                                     user_type=UserAccount.UserType.VISION_STAFF,
                                                     status=UserAccount.Status.ACTIVE,
                                                     password_changed_at=timezone.now())

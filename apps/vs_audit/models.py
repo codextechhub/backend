@@ -64,16 +64,14 @@ class AuditModuleKey(models.TextChoices):
     FINANCE = "FINANCE", "Finance"
     PROCUREMENT = "PROCUREMENT", "Procurement"
     INSTITUTION = "INSTITUTION", "Institution Management"
+    BRANCH = "BRANCH", "Branch Management"
     SYSTEM = "SYSTEM", "System"
 
 
 class AuditActionType(models.TextChoices):
     """Specific auditable actions that can be emitted by the platform."""
-    INSTITUTION_CREATED = "INSTITUTION_CREATED", "Institution Created"
-    BRANCH_CREATED = "BRANCH_CREATED", "Branch Created"
-    INSTITUTION_UPDATED = "INSTITUTION_UPDATED", "Institution Updated"
-    BRANCH_UPDATED = "BRANCH_UPDATED", "Branch Updated"
-    USER_CREATED = "USER_CREATED", "User Created"
+    CREATE = "CREATE", "Create"
+    UPDATE = "UPDATE", "Update"
     LOGIN_SUCCESS = "LOGIN_SUCCESS", "Login Success"
     LOGIN_FAILED = "LOGIN_FAILED", "Login Failed"
     PASSWORD_RESET = "PASSWORD_RESET", "Password Reset"
