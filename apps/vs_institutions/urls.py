@@ -15,16 +15,11 @@ from .views.branch import (
     BranchUpdateView
 )
 from .views.lifecycle import BranchTransitionView
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from .views.ops import (
     InstitutionResetConfigView,
 )
 
 urlpatterns = [
-    # Authentication
-    path("token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
-    path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
-
     # --------- Institutions ---------
     # Institutions (separate list/create views)
     path("", InstitutionListView.as_view(), name="institution-list"),

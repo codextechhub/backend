@@ -436,7 +436,6 @@ class BranchLifecycle(models.Model):
 # Primary Admin linkage
 # -----------------------------------------------------------------------------
 
-
 class ContactInfo(TimeStampedModel):
     """
     Represents a reusable contact record that is not necessarily linked to an authentication user.
