@@ -483,35 +483,3 @@ class AuthEventLog(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"AuthEvent<{self.event}>"
-
-
-# -----------------------------------------------------------------------------
-# Constraints / Indexes
-# -----------------------------------------------------------------------------
-
-# Enforce case-insensitive unique email per institution 
-# UserAccount._meta.constraints.extend([
-#     models.UniqueConstraint(
-#         fields=["institution"],
-#         expressions=[Lower("email")], 
-#         name="uq_user_email_lower_per_institution"
-#     ),
-#     models.CheckConstraint(
-#         check=(
-#             Q(user_type=UserAccount.UserType.VISION_STAFF, institution__isnull=True)
-#             | ~Q(user_type=UserAccount.UserType.VISION_STAFF)
-#         ),
-#         name="ck_user_institution_binding",
-#     ),
-# ])
-
-# LoginSession._meta.indexes.extend([
-#     models.Index(fields=["user", "is_active"]),
-#     models.Index(fields=["institution", "is_active"]),
-# ])
-
-# AuthAttempt._meta.indexes.extend([
-#     models.Index(fields=["email_entered", "created_at"]),
-#     models.Index(fields=["ip_address", "created_at"]),
-#     models.Index(fields=["result", "created_at"]),
-# ])
