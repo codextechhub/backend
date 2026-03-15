@@ -8,10 +8,8 @@ from django.db.models import Q
 from django.db.models.functions import Lower
 from django.utils import timezone
 
-# Module 1
-from vs_institutions.models import Institution
+from vs_institutions.models import Branch
 
-# If your User model is Module 3's UserAccount, set AUTH_USER_MODEL to it.
 User = settings.AUTH_USER_MODEL
 
 
@@ -31,7 +29,7 @@ class TimeStampedModel(models.Model):
 # -----------------------------------------------------------------------------
 class Permission(TimeStampedModel):
     """
-    Global permission registry. Vision-owned (not institution-scoped).
+    Global permission registry. Vision-owned (not branch-scoped).
 
     Example keys:
       - "finance.invoice.view"
@@ -55,7 +53,7 @@ class Permission(TimeStampedModel):
         default=Sensitivity.NORMAL,
     )
 
-    # If True, institutions cannot grant this directly; must go through approval workflow (RoleChangeRequest)
+    # If True, branches cannot grant this directly; must go through approval workflow (RoleChangeRequest)
     is_restricted = models.BooleanField(default=False)
 
     # Optional: for more advanced policy/UX; safe to keep lightweight
@@ -106,11 +104,11 @@ class PermissionDependency(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
-# Role Templates (institution-scoped)
+# Role Templates (branch-scoped)
 # -----------------------------------------------------------------------------
 class RoleTemplate(TimeStampedModel):
     """
-    Institution-scoped role template.
+    Branch-scoped role template.
     Supports locking, archival, versioning, and safe rollback via snapshots.
     """
 
@@ -120,8 +118,8 @@ class RoleTemplate(TimeStampedModel):
         ARCHIVED = "ARCHIVED", "Archived"
 
 
-    institution = models.ForeignKey(
-        Institution,
+    branch = models.ForeignKey(
+        Branch,
         on_delete=models.PROTECT,
         related_name="role_templates",
     )
@@ -131,7 +129,7 @@ class RoleTemplate(TimeStampedModel):
 
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
 
-    # System roles are provisioned/owned by Vision; institutions might not be able to edit these.
+    # System roles are provisioned/owned by Vision; branches might not be able to edit these.
     is_system_role = models.BooleanField(default=False)
 
     # Locked means "read-only except elevated actors"
@@ -159,21 +157,21 @@ class RoleTemplate(TimeStampedModel):
     class Meta:
         db_table = "rbac_role_template"
         indexes = [
-            models.Index(fields=["institution", "status"]),
-            models.Index(fields=["institution", "is_locked"]),
+            models.Index(fields=["branch", "status"]),
+            models.Index(fields=["branch", "is_locked"]),
             models.Index(Lower("name"), name="idx_role_name_lower"),
         ]
         constraints = [
-            # role names unique per institution (case-insensitive)
+            # role names unique per branch (case-insensitive)
             models.UniqueConstraint(
                 Lower("name"),
-                "institution",
-                name="uq_role_name_per_institution_ci",
+                "branch",
+                name="uq_role_name_per_branch_ci",
             )
         ]
 
     def __str__(self) -> str:
-        return f"{self.institution_id}:{self.name}"
+        return f"{self.branch_id}:{self.name}"
 
     def clean(self):
         # Safety: archived roles should not be locked/unlocked by mistake (policy choice)
@@ -228,7 +226,7 @@ class RolePermission(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
-# Assign roles to users (institution scoped)
+# Assign roles to users (branch scoped)
 # -----------------------------------------------------------------------------
 class UserRoleAssignment(TimeStampedModel):
     class AssignmentStatus(models.TextChoices):
@@ -236,8 +234,8 @@ class UserRoleAssignment(TimeStampedModel):
         REVOKED = "REVOKED", "Revoked"
 
 
-    institution = models.ForeignKey(
-        Institution,
+    branch = models.ForeignKey(
+        Branch,
         on_delete=models.PROTECT,
         related_name="role_assignments",
     )
@@ -283,26 +281,26 @@ class UserRoleAssignment(TimeStampedModel):
     class Meta:
         db_table = "rbac_user_role_assignment"
         indexes = [
-            models.Index(fields=["institution", "user", "assignment_status"]),
-            models.Index(fields=["institution", "role", "assignment_status"]),
+            models.Index(fields=["branch", "user", "assignment_status"]),
+            models.Index(fields=["branch", "role", "assignment_status"]),
         ]
         constraints = [
-            # Prevent duplicate active assignment of same role to same user in same institution
+            # Prevent duplicate active assignment of same role to same user in same branch
             models.UniqueConstraint(
-                fields=["institution", "user", "role"],
+                fields=["branch", "user", "role"],
                 condition=Q(assignment_status="ACTIVE"),
-                name="uq_active_assignment_user_role_institution",
+                name="uq_active_assignment_user_role_branch",
             )
         ]
 
     def __str__(self) -> str:
-        return f"{self.institution_id}:{self.user_id}->{self.role_id} ({self.assignment_status})"
+        return f"{self.branch_id}:{self.user_id}->{self.role_id} ({self.assignment_status})"
 
     def clean(self):
-        # Cross-institution safety: role must belong to the same institution
-        if self.role_id and self.institution_id and self.role.institution_id != self.institution_id:
-            raise ValidationError("Role must belong to the same institution as the assignment.")
-        # You can add a similar check for user.institution if your UserAccount has institution FK.
+        # Cross-branch safety: role must belong to the same branch
+        if self.role_id and self.branch_id and self.role.branch_id != self.branch_id:
+            raise ValidationError("Role must belong to the same branch as the assignment.")
+        # You can add a similar check for user.branch if your UserAccount has branch FK.
 
     def revoke(self, by_user=None, reason: str = ""):
         self.assignment_status = self.AssignmentStatus.REVOKED
@@ -312,40 +310,7 @@ class UserRoleAssignment(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
-# Role version snapshots (rollback)
-# -----------------------------------------------------------------------------
-class RoleVersionSnapshot(TimeStampedModel):
-
-    role = models.ForeignKey(RoleTemplate, on_delete=models.CASCADE, related_name="snapshots")
-
-    version_number = models.PositiveIntegerField()
-    permissions_snapshot = models.JSONField(default=dict)  # store list/dict of granted permissions etc.
-
-    created_by = models.ForeignKey(
-        User,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="role_snapshots_created",
-    )
-    reason = models.CharField(max_length=255, blank=True)
-
-    class Meta:
-        db_table = "rbac_role_version_snapshot"
-        indexes = [
-            models.Index(fields=["role", "version_number"]),
-            models.Index(fields=["created_at"]),
-        ]
-        constraints = [
-            models.UniqueConstraint(fields=["role", "version_number"], name="uq_role_snapshot_version"),
-        ]
-
-    def __str__(self) -> str:
-        return f"{self.role_id}@v{self.version_number}"
-
-
-# -----------------------------------------------------------------------------
-# Approval workflow: Institution -> Vision (role changes)
+# Approval workflow: Branch -> Vision (role changes)
 # -----------------------------------------------------------------------------
 class RoleChangeRequest(TimeStampedModel):
     class Status(models.TextChoices):
@@ -355,8 +320,8 @@ class RoleChangeRequest(TimeStampedModel):
         APPLY_FAILED = "APPLY_FAILED", "Apply Failed"
 
 
-    institution = models.ForeignKey(
-        Institution,
+    branch = models.ForeignKey(
+        Branch,
         on_delete=models.PROTECT,
         related_name="role_change_requests",
     )
@@ -395,7 +360,7 @@ class RoleChangeRequest(TimeStampedModel):
     class Meta:
         db_table = "rbac_role_change_request"
         indexes = [
-            models.Index(fields=["institution", "status", "submitted_at"]),
+            models.Index(fields=["branch", "status", "submitted_at"]),
             models.Index(fields=["status", "submitted_at"]),
         ]
 
@@ -403,9 +368,9 @@ class RoleChangeRequest(TimeStampedModel):
         return f"RCR:{self.id} ({self.status})"
 
     def clean(self):
-        # Cross-institution safety: target role must belong to same institution
-        if self.target_role_id and self.institution_id and self.target_role.institution_id != self.institution_id:
-            raise ValidationError("Target role must belong to the same institution as the request.")
+        # Cross-branch safety: target role must belong to same branch
+        if self.target_role_id and self.branch_id and self.target_role.branch_id != self.branch_id:
+            raise ValidationError("Target role must belong to the same branch as the request.")
         if not self.justification or not self.justification.strip():
             raise ValidationError("Justification is required.")
 
@@ -464,58 +429,320 @@ class RoleChangeDeltaItem(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
-# Critical role lock history
+# Platform Role Template (Vision-owned / global)
 # -----------------------------------------------------------------------------
-class RoleLockEvent(TimeStampedModel):
-    class Action(models.TextChoices):
-        LOCK = "LOCK", "Lock"
-        UNLOCK = "UNLOCK", "Unlock"
+class PlatformRoleTemplate(TimeStampedModel):
+    """
+    Global/platform role template for Vision internal actors.
 
+    Examples:
+      - Vision Super Admin
+      - Vision Support Officer
+      - Vision Compliance Reviewer
+      - Vision Operations Analyst
+      - Vision Auditor
+    """
 
-    role = models.ForeignKey(RoleTemplate, on_delete=models.CASCADE, related_name="lock_events")
-    actor = models.ForeignKey(User, on_delete=models.PROTECT, related_name="role_lock_events")
+    class Status(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        INACTIVE = "INACTIVE", "Inactive"
+        ARCHIVED = "ARCHIVED", "Archived"
 
-    action = models.CharField(max_length=8, choices=Action.choices)
-    reason = models.CharField(max_length=255, blank=True)
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    name = models.CharField(max_length=80)
+    description = models.TextField(blank=True)
+
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.ACTIVE,
+    )
+
+    # System-owned means only top-level platform actors should edit it
+    is_system_role = models.BooleanField(default=True)
+
+    # Locked means read-only except very elevated actors
+    is_locked = models.BooleanField(default=False)
+
+    # Version bump whenever permissions change
+    version = models.PositiveIntegerField(default=1)
+
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_platform_roles",
+    )
+
+    permissions = models.ManyToManyField(
+        Permission,
+        through="PlatformRolePermission",
+        related_name="platform_roles",
+        blank=True,
+    )
 
     class Meta:
-        db_table = "rbac_role_lock_event"
+        db_table = "platform_rbac_role_template"
         indexes = [
-            models.Index(fields=["role", "created_at"]),
+            models.Index(fields=["status"]),
+            models.Index(fields=["is_locked"]),
+            models.Index(Lower("name"), name="idx_platform_role_name_lower"),
         ]
-
-    def __str__(self) -> str:
-        return f"{self.role_id} {self.action}"
-
-
-# -----------------------------------------------------------------------------
-# Optional: cache effective permissions (if you want faster checks)
-# -----------------------------------------------------------------------------
-class EffectivePermissionCache(TimeStampedModel):
-    """
-    Optional optimization: stores a hash + list of effective permission keys for a user in an institution.
-    You can also store just the hash and recompute list from DB.
-    """
-
-
-    institution = models.ForeignKey(Institution, on_delete=models.CASCADE, related_name="permission_caches")
-    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="permission_cache")
-
-    permissions_hash = models.CharField(max_length=64)  # e.g. sha256 of sorted permission keys + role versions
-    permissions = models.JSONField(default=list, blank=True)  # list of permission keys
-
-    computed_at = models.DateTimeField(default=timezone.now)
-    expires_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        db_table = "rbac_effective_permission_cache"
         constraints = [
-            models.UniqueConstraint(fields=["institution", "user"], name="uq_cache_per_institution_user"),
-        ]
-        indexes = [
-            models.Index(fields=["institution", "user"]),
-            models.Index(fields=["expires_at"]),
+            models.UniqueConstraint(
+                Lower("name"),
+                name="uq_platform_role_name_ci",
+            )
         ]
 
     def __str__(self) -> str:
-        return f"{self.institution_id}:{self.user_id} cache"
+        return self.name
+
+    def bump_version(self):
+        self.version = (self.version or 1) + 1
+
+
+# -----------------------------------------------------------------------------
+# Platform Role <-> Permission mapping
+# -----------------------------------------------------------------------------
+class PlatformRolePermission(TimeStampedModel):
+    """
+    Through table for PlatformRoleTemplate <-> Permission.
+
+    Stores metadata about who granted the permission and when.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    role = models.ForeignKey(
+        PlatformRoleTemplate,
+        on_delete=models.CASCADE,
+        related_name="role_permissions",
+    )
+
+    permission = models.ForeignKey(
+        Permission,
+        to_field="key",
+        db_column="permission_key",
+        on_delete=models.CASCADE,
+        related_name="platform_role_permissions",
+    )
+
+    granted = models.BooleanField(default=True)
+
+    granted_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="granted_platform_role_permissions",
+    )
+
+    granted_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = "platform_rbac_role_permission"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["role", "permission"],
+                name="uq_platform_role_permission_once",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["role", "granted"]),
+            models.Index(fields=["permission", "granted"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.role_id}:{self.permission_id} ({'grant' if self.granted else 'deny'})"
+
+
+# -----------------------------------------------------------------------------
+# Assign platform roles to Vision/internal users
+# -----------------------------------------------------------------------------
+class PlatformUserRoleAssignment(TimeStampedModel):
+    class AssignmentStatus(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        REVOKED = "REVOKED", "Revoked"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="platform_role_assignments",
+    )
+
+    role = models.ForeignKey(
+        PlatformRoleTemplate,
+        on_delete=models.PROTECT,
+        related_name="user_assignments",
+    )
+
+    assignment_status = models.CharField(
+        max_length=12,
+        choices=AssignmentStatus.choices,
+        default=AssignmentStatus.ACTIVE,
+    )
+
+    assigned_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="assigned_platform_roles",
+    )
+
+    assigned_at = models.DateTimeField(default=timezone.now)
+
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    revoked_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="revoked_platform_roles",
+    )
+
+    reason_note = models.TextField(blank=True)
+
+    class Meta:
+        db_table = "platform_rbac_user_role_assignment"
+        indexes = [
+            models.Index(fields=["user", "assignment_status"]),
+            models.Index(fields=["role", "assignment_status"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["user", "role"],
+                condition=Q(assignment_status="ACTIVE"),
+                name="uq_active_platform_assignment_user_role",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.user_id}->{self.role_id} ({self.assignment_status})"
+
+    def revoke(self, by_user=None, reason: str = ""):
+        self.assignment_status = self.AssignmentStatus.REVOKED
+        self.revoked_at = timezone.now()
+        self.revoked_by = by_user
+        self.reason_note = reason or self.reason_note
+
+
+# -----------------------------------------------------------------------------
+# Platform approval workflow for restricted permission changes
+# -----------------------------------------------------------------------------
+class PlatformRoleChangeRequest(TimeStampedModel):
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        APPROVED = "APPROVED", "Approved"
+        DENIED = "DENIED", "Denied"
+        APPLY_FAILED = "APPLY_FAILED", "Apply Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    requested_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="platform_role_change_requests_made",
+    )
+
+    target_role = models.ForeignKey(
+        PlatformRoleTemplate,
+        on_delete=models.PROTECT,
+        related_name="change_requests",
+    )
+
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+    )
+
+    justification = models.TextField()
+
+    reviewer = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="platform_role_change_requests_reviewed",
+    )
+
+    reviewer_notes = models.TextField(blank=True)
+
+    submitted_at = models.DateTimeField(default=timezone.now)
+    decided_at = models.DateTimeField(null=True, blank=True)
+
+    impact_summary = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        db_table = "platform_rbac_role_change_request"
+        indexes = [
+            models.Index(fields=["status", "submitted_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"PRCR:{self.id} ({self.status})"
+
+    def clean(self):
+        if not self.justification or not self.justification.strip():
+            raise ValidationError("Justification is required.")
+
+    def mark_denied(self, reviewer, notes: str):
+        self.status = self.Status.DENIED
+        self.reviewer = reviewer
+        self.reviewer_notes = notes
+        self.decided_at = timezone.now()
+
+    def mark_approved(self, reviewer, notes: str = ""):
+        self.status = self.Status.APPROVED
+        self.reviewer = reviewer
+        self.reviewer_notes = notes
+        self.decided_at = timezone.now()
+
+    def mark_apply_failed(self, reviewer, notes: str):
+        self.status = self.Status.APPLY_FAILED
+        self.reviewer = reviewer
+        self.reviewer_notes = notes
+        self.decided_at = timezone.now()
+
+
+class PlatformRoleChangeDeltaItem(TimeStampedModel):
+    class Operation(models.TextChoices):
+        ADD = "ADD", "Add"
+        REMOVE = "REMOVE", "Remove"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    request = models.ForeignKey(
+        PlatformRoleChangeRequest,
+        on_delete=models.CASCADE,
+        related_name="delta_items",
+    )
+
+    permission = models.ForeignKey(
+        Permission,
+        to_field="key",
+        db_column="permission_key",
+        on_delete=models.PROTECT,
+        related_name="platform_delta_items",
+    )
+
+    operation = models.CharField(max_length=8, choices=Operation.choices)
+
+    class Meta:
+        db_table = "platform_rbac_role_change_delta_item"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["request", "permission", "operation"],
+                name="uq_platform_request_permission_operation",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.request_id} {self.operation} {self.permission_id}"
