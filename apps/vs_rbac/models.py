@@ -77,7 +77,6 @@ class PermissionDependency(TimeStampedModel):
     "permission_key depends on depends_on_key"
     Example: finance.invoice.approve depends on finance.invoice.view
     """
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     permission = models.ForeignKey(
         Permission,
         to_field="key",
@@ -120,7 +119,6 @@ class RoleTemplate(TimeStampedModel):
         INACTIVE = "INACTIVE", "Inactive"
         ARCHIVED = "ARCHIVED", "Archived"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     institution = models.ForeignKey(
         Institution,
@@ -194,7 +192,6 @@ class RolePermission(TimeStampedModel):
     NOTE: We keep "granted" so you can store explicit denies if you ever need it.
           If you only store grants, you can drop granted and treat existence as grant.
     """
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     role = models.ForeignKey(RoleTemplate, on_delete=models.CASCADE, related_name="role_permissions")
     permission = models.ForeignKey(
@@ -238,7 +235,6 @@ class UserRoleAssignment(TimeStampedModel):
         ACTIVE = "ACTIVE", "Active"
         REVOKED = "REVOKED", "Revoked"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     institution = models.ForeignKey(
         Institution,
@@ -319,7 +315,6 @@ class UserRoleAssignment(TimeStampedModel):
 # Role version snapshots (rollback)
 # -----------------------------------------------------------------------------
 class RoleVersionSnapshot(TimeStampedModel):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     role = models.ForeignKey(RoleTemplate, on_delete=models.CASCADE, related_name="snapshots")
 
@@ -359,7 +354,6 @@ class RoleChangeRequest(TimeStampedModel):
         DENIED = "DENIED", "Denied"
         APPLY_FAILED = "APPLY_FAILED", "Apply Failed"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     institution = models.ForeignKey(
         Institution,
@@ -439,7 +433,6 @@ class RoleChangeDeltaItem(TimeStampedModel):
         ADD = "ADD", "Add"
         REMOVE = "REMOVE", "Remove"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     request = models.ForeignKey(
         RoleChangeRequest,
@@ -478,7 +471,6 @@ class RoleLockEvent(TimeStampedModel):
         LOCK = "LOCK", "Lock"
         UNLOCK = "UNLOCK", "Unlock"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     role = models.ForeignKey(RoleTemplate, on_delete=models.CASCADE, related_name="lock_events")
     actor = models.ForeignKey(User, on_delete=models.PROTECT, related_name="role_lock_events")
@@ -504,7 +496,7 @@ class EffectivePermissionCache(TimeStampedModel):
     Optional optimization: stores a hash + list of effective permission keys for a user in an institution.
     You can also store just the hash and recompute list from DB.
     """
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
 
     institution = models.ForeignKey(Institution, on_delete=models.CASCADE, related_name="permission_caches")
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="permission_cache")

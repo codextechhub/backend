@@ -14,7 +14,7 @@ urlpatterns = [
         name="rbac-permission-dependency-list-create",
     ),
     path(
-        "vision/permission-dependencies/<uuid:id>/",
+        "vision/permission-dependencies/<int:pk>/",
         views.PermissionDependencyDetailView.as_view(),
         name="rbac-permission-dependency-detail",
     ),
@@ -23,43 +23,43 @@ urlpatterns = [
     # Institution-scoped Roles
     # -------------------------
     path(
-        "institutions/<uuid:institution_id>/roles/",
+        "institutions/<int:institution_id>/roles/",
         views.RoleTemplateListCreateView.as_view(),
         name="rbac-role-list-create",
     ),
     path(
-        "institutions/<uuid:institution_id>/roles/<uuid:id>/",
+        "institutions/<int:institution_id>/roles/<int:id>/",
         views.RoleTemplateDetailView.as_view(),
         name="rbac-role-detail",
     ),
 
     # Role snapshots (rollback)
     path(
-        "institutions/<uuid:institution_id>/roles/<uuid:role_id>/snapshots/",
+        "institutions/<int:institution_id>/roles/<int:role_id>/snapshots/",
         views.RoleSnapshotListView.as_view(),
         name="rbac-role-snapshot-list",
     ),
     path(
-        "institutions/<uuid:institution_id>/role-snapshots/<uuid:id>/",
+        "institutions/<int:institution_id>/role-snapshots/<int:id>/",
         views.RoleSnapshotDetailView.as_view(),
         name="rbac-role-snapshot-detail",
     ),
 
     # Role assignments
     path(
-        "institutions/<uuid:institution_id>/role-assignments/",
+        "institutions/<int:institution_id>/role-assignments/",
         views.UserRoleAssignmentListCreateView.as_view(),
         name="rbac-assignment-list-create",
     ),
     path(
-        "institutions/<uuid:institution_id>/role-assignments/<uuid:id>/",
+        "institutions/<int:institution_id>/role-assignments/<int:id>/",
         views.UserRoleAssignmentDetailView.as_view(),
         name="rbac-assignment-detail",
     ),
 
     # Institution role-change requests
     path(
-        "institutions/<uuid:institution_id>/role-change-requests/",
+        "institutions/<int:institution_id>/role-change-requests/",
         views.InstitutionRoleChangeRequestListCreateView.as_view(),
         name="rbac-role-change-request-list-create",
     ),
@@ -71,21 +71,21 @@ urlpatterns = [
         name="rbac-vision-role-change-queue",
     ),
     path(
-        "vision/role-change-requests/<uuid:request_id>/decide/",
+        "vision/role-change-requests/<int:request_id>/decide/",
         views.VisionRoleChangeRequestDecisionView.as_view(),
         name="rbac-vision-role-change-decide",
     ),
 
     # Lock history
     path(
-        "institutions/<uuid:institution_id>/role-lock-events/",
+        "institutions/<int:institution_id>/role-lock-events/",
         views.RoleLockEventListView.as_view(),
         name="rbac-role-lock-events",
     ),
 
     # Effective permission cache (optional)
     path(
-        "institutions/<uuid:institution_id>/permission-cache/<uuid:id>/",
+        "institutions/<int:institution_id>/permission-cache/<int:id>/",
         views.EffectivePermissionCacheDetailView.as_view(),
         name="rbac-permission-cache-detail",
     ),
