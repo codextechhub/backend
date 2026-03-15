@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from django.db.models import Q
+from django.forms import ValidationError
 from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -20,15 +21,13 @@ class ActorContextMixin:
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
-        user = getattr(self.request, "user", None)
-        ctx["actor_id"] = str(getattr(user, "id", "system"))
+        ctx["actor_id"] = getattr(self.request, "user", None)
         return ctx
 
 
 class BranchListView(ActorContextMixin, generics.ListAPIView):
     permission_classes = [IsVisionStaff]
     serializer_class = BranchListSerializer
-
     queryset = Branch.objects.all().select_related("institution")
 
     def get_queryset(self):
@@ -125,6 +124,13 @@ class BranchCreateView(ActorContextMixin, generics.CreateAPIView):
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
         i_slug = self.kwargs["i_slug"]
+
+        if not Institution.objects.filter(slug=i_slug).exists():
+            raise ValueError(f"Institution with slug '{i_slug}' does not exist.")
+        
+        if Institution.objects.filter(slug=i_slug).first().status != "ACTIVE":
+            raise ValidationError({"detail": "Branches can only be created for active institutions."})
+
         ctx["institution"] = Institution.objects.filter(slug=i_slug).first()
         return ctx
 

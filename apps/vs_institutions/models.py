@@ -38,23 +38,23 @@ RESERVED_TENANT_SLUGS = {
 # -----------------------------------------------------------------------------
 
 class InstitutionStatus(models.TextChoices):
-    ACTIVE = "Active", "Active"
-    INACTIVE = "Inactive", "Inactive"
-    DELETED = "Deleted", "Deleted"
+    ACTIVE = "ACTIVE", "Active"
+    INACTIVE = "INACTIVE", "Inactive"
+    DELETED = "DELETED", "Deleted"
     
 
 class BranchStatus(models.TextChoices):
-    ACTIVE = "Active", "Active"
-    PENDING = "Pending", "Pending Activation"
-    SUSPENDED = "Suspended", "Suspended"
-    INACTIVE = "Inactive", "Inactive"
-    CLOSED = "Closed", "Closed"
+    ACTIVE = "ACTIVE", "Active"
+    PENDING = "PENDING", "Pending Activation"
+    SUSPENDED = "SUSPENDED", "Suspended"
+    INACTIVE = "INACTIVE", "Inactive"
+    CLOSED = "CLOSED", "Closed"
 
 
 class InviteStatus(models.TextChoices):
-    QUEUED = "Queued", "Queued"
-    SENT = "Sent", "Sent"
-    FAILED = "Failed", "Failed"
+    QUEUED = "QUEUED", "Queued"
+    SENT = "SENT", "Sent"
+    FAILED = "FAILED", "Failed"
 
 
 class OperationOutcome(models.TextChoices):
@@ -165,7 +165,7 @@ class Branch(TimeStampedModel):
     can have multiple branches, with exactly one designated as the main branch (is_main=True).
     Branches have a lifecycle managed through status transitions (PENDING → ACTIVE → SUSPENDED/INACTIVE → CLOSED).
     All status transitions are logged in the BranchLifecycle model for audit purposes.
-    Key Features:
+    ### Key Features:
     - Location & contact information (address, email, website, phone, timezone, currency)
     - Status tracking with lifecycle logging via transition() methods
     - Enforced constraints: one main branch per institution, unique code per institution
@@ -239,7 +239,6 @@ class Branch(TimeStampedModel):
     closed_at = models.DateTimeField(null=True, blank=True)
 
     activated_at = models.DateTimeField(null=True, blank=True)
-    updated_at = models.DateTimeField(auto_now=True)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
@@ -436,7 +435,6 @@ class BranchLifecycle(models.Model):
 # -----------------------------------------------------------------------------
 # Primary Admin linkage
 # -----------------------------------------------------------------------------
-
 
 class ContactInfo(TimeStampedModel):
     """

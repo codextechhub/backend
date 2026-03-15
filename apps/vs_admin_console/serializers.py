@@ -4,62 +4,10 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .models import (
-    AdminActionLog,
-    FeatureFlag,
     ImpersonationSession,
-    ImportJobLog,
-    ProvisioningEvent,
 )
 
-# -----------------------------------------------------------------------------
-# Admin Action Log
-# -----------------------------------------------------------------------------
 
-class AdminActionLogSerializer(serializers.ModelSerializer):
-    actor_email = serializers.EmailField(source="actor.email", read_only=True)
-    
-    class Meta:
-        model = AdminActionLog
-        fields = [
-            "id",
-            "created_at",
-            "updated_at",
-            "actor",
-            "actor_email",
-            "institution",
-            "action",
-            "result",
-            "reason",
-            "metadata",
-            "error_message",
-        ]
-    read_only_fields = ["id", "created_at", "updated_at", "actor_email"]
-    
-class AdminActionLogCreateSerializer(serializers.ModelSerializer):
-    """
-    Use this when the Admin Console creates an action log entry.
-    Tip: set actor in the view as request.user (don't accept actor from the client).
-    """
-    class Meta:
-        model = AdminActionLog
-        fields = [
-            "institution",
-            "action",
-            "result",
-            "reason",
-            "metadata",
-            "error_message",
-        ]
-    
-    def validate(self, attrs):
-        # Mirror the model's rule in a user-friendly way.
-        action = attrs.get("action")
-        reason = (attrs.get('reason')or "").strip()
-        risky_actions = {"INSTITUTION_RESET", "IMPERSONATION_START"}
-        if action in risky_actions and not reason:
-            raise serializers.ValidationError("Reason is required for resets and impersonation.")
-        return attrs
-    
 # -----------------------------------------------------------------------------
 # Impersonation
 # -----------------------------------------------------------------------------
@@ -113,111 +61,7 @@ class ImpersonationEndSerializer(serializers.Serializer):
             raise serializers.ValidationError("Invalid session_id.")
         return value
         
-# -----------------------------------------------------------------------------
-# Feature Flags
-# -----------------------------------------------------------------------------
 
-class FeatureFlagSerializer(serializers.ModelSerializer):
-    updated_by_email = serializers.EmailField(source="updated_by.email", read_only=True)
-
-    class Meta:
-        model = FeatureFlag
-        fields = [
-            "id",
-            "created_at",
-            "updated_at",
-            "institution",
-            "key",
-            "enabled",
-            "updated_by",
-            "updated_by_email",
-            "reason",
-        ]
-        read_only_fields = ["id", "created_at", "updated_at", "updated_by_email"]
-        
-class FeatureFlagUpsertSerializer(serializers.Serializer):
-    """
-    Upsert payload:
-    - If flag exists for (institution, key), update it
-    - else create it
-    """
-    institution = serializers.IntegerField()
-    key = serializers.CharField(max_length=120)
-    enabled = serializers.BooleanField()
-    reason = serializers.CharField(allow_blank=True, required=False)
-
-    def validate_key(self, value):
-        value = value.strip()
-        if not value:
-            raise serializers.ValidationError("key is required.")
-        return value
-    
-# -----------------------------------------------------------------------------
-# Provisioning Events
-# -----------------------------------------------------------------------------
-
-class ProvisioningEventSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ProvisioningEvent
-        fields = [
-            "id",
-            "created_at",
-            "updated_at",
-            "institution",
-            "step",
-            "status",
-            "message",
-        ]
-        read_only_fields = ["id", "created_at", "updated_at"]
-        
-class ProvisioningRetrySerializer(serializers.Serializer):
-    """
-    Payload to retry a failed provisioning step.
-    Your view should enforce rules like: cannot retry if step is RUNNING.
-    """
-    institution = serializers.IntegerField()
-    step = serializers.CharField(max_length=120)
-    reason = serializers.CharField()
-
-    def validate(self, attrs):
-        if not attrs["reason"].strip():
-            raise serializers.ValidationError({"reason": "Reason is required to retry a step."})
-        return attrs
-
-# -----------------------------------------------------------------------------
-# Import Jobs (Admin Console tracking)
-# -----------------------------------------------------------------------------
-
-class ImportJobLogSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = ImportJobLog
-        fields = [
-            "id",
-            "created_at",
-            "updated_at",
-            "institution",
-            "job_type",
-            "status",
-            "total_rows",
-            "failed_rows",
-            "error_report",
-        ]
-        read_only_fields = ["id", "created_at", "updated_at"]
-        
-class ImportRetrySerializer(serializers.Serializer):
-    """
-    Payload to retry an import job.
-    Use job_type if you don't have a separate import-job ID yet.
-    """
-    institution = serializers.IntegerField()
-    job_type = serializers.CharField(max_length=120)
-    reason = serializers.CharField()
-
-    def validate_reason(self, value):
-        if not value.strip():
-            raise serializers.ValidationError("Reason is required.")
-        return value
-    
 # -----------------------------------------------------------------------------
 # Dashboard helpers (nice for list endpoints)
 # -----------------------------------------------------------------------------

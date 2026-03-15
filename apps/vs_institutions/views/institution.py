@@ -3,10 +3,10 @@ from __future__ import annotations
 from django.db.models import Q
 from rest_framework import generics
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.permissions import IsAuthenticated
 
 from ..models import Institution, InstitutionStatus
-from ..permissions import IsVisionStaff
+from ..permissions import IsVisionStaff, IsVisionSuperAdmin
 from ..serializers import (
     InstitutionCreateSerializer,
     InstitutionDetailSerializer,
@@ -21,7 +21,7 @@ class ActorContextMixin:
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
         user = getattr(self.request, "user", None)
-        ctx["actor_id"] = str(getattr(user, "id", "system"))
+        ctx["actor_id"] = getattr(user, "id", "system")
         return ctx
 
 
@@ -90,7 +90,7 @@ class InstitutionCountView(generics.GenericAPIView):
 
 
 class InstitutionCreateView(ActorContextMixin, generics.CreateAPIView):
-    permission_classes = [AllowAny]  # Allow any authenticated user to create an institution (or change to IsVisionStaff if you want to restrict)
+    permission_classes = [IsVisionStaff]
     serializer_class = InstitutionCreateSerializer
 
 

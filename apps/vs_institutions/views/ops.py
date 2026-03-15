@@ -15,7 +15,7 @@ class ActorContextMixin:
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
         user = getattr(self.request, "user", None)
-        ctx["actor_id"] = str(getattr(user, "id", "system"))
+        ctx["actor_id"] = getattr(user, "id", "system")
         return ctx
 
 
