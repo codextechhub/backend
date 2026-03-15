@@ -3,72 +3,77 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
-    # -------------------------
+    # -------------------------------------------------------------------------
     # Vision-owned Permission Registry
-    # -------------------------
-    path("vision/permissions/", views.PermissionListCreateView.as_view(), name="rbac-permission-list-create"),
-    path("vision/permissions/<str:key>/", views.PermissionDetailView.as_view(), name="rbac-permission-detail"),
+    # -------------------------------------------------------------------------
+    path(
+        "vision/permissions/",
+        views.PermissionListCreateView.as_view(),
+        name="rbac-permission-list-create",
+    ),
+    path(
+        "vision/permissions/<str:key>/",
+        views.PermissionDetailView.as_view(),
+        name="rbac-permission-detail",
+    ),
     path(
         "vision/permission-dependencies/",
         views.PermissionDependencyListCreateView.as_view(),
         name="rbac-permission-dependency-list-create",
     ),
     path(
-        "vision/permission-dependencies/<int:pk>/",
+        "vision/permission-dependencies/<int:id>/",
         views.PermissionDependencyDetailView.as_view(),
         name="rbac-permission-dependency-detail",
     ),
 
-    # -------------------------
-    # Institution-scoped Roles
-    # -------------------------
+    # -------------------------------------------------------------------------
+    # Branch-scoped Role Templates
+    # -------------------------------------------------------------------------
     path(
-        "institutions/<int:institution_id>/roles/",
+        "branches/<uuid:branch_id>/roles/",
         views.RoleTemplateListCreateView.as_view(),
         name="rbac-role-list-create",
     ),
     path(
-        "institutions/<int:institution_id>/roles/<int:id>/",
+        "branches/<uuid:branch_id>/roles/<int:id>/",
         views.RoleTemplateDetailView.as_view(),
         name="rbac-role-detail",
     ),
 
-    # Role snapshots (rollback)
+    # -------------------------------------------------------------------------
+    # Branch-scoped Role Assignments
+    # -------------------------------------------------------------------------
     path(
-        "institutions/<int:institution_id>/roles/<int:role_id>/snapshots/",
-        views.RoleSnapshotListView.as_view(),
-        name="rbac-role-snapshot-list",
-    ),
-    path(
-        "institutions/<int:institution_id>/role-snapshots/<int:id>/",
-        views.RoleSnapshotDetailView.as_view(),
-        name="rbac-role-snapshot-detail",
-    ),
-
-    # Role assignments
-    path(
-        "institutions/<int:institution_id>/role-assignments/",
+        "branches/<uuid:branch_id>/role-assignments/",
         views.UserRoleAssignmentListCreateView.as_view(),
         name="rbac-assignment-list-create",
     ),
     path(
-        "institutions/<int:institution_id>/role-assignments/<int:id>/",
+        "branches/<uuid:branch_id>/role-assignments/<int:id>/",
         views.UserRoleAssignmentDetailView.as_view(),
         name="rbac-assignment-detail",
     ),
 
-    # Institution role-change requests
+    # -------------------------------------------------------------------------
+    # Branch -> Vision Role Change Requests
+    # -------------------------------------------------------------------------
     path(
-        "institutions/<int:institution_id>/role-change-requests/",
-        views.InstitutionRoleChangeRequestListCreateView.as_view(),
+        "branches/<uuid:branch_id>/role-change-requests/",
+        views.BranchRoleChangeRequestListCreateView.as_view(),
         name="rbac-role-change-request-list-create",
     ),
 
-    # Vision review queue + decision endpoint
+    # Vision review queue
     path(
         "vision/role-change-requests/",
         views.VisionRoleChangeRequestQueueView.as_view(),
         name="rbac-vision-role-change-queue",
+    ),
+    path(
+        "vision/role-change-requests/<int:id>/",
+        views.VisionRoleChangeRequestDetailView.as_view(),
+        name="rbac-vision-role-change-detail",
     ),
     path(
         "vision/role-change-requests/<int:request_id>/decide/",
@@ -76,17 +81,50 @@ urlpatterns = [
         name="rbac-vision-role-change-decide",
     ),
 
-    # Lock history
+    # -------------------------------------------------------------------------
+    # Vision/Internal Platform Role Templates
+    # -------------------------------------------------------------------------
     path(
-        "institutions/<int:institution_id>/role-lock-events/",
-        views.RoleLockEventListView.as_view(),
-        name="rbac-role-lock-events",
+        "platform/roles/",
+        views.PlatformRoleTemplateListCreateView.as_view(),
+        name="platform-rbac-role-list-create",
+    ),
+    path(
+        "platform/roles/<uuid:id>/",
+        views.PlatformRoleTemplateDetailView.as_view(),
+        name="platform-rbac-role-detail",
     ),
 
-    # Effective permission cache (optional)
+    # -------------------------------------------------------------------------
+    # Vision/Internal Platform Role Assignments
+    # -------------------------------------------------------------------------
     path(
-        "institutions/<int:institution_id>/permission-cache/<int:id>/",
-        views.EffectivePermissionCacheDetailView.as_view(),
-        name="rbac-permission-cache-detail",
+        "platform/role-assignments/",
+        views.PlatformUserRoleAssignmentListCreateView.as_view(),
+        name="platform-rbac-assignment-list-create",
+    ),
+    path(
+        "platform/role-assignments/<uuid:id>/",
+        views.PlatformUserRoleAssignmentDetailView.as_view(),
+        name="platform-rbac-assignment-detail",
+    ),
+
+    # -------------------------------------------------------------------------
+    # Vision/Internal Platform Role Change Requests
+    # -------------------------------------------------------------------------
+    path(
+        "platform/role-change-requests/",
+        views.PlatformRoleChangeRequestListCreateView.as_view(),
+        name="platform-rbac-role-change-request-list-create",
+    ),
+    path(
+        "platform/role-change-requests/<uuid:id>/",
+        views.PlatformRoleChangeRequestDetailView.as_view(),
+        name="platform-rbac-role-change-detail",
+    ),
+    path(
+        "platform/role-change-requests/<uuid:request_id>/decide/",
+        views.PlatformRoleChangeRequestDecisionView.as_view(),
+        name="platform-rbac-role-change-decide",
     ),
 ]
