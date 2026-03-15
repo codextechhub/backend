@@ -55,7 +55,7 @@ class ImpersonationSession(models.Model):
             return
         self.status = "ENDED"
         self.ended_at = timezone.now()
-        self.save(update_fields=["status", "ended_at", "updated_at"])
+        self.save(update_fields=["status", "ended_at"])
 
     def __str__(self):
         return f"Impersonation {self.staff_user_id} -> {self.target_user_id} ({self.status})"

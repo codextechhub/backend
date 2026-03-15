@@ -70,7 +70,6 @@ class Permission(TimeStampedModel):
     is_active = models.BooleanField(default=True)
 
     class Meta:
-        db_table = "rbac_permission"
         indexes = [
             models.Index(fields=["module_key", "action"]),
             models.Index(fields=["is_restricted", "sensitivity_level"]),
@@ -106,7 +105,6 @@ class PermissionDependency(TimeStampedModel):
     )
 
     class Meta:
-        db_table = "rbac_permission_dependency"
         constraints = [
             models.UniqueConstraint(
                 fields=["permission", "depends_on"],
@@ -179,7 +177,6 @@ class RoleTemplate(TimeStampedModel):
     )
 
     class Meta:
-        db_table = "rbac_role_template"
         indexes = [
             models.Index(fields=["branch", "status"]),
             models.Index(fields=["branch", "is_locked"]),
@@ -239,7 +236,6 @@ class RolePermission(TimeStampedModel):
     granted_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        db_table = "rbac_role_permission"
         constraints = [
             models.UniqueConstraint(fields=["role", "permission"], name="uq_role_permission_once"),
         ]
@@ -321,7 +317,6 @@ class UserRoleAssignment(TimeStampedModel):
     reason_note = models.TextField(blank=True)
 
     class Meta:
-        db_table = "rbac_user_role_assignment"
         indexes = [
             models.Index(fields=["branch", "user", "assignment_status"]),
             models.Index(fields=["branch", "role", "assignment_status"]),
@@ -415,7 +410,6 @@ class RoleChangeRequest(TimeStampedModel):
     impact_summary = models.JSONField(default=dict, blank=True)
 
     class Meta:
-        db_table = "rbac_role_change_request"
         indexes = [
             models.Index(fields=["branch", "status", "submitted_at"]),
             models.Index(fields=["status", "submitted_at"]),
@@ -481,7 +475,6 @@ class RoleChangeDeltaItem(TimeStampedModel):
     operation = models.CharField(max_length=8, choices=Operation.choices)
 
     class Meta:
-        db_table = "rbac_role_change_delta_item"
         constraints = [
             models.UniqueConstraint(
                 fields=["request", "permission", "operation"],
@@ -554,7 +547,6 @@ class PlatformRoleTemplate(TimeStampedModel):
     )
 
     class Meta:
-        db_table = "platform_rbac_role_template"
         indexes = [
             models.Index(fields=["status"]),
             models.Index(fields=["is_locked"]),
@@ -617,7 +609,6 @@ class PlatformRolePermission(TimeStampedModel):
     granted_at = models.DateTimeField(default=timezone.now)
 
     class Meta:
-        db_table = "platform_rbac_role_permission"
         constraints = [
             models.UniqueConstraint(
                 fields=["role", "permission"],
@@ -695,7 +686,6 @@ class PlatformUserRoleAssignment(TimeStampedModel):
     reason_note = models.TextField(blank=True)
 
     class Meta:
-        db_table = "platform_rbac_user_role_assignment"
         indexes = [
             models.Index(fields=["user", "assignment_status"]),
             models.Index(fields=["role", "assignment_status"]),
@@ -775,7 +765,6 @@ class PlatformRoleChangeRequest(TimeStampedModel):
     impact_summary = models.JSONField(default=dict, blank=True)
 
     class Meta:
-        db_table = "platform_rbac_role_change_request"
         indexes = [
             models.Index(fields=["status", "submitted_at"]),
         ]
@@ -836,7 +825,6 @@ class PlatformRoleChangeDeltaItem(TimeStampedModel):
     operation = models.CharField(max_length=8, choices=Operation.choices)
 
     class Meta:
-        db_table = "platform_rbac_role_change_delta_item"
         constraints = [
             models.UniqueConstraint(
                 fields=["request", "permission", "operation"],

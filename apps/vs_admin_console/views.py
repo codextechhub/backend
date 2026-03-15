@@ -30,7 +30,7 @@ class ImpersonationSessionViewSet(viewsets.ModelViewSet):
     But leaving ModelViewSet keeps it simple for now.
     """
     permission_classes = [IsVisionStaff]
-    queryset = ImpersonationSession.objects.select_related("staff_user", "target_user").order_by("-created_at")
+    queryset = ImpersonationSession.objects.select_related("staff_user", "target_user")
     serializer_class = ImpersonationSessionSerializer
 
     def get_queryset(self):

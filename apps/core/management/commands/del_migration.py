@@ -10,7 +10,7 @@ class Command(BaseCommand):
     def handle(self, *args, **kwargs):
         # Iterate through all installed apps
         deleted_files = []
-        installed_apps = ['vs_admin_console', 'vs_user', 'vs_institutions', 'vs_rbac']  # List your apps here
+        installed_apps = ['vs_admin_console', 'vs_user', 'vs_institutions', 'vs_rbac', 'vs_audit']  # List your apps here
 
         # Ask for confirmation before deleting anything
         prompt = "This will delete all migration .py files in the following apps: {}. Continue? [y/N]: ".format(', '.join(installed_apps))
