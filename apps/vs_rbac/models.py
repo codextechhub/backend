@@ -17,6 +17,8 @@ User = settings.AUTH_USER_MODEL
 # Shared base
 # -----------------------------------------------------------------------------
 class TimeStampedModel(models.Model):
+    """Abstract base that tracks creation and last update timestamps."""
+
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -28,13 +30,21 @@ class TimeStampedModel(models.Model):
 # Permission Registry (global, Vision-owned)
 # -----------------------------------------------------------------------------
 class Permission(TimeStampedModel):
-    """
-    Global permission registry. Vision-owned (not branch-scoped).
+    """Vision-owned registry for reusable permissions.
+
+    Attributes:
+        key: Primary identifier written in dotted form (module.section.action).
+        module_key: Top-level module bucket so UIs can group permissions.
+        action: Operation keyword such as ``view`` or ``approve``.
+        description: Optional human summary rendered in management screens.
+        sensitivity_level: Flagged via ``Sensitivity`` for audit and review queues.
+        is_restricted: Marks permissions that must flow through approvals.
+        is_active: Lightweight flag for soft-deleting or hiding items.
 
     Example keys:
-      - "finance.invoice.view"
-      - "finance.invoice.approve"
-      - "students.profile.update"
+        ``finance.invoice.view``
+        ``finance.invoice.approve``
+        ``students.profile.update``
     """
 
     class Sensitivity(models.TextChoices):
@@ -71,9 +81,14 @@ class Permission(TimeStampedModel):
 
 
 class PermissionDependency(TimeStampedModel):
-    """
-    "permission_key depends on depends_on_key"
-    Example: finance.invoice.approve depends on finance.invoice.view
+    """Explicit dependency graph between permissions.
+
+    Attributes:
+        permission: Permission that requires another capability before use.
+        depends_on: Permission that must already be granted.
+
+    Example:
+        ``finance.invoice.approve`` -> ``finance.invoice.view``
     """
     permission = models.ForeignKey(
         Permission,
@@ -107,9 +122,18 @@ class PermissionDependency(TimeStampedModel):
 # Role Templates (branch-scoped)
 # -----------------------------------------------------------------------------
 class RoleTemplate(TimeStampedModel):
-    """
-    Branch-scoped role template.
-    Supports locking, archival, versioning, and safe rollback via snapshots.
+    """Branch-scoped role blueprint owned by a specific institution branch.
+
+    Attributes:
+        branch: Branch that owns the template; acts as tenant boundary.
+        name: Human readable label surfaced in admin UIs.
+        description: Optional context for auditors and approvers.
+        status: Current lifecycle (active/inactive/archived).
+        is_system_role: Locks the record to Vision-managed roles.
+        is_locked: Prevents branch edits while elevated workflows run.
+        version: Incremented when permissions change for cache busting.
+        created_by: User that created the template, if tracked.
+        permissions: Many-to-many relationship via ``RolePermission``.
     """
 
     class Status(models.TextChoices):
@@ -184,11 +208,14 @@ class RoleTemplate(TimeStampedModel):
 
 
 class RolePermission(TimeStampedModel):
-    """
-    Through table for RoleTemplate <-> Permission.
+    """Join table capturing permission grants on branch role templates.
 
-    NOTE: We keep "granted" so you can store explicit denies if you ever need it.
-          If you only store grants, you can drop granted and treat existence as grant.
+    Attributes:
+        role: ``RoleTemplate`` receiving the grant or deny record.
+        permission: ``Permission`` key linked through ``permission_key`` column.
+        granted: Boolean flag so future explicit denies can be represented.
+        granted_by: (Optional) actor who made the last change.
+        granted_at: Timestamp of the latest update for audit trails.
     """
 
     role = models.ForeignKey(RoleTemplate, on_delete=models.CASCADE, related_name="role_permissions")
@@ -229,6 +256,21 @@ class RolePermission(TimeStampedModel):
 # Assign roles to users (branch scoped)
 # -----------------------------------------------------------------------------
 class UserRoleAssignment(TimeStampedModel):
+    """Branch-scoped assignment of a ``RoleTemplate`` to a specific user.
+
+    Attributes:
+        branch: Branch boundary that owns the assignment record.
+        user: Actor receiving the permissions.
+        role: Template being assigned; must belong to the same branch.
+        assignment_status: Active vs revoked state machine.
+        assigned_by/assigned_at: Metadata on who granted the role and when.
+        revoked_by/revoked_at: Metadata on revocation events.
+        reason_note: Free-form justification captured for audits.
+
+    Methods:
+        clean: Validates branch consistency between role and assignment.
+        revoke: Helper that stamps revoke metadata in one call.
+    """
     class AssignmentStatus(models.TextChoices):
         ACTIVE = "ACTIVE", "Active"
         REVOKED = "REVOKED", "Revoked"
@@ -313,6 +355,21 @@ class UserRoleAssignment(TimeStampedModel):
 # Approval workflow: Branch -> Vision (role changes)
 # -----------------------------------------------------------------------------
 class RoleChangeRequest(TimeStampedModel):
+    """Workflow record for branch-to-Vision approval of role edits.
+
+    Attributes:
+        branch: Tenant requesting the change.
+        requested_by: Branch operator initiating request.
+        target_role: ``RoleTemplate`` being modified.
+        status: State machine captured via ``Status`` choices.
+        justification: Required explanation for Vision reviewers.
+        reviewer/reviewer_notes: Outcome metadata once decided.
+        submitted_at/decided_at: Audit timestamps.
+        impact_summary: Cached diff to help reviewers.
+
+    Helper methods:
+        mark_denied/mark_approved/mark_apply_failed: Convenience status transitions.
+    """
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
         APPROVED = "APPROVED", "Approved"
@@ -394,6 +451,14 @@ class RoleChangeRequest(TimeStampedModel):
 
 
 class RoleChangeDeltaItem(TimeStampedModel):
+    """Normalized list of atomic permission diffs attached to a request.
+
+    Attributes:
+        request: Parent ``RoleChangeRequest``.
+        permission: Permission key being added or removed.
+        operation: ``ADD`` or ``REMOVE`` to describe the action.
+    """
+
     class Operation(models.TextChoices):
         ADD = "ADD", "Add"
         REMOVE = "REMOVE", "Remove"
@@ -432,15 +497,20 @@ class RoleChangeDeltaItem(TimeStampedModel):
 # Platform Role Template (Vision-owned / global)
 # -----------------------------------------------------------------------------
 class PlatformRoleTemplate(TimeStampedModel):
-    """
-    Global/platform role template for Vision internal actors.
+    """Global counterpart of ``RoleTemplate`` for Vision internal teams.
+
+    Attributes:
+        id: UUID primary key to avoid collisions across regions.
+        name/description: Human context for auditors and tooling.
+        status: Lifecycle control to archive or pause templates.
+        is_system_role: Marks templates that only core platform may edit.
+        is_locked: Prevents edits outside elevated workflows.
+        version: Incremented when permissions change to invalidate caches.
+        created_by: Platform user who authored the template.
+        permissions: Many-to-many via ``PlatformRolePermission``.
 
     Examples:
-      - Vision Super Admin
-      - Vision Support Officer
-      - Vision Compliance Reviewer
-      - Vision Operations Analyst
-      - Vision Auditor
+        Vision Super Admin, Support Officer, Compliance Reviewer, etc.
     """
 
     class Status(models.TextChoices):
@@ -508,10 +578,14 @@ class PlatformRoleTemplate(TimeStampedModel):
 # Platform Role <-> Permission mapping
 # -----------------------------------------------------------------------------
 class PlatformRolePermission(TimeStampedModel):
-    """
-    Through table for PlatformRoleTemplate <-> Permission.
+    """Permission grant records attached to ``PlatformRoleTemplate`` entries.
 
-    Stores metadata about who granted the permission and when.
+    Attributes:
+        id: UUID for immutable audit references.
+        role: Platform role receiving the grant/deny.
+        permission: Global ``Permission`` being referenced.
+        granted: Allows eventual explicit deny semantics if required.
+        granted_by/granted_at: Capture actor context for compliance teams.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -563,6 +637,19 @@ class PlatformRolePermission(TimeStampedModel):
 # Assign platform roles to Vision/internal users
 # -----------------------------------------------------------------------------
 class PlatformUserRoleAssignment(TimeStampedModel):
+    """Vision-internal record that maps staff to platform role templates.
+
+    Attributes:
+        user: Internal account receiving privileges.
+        role: ``PlatformRoleTemplate`` granted to the user.
+        assignment_status: Active or revoked state.
+        assigned_by/assigned_at: Audit data for the grant event.
+        revoked_by/revoked_at: Audit data for the revoke event.
+        reason_note: Optional justification for grant or revoke.
+
+    Methods:
+        revoke: Helper to flip status and stamp metadata atomically.
+    """
     class AssignmentStatus(models.TextChoices):
         ACTIVE = "ACTIVE", "Active"
         REVOKED = "REVOKED", "Revoked"
@@ -637,6 +724,17 @@ class PlatformUserRoleAssignment(TimeStampedModel):
 # Platform approval workflow for restricted permission changes
 # -----------------------------------------------------------------------------
 class PlatformRoleChangeRequest(TimeStampedModel):
+    """Approval workflow for restricted edits to platform role templates.
+
+    Attributes:
+        requested_by: Vision staff member initiating the request.
+        target_role: ``PlatformRoleTemplate`` slated for changes.
+        status: Current lifecycle using ``Status`` choices.
+        justification: Required rationale for auditability.
+        reviewer/reviewer_notes: Outcome metadata.
+        submitted_at/decided_at: Lifecycle timestamps.
+        impact_summary: Cached diff for quick reviewer context.
+    """
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
         APPROVED = "APPROVED", "Approved"
@@ -713,6 +811,14 @@ class PlatformRoleChangeRequest(TimeStampedModel):
 
 
 class PlatformRoleChangeDeltaItem(TimeStampedModel):
+    """Platform analogue of ``RoleChangeDeltaItem`` tracking requested diffs.
+
+    Attributes:
+        request: Parent ``PlatformRoleChangeRequest``.
+        permission: Permission key being added or removed.
+        operation: ``ADD`` or ``REMOVE`` action stored via ``Operation`` choices.
+    """
+
     class Operation(models.TextChoices):
         ADD = "ADD", "Add"
         REMOVE = "REMOVE", "Remove"
