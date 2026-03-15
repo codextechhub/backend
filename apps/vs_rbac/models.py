@@ -654,8 +654,6 @@ class PlatformUserRoleAssignment(TimeStampedModel):
         ACTIVE = "ACTIVE", "Active"
         REVOKED = "REVOKED", "Revoked"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-
     user = models.ForeignKey(
         User,
         on_delete=models.CASCADE,
@@ -741,8 +739,6 @@ class PlatformRoleChangeRequest(TimeStampedModel):
         DENIED = "DENIED", "Denied"
         APPLY_FAILED = "APPLY_FAILED", "Apply Failed"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-
     requested_by = models.ForeignKey(
         User,
         on_delete=models.PROTECT,
@@ -822,8 +818,6 @@ class PlatformRoleChangeDeltaItem(TimeStampedModel):
     class Operation(models.TextChoices):
         ADD = "ADD", "Add"
         REMOVE = "REMOVE", "Remove"
-
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
     request = models.ForeignKey(
         PlatformRoleChangeRequest,
