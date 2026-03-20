@@ -8,7 +8,6 @@ from django.utils.text import slugify
 from rest_framework import serializers
 
 from .models import (
-    AuditEvent,
     ContactInfo,
     InviteStatus,
     OperationOutcome,
@@ -304,7 +303,7 @@ class BranchCreateSerializer(serializers.ModelSerializer):
             branch=branch,
             from_state="",
             to_state=BranchStatus.PENDING,
-            actor_id=str(self.context.get("actor_id", "system")),
+            actor_id=self.context.get("actor_id", "system"),
             reason="Branch created",
         )
 
@@ -650,7 +649,7 @@ class InstitutionUpdateSerializer(serializers.ModelSerializer):
         instance.full_clean()
         instance.save()
 
-        actor_id = str(self.context.get("actor_id", "system"))
+        actor_id = self.context.get("actor_id", "system")
 
         # Branding upsert
         if branding_data is not None:
@@ -668,7 +667,7 @@ class InstitutionUpdateSerializer(serializers.ModelSerializer):
                     defaults={
                         "enabled": ms.get("enabled", False),
                         "effective_from": ms.get("effective_from"),
-                        "changed_by_actor_id": actor_id,
+                        "changed_by_actor_id": str(actor_id),
                     },
                 )
 
@@ -694,7 +693,7 @@ class BranchStateTransitionSerializer(serializers.Serializer):
     @transaction.atomic
     def save(self, **kwargs) -> Branch:
         branch: Branch = self.context["branch"]
-        actor_id = str(self.context.get("actor_id", "system"))
+        actor_id = self.context.get("actor_id", "system")
         to_state = self.validated_data["to_state"]
         reason = self.validated_data.get("reason", "")
 
@@ -720,7 +719,7 @@ class InstitutionResetConfigSerializer(serializers.Serializer):
     @transaction.atomic
     def save(self, **kwargs) -> Institution:
         institution: Institution = self.context["institution"]
-        actor_id = str(self.context.get("actor_id", "system"))
+        actor_id = self.context.get("actor_id", "system")
 
         token = (self.validated_data.get("confirmation_token") or "").strip()
         if not token:
@@ -733,12 +732,4 @@ class InstitutionResetConfigSerializer(serializers.Serializer):
         InstitutionBranding.objects.filter(institution=institution).delete()
         InstitutionModuleSetting.objects.filter(institution=institution).update(enabled=False, changed_by_actor_id=actor_id)
 
-        AuditEvent.objects.create(
-            institution=institution,
-            actor_id=actor_id,
-            action="TENANT_RESET_CONFIG",
-            resource_type="Institution",
-            resource_slug=str(institution.slug),
-            outcome=OperationOutcome.SUCCEEDED,
-        )
         return institution
