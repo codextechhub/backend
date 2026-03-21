@@ -6,7 +6,7 @@ from ..models import ImportAuditLog
 
 def create_import_audit_log(
     *,
-    institution,
+    branch,
     action: str,
     actor=None,
     import_batch=None,
@@ -28,7 +28,7 @@ def create_import_audit_log(
     diff_data = AuditDiffService.diff_dicts(before_data, after_data)
 
     return ImportAuditLog.objects.create(
-        institution=institution,
+        branch=branch,
         import_batch=import_batch,
         job=job,
         actor=actor,
