@@ -7,7 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from vs_institutions.models import Institution
+from vs_institutions.models import Branch
 
 
 # =========================================================
@@ -119,9 +119,9 @@ class NotificationStatusChoices(models.TextChoices):
 # =========================================================
 def import_file_upload_to(instance: "ImportBatch", filename: str) -> str:
     ext = os.path.splitext(filename)[1].lower()
-    institution_slug = getattr(instance.institution, "slug", "institution")
+    branch_slug = getattr(instance.branch, "slug", "branch")
     return (
-        f"imports/{institution_slug}/{instance.dataset_type or 'unknown'}/"
+        f"imports/{branch_slug}/{instance.dataset_type or 'unknown'}/"
         f"{instance.id}{ext}"
     )
 
@@ -137,8 +137,8 @@ class ImportBatch(TimeStampedModel):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
-    institution = models.ForeignKey(
-        Institution,
+    branch = models.ForeignKey(
+        Branch,
         on_delete=models.CASCADE,
         related_name="import_batches",
     )
@@ -209,13 +209,13 @@ class ImportBatch(TimeStampedModel):
     class Meta:
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["institution", "status"]),
-            models.Index(fields=["institution", "dataset_type"]),
+            models.Index(fields=["branch", "status"]),
+            models.Index(fields=["branch", "dataset_type"]),
             models.Index(fields=["created_at"]),
         ]
 
     def __str__(self) -> str:
-        return f"{self.institution} - {self.dataset_type} - {self.original_filename}"
+        return f"{self.branch} - {self.dataset_type} - {self.original_filename}"
 
     def clean(self):
         allowed = {FileFormatChoices.CSV, FileFormatChoices.XLSX, FileFormatChoices.XLS}
@@ -236,13 +236,13 @@ class ImportBatch(TimeStampedModel):
 # =========================================================
 class ImportTemplate(TimeStampedModel):
     """
-    A reusable mapping template for a dataset type within an institution.
+    A reusable mapping template for a dataset type within an branch.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
-    institution = models.ForeignKey(
-        Institution,
+    branch = models.ForeignKey(
+        Branch,
         on_delete=models.CASCADE,
         related_name="import_templates",
     )
@@ -269,9 +269,9 @@ class ImportTemplate(TimeStampedModel):
 
     class Meta:
         ordering = ["name"]
-        unique_together = [("institution", "name", "dataset_type")]
+        unique_together = [("branch", "name", "dataset_type")]
         indexes = [
-            models.Index(fields=["institution", "dataset_type", "is_active"]),
+            models.Index(fields=["branch", "dataset_type", "is_active"]),
         ]
 
     def __str__(self) -> str:
@@ -594,8 +594,8 @@ class ImportAuditLog(TimeStampedModel):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
 
-    institution = models.ForeignKey(
-        Institution,
+    branch = models.ForeignKey(
+        Branch,
         on_delete=models.CASCADE,
         related_name="import_audit_logs",
     )
@@ -638,7 +638,7 @@ class ImportAuditLog(TimeStampedModel):
     class Meta:
         ordering = ["-created_at"]
         indexes = [
-            models.Index(fields=["institution", "action"]),
+            models.Index(fields=["branch", "action"]),
             models.Index(fields=["import_batch"]),
             models.Index(fields=["job"]),
         ]
