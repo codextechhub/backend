@@ -7,7 +7,7 @@ from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from vs_institutions.models import Institution
+from vs_institutions.models import Branch
 
 from .models import (
     ImportAuditLog,
@@ -63,7 +63,7 @@ from .services import (
 class IsAuthenticatedStaff(permissions.IsAuthenticated):
     """
     Basic placeholder permission.
-    Replace with your real institution/module permission checks.
+    Replace with your real branch/module permission checks.
     """
     pass
 
@@ -71,27 +71,27 @@ class IsAuthenticatedStaff(permissions.IsAuthenticated):
 # =========================================================
 # Reusable mixins
 # =========================================================
-class InstitutionContextMixin:
+class BranchContextMixin:
     """
-    Gets institution from URL and makes it available everywhere.
-    URL must contain: institution_id
+    Gets branch from URL and makes it available everywhere.
+    URL must contain: branch_id
     """
 
-    institution_lookup_url_kwarg = "institution_id"
+    branch_lookup_url_kwarg = "branch_id"
 
-    def get_institution(self):
-        institution_id = self.kwargs[self.institution_lookup_url_kwarg]
-        return get_object_or_404(Institution, id=institution_id)
+    def get_branch(self):
+        branch_id = self.kwargs[self.branch_lookup_url_kwarg]
+        return get_object_or_404(Branch, id=branch_id)
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
-        context["institution"] = self.get_institution()
+        context["branch"] = self.get_branch()
         return context
 
 
-class ImportBatchContextMixin(InstitutionContextMixin):
+class ImportBatchContextMixin(BranchContextMixin):
     """
-    Gets an import batch belonging to the current institution.
+    Gets an import batch belonging to the current branch.
     URL must contain: batch_id
     """
 
@@ -99,9 +99,9 @@ class ImportBatchContextMixin(InstitutionContextMixin):
 
     def get_import_batch(self):
         return get_object_or_404(
-            ImportBatch.objects.select_related("institution", "uploaded_by"),
+            ImportBatch.objects.select_related("branch", "uploaded_by"),
             id=self.kwargs[self.batch_lookup_url_kwarg],
-            institution=self.get_institution(),
+            branch=self.get_branch(),
         )
 
     def get_serializer_context(self):
@@ -134,17 +134,17 @@ class ImportJobContextMixin(ImportBatchContextMixin):
 # =========================================================
 # Import Template Views
 # =========================================================
-class ImportTemplateListCreateView(InstitutionContextMixin, generics.ListCreateAPIView):
+class ImportTemplateListCreateView(BranchContextMixin, generics.ListCreateAPIView):
     """
-    GET  -> list templates for one institution
+    GET  -> list templates for one branch
     POST -> create a new template
     """
     permission_classes = [IsAuthenticatedStaff]
 
     def get_queryset(self):
         return ImportTemplate.objects.filter(
-            institution=self.get_institution()
-        ).select_related("institution", "created_by").order_by("name")
+            branch=self.get_branch()
+        ).select_related("branch", "created_by").order_by("name")
 
     def get_serializer_class(self):
         if self.request.method == "POST":
@@ -152,7 +152,7 @@ class ImportTemplateListCreateView(InstitutionContextMixin, generics.ListCreateA
         return ImportTemplateListSerializer
 
 
-class ImportTemplateDetailView(InstitutionContextMixin, generics.RetrieveUpdateDestroyAPIView):
+class ImportTemplateDetailView(BranchContextMixin, generics.RetrieveUpdateDestroyAPIView):
     """
     GET    -> one template
     PATCH  -> update template
@@ -163,8 +163,8 @@ class ImportTemplateDetailView(InstitutionContextMixin, generics.RetrieveUpdateD
 
     def get_queryset(self):
         return ImportTemplate.objects.filter(
-            institution=self.get_institution()
-        ).select_related("institution", "created_by")
+            branch=self.get_branch()
+        ).select_related("branch", "created_by")
 
     def get_serializer_class(self):
         if self.request.method in ["PATCH", "PUT"]:
@@ -175,7 +175,7 @@ class ImportTemplateDetailView(InstitutionContextMixin, generics.RetrieveUpdateD
 # =========================================================
 # Import Batch Views
 # =========================================================
-class ImportBatchListCreateView(InstitutionContextMixin, generics.ListCreateAPIView):
+class ImportBatchListCreateView(BranchContextMixin, generics.ListCreateAPIView):
     """
     GET  -> list import batches
     POST -> upload a new import batch
@@ -184,8 +184,8 @@ class ImportBatchListCreateView(InstitutionContextMixin, generics.ListCreateAPIV
 
     def get_queryset(self):
         return (
-            ImportBatch.objects.filter(institution=self.get_institution())
-            .select_related("institution", "uploaded_by")
+            ImportBatch.objects.filter(branch=self.get_branch())
+            .select_related("branch", "uploaded_by")
             .prefetch_related("validation_issues")
             .order_by("-created_at")
         )
@@ -206,8 +206,8 @@ class ImportBatchDetailView(ImportBatchContextMixin, generics.RetrieveUpdateDest
 
     def get_queryset(self):
         return (
-            ImportBatch.objects.filter(institution=self.get_institution())
-            .select_related("institution", "uploaded_by")
+            ImportBatch.objects.filter(branch=self.get_branch())
+            .select_related("branch", "uploaded_by")
             .prefetch_related(
                 "column_mappings",
                 "validation_issues",
@@ -235,7 +235,7 @@ class ApplyTemplateToImportBatchView(ImportBatchContextMixin, APIView):
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, institution_id, batch_id):
+    def post(self, request, branch_id, batch_id):
         import_batch = self.get_import_batch()
 
         serializer = ApplyTemplateSerializer(data=request.data)
@@ -244,7 +244,7 @@ class ApplyTemplateToImportBatchView(ImportBatchContextMixin, APIView):
         template = get_object_or_404(
             ImportTemplate,
             id=serializer.validated_data["template_id"],
-            institution=self.get_institution(),
+            branch=self.get_branch(),
         )
 
         mappings = apply_template_to_batch(import_batch=import_batch, template=template)
@@ -264,7 +264,7 @@ class AutoMapImportBatchView(ImportBatchContextMixin, APIView):
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, institution_id, batch_id):
+    def post(self, request, branch_id, batch_id):
         import_batch = self.get_import_batch()
 
         serializer = AutoMapSerializer(data=request.data)
@@ -290,7 +290,7 @@ class BulkColumnMappingView(ImportBatchContextMixin, APIView):
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, institution_id, batch_id):
+    def post(self, request, branch_id, batch_id):
         import_batch = self.get_import_batch()
 
         serializer = BulkColumnMappingSerializer(data=request.data)
@@ -318,7 +318,7 @@ class ImportBatchMappingsListView(ImportBatchContextMixin, generics.ListAPIView)
     permission_classes = [IsAuthenticatedStaff]
     serializer_class = ImportBatchDetailSerializer
 
-    def get(self, request, institution_id, batch_id):
+    def get(self, request, branch_id, batch_id):
         import_batch = self.get_import_batch()
         serializer = ImportBatchDetailSerializer(import_batch, context=self.get_serializer_context())
         return Response(
@@ -338,7 +338,7 @@ class ValidateImportBatchView(ImportBatchContextMixin, APIView):
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, institution_id, batch_id):
+    def post(self, request, branch_id, batch_id):
         import_batch = self.get_import_batch()
 
         serializer = ValidateImportBatchSerializer(data=request.data)
@@ -426,7 +426,7 @@ class RevalidateAfterCorrectionView(ImportBatchContextMixin, APIView):
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, institution_id, batch_id):
+    def post(self, request, branch_id, batch_id):
         import_batch = self.get_import_batch()
 
         serializer = RevalidateAfterCorrectionSerializer(data=request.data)
@@ -452,7 +452,7 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, institution_id, batch_id):
+    def post(self, request, branch_id, batch_id):
         import_batch = self.get_import_batch()
 
         serializer = StartImportSerializer(
@@ -505,7 +505,7 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, institution_id, batch_id, job_id):
+    def post(self, request, branch_id, batch_id, job_id):
         job = self.get_job()
 
         serializer = RollbackImportSerializer(
