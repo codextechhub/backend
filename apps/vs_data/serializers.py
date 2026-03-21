@@ -34,14 +34,14 @@ class UserMiniSerializer(serializers.Serializer):
     full_name = serializers.CharField(read_only=True, required=False)
 
 
-class InstitutionMiniSerializer(serializers.Serializer):
+class BranchMiniSerializer(serializers.Serializer):
     """
-    Small reusable serializer for showing institution info in nested responses.
-    Use this only if you don't already have a shared institution serializer.
+    Small reusable serializer for showing branch info in nested responses.
+    Use this only if you don't already have a shared branch serializer.
     """
     id = serializers.CharField(read_only=True)
     name = serializers.CharField(read_only=True, required=False)
-    slug = serializers.CharField(read_only=True, required=False)
+    code = serializers.CharField(read_only=True, required=False)
 
 
 # =========================================================
@@ -71,13 +71,13 @@ class ImportTemplateDetailSerializer(serializers.ModelSerializer):
     Full serializer for one template.
     """
     created_by = serializers.SerializerMethodField()
-    institution = serializers.SerializerMethodField()
+    branch = serializers.SerializerMethodField()
 
     class Meta:
         model = ImportTemplate
         fields = (
             "id",
-            "institution",
+            "branch",
             "created_by",
             "name",
             "dataset_type",
@@ -90,7 +90,7 @@ class ImportTemplateDetailSerializer(serializers.ModelSerializer):
         )
         read_only_fields = (
             "id",
-            "institution",
+            "branch",
             "created_by",
             "last_used_at",
             "created_at",
@@ -105,19 +105,19 @@ class ImportTemplateDetailSerializer(serializers.ModelSerializer):
             "full_name": getattr(user, "full_name", ""),
         }
 
-    def get_institution(self, obj):
-        institution = obj.institution
+    def get_branch(self, obj):
+        branch = obj.branch
         return {
-            "id": str(institution.id),
-            "name": getattr(institution, "name", ""),
-            "slug": getattr(institution, "slug", ""),
+            "id": str(branch.id),
+            "name": getattr(branch, "name", ""),
+            "code": getattr(branch, "code", ""),
         }
 
 
 class ImportTemplateCreateUpdateSerializer(serializers.ModelSerializer):
     """
     Used for creating and editing template records.
-    Institution and created_by are taken from context/view, not user input.
+    Branch and created_by are taken from context/view, not user input.
     """
 
     class Meta:
@@ -142,7 +142,7 @@ class ImportTemplateCreateUpdateSerializer(serializers.ModelSerializer):
         return value
 
     def create(self, validated_data):
-        validated_data["institution"] = self.context["institution"]
+        validated_data["branch"] = self.context["branch"]
         validated_data["created_by"] = self.context["request"].user
         return super().create(validated_data)
 
@@ -519,7 +519,7 @@ class ImportAuditLogSerializer(serializers.ModelSerializer):
         model = ImportAuditLog
         fields = (
             "id",
-            "institution",
+            "branch",
             "import_batch",
             "job",
             "actor",
@@ -622,7 +622,7 @@ class ImportBatchDetailSerializer(serializers.ModelSerializer):
     Full serializer for one import batch.
     Includes nested child records for easy API consumption.
     """
-    institution = serializers.SerializerMethodField()
+    branch = serializers.SerializerMethodField()
     uploaded_by = serializers.SerializerMethodField()
 
     column_mappings = ImportColumnMappingSerializer(many=True, read_only=True)
@@ -637,7 +637,7 @@ class ImportBatchDetailSerializer(serializers.ModelSerializer):
         model = ImportBatch
         fields = (
             "id",
-            "institution",
+            "branch",
             "uploaded_by",
             "source",
             "original_filename",
@@ -672,12 +672,12 @@ class ImportBatchDetailSerializer(serializers.ModelSerializer):
         )
         read_only_fields = fields
 
-    def get_institution(self, obj):
-        institution = obj.institution
+    def get_branch(self, obj):
+        branch = obj.branch
         return {
-            "id": str(institution.id),
-            "name": getattr(institution, "name", ""),
-            "slug": getattr(institution, "slug", ""),
+            "id": str(branch.id),
+            "name": getattr(branch, "name", ""),
+            "code": getattr(branch, "code", ""),
         }
 
     def get_uploaded_by(self, obj):
@@ -692,7 +692,7 @@ class ImportBatchDetailSerializer(serializers.ModelSerializer):
 class ImportBatchUploadSerializer(serializers.ModelSerializer):
     """
     Used when uploading a new import file.
-    institution and uploaded_by should come from the view/context.
+    branch and uploaded_by should come from the view/context.
     """
     file = serializers.FileField(write_only=True)
 
@@ -749,7 +749,7 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
         else:
             file_format = FileFormatChoices.XLS
 
-        validated_data["institution"] = self.context["institution"]
+        validated_data["branch"] = self.context["branch"]
         validated_data["uploaded_by"] = self.context["request"].user
         validated_data["file"] = uploaded_file
         validated_data["original_filename"] = uploaded_file.name
