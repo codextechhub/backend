@@ -1,6 +1,6 @@
 from django.apps import AppConfig
 
 
-class VsDataConfig(AppConfig):
+class VsImportDataConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
-    name = "vs_data"
+    name = "vs_import_data"
