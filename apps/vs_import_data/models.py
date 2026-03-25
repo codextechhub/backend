@@ -14,7 +14,7 @@ from vs_institutions.models import Branch
 # Base model
 # =========================================================
 class TimeStampedModel(models.Model):
-    """Reusable timestamps."""
+    """Abstract base that injects consistent created/updated timestamps into every import model."""
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -119,9 +119,9 @@ class NotificationStatusChoices(models.TextChoices):
 # =========================================================
 def import_file_upload_to(instance: "ImportBatch", filename: str) -> str:
     ext = os.path.splitext(filename)[1].lower()
-    branch_slug = getattr(instance.branch, "slug", "branch")
+    branch_code = getattr(instance.branch, "code", "branch")
     return (
-        f"imports/{branch_slug}/{instance.dataset_type or 'unknown'}/"
+        f"imports/{branch_code}/{instance.dataset_type or 'unknown'}/"
         f"{instance.id}{ext}"
     )
 
@@ -131,8 +131,11 @@ def import_file_upload_to(instance: "ImportBatch", filename: str) -> str:
 # =========================================================
 class ImportBatch(TimeStampedModel):
     """
-    One uploaded file and its full lifecycle:
-    upload -> detect -> map -> validate -> import -> history.
+    Represents a single uploaded data file and tracks it through the entire import lifecycle.
+
+    The record holds the owning branch, uploader, original file metadata, detected structure,
+    validation summaries, and lifecycle timestamps so both the UI and background workers can
+    resume from any stage (upload → detection → mapping → validation → import → rollback).
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -236,7 +239,10 @@ class ImportBatch(TimeStampedModel):
 # =========================================================
 class ImportTemplate(TimeStampedModel):
     """
-    A reusable mapping template for a dataset type within an branch.
+    Saved mapping blueprint for a branch and dataset type.
+
+    Templates capture user-curated column → target-field definitions so administrators can quickly
+    apply consistent mappings to multiple batches without rebuilding the schema every time.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -283,7 +289,10 @@ class ImportTemplate(TimeStampedModel):
 # =========================================================
 class ImportColumnMapping(TimeStampedModel):
     """
-    Maps one uploaded column to one Vision target field.
+    Stores the relationship between one uploaded column and one normalized Vision target field.
+
+    Each mapping also tracks whether it originated from auto-detection, a saved template, or manual
+    confirmation, along with confidence metadata that can be surfaced back to the user.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -336,8 +345,11 @@ class ImportColumnMapping(TimeStampedModel):
 # =========================================================
 class ImportValidationIssue(TimeStampedModel):
     """
-    One validation issue found in a file.
-    Can be file-level, column-level, row-level, or cell-level.
+    Captures a single validation finding detected while analyzing an import batch.
+
+    Issues can be raised at the file, column, row, or cell level and retain severity, code,
+    human-readable messaging, the raw value that triggered the rule, and optional metadata for
+    debugging/downloadable reports.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -398,7 +410,10 @@ class ImportValidationIssue(TimeStampedModel):
 # =========================================================
 class ImportRowCorrection(TimeStampedModel):
     """
-    Stores a manual fix made against a row before a revalidation/import.
+    Records a user-supplied correction for a specific row/column combination inside a batch.
+
+    These corrections allow analysts to tweak data between validation runs, preserving both the
+    before/after values and who made the adjustment for auditability.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -438,7 +453,10 @@ class ImportRowCorrection(TimeStampedModel):
 # =========================================================
 class ImportJob(TimeStampedModel):
     """
-    Async execution record for importing an already validated batch.
+    Tracks the asynchronous execution of importing a validated batch into Vision.
+
+    The model keeps queue metadata, worker task identifiers, progress counters, last error details,
+    and rollback timestamps so operators can monitor long-running jobs and resume/retry safely.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -507,8 +525,11 @@ class ImportJob(TimeStampedModel):
 # =========================================================
 class ImportJobRowResult(TimeStampedModel):
     """
-    Stores the outcome of each processed row during execution.
-    Useful for partial failure reports and rollback tracing.
+    Persists the per-row outcome generated by an import job.
+
+    Row results allow the platform to show fine-grained success/failure feedback, keep the exact
+    normalized payload that was sent to downstream models, and supply the data needed for partial
+    rollbacks or targeted retries.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -548,7 +569,10 @@ class ImportJobRowResult(TimeStampedModel):
 # =========================================================
 class ImportRollbackRecord(TimeStampedModel):
     """
-    Tracks rollback attempts for failed or cancelled jobs.
+    Describes a rollback operation executed against a completed import job.
+
+    Stores who initiated the rollback, whether it succeeded, how many rows were reverted, and any
+    additional metadata required to audit or debug the compensating action.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -588,8 +612,10 @@ class ImportRollbackRecord(TimeStampedModel):
 # =========================================================
 class ImportAuditLog(TimeStampedModel):
     """
-    Lightweight import-specific audit trail.
-    You may later merge this into your central audit module if preferred.
+    Import-specific audit trail that captures who performed which action and on what entity.
+
+    Each log links back to the branch, batch, and optional job plus before/after/diff snapshots so
+    operators can reconstruct the history of mapping edits, validations, imports, and rollbacks.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -652,7 +678,10 @@ class ImportAuditLog(TimeStampedModel):
 # =========================================================
 class ImportNotification(TimeStampedModel):
     """
-    Tracks admin notifications about validation/import completion.
+    Represents a notification that should be delivered to an internal user about an import event.
+
+    The record links back to the batch, stores the intended recipient and templated content, and
+    keeps delivery status/error details so reminders or retries can be coordinated later.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
