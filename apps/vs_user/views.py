@@ -329,7 +329,7 @@ class TokenRevokeAPIView(APIView):
     Revoke by JTI (FR-IDA-005).
     For SimpleJWT, you’ll typically revoke refresh tokens (and optionally access tokens).
     """
-    permission_classes = [IsAuthenticated, IsInstitutionAdminOrVisionStaff]
+    permission_classes = [IsAuthenticated, IsVisionStaffOrSuperuser]         # IsInstitutionAdminOrVisionStaff
 
     def post(self, request):
         ser = TokenRevokeSerializer(data=request.data)
@@ -378,7 +378,7 @@ class PasswordChangeAPIView(APIView):
         u.save(update_fields=["password", "must_change_password", "password_changed_at", "updated_at"])
 
         _log_auth_event(
-            actor=u, subject=u, institution=u.institution,
+            actor=u, subject=u, institution=_user_institution(u),
             event=AuthEventLog.Event.PASSWORD_CHANGED,
             request=request,
             metadata={"forced_change_flow": True},
