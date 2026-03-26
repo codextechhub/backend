@@ -65,6 +65,7 @@ from .permissions import (
     IsVisionStaff,
     IsInstitutionAdminOrVisionStaff,
     IsSelfOrVisionStaff,
+    IsVisionStaffOrSuperuser,
 )
 
 
@@ -134,7 +135,8 @@ class UserAccountViewSet(viewsets.ModelViewSet):
     - Vision staff can manage users broadly
     - Non-vision users can read/update themselves (basic profile fields)
     """
-    queryset = UserAccount.objects.select_related("institution").all()
+    queryset = UserAccount.objects.select_related("branch").all()
+    # permission_classes = [IsVisionStaffOrSuperuser]  # default, overridden in get_permissions
 
     def get_serializer_class(self):
         if self.action in ("create",):
@@ -145,9 +147,11 @@ class UserAccountViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action in ("create", "list", "destroy"):
-            return [IsAuthenticated(), IsVisionStaff()]
+            return [IsAuthenticated(), IsVisionStaffOrSuperuser()]
+
         if self.action in ("retrieve", "update", "partial_update"):
-            return [IsAuthenticated(), IsSelfOrVisionStaff()]
+            return [IsAuthenticated(), IsSelfOrVisionStaff(), ]
+
         return [IsAuthenticated()]
 
     def perform_create(self, serializer):
@@ -160,7 +164,7 @@ class UserAccountViewSet(viewsets.ModelViewSet):
         _log_auth_event(
             actor=self.request.user,
             subject=user,
-            institution=user.institution,
+            institution=getattr(user, "institution", None),
             event=AuthEventLog.Event.USER_CREATED,
             request=self.request,
             metadata={"via": "UserAccountViewSet.create"},

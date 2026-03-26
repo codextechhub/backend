@@ -48,12 +48,13 @@ class UserAccountReadSerializer(serializers.ModelSerializer):
     """
     Read-only serializer for returning user info safely.
     """
-    institution = InstitutionSlimSerializer(read_only=True)
+    institution = InstitutionSlimSerializer(source="branch.institution", read_only=True)
 
     class Meta:
         model = UserAccount
         fields = (
             "id",
+            "institution",
             "branch",
             "email",
             "user_type",

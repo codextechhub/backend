@@ -1,119 +1,44 @@
-from django.urls import path
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
 
 from .views import (
-    # Users
     UserAccountViewSet,
     AdminCreateAccountView,
-
-    # Temp password
-    TemporaryPasswordIssueViewSet,
-
-    # Sessions
-    SessionViewSet,
-
-    # Security / logs
-    AuthAttemptViewSet,
-    AccountLockoutViewSet,
-    RevokedTokenViewSet,
-    SuspiciousLoginEventViewSet,
-    AuthEventLogViewSet,
-
-    # APIViews (auth/password)
     LoginAPIView,
     TokenRefreshAPIView,
     TokenRevokeAPIView,
     PasswordChangeAPIView,
     PasswordResetRequestAPIView,
     PasswordResetConfirmAPIView,
+    TemporaryPasswordIssueViewSet,
+    SessionViewSet,
+    AuthAttemptViewSet,
+    AccountLockoutViewSet,
+    RevokedTokenViewSet,
+    SuspiciousLoginEventViewSet,
+    AuthEventLogViewSet,
 )
 
-urlpatterns = [
-    # -------------------------------------------------------------------------
-    # AUTH (JWT)
-    # -------------------------------------------------------------------------
-    path("auth/login/", LoginAPIView.as_view(), name="auth-login"),
-    path("auth/refresh/", TokenRefreshAPIView.as_view(), name="auth-refresh"),
-    path("auth/revoke/", TokenRevokeAPIView.as_view(), name="auth-revoke"),
+router = DefaultRouter()
+router.register(r"", UserAccountViewSet, basename="users")
+router.register(r"temp-password-issues", TemporaryPasswordIssueViewSet, basename="temp-password-issues")
+router.register(r"sessions", SessionViewSet, basename="sessions")
+router.register(r"auth-attempts", AuthAttemptViewSet, basename="auth-attempts")
+router.register(r"account-lockouts", AccountLockoutViewSet, basename="account-lockouts")
+router.register(r"revoked-tokens", RevokedTokenViewSet, basename="revoked-tokens")
+router.register(r"suspicious-logins", SuspiciousLoginEventViewSet, basename="suspicious-logins")
+router.register(r"auth-events", AuthEventLogViewSet, basename="auth-events")
 
-    # -------------------------------------------------------------------------
-    # PASSWORD
-    # -------------------------------------------------------------------------
+urlpatterns = [
+    path("", include(router.urls)),
+
+    path("admin-create/", AdminCreateAccountView.as_view(), name="admin-create-account"),
+
+    path("auth/login/", LoginAPIView.as_view(), name="auth-login"),
+    path("auth/token/refresh/", TokenRefreshAPIView.as_view(), name="auth-token-refresh"),
+    path("auth/token/revoke/", TokenRevokeAPIView.as_view(), name="auth-token-revoke"),
+
     path("auth/password/change/", PasswordChangeAPIView.as_view(), name="password-change"),
     path("auth/password/reset/request/", PasswordResetRequestAPIView.as_view(), name="password-reset-request"),
     path("auth/password/reset/confirm/", PasswordResetConfirmAPIView.as_view(), name="password-reset-confirm"),
-
-    # -------------------------------------------------------------------------
-    # USERS
-    # (ModelViewSet via path using `.as_view({})`)
-    # -------------------------------------------------------------------------
-    
-    path(
-        'admin-create/', AdminCreateAccountView.as_view(), name='admin-create-account'),
-    path(
-        "",
-        UserAccountViewSet.as_view({"get": "list", "post": "create"}),
-        name="users-list-create",
-    ),
-    path(
-        "<int:pk>/",
-        UserAccountViewSet.as_view({"get": "retrieve", "patch": "partial_update", "put": "update"}),
-        name="users-detail",
-    ),
-
-    # -------------------------------------------------------------------------
-    # TEMP PASSWORD ISSUES (admin operation)
-    # -------------------------------------------------------------------------
-    path(
-        "temp-password-issues/",
-        TemporaryPasswordIssueViewSet.as_view({"get": "list", "post": "create"}),
-        name="temp-password-issues-list-create",
-    ),
-
-    # -------------------------------------------------------------------------
-    # SESSIONS
-    # -------------------------------------------------------------------------
-    path(
-        "sessions/",
-        SessionViewSet.as_view({"get": "list"}),
-        name="sessions-list",
-    ),
-    path(
-        "sessions/force-logout/",
-        SessionViewSet.as_view({"post": "force_logout"}),
-        name="sessions-force-logout",
-    ),
-
-    # -------------------------------------------------------------------------
-    # SECURITY / OBSERVABILITY (Vision staff only in my permissions)
-    # -------------------------------------------------------------------------
-    path(
-        "auth-attempts/",
-        AuthAttemptViewSet.as_view({"get": "list"}),
-        name="auth-attempts-list",
-    ),
-    path(
-        "lockouts/",
-        AccountLockoutViewSet.as_view({"get": "list"}),
-        name="lockouts-list",
-    ),
-    path(
-        "lockouts/unlock/",
-        AccountLockoutViewSet.as_view({"post": "unlock"}),
-        name="lockouts-unlock",
-    ),
-    path(
-        "revoked-tokens/",
-        RevokedTokenViewSet.as_view({"get": "list"}),
-        name="revoked-tokens-list",
-    ),
-    path(
-        "suspicious-events/",
-        SuspiciousLoginEventViewSet.as_view({"get": "list"}),
-        name="suspicious-events-list",
-    ),
-    path(
-        "auth-events/",
-        AuthEventLogViewSet.as_view({"get": "list"}),
-        name="auth-events-list",
-    ),
 ]
