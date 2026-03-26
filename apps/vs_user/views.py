@@ -96,6 +96,10 @@ def _issue_tokens_for_user(user: UserAccount) -> dict:
     refresh = RefreshToken.for_user(user)
     return {"refresh": str(refresh), "access": str(refresh.access_token), "refresh_jti": str(refresh["jti"])}
 
+def _user_institution(user):
+    branch = getattr(user, "branch", None)
+    return getattr(branch, "institution", None)
+
 
 def _log_auth_event(*, actor: UserAccount | None, subject: UserAccount | None, institution: Institution | None,
                     event: str, request, metadata: dict | None = None):
@@ -196,6 +200,7 @@ class LoginAPIView(APIView):
         device_label = ser.validated_data.get("device_label", "")
 
         institution = _resolve_institution_from_slug(institution_slug) if institution_slug else None
+       
 
         # Find user (case-insensitive). This matches your uniqueness constraints.
         user = UserAccount.objects.filter(email__iexact=email).first()
@@ -211,11 +216,11 @@ class LoginAPIView(APIView):
                 )
                 return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
 
-            if user.institution_id != institution.id:
+            if user.branch.institution_id != institution.id:
                 # do not reveal what was wrong
                 _record_attempt(
                     email_entered=email, institution_context=institution_slug,
-                    user=user, institution=institution,
+                    user=user, institution=_user_institution(user),
                     result=AuthAttempt.Result.FAIL, failure_code="INSTITUTION_MISMATCH",
                     request=request,
                 )
@@ -238,7 +243,7 @@ class LoginAPIView(APIView):
         if not authed:
             _record_attempt(
                 email_entered=email, institution_context=institution_slug,
-                user=user, institution=institution,
+                user=user, institution=_user_institution(user),
                 result=AuthAttempt.Result.FAIL, failure_code="INVALID_CREDENTIALS",
                 request=request,
             )
@@ -248,7 +253,8 @@ class LoginAPIView(APIView):
         if authed.status in (UserAccount.Status.SUSPENDED, UserAccount.Status.DELETED, UserAccount.Status.LOCKED):
             _record_attempt(
                 email_entered=email, institution_context=institution_slug,
-                user=authed, institution=authed.institution,
+                user=authed,
+                institution=_user_institution(user),
                 result=AuthAttempt.Result.BLOCKED, failure_code=authed.status,
                 request=request,
             )
@@ -260,7 +266,7 @@ class LoginAPIView(APIView):
         # Create session record (FR-IDA-009)
         session = LoginSession.objects.create(
             user=authed,
-            institution=authed.institution,
+            institution=_user_institution(user),
             ip_address=_get_client_ip(request),
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
             device_label=device_label or "",
@@ -275,12 +281,14 @@ class LoginAPIView(APIView):
 
         _record_attempt(
             email_entered=email, institution_context=institution_slug,
-            user=authed, institution=authed.institution,
+            user=authed,
+            institution=_user_institution(user),
             result=AuthAttempt.Result.SUCCESS, failure_code="",
             request=request,
         )
         _log_auth_event(
-            actor=authed, subject=authed, institution=authed.institution,
+            actor=authed, subject=authed,
+            institution=_user_institution(authed),
             event=AuthEventLog.Event.LOGIN_SUCCESS,
             request=request,
             metadata={"session_id": session.id},
