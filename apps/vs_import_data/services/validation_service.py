@@ -12,36 +12,27 @@ from ..validators import (
     find_duplicate_values,
     summarize_issues,
     validate_duplicate_headers,
-    validate_email,
-    validate_required_columns,
-    validate_required_fields_for_row,
+)
+from .template import get_template_headers
+from .template_validation import (
+    compare_uploaded_headers_to_template,
+    validate_row_against_template,
 )
 
 
-DATASET_REQUIRED_COLUMNS = {
-    "students": ["full_name", "admission_number", "email"],
-    "staff": ["full_name", "employee_id", "email"],
-    "classes": ["class_name", "arm"],
-    "fees": ["fee_name", "amount", "term"],
-}
-
-DATASET_REQUIRED_ROW_FIELDS = {
-    "students": ["full_name", "admission_number"],
-    "staff": ["full_name", "employee_id"],
-    "classes": ["class_name"],
-    "fees": ["fee_name", "amount"],
-}
-
-
-def _save_validation_issues(import_batch, issues: list[dict]):
+# =========================================================
+# Internal helpers
+# =========================================================
+def _save_validation_issues(import_batch, issues: list[dict]) -> None:
     """
-    Replace previous validation issues with fresh ones.
+    Replace old validation issues with the latest run.
     """
     import_batch.validation_issues.all().delete()
 
-    objects = []
+    issue_objects = []
+
     for issue in issues:
-        objects.append(
+        issue_objects.append(
             ImportValidationIssue(
                 import_batch=import_batch,
                 severity=issue.get("severity", ValidationSeverityChoices.ERROR),
@@ -57,93 +48,242 @@ def _save_validation_issues(import_batch, issues: list[dict]):
             )
         )
 
-    if objects:
-        ImportValidationIssue.objects.bulk_create(objects)
+    if issue_objects:
+        ImportValidationIssue.objects.bulk_create(issue_objects)
 
 
-def _validate_headers(import_batch) -> list[dict]:
+def _validate_template_presence(import_batch) -> list[dict]:
+    """
+    Ensure a template is attached to the batch.
+    """
     issues = []
 
-    headers = import_batch.detected_columns or []
-    required_columns = DATASET_REQUIRED_COLUMNS.get(import_batch.dataset_type, [])
-
-    issues.extend(validate_duplicate_headers(headers))
-    issues.extend(validate_required_columns(headers, required_columns))
+    if not import_batch.template:
+        issues.append(
+            {
+                "severity": "error",
+                "code": "business_rule",
+                "message": "No import template is attached to this batch.",
+            }
+        )
 
     return issues
 
 
-def _validate_preview_rows(import_batch) -> list[dict]:
+def _validate_headers_against_template(import_batch) -> list[dict]:
+    """
+    Validate uploaded headers against the selected official template.
+    """
     issues = []
 
-    rows = import_batch.preview_rows or []
-    required_fields = DATASET_REQUIRED_ROW_FIELDS.get(import_batch.dataset_type, [])
+    uploaded_headers = import_batch.uploaded_headers or import_batch.detected_columns or []
 
-    for row_number, row in enumerate(rows, start=1):
+    issues.extend(validate_duplicate_headers(uploaded_headers))
+
+    if import_batch.template:
         issues.extend(
-            validate_required_fields_for_row(
-                row_data=row,
-                required_fields=required_fields,
-                row_number=row_number,
+            compare_uploaded_headers_to_template(
+                uploaded_headers=uploaded_headers,
+                template=import_batch.template,
             )
         )
 
-        if "email" in row:
-            email_issue = validate_email(
-                value=row.get("email"),
+    return issues
+
+
+def _validate_rows_against_template(import_batch) -> list[dict]:
+    """
+    Validate each preview row using ImportTemplateColumn definitions.
+    """
+    issues = []
+
+    if not import_batch.template:
+        return issues
+
+    rows = import_batch.preview_rows or []
+
+    for row_number, row_data in enumerate(rows, start=1):
+        issues.extend(
+            validate_row_against_template(
+                row_data=row_data,
                 row_number=row_number,
-                column_name="email",
+                template=import_batch.template,
             )
-            if email_issue:
-                issues.append(email_issue)
-
-    if import_batch.dataset_type == "students":
-        issues.extend(find_duplicate_values(rows, "admission_number"))
-        issues.extend(find_duplicate_values(rows, "email"))
-
-    if import_batch.dataset_type == "staff":
-        issues.extend(find_duplicate_values(rows, "employee_id"))
-        issues.extend(find_duplicate_values(rows, "email"))
+        )
 
     return issues
 
 
-@transaction.atomic
-def validate_import_batch(import_batch) -> dict:
+def _validate_template_uniqueness_rules(import_batch) -> list[dict]:
     """
-    Main validator for one import batch.
+    Enforce any template columns marked as unique within the uploaded file.
     """
-    import_batch.status = ImportBatchStatusChoices.VALIDATING
-    import_batch.validation_started_at = timezone.now()
-    import_batch.save(update_fields=["status", "validation_started_at", "updated_at"])
-
     issues = []
-    issues.extend(_validate_headers(import_batch))
-    issues.extend(_validate_preview_rows(import_batch))
 
-    summary = summarize_issues(issues)
+    if not import_batch.template:
+        return issues
 
-    _save_validation_issues(import_batch, issues)
+    rows = import_batch.preview_rows or []
+    unique_columns = import_batch.template.columns.filter(is_unique=True)
 
+    for template_column in unique_columns:
+        issues.extend(find_duplicate_values(rows, template_column.column_name))
+
+    return issues
+
+
+def _validate_dataset_specific_rules(import_batch) -> list[dict]:
+    """
+    Optional place for dataset-specific business rules that go beyond
+    simple column-level validation.
+
+    Examples:
+    - fees.amount must be > 0
+    - class session must exist
+    - staff role must be compatible with department
+    """
+    issues = []
+
+    dataset_type = getattr(import_batch.template, "dataset_type", None)
+    rows = import_batch.preview_rows or []
+
+    if dataset_type == "fees":
+        for row_number, row_data in enumerate(rows, start=1):
+            amount = row_data.get("amount")
+
+            if amount not in [None, ""]:
+                try:
+                    numeric_amount = float(str(amount))
+                    if numeric_amount <= 0:
+                        issues.append(
+                            {
+                                "severity": "error",
+                                "code": "business_rule",
+                                "message": "'amount' must be greater than 0.",
+                                "row_number": row_number,
+                                "column_name": "amount",
+                                "raw_value": amount,
+                            }
+                        )
+                except (ValueError, TypeError):
+                    # Type-format problems should already be caught elsewhere.
+                    pass
+
+    return issues
+
+
+def _validate_cross_references(import_batch) -> list[dict]:
+    """
+    Optional place for checking references against real system data.
+
+    Example uses:
+    - teacher exists in staff records
+    - class exists
+    - campus exists
+    - department exists
+
+    For now this is left as a structured placeholder because the exact
+    referenced models in your project may differ.
+    """
+    issues = []
+
+    if not import_batch.template:
+        return issues
+
+    rows = import_batch.preview_rows or []
+    template_columns = import_batch.template.columns.exclude(reference_model="").exclude(reference_lookup_field="")
+
+    # Example pattern:
+    # for col in template_columns:
+    #     valid_values = fetch_lookup_values(col.reference_model, col.reference_lookup_field, import_batch.institution)
+    #     for row_number, row_data in enumerate(rows, start=1):
+    #         issue = validate_foreign_key_reference(
+    #             value=row_data.get(col.column_name),
+    #             valid_lookup_values=valid_values,
+    #             row_number=row_number,
+    #             column_name=col.column_name,
+    #             reference_name=col.reference_model,
+    #         )
+    #         if issue:
+    #             issues.append(issue)
+
+    return issues
+
+
+def _update_batch_validation_state(import_batch, summary: dict) -> None:
+    """
+    Update validation result fields on the batch.
+    """
     import_batch.validation_summary = summary
     import_batch.validation_completed_at = timezone.now()
     import_batch.has_critical_errors = summary["error_count"] > 0
     import_batch.is_ready_for_import = summary["error_count"] == 0
+    import_batch.structure_matches_template = summary["error_count"] == 0
+
     import_batch.status = (
         ImportBatchStatusChoices.READY_TO_IMPORT
         if summary["error_count"] == 0
         else ImportBatchStatusChoices.VALIDATION_FAILED
     )
+
     import_batch.save(
         update_fields=[
             "validation_summary",
             "validation_completed_at",
             "has_critical_errors",
             "is_ready_for_import",
+            "structure_matches_template",
             "status",
             "updated_at",
         ]
     )
+
+
+# =========================================================
+# Main validation entry point
+# =========================================================
+@transaction.atomic
+def validate_import_batch(import_batch) -> dict:
+    """
+    Main validation function for a template-driven import batch.
+
+    What it does:
+    1. confirms a template exists
+    2. validates uploaded headers against the template
+    3. validates row values against template column rules
+    4. checks uniqueness-in-file rules
+    5. runs optional cross-reference and dataset-specific checks
+    6. stores validation issues
+    7. updates import batch status and summary
+    """
+    import_batch.status = ImportBatchStatusChoices.VALIDATING
+    import_batch.validation_started_at = timezone.now()
+
+    if import_batch.template:
+        import_batch.template_headers_snapshot = get_template_headers(import_batch.template)
+
+    import_batch.save(
+        update_fields=[
+            "status",
+            "validation_started_at",
+            "template_headers_snapshot",
+            "updated_at",
+        ]
+    )
+
+    issues = []
+
+    issues.extend(_validate_template_presence(import_batch))
+    issues.extend(_validate_headers_against_template(import_batch))
+    issues.extend(_validate_rows_against_template(import_batch))
+    issues.extend(_validate_template_uniqueness_rules(import_batch))
+    issues.extend(_validate_cross_references(import_batch))
+    issues.extend(_validate_dataset_specific_rules(import_batch))
+
+    summary = summarize_issues(issues)
+
+    _save_validation_issues(import_batch, issues)
+    _update_batch_validation_state(import_batch, summary)
 
     return {
         "summary": summary,
