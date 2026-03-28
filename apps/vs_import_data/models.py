@@ -25,12 +25,6 @@ class TimeStampedModel(models.Model):
 # =========================================================
 # Choices / constants
 # =========================================================
-class ImportSourceChoices(models.TextChoices):
-    DIRECT_UPLOAD = "direct_upload", "Direct Upload"
-    SECURE_LINK = "secure_link", "Secure Intake Link"
-    SYSTEM_GENERATED = "system_generated", "System Generated"
-
-
 class FileFormatChoices(models.TextChoices):
     CSV = "csv", "CSV"
     XLSX = "xlsx", "Excel (.xlsx)"
@@ -114,6 +108,23 @@ class NotificationStatusChoices(models.TextChoices):
     FAILED = "failed", "Failed"
 
 
+class TemplateStatusChoices(models.TextChoices):
+    DRAFT = "draft", "Draft"
+    ACTIVE = "active", "Active"
+    RETIRED = "retired", "Retired"
+
+
+class TemplateColumnDataTypeChoices(models.TextChoices):
+    STRING = "string", "String"
+    INTEGER = "integer", "Integer"
+    DECIMAL = "decimal", "Decimal"
+    DATE = "date", "Date"
+    DATETIME = "datetime", "Datetime"
+    EMAIL = "email", "Email"
+    BOOLEAN = "boolean", "Boolean"
+    CHOICE = "choice", "Choice"
+
+
 # =========================================================
 # Upload path helper
 # =========================================================
@@ -124,6 +135,10 @@ def import_file_upload_to(instance: "ImportBatch", filename: str) -> str:
         f"imports/{branch_code}/{instance.dataset_type or 'unknown'}/"
         f"{instance.id}{ext}"
     )
+
+def import_template_file_upload_to(instance: "ImportTemplate", filename: str) -> str:
+    ext = os.path.splitext(filename)[1].lower()
+    return f"system_import_templates/{instance.dataset_type}/{instance.code}{ext}"
 
 
 # =========================================================
@@ -138,7 +153,7 @@ class ImportBatch(TimeStampedModel):
     resume from any stage (upload → detection → mapping → validation → import → rollback).
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.AutoField(primary_key=True, editable=False)
 
     branch = models.ForeignKey(
         Branch,
@@ -152,34 +167,16 @@ class ImportBatch(TimeStampedModel):
         related_name="uploaded_import_batches",
     )
 
-    source = models.CharField(
-        max_length=30,
-        choices=ImportSourceChoices.choices,
-        default=ImportSourceChoices.DIRECT_UPLOAD,
-    )
-
-    original_filename = models.CharField(max_length=255)
-    file = models.FileField(upload_to=import_file_upload_to)
-    file_format = models.CharField(max_length=10, choices=FileFormatChoices.choices)
-
-    # What the user selected vs what the system detected
-    dataset_type = models.CharField(
-        max_length=30,
-        choices=DatasetTypeChoices.choices,
-        default=DatasetTypeChoices.GENERIC,
-    )
-    detected_dataset_type = models.CharField(
-        max_length=30,
-        choices=DatasetTypeChoices.choices,
-        blank=True,
-    )
-    detection_confidence = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
+    template = models.ForeignKey(
+        "ImportTemplate",
+        on_delete=models.PROTECT,
+        related_name="import_batches",
         null=True,
         blank=True,
-        help_text="Stored as percent-like score, e.g. 84.50",
+        help_text="Official system template chosen for this import batch.",
     )
+
+    file = models.FileField(upload_to=import_file_upload_to)
 
     status = models.CharField(
         max_length=40,
@@ -196,9 +193,9 @@ class ImportBatch(TimeStampedModel):
     sheet_name = models.CharField(max_length=255, blank=True)
 
     # Parsed metadata / snapshots
-    detected_columns = models.JSONField(default=list, blank=True)
-    preview_rows = models.JSONField(default=list, blank=True)
-    validation_summary = models.JSONField(default=dict, blank=True)
+    uploaded_headers = models.JSONField(default=list, blank=True)  # List of column headers as they appear in the uploaded file
+    template_headers_snapshot = models.JSONField(default=list, blank=True)  # List of expected column headers from the template at the time of upload
+    structure_matches_template = models.BooleanField(default=False)  # Indicates if the uploaded file structure matches the template
 
     has_critical_errors = models.BooleanField(default=False)
     is_ready_for_import = models.BooleanField(default=False)
@@ -234,28 +231,19 @@ class ImportBatch(TimeStampedModel):
         return self.validation_issues.filter(severity=ValidationSeverityChoices.WARNING).count()
 
 
-# =========================================================
-# Reusable import templates
-# =========================================================
 class ImportTemplate(TimeStampedModel):
     """
-    Saved mapping blueprint for a branch and dataset type.
-
-    Templates capture user-curated column → target-field definitions so administrators can quickly
-    apply consistent mappings to multiple batches without rebuilding the schema every time.
+    Official system-defined import template.
+    Since you are using only system templates, this becomes
+    the single source of truth for expected file structure.
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.AutoField(primary_key=True, editable=False)
 
-    branch = models.ForeignKey(
-        Branch,
-        on_delete=models.CASCADE,
-        related_name="import_templates",
-    )
-    created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.PROTECT,
-        related_name="created_import_templates",
+    code = models.CharField(
+        max_length=100,
+        unique=True,
+        help_text="Stable internal code. Example: students_master_v1",
     )
 
     name = models.CharField(max_length=150)
@@ -263,81 +251,154 @@ class ImportTemplate(TimeStampedModel):
 
     description = models.TextField(blank=True)
 
-    # Example:
-    # {
-    #   "Student Name": {"target_field": "full_name", "required": true},
-    #   "DOB": {"target_field": "date_of_birth", "required": false}
-    # }
-    mapping_schema = models.JSONField(default=dict)
+    version = models.CharField(max_length=20, default="1.0")
+    status = models.CharField(
+        max_length=20,
+        choices=TemplateStatusChoices.choices,
+        default=TemplateStatusChoices.ACTIVE,
+    )
 
-    is_active = models.BooleanField(default=True)
-    last_used_at = models.DateTimeField(null=True, blank=True)
+    default_file_format = models.CharField(
+        max_length=10,
+        choices=FileFormatChoices.choices,
+        default=FileFormatChoices.XLSX,
+    )
+
+    template_file = models.FileField(
+        upload_to=import_template_file_upload_to,
+        blank=True,
+        null=True,
+        help_text="Optional pre-generated downloadable file.",
+    )
+
+    instructions = models.TextField(
+        blank=True,
+        help_text="Plain-language instructions shown to the admin before download/upload.",
+    )
+
+    allow_sample_row = models.BooleanField(default=True)
+    sample_row_data = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Optional example row shown in generated template file.",
+    )
+
+    validation_rules = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Optional dataset-wide rules or config.",
+    )
+
+    is_download_enabled = models.BooleanField(default=True)
+
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="created_system_import_templates",
+        null=True,
+        blank=True,
+    )
+
+    published_at = models.DateTimeField(null=True, blank=True)
+    retired_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        ordering = ["name"]
-        unique_together = [("branch", "name", "dataset_type")]
+        ordering = ["dataset_type", "name", "-version"]
         indexes = [
-            models.Index(fields=["branch", "dataset_type", "is_active"]),
+            models.Index(fields=["dataset_type", "status"]),
+            models.Index(fields=["code"]),
         ]
 
     def __str__(self) -> str:
-        return f"{self.name} ({self.dataset_type})"
+        return f"{self.name} ({self.version})"
+
+    def clean(self):
+        if self.status == TemplateStatusChoices.ACTIVE and not self.columns.exists():
+            raise ValidationError("An active template must have at least one column.")
 
 
-# =========================================================
-# Column-level mapping for a batch
-# =========================================================
-class ImportColumnMapping(TimeStampedModel):
+class ImportTemplateColumn(TimeStampedModel):
     """
-    Stores the relationship between one uploaded column and one normalized Vision target field.
-
-    Each mapping also tracks whether it originated from auto-detection, a saved template, or manual
-    confirmation, along with confidence metadata that can be surfaced back to the user.
+    Defines each column that must appear in the downloadable/uploadable template.
+    This replaces the need for dynamic per-batch mappings in the system-template flow.
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-
-    import_batch = models.ForeignKey(
-        ImportBatch,
-        on_delete=models.CASCADE,
-        related_name="column_mappings",
-    )
+    id = models.AutoField(primary_key=True, editable=False)
 
     template = models.ForeignKey(
         ImportTemplate,
-        on_delete=models.SET_NULL,
-        related_name="applied_mappings",
-        null=True,
-        blank=True,
+        on_delete=models.CASCADE,
+        related_name="columns",
     )
 
-    source_column = models.CharField(max_length=255)
-    target_field = models.CharField(max_length=255)
+    column_name = models.CharField(
+        max_length=255,
+        help_text="Exact spreadsheet header expected in uploaded file.",
+    )
 
-    source = models.CharField(
+    target_field = models.CharField(
+        max_length=255,
+        help_text="Internal field the import engine uses.",
+    )
+
+    display_name = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Friendly name shown in docs/UI if needed.",
+    )
+
+    help_text = models.TextField(
+        blank=True,
+        help_text="Explains what the admin should put in this column.",
+    )
+
+    data_type = models.CharField(
         max_length=20,
-        choices=MappingSourceChoices.choices,
-        default=MappingSourceChoices.AUTO,
-    )
-    confidence_score = models.DecimalField(
-        max_digits=5,
-        decimal_places=2,
-        null=True,
-        blank=True,
+        choices=TemplateColumnDataTypeChoices.choices,
+        default=TemplateColumnDataTypeChoices.STRING,
     )
 
     is_required = models.BooleanField(default=False)
-    is_confirmed = models.BooleanField(default=False)
+    is_unique = models.BooleanField(default=False)
+
+    max_length = models.PositiveIntegerField(null=True, blank=True)
+
+    allowed_values = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Used when data_type=choice or where fixed values are expected.",
+    )
+
+    sample_value = models.CharField(max_length=255, blank=True)
+    default_value = models.CharField(max_length=255, blank=True)
+
+    column_order = models.PositiveIntegerField(default=1)
+
+    # Optional reference metadata for cross-validation
+    reference_model = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Example: Staff, Campus, ClassRoom",
+    )
+    reference_lookup_field = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Example: full_name, name, code",
+    )
 
     class Meta:
-        ordering = ["source_column"]
-        unique_together = [("import_batch", "source_column")]
+        ordering = ["column_order", "column_name"]
+        unique_together = [
+            ("template", "column_name"),
+            ("template", "target_field"),
+        ]
         indexes = [
-            models.Index(fields=["import_batch", "target_field"]),
+            models.Index(fields=["template", "column_order"]),
+            models.Index(fields=["template", "is_required"]),
         ]
 
     def __str__(self) -> str:
-        return f"{self.source_column} -> {self.target_field}"
+        return f"{self.template.code} - {self.column_name}"
 
 
 # =========================================================
@@ -352,7 +413,7 @@ class ImportValidationIssue(TimeStampedModel):
     debugging/downloadable reports.
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.AutoField(primary_key=True, editable=False)
 
     import_batch = models.ForeignKey(
         ImportBatch,
@@ -416,7 +477,7 @@ class ImportRowCorrection(TimeStampedModel):
     before/after values and who made the adjustment for auditability.
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.AutoField(primary_key=True, editable=False)
 
     import_batch = models.ForeignKey(
         ImportBatch,
@@ -459,7 +520,7 @@ class ImportJob(TimeStampedModel):
     and rollback timestamps so operators can monitor long-running jobs and resume/retry safely.
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.AutoField(primary_key=True, editable=False)
 
     import_batch = models.OneToOneField(
         ImportBatch,
@@ -532,7 +593,7 @@ class ImportJobRowResult(TimeStampedModel):
     rollbacks or targeted retries.
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.AutoField(primary_key=True, editable=False)
 
     job = models.ForeignKey(
         ImportJob,
@@ -575,7 +636,7 @@ class ImportRollbackRecord(TimeStampedModel):
     additional metadata required to audit or debug the compensating action.
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.AutoField(primary_key=True, editable=False)
 
     job = models.ForeignKey(
         ImportJob,
@@ -618,7 +679,7 @@ class ImportAuditLog(TimeStampedModel):
     operators can reconstruct the history of mapping edits, validations, imports, and rollbacks.
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.AutoField(primary_key=True, editable=False)
 
     branch = models.ForeignKey(
         Branch,
@@ -684,7 +745,7 @@ class ImportNotification(TimeStampedModel):
     keeps delivery status/error details so reminders or retries can be coordinated later.
     """
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.AutoField(primary_key=True, editable=False)
 
     import_batch = models.ForeignKey(
         ImportBatch,
