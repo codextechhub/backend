@@ -5,17 +5,22 @@ from . import views
 
 urlpatterns = [
     # =========================================================
-    # Import Templates
+    # Official System Import Templates
     # =========================================================
     path(
-        "institutions/<int:institution_id>/imports/templates/",
-        views.ImportTemplateListCreateView.as_view(),
-        name="import-template-list-create",
+        "system-import-templates/",
+        views.SystemImportTemplateListView.as_view(),
+        name="system-import-template-list",
     ),
     path(
-        "institutions/<int:institution_id>/imports/templates/<uuid:template_id>/",
-        views.ImportTemplateDetailView.as_view(),
-        name="import-template-detail",
+        "system-import-templates/<uuid:template_id>/",
+        views.SystemImportTemplateDetailView.as_view(),
+        name="system-import-template-detail",
+    ),
+    path(
+        "system-import-templates/<uuid:template_id>/download/",
+        views.SystemImportTemplateDownloadView.as_view(),
+        name="system-import-template-download",
     ),
 
     # =========================================================
@@ -30,30 +35,6 @@ urlpatterns = [
         "institutions/<int:institution_id>/imports/batches/<uuid:batch_id>/",
         views.ImportBatchDetailView.as_view(),
         name="import-batch-detail",
-    ),
-
-    # =========================================================
-    # Mapping
-    # =========================================================
-    path(
-        "institutions/<int:institution_id>/imports/batches/<uuid:batch_id>/apply-template/",
-        views.ApplyTemplateToImportBatchView.as_view(),
-        name="import-batch-apply-template",
-    ),
-    path(
-        "institutions/<int:institution_id>/imports/batches/<uuid:batch_id>/auto-map/",
-        views.AutoMapImportBatchView.as_view(),
-        name="import-batch-auto-map",
-    ),
-    path(
-        "institutions/<int:institution_id>/imports/batches/<uuid:batch_id>/mappings/",
-        views.BulkColumnMappingView.as_view(),
-        name="import-batch-bulk-mappings",
-    ),
-    path(
-        "institutions/<int:institution_id>/imports/batches/<uuid:batch_id>/mappings/view/",
-        views.ImportBatchMappingsListView.as_view(),
-        name="import-batch-mappings-view",
     ),
 
     # =========================================================
