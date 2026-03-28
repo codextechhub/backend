@@ -1,29 +1,27 @@
 from __future__ import annotations
 
-from django.db.models import Prefetch
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 
 from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from vs_institutions.models import Branch
+from vs_institutions.models import Institution
 
 from .models import (
     ImportAuditLog,
     ImportBatch,
-    ImportColumnMapping,
     ImportJob,
     ImportNotification,
     ImportRollbackRecord,
     ImportRowCorrection,
     ImportTemplate,
     ImportValidationIssue,
+    TemplateStatusChoices,
+    FileFormatChoices,
 )
 from .serializers import (
-    ApplyTemplateSerializer,
-    AutoMapSerializer,
-    BulkColumnMappingSerializer,
     ImportAuditLogSerializer,
     ImportBatchDetailSerializer,
     ImportBatchListSerializer,
@@ -35,7 +33,6 @@ from .serializers import (
     ImportRollbackRecordSerializer,
     ImportRowCorrectionCreateSerializer,
     ImportRowCorrectionSerializer,
-    ImportTemplateCreateUpdateSerializer,
     ImportTemplateDetailSerializer,
     ImportTemplateListSerializer,
     ImportValidationIssueDetailSerializer,
@@ -46,24 +43,23 @@ from .serializers import (
     StartImportSerializer,
     ValidateImportBatchSerializer,
 )
-from .services import (
-    apply_template_to_batch,
-    auto_map_columns,
-    execute_import,
-    rollback_import_job,
-    save_bulk_mappings,
-    validate_import_batch,
+from .services.import_executor import execute_import
+from .services.rollback_service import rollback_import_job
+from .services.template_file import (
+    generate_template_csv,
+    generate_template_xlsx,
 )
+from .services.validation_service import validate_import_batch
 
 
 # =========================================================
-# Simple placeholder permissions
-# Replace with your real custom permissions later
+# Placeholder permission
+# Replace later with your actual custom permission classes
 # =========================================================
 class IsAuthenticatedStaff(permissions.IsAuthenticated):
     """
-    Basic placeholder permission.
-    Replace with your real branch/module permission checks.
+    Placeholder permission.
+    Replace with your real module permissions later.
     """
     pass
 
@@ -71,37 +67,41 @@ class IsAuthenticatedStaff(permissions.IsAuthenticated):
 # =========================================================
 # Reusable mixins
 # =========================================================
-class BranchContextMixin:
+class InstitutionContextMixin:
     """
-    Gets branch from URL and makes it available everywhere.
-    URL must contain: branch_id
+    Gets institution from URL and exposes it to serializers/views.
+    URL must include: institution_id
     """
+    institution_lookup_url_kwarg = "institution_id"
 
-    branch_lookup_url_kwarg = "branch_id"
-
-    def get_branch(self):
-        branch_id = self.kwargs[self.branch_lookup_url_kwarg]
-        return get_object_or_404(Branch, id=branch_id)
+    def get_institution(self):
+        institution_id = self.kwargs[self.institution_lookup_url_kwarg]
+        return get_object_or_404(Institution, id=institution_id)
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
-        context["branch"] = self.get_branch()
+        context["institution"] = self.get_institution()
         return context
 
 
-class ImportBatchContextMixin(BranchContextMixin):
+class ImportBatchContextMixin(InstitutionContextMixin):
     """
-    Gets an import batch belonging to the current branch.
-    URL must contain: batch_id
+    Gets an import batch belonging to the current institution.
+    URL must include: batch_id
     """
-
     batch_lookup_url_kwarg = "batch_id"
 
     def get_import_batch(self):
         return get_object_or_404(
-            ImportBatch.objects.select_related("branch", "uploaded_by"),
+            ImportBatch.objects.select_related(
+                "institution",
+                "uploaded_by",
+                "template",
+            ).prefetch_related(
+                "template__columns",
+            ),
             id=self.kwargs[self.batch_lookup_url_kwarg],
-            branch=self.get_branch(),
+            institution=self.get_institution(),
         )
 
     def get_serializer_context(self):
@@ -113,14 +113,16 @@ class ImportBatchContextMixin(BranchContextMixin):
 class ImportJobContextMixin(ImportBatchContextMixin):
     """
     Gets an import job belonging to the current import batch.
-    URL must contain: job_id
+    URL must include: job_id
     """
-
     job_lookup_url_kwarg = "job_id"
 
     def get_job(self):
         return get_object_or_404(
-            ImportJob.objects.select_related("import_batch", "queued_by"),
+            ImportJob.objects.select_related(
+                "import_batch",
+                "queued_by",
+            ),
             id=self.kwargs[self.job_lookup_url_kwarg],
             import_batch=self.get_import_batch(),
         )
@@ -132,63 +134,105 @@ class ImportJobContextMixin(ImportBatchContextMixin):
 
 
 # =========================================================
-# Import Template Views
+# System Import Template Views
 # =========================================================
-class ImportTemplateListCreateView(BranchContextMixin, generics.ListCreateAPIView):
+class SystemImportTemplateListView(generics.ListAPIView):
     """
-    GET  -> list templates for one branch
-    POST -> create a new template
+    GET -> list available official system templates.
     """
     permission_classes = [IsAuthenticatedStaff]
+    serializer_class = ImportTemplateListSerializer
 
     def get_queryset(self):
-        return ImportTemplate.objects.filter(
-            branch=self.get_branch()
-        ).select_related("branch", "created_by").order_by("name")
+        queryset = ImportTemplate.objects.filter(
+            status=TemplateStatusChoices.ACTIVE,
+            is_download_enabled=True,
+        ).prefetch_related("columns").order_by("dataset_type", "name")
 
-    def get_serializer_class(self):
-        if self.request.method == "POST":
-            return ImportTemplateCreateUpdateSerializer
-        return ImportTemplateListSerializer
+        dataset_type = self.request.query_params.get("dataset_type")
+        if dataset_type:
+            queryset = queryset.filter(dataset_type=dataset_type)
+
+        return queryset
 
 
-class ImportTemplateDetailView(BranchContextMixin, generics.RetrieveUpdateDestroyAPIView):
+class SystemImportTemplateDetailView(generics.RetrieveAPIView):
     """
-    GET    -> one template
-    PATCH  -> update template
-    DELETE -> delete template
+    GET -> retrieve one official system template.
     """
     permission_classes = [IsAuthenticatedStaff]
+    serializer_class = ImportTemplateDetailSerializer
     lookup_url_kwarg = "template_id"
 
     def get_queryset(self):
         return ImportTemplate.objects.filter(
-            branch=self.get_branch()
-        ).select_related("branch", "created_by")
+            status=TemplateStatusChoices.ACTIVE,
+            is_download_enabled=True,
+        ).prefetch_related("columns")
 
-    def get_serializer_class(self):
-        if self.request.method in ["PATCH", "PUT"]:
-            return ImportTemplateCreateUpdateSerializer
-        return ImportTemplateDetailSerializer
+
+class SystemImportTemplateDownloadView(APIView):
+    """
+    GET -> download a template file as CSV or XLSX.
+
+    Query param:
+        ?format=csv
+        ?format=xlsx
+    """
+    permission_classes = [IsAuthenticatedStaff]
+
+    def get(self, request, template_id):
+        template = get_object_or_404(
+            ImportTemplate.objects.prefetch_related("columns"),
+            id=template_id,
+            status=TemplateStatusChoices.ACTIVE,
+            is_download_enabled=True,
+        )
+
+        requested_format = request.query_params.get("format", template.default_file_format)
+        filename_base = f"{template.code}_v{template.version}"
+
+        if requested_format == FileFormatChoices.CSV:
+            content = generate_template_csv(template)
+            response = HttpResponse(content, content_type="text/csv")
+            response["Content-Disposition"] = f'attachment; filename="{filename_base}.csv"'
+            return response
+
+        content = generate_template_xlsx(template)
+        response = HttpResponse(
+            content,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        response["Content-Disposition"] = f'attachment; filename="{filename_base}.xlsx"'
+        return response
 
 
 # =========================================================
 # Import Batch Views
 # =========================================================
-class ImportBatchListCreateView(BranchContextMixin, generics.ListCreateAPIView):
+class ImportBatchListCreateView(InstitutionContextMixin, generics.ListCreateAPIView):
     """
-    GET  -> list import batches
-    POST -> upload a new import batch
+    GET  -> list import batches for an institution
+    POST -> upload a new import batch using a selected system template
     """
     permission_classes = [IsAuthenticatedStaff]
 
     def get_queryset(self):
-        return (
-            ImportBatch.objects.filter(branch=self.get_branch())
-            .select_related("branch", "uploaded_by")
-            .prefetch_related("validation_issues")
+        queryset = (
+            ImportBatch.objects.filter(institution=self.get_institution())
+            .select_related("institution", "uploaded_by", "template")
             .order_by("-created_at")
         )
+
+        status_param = self.request.query_params.get("status")
+        if status_param:
+            queryset = queryset.filter(status=status_param)
+
+        template_id = self.request.query_params.get("template_id")
+        if template_id:
+            queryset = queryset.filter(template_id=template_id)
+
+        return queryset
 
     def get_serializer_class(self):
         if self.request.method == "POST":
@@ -198,18 +242,18 @@ class ImportBatchListCreateView(BranchContextMixin, generics.ListCreateAPIView):
 
 class ImportBatchDetailView(ImportBatchContextMixin, generics.RetrieveUpdateDestroyAPIView):
     """
-    GET    -> full details of one import batch
-    PATCH  -> edit simple batch metadata
-    DELETE -> delete the batch
+    GET    -> full import batch details
+    PATCH  -> update simple metadata only
+    DELETE -> delete batch
     """
     permission_classes = [IsAuthenticatedStaff]
 
     def get_queryset(self):
         return (
-            ImportBatch.objects.filter(branch=self.get_branch())
-            .select_related("branch", "uploaded_by")
+            ImportBatch.objects.filter(institution=self.get_institution())
+            .select_related("institution", "uploaded_by", "template")
             .prefetch_related(
-                "column_mappings",
+                "template__columns",
                 "validation_issues",
                 "row_corrections",
                 "notifications",
@@ -227,118 +271,15 @@ class ImportBatchDetailView(ImportBatchContextMixin, generics.RetrieveUpdateDest
 
 
 # =========================================================
-# Mapping Views
-# =========================================================
-class ApplyTemplateToImportBatchView(ImportBatchContextMixin, APIView):
-    """
-    Apply a saved mapping template to an import batch.
-    """
-    permission_classes = [IsAuthenticatedStaff]
-
-    def post(self, request, branch_id, batch_id):
-        import_batch = self.get_import_batch()
-
-        serializer = ApplyTemplateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        template = get_object_or_404(
-            ImportTemplate,
-            id=serializer.validated_data["template_id"],
-            branch=self.get_branch(),
-        )
-
-        mappings = apply_template_to_batch(import_batch=import_batch, template=template)
-
-        return Response(
-            {
-                "message": "Template applied successfully.",
-                "mappings_created": len(mappings),
-            },
-            status=status.HTTP_200_OK,
-        )
-
-
-class AutoMapImportBatchView(ImportBatchContextMixin, APIView):
-    """
-    Automatically map detected columns to target fields.
-    """
-    permission_classes = [IsAuthenticatedStaff]
-
-    def post(self, request, branch_id, batch_id):
-        import_batch = self.get_import_batch()
-
-        serializer = AutoMapSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        mappings = auto_map_columns(
-            import_batch=import_batch,
-            overwrite_existing=serializer.validated_data["overwrite_existing"],
-        )
-
-        return Response(
-            {
-                "message": "Auto-mapping completed.",
-                "mappings_created": len(mappings),
-            },
-            status=status.HTTP_200_OK,
-        )
-
-
-class BulkColumnMappingView(ImportBatchContextMixin, APIView):
-    """
-    Save many mappings at once.
-    """
-    permission_classes = [IsAuthenticatedStaff]
-
-    def post(self, request, branch_id, batch_id):
-        import_batch = self.get_import_batch()
-
-        serializer = BulkColumnMappingSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        mappings = save_bulk_mappings(
-            import_batch=import_batch,
-            mappings=serializer.validated_data["mappings"],
-            clear_existing=True,
-        )
-
-        return Response(
-            {
-                "message": "Mappings saved successfully.",
-                "mappings_created": len(mappings),
-            },
-            status=status.HTTP_200_OK,
-        )
-
-
-class ImportBatchMappingsListView(ImportBatchContextMixin, generics.ListAPIView):
-    """
-    List saved mappings for an import batch.
-    """
-    permission_classes = [IsAuthenticatedStaff]
-    serializer_class = ImportBatchDetailSerializer
-
-    def get(self, request, branch_id, batch_id):
-        import_batch = self.get_import_batch()
-        serializer = ImportBatchDetailSerializer(import_batch, context=self.get_serializer_context())
-        return Response(
-            {
-                "batch_id": str(import_batch.id),
-                "column_mappings": serializer.data["column_mappings"],
-            }
-        )
-
-
-# =========================================================
 # Validation Views
 # =========================================================
 class ValidateImportBatchView(ImportBatchContextMixin, APIView):
     """
-    Run validation on the import batch.
+    POST -> validate an import batch against its selected template.
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, branch_id, batch_id):
+    def post(self, request, institution_id, batch_id):
         import_batch = self.get_import_batch()
 
         serializer = ValidateImportBatchSerializer(data=request.data)
@@ -357,8 +298,10 @@ class ValidateImportBatchView(ImportBatchContextMixin, APIView):
 
 class ImportValidationIssueListView(ImportBatchContextMixin, generics.ListAPIView):
     """
-    List validation issues for one batch.
-    Optional query param: ?severity=error
+    GET -> list validation issues for a batch.
+    Optional query params:
+        ?severity=error
+        ?is_resolved=true
     """
     permission_classes = [IsAuthenticatedStaff]
     serializer_class = ImportValidationIssueListSerializer
@@ -372,12 +315,20 @@ class ImportValidationIssueListView(ImportBatchContextMixin, generics.ListAPIVie
         if severity:
             queryset = queryset.filter(severity=severity)
 
+        is_resolved = self.request.query_params.get("is_resolved")
+        if is_resolved is not None:
+            normalized = is_resolved.lower()
+            if normalized in {"true", "1"}:
+                queryset = queryset.filter(is_resolved=True)
+            elif normalized in {"false", "0"}:
+                queryset = queryset.filter(is_resolved=False)
+
         return queryset
 
 
 class ImportValidationIssueDetailView(ImportBatchContextMixin, generics.RetrieveAPIView):
     """
-    Get one validation issue.
+    GET -> retrieve one validation issue.
     """
     permission_classes = [IsAuthenticatedStaff]
     serializer_class = ImportValidationIssueDetailSerializer
@@ -389,7 +340,7 @@ class ImportValidationIssueDetailView(ImportBatchContextMixin, generics.Retrieve
 
 class ResolveImportValidationIssueView(ImportBatchContextMixin, generics.UpdateAPIView):
     """
-    Mark one issue as resolved.
+    PATCH -> mark a validation issue as resolved.
     """
     permission_classes = [IsAuthenticatedStaff]
     serializer_class = ImportValidationIssueResolveSerializer
@@ -405,14 +356,16 @@ class ResolveImportValidationIssueView(ImportBatchContextMixin, generics.UpdateA
 class ImportRowCorrectionListCreateView(ImportBatchContextMixin, generics.ListCreateAPIView):
     """
     GET  -> list row corrections
-    POST -> add a row correction
+    POST -> create a row correction
     """
     permission_classes = [IsAuthenticatedStaff]
 
     def get_queryset(self):
-        return ImportRowCorrection.objects.filter(
-            import_batch=self.get_import_batch()
-        ).select_related("corrected_by").order_by("row_number", "created_at")
+        return (
+            ImportRowCorrection.objects.filter(import_batch=self.get_import_batch())
+            .select_related("corrected_by")
+            .order_by("row_number", "created_at")
+        )
 
     def get_serializer_class(self):
         if self.request.method == "POST":
@@ -422,11 +375,11 @@ class ImportRowCorrectionListCreateView(ImportBatchContextMixin, generics.ListCr
 
 class RevalidateAfterCorrectionView(ImportBatchContextMixin, APIView):
     """
-    Re-run validation after manual corrections.
+    POST -> re-run validation after corrections.
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, branch_id, batch_id):
+    def post(self, request, institution_id, batch_id):
         import_batch = self.get_import_batch()
 
         serializer = RevalidateAfterCorrectionSerializer(data=request.data)
@@ -448,11 +401,11 @@ class RevalidateAfterCorrectionView(ImportBatchContextMixin, APIView):
 # =========================================================
 class StartImportBatchView(ImportBatchContextMixin, APIView):
     """
-    Start actual import execution.
+    POST -> start actual import execution.
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, branch_id, batch_id):
+    def post(self, request, institution_id, batch_id):
         import_batch = self.get_import_batch()
 
         serializer = StartImportSerializer(
@@ -475,37 +428,42 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
 
 class ImportJobListView(ImportBatchContextMixin, generics.ListAPIView):
     """
-    List jobs for one import batch.
+    GET -> list jobs for one batch.
     """
     permission_classes = [IsAuthenticatedStaff]
     serializer_class = ImportJobListSerializer
 
     def get_queryset(self):
-        return ImportJob.objects.filter(
-            import_batch=self.get_import_batch()
-        ).select_related("queued_by").order_by("-created_at")
+        return (
+            ImportJob.objects.filter(import_batch=self.get_import_batch())
+            .select_related("queued_by")
+            .order_by("-created_at")
+        )
 
 
 class ImportJobDetailView(ImportJobContextMixin, generics.RetrieveAPIView):
     """
-    Get one import job with row results.
+    GET -> retrieve one import job with row results.
     """
     permission_classes = [IsAuthenticatedStaff]
     serializer_class = ImportJobDetailSerializer
+    lookup_url_kwarg = "job_id"
 
     def get_queryset(self):
-        return ImportJob.objects.filter(
-            import_batch=self.get_import_batch()
-        ).select_related("queued_by").prefetch_related("row_results")
+        return (
+            ImportJob.objects.filter(import_batch=self.get_import_batch())
+            .select_related("queued_by")
+            .prefetch_related("row_results")
+        )
 
 
 class RollbackImportJobView(ImportJobContextMixin, APIView):
     """
-    Roll back a completed import job.
+    POST -> rollback an import job.
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, branch_id, batch_id, job_id):
+    def post(self, request, institution_id, batch_id, job_id):
         job = self.get_job()
 
         serializer = RollbackImportSerializer(
@@ -532,13 +490,15 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
 
 class ImportRollbackRecordListView(ImportJobContextMixin, generics.ListAPIView):
     """
-    List rollback history for one job.
+    GET -> list rollback history for one job.
     """
     permission_classes = [IsAuthenticatedStaff]
     serializer_class = ImportRollbackRecordSerializer
 
     def get_queryset(self):
-        return ImportRollbackRecord.objects.filter(job=self.get_job()).order_by("-started_at")
+        return ImportRollbackRecord.objects.filter(
+            job=self.get_job()
+        ).order_by("-started_at")
 
 
 # =========================================================
@@ -546,25 +506,29 @@ class ImportRollbackRecordListView(ImportJobContextMixin, generics.ListAPIView):
 # =========================================================
 class ImportAuditLogListView(ImportBatchContextMixin, generics.ListAPIView):
     """
-    List audit logs for one batch.
+    GET -> list audit logs for one import batch.
     """
     permission_classes = [IsAuthenticatedStaff]
     serializer_class = ImportAuditLogSerializer
 
     def get_queryset(self):
-        return ImportAuditLog.objects.filter(
-            import_batch=self.get_import_batch()
-        ).select_related("actor").order_by("-created_at")
+        return (
+            ImportAuditLog.objects.filter(import_batch=self.get_import_batch())
+            .select_related("actor")
+            .order_by("-created_at")
+        )
 
 
 class ImportNotificationListView(ImportBatchContextMixin, generics.ListAPIView):
     """
-    List notifications for one batch.
+    GET -> list notifications for one import batch.
     """
     permission_classes = [IsAuthenticatedStaff]
     serializer_class = ImportNotificationSerializer
 
     def get_queryset(self):
-        return ImportNotification.objects.filter(
-            import_batch=self.get_import_batch()
-        ).select_related("recipient").order_by("-created_at")
+        return (
+            ImportNotification.objects.filter(import_batch=self.get_import_batch())
+            .select_related("recipient")
+            .order_by("-created_at")
+        )
