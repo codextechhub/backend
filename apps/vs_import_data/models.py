@@ -14,7 +14,20 @@ from vs_institutions.models import Branch
 # Base model
 # =========================================================
 class TimeStampedModel(models.Model):
-    """Abstract base that injects consistent created/updated timestamps into every import model."""
+    """
+    Shared timestamp mixin covering creation and last-update times.
+
+    This keeps auditing consistent across all import-related tables without repeating the
+    column declarations on every model. Django handles the default/auto_now behaviors so
+    derived models only need to inherit.
+
+    Fields:
+        created_at: Timezone-aware timestamp recorded when the row is inserted.
+        updated_at: Auto-updated timestamp refreshed on each save.
+
+    Meta:
+        - declared as `abstract=True` so no standalone table is created.
+    """
     created_at = models.DateTimeField(default=timezone.now, editable=False)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -32,6 +45,8 @@ class FileFormatChoices(models.TextChoices):
 
 
 class DatasetTypeChoices(models.TextChoices):
+    INSTITUTIONS = "institutions", "Institutions"
+    BRANCHES = "branches", "Branches"
     STUDENTS = "students", "Students"
     STAFF = "staff", "Staff"
     CLASSES = "classes", "Classes / Structure"
@@ -146,11 +161,47 @@ def import_template_file_upload_to(instance: "ImportTemplate", filename: str) ->
 # =========================================================
 class ImportBatch(TimeStampedModel):
     """
-    Represents a single uploaded data file and tracks it through the entire import lifecycle.
+    Represents a single uploaded dataset file as it moves through the full import
+    pipeline: upload → detection → mapping → validation → execution. Every stage
+    of that lifecycle is reflected on this record, making it the central tracking
+    object for Module 9.
 
-    The record holds the owning branch, uploader, original file metadata, detected structure,
-    validation summaries, and lifecycle timestamps so both the UI and background workers can
-    resume from any stage (upload → detection → mapping → validation → import → rollback).
+    One batch belongs to exactly one branch and one uploader. It may optionally be
+    linked to a system ImportTemplate. The file is stored using a branch-scoped,
+    dataset-type-scoped path via `import_file_upload_to`.
+
+    Fields:
+        branch: FK to Branch; scopes this batch to a specific institution branch.
+        uploaded_by: FK to the user who performed the upload (PROTECT on delete).
+        template: Optional FK to ImportTemplate; the official system template selected
+                  for this batch. Null when no template is explicitly chosen.
+        file: The uploaded file stored at a branch/dataset-type/id-scoped path.
+        status: Current pipeline stage (ImportBatchStatusChoices, default UPLOADED).
+        file_size_bytes: Raw byte size of the uploaded file, defaulting to 0.
+        total_rows: Row count parsed from the file (excluding header), defaulting to 0.
+        total_columns: Column count parsed from the file, defaulting to 0.
+        header_row_index: Position of the header row in the file (1-based, default 1).
+        sheet_name: Optional sheet identifier for Excel files with multiple sheets.
+        notes: Free-text operator notes attached to the batch.
+        uploaded_headers: JSON list of column headers exactly as they appear in the
+                          uploaded file, captured at parse time.
+        template_headers_snapshot: JSON list of the expected headers from the linked
+                                   ImportTemplate at the moment of upload, used for
+                                   structural comparison.
+        structure_matches_template: Boolean flag indicating whether the uploaded file's
+                                    headers align with the template snapshot.
+        has_critical_errors: True if any ERROR-severity validation issues exist for
+                             this batch; gates the import trigger.
+        is_ready_for_import: True when validation has passed and the batch is cleared
+                             for background execution.
+        validation_started_at: Timestamp recorded when the validation pass begins.
+        validation_completed_at: Timestamp recorded when the validation pass finishes.
+        imported_at: Timestamp recorded when the ImportJob completes successfully.
+
+    Meta:
+        - ordering newest-first by created_at.
+        - indexes on (branch, status), (branch, dataset_type), and created_at
+          to serve dashboard and filter queries efficiently.
     """
 
     id = models.AutoField(primary_key=True, editable=False)
@@ -177,6 +228,12 @@ class ImportBatch(TimeStampedModel):
     )
 
     file = models.FileField(upload_to=import_file_upload_to)
+    file_format = models.CharField(
+        max_length=10,
+        choices=FileFormatChoices.choices,
+        blank=True,
+    )
+    original_filename = models.CharField(max_length=255, blank=True)
 
     status = models.CharField(
         max_length=40,
@@ -210,7 +267,6 @@ class ImportBatch(TimeStampedModel):
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["branch", "status"]),
-            models.Index(fields=["branch", "dataset_type"]),
             models.Index(fields=["created_at"]),
         ]
 
@@ -233,9 +289,44 @@ class ImportBatch(TimeStampedModel):
 
 class ImportTemplate(TimeStampedModel):
     """
-    Official system-defined import template.
-    Since you are using only system templates, this becomes
-    the single source of truth for expected file structure.
+    System-managed definition of the canonical column structure for a given dataset
+    type. Templates are the source of truth that admins download before filling data
+    and that the import pipeline uses to validate uploaded files.
+
+    Templates are versioned and follow a lifecycle (draft → active → retired). Only
+    one template per dataset type is expected to be active at a time. Column
+    specifications are stored on related ImportTemplateColumn records.
+
+    Fields:
+        code: Stable internal identifier, unique across all templates.
+              Example: "students_master_v1". Used for programmatic lookups.
+        name: Human-readable display label for the template.
+        dataset_type: The kind of data this template governs (DatasetTypeChoices).
+        description: Optional narrative summary shown to admins in the UI.
+        version: Semantic version string (default "1.0"); incremented on structural
+                 column changes.
+        status: Publication state (TemplateStatusChoices, default ACTIVE).
+        default_file_format: Preferred format for generated download files
+                             (FileFormatChoices, default XLSX).
+        template_file: Optional pre-generated downloadable file stored at a
+                       dataset-type/code-scoped path.
+        instructions: Plain-language guidance displayed to admins before they
+                      download or upload against this template.
+        allow_sample_row: Whether a sample data row is included in generated files.
+        sample_row_data: JSON object representing the optional example row injected
+                         into generated template files.
+        validation_rules: JSON object holding optional dataset-wide validation config
+                          consumed by the validator layer.
+        is_download_enabled: Controls whether the template is currently available for
+                             admin download.
+        created_by: Optional FK to the user who created the template record.
+        published_at: Timestamp when the template was promoted to active status.
+        retired_at: Timestamp when the template was retired and superseded.
+
+    Meta:
+        - ordering by dataset_type, name, then descending version.
+        - indexes on (dataset_type, status) for active-template lookups and on code
+          for direct programmatic access.
     """
 
     id = models.AutoField(primary_key=True, editable=False)
@@ -262,13 +353,6 @@ class ImportTemplate(TimeStampedModel):
         max_length=10,
         choices=FileFormatChoices.choices,
         default=FileFormatChoices.XLSX,
-    )
-
-    template_file = models.FileField(
-        upload_to=import_template_file_upload_to,
-        blank=True,
-        null=True,
-        help_text="Optional pre-generated downloadable file.",
     )
 
     instructions = models.TextField(
@@ -319,8 +403,46 @@ class ImportTemplate(TimeStampedModel):
 
 class ImportTemplateColumn(TimeStampedModel):
     """
-    Defines each column that must appear in the downloadable/uploadable template.
-    This replaces the need for dynamic per-batch mappings in the system-template flow.
+    A single column specification within an ImportTemplate. Each record maps a
+    spreadsheet header to an internal target field and declares the data type,
+    validation rules, display hints, and optional cross-reference metadata needed
+    by the import engine and template generator.
+
+    Fields:
+        template: FK to the owning ImportTemplate (CASCADE on delete).
+        column_name: Exact header string expected in the uploaded file, used for
+                     structural matching. Example: "Date of Birth".
+        target_field: Internal field identifier the import handler maps this column
+                      to. Example: "date_of_birth".
+        display_name: Optional friendly label used in documentation or UI if the
+                      column_name is not human-readable enough.
+        help_text: Explanation of what the admin should enter in this column, shown
+                   in generated template files or UI tooltips.
+        data_type: Expected data type for values in this column
+                   (TemplateColumnDataTypeChoices, default STRING).
+        is_required: Whether a missing value in this column constitutes a validation
+                     error.
+        is_unique: Whether duplicate values in this column across rows are flagged
+                   as errors.
+        max_length: Optional upper bound on string length for string-typed columns.
+        allowed_values: JSON list of permitted values; active when data_type is
+                        CHOICE or a fixed-value constraint applies.
+        sample_value: Example value injected into the generated template file so
+                      admins understand the expected format.
+        default_value: Fallback value applied during import when the cell is blank,
+                       if validation rules permit it.
+        column_order: Integer used to sort columns in generated files and UI displays.
+        reference_model: Optional name of the domain model this column cross-references
+                         during validation. Example: "Staff", "Campus".
+        reference_lookup_field: The field on the reference model used to resolve the
+                                cross-reference. Example: "full_name", "code".
+
+    Meta:
+        - ordering by column_order then column_name.
+        - unique_together constraints on (template, column_name) and
+          (template, target_field) to prevent duplicate mappings within a template.
+        - indexes on (template, column_order) and (template, is_required) to
+          support ordered rendering and required-column filtering.
     """
 
     id = models.AutoField(primary_key=True, editable=False)
@@ -369,10 +491,10 @@ class ImportTemplateColumn(TimeStampedModel):
         help_text="Used when data_type=choice or where fixed values are expected.",
     )
 
-    sample_value = models.CharField(max_length=255, blank=True)
-    default_value = models.CharField(max_length=255, blank=True)
+    sample_value = models.CharField(max_length=255, blank=True)  # For generating example rows in the template file
+    default_value = models.CharField(max_length=255, blank=True)  # For filling in missing values during import if allowed by validation rules
 
-    column_order = models.PositiveIntegerField(default=1)
+    column_order = models.PositiveIntegerField(default=1)  # For ordering columns in the generated template file and UI display
 
     # Optional reference metadata for cross-validation
     reference_model = models.CharField(
@@ -406,11 +528,37 @@ class ImportTemplateColumn(TimeStampedModel):
 # =========================================================
 class ImportValidationIssue(TimeStampedModel):
     """
-    Captures a single validation finding detected while analyzing an import batch.
+    An individual result emitted during the validation pass of an ImportBatch.
+    One record is written per issue found, whether file-level or row-level. The
+    aggregate of these records determines whether a batch can proceed to import.
 
-    Issues can be raised at the file, column, row, or cell level and retain severity, code,
-    human-readable messaging, the raw value that triggered the rule, and optional metadata for
-    debugging/downloadable reports.
+    Fields:
+        import_batch: FK to the batch being validated (CASCADE on delete).
+        severity: Urgency level of the issue (ValidationSeverityChoices:
+                  ERROR, WARNING, INFO). ERRORs block import progression.
+        code: Machine-readable issue code (ValidationCodeChoices) used for
+              grouping, filtering, and export diagnostics.
+        message: Human-readable description of the specific issue surfaced in the UI.
+        help_text: Optional supplementary guidance explaining how to correct the issue.
+        row_number: Spreadsheet row index (1-based) where the issue was found.
+                   Null for file-level issues such as missing sheets or wrong format.
+        column_name: Header name of the column where the issue was detected. Blank
+                     for row-level or file-level issues not tied to a specific column.
+        field_name: Internal field name corresponding to column_name, if resolved.
+        raw_value: The original cell value as read from the file before any
+                   transformation, stored for diagnostics and download reports.
+        normalized_value: The cleaned or coerced value after transformation, if any
+                          processing was applied before the issue was raised.
+        metadata: JSON object for structured debugging data such as reference mismatches,
+                  allowed value lists, or rule violation details.
+        is_resolved: True if an operator has manually acknowledged or resolved this issue.
+        resolved_at: Timestamp when the issue was marked resolved.
+        resolved_by: FK to the user who resolved the issue; SET_NULL on user deletion.
+
+    Meta:
+        - ordering by row_number, column_name, created_at.
+        - indexes on (import_batch, severity), (import_batch, code), and
+          (import_batch, row_number) for issue filtering and export queries.
     """
 
     id = models.AutoField(primary_key=True, editable=False)
@@ -471,10 +619,23 @@ class ImportValidationIssue(TimeStampedModel):
 # =========================================================
 class ImportRowCorrection(TimeStampedModel):
     """
-    Records a user-supplied correction for a specific row/column combination inside a batch.
+    A user-supplied override for a specific row/column value before an ImportBatch
+    proceeds to execution. Corrections allow analysts to fix individual cells between
+    validation passes without re-uploading the full file. Each record is fully auditable,
+    capturing the before/after values and the person who made the change.
 
-    These corrections allow analysts to tweak data between validation runs, preserving both the
-    before/after values and who made the adjustment for auditability.
+    Fields:
+        import_batch: FK to the batch the corrected row belongs to (CASCADE on delete).
+        row_number: Spreadsheet row index (1-based) of the cell being corrected.
+        column_name: Header name of the column whose value is being overridden.
+        old_value: The original cell value as it existed before the correction.
+        new_value: The replacement value the analyst has provided.
+        reason: Optional justification for the correction, supporting audit trails.
+        corrected_by: FK to the user who submitted the correction (PROTECT on delete).
+
+    Meta:
+        - ordering by row_number, column_name, created_at.
+        - index on (import_batch, row_number) for quick per-batch row lookup.
     """
 
     id = models.AutoField(primary_key=True, editable=False)
@@ -514,13 +675,50 @@ class ImportRowCorrection(TimeStampedModel):
 # =========================================================
 class ImportJob(TimeStampedModel):
     """
-    Tracks the asynchronous execution of importing a validated batch into Vision.
+    Background execution record for a validated ImportBatch. Created when an admin
+    confirms and queues the import. The Celery worker updates this record as it
+    processes rows in chunks, recording throughput counters and rollback timestamps
+    that operators and the UI use to monitor progress or diagnose failures.
 
-    The model keeps queue metadata, worker task identifiers, progress counters, last error details,
-    and rollback timestamps so operators can monitor long-running jobs and resume/retry safely.
+    One batch maps to exactly one job (OneToOne). Rollback attempts are tracked
+    separately on ImportRollbackRecord.
+
+    Fields:
+        import_batch: OneToOne FK to the ImportBatch being executed (CASCADE on delete).
+        queued_by: FK to the user who triggered the import (PROTECT on delete).
+        status: Current execution state (ImportJobStatusChoices, default QUEUED).
+        task_id: Background worker task identifier (Celery task ID) stored for
+                 status polling and cancellation.
+        progress_percent: Integer 0–100 representing execution progress, updated
+                          periodically by the worker.
+        total_rows: Total row count the worker expects to process.
+        processed_rows: Running count of rows the worker has attempted so far.
+        succeeded_rows: Count of rows that resulted in successful CREATE or UPDATE.
+        failed_rows: Count of rows that encountered an error and were not persisted.
+        skipped_rows: Count of rows the worker intentionally bypassed (e.g., duplicates
+                      or rows flagged SKIP during mapping).
+        retry_count: Number of times the job has been retried after a transient failure.
+        started_at: Timestamp when the worker first picked up and began executing the job.
+        completed_at: Timestamp when the worker finished, regardless of outcome.
+        last_error_code: Machine-readable code of the most recent failure encountered.
+        last_error_message: Human-readable description of the most recent failure.
+        rollback_started_at: Timestamp when a compensating rollback run was initiated.
+        rollback_completed_at: Timestamp when the rollback run finished.
+        execution_summary: JSON object containing metrics emitted by dataset-type
+                           handlers at the end of execution.
+
+    Meta:
+        - ordering newest-first by created_at.
+        - indexes on status and started_at for dashboard and monitoring queries.
     """
 
     id = models.AutoField(primary_key=True, editable=False)
+    
+    branch = models.ForeignKey(
+        Branch,
+        on_delete=models.CASCADE,
+        related_name="import_jobs",
+    )
 
     import_batch = models.OneToOneField(
         ImportBatch,
@@ -586,11 +784,36 @@ class ImportJob(TimeStampedModel):
 # =========================================================
 class ImportJobRowResult(TimeStampedModel):
     """
-    Persists the per-row outcome generated by an import job.
+    Granular outcome for a single spreadsheet row processed by an ImportJob. One
+    record is written per row during execution, capturing the action taken, the
+    domain object touched, and both the raw and normalized data payloads. Enables
+    row-level feedback in the UI, targeted retries, and full audit reconstruction.
 
-    Row results allow the platform to show fine-grained success/failure feedback, keep the exact
-    normalized payload that was sent to downstream models, and supply the data needed for partial
-    rollbacks or targeted retries.
+    Fields:
+        job: FK to the parent ImportJob (CASCADE on delete).
+        row_number: Spreadsheet row index (1-based) identifying which row this result
+                    corresponds to.
+        action: Outcome category for this row (ImportRowActionChoices:
+                CREATE, UPDATE, SKIP, FAILED).
+        target_model: String name of the domain model that was created or updated.
+                      Example: "Student", "Staff". Blank for SKIP and FAILED rows.
+        target_object_pk: Primary key of the domain object that was created or updated,
+                          stored as a string for cross-model flexibility.
+        status_message: Human-readable description of what happened to this row,
+                        used for UI display and export reports.
+        error_details: JSON object with structured error context for FAILED rows,
+                       used in support diagnostics and download reports.
+        row_payload: JSON snapshot of the raw row data as parsed from the file,
+                     before any normalization or transformation.
+        normalized_payload: JSON snapshot of the row data after transformation and
+                            field mapping, representing what was sent to the handler.
+
+    Meta:
+        - ordering by row_number.
+        - unique_together on (job, row_number) to prevent duplicate result records
+          for the same row within a job.
+        - indexes on (job, action) and (job, row_number) for result filtering and
+          per-row lookup.
     """
 
     id = models.AutoField(primary_key=True, editable=False)
@@ -630,10 +853,27 @@ class ImportJobRowResult(TimeStampedModel):
 # =========================================================
 class ImportRollbackRecord(TimeStampedModel):
     """
-    Describes a rollback operation executed against a completed import job.
+    Audit record for a rollback attempt applied to a completed ImportJob. Created
+    whenever an operator initiates a reversal of a previously executed import.
+    Captures the initiating user, the stated reason, outcome counters, and timing so
+    compensating actions remain fully traceable.
 
-    Stores who initiated the rollback, whether it succeeded, how many rows were reverted, and any
-    additional metadata required to audit or debug the compensating action.
+    Fields:
+        job: FK to the ImportJob being reversed (CASCADE on delete).
+        initiated_by: FK to the user who triggered the rollback. Null if initiated
+                      by automation; SET_NULL on user deletion.
+        reason: Operator-supplied explanation for why the rollback was requested.
+        was_successful: True if the rollback completed without errors.
+        reverted_rows_count: Number of domain rows successfully reversed during this
+                             rollback attempt.
+        details: JSON object with structured rollback diagnostics, such as which
+                 models were affected or partial failure notes.
+        started_at: Timestamp when the rollback process began (default timezone.now).
+        completed_at: Timestamp when the rollback process finished, null if still
+                      in progress or interrupted.
+
+    Meta:
+        - ordering newest-first by started_at.
     """
 
     id = models.AutoField(primary_key=True, editable=False)
@@ -673,10 +913,37 @@ class ImportRollbackRecord(TimeStampedModel):
 # =========================================================
 class ImportAuditLog(TimeStampedModel):
     """
-    Import-specific audit trail that captures who performed which action and on what entity.
+    Append-only audit trail for all significant actions performed on or by the import
+    system. Records are written by both humans and automation, covering mapping
+    decisions, validation events, job executions, rollbacks, and notification
+    dispatches. Before/after payloads allow investigators to reconstruct the full
+    history of any batch.
 
-    Each log links back to the branch, batch, and optional job plus before/after/diff snapshots so
-    operators can reconstruct the history of mapping edits, validations, imports, and rollbacks.
+    Fields:
+        branch: FK to the Branch in whose context the action occurred (CASCADE on delete).
+        import_batch: Optional FK to the ImportBatch this log entry relates to.
+                      SET_NULL on batch deletion so logs are preserved.
+        job: Optional FK to the ImportJob this log entry relates to.
+             SET_NULL on job deletion so logs are preserved.
+        actor: Optional FK to the user who performed the action. Null for
+               system/automation-initiated events; SET_NULL on user deletion.
+        action: String label describing the event. Examples: "batch_uploaded",
+                "validation_completed", "import_triggered", "rollback_initiated".
+        entity_type: String name of the model or resource the action targeted.
+                     Example: "ImportBatch", "ImportJob".
+        entity_id: String primary key of the specific entity instance affected.
+        before_data: JSON snapshot of the entity's state before the action.
+        after_data: JSON snapshot of the entity's state after the action.
+        diff_data: JSON object representing only the changed fields between
+                   before_data and after_data.
+        message: Optional human-readable narrative describing the event for UI display
+                 or support investigation.
+        metadata: JSON object for additional structured context not captured in the
+                  other fields, such as IP addresses, request IDs, or batch counters.
+
+    Meta:
+        - ordering newest-first by created_at.
+        - indexes on (branch, action), import_batch, and job for filtered audit queries.
     """
 
     id = models.AutoField(primary_key=True, editable=False)
@@ -739,10 +1006,30 @@ class ImportAuditLog(TimeStampedModel):
 # =========================================================
 class ImportNotification(TimeStampedModel):
     """
-    Represents a notification that should be delivered to an internal user about an import event.
+    Notification record targeting a specific user about a milestone or failure in an
+    ImportBatch lifecycle. Created by the notification dispatch layer and updated as
+    delivery succeeds or fails, enabling retry orchestration and delivery auditing.
 
-    The record links back to the batch, stores the intended recipient and templated content, and
-    keeps delivery status/error details so reminders or retries can be coordinated later.
+    Fields:
+        import_batch: FK to the ImportBatch that triggered this notification
+                      (CASCADE on delete).
+        recipient: FK to the user who should receive the message (CASCADE on delete).
+        event_type: String key identifying the triggering milestone. Examples:
+                    "validation_completed", "import_succeeded", "import_failed",
+                    "rollback_completed".
+        title: Short subject line rendered in the notification UI or email header.
+        body: Full notification body text, may be plain text or HTML depending on
+              the delivery channel.
+        status: Current delivery state (NotificationStatusChoices:
+                PENDING, SENT, FAILED).
+        sent_at: Timestamp recorded when delivery was confirmed successful.
+        error_message: Description of the failure reason if status is FAILED, used
+                       for retry logic and support diagnostics.
+
+    Meta:
+        - ordering newest-first by created_at.
+        - indexes on (recipient, status) for per-user inbox queries and on event_type
+          for system-level delivery monitoring.
     """
 
     id = models.AutoField(primary_key=True, editable=False)
