@@ -71,6 +71,7 @@ INSTALLED_APPS = [
     'vs_user',
     'vs_rbac',
     'vs_audit',
+    'vs_import_data',
 ]
 
 MIDDLEWARE = [
