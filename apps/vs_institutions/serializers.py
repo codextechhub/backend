@@ -16,10 +16,13 @@ from .models import (
     Institution,
     Branch,
     BranchPrimaryAdmin,
+    InstitutionPrimaryAdmin,
     InstitutionBranding,
     BranchLifecycle,
     InstitutionStatus,
-    PlanTier,
+    OwnershipType,
+    TermStructure,
+    Currency,
 )
 from vs_audit.models import (
     AuditEvent, 
@@ -136,7 +139,8 @@ class BranchPrimaryAdminWriteSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=120)
     email = serializers.EmailField()
     phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
-    role_label = serializers.CharField(max_length=80, required=False, allow_blank=True, default="IN_AD")
+    branch_role = serializers.CharField(max_length=80, required=False, allow_blank=True, default="Head Teacher")
+    role_label = serializers.CharField(max_length=80, required=False, allow_blank=True, default="BRANCH_ADMIN")
 
     def validate_full_name(self, value: str) -> str:
         if not value.strip():
@@ -146,7 +150,34 @@ class BranchPrimaryAdminWriteSerializer(serializers.Serializer):
 
 class BranchPrimaryAdminReadSerializer(serializers.Serializer):
     """Read-only view; returns link + contact."""
-    id = serializers.UUIDField()
+    id = serializers.CharField()
+    branch_role = serializers.CharField()
+    role_label = serializers.CharField()
+    invite_status = serializers.CharField()
+    invite_queued_at = serializers.DateTimeField(allow_null=True)
+    invite_sent_at = serializers.DateTimeField(allow_null=True)
+    contact = ContactInfoSerializer()
+
+
+class InstitutionPrimaryAdminWriteSerializer(serializers.Serializer):
+    """Write-only structure for assigning institution-level primary admin."""
+
+    full_name = serializers.CharField(max_length=120)
+    email = serializers.EmailField()
+    phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
+    institution_role = serializers.CharField(max_length=80, required=False, allow_blank=True, default="IT Head")
+    role_label = serializers.CharField(max_length=80, required=False, allow_blank=True, default="INSTITUTION_ADMIN")
+
+    def validate_full_name(self, value: str) -> str:
+        if not value.strip():
+            raise serializers.ValidationError("full_name cannot be empty.")
+        return value.strip()
+
+
+class InstitutionPrimaryAdminReadSerializer(serializers.Serializer):
+    """Read-only view; returns institution admin link + contact."""
+    id = serializers.CharField()
+    institution_role = serializers.CharField()
     role_label = serializers.CharField()
     invite_status = serializers.CharField()
     invite_queued_at = serializers.DateTimeField(allow_null=True)
@@ -168,10 +199,10 @@ class BranchListSerializer(serializers.ModelSerializer):
             "institution_slug",
             "name",
             "is_main",
+            "_type",
             "status",
             "country",
             "state",
-            "city",
         ]
         read_only_fields = fields
 
@@ -187,20 +218,13 @@ class BranchDetailSerializer(serializers.ModelSerializer):
             "institution_slug",
             "name",
             "is_main",
-
-            "category",
-            "plan_tier",
+            "_type",
 
             "address",
             "email",
-            "website",
-            "phone_number",
 
             "country",
             "state",
-            "city",
-            "timezone",
-            "currency",
 
             "status",
             "opened_at",
@@ -232,19 +256,13 @@ class BranchCreateSerializer(serializers.ModelSerializer):
         fields = [
             "name",
             "is_main",
-            "category",
-            "plan_tier",
+            "_type",
 
             "address",
             "email",
-            "website",
-            "phone_number",
 
             "country",
             "state",
-            "city",
-            "timezone",
-            "currency",
             "opened_at",
 
             # optional nested
@@ -297,9 +315,10 @@ class BranchCreateSerializer(serializers.ModelSerializer):
             from .models import BranchPrimaryAdmin
 
             BranchPrimaryAdmin.objects.create(
-                branch = branch,
+                branch=branch,
                 contact=contact,
-                role_label=primary_admin_data.get("role_label", "BR_AD"),
+                branch_role=primary_admin_data.get("branch_role", "Head Teacher"),
+                role_label=primary_admin_data.get("role_label", "BRANCH_ADMIN"),
                 invite_status=InviteStatus.QUEUED,
                 invite_queued_at=timezone.now(),
                 invite_sent_at=None,
@@ -343,19 +362,13 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
         fields = [
             "name",
             "is_main",
-            "category",
-            "plan_tier",
+            "_type",
 
             "address",
             "email",
-            "website",
-            "phone_number",
 
             "country",
             "state",
-            "city",
-            "timezone",
-            "currency",
             "opened_at",
         ]
 
@@ -435,7 +448,8 @@ class InstitutionListSerializer(serializers.ModelSerializer):
         fields = [
             "name",
             "slug",
-            "_type",
+            "code",
+            "ownership_type",
             "status",
             "activated_at",
             "main_branch",
@@ -451,16 +465,24 @@ class InstitutionDetailSerializer(serializers.ModelSerializer):
     branches = BranchDetailSerializer(many=True, read_only=True)
     main_branch = BranchDetailSerializer(read_only=True)
     branding = InstitutionBrandingSerializer(read_only=True)
+    primary_admin = InstitutionPrimaryAdminReadSerializer(read_only=True)
 
     class Meta:
         model = Institution
         fields = [
             "name",
             "slug",
-            "_type",
+            "code",
+            "ownership_type",
+            "address",
+            "website",
+            "motto",
+            "term_structure",
+            "currency",
+            "registration_id",
             "status",
             "activated_at",
-            "deleted_at",
+            "deactivated_at",
 
             # Convenient reads
             "main_branch",
@@ -468,6 +490,7 @@ class InstitutionDetailSerializer(serializers.ModelSerializer):
 
             # Nested institution-level
             "branding",
+            "primary_admin",
         ]
         read_only_fields = fields
 
@@ -489,16 +512,25 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
 
     slug = serializers.CharField(required=False, allow_blank=True)
     branding = InstitutionBrandingSerializer(required=False)
+    primary_admin_data = InstitutionPrimaryAdminWriteSerializer(required=False)
 
     class Meta:
         model = Institution
         fields = [
             "name",
             "slug",
-            "_type",
+            "code",
+            "ownership_type",
+            "address",
+            "website",
+            "motto",
+            "term_structure",
+            "currency",
+            "registration_id",
 
             # optional nested
             "branding",
+            "primary_admin_data",
         ]
 
     def validate_slug(self, value: str) -> str:
@@ -532,6 +564,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def create(self, validated_data: Dict[str, Any]) -> Institution:
         branding_data = validated_data.pop("branding", None)
+        primary_admin_data = validated_data.pop("primary_admin_data", None)
 
         institution = Institution.objects.create(
             **validated_data,
@@ -542,6 +575,23 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
         # Optional branding
         if branding_data:
             InstitutionBranding.objects.create(institution=institution, **branding_data)
+
+        # Optional institution-level primary admin
+        if primary_admin_data:
+            contact = ContactInfo.objects.create(
+                full_name=primary_admin_data["full_name"],
+                email=primary_admin_data["email"],
+                phone=primary_admin_data.get("phone", ""),
+            )
+            InstitutionPrimaryAdmin.objects.create(
+                institution=institution,
+                contact=contact,
+                institution_role=primary_admin_data.get("institution_role", "IT Head"),
+                role_label=primary_admin_data.get("role_label", "INSTITUTION_ADMIN"),
+                invite_status=InviteStatus.QUEUED,
+                invite_queued_at=timezone.now(),
+                invite_sent_at=None,
+            )
 
         audit_e = AuditEvent.objects.create(
             module_key=AuditModuleKey.INSTITUTION,
@@ -579,7 +629,13 @@ class InstitutionUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Institution
         fields = [
-            "_type",
+            "ownership_type",
+            "address",
+            "website",
+            "motto",
+            "term_structure",
+            "currency",
+            "registration_id",
             "status",       # include only if you allow direct status updates here
 
             # optional nested
@@ -618,16 +674,16 @@ class InstitutionUpdateSerializer(serializers.ModelSerializer):
 # Lifecycle & Operations serializers (write)
 # -----------------------------------------------------------------------------
 
-TransitionChoiceField = {
-    "ACTIVE": "Branch_Activated",
-    "SUSPENDED": "Branch_Suspended",
-    "INACTIVE": "Branch_Deactivated",
-    "PENDING": "Branch_Pending",
-    "CLOSED": "Branch_Closed",
-}
+Branch_Transition_Choice = [
+    ("ACTIVE", "Branch Activated"),
+    ("SUSPENDED", "Branch Suspended"),
+    ("INACTIVE", "Branch Deactivated"),
+    ("PENDING", "Branch Pending"),
+    ("CLOSED", "Branch Closed"),
+]
 
 class BranchStateTransitionSerializer(serializers.Serializer):
-    to_state = serializers.ChoiceField(choices=TransitionChoiceField)
+    to_state = serializers.ChoiceField(choices=Branch_Transition_Choice)
     reason = serializers.CharField(required=False, allow_blank=True, default="")
 
     @transaction.atomic
@@ -637,7 +693,7 @@ class BranchStateTransitionSerializer(serializers.Serializer):
         to_state = self.validated_data["to_state"]
         reason = self.validated_data.get("reason", "")
 
-        if to_state not in TransitionChoiceField.keys():
+        if to_state not in [choice[0] for choice in Branch_Transition_Choice]:
             raise serializers.ValidationError(f"Invalid to_state: {to_state}")
         
         if branch.status == to_state:
