@@ -249,7 +249,7 @@ class BranchCreateSerializer(serializers.ModelSerializer):
     - you can optionally auto-set opened_at if not provided.
     """
 
-    primary_admin_data = BranchPrimaryAdminWriteSerializer(required=False)
+    primary_admin_data = BranchPrimaryAdminWriteSerializer(required=False, write_only=True)
 
     class Meta:
         model = Branch
@@ -499,20 +499,53 @@ class InstitutionDetailSerializer(serializers.ModelSerializer):
 # Institution serializers (write)
 # -----------------------------------------------------------------------------
 
+class BranchInlineCreateSerializer(serializers.Serializer):
+    """
+    Represents a single branch entry submitted inline during institution creation.
+
+    This is intentionally a plain Serializer (not ModelSerializer) because it is
+    used as a nested write structure — the actual Branch model creation happens
+    inside InstitutionCreateSerializer.create(), not here.
+
+    Each branch entry must include primary_admin_data.
+    is_main defaults to False. Exactly one branch should have is_main=True.
+    """
+
+    name = serializers.CharField(max_length=255)
+    _type = serializers.CharField(max_length=80)
+    address = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
+    email = serializers.EmailField(required=False, allow_blank=True, default="")
+    country = serializers.CharField(max_length=80, default="Nigeria")
+    state = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
+    is_main = serializers.BooleanField(default=False)
+    opened_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
+
+    primary_admin_data = BranchPrimaryAdminWriteSerializer(required=True)
+
+    def validate_name(self, value: str) -> str:
+        if not value.strip():
+            raise serializers.ValidationError("Branch name cannot be empty.")
+        return value.strip()
+
+
 class InstitutionCreateSerializer(serializers.ModelSerializer):
     """
-    Creates Institution (tenant identity) and optionally creates an initial MAIN branch.
-
-    Old serializer created institution and handled nested:
+    Creates an Institution with optional:
       - Branding
-      - Primary admin
+      - Institution-level primary admin
+      - One or more branches (each with their own branch admin)
 
-    Those can remain here, while Branch creation handles the location/contact fields.
+    The `branches` field accepts a list of branch objects.
+    Business rules enforced here:
+      - At most ONE branch may have is_main=True.
+      - If any branches are submitted, exactly one must be is_main=True.
+      - Branch names must be unique within the submission.
     """
 
     slug = serializers.CharField(required=False, allow_blank=True)
     branding = InstitutionBrandingSerializer(required=False)
-    primary_admin_data = InstitutionPrimaryAdminWriteSerializer(required=False)
+    primary_admin_data = InstitutionPrimaryAdminWriteSerializer(required=False, write_only=True)
+    branches = BranchInlineCreateSerializer(many=True, required=False, default=list, write_only=True)
 
     class Meta:
         model = Institution
@@ -531,6 +564,9 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
             # optional nested
             "branding",
             "primary_admin_data",
+
+            # NEW
+            "branches",
         ]
 
     def validate_slug(self, value: str) -> str:
@@ -543,40 +579,72 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("This slug is reserved. Choose another.")
         if not _slug_is_unique(normalized):
             suggestions = _build_slug_suggestions(normalized)
-            raise serializers.ValidationError({"message": "Slug already exists.", "suggestions": suggestions})
+            raise serializers.ValidationError({
+                "message": "Slug already exists.",
+                "suggestions": suggestions
+            })
         return normalized
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+        # --- Slug auto-generation (unchanged from before) ---
         raw_slug = (attrs.get("slug") or "").strip()
         if not raw_slug:
             base = _normalize_slug(attrs.get("name", ""))
             if not base:
-                raise serializers.ValidationError({"slug": "Unable to generate slug from name. Provide slug explicitly."})
+                raise serializers.ValidationError({
+                    "slug": "Unable to generate slug from name. Provide slug explicitly."
+                })
             if base in RESERVED_TENANT_SLUGS:
                 base = f"{base}-institution"
             if not _slug_is_unique(base):
                 suggestions = [s for s in _build_slug_suggestions(base) if _slug_is_unique(s)]
-                raise serializers.ValidationError({"slug": {"message": "Generated slug conflicts.", "suggestions": suggestions}})
+                raise serializers.ValidationError({
+                    "slug": {"message": "Generated slug conflicts.", "suggestions": suggestions}
+                })
             attrs["slug"] = base
-            
+
+        # --- Branch-level validations ---
+        branches = attrs.get("branches", [])
+
+        if branches:
+            # Rule 1: Branch names must be unique within the submission
+            names = [b["name"].strip().lower() for b in branches]
+            if len(names) != len(set(names)):
+                raise serializers.ValidationError({
+                    "branches": "Each branch must have a unique name within this submission."
+                })
+
+            # Rule 2: Exactly one branch must be marked as main
+            main_branches = [b for b in branches if b.get("is_main", False)]
+            if len(main_branches) == 0:
+                raise serializers.ValidationError({
+                    "branches": "Exactly one branch must be marked as is_main=true."
+                })
+            if len(main_branches) > 1:
+                raise serializers.ValidationError({
+                    "branches": "Only one branch can be marked as is_main=true."
+                })
+
         return attrs
 
     @transaction.atomic
     def create(self, validated_data: Dict[str, Any]) -> Institution:
         branding_data = validated_data.pop("branding", None)
         primary_admin_data = validated_data.pop("primary_admin_data", None)
+        branches_data = validated_data.pop("branches", [])
 
+        # --- 1. Create the Institution ---
         institution = Institution.objects.create(
             **validated_data,
             status=InstitutionStatus.ACTIVE,
             activated_at=timezone.now(),
         )
 
-        # Optional branding
+        # --- 2. Optional branding ---
         if branding_data:
             InstitutionBranding.objects.create(institution=institution, **branding_data)
 
-        # Optional institution-level primary admin
+        # --- 3. Optional institution-level primary admin ---
         if primary_admin_data:
             contact = ContactInfo.objects.create(
                 full_name=primary_admin_data["full_name"],
@@ -593,7 +661,68 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
                 invite_sent_at=None,
             )
 
-        audit_e = AuditEvent.objects.create(
+        # --- 4. Create branches inline ---
+        for branch_data in branches_data:
+            branch_admin_data = branch_data.pop("primary_admin_data", None)
+
+            branch = Branch.objects.create(
+                institution=institution,
+                status=BranchStatus.PENDING,
+                opened_at=branch_data.pop("opened_at", None) or timezone.now(),
+                **branch_data,
+            )
+
+            # Log initial lifecycle event
+            BranchLifecycle.objects.create(
+                branch=branch,
+                from_state="",
+                to_state=BranchStatus.PENDING,
+                actor_id=self.context.get("actor_id", "system"),
+                reason="Branch created during institution onboarding",
+            )
+
+            # Create branch admin if provided
+            if branch_admin_data:
+                contact = ContactInfo.objects.create(
+                    full_name=branch_admin_data["full_name"],
+                    email=branch_admin_data["email"],
+                    phone=branch_admin_data.get("phone", ""),
+                )
+                BranchPrimaryAdmin.objects.create(
+                    branch=branch,
+                    contact=contact,
+                    branch_role=branch_admin_data.get("branch_role", "Head Teacher"),
+                    role_label=branch_admin_data.get("role_label", "BRANCH_ADMIN"),
+                    invite_status=InviteStatus.QUEUED,
+                    invite_queued_at=timezone.now(),
+                    invite_sent_at=None,
+                )
+        
+            # branch audit trail for creation
+            audit_branch = AuditEvent.objects.create(
+                module_key=AuditModuleKey.BRANCH,
+                action_type=AuditActionType.CREATE,
+                actor_user=self.context.get("actor_id", "system"),
+                entity_type="Branch",
+                entity_id=str(branch.code),
+                entity_label=branch.name,
+                before_data={},
+                diff_data=AuditDiffService.from_instances(
+                    before_instance=None, 
+                    after_instance=branch,
+                    exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deleted_at"],
+                )['diff'],
+            )
+
+            trail = EntityAuditTrail.objects.create(
+                entity_type="Branch",
+                entity_id=str(branch.code),
+                entity_label=branch.name,
+            )
+            trail.register_event(audit_branch)
+
+        # --- 5. Audit trail for institution ---
+        audit_institution = AuditEvent.objects.create(
             module_key=AuditModuleKey.INSTITUTION,
             action_type=AuditActionType.CREATE,
             actor_user=self.context.get("actor_id", "system"),
@@ -602,21 +731,20 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
             entity_label=institution.name,
             before_data={},
             diff_data=AuditDiffService.from_instances(
-                before_instance=None, 
+                before_instance=None,
                 after_instance=institution,
-                exclude_fields=["created_at", "updated_at", "activated_at", "deleted_at"],
+                exclude_fields=["created_at", "updated_at", "activated_at", "deactivated_at"],
             )['diff'],
         )
-
         trail = EntityAuditTrail.objects.create(
             entity_type="Institution",
             entity_id=str(institution.slug),
             entity_label=institution.name,
         )
-        trail.register_event(audit_e)
+        trail.register_event(audit_institution)
 
         return institution
-
+    
 
 class InstitutionUpdateSerializer(serializers.ModelSerializer):
     """

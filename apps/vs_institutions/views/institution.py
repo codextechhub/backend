@@ -13,6 +13,7 @@ from ..serializers import (
     InstitutionListSerializer,
     InstitutionUpdateSerializer,
 )
+from ..paginations import InstitutionPagination
 
 
 class ActorContextMixin:
@@ -28,6 +29,7 @@ class ActorContextMixin:
 class InstitutionListView(ActorContextMixin, generics.ListAPIView):
     permission_classes = [IsVisionStaff]
     serializer_class = InstitutionListSerializer
+    pagination_class = InstitutionPagination
 
     queryset = (
         Institution.objects.all()
@@ -90,10 +92,10 @@ class InstitutionStatsView(generics.GenericAPIView):
         from django.db.models import Count, Q
 
         result = Institution.objects.aggregate(
-            all=Count("id"),
-            active=Count("id", filter=Q(status=InstitutionStatus.ACTIVE)),
-            pending=Count("id", filter=Q(status=InstitutionStatus.PENDING)),
-            inactive=Count("id", filter=Q(status=InstitutionStatus.INACTIVE)),
+            all=Count("slug"),
+            active=Count("slug", filter=Q(status=InstitutionStatus.ACTIVE)),
+            pending=Count("slug", filter=Q(status=InstitutionStatus.PENDING)),
+            inactive=Count("slug", filter=Q(status=InstitutionStatus.INACTIVE)),
         )
 
         return Response(result)
