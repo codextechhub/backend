@@ -40,7 +40,8 @@ RESERVED_TENANT_SLUGS = {
 class InstitutionStatus(models.TextChoices):
     ACTIVE = "ACTIVE", "Active"
     INACTIVE = "INACTIVE", "Inactive"
-    DELETED = "DELETED", "Deleted"
+    PENDING = "PENDING", "Pending"
+    INACTIVE = "INACTIVE", "Inactive"
     
 
 class BranchStatus(models.TextChoices):
@@ -159,7 +160,7 @@ class Institution(TimeStampedModel):
     )
 
     activated_at = models.DateTimeField(null=True, blank=True)
-    deleted_at = models.DateTimeField(null=True, blank=True)
+    deactivated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         indexes = [
@@ -257,7 +258,7 @@ class Branch(TimeStampedModel):
     closed_at = models.DateTimeField(null=True, blank=True)
 
     activated_at = models.DateTimeField(null=True, blank=True)
-    deleted_at = models.DateTimeField(null=True, blank=True)
+    deactivated_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         indexes = [
