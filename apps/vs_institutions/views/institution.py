@@ -32,7 +32,7 @@ class InstitutionListView(ActorContextMixin, generics.ListAPIView):
     queryset = (
         Institution.objects.all()
         .select_related("branding",)
-        .prefetch_related("module_settings", "branches")
+        .prefetch_related("branches")
     )
 
     def get_queryset(self):
@@ -69,25 +69,35 @@ class InstitutionListView(ActorContextMixin, generics.ListAPIView):
         return qs
 
 
-class InstitutionCountView(generics.GenericAPIView):
+class InstitutionStatsView(generics.GenericAPIView):
+    """
+    Returns a single summary payload with institution counts broken down
+    by status. Designed for the School Management dashboard stat cards.
+
+    Response shape:
+        {
+            "all":      47,
+            "active":   32,
+            "pending":  8,
+            "inactive": 7
+        }
+
+    One DB query using conditional aggregation — no N+1.
+    """
     permission_classes = [IsVisionStaff]
 
     def get(self, request, *args, **kwargs):
-        param = "all"
-        count = Institution.objects.count()
+        from django.db.models import Count, Q
 
-        active_param = (self.request.query_params.get("active") or "").strip().lower()
-        if active_param in ("1", "true", "yes"):
-            param = "active"
-            count = Institution.objects.filter(status=InstitutionStatus.ACTIVE).count()
+        result = Institution.objects.aggregate(
+            all=Count("id"),
+            active=Count("id", filter=Q(status=InstitutionStatus.ACTIVE)),
+            pending=Count("id", filter=Q(status=InstitutionStatus.PENDING)),
+            inactive=Count("id", filter=Q(status=InstitutionStatus.INACTIVE)),
+        )
 
-        inactive_param = (self.request.query_params.get("inactive") or "").strip().lower()
-        if inactive_param in ("1", "true", "yes"):
-            param = "inactive"
-            count = Institution.objects.filter(status=InstitutionStatus.INACTIVE).count()
-
-        return Response({f"{param.capitalize()} count": count})
-
+        return Response(result)
+    
 
 class InstitutionCreateView(ActorContextMixin, generics.CreateAPIView):
     permission_classes = [IsVisionStaff]
@@ -117,7 +127,7 @@ class InstitutionUpdateView(ActorContextMixin, generics.UpdateAPIView):
     queryset = (
         Institution.objects.all()
         .select_related("branding")
-        .prefetch_related("module_settings", "branches")
+        .prefetch_related("branches")
     )
     lookup_field = "slug"
 
