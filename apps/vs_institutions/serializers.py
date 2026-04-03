@@ -716,7 +716,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
 
             trail = EntityAuditTrail.objects.create(
                 entity_type="Branch",
-                entity_id=str(branch.code),
+                entity_id=f"{str(branch.institution.slug)}-{str(branch.code)}",
                 entity_label=branch.name,
             )
             trail.register_event(audit_branch)
