@@ -30,8 +30,6 @@ router.register(r"suspicious-logins", SuspiciousLoginEventViewSet, basename="sus
 router.register(r"auth-events", AuthEventLogViewSet, basename="auth-events")
 
 urlpatterns = [
-    path("", include(router.urls)),
-
     path("admin-create/", AdminCreateAccountView.as_view(), name="admin-create-account"),
 
     path("auth/login/", LoginAPIView.as_view(), name="auth-login"),
@@ -41,4 +39,6 @@ urlpatterns = [
     path("auth/password/change/", PasswordChangeAPIView.as_view(), name="password-change"),
     path("auth/password/reset/request/", PasswordResetRequestAPIView.as_view(), name="password-reset-request"),
     path("auth/password/reset/confirm/", PasswordResetConfirmAPIView.as_view(), name="password-reset-confirm"),
+
+    path("", include(router.urls)),
 ]
