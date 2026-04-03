@@ -34,9 +34,7 @@ class BranchListView(ActorContextMixin, generics.ListAPIView):
         qs = super().get_queryset()
 
         # Filter by institution (tenant)
-        institution_slug = (self.request.query_params.get("institution") or "").strip()
-        if institution_slug:
-            qs = qs.filter(institution__slug=institution_slug)
+        qs = qs.filter(institution__slug=self.kwargs.get("slug"))
 
         status_param = (self.request.query_params.get("status") or "").strip()
         if status_param:
@@ -111,9 +109,8 @@ class BranchStatsView(generics.GenericAPIView):
 
         qs = Branch.objects.all()
 
-        i_slug = (request.query_params.get("i_slug") or "").strip()
-        if i_slug:
-            qs = qs.filter(institution__slug=i_slug)
+        i_slug = self.kwargs.get("slug")
+        qs = qs.filter(institution__slug=i_slug)
 
         result = qs.aggregate(
             all=Count("id"),

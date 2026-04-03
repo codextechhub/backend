@@ -35,9 +35,9 @@ urlpatterns = [
 
     # --------- Branches ---------
     # Branches (separate list/create views)
-    path("branches/", BranchListView.as_view(), name="branch-list"),
-    path("<str:slug>/branches/", BranchCreateView.as_view(), name="branch-create"),
-    path("branches/stats/", BranchStatsView.as_view(), name="branch-stats"),
+    path("<str:slug>/branches/", BranchListView.as_view(), name="branch-list"),
+    path("<str:slug>/branches/create/", BranchCreateView.as_view(), name="branch-create"),
+    path("<str:slug>/branches/stats/", BranchStatsView.as_view(), name="branch-stats"),
 
     # Branch record access (separate detail/update/delete views)
     path("<str:slug>/branches/<int:code>/detail/", BranchDetailView.as_view(), name="branch-detail"),
