@@ -24,7 +24,7 @@ class BranchTransitionView(ActorContextMixin, generics.GenericAPIView):
 
     def post(self, request, *args, **kwargs):
         branch = self.get_object()
-        serializer = self.get_serializer(data=request.data, context={**self.get_serializer_context(), "branch": branch})
+        serializer = self.get_serializer(data=request.data, context={**self.get_serializer_context(), "branch": branch, "institution": branch.institution})
         serializer.is_valid(raise_exception=True)
         serializer.save()
         branch.refresh_from_db()
