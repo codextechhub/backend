@@ -73,10 +73,8 @@ class BranchListView(ActorContextMixin, generics.ListAPIView):
                 Q(name__icontains=q)
                 | Q(address__icontains=q)
                 | Q(state__icontains=q)
-                | Q(city__icontains=q)
                 | Q(country__icontains=q)
                 | Q(email__icontains=q)
-                | Q(phone_number__icontains=q)
                 | Q(institution__name__icontains=q)
                 | Q(institution__slug__icontains=q)
             )
@@ -87,35 +85,47 @@ class BranchListView(ActorContextMixin, generics.ListAPIView):
         return qs
 
 
-class BranchCountView(generics.GenericAPIView):
+class BranchStatsView(generics.GenericAPIView):
+    """
+    Returns a single summary payload with branch counts broken down by status.
+    Designed for the Branch Management dashboard stat cards.
+
+    Supports optional institution scoping via ?s=<institution_slug>
+
+    Response shape:
+        {
+            "all":       94,
+            "active":    61,
+            "pending":   12,
+            "suspended": 8,
+            "inactive":  9,
+            "closed":    4
+        }
+
+    One DB query using conditional aggregation — no N+1.
+    """
     permission_classes = [IsVisionStaff]
 
     def get(self, request, *args, **kwargs):
+        from django.db.models import Count, Q
+
         qs = Branch.objects.all()
 
-        i_slug = (self.request.query_params.get("s") or "").strip() # "s" for "slug" to keep it short in URL
+        i_slug = (request.query_params.get("i_slug") or "").strip()
         if i_slug:
             qs = qs.filter(institution__slug=i_slug)
 
-        param = "all"
-        count = qs.count()
+        result = qs.aggregate(
+            all=Count("id"),
+            active=Count("id", filter=Q(status=BranchStatus.ACTIVE)),
+            pending=Count("id", filter=Q(status=BranchStatus.PENDING)),
+            suspended=Count("id", filter=Q(status=BranchStatus.SUSPENDED)),
+            inactive=Count("id", filter=Q(status=BranchStatus.INACTIVE)),
+            closed=Count("id", filter=Q(status=BranchStatus.CLOSED)),
+        )
 
-        # status selectors
-        for key, value in [
-            ("active", BranchStatus.ACTIVE),
-            ("inactive", BranchStatus.INACTIVE),
-            ("suspended", BranchStatus.SUSPENDED),
-            ("pending", BranchStatus.PENDING),
-            ("closed", BranchStatus.CLOSED),
-        ]:
-            flag = (self.request.query_params.get(key) or "").strip().lower()
-            if flag in ("1", "true", "yes"):
-                param = key
-                count = qs.filter(status=value).count()
-                break
-
-        return Response({f"{param.capitalize()} count": count})
-
+        return Response(result)
+    
 
 class BranchCreateView(ActorContextMixin, generics.CreateAPIView):
     permission_classes = [IsVisionStaff]
