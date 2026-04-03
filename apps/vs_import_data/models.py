@@ -227,6 +227,12 @@ class ImportBatch(TimeStampedModel):
         help_text="Official system template chosen for this import batch.",
     )
 
+    dataset_type = models.CharField(
+        max_length=30,
+        choices=DatasetTypeChoices.choices,
+        blank=True,
+    )
+
     file = models.FileField(upload_to=import_file_upload_to)
     file_format = models.CharField(
         max_length=10,
@@ -267,6 +273,7 @@ class ImportBatch(TimeStampedModel):
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["branch", "status"]),
+            models.Index(fields=["branch", "dataset_type"]),
             models.Index(fields=["created_at"]),
         ]
 
@@ -275,7 +282,7 @@ class ImportBatch(TimeStampedModel):
 
     def clean(self):
         allowed = {FileFormatChoices.CSV, FileFormatChoices.XLSX, FileFormatChoices.XLS}
-        if self.file_format not in allowed:
+        if self.file_format and self.file_format not in allowed:
             raise ValidationError({"file_format": "Only CSV and Excel files are supported."})
 
     @property
