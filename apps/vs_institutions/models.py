@@ -41,7 +41,6 @@ class InstitutionStatus(models.TextChoices):
     ACTIVE = "ACTIVE", "Active"
     INACTIVE = "INACTIVE", "Inactive"
     PENDING = "PENDING", "Pending"
-    INACTIVE = "INACTIVE", "Inactive"
     
 
 class BranchStatus(models.TextChoices):
