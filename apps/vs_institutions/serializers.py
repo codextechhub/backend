@@ -9,8 +9,8 @@ from rest_framework import serializers
 
 from .models import (
     ContactInfo,
+    InstitutionPackageSetup,
     InviteStatus,
-    OperationOutcome,
     BranchStatus,
     RESERVED_TENANT_SLUGS,
     Institution,
@@ -20,9 +20,8 @@ from .models import (
     InstitutionBranding,
     BranchLifecycle,
     InstitutionStatus,
-    OwnershipType,
-    TermStructure,
-    Currency,
+    PackagePlan,
+    XVSModules,
 )
 from vs_audit.models import (
     AuditEvent, 
@@ -120,6 +119,151 @@ class AuditEventSerializer(serializers.ModelSerializer):
             "after_hash",
             "outcome",
             "occurred_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+
+# ---------------------------------------------------------------
+# Package Setup serializers
+# ---------------------------------------------------------------
+
+class PackagePlanSerializer(serializers.ModelSerializer):
+    """
+    Read-only representation of a PackagePlan catalog entry.
+    Used for listing available plans in the Package Plan dropdown.
+    """
+    class Meta:
+        model = PackagePlan
+        fields = [
+            "id",
+            "name",
+            "code",
+            "description",
+            "billing_cycle",
+            "max_students",
+            "max_teachers",
+            "max_admins",
+            "max_branch",
+            "is_active",
+        ]
+        read_only_fields = fields
+
+
+class XVSModuleSerializer(serializers.ModelSerializer):
+    """
+    Read-only representation of a platform module.
+    Used for listing available modules in the Enabled Modules dropdown.
+    """
+    class Meta:
+        model = XVSModules
+        fields = [
+            "id",
+            "key",
+            "name",
+            "description",
+            "is_active",
+        ]
+        read_only_fields = fields
+
+
+class InstitutionPackageSetupWriteSerializer(serializers.Serializer):
+    """
+    Write-only structure for submitting package setup during institution creation.
+
+    Accepts `package_plan` as the PackagePlan `code` (slug) — more stable
+    than a numeric PK and matches what the dropdown naturally emits.
+    Accepts `enabled_modules` as a list of XVSModules `key` strings.
+
+    Validation enforces:
+    - package_plan must exist and be active.
+    - All module keys must exist and be active.
+    - Capacities must be >= 1.
+    - Capacities must not exceed plan limits.
+    - subscription_expires_at must not be in the past.
+    """
+
+    package_plan = serializers.SlugRelatedField(
+        slug_field="code",
+        queryset=PackagePlan.objects.filter(is_active=True),
+        help_text="The `code` of the PackagePlan to assign. E.g. 'basic', 'premium'.",
+    )
+
+    enabled_modules = serializers.ListField(
+        child=serializers.SlugRelatedField(
+            slug_field="key",
+            queryset=XVSModules.objects.filter(is_active=True),
+        ),
+        required=False,
+        default=list,
+        help_text="List of module `key` strings to enable. E.g. ['students', 'attendance'].",
+    )
+
+    student_capacity = serializers.IntegerField(min_value=1)
+    teacher_capacity = serializers.IntegerField(min_value=1)
+    admin_capacity = serializers.IntegerField(min_value=1)
+
+    subscription_expires_at = serializers.DateField(
+        required=False,
+        allow_null=True,
+        default=None,
+        help_text="Optional. Date the subscription expires. Cannot be in the past.",
+    )
+
+    def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+        plan: PackagePlan = attrs["package_plan"]
+        errors = {}
+
+        # --- Capacity vs plan limits ---
+        if plan.max_students is not None and attrs["student_capacity"] > plan.max_students:
+            errors["student_capacity"] = (
+                f"Exceeds plan limit of {plan.max_students} students."
+            )
+
+        if plan.max_teachers is not None and attrs["teacher_capacity"] > plan.max_teachers:
+            errors["teacher_capacity"] = (
+                f"Exceeds plan limit of {plan.max_teachers} teachers."
+            )
+
+        if plan.max_admins is not None and attrs["admin_capacity"] > plan.max_admins:
+            errors["admin_capacity"] = (
+                f"Exceeds plan limit of {plan.max_admins} admins."
+            )
+
+        # --- Subscription expiry ---
+        expires_at = attrs.get("subscription_expires_at")
+        if expires_at and expires_at < timezone.localdate():
+            errors["subscription_expires_at"] = (
+                "Subscription expiry date cannot be in the past."
+            )
+
+        if errors:
+            raise serializers.ValidationError(errors)
+
+        return attrs
+
+
+class InstitutionPackageSetupReadSerializer(serializers.ModelSerializer):
+    """
+    Read-only nested representation of a package setup.
+    Returned in InstitutionDetailSerializer.
+    """
+    package_plan = PackagePlanSerializer(read_only=True)
+    enabled_modules = XVSModuleSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = InstitutionPackageSetup
+        fields = [
+            "id",
+            "package_plan",
+            "enabled_modules",
+            "student_capacity",
+            "teacher_capacity",
+            "admin_capacity",
+            "subscription_expires_at",
+            "is_active",
+            "notes",
             "created_at",
             "updated_at",
         ]
@@ -442,6 +586,7 @@ class InstitutionListSerializer(serializers.ModelSerializer):
     Location fields moved to Branch (main branch can be shown via nested/flattened approach).
     """
     main_branch = BranchListSerializer(read_only=True)
+    total_students = serializers.ReadOnlyField(default=0)
 
     class Meta:
         model = Institution
@@ -452,6 +597,7 @@ class InstitutionListSerializer(serializers.ModelSerializer):
             "ownership_type",
             "status",
             "activated_at",
+            "total_students",
             "main_branch",
         ]
         read_only_fields = fields
@@ -466,6 +612,7 @@ class InstitutionDetailSerializer(serializers.ModelSerializer):
     main_branch = BranchDetailSerializer(read_only=True)
     branding = InstitutionBrandingSerializer(read_only=True)
     primary_admin = InstitutionPrimaryAdminReadSerializer(read_only=True)
+    package_setup = InstitutionPackageSetupReadSerializer(read_only=True)
 
     class Meta:
         model = Institution
@@ -491,6 +638,10 @@ class InstitutionDetailSerializer(serializers.ModelSerializer):
             # Nested institution-level
             "branding",
             "primary_admin",
+            "package_setup",
+
+            # Extras
+            "total_students",
         ]
         read_only_fields = fields
 
@@ -529,6 +680,7 @@ class BranchInlineCreateSerializer(serializers.Serializer):
 
 
 class InstitutionCreateSerializer(serializers.ModelSerializer):
+
     """
     Creates an Institution with optional:
       - Branding
@@ -546,6 +698,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
     branding = InstitutionBrandingSerializer(required=False)
     primary_admin_data = InstitutionPrimaryAdminWriteSerializer(required=False, write_only=True)
     branches = BranchInlineCreateSerializer(many=True, required=False, default=list, write_only=True)
+    package_setup_data = InstitutionPackageSetupWriteSerializer(required=False, write_only=True)
 
     class Meta:
         model = Institution
@@ -564,9 +717,8 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
             # optional nested
             "branding",
             "primary_admin_data",
-
-            # NEW
             "branches",
+            "package_setup_data",
         ]
 
     def validate_slug(self, value: str) -> str:
@@ -632,6 +784,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
         branding_data = validated_data.pop("branding", None)
         primary_admin_data = validated_data.pop("primary_admin_data", None)
         branches_data = validated_data.pop("branches", [])
+        package_setup_data = validated_data.pop("package_setup_data", None)
 
         # --- 1. Create the Institution ---
         institution = Institution.objects.create(
@@ -720,8 +873,29 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
                 entity_label=branch.name,
             )
             trail.register_event(audit_branch)
+        
+        # --- 5. Optional package setup ---
+        if package_setup_data:
+            enabled_modules = package_setup_data.pop("enabled_modules", [])
 
-        # --- 5. Audit trail for institution ---
+            # subscription_expires_at defaults to 1 year if not provided
+            expires_at = package_setup_data.pop("subscription_expires_at", None)
+            if not expires_at:
+                from datetime import date
+                from dateutil.relativedelta import relativedelta
+                expires_at = date.today() + relativedelta(years=1)
+
+            setup = InstitutionPackageSetup.objects.create(
+                institution=institution,
+                subscription_expires_at=expires_at,
+                **package_setup_data,
+            )
+
+            # Assign M2M modules after creation
+            if enabled_modules:
+                setup.enabled_modules.set(enabled_modules)
+
+        # --- 6. Audit trail for institution ---
         audit_institution = AuditEvent.objects.create(
             module_key=AuditModuleKey.INSTITUTION,
             action_type=AuditActionType.CREATE,
