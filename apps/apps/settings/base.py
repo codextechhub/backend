@@ -16,6 +16,10 @@ SECRET_KEY = config(
     "SECRET_KEY",
     default="django-insecure-i7@+=ild@90+jm5dew6h%1#rcpmvb0%83j^5$hqvlc2^*hihwd",
 )
+RENDER_API_KEY = config(
+    "RENDER_API_KEY",
+    default="rnd_eA8qL7X50e5Wqtf6bFlpJMiUxMxa"
+)
 TEMP_PASSWORD_PEPPER = config(
     "TEMP_PASSWORD_PEPPER",
     default="a9f8s7d6g5h4j3k2l1q0w9e8r7t6y5u4i3o2p1z0x9c8v7b6n5m4#@hg!$%^^&*()",
