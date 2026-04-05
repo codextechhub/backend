@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__render__get_metrics",
+      "mcp__render__list_deploys",
+      "mcp__render__list_logs"
+    ]
+  }
+}

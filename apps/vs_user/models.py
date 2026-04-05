@@ -119,7 +119,7 @@ class UserAccount(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         constraints = [
             # Enforce institution binding rules
             models.CheckConstraint(
-                check=(
+                condition=(
                     Q(user_type="VS_STAFF", branch__isnull=True)
                     | ~Q(user_type="VS_STAFF")
                 ),
