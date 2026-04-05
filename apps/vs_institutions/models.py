@@ -167,7 +167,7 @@ class Institution(TimeStampedModel):
             models.Index(fields=["status", "created_at"]),
         ]
         constraints = [
-            models.CheckConstraint(check=~Q(slug=""), name="slug_not_empty"),
+            models.CheckConstraint(condition=~Q(slug=""), name="slug_not_empty"),
         ]
 
     def __str__(self) -> str:
