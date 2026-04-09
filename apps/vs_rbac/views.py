@@ -65,20 +65,20 @@ class PermissionDependencyDetailView(generics.RetrieveDestroyAPIView):
 
 
 # -----------------------------------------------------------------------------
-# Branch Role Templates
+# Institution Role Templates
 # -----------------------------------------------------------------------------
 class RoleTemplateListCreateView(generics.ListCreateAPIView):
     """
-    Branch-facing:
-    - GET: list role templates in a branch
-    - POST: create a role template in a branch
+    Institution-facing:
+    - GET: list role templates in a institution
+    - POST: create a role template in a institution
     """
     permission_classes = [IsAuthenticatedAndActive & IsInstitutionAdmin]
 
     def get_queryset(self):
-        branch_id = self.kwargs["branch_id"]
+        institution_id = self.kwargs["institution_id"]
         return (
-            RoleTemplate.objects.filter(branch_id=branch_id)
+            RoleTemplate.objects.filter(institution_id=institution_id)
             .annotate(
                 assigned_users_count=Count(
                     "user_assignments",
@@ -91,7 +91,7 @@ class RoleTemplateListCreateView(generics.ListCreateAPIView):
                     distinct=True,
                 ),
             )
-            .select_related("created_by", "branch")
+            .select_related("created_by", "institution")
             .order_by("name")
         )
 
@@ -101,12 +101,12 @@ class RoleTemplateListCreateView(generics.ListCreateAPIView):
         return RoleTemplateListSerializer
 
     def perform_create(self, serializer):
-        serializer.save(branch_id=self.kwargs["branch_id"])
+        serializer.save(institution_id=self.kwargs["institution_id"])
 
 
 class RoleTemplateDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
-    Branch-facing:
+    Institution-facing:
     - GET: role detail
     - PATCH/PUT: update role fields and optionally replace permission_keys
     - DELETE: hard delete (if your policy allows it)
@@ -116,32 +116,32 @@ class RoleTemplateDetailView(generics.RetrieveUpdateDestroyAPIView):
     lookup_field = "id"
 
     def get_queryset(self):
-        branch_id = self.kwargs["branch_id"]
+        institution_id = self.kwargs["institution_id"]
         return (
-            RoleTemplate.objects.filter(branch_id=branch_id)
-            .select_related("created_by", "branch")
+            RoleTemplate.objects.filter(institution_id=institution_id)
+            .select_related("created_by", "institution")
             .prefetch_related("role_permissions__permission")
         )
 
 
 # -----------------------------------------------------------------------------
-# Branch User Role Assignments
+# Institution User Role Assignments
 # -----------------------------------------------------------------------------
 class UserRoleAssignmentListCreateView(generics.ListCreateAPIView):
     """
-    Branch-facing:
-    - GET: list assignments in a branch
-    - POST: assign a role to a user inside a branch
+    Institution-facing:
+    - GET: list assignments in a institution
+    - POST: assign a role to a user inside a institution
     """
     serializer_class = UserRoleAssignmentSerializer
     permission_classes = [IsAuthenticatedAndActive & IsInstitutionAdmin]
 
     def get_queryset(self):
-        branch_id = self.kwargs["branch_id"]
+        institution_id = self.kwargs["institution_id"]
 
         qs = (
-            UserRoleAssignment.objects.filter(branch_id=branch_id)
-            .select_related("user", "role", "assigned_by", "revoked_by", "branch")
+            UserRoleAssignment.objects.filter(institution_id=institution_id)
+            .select_related("user", "role", "assigned_by", "revoked_by", "institution")
             .order_by("-created_at")
         )
 
@@ -159,12 +159,12 @@ class UserRoleAssignmentListCreateView(generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(branch_id=self.kwargs["branch_id"])
+        serializer.save(institution_id=self.kwargs["institution_id"])
 
 
 class UserRoleAssignmentDetailView(generics.RetrieveUpdateAPIView):
     """
-    Branch-facing:
+    Institution-facing:
     - GET: one assignment
     - PATCH: often used for revoke flow
     """
@@ -173,30 +173,30 @@ class UserRoleAssignmentDetailView(generics.RetrieveUpdateAPIView):
     lookup_field = "id"
 
     def get_queryset(self):
-        branch_id = self.kwargs["branch_id"]
+        institution_id = self.kwargs["institution_id"]
         return (
-            UserRoleAssignment.objects.filter(branch_id=branch_id)
-            .select_related("user", "role", "assigned_by", "revoked_by", "branch")
+            UserRoleAssignment.objects.filter(institution_id=institution_id)
+            .select_related("user", "role", "assigned_by", "revoked_by", "institution")
         )
 
 
 # -----------------------------------------------------------------------------
-# Branch Role Change Requests (Branch -> Vision)
+# Institution Role Change Requests (Institution -> Vision)
 # -----------------------------------------------------------------------------
-class BranchRoleChangeRequestListCreateView(generics.ListCreateAPIView):
+class InstitutionRoleChangeRequestListCreateView(generics.ListCreateAPIView):
     """
-    Branch-facing:
-    - GET: list requests for a branch
-    - POST: create a change request for a role in that branch
+    Institution-facing:
+    - GET: list requests for a institution
+    - POST: create a change request for a role in that institution
     """
     serializer_class = RoleChangeRequestSerializer
     permission_classes = [IsAuthenticatedAndActive & IsInstitutionAdmin]
 
     def get_queryset(self):
-        branch_id = self.kwargs["branch_id"]
+        institution_id = self.kwargs["institution_id"]
         qs = (
-            RoleChangeRequest.objects.filter(branch_id=branch_id)
-            .select_related("requested_by", "reviewer", "target_role", "branch")
+            RoleChangeRequest.objects.filter(institution_id=institution_id)
+            .select_related("requested_by", "reviewer", "target_role", "institution")
             .prefetch_related("delta_items__permission")
             .order_by("-submitted_at")
         )
@@ -212,13 +212,13 @@ class BranchRoleChangeRequestListCreateView(generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(branch_id=self.kwargs["branch_id"])
+        serializer.save(institution_id=self.kwargs["institution_id"])
 
 
 class VisionRoleChangeRequestQueueView(generics.ListAPIView):
     """
     Vision-facing:
-    - GET: queue of branch role change requests across branches
+    - GET: queue of institution role change requests across institutiones
     """
     serializer_class = RoleChangeRequestSerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
@@ -226,19 +226,19 @@ class VisionRoleChangeRequestQueueView(generics.ListAPIView):
     def get_queryset(self):
         qs = (
             RoleChangeRequest.objects.all()
-            .select_related("requested_by", "reviewer", "target_role", "branch")
+            .select_related("requested_by", "reviewer", "target_role", "institution")
             .prefetch_related("delta_items__permission")
             .order_by("-submitted_at")
         )
 
         status_q = self.request.query_params.get("status")
-        branch_id = self.request.query_params.get("branch_id")
+        institution_id = self.request.query_params.get("institution_id")
         target_role = self.request.query_params.get("target_role")
 
         if status_q:
             qs = qs.filter(status=status_q)
-        if branch_id:
-            qs = qs.filter(branch_id=branch_id)
+        if institution_id:
+            qs = qs.filter(institution_id=institution_id)
         if target_role:
             qs = qs.filter(target_role_id=target_role)
 
@@ -248,7 +248,7 @@ class VisionRoleChangeRequestQueueView(generics.ListAPIView):
 class VisionRoleChangeRequestDetailView(generics.RetrieveAPIView):
     """
     Vision-facing:
-    - GET: single branch role change request
+    - GET: single institution role change request
     """
     serializer_class = RoleChangeRequestSerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
@@ -257,14 +257,14 @@ class VisionRoleChangeRequestDetailView(generics.RetrieveAPIView):
     def get_queryset(self):
         return (
             RoleChangeRequest.objects.all()
-            .select_related("requested_by", "reviewer", "target_role", "branch")
+            .select_related("requested_by", "reviewer", "target_role", "institution")
             .prefetch_related("delta_items__permission")
         )
 
 
 class VisionRoleChangeRequestDecisionView(APIView):
     """
-    Vision-facing decision endpoint for branch role change requests.
+    Vision-facing decision endpoint for institution role change requests.
 
     POST body:
     {
@@ -279,7 +279,7 @@ class VisionRoleChangeRequestDecisionView(APIView):
         notes = (request.data.get("notes") or "").strip()
 
         try:
-            obj = RoleChangeRequest.objects.select_related("target_role", "branch").get(id=request_id)
+            obj = RoleChangeRequest.objects.select_related("target_role", "institution").get(id=request_id)
         except RoleChangeRequest.DoesNotExist:
             return Response(
                 {"detail": "Request not found."},
@@ -318,8 +318,8 @@ class VisionRoleChangeRequestDecisionView(APIView):
             try:
                 with transaction.atomic():
                     # USE SERVICE LAYER
-                    from .services import apply_branch_role_change_request
-                    apply_branch_role_change_request(
+                    from .services import apply_institution_role_change_request
+                    apply_institution_role_change_request(
                         obj=obj,
                         reviewer=request.user,
                         notes=notes
