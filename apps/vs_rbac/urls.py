@@ -28,39 +28,39 @@ urlpatterns = [
     ),
 
     # -------------------------------------------------------------------------
-    # Branch-scoped Role Templates
+    # Institution-scoped Role Templates
     # -------------------------------------------------------------------------
     path(
-        "branches/<uuid:branch_id>/roles/",
+        "institutions/<slug:institution_id>/roles/",
         views.RoleTemplateListCreateView.as_view(),
         name="rbac-role-list-create",
     ),
     path(
-        "branches/<uuid:branch_id>/roles/<int:id>/",
+        "institutions/<slug:institution_id>/roles/<int:id>/",
         views.RoleTemplateDetailView.as_view(),
         name="rbac-role-detail",
     ),
 
     # -------------------------------------------------------------------------
-    # Branch-scoped Role Assignments
+    # Institution-scoped Role Assignments
     # -------------------------------------------------------------------------
     path(
-        "branches/<uuid:branch_id>/role-assignments/",
+        "institutions/<slug:institution_id>/role-assignments/",
         views.UserRoleAssignmentListCreateView.as_view(),
         name="rbac-assignment-list-create",
     ),
     path(
-        "branches/<uuid:branch_id>/role-assignments/<int:id>/",
+        "institutions/<slug:institution_id>/role-assignments/<int:id>/",
         views.UserRoleAssignmentDetailView.as_view(),
         name="rbac-assignment-detail",
     ),
 
     # -------------------------------------------------------------------------
-    # Branch -> Vision Role Change Requests
+    # Institution -> Vision Role Change Requests
     # -------------------------------------------------------------------------
     path(
-        "branches/<uuid:branch_id>/role-change-requests/",
-        views.BranchRoleChangeRequestListCreateView.as_view(),
+        "institutions/<slug:institution_id>/role-change-requests/",
+        views.InstitutionRoleChangeRequestListCreateView.as_view(),
         name="rbac-role-change-request-list-create",
     ),
 
