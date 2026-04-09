@@ -3,7 +3,10 @@
     "allow": [
       "mcp__render__get_metrics",
       "mcp__render__list_deploys",
-      "mcp__render__list_logs"
+      "mcp__render__list_logs",
+      "Bash(grep -r \"branch_id\\\\|Branch\" /Users/mac/Documents/GitHub/backend/apps/vs_rbac/*.py)",
+      "Bash(find /Users/mac/Documents/GitHub/backend/apps -type f -name \"*.py\" -exec grep -l \"vs_rbac\\\\|has_perm\\\\|permission\" {})",
+      "Bash(python3 -c \":*)"
     ]
   }
 }
