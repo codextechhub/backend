@@ -1,11 +1,5 @@
 """
 Service layer for role change approval workflows.
-
-Handles:
-- Institution role change request approval and application
-- Platform role change request approval and application
-- Dependency validation before applying changes
-- Audit trail generation
 """
 from __future__ import annotations
 
@@ -15,12 +9,10 @@ from django.utils import timezone
 from .models import (
     RoleChangeRequest,
     RoleChangeDeltaItem,
-    RoleTemplate,
     RolePermission,
     Permission,
     PlatformRoleChangeRequest,
     PlatformRoleChangeDeltaItem,
-    PlatformRoleTemplate,
     PlatformRolePermission,
 )
 from .validators import validate_role_permissions
@@ -28,126 +20,76 @@ from .validators import validate_role_permissions
 
 def apply_institution_role_change_request(obj: RoleChangeRequest, reviewer, notes: str = ""):
     """
-    Apply approved institution role change request.
-    
-    This atomically:
-    1. Validates dependencies
-    2. Applies ADD/REMOVE operations
-    3. Bumps role version
-    4. Marks request as approved
-    5. Creates audit trail
-    
-    Raises exception if validation fails or apply fails.
+    Atomically apply an approved institution role change request.
+    Validates dependencies, applies ADD/REMOVE deltas, bumps version.
     """
     with transaction.atomic():
         target_role = obj.target_role
-        
-        # Get current permission keys
+
         current_keys = set(
-            RolePermission.objects.filter(
-                role=target_role,
-                granted=True
-            ).values_list('permission_id', flat=True)
+            RolePermission.objects.filter(role=target_role, granted=True)
+            .values_list('permission_id', flat=True)
         )
-        
-        # Apply delta items
-        delta_items = obj.delta_items.select_related('permission').all()
-        
-        for item in delta_items:
+
+        for item in obj.delta_items.select_related('permission').all():
             if item.operation == RoleChangeDeltaItem.Operation.ADD:
                 current_keys.add(item.permission_id)
             elif item.operation == RoleChangeDeltaItem.Operation.REMOVE:
                 current_keys.discard(item.permission_id)
-        
-        # Validate final permission set
+
         final_keys = sorted(current_keys)
-        validate_role_permissions(final_keys)  # Raises ValidationError if invalid
-        
-        # Apply changes
+        validate_role_permissions(final_keys)
+
         RolePermission.objects.filter(role=target_role).delete()
-        
         perms = Permission.objects.filter(key__in=final_keys)
         RolePermission.objects.bulk_create([
             RolePermission(
-                role=target_role,
-                permission=perm,
-                granted=True,
-                granted_by=reviewer,
-                granted_at=timezone.now(),
+                role=target_role, permission=perm, granted=True,
+                granted_by=reviewer, granted_at=timezone.now(),
             )
             for perm in perms
         ])
-        
-        # Bump role version to invalidate caches
+
         target_role.bump_version()
         target_role.save(update_fields=['version', 'updated_at'])
-        
-        # Mark request as approved
+
         obj.mark_approved(reviewer=reviewer, notes=notes)
-        obj.save(update_fields=[
-            'status',
-            'reviewer',
-            'reviewer_notes',
-            'decided_at',
-            'updated_at',
-        ])
+        obj.save(update_fields=['status', 'reviewer', 'reviewer_notes', 'decided_at', 'updated_at'])
 
 
 def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer, notes: str = ""):
     """
-    Apply approved platform role change request.
-    
-    Same logic as institution role changes but for platform roles.
+    Atomically apply an approved platform role change request.
     """
     with transaction.atomic():
         target_role = obj.target_role
-        
-        # Get current permission keys
+
         current_keys = set(
-            PlatformRolePermission.objects.filter(
-                role=target_role,
-                granted=True
-            ).values_list('permission_id', flat=True)
+            PlatformRolePermission.objects.filter(role=target_role, granted=True)
+            .values_list('permission_id', flat=True)
         )
-        
-        # Apply delta items
-        delta_items = obj.delta_items.select_related('permission').all()
-        
-        for item in delta_items:
+
+        for item in obj.delta_items.select_related('permission').all():
             if item.operation == PlatformRoleChangeDeltaItem.Operation.ADD:
                 current_keys.add(item.permission_id)
             elif item.operation == PlatformRoleChangeDeltaItem.Operation.REMOVE:
                 current_keys.discard(item.permission_id)
-        
-        # Validate final permission set
+
         final_keys = sorted(current_keys)
         validate_role_permissions(final_keys)
-        
-        # Apply changes
+
         PlatformRolePermission.objects.filter(role=target_role).delete()
-        
         perms = Permission.objects.filter(key__in=final_keys)
         PlatformRolePermission.objects.bulk_create([
             PlatformRolePermission(
-                role=target_role,
-                permission=perm,
-                granted=True,
-                granted_by=reviewer,
-                granted_at=timezone.now(),
+                role=target_role, permission=perm, granted=True,
+                granted_by=reviewer, granted_at=timezone.now(),
             )
             for perm in perms
         ])
-        
-        # Bump version
+
         target_role.bump_version()
         target_role.save(update_fields=['version', 'updated_at'])
-        
-        # Mark approved
+
         obj.mark_approved(reviewer=reviewer, notes=notes)
-        obj.save(update_fields=[
-            'status',
-            'reviewer',
-            'reviewer_notes',
-            'decided_at',
-            'updated_at',
-        ])
+        obj.save(update_fields=['status', 'reviewer', 'reviewer_notes', 'decided_at', 'updated_at'])
