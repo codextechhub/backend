@@ -109,11 +109,11 @@ class PermissionDependencySerializer(serializers.ModelSerializer):
 
 
 # -----------------------------------------------------------------------------
-# 2) Branch Role Templates + Role Permissions
+# 2) Institution Role Templates + Role Permissions
 # -----------------------------------------------------------------------------
 class RolePermissionSerializer(serializers.ModelSerializer):
     """
-    One permission row attached to a branch role template.
+    One permission row attached to a institution role template.
     """
 
     permission_key = serializers.CharField(source="permission.key", read_only=True)
@@ -179,7 +179,7 @@ class RoleTemplateListSerializer(serializers.ModelSerializer):
         model = RoleTemplate
         fields = [
             "id",
-            "branch",
+            "institution",
             "name",
             "status",
             "is_system_role",
@@ -203,7 +203,7 @@ class RoleTemplateDetailSerializer(
     PermissionKeyListValidationMixin, serializers.ModelSerializer
 ):
     """
-    Detailed serializer for branch role templates.
+    Detailed serializer for institution role templates.
 
     Read:
     - shows expanded role_permissions
@@ -219,14 +219,14 @@ class RoleTemplateDetailSerializer(
         child=serializers.CharField(),
         write_only=True,
         required=False,
-        help_text="List of permission keys to grant to this branch role template.",
+        help_text="List of permission keys to grant to this institution role template.",
     )
 
     class Meta:
         model = RoleTemplate
         fields = [
             "id",
-            "branch",
+            "institution",
             "name",
             "description",
             "status",
@@ -248,14 +248,19 @@ class RoleTemplateDetailSerializer(
         ]
 
     def validate(self, attrs):
-        branch = attrs.get("branch") or getattr(self.instance, "branch", None)
-        if not branch:
-            raise serializers.ValidationError({"branch": "branch is required."})
+        institution = attrs.get("institution") or getattr(self.instance, "institution", None)
+        if not institution:
+            raise serializers.ValidationError({"institution": "institution is required."})
         return attrs
 
     @transaction.atomic
     def create(self, validated_data):
         permission_keys = validated_data.pop("permission_keys", [])
+
+        # VALIDATE DEPENDENCIES
+        if permission_keys:
+            from .validators import validate_role_permissions
+            validate_role_permissions(permission_keys)
 
         request = self.context.get("request")
         actor = request.user if request and request.user.is_authenticated else None
@@ -282,6 +287,11 @@ class RoleTemplateDetailSerializer(
     @transaction.atomic
     def update(self, instance, validated_data):
         permission_keys = validated_data.pop("permission_keys", None)
+
+        # VALIDATE DEPENDENCIES
+        if permission_keys:
+            from .validators import validate_role_permissions
+            validate_role_permissions(permission_keys)
 
         for field, value in validated_data.items():
             setattr(instance, field, value)
@@ -314,21 +324,21 @@ class RoleTemplateDetailSerializer(
 
 
 # -----------------------------------------------------------------------------
-# 3) Branch User Role Assignments
+# 3) Institution User Role Assignments
 # -----------------------------------------------------------------------------
 class UserRoleAssignmentSerializer(serializers.ModelSerializer):
     """
-    Assign or revoke a branch role for a user.
+    Assign or revoke a institution role for a user.
 
     Key rule:
-    - role.branch must match assignment.branch
+    - role.institution must match assignment.institution
     """
 
     class Meta:
         model = UserRoleAssignment
         fields = [
             "id",
-            "branch",
+            "institution",
             "user",
             "role",
             "assignment_status",
@@ -351,12 +361,12 @@ class UserRoleAssignmentSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, attrs):
-        branch = attrs.get("branch") or getattr(self.instance, "branch", None)
+        institution = attrs.get("institution") or getattr(self.instance, "institution", None)
         role = attrs.get("role") or getattr(self.instance, "role", None)
 
-        if branch and role and role.branch_id != branch.id:
+        if institution and role and role.institution_id != institution.id:
             raise serializers.ValidationError(
-                "Role must belong to the same branch as the assignment."
+                "Role must belong to the same institution as the assignment."
             )
 
         return attrs
@@ -392,7 +402,7 @@ class UserRoleAssignmentSerializer(serializers.ModelSerializer):
 
 
 # -----------------------------------------------------------------------------
-# 4) Branch Role Change Requests
+# 4) Institution Role Change Requests
 # -----------------------------------------------------------------------------
 class RoleChangeDeltaItemSerializer(serializers.ModelSerializer):
     """
@@ -432,11 +442,11 @@ class RoleChangeDeltaItemSerializer(serializers.ModelSerializer):
 
 class RoleChangeRequestSerializer(serializers.ModelSerializer):
     """
-    Create a branch-level role change request with delta items.
+    Create a institution-level role change request with delta items.
 
     Example input:
     {
-      "branch": 1,
+      "institution": 1,
       "target_role": 5,
       "justification": "Need invoice approval permissions",
       "delta_items": [
@@ -452,7 +462,7 @@ class RoleChangeRequestSerializer(serializers.ModelSerializer):
         model = RoleChangeRequest
         fields = [
             "id",
-            "branch",
+            "institution",
             "requested_by",
             "target_role",
             "status",
@@ -479,12 +489,12 @@ class RoleChangeRequestSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, attrs):
-        branch = attrs.get("branch") or getattr(self.instance, "branch", None)
+        institution = attrs.get("institution") or getattr(self.instance, "institution", None)
         target_role = attrs.get("target_role") or getattr(self.instance, "target_role", None)
 
-        if branch and target_role and target_role.branch_id != branch.id:
+        if institution and target_role and target_role.institution_id != institution.id:
             raise serializers.ValidationError(
-                "Target role must belong to the same branch as the request."
+                "Target role must belong to the same institution as the request."
             )
 
         return attrs
@@ -610,6 +620,11 @@ class PlatformRoleTemplateDetailSerializer(
     def create(self, validated_data):
         permission_keys = validated_data.pop("permission_keys", [])
 
+        # VALIDATE DEPENDENCIES
+        if permission_keys:
+            from .validators import validate_role_permissions
+            validate_role_permissions(permission_keys)
+
         request = self.context.get("request")
         actor = request.user if request and request.user.is_authenticated else None
 
@@ -635,6 +650,11 @@ class PlatformRoleTemplateDetailSerializer(
     @transaction.atomic
     def update(self, instance, validated_data):
         permission_keys = validated_data.pop("permission_keys", None)
+
+        # VALIDATE DEPENDENCIES
+        if permission_keys:
+            from .validators import validate_role_permissions
+            validate_role_permissions(permission_keys)
 
         for field, value in validated_data.items():
             setattr(instance, field, value)

@@ -8,7 +8,7 @@ from django.db.models import Q
 from django.db.models.functions import Lower
 from django.utils import timezone
 
-from vs_institutions.models import Branch
+from vs_institutions.models import Institution
 
 User = settings.AUTH_USER_MODEL
 
@@ -63,7 +63,7 @@ class Permission(TimeStampedModel):
         default=Sensitivity.NORMAL,
     )
 
-    # If True, branches cannot grant this directly; must go through approval workflow (RoleChangeRequest)
+    # If True, institutiones cannot grant this directly; must go through approval workflow (RoleChangeRequest)
     is_restricted = models.BooleanField(default=False)
 
     # Optional: for more advanced policy/UX; safe to keep lightweight
@@ -117,18 +117,18 @@ class PermissionDependency(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
-# Role Templates (branch-scoped)
+# Role Templates (institution-scoped)
 # -----------------------------------------------------------------------------
 class RoleTemplate(TimeStampedModel):
-    """Branch-scoped role blueprint owned by a specific institution branch.
+    """Institution-scoped role blueprint owned by a specific institution institution.
 
     Attributes:
-        branch: Branch that owns the template; acts as tenant boundary.
+        institution: Institution that owns the template; acts as tenant boundary.
         name: Human readable label surfaced in admin UIs.
         description: Optional context for auditors and approvers.
         status: Current lifecycle (active/inactive/archived).
         is_system_role: Locks the record to Vision-managed roles.
-        is_locked: Prevents branch edits while elevated workflows run.
+        is_locked: Prevents institution edits while elevated workflows run.
         version: Incremented when permissions change for cache busting.
         created_by: User that created the template, if tracked.
         permissions: Many-to-many relationship via ``RolePermission``.
@@ -140,8 +140,8 @@ class RoleTemplate(TimeStampedModel):
         ARCHIVED = "ARCHIVED", "Archived"
 
 
-    branch = models.ForeignKey(
-        Branch,
+    institution = models.ForeignKey(
+        Institution,
         on_delete=models.PROTECT,
         related_name="role_templates",
     )
@@ -151,7 +151,7 @@ class RoleTemplate(TimeStampedModel):
 
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
 
-    # System roles are provisioned/owned by Vision; branches might not be able to edit these.
+    # System roles are provisioned/owned by Vision; institutiones might not be able to edit these.
     is_system_role = models.BooleanField(default=False)
 
     # Locked means "read-only except elevated actors"
@@ -178,21 +178,21 @@ class RoleTemplate(TimeStampedModel):
 
     class Meta:
         indexes = [
-            models.Index(fields=["branch", "status"]),
-            models.Index(fields=["branch", "is_locked"]),
+            models.Index(fields=["institution", "status"]),
+            models.Index(fields=["institution", "is_locked"]),
             models.Index(Lower("name"), name="idx_role_name_lower"),
         ]
         constraints = [
-            # role names unique per branch (case-insensitive)
+            # role names unique per institution (case-insensitive)
             models.UniqueConstraint(
                 Lower("name"),
-                "branch",
-                name="uq_role_name_per_branch_ci",
+                "institution",
+                name="uq_role_name_per_institution_ci",
             )
         ]
 
     def __str__(self) -> str:
-        return f"{self.branch_id}:{self.name}"
+        return f"{self.institution_id}:{self.name}"
 
     def clean(self):
         # Safety: archived roles should not be locked/unlocked by mistake (policy choice)
@@ -205,7 +205,7 @@ class RoleTemplate(TimeStampedModel):
 
 
 class RolePermission(TimeStampedModel):
-    """Join table capturing permission grants on branch role templates.
+    """Join table capturing permission grants on institution role templates.
 
     Attributes:
         role: ``RoleTemplate`` receiving the grant or deny record.
@@ -249,22 +249,22 @@ class RolePermission(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
-# Assign roles to users (branch scoped)
+# Assign roles to users (institution scoped)
 # -----------------------------------------------------------------------------
 class UserRoleAssignment(TimeStampedModel):
-    """Branch-scoped assignment of a ``RoleTemplate`` to a specific user.
+    """Institution-scoped assignment of a ``RoleTemplate`` to a specific user.
 
     Attributes:
-        branch: Branch boundary that owns the assignment record.
+        institution: Institution boundary that owns the assignment record.
         user: Actor receiving the permissions.
-        role: Template being assigned; must belong to the same branch.
+        role: Template being assigned; must belong to the same institution.
         assignment_status: Active vs revoked state machine.
         assigned_by/assigned_at: Metadata on who granted the role and when.
         revoked_by/revoked_at: Metadata on revocation events.
         reason_note: Free-form justification captured for audits.
 
     Methods:
-        clean: Validates branch consistency between role and assignment.
+        clean: Validates institution consistency between role and assignment.
         revoke: Helper that stamps revoke metadata in one call.
     """
     class AssignmentStatus(models.TextChoices):
@@ -272,8 +272,8 @@ class UserRoleAssignment(TimeStampedModel):
         REVOKED = "REVOKED", "Revoked"
 
 
-    branch = models.ForeignKey(
-        Branch,
+    institution = models.ForeignKey(
+        Institution,
         on_delete=models.PROTECT,
         related_name="role_assignments",
     )
@@ -318,26 +318,26 @@ class UserRoleAssignment(TimeStampedModel):
 
     class Meta:
         indexes = [
-            models.Index(fields=["branch", "user", "assignment_status"]),
-            models.Index(fields=["branch", "role", "assignment_status"]),
+            models.Index(fields=["institution", "user", "assignment_status"]),
+            models.Index(fields=["institution", "role", "assignment_status"]),
         ]
         constraints = [
-            # Prevent duplicate active assignment of same role to same user in same branch
+            # Prevent duplicate active assignment of same role to same user in same institution
             models.UniqueConstraint(
-                fields=["branch", "user", "role"],
+                fields=["institution", "user", "role"],
                 condition=Q(assignment_status="ACTIVE"),
-                name="uq_active_assignment_user_role_branch",
+                name="uq_active_assignment_user_role_institution",
             )
         ]
 
     def __str__(self) -> str:
-        return f"{self.branch_id}:{self.user_id}->{self.role_id} ({self.assignment_status})"
+        return f"{self.institution_id}:{self.user_id}->{self.role_id} ({self.assignment_status})"
 
     def clean(self):
-        # Cross-branch safety: role must belong to the same branch
-        if self.role_id and self.branch_id and self.role.branch_id != self.branch_id:
-            raise ValidationError("Role must belong to the same branch as the assignment.")
-        # You can add a similar check for user.branch if your UserAccount has branch FK.
+        # Cross-institution safety: role must belong to the same institution
+        if self.role_id and self.institution_id and self.role.institution_id != self.institution_id:
+            raise ValidationError("Role must belong to the same institution as the assignment.")
+        # You can add a similar check for user.institution if your UserAccount has institution FK.
 
     def revoke(self, by_user=None, reason: str = ""):
         self.assignment_status = self.AssignmentStatus.REVOKED
@@ -347,14 +347,14 @@ class UserRoleAssignment(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
-# Approval workflow: Branch -> Vision (role changes)
+# Approval workflow: Institution -> Vision (role changes)
 # -----------------------------------------------------------------------------
 class RoleChangeRequest(TimeStampedModel):
-    """Workflow record for branch-to-Vision approval of role edits.
+    """Workflow record for institution-to-Vision approval of role edits.
 
     Attributes:
-        branch: Tenant requesting the change.
-        requested_by: Branch operator initiating request.
+        institution: Tenant requesting the change.
+        requested_by: Institution operator initiating request.
         target_role: ``RoleTemplate`` being modified.
         status: State machine captured via ``Status`` choices.
         justification: Required explanation for Vision reviewers.
@@ -372,8 +372,8 @@ class RoleChangeRequest(TimeStampedModel):
         APPLY_FAILED = "APPLY_FAILED", "Apply Failed"
 
 
-    branch = models.ForeignKey(
-        Branch,
+    institution = models.ForeignKey(
+        Institution,
         on_delete=models.PROTECT,
         related_name="role_change_requests",
     )
@@ -411,7 +411,7 @@ class RoleChangeRequest(TimeStampedModel):
 
     class Meta:
         indexes = [
-            models.Index(fields=["branch", "status", "submitted_at"]),
+            models.Index(fields=["institution", "status", "submitted_at"]),
             models.Index(fields=["status", "submitted_at"]),
         ]
 
@@ -419,9 +419,9 @@ class RoleChangeRequest(TimeStampedModel):
         return f"RCR:{self.id} ({self.status})"
 
     def clean(self):
-        # Cross-branch safety: target role must belong to same branch
-        if self.target_role_id and self.branch_id and self.target_role.branch_id != self.branch_id:
-            raise ValidationError("Target role must belong to the same branch as the request.")
+        # Cross-institution safety: target role must belong to same institution
+        if self.target_role_id and self.institution_id and self.target_role.institution_id != self.institution_id:
+            raise ValidationError("Target role must belong to the same institution as the request.")
         if not self.justification or not self.justification.strip():
             raise ValidationError("Justification is required.")
 

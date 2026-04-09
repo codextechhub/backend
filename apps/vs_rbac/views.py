@@ -33,8 +33,6 @@ from .permissions import (
     IsVisionStaff,
     IsInstitutionAdmin,
 )
-# Optional:
-# from .services import apply_branch_role_change_request, apply_platform_role_change_request
 
 
 # -----------------------------------------------------------------------------
@@ -319,19 +317,12 @@ class VisionRoleChangeRequestDecisionView(APIView):
         if action == "APPROVE":
             try:
                 with transaction.atomic():
-                    # Recommended:
-                    # apply_branch_role_change_request(obj=obj, reviewer=request.user, notes=notes)
-
-                    # Placeholder version:
-                    obj.mark_approved(reviewer=request.user, notes=notes)
-                    obj.save(
-                        update_fields=[
-                            "status",
-                            "reviewer",
-                            "reviewer_notes",
-                            "decided_at",
-                            "updated_at",
-                        ]
+                    # USE SERVICE LAYER
+                    from .services import apply_branch_role_change_request
+                    apply_branch_role_change_request(
+                        obj=obj,
+                        reviewer=request.user,
+                        notes=notes
                     )
 
             except Exception as exc:
