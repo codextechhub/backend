@@ -195,7 +195,7 @@ def _validate_cross_references(import_batch) -> list[dict]:
 
     # Example pattern:
     # for col in template_columns:
-    #     valid_values = fetch_lookup_values(col.reference_model, col.reference_lookup_field, import_batch.institution)
+    #     valid_values = fetch_lookup_values(col.reference_model, col.reference_lookup_field, import_batch.school)
     #     for row_number, row_data in enumerate(rows, start=1):
     #         issue = validate_foreign_key_reference(
     #             value=row_data.get(col.column_name),

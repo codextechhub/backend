@@ -1,7 +1,7 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from vs_institutions.models import PackagePlan, BillingCycle
+from vs_schools.models import PackagePlan, BillingCycle
 
 
 # ---------------------------------------------------------------------------
@@ -10,7 +10,7 @@ from vs_institutions.models import PackagePlan, BillingCycle
 #
 # Capacity limits (max_*):
 #   None  → unlimited (no ceiling enforced)
-#   int   → hard cap validated in InstitutionPackageSetup.clean()
+#   int   → hard cap validated in SchoolPackageSetup.clean()
 #
 # `code` is the slug used in API payloads (e.g. package_plan="standard")
 # ---------------------------------------------------------------------------
@@ -20,7 +20,7 @@ PLANS = [
         "name": "Basic",
         "code": "basic",
         "description": (
-            "Entry-level plan suited for small single-branch institutions. "
+            "Entry-level plan suited for small single-branch schools. "
             "Covers core student and teacher management with limited capacity."
         ),
         "billing_cycle": BillingCycle.YEARLY,
@@ -34,7 +34,7 @@ PLANS = [
         "name": "Standard",
         "code": "standard",
         "description": (
-            "Mid-tier plan for growing institutions with multiple branches. "
+            "Mid-tier plan for growing schools with multiple branches. "
             "Includes expanded capacity and access to additional modules."
         ),
         "billing_cycle": BillingCycle.YEARLY,
@@ -48,7 +48,7 @@ PLANS = [
         "name": "Premium",
         "code": "premium",
         "description": (
-            "Full-featured plan for established institutions that need "
+            "Full-featured plan for established schools that need "
             "high capacity, all modules, and priority support."
         ),
         "billing_cycle": BillingCycle.YEARLY,
@@ -63,7 +63,7 @@ PLANS = [
         "code": "enterprise",
         "description": (
             "Unlimited plan for large school networks and multi-campus "
-            "institutions. No capacity ceilings. Custom SLA and support."
+            "schools. No capacity ceilings. Custom SLA and support."
         ),
         "billing_cycle": BillingCycle.YEARLY,
         "max_students": None,   # unlimited

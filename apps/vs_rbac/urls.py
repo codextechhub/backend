@@ -28,39 +28,39 @@ urlpatterns = [
     ),
 
     # -------------------------------------------------------------------------
-    # Branch-scoped Role Templates
+    # School-scoped Role Templates
     # -------------------------------------------------------------------------
     path(
-        "branches/<uuid:branch_id>/roles/",
+        "schools/<slug:school_id>/roles/",
         views.RoleTemplateListCreateView.as_view(),
         name="rbac-role-list-create",
     ),
     path(
-        "branches/<uuid:branch_id>/roles/<int:id>/",
+        "schools/<slug:school_id>/roles/<int:id>/",
         views.RoleTemplateDetailView.as_view(),
         name="rbac-role-detail",
     ),
 
     # -------------------------------------------------------------------------
-    # Branch-scoped Role Assignments
+    # School-scoped Role Assignments
     # -------------------------------------------------------------------------
     path(
-        "branches/<uuid:branch_id>/role-assignments/",
+        "schools/<slug:school_id>/role-assignments/",
         views.UserRoleAssignmentListCreateView.as_view(),
         name="rbac-assignment-list-create",
     ),
     path(
-        "branches/<uuid:branch_id>/role-assignments/<int:id>/",
+        "schools/<slug:school_id>/role-assignments/<int:id>/",
         views.UserRoleAssignmentDetailView.as_view(),
         name="rbac-assignment-detail",
     ),
 
     # -------------------------------------------------------------------------
-    # Branch -> Vision Role Change Requests
+    # School -> Vision Role Change Requests
     # -------------------------------------------------------------------------
     path(
-        "branches/<uuid:branch_id>/role-change-requests/",
-        views.BranchRoleChangeRequestListCreateView.as_view(),
+        "schools/<slug:school_id>/role-change-requests/",
+        views.SchoolRoleChangeRequestListCreateView.as_view(),
         name="rbac-role-change-request-list-create",
     ),
 

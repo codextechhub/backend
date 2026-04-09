@@ -428,7 +428,7 @@ def validate_foreign_key_reference(
 
     Example:
         class_name exists
-        institution branch exists
+        school branch exists
         fee category exists
         department exists
     """

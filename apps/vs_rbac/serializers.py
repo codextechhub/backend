@@ -109,11 +109,11 @@ class PermissionDependencySerializer(serializers.ModelSerializer):
 
 
 # -----------------------------------------------------------------------------
-# 2) Institution Role Templates + Role Permissions
+# 2) School Role Templates + Role Permissions
 # -----------------------------------------------------------------------------
 class RolePermissionSerializer(serializers.ModelSerializer):
     """
-    One permission row attached to a institution role template.
+    One permission row attached to a school role template.
     """
 
     permission_key = serializers.CharField(source="permission.key", read_only=True)
@@ -179,7 +179,7 @@ class RoleTemplateListSerializer(serializers.ModelSerializer):
         model = RoleTemplate
         fields = [
             "id",
-            "institution",
+            "school",
             "name",
             "status",
             "is_system_role",
@@ -203,7 +203,7 @@ class RoleTemplateDetailSerializer(
     PermissionKeyListValidationMixin, serializers.ModelSerializer
 ):
     """
-    Detailed serializer for institution role templates.
+    Detailed serializer for school role templates.
 
     Read:
     - shows expanded role_permissions
@@ -219,14 +219,14 @@ class RoleTemplateDetailSerializer(
         child=serializers.CharField(),
         write_only=True,
         required=False,
-        help_text="List of permission keys to grant to this institution role template.",
+        help_text="List of permission keys to grant to this school role template.",
     )
 
     class Meta:
         model = RoleTemplate
         fields = [
             "id",
-            "institution",
+            "school",
             "name",
             "description",
             "status",
@@ -248,9 +248,9 @@ class RoleTemplateDetailSerializer(
         ]
 
     def validate(self, attrs):
-        institution = attrs.get("institution") or getattr(self.instance, "institution", None)
-        if not institution:
-            raise serializers.ValidationError({"institution": "institution is required."})
+        school = attrs.get("school") or getattr(self.instance, "school", None)
+        if not school:
+            raise serializers.ValidationError({"school": "school is required."})
         return attrs
 
     @transaction.atomic
@@ -324,21 +324,21 @@ class RoleTemplateDetailSerializer(
 
 
 # -----------------------------------------------------------------------------
-# 3) Institution User Role Assignments
+# 3) School User Role Assignments
 # -----------------------------------------------------------------------------
 class UserRoleAssignmentSerializer(serializers.ModelSerializer):
     """
-    Assign or revoke a institution role for a user.
+    Assign or revoke a school role for a user.
 
     Key rule:
-    - role.institution must match assignment.institution
+    - role.school must match assignment.school
     """
 
     class Meta:
         model = UserRoleAssignment
         fields = [
             "id",
-            "institution",
+            "school",
             "user",
             "role",
             "assignment_status",
@@ -361,12 +361,12 @@ class UserRoleAssignmentSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, attrs):
-        institution = attrs.get("institution") or getattr(self.instance, "institution", None)
+        school = attrs.get("school") or getattr(self.instance, "school", None)
         role = attrs.get("role") or getattr(self.instance, "role", None)
 
-        if institution and role and role.institution_id != institution.id:
+        if school and role and role.school_id != school.id:
             raise serializers.ValidationError(
-                "Role must belong to the same institution as the assignment."
+                "Role must belong to the same school as the assignment."
             )
 
         return attrs
@@ -402,7 +402,7 @@ class UserRoleAssignmentSerializer(serializers.ModelSerializer):
 
 
 # -----------------------------------------------------------------------------
-# 4) Institution Role Change Requests
+# 4) School Role Change Requests
 # -----------------------------------------------------------------------------
 class RoleChangeDeltaItemSerializer(serializers.ModelSerializer):
     """
@@ -442,11 +442,11 @@ class RoleChangeDeltaItemSerializer(serializers.ModelSerializer):
 
 class RoleChangeRequestSerializer(serializers.ModelSerializer):
     """
-    Create a institution-level role change request with delta items.
+    Create a school-level role change request with delta items.
 
     Example input:
     {
-      "institution": 1,
+      "school": 1,
       "target_role": 5,
       "justification": "Need invoice approval permissions",
       "delta_items": [
@@ -462,7 +462,7 @@ class RoleChangeRequestSerializer(serializers.ModelSerializer):
         model = RoleChangeRequest
         fields = [
             "id",
-            "institution",
+            "school",
             "requested_by",
             "target_role",
             "status",
@@ -489,12 +489,12 @@ class RoleChangeRequestSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, attrs):
-        institution = attrs.get("institution") or getattr(self.instance, "institution", None)
+        school = attrs.get("school") or getattr(self.instance, "school", None)
         target_role = attrs.get("target_role") or getattr(self.instance, "target_role", None)
 
-        if institution and target_role and target_role.institution_id != institution.id:
+        if school and target_role and target_role.school_id != school.id:
             raise serializers.ValidationError(
-                "Target role must belong to the same institution as the request."
+                "Target role must belong to the same school as the request."
             )
 
         return attrs

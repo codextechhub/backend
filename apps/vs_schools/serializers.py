@@ -9,17 +9,17 @@ from rest_framework import serializers
 
 from .models import (
     ContactInfo,
-    InstitutionPackageSetup,
+    SchoolPackageSetup,
     InviteStatus,
     BranchStatus,
     RESERVED_TENANT_SLUGS,
-    Institution,
+    School,
     Branch,
     BranchPrimaryAdmin,
-    InstitutionPrimaryAdmin,
-    InstitutionBranding,
+    SchoolPrimaryAdmin,
+    SchoolBranding,
     BranchLifecycle,
-    InstitutionStatus,
+    SchoolStatus,
     PackagePlan,
     XVSModules,
 )
@@ -53,10 +53,10 @@ def _build_slug_suggestions(base_slug: str, max_suggestions: int = 5) -> List[st
     return [f"{base_slug}-{i}" for i in range(2, 2 + max_suggestions)]
 
 
-def _slug_is_unique(slug: str, exclude_institution_slug: Optional[str] = None) -> bool:
-    qs = Institution.objects.all()
-    if exclude_institution_slug:
-        qs = qs.exclude(slug=exclude_institution_slug)
+def _slug_is_unique(slug: str, exclude_school_slug: Optional[str] = None) -> bool:
+    qs = School.objects.all()
+    if exclude_school_slug:
+        qs = qs.exclude(slug=exclude_school_slug)
     return not qs.filter(slug=slug).exists()
 
 
@@ -77,9 +77,9 @@ class ContactInfoSerializer(serializers.ModelSerializer):
         read_only_fields = [ "created_at", "updated_at"]
 
 
-class InstitutionBrandingSerializer(serializers.ModelSerializer):
+class SchoolBrandingSerializer(serializers.ModelSerializer):
     class Meta:
-        model = InstitutionBranding
+        model = SchoolBranding
         fields = [
             
             "logo",
@@ -168,9 +168,9 @@ class XVSModuleSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class InstitutionPackageSetupWriteSerializer(serializers.Serializer):
+class SchoolPackageSetupWriteSerializer(serializers.Serializer):
     """
-    Write-only structure for submitting package setup during institution creation.
+    Write-only structure for submitting package setup during school creation.
 
     Accepts `package_plan` as the PackagePlan `code` (slug) — more stable
     than a numeric PK and matches what the dropdown naturally emits.
@@ -244,16 +244,16 @@ class InstitutionPackageSetupWriteSerializer(serializers.Serializer):
         return attrs
 
 
-class InstitutionPackageSetupReadSerializer(serializers.ModelSerializer):
+class SchoolPackageSetupReadSerializer(serializers.ModelSerializer):
     """
     Read-only nested representation of a package setup.
-    Returned in InstitutionDetailSerializer.
+    Returned in SchoolDetailSerializer.
     """
     package_plan = PackagePlanSerializer(read_only=True)
     enabled_modules = XVSModuleSerializer(many=True, read_only=True)
 
     class Meta:
-        model = InstitutionPackageSetup
+        model = SchoolPackageSetup
         fields = [
             "id",
             "package_plan",
@@ -303,14 +303,14 @@ class BranchPrimaryAdminReadSerializer(serializers.Serializer):
     contact = ContactInfoSerializer()
 
 
-class InstitutionPrimaryAdminWriteSerializer(serializers.Serializer):
-    """Write-only structure for assigning institution-level primary admin."""
+class SchoolPrimaryAdminWriteSerializer(serializers.Serializer):
+    """Write-only structure for assigning school-level primary admin."""
 
     full_name = serializers.CharField(max_length=120)
     email = serializers.EmailField()
     phone = serializers.CharField(max_length=32, required=False, allow_blank=True, default="")
-    institution_role = serializers.CharField(max_length=80, required=False, allow_blank=True, default="IT Head")
-    role_label = serializers.CharField(max_length=80, required=False, allow_blank=True, default="INSTITUTION_ADMIN")
+    school_role = serializers.CharField(max_length=80, required=False, allow_blank=True, default="IT Head")
+    role_label = serializers.CharField(max_length=80, required=False, allow_blank=True, default="SCHOOL_ADMIN")
 
     def validate_full_name(self, value: str) -> str:
         if not value.strip():
@@ -318,10 +318,10 @@ class InstitutionPrimaryAdminWriteSerializer(serializers.Serializer):
         return value.strip()
 
 
-class InstitutionPrimaryAdminReadSerializer(serializers.Serializer):
-    """Read-only view; returns institution admin link + contact."""
+class SchoolPrimaryAdminReadSerializer(serializers.Serializer):
+    """Read-only view; returns school admin link + contact."""
     id = serializers.CharField()
-    institution_role = serializers.CharField()
+    school_role = serializers.CharField()
     role_label = serializers.CharField()
     invite_status = serializers.CharField()
     invite_queued_at = serializers.DateTimeField(allow_null=True)
@@ -334,13 +334,13 @@ class InstitutionPrimaryAdminReadSerializer(serializers.Serializer):
 # -----------------------------------------------------------------------------
 
 class BranchListSerializer(serializers.ModelSerializer):
-    institution_slug = serializers.CharField(source="institution.slug", read_only=True)
+    school_slug = serializers.CharField(source="school.slug", read_only=True)
 
     class Meta:
         model = Branch
         fields = [
             "code",
-            "institution_slug",
+            "school_slug",
             "name",
             "is_main",
             "_type",
@@ -352,14 +352,14 @@ class BranchListSerializer(serializers.ModelSerializer):
 
 
 class BranchDetailSerializer(serializers.ModelSerializer):
-    institution_slug = serializers.CharField(source="institution.slug", read_only=True)
+    school_slug = serializers.CharField(source="school.slug", read_only=True)
     primary_admin = BranchPrimaryAdminReadSerializer(read_only=True)
 
     class Meta:
         model = Branch
         fields = [
             "code",
-            "institution_slug",
+            "school_slug",
             "name",
             "is_main",
             "_type",
@@ -385,11 +385,11 @@ class BranchDetailSerializer(serializers.ModelSerializer):
 
 class BranchCreateSerializer(serializers.ModelSerializer):
     """
-    Creates a branch under a given institution.
+    Creates a branch under a given school.
 
     Notes:
     - code is AutoField; you don't supply it.
-    - business rule: only one main branch per institution enforced by constraint.
+    - business rule: only one main branch per school enforced by constraint.
     - you can optionally auto-set opened_at if not provided.
     """
 
@@ -415,22 +415,22 @@ class BranchCreateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
         # Example: if is_main=True, ensure no other main branch exists (friendly error before DB constraint)
-        institution = self.context.get("institution")
+        school = self.context.get("school")
         is_main = attrs.get("is_main", False)
-        if institution and is_main:
-            if Branch.objects.filter(institution=institution, is_main=True).exists():
-                raise serializers.ValidationError({"is_main": "This institution already has a main branch."})
+        if school and is_main:
+            if Branch.objects.filter(school=school, is_main=True).exists():
+                raise serializers.ValidationError({"is_main": "This school already has a main branch."})
 
         return attrs
 
     @transaction.atomic
     def create(self, validated_data: Dict[str, Any]) -> Branch:
         primary_admin_data = validated_data.pop("primary_admin_data", None)
-        institution = self.context.get("institution")
+        school = self.context.get("school")
         
         # Set default lifecycle state if you want it always created as pending
         branch = Branch.objects.create(
-            institution=institution,
+            school=school,
             **validated_data,
             status=BranchStatus.PENDING,
         )
@@ -521,11 +521,11 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
         # Friendly guard: if turning this branch into main, ensure no other main exists
         if "is_main" in attrs and attrs["is_main"] is True:
             exists_other_main = Branch.objects.filter(
-                institution=branch.institution,
+                school=branch.school,
                 is_main=True,
             ).exclude(code=branch.code).exists()
             if exists_other_main:
-                raise serializers.ValidationError({"is_main": "Another main branch already exists for this institution."})
+                raise serializers.ValidationError({"is_main": "Another main branch already exists for this school."})
         return attrs
 
     @transaction.atomic
@@ -577,19 +577,19 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
 
 
 # -----------------------------------------------------------------------------
-# Institution serializers (read)
+# School serializers (read)
 # -----------------------------------------------------------------------------
 
-class InstitutionListSerializer(serializers.ModelSerializer):
+class SchoolListSerializer(serializers.ModelSerializer):
     """
-    Institution list now shows tenant identity + status.
+    School list now shows tenant identity + status.
     Location fields moved to Branch (main branch can be shown via nested/flattened approach).
     """
     main_branch = BranchListSerializer(read_only=True)
     total_students = serializers.ReadOnlyField(default=0)
 
     class Meta:
-        model = Institution
+        model = School
         fields = [
             "name",
             "slug",
@@ -603,19 +603,19 @@ class InstitutionListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class InstitutionDetailSerializer(serializers.ModelSerializer):
+class SchoolDetailSerializer(serializers.ModelSerializer):
     """
     Detail includes tenant identity + nested branches.
     Location/contact details are on branches; main branch can be highlighted via main_branch field.
     """
     branches = BranchDetailSerializer(many=True, read_only=True)
     main_branch = BranchDetailSerializer(read_only=True)
-    branding = InstitutionBrandingSerializer(read_only=True)
-    primary_admin = InstitutionPrimaryAdminReadSerializer(read_only=True)
-    package_setup = InstitutionPackageSetupReadSerializer(read_only=True)
+    branding = SchoolBrandingSerializer(read_only=True)
+    primary_admin = SchoolPrimaryAdminReadSerializer(read_only=True)
+    package_setup = SchoolPackageSetupReadSerializer(read_only=True)
 
     class Meta:
-        model = Institution
+        model = School
         fields = [
             "name",
             "slug",
@@ -635,7 +635,7 @@ class InstitutionDetailSerializer(serializers.ModelSerializer):
             "main_branch",
             "branches",
 
-            # Nested institution-level
+            # Nested school-level
             "branding",
             "primary_admin",
             "package_setup",
@@ -647,16 +647,16 @@ class InstitutionDetailSerializer(serializers.ModelSerializer):
 
 
 # -----------------------------------------------------------------------------
-# Institution serializers (write)
+# School serializers (write)
 # -----------------------------------------------------------------------------
 
 class BranchInlineCreateSerializer(serializers.Serializer):
     """
-    Represents a single branch entry submitted inline during institution creation.
+    Represents a single branch entry submitted inline during school creation.
 
     This is intentionally a plain Serializer (not ModelSerializer) because it is
     used as a nested write structure — the actual Branch model creation happens
-    inside InstitutionCreateSerializer.create(), not here.
+    inside SchoolCreateSerializer.create(), not here.
 
     Each branch entry must include primary_admin_data.
     is_main defaults to False. Exactly one branch should have is_main=True.
@@ -679,12 +679,12 @@ class BranchInlineCreateSerializer(serializers.Serializer):
         return value.strip()
 
 
-class InstitutionCreateSerializer(serializers.ModelSerializer):
+class SchoolCreateSerializer(serializers.ModelSerializer):
 
     """
-    Creates an Institution with optional:
+    Creates an School with optional:
       - Branding
-      - Institution-level primary admin
+      - School-level primary admin
       - One or more branches (each with their own branch admin)
 
     The `branches` field accepts a list of branch objects.
@@ -695,13 +695,13 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
     """
 
     slug = serializers.CharField(required=False, allow_blank=True)
-    branding = InstitutionBrandingSerializer(required=False)
-    primary_admin_data = InstitutionPrimaryAdminWriteSerializer(required=False, write_only=True)
+    branding = SchoolBrandingSerializer(required=False)
+    primary_admin_data = SchoolPrimaryAdminWriteSerializer(required=False, write_only=True)
     branches = BranchInlineCreateSerializer(many=True, required=False, default=list, write_only=True)
-    package_setup_data = InstitutionPackageSetupWriteSerializer(required=False, write_only=True)
+    package_setup_data = SchoolPackageSetupWriteSerializer(required=False, write_only=True)
 
     class Meta:
-        model = Institution
+        model = School
         fields = [
             "name",
             "slug",
@@ -747,7 +747,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
                     "slug": "Unable to generate slug from name. Provide slug explicitly."
                 })
             if base in RESERVED_TENANT_SLUGS:
-                base = f"{base}-institution"
+                base = f"{base}-school"
             if not _slug_is_unique(base):
                 suggestions = [s for s in _build_slug_suggestions(base) if _slug_is_unique(s)]
                 raise serializers.ValidationError({
@@ -780,35 +780,35 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
         return attrs
 
     @transaction.atomic
-    def create(self, validated_data: Dict[str, Any]) -> Institution:
+    def create(self, validated_data: Dict[str, Any]) -> School:
         branding_data = validated_data.pop("branding", None)
         primary_admin_data = validated_data.pop("primary_admin_data", None)
         branches_data = validated_data.pop("branches", [])
         package_setup_data = validated_data.pop("package_setup_data", None)
 
-        # --- 1. Create the Institution ---
-        institution = Institution.objects.create(
+        # --- 1. Create the School ---
+        school = School.objects.create(
             **validated_data,
-            status=InstitutionStatus.ACTIVE,
+            status=SchoolStatus.ACTIVE,
             activated_at=timezone.now(),
         )
 
         # --- 2. Optional branding ---
         if branding_data:
-            InstitutionBranding.objects.create(institution=institution, **branding_data)
+            SchoolBranding.objects.create(school=school, **branding_data)
 
-        # --- 3. Optional institution-level primary admin ---
+        # --- 3. Optional school-level primary admin ---
         if primary_admin_data:
             contact = ContactInfo.objects.create(
                 full_name=primary_admin_data["full_name"],
                 email=primary_admin_data["email"],
                 phone=primary_admin_data.get("phone", ""),
             )
-            InstitutionPrimaryAdmin.objects.create(
-                institution=institution,
+            SchoolPrimaryAdmin.objects.create(
+                school=school,
                 contact=contact,
-                institution_role=primary_admin_data.get("institution_role", "IT Head"),
-                role_label=primary_admin_data.get("role_label", "INSTITUTION_ADMIN"),
+                school_role=primary_admin_data.get("school_role", "IT Head"),
+                role_label=primary_admin_data.get("role_label", "SCHOOL_ADMIN"),
                 invite_status=InviteStatus.QUEUED,
                 invite_queued_at=timezone.now(),
                 invite_sent_at=None,
@@ -819,7 +819,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
             branch_admin_data = branch_data.pop("primary_admin_data", None)
 
             branch = Branch.objects.create(
-                institution=institution,
+                school=school,
                 status=BranchStatus.PENDING,
                 opened_at=branch_data.pop("opened_at", None) or timezone.now(),
                 **branch_data,
@@ -831,7 +831,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
                 from_state="",
                 to_state=BranchStatus.PENDING,
                 actor_id=self.context.get("actor_id", "system"),
-                reason="Branch created during institution onboarding",
+                reason="Branch created during school onboarding",
             )
 
             # Create branch admin if provided
@@ -869,7 +869,7 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
 
             trail = EntityAuditTrail.objects.create(
                 entity_type="Branch",
-                entity_id=f"{str(branch.institution.slug)}-{str(branch.code)}",
+                entity_id=f"{str(branch.school.slug)}-{str(branch.code)}",
                 entity_label=branch.name,
             )
             trail.register_event(audit_branch)
@@ -885,8 +885,8 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
                 from dateutil.relativedelta import relativedelta
                 expires_at = date.today() + relativedelta(years=1)
 
-            setup = InstitutionPackageSetup.objects.create(
-                institution=institution,
+            setup = SchoolPackageSetup.objects.create(
+                school=school,
                 subscription_expires_at=expires_at,
                 **package_setup_data,
             )
@@ -895,41 +895,41 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
             if enabled_modules:
                 setup.enabled_modules.set(enabled_modules)
 
-        # --- 6. Audit trail for institution ---
-        audit_institution = AuditEvent.objects.create(
-            module_key=AuditModuleKey.INSTITUTION,
+        # --- 6. Audit trail for school ---
+        audit_school = AuditEvent.objects.create(
+            module_key=AuditModuleKey.SCHOOL,
             action_type=AuditActionType.CREATE,
             actor_user=self.context.get("actor_id", "system"),
-            entity_type="Institution",
-            entity_id=str(institution.slug),
-            entity_label=institution.name,
+            entity_type="School",
+            entity_id=str(school.slug),
+            entity_label=school.name,
             before_data={},
             diff_data=AuditDiffService.from_instances(
                 before_instance=None,
-                after_instance=institution,
+                after_instance=school,
                 exclude_fields=["created_at", "updated_at", "activated_at", "deactivated_at"],
             )['diff'],
         )
         trail = EntityAuditTrail.objects.create(
-            entity_type="Institution",
-            entity_id=str(institution.slug),
-            entity_label=institution.name,
+            entity_type="School",
+            entity_id=str(school.slug),
+            entity_label=school.name,
         )
-        trail.register_event(audit_institution)
+        trail.register_event(audit_school)
 
-        return institution
+        return school
     
 
-class InstitutionUpdateSerializer(serializers.ModelSerializer):
+class SchoolUpdateSerializer(serializers.ModelSerializer):
     """
     Updates tenant identity fields only.
     Branch details are updated via BranchUpdateSerializer.
     """
 
-    branding = InstitutionBrandingSerializer(required=False)
+    branding = SchoolBrandingSerializer(required=False)
 
     class Meta:
-        model = Institution
+        model = School
         fields = [
             "ownership_type",
             "address",
@@ -945,7 +945,7 @@ class InstitutionUpdateSerializer(serializers.ModelSerializer):
         ]
 
     @transaction.atomic
-    def update(self, instance: Institution, validated_data: Dict[str, Any]) -> Institution:
+    def update(self, instance: School, validated_data: Dict[str, Any]) -> School:
         branding_data = validated_data.pop("branding", None)
 
         changes = 0
@@ -964,8 +964,8 @@ class InstitutionUpdateSerializer(serializers.ModelSerializer):
 
         # Branding upsert
         if branding_data is not None:
-            InstitutionBranding.objects.update_or_create(
-                institution=instance,
+            SchoolBranding.objects.update_or_create(
+                school=instance,
                 defaults=branding_data,
             )
 
@@ -1006,17 +1006,17 @@ class BranchStateTransitionSerializer(serializers.Serializer):
         return branch
 
 
-class InstitutionResetConfigSerializer(serializers.Serializer):
+class SchoolResetConfigSerializer(serializers.Serializer):
     """
-    Resets institution configuration to baseline (branding/modules/localization),
+    Resets school configuration to baseline (branding/modules/localization),
     without deleting core operational data (policy-driven).
     """
     confirmation_token = serializers.CharField()
     reason = serializers.CharField(required=False, allow_blank=True, default="")
 
     @transaction.atomic
-    def save(self, **kwargs) -> Institution:
-        institution: Institution = self.context["institution"]
+    def save(self, **kwargs) -> School:
+        school: School = self.context["school"]
         actor_id = self.context.get("actor_id", "system")
 
         token = (self.validated_data.get("confirmation_token") or "").strip()
@@ -1027,6 +1027,6 @@ class InstitutionResetConfigSerializer(serializers.Serializer):
         # - Remove branding
         # - Disable all modules (or re-seed defaults depending on your product policy)
         # - Clear localization (optional; many teams keep localization)
-        InstitutionBranding.objects.filter(institution=institution).delete()
+        SchoolBranding.objects.filter(school=school).delete()
 
-        return institution
+        return school

@@ -1,7 +1,7 @@
 """
-Institution context enforcement middleware.
+School context enforcement middleware.
 
-This middleware injects institution context into every request and enforces
+This middleware injects school context into every request and enforces
 tenant boundary isolation at the ORM level.
 """
 from __future__ import annotations
@@ -10,65 +10,65 @@ from django.core.exceptions import PermissionDenied
 from django.http import HttpRequest
 from django.utils.functional import SimpleLazyObject
 
-from vs_institutions.models import Institution
-from core.thread_locals import set_current_institution, clear_current_institution
+from vs_schools.models import School
+from core.thread_locals import set_current_school, clear_current_school
 
 
-def _get_institution_from_request(request: HttpRequest):
+def _get_school_from_request(request: HttpRequest):
     """
-    Extract institution from request context.
+    Extract school from request context.
     
     Priority order:
-    1. Explicitly set request.institution_id (e.g., from API token/JWT)
-    2. User's default institution (if institution-scoped user)
-    3. Vision staff can access all institutions (no filter)
+    1. Explicitly set request.school_id (e.g., from API token/JWT)
+    2. User's default school (if school-scoped user)
+    3. Vision staff can access all schools (no filter)
     """
     # If already resolved in this request
-    if hasattr(request, "_cached_institution"):
-        return request._cached_institution
+    if hasattr(request, "_cached_school"):
+        return request._cached_school
     
     user = getattr(request, "user", None)
     
     # Unauthenticated or no user
     if not user or not user.is_authenticated:
-        request._cached_institution = None
+        request._cached_school = None
         return None
     
-    # Vision staff bypass institution scoping
+    # Vision staff bypass school scoping
     if getattr(user, "user_type", None) == "VS_STAFF":
-        request._cached_institution = None
+        request._cached_school = None
         return None
     
-    # Check if institution was explicitly set (e.g., via JWT claim or header)
-    if hasattr(request, "institution_id"):
+    # Check if school was explicitly set (e.g., via JWT claim or header)
+    if hasattr(request, "school_id"):
         try:
-            institution = Institution.objects.get(id=request.institution_id)
-            request._cached_institution = institution
-            return institution
-        except Institution.DoesNotExist:
-            raise PermissionDenied("Invalid institution context.")
+            school = School.objects.get(id=request.school_id)
+            request._cached_school = school
+            return school
+        except School.DoesNotExist:
+            raise PermissionDenied("Invalid school context.")
     
-    # Fall back to user's default institution
-    user_institution_id = getattr(user, "institution_id", None)
+    # Fall back to user's default school
+    user_school_id = getattr(user, "school_id", None)
     
-    if user_institution_id:
+    if user_school_id:
         try:
-            institution = Institution.objects.get(id=user_institution_id)
-            request._cached_institution = institution
-            return institution
-        except Institution.DoesNotExist:
-            raise PermissionDenied("User's institution does not exist.")
+            school = School.objects.get(id=user_school_id)
+            request._cached_school = school
+            return school
+        except School.DoesNotExist:
+            raise PermissionDenied("User's school does not exist.")
     
-    # No institution context available
-    request._cached_institution = None
+    # No school context available
+    request._cached_school = None
     return None
 
 
 class TenantContextMiddleware:
     """
-    Injects institution context into every request.
+    Injects school context into every request.
     
-    Sets request.institution as a lazy-loaded property AND stores it in
+    Sets request.school as a lazy-loaded property AND stores it in
     thread-local storage for automatic ORM filtering via TenantAwareManager.
     """
     
@@ -76,25 +76,25 @@ class TenantContextMiddleware:
         self.get_response = get_response
     
     def __call__(self, request: HttpRequest):
-        # Clear any previous institution context from thread-local
-        clear_current_institution()
+        # Clear any previous school context from thread-local
+        clear_current_school()
         
-        # Lazy-load institution to avoid unnecessary DB queries
-        request.institution = SimpleLazyObject(
-            lambda: _get_institution_from_request(request)
+        # Lazy-load school to avoid unnecessary DB queries
+        request.school = SimpleLazyObject(
+            lambda: _get_school_from_request(request)
         )
         
         # Force evaluation and set in thread-local for ORM access
-        institution = request.institution  # This triggers lazy evaluation
+        school = request.school  # This triggers lazy evaluation
         
-        if institution is not None:
-            set_current_institution(institution)
+        if school is not None:
+            set_current_school(school)
         
         # Process request
         response = self.get_response(request)
         
         # Clean up thread-local after request completes
-        clear_current_institution()
+        clear_current_school()
         
         return response
 
@@ -105,8 +105,8 @@ class TenantBoundaryEnforcementMiddleware:
     
     This middleware runs AFTER authentication and tenant context injection.
     It validates that:
-    - Institution-scoped users can only access their own institution's data
-    - Cross-institution references are blocked
+    - School-scoped users can only access their own school's data
+    - Cross-school references are blocked
     """
     
     def __init__(self, get_response):
@@ -119,19 +119,19 @@ class TenantBoundaryEnforcementMiddleware:
         if not user or not user.is_authenticated:
             return self.get_response(request)
         
-        # Skip enforcement for Vision staff (they can access all institutions)
+        # Skip enforcement for Vision staff (they can access all schools)
         if getattr(user, "user_type", None) == "VS_STAFF":
             return self.get_response(request)
         
-        # Enforce that institution-scoped users have valid institution context
-        institution = getattr(request, "institution", None)
+        # Enforce that school-scoped users have valid school context
+        school = getattr(request, "school", None)
         
-        if not institution:
-            # Institution user with no institution context = security violation
+        if not school:
+            # School user with no school context = security violation
             user_type = getattr(user, "user_type", None)
-            if user_type in {"INSTITUTION_ADMIN", "INSTITUTION_USER"}:
+            if user_type in {"SCHOOL_ADMIN", "SCHOOL_USER"}:
                 raise PermissionDenied(
-                    "Institution context required for institution-scoped users."
+                    "School context required for school-scoped users."
                 )
         
         response = self.get_response(request)

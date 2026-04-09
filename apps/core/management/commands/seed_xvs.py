@@ -1,7 +1,7 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from vs_institutions.models import XVSModules
+from vs_schools.models import XVSModules
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ MODULES = [
         "name": "Finance",
         "description": (
             "Manage school fees, invoices, payment collection, receipts, "
-            "and financial reporting for institutions."
+            "and financial reporting for schools."
         ),
         "is_active": True,
     },
@@ -63,7 +63,7 @@ MODULES = [
         "name": "Procurement",
         "description": (
             "Handle purchase requests, vendor orders, and supply chain "
-            "workflows for institution procurement teams."
+            "workflows for school procurement teams."
         ),
         "is_active": True,
     },
@@ -72,7 +72,7 @@ MODULES = [
         "name": "Vendors Management",
         "description": (
             "Maintain a registry of approved vendors, track contracts, "
-            "and manage vendor relationships across the institution."
+            "and manage vendor relationships across the school."
         ),
         "is_active": True,
     },

@@ -37,7 +37,7 @@ RESERVED_TENANT_SLUGS = {
 # Enumerations
 # -----------------------------------------------------------------------------
 
-class InstitutionStatus(models.TextChoices):
+class SchoolStatus(models.TextChoices):
     ACTIVE = "ACTIVE", "Active"
     INACTIVE = "INACTIVE", "Inactive"
     PENDING = "PENDING", "Pending"
@@ -105,11 +105,11 @@ class BillingCycle(models.TextChoices):
 # Core Entities
 # -----------------------------------------------------------------------------
 
-class Institution(TimeStampedModel):
+class School(TimeStampedModel):
     """
     Canonical tenant record for the platform.
 
-    Institution captures the durable identity for a school or organization while
+    School captures the durable identity for a school or organization while
     related Branch rows store per-location details. The slug doubles as the primary
     key so tenants can be addressed via subdomains and API scopes.
 
@@ -122,7 +122,7 @@ class Institution(TimeStampedModel):
         website / motto / registration_id: Optional metadata displayed in onboarding.
         term_structure: Academic calendar definition (`TermStructure` choices).
         currency: Preferred billing currency (`Currency` choices).
-        status: Operational flag (`InstitutionStatus` choices, indexed).
+        status: Operational flag (`SchoolStatus` choices, indexed).
         activated_at / deleted_at: Lifecycle timestamps for activation and soft-deletes.
 
     Meta:
@@ -140,7 +140,7 @@ class Institution(TimeStampedModel):
         max_length=80,
         unique=True,
         validators=[slug_validator],
-        help_text="URL-safe unique institution identifier. Lowercase, hyphen-separated.",
+        help_text="URL-safe unique school identifier. Lowercase, hyphen-separated.",
     )
     address = models.CharField(max_length=255, blank=True, default="")
     ownership_type = models.CharField(max_length=80, choices=OwnershipType.choices, default=OwnershipType.PUBLIC)
@@ -153,8 +153,8 @@ class Institution(TimeStampedModel):
 
     status = models.CharField(
         max_length=16,
-        choices=InstitutionStatus.choices,
-        default=InstitutionStatus.ACTIVE,
+        choices=SchoolStatus.choices,
+        default=SchoolStatus.ACTIVE,
         db_index=True,
     )
 
@@ -192,17 +192,17 @@ class Institution(TimeStampedModel):
 
 class Branch(TimeStampedModel):
     """
-    Physical branch or campus associated with an `Institution`.
+    Physical branch or campus associated with an `School`.
 
-    An institution can own multiple branches but only one may be flagged as
-    `is_main=True`. Branch codes are automatically allocated per institution inside
+    An school can own multiple branches but only one may be flagged as
+    `is_main=True`. Branch codes are automatically allocated per school inside
     a transaction to avoid duplicates. Status changes flow through the helper
     methods and are logged via `BranchLifecycle`.
 
     Fields:
-        institution: FK back to the owning Institution (`branches` related name).
+        school: FK back to the owning School (`branches` related name).
         name: Display label such as "Lekki Campus".
-        code: Integer code unique within the institution; filled on first save.
+        code: Integer code unique within the school; filled on first save.
         is_main: Boolean marker for the canonical branch (unique constraint enforces 1).
         _type: Optional free-form descriptor (e.g., Primary, Secondary).
         address / email / country / state: Contact + location metadata captured today.
@@ -210,17 +210,17 @@ class Branch(TimeStampedModel):
         opened_at / closed_at / activated_at / deleted_at: Optional lifecycle timestamps.
 
     Meta:
-        - indexes on (`institution`, `is_main`), (`institution`, `status`), (`institution`, `code`)
-        - unique constraints for non-zero codes per institution and single main branch.
+        - indexes on (`school`, `is_main`), (`school`, `status`), (`school`, `code`)
+        - unique constraints for non-zero codes per school and single main branch.
 
     Helpers:
-        allocate_next_code() wraps a SELECT .. FOR UPDATE sequence per institution.
+        allocate_next_code() wraps a SELECT .. FOR UPDATE sequence per school.
         transition()/mark_*() mutate status and append a BranchLifecycle event.
         clean() auto-populates `closed_at` when the status is CLOSED.
     """
 
-    institution = models.ForeignKey(
-        Institution,
+    school = models.ForeignKey(
+        School,
         on_delete=models.CASCADE,
         related_name="branches",
         db_index=True,
@@ -230,12 +230,12 @@ class Branch(TimeStampedModel):
     code = models.PositiveIntegerField(
         editable=False,
         null=False,
-        help_text="Branch code unique per institution (1..N).",
+        help_text="Branch code unique per school (1..N).",
         db_index=True,
     )
     is_main = models.BooleanField(
         default=False,
-        help_text="Marks the primary/main branch for this institution.",
+        help_text="Marks the primary/main branch for this school.",
     )
 
     _type = models.CharField(max_length=80)  # e.g., Primary, Secondary, etc. --- optional freeform for now
@@ -261,28 +261,28 @@ class Branch(TimeStampedModel):
 
     class Meta:
         indexes = [
-            models.Index(fields=["institution", "is_main"]),
-            models.Index(fields=["institution", "status"]),
-            models.Index(fields=["institution", "code"]),
+            models.Index(fields=["school", "is_main"]),
+            models.Index(fields=["school", "status"]),
+            models.Index(fields=["school", "code"]),
         ]
         constraints = [
-            # Optional: if code is supplied, enforce uniqueness within institution
+            # Optional: if code is supplied, enforce uniqueness within school
             models.UniqueConstraint(
-                fields=["institution", "code"],
+                fields=["school", "code"],
                 condition=~Q(code=0),  # AutoField starts at 1, so code=0 can represent "not set"
-                name="uniq_branch_code_per_institution_when_present",
+                name="uniq_branch_code_per_school_when_present",
             ),
 
-            # Enforce only ONE main branch per institution
+            # Enforce only ONE main branch per school
             models.UniqueConstraint(
-                fields=["institution"],
+                fields=["school"],
                 condition=Q(is_main=True),
-                name="uniq_one_main_branch_per_institution",
+                name="uniq_one_main_branch_per_school",
             ),
         ]
 
     def __str__(self) -> str:
-        return f"{self.institution.slug}:{self.code}"
+        return f"{self.school.slug}:{self.code}"
 
     def clean(self):
         super().clean()
@@ -292,13 +292,13 @@ class Branch(TimeStampedModel):
             self.closed_at = timezone.now()
     
     @staticmethod
-    def allocate_next_code(*, institution: Institution) -> int:
+    def allocate_next_code(*, school: School) -> int:
         """
-        Allocates the next branch code per institution safely.
+        Allocates the next branch code per school safely.
         Uses row locking to prevent duplicate codes under concurrency.
         """
-        # Lock rows for this institution so two creates don't pick the same Max(code)
-        qs = Branch.objects.select_for_update().filter(institution=institution)
+        # Lock rows for this school so two creates don't pick the same Max(code)
+        qs = Branch.objects.select_for_update().filter(school=school)
         current_max = qs.aggregate(m=Max("code"))["m"] or 0
         return current_max + 1
 
@@ -306,7 +306,7 @@ class Branch(TimeStampedModel):
         # Allocate code only on first save if missing/zero.
         if not self.code:
             with transaction.atomic():
-                self.code = Branch.allocate_next_code(institution=self.institution)
+                self.code = Branch.allocate_next_code(school=self.school)
                 super().save(*args, **kwargs)
             return
         return super().save(*args, **kwargs)
@@ -344,29 +344,29 @@ class Branch(TimeStampedModel):
             reason=reason or "",
         )
 
-class InstitutionBranding(TimeStampedModel):
+class SchoolBranding(TimeStampedModel):
     """
-    Lightweight container for institution-specific branding assets.
+    Lightweight container for school-specific branding assets.
 
-    Each Institution owns exactly one branding row which currently stores an optional
+    Each School owns exactly one branding row which currently stores an optional
     `logo` upload. Additional theme fields can be added later without bloating the
-    core Institution table.
+    core School table.
     """
 
-    institution = models.OneToOneField(
-        Institution,
+    school = models.OneToOneField(
+        School,
         on_delete=models.CASCADE,
         related_name="branding",
     )
 
-    logo = models.ImageField(upload_to="institution_logos/", null=True, blank=True)
+    logo = models.ImageField(upload_to="school_logos/", null=True, blank=True)
 
 
 class XVSModules(TimeStampedModel):
     """
-    Master list of modules that can be enabled for an institution.
+    Master list of modules that can be enabled for an school.
     Example: students, staff, finance, procurement, attendance, analytics.
-    This fits your product docs where modules are enabled/disabled per institution.
+    This fits your product docs where modules are enabled/disabled per school.
     """
     key = models.SlugField(
         max_length=100,
@@ -419,30 +419,30 @@ class PackagePlan(TimeStampedModel):
         return self.name
 
 
-class InstitutionPackageSetup(TimeStampedModel):
+class SchoolPackageSetup(TimeStampedModel):
     """
-    Applied subscription configuration for an institution.
+    Applied subscription configuration for an school.
 
     Records the chosen `PackagePlan`, seat capacities for key roles, subscription
     expiry, activation flag, and optional operator notes. `clean()` ensures
     capacities are positive, the expiry date is not in the past, and that each
     capacity respects the limits enforced by the associated `PackagePlan`. The
-    one-to-one relationship guarantees at most one active setup per institution.
+    one-to-one relationship guarantees at most one active setup per school.
     """
-    institution = models.OneToOneField(
-        Institution,
+    school = models.OneToOneField(
+        School,
         on_delete=models.CASCADE,
         related_name="package_setup",
     )
     package_plan = models.ForeignKey(
         PackagePlan,
         on_delete=models.PROTECT,
-        related_name="institution_setups",
+        related_name="school_setups",
     )
     enabled_modules = models.ManyToManyField(
         XVSModules,
         blank=True,
-        related_name="institution_package_setups",
+        related_name="school_package_setups",
     )
 
     student_capacity = models.PositiveIntegerField()
@@ -455,11 +455,11 @@ class InstitutionPackageSetup(TimeStampedModel):
     notes = models.TextField(blank=True)
 
     class Meta:
-        verbose_name = "Institution Package Setup"
-        verbose_name_plural = "Institution Package Setups"
+        verbose_name = "School Package Setup"
+        verbose_name_plural = "School Package Setups"
 
     def __str__(self) -> str:
-        return f"{self.institution} - {self.package_plan}"
+        return f"{self.school} - {self.package_plan}"
 
     def clean(self):
         errors = {}
@@ -603,28 +603,28 @@ class BranchPrimaryAdmin(TimeStampedModel):
         ]
 
 
-class InstitutionPrimaryAdmin(TimeStampedModel):
+class SchoolPrimaryAdmin(TimeStampedModel):
     """
-    Same concept as `BranchPrimaryAdmin` but at the institution level.
+    Same concept as `BranchPrimaryAdmin` but at the school level.
 
-    Stores the primary Institution contact, optional role labels, and invite
+    Stores the primary School contact, optional role labels, and invite
     status/timestamps so onboarding jobs can reconcile which tenants still need
-    primary admins activated. Indexed by (`institution`, `invite_status`) for
+    primary admins activated. Indexed by (`school`, `invite_status`) for
     efficient filtering.
     """
     
-    institution = models.OneToOneField(
-        Institution,
+    school = models.OneToOneField(
+        School,
         on_delete=models.CASCADE,
         related_name="primary_admin",
     )
     contact = models.ForeignKey(
         ContactInfo,
         on_delete=models.PROTECT,
-        related_name="primary_admin_for_institutions",
+        related_name="primary_admin_for_schools",
     )
-    institution_role = models.CharField(max_length=80, blank=True, default="IT Head")
-    role_label = models.CharField(max_length=80, blank=True, default="INSTITUTION_ADMIN")
+    school_role = models.CharField(max_length=80, blank=True, default="IT Head")
+    role_label = models.CharField(max_length=80, blank=True, default="SCHOOL_ADMIN")
 
     invite_status = models.CharField(
         max_length=16,
@@ -637,5 +637,5 @@ class InstitutionPrimaryAdmin(TimeStampedModel):
 
     class Meta:
         indexes = [
-            models.Index(fields=["institution", "invite_status"]),
+            models.Index(fields=["school", "invite_status"]),
         ]

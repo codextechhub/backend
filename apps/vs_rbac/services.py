@@ -2,7 +2,7 @@
 Service layer for role change approval workflows.
 
 Handles:
-- Institution role change request approval and application
+- School role change request approval and application
 - Platform role change request approval and application
 - Dependency validation before applying changes
 - Audit trail generation
@@ -26,9 +26,9 @@ from .models import (
 from .validators import validate_role_permissions
 
 
-def apply_institution_role_change_request(obj: RoleChangeRequest, reviewer, notes: str = ""):
+def apply_school_role_change_request(obj: RoleChangeRequest, reviewer, notes: str = ""):
     """
-    Apply approved institution role change request.
+    Apply approved school role change request.
     
     This atomically:
     1. Validates dependencies
@@ -97,7 +97,7 @@ def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer,
     """
     Apply approved platform role change request.
     
-    Same logic as institution role changes but for platform roles.
+    Same logic as school role changes but for platform roles.
     """
     with transaction.atomic():
         target_role = obj.target_role

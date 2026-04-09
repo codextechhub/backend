@@ -3,11 +3,11 @@ from __future__ import annotations
 from rest_framework import generics
 from rest_framework.response import Response
 
-from ..models import Institution
+from ..models import School
 from ..permissions import IsVisionStaff, IsVisionSuperAdmin
 from ..serializers import (
-    InstitutionDetailSerializer,
-    InstitutionResetConfigSerializer,
+    SchoolDetailSerializer,
+    SchoolResetConfigSerializer,
 )
 
 
@@ -19,25 +19,25 @@ class ActorContextMixin:
         return ctx
 
 
-class _InstitutionOpBaseView(ActorContextMixin, generics.GenericAPIView):
-    """Base for institution operation views."""
-    queryset = Institution.objects.all()
+class _SchoolOpBaseView(ActorContextMixin, generics.GenericAPIView):
+    """Base for school operation views."""
+    queryset = School.objects.all()
     lookup_field = "slug"
 
     def _run(self, request, serializer_class):
-        institution = self.get_object()
+        school = self.get_object()
         serializer = serializer_class(
             data=request.data,
-            context={**self.get_serializer_context(), "institution": institution},
+            context={**self.get_serializer_context(), "school": school},
         )
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        institution.refresh_from_db()
-        return Response(InstitutionDetailSerializer(institution, context=self.get_serializer_context()).data)
+        school.refresh_from_db()
+        return Response(SchoolDetailSerializer(school, context=self.get_serializer_context()).data)
 
 
-class InstitutionResetConfigView(_InstitutionOpBaseView):
+class SchoolResetConfigView(_SchoolOpBaseView):
     permission_classes = [IsVisionSuperAdmin]
 
     def post(self, request, *args, **kwargs):
-        return self._run(request, InstitutionResetConfigSerializer)
+        return self._run(request, SchoolResetConfigSerializer)

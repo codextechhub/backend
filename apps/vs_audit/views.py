@@ -248,7 +248,7 @@ class ComplianceRuleListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsVisionSuperAdmin]
 
     def get_queryset(self):
-        queryset = ComplianceRule.objects.select_related("institution").all()
+        queryset = ComplianceRule.objects.select_related("school").all()
 
         i_slug = self.request.query_params.get("i_slug")
         rule_type = self.request.query_params.get("rule_type")
@@ -282,7 +282,7 @@ class ComplianceRuleDetailView(generics.RetrieveUpdateDestroyAPIView):
     DELETE /audit/compliance-rules/<uuid:id>/
     """
 
-    queryset = ComplianceRule.objects.select_related("institution").all()
+    queryset = ComplianceRule.objects.select_related("school").all()
     permission_classes = [IsVisionSuperAdmin]
     lookup_field = "id"
 

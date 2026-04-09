@@ -7,7 +7,7 @@ class IsVisionStaff(BasePermission):
     Replace/extend with your real RBAC (groups/roles/claims).
     """
 
-    message = "You do not have permission to access institution management."
+    message = "You do not have permission to access school management."
 
     def has_permission(self, request, view) -> bool:
         user = getattr(request, "user", None)

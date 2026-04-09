@@ -32,9 +32,9 @@ class UserMiniSerializer(serializers.Serializer):
     full_name = serializers.CharField(read_only=True, required=False)
 
 
-class InstitutionMiniSerializer(serializers.Serializer):
+class SchoolMiniSerializer(serializers.Serializer):
     """
-    Small serializer for nested institution display.
+    Small serializer for nested school display.
     """
     id = serializers.CharField(read_only=True)
     name = serializers.CharField(read_only=True, required=False)
@@ -460,7 +460,7 @@ class ImportAuditLogSerializer(serializers.ModelSerializer):
         model = ImportAuditLog
         fields = (
             "id",
-            "institution",
+            "school",
             "import_batch",
             "job",
             "actor",
@@ -565,7 +565,7 @@ class ImportBatchDetailSerializer(serializers.ModelSerializer):
     """
     Full serializer for one import batch.
     """
-    institution = serializers.SerializerMethodField()
+    school = serializers.SerializerMethodField()
     uploaded_by = serializers.SerializerMethodField()
     template = ImportTemplateDetailSerializer(read_only=True)
 
@@ -580,7 +580,7 @@ class ImportBatchDetailSerializer(serializers.ModelSerializer):
         model = ImportBatch
         fields = (
             "id",
-            "institution",
+            "school",
             "uploaded_by",
             "template",
             "template_version",
@@ -617,12 +617,12 @@ class ImportBatchDetailSerializer(serializers.ModelSerializer):
         )
         read_only_fields = fields
 
-    def get_institution(self, obj):
-        institution = obj.institution
+    def get_school(self, obj):
+        school = obj.school
         return {
-            "id": str(institution.id),
-            "name": getattr(institution, "name", ""),
-            "slug": getattr(institution, "slug", ""),
+            "id": str(school.id),
+            "name": getattr(school, "name", ""),
+            "slug": getattr(school, "slug", ""),
         }
 
     def get_uploaded_by(self, obj):
@@ -641,7 +641,7 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
     In the new system-template-only flow:
     - template is required
     - file is required
-    - institution and uploaded_by come from context
+    - school and uploaded_by come from context
     - template_version is copied automatically
     """
     file = serializers.FileField(write_only=True)
@@ -710,7 +710,7 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
             template.columns.order_by("column_order").values_list("column_name", flat=True)
         )
 
-        validated_data["institution"] = self.context["institution"]
+        validated_data["school"] = self.context["school"]
         validated_data["uploaded_by"] = self.context["request"].user
         validated_data["template"] = template
         validated_data["template_version"] = template.version
