@@ -76,6 +76,12 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+
+    # --- Custom middleware for institution context and tenant isolation ---
+    'vs_rbac.middleware.TenantContextMiddleware',
+    'vs_rbac.middleware.TenantBoundaryEnforcementMiddleware',
+    # --- End of custom middleware ---
+    
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
