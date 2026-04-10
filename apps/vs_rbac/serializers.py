@@ -107,6 +107,17 @@ class PermissionDependencySerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
+    def create(self, validated_data):
+        permission_key = validated_data.pop("permission", {}).get("key")
+        depends_on_key = validated_data.pop("depends_on", {}).get("key")
+        permission = Permission.objects.get(key=permission_key)
+        depends_on = Permission.objects.get(key=depends_on_key)
+        return PermissionDependency.objects.create(
+            permission=permission,
+            depends_on=depends_on,
+            **validated_data,
+        )
+
 
 # -----------------------------------------------------------------------------
 # 2) School Role Templates + Role Permissions
@@ -364,7 +375,7 @@ class UserRoleAssignmentSerializer(serializers.ModelSerializer):
         school = attrs.get("school") or getattr(self.instance, "school", None)
         role = attrs.get("role") or getattr(self.instance, "role", None)
 
-        if school and role and role.school_id != school.id:
+        if school and role and role.school_id != school.pk:
             raise serializers.ValidationError(
                 "Role must belong to the same school as the assignment."
             )
@@ -492,7 +503,7 @@ class RoleChangeRequestSerializer(serializers.ModelSerializer):
         school = attrs.get("school") or getattr(self.instance, "school", None)
         target_role = attrs.get("target_role") or getattr(self.instance, "target_role", None)
 
-        if school and target_role and target_role.school_id != school.id:
+        if school and target_role and target_role.school_id != school.pk:
             raise serializers.ValidationError(
                 "Target role must belong to the same school as the request."
             )
