@@ -66,8 +66,8 @@ class HasRBACPermission(BasePermission):
     Usage:
         permission_classes = [IsAuthenticatedAndActive, HasRBACPermission("finance.invoice.approve")]
 
-    For institution-scoped views, the institution is resolved from the URL kwarg
-    "institution_id" (override via `institution_url_kwarg` on the view).
+    For school-scoped views, the school is resolved from the URL kwarg
+    "school_id" (override via `school_url_kwarg` on the view).
     """
 
     def __init__(self, *required_permissions: str):
@@ -77,27 +77,18 @@ class HasRBACPermission(BasePermission):
         """Allow DRF to instantiate this class; return self since already configured."""
         return self
 
-    def has_permission(self, request, view):
+    def has_permission(self, request, _view):
         user = getattr(request, "user", None)
         if not user or not user.is_authenticated:
             return False
 
         from .evaluator import has_all_permissions
 
-        # Resolve institution from URL kwargs if available
-        institution = None
-        institution_kwarg = getattr(view, "institution_url_kwarg", "institution_id")
-        institution_id = getattr(view, "kwargs", {}).get(institution_kwarg)
-
-        if institution_id:
-            from vs_institutions.models import Institution
-            try:
-                institution = Institution.objects.get(pk=institution_id)
-            except Institution.DoesNotExist:
-                return False
+        # Use school already resolved and cached by TenantContextMiddleware
+        school = getattr(request, "school", None)
 
         return has_all_permissions(
             user,
             list(self.required_permissions),
-            institution=institution,
+            school=school,
         )
