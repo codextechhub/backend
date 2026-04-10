@@ -5,7 +5,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from vs_institutions.models import Institution
+from vs_schools.models import School
 
 
 class ImpersonationSession(models.Model):
@@ -25,8 +25,8 @@ class ImpersonationSession(models.Model):
         on_delete=models.PROTECT,
         related_name="impersonation_sessions_started",
     )
-    institution = models.ForeignKey(
-        Institution,
+    school = models.ForeignKey(
+        School,
         on_delete=models.PROTECT,
         related_name="impersonation_sessions",
     )

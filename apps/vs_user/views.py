@@ -17,7 +17,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 
-from vs_institutions.models import Institution
+from vs_schools.models import School
 
 from .models import (
     UserAccount,
@@ -63,7 +63,7 @@ from .serializers import (
 )
 from .permissions import (
     IsVisionStaff,
-    IsInstitutionAdminOrVisionStaff,
+    IsSchoolAdminOrVisionStaff,
     IsSelfOrVisionStaff,
     IsVisionStaffOrSuperuser,
 )
@@ -80,12 +80,12 @@ def _get_client_ip(request) -> str | None:
     return request.META.get("REMOTE_ADDR")
 
 
-def _resolve_institution_from_slug(slug: str) -> Institution | None:
+def _resolve_school_from_slug(slug: str) -> School | None:
     if not slug:
         return None
     try:
-        return Institution.objects.get(slug=slug)
-    except Institution.DoesNotExist:
+        return School.objects.get(slug=slug)
+    except School.DoesNotExist:
         return None
 
 
@@ -96,17 +96,17 @@ def _issue_tokens_for_user(user: UserAccount) -> dict:
     refresh = RefreshToken.for_user(user)
     return {"refresh": str(refresh), "access": str(refresh.access_token), "refresh_jti": str(refresh["jti"])}
 
-def _user_institution(user):
+def _user_school(user):
     branch = getattr(user, "branch", None)
-    return getattr(branch, "institution", None)
+    return getattr(branch, "school", None)
 
 
-def _log_auth_event(*, actor: UserAccount | None, subject: UserAccount | None, institution: Institution | None,
+def _log_auth_event(*, actor: UserAccount | None, subject: UserAccount | None, school: School | None,
                     event: str, request, metadata: dict | None = None):
     AuthEventLog.objects.create(
         actor=actor,
         subject=subject,
-        institution=institution,
+        school=school,
         event=event,
         ip_address=_get_client_ip(request),
         user_agent=request.META.get("HTTP_USER_AGENT", ""),
@@ -114,13 +114,13 @@ def _log_auth_event(*, actor: UserAccount | None, subject: UserAccount | None, i
     )
 
 
-def _record_attempt(*, email_entered: str, institution_context: str, user: UserAccount | None,
-                    institution: Institution | None, result: str, failure_code: str, request, metadata: dict | None = None):
+def _record_attempt(*, email_entered: str, school_context: str, user: UserAccount | None,
+                    school: School | None, result: str, failure_code: str, request, metadata: dict | None = None):
     AuthAttempt.objects.create(
         email_entered=email_entered,
-        institution_context=institution_context or "",
+        school_context=school_context or "",
         user=user,
-        institution=institution,
+        school=school,
         ip_address=_get_client_ip(request),
         user_agent=request.META.get("HTTP_USER_AGENT", ""),
         result=result,
@@ -168,7 +168,7 @@ class UserAccountViewSet(viewsets.ModelViewSet):
         _log_auth_event(
             actor=self.request.user,
             subject=user,
-            institution=getattr(user, "institution", None),
+            school=getattr(user, "school", None),
             event=AuthEventLog.Event.USER_CREATED,
             request=self.request,
             metadata={"via": "UserAccountViewSet.create"},
@@ -196,44 +196,44 @@ class LoginAPIView(APIView):
         ser.is_valid(raise_exception=True)
         email = ser.validated_data["email"].strip()
         password = ser.validated_data["password"]
-        institution_slug = ser.validated_data.get("institution_slug", "").strip()
+        school_slug = ser.validated_data.get("school_slug", "").strip()
         device_label = ser.validated_data.get("device_label", "")
 
-        institution = _resolve_institution_from_slug(institution_slug) if institution_slug else None
+        school = _resolve_school_from_slug(school_slug) if school_slug else None
        
 
         # Find user (case-insensitive). This matches your uniqueness constraints.
         user = UserAccount.objects.filter(email__iexact=email).first()
 
-        # Block “fail open” on institution context (FR-IDA-012)
+        # Block “fail open” on school context (FR-IDA-012)
         if user and user.user_type != UserAccount.UserType.VISION_STAFF:
-            if not institution:
+            if not school:
                 _record_attempt(
-                    email_entered=email, institution_context=institution_slug,
-                    user=user, institution=None,
-                    result=AuthAttempt.Result.FAIL, failure_code="INSTITUTION_CONTEXT_REQUIRED",
+                    email_entered=email, school_context=school_slug,
+                    user=user, school=None,
+                    result=AuthAttempt.Result.FAIL, failure_code="SCHOOL_CONTEXT_REQUIRED",
                     request=request,
                 )
                 return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
 
-            if user.branch.institution_id != institution.id:
+            if user.branch.school_id != school.id:
                 # do not reveal what was wrong
                 _record_attempt(
-                    email_entered=email, institution_context=institution_slug,
-                    user=user, institution=_user_institution(user),
-                    result=AuthAttempt.Result.FAIL, failure_code="INSTITUTION_MISMATCH",
+                    email_entered=email, school_context=school_slug,
+                    user=user, school=_user_school(user),
+                    result=AuthAttempt.Result.FAIL, failure_code="SCHOOL_MISMATCH",
                     request=request,
                 )
                 SuspiciousLoginEvent.objects.create(
                     user=user,
                     email_entered=email,
-                    institution_context=institution_slug,
+                    school_context=school_slug,
                     ip_address=_get_client_ip(request),
                     user_agent=request.META.get("HTTP_USER_AGENT", ""),
-                    event_type=SuspiciousLoginEvent.EventType.INSTITUTION_MISMATCH,
+                    event_type=SuspiciousLoginEvent.EventType.SCHOOL_MISMATCH,
                     risk_score=70,
                     decision=SuspiciousLoginEvent.Decision.BLOCK,
-                    details={"expected_institution_id": user.institution_id, "got_institution_id": institution.id},
+                    details={"expected_school_id": user.school_id, "got_school_id": school.id},
                 )
                 return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
 
@@ -242,8 +242,8 @@ class LoginAPIView(APIView):
         authed = authenticate(request=request, email=email, password=password)
         if not authed:
             _record_attempt(
-                email_entered=email, institution_context=institution_slug,
-                user=user, institution=_user_institution(user),
+                email_entered=email, school_context=school_slug,
+                user=user, school=_user_school(user),
                 result=AuthAttempt.Result.FAIL, failure_code="INVALID_CREDENTIALS",
                 request=request,
             )
@@ -252,9 +252,9 @@ class LoginAPIView(APIView):
         # Business status checks
         if authed.status in (UserAccount.Status.SUSPENDED, UserAccount.Status.DELETED, UserAccount.Status.LOCKED):
             _record_attempt(
-                email_entered=email, institution_context=institution_slug,
+                email_entered=email, school_context=school_slug,
                 user=authed,
-                institution=_user_institution(user),
+                school=_user_school(user),
                 result=AuthAttempt.Result.BLOCKED, failure_code=authed.status,
                 request=request,
             )
@@ -266,7 +266,7 @@ class LoginAPIView(APIView):
         # Create session record (FR-IDA-009)
         session = LoginSession.objects.create(
             user=authed,
-            institution=_user_institution(user),
+            school=_user_school(user),
             ip_address=_get_client_ip(request),
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
             device_label=device_label or "",
@@ -280,15 +280,15 @@ class LoginAPIView(APIView):
         authed.save(update_fields=["last_login_at", "updated_at"])
 
         _record_attempt(
-            email_entered=email, institution_context=institution_slug,
+            email_entered=email, school_context=school_slug,
             user=authed,
-            institution=_user_institution(user),
+            school=_user_school(user),
             result=AuthAttempt.Result.SUCCESS, failure_code="",
             request=request,
         )
         _log_auth_event(
             actor=authed, subject=authed,
-            institution=_user_institution(authed),
+            school=_user_school(authed),
             event=AuthEventLog.Event.LOGIN_SUCCESS,
             request=request,
             metadata={"session_id": session.id},
@@ -329,7 +329,7 @@ class TokenRevokeAPIView(APIView):
     Revoke by JTI (FR-IDA-005).
     For SimpleJWT, you’ll typically revoke refresh tokens (and optionally access tokens).
     """
-    permission_classes = [IsAuthenticated, IsVisionStaffOrSuperuser]         # IsInstitutionAdminOrVisionStaff
+    permission_classes = [IsAuthenticated, IsVisionStaffOrSuperuser]         # IsSchoolAdminOrVisionStaff
 
     def post(self, request):
         ser = TokenRevokeSerializer(data=request.data)
@@ -352,7 +352,7 @@ class TokenRevokeAPIView(APIView):
         )
 
         _log_auth_event(
-            actor=request.user, subject=request.user, institution=getattr(request.user, "institution", None),
+            actor=request.user, subject=request.user, school=getattr(request.user, "school", None),
             event=AuthEventLog.Event.TOKEN_REVOKED, request=request,
             metadata={"jti": jti, "token_type": token_type, "reason": reason},
         )
@@ -378,7 +378,7 @@ class PasswordChangeAPIView(APIView):
         u.save(update_fields=["password", "must_change_password", "password_changed_at", "updated_at"])
 
         _log_auth_event(
-            actor=u, subject=u, institution=_user_institution(u),
+            actor=u, subject=u, school=_user_school(u),
             event=AuthEventLog.Event.PASSWORD_CHANGED,
             request=request,
             metadata={"forced_change_flow": True},
@@ -394,13 +394,13 @@ class PasswordResetRequestAPIView(APIView):
         ser.is_valid(raise_exception=True)
 
         email = ser.validated_data["email"].strip()
-        institution_slug = (ser.validated_data.get("institution_slug") or "").strip()
-        institution = _resolve_institution_from_slug(institution_slug) if institution_slug else None
+        school_slug = (ser.validated_data.get("school_slug") or "").strip()
+        school = _resolve_school_from_slug(school_slug) if school_slug else None
 
         # Generic response regardless of existence (avoid enumeration)
         user_qs = UserAccount.objects.filter(email__iexact=email)
-        if institution:
-            user_qs = user_qs.filter(institution=institution)
+        if school:
+            user_qs = user_qs.filter(school=school)
         user = user_qs.first()
 
         if user and user.status != UserAccount.Status.DELETED:
@@ -415,10 +415,10 @@ class PasswordResetRequestAPIView(APIView):
                 requested_user_agent=request.META.get("HTTP_USER_AGENT", ""),
             )
             _log_auth_event(
-                actor=None, subject=user, institution=user.institution,
+                actor=None, subject=user, school=user.school,
                 event=AuthEventLog.Event.PASSWORD_RESET_REQUESTED,
                 request=request,
-                metadata={"institution_slug": institution_slug},
+                metadata={"school_slug": school_slug},
             )
             # NOTE: send raw_token via email/SMS here (not shown)
 
@@ -450,7 +450,7 @@ class PasswordResetConfirmAPIView(APIView):
             pr.save(update_fields=["used_at", "updated_at"])
 
         _log_auth_event(
-            actor=None, subject=user, institution=user.institution,
+            actor=None, subject=user, school=user.school,
             event=AuthEventLog.Event.PASSWORD_RESET_COMPLETED,
             request=request,
         )
@@ -470,7 +470,7 @@ class TemporaryPasswordIssueViewSet(mixins.CreateModelMixin, mixins.ListModelMix
         return TemporaryPasswordIssueReadSerializer
 
     def get_permissions(self):
-        # Typically Vision staff only; adjust to allow institution admins if policy allows
+        # Typically Vision staff only; adjust to allow school admins if policy allows
         return [IsAuthenticated(), IsVisionStaff()]
 
     def create(self, request, *args, **kwargs):
@@ -502,7 +502,7 @@ class TemporaryPasswordIssueViewSet(mixins.CreateModelMixin, mixins.ListModelMix
         user.save(update_fields=["password", "must_change_password", "updated_at"])
 
         _log_auth_event(
-            actor=request.user, subject=user, institution=user.institution,
+            actor=request.user, subject=user, school=user.school,
             event=AuthEventLog.Event.TEMP_PASSWORD_ISSUED,
             request=request,
             metadata={"issue_id": issue.id, "channel": channel, "delivered_to": delivered_to},
@@ -529,12 +529,12 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_queryset(self):
         u = self.request.user
-        qs = LoginSession.objects.select_related("user", "institution").order_by("-last_seen_at")
+        qs = LoginSession.objects.select_related("user", "school").order_by("-last_seen_at")
         if getattr(u, "user_type", None) == "VISION_STAFF":
             return qs
         return qs.filter(user=u)
 
-    @action(detail=False, methods=["post"], url_path="force-logout", permission_classes=[IsAuthenticated, IsInstitutionAdminOrVisionStaff])
+    @action(detail=False, methods=["post"], url_path="force-logout", permission_classes=[IsAuthenticated, IsSchoolAdminOrVisionStaff])
     def force_logout(self, request):
         ser = ForceLogoutSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
@@ -559,7 +559,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         _log_auth_event(
             actor=request.user,
             subject=user if user else (session.user if session else None),
-            institution=getattr(request.user, "institution", None),
+            school=getattr(request.user, "school", None),
             event=AuthEventLog.Event.FORCE_LOGOUT,
             request=request,
             metadata={"ended_sessions": ended, "reason": reason},
@@ -574,7 +574,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     serializer_class = AuthAttemptReadSerializer
     permission_classes = [IsAuthenticated, IsVisionStaff]
-    queryset = AuthAttempt.objects.select_related("user", "institution").order_by("-created_at")
+    queryset = AuthAttempt.objects.select_related("user", "school").order_by("-created_at")
 
 
 class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
@@ -601,7 +601,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             user.save(update_fields=["status", "updated_at"])
 
         _log_auth_event(
-            actor=request.user, subject=user, institution=user.institution,
+            actor=request.user, subject=user, school=user.school,
             event=AuthEventLog.Event.ACCOUNT_UNLOCKED,
             request=request,
             metadata={"force_password_reset": force_reset, "reason": reason},
@@ -633,4 +633,4 @@ class SuspiciousLoginEventViewSet(mixins.ListModelMixin, viewsets.GenericViewSet
 class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     serializer_class = AuthEventLogReadSerializer
     permission_classes = [IsAuthenticated, IsVisionStaff]
-    queryset = AuthEventLog.objects.select_related("actor", "subject", "institution").order_by("-created_at")
+    queryset = AuthEventLog.objects.select_related("actor", "subject", "school").order_by("-created_at")

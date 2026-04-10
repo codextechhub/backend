@@ -40,10 +40,10 @@ class IsVisionStaff(BasePermission):
         return getattr(u, "user_type", "") == "VS_STAFF"
 
 
-class IsInstitutionAdmin(BasePermission):
+class IsSchoolAdmin(BasePermission):
     """
-    Institution admin can manage roles within their institution.
-    This is a simplified check: we treat user_type == INSTITUTION_ADMIN as admin.
+    School admin can manage roles within their school.
+    This is a simplified check: we treat user_type == SCHOOL_ADMIN as admin.
     If you want "anyone with permission", wire it to your RBAC evaluator later.
     """
 
@@ -51,7 +51,7 @@ class IsInstitutionAdmin(BasePermission):
         u = request.user
         if not u or not u.is_authenticated:
             return False
-        return getattr(u, "user_type", "") == "INSTITUTION_ADMIN"
+        return getattr(u, "user_type", "") == "SCHOOL_ADMIN"
 
 
 class ReadOnly(BasePermission):

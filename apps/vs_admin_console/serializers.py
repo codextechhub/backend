@@ -24,7 +24,7 @@ class ImpersonationSessionSerializer(serializers.ModelSerializer):
             "updated_at",
             "staff_user",
             "staff_email",
-            "institution",
+            "school",
             "target_user",
             "target_email",
             "justification",
@@ -40,7 +40,7 @@ class ImpersonationStartSerializer(serializers.Serializer):
     Simple payload for starting impersonation.
     In your view/service, you'll create an ImpersonationSession object.
     """
-    institution = serializers.IntegerField()
+    school = serializers.IntegerField()
     target_user = serializers.IntegerField()
     justification = serializers.CharField()
     duration_minutes = serializers.IntegerField(min_value=5, max_value=240, default=30) # 5 min to 4 hours
@@ -66,18 +66,18 @@ class ImpersonationEndSerializer(serializers.Serializer):
 # Dashboard helpers (nice for list endpoints)
 # -----------------------------------------------------------------------------
 
-class InstitutionDashboardItemSerializer(serializers.Serializer):
+class SchoolDashboardItemSerializer(serializers.Serializer):
     """
     This is NOT a DB model serializer.
     It's a simple response shape for the Admin dashboard list.
 
     Your view can build this from:
-      - Institution (Module 1)
+      - School (Module 1)
       - latest ProvisioningEvent
       - latest ImportJobLog summaries
-      - flags/suspension state (from Institution model)
+      - flags/suspension state (from School model)
     """
-    institution_id = serializers.IntegerField()
+    school_id = serializers.IntegerField()
     name = serializers.CharField()
     slug = serializers.CharField()
 

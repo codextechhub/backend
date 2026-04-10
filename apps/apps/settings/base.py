@@ -61,7 +61,7 @@ INSTALLED_APPS = [
     "corsheaders",
 
     # apps
-    "vs_institutions",
+    "vs_schools",
     "vs_admin_console",
     "vs_user",
     "vs_rbac",
@@ -77,7 +77,7 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
 
-    # --- Custom middleware for institution context and tenant isolation ---
+    # --- Custom middleware for school context and tenant isolation ---
     'vs_rbac.middleware.TenantContextMiddleware',
     'vs_rbac.middleware.TenantBoundaryEnforcementMiddleware',
     # --- End of custom middleware ---

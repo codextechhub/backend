@@ -7,7 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from vs_institutions.models import Branch
+from vs_schools.models import Branch
 
 
 # =========================================================
@@ -45,7 +45,7 @@ class FileFormatChoices(models.TextChoices):
 
 
 class DatasetTypeChoices(models.TextChoices):
-    INSTITUTIONS = "institutions", "Institutions"
+    SCHOOLS = "schools", "Schools"
     BRANCHES = "branches", "Branches"
     STUDENTS = "students", "Students"
     STAFF = "staff", "Staff"
@@ -171,7 +171,7 @@ class ImportBatch(TimeStampedModel):
     dataset-type-scoped path via `import_file_upload_to`.
 
     Fields:
-        branch: FK to Branch; scopes this batch to a specific institution branch.
+        branch: FK to Branch; scopes this batch to a specific school branch.
         uploaded_by: FK to the user who performed the upload (PROTECT on delete).
         template: Optional FK to ImportTemplate; the official system template selected
                   for this batch. Null when no template is explicitly chosen.

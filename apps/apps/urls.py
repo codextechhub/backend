@@ -19,7 +19,7 @@ from django.urls import path, include
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 urlpatterns = [
-    path("v1/i/", include("vs_institutions.urls")),
+    path("v1/i/", include("vs_schools.urls")),
     path("v1/admin/", include("vs_admin_console.urls")),
     path("v1/users/", include("vs_user.urls")),
     path("v1/rbac/", include("vs_rbac.urls")),

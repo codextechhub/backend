@@ -8,7 +8,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from vs_institutions.models import Institution
+from vs_schools.models import School
 
 
 # -----------------------------------------------------------------------------
@@ -63,7 +63,7 @@ class AuditModuleKey(models.TextChoices):
     CONFIG = "CONFIG", "System Configuration"
     FINANCE = "FINANCE", "Finance"
     PROCUREMENT = "PROCUREMENT", "Procurement"
-    INSTITUTION = "INSTITUTION", "Institution Management"
+    SCHOOL = "SCHOOL", "School Management"
     BRANCH = "BRANCH", "Branch Management"
     SYSTEM = "SYSTEM", "System"
 
@@ -183,7 +183,7 @@ class AuditEvent(models.Model):
     entity_type = models.CharField(
         max_length=100,
         db_index=True,
-        help_text="Examples: UserAccount, Institution, ImportJob, Invoice, RoleTemplate"
+        help_text="Examples: UserAccount, School, ImportJob, Invoice, RoleTemplate"
     )
     entity_id = models.CharField(
         max_length=100,
@@ -248,7 +248,7 @@ class AuditEvent(models.Model):
         if self.actor_type == AuditActorType.USER and not self.actor_user:
             raise ValidationError("User-attributed audit events require actor_user or actor_label.")
 
-        # Global event can have institution=None, but institution-scoped events usually should not
+        # Global event can have school=None, but school-scoped events usually should not
         if not self.entity_type:
             raise ValidationError("entity_type is required.")
         if not self.entity_id:
@@ -442,7 +442,7 @@ class ComplianceRule(TimeStampedModel):
         name (CharField): Human-readable identifier shown in admin tools.
         description (TextField): Optional longer explanation of the rule.
         rule_type (CharField): Category such as retention, masking, or export.
-        institution (ForeignKey): Tenant that owns the rule, if any.
+        school (ForeignKey): Tenant that owns the rule, if any.
         module_key (CharField): Optional module filter that narrows scope.
         action_type (CharField): Optional action filter that narrows scope.
         is_active (BooleanField): Indicates whether enforcement is enabled.
@@ -462,8 +462,8 @@ class ComplianceRule(TimeStampedModel):
     )
 
     # Scope
-    institution = models.ForeignKey(
-        Institution,
+    school = models.ForeignKey(
+        School,
         on_delete=models.CASCADE,
         null=True,
         blank=True,
@@ -505,7 +505,7 @@ class ComplianceRule(TimeStampedModel):
         ordering = ["name"]
         indexes = [
             models.Index(fields=["rule_type", "is_active"]),
-            models.Index(fields=["institution", "rule_type"]),
+            models.Index(fields=["school", "rule_type"]),
         ]
 
     def __str__(self) -> str:
@@ -522,7 +522,7 @@ class ComplianceRule(TimeStampedModel):
         if not self.is_active:
             return False
 
-        if self.institution_id and event.institution_id != self.institution_id:
+        if self.school_id and event.school_id != self.school_id:
             return False
 
         if self.module_key and event.module_key != self.module_key:

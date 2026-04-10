@@ -1,5 +1,5 @@
 from django.core.management.base import BaseCommand
-from ...models import Product, Institution, GlobalUser, UserRole, PlatformStaff, InstitutionUser, UserActivityLog, APIKey, SystemSetting
+from ...models import Product, School, GlobalUser, UserRole, PlatformStaff, SchoolUser, UserActivityLog, APIKey, SystemSetting
 from django.db import connection
 
 class Command(BaseCommand):
@@ -8,11 +8,11 @@ class Command(BaseCommand):
     def handle(self, *args, **kwargs):
         tables_to_truncate = [
             Product,
-            Institution,
+            School,
             GlobalUser,
             UserRole,
             PlatformStaff,
-            InstitutionUser,
+            SchoolUser,
             UserActivityLog,
             APIKey,
             SystemSetting,

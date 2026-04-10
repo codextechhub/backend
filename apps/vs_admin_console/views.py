@@ -15,7 +15,7 @@ from .serializers import (
     ImpersonationEndSerializer,
     ImpersonationSessionSerializer,
     ImpersonationStartSerializer,
-    InstitutionDashboardItemSerializer,
+    SchoolDashboardItemSerializer,
 )
 
 
@@ -35,10 +35,10 @@ class ImpersonationSessionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
-        institution_id = self.request.query_params.get("institution")
+        school_id = self.request.query_params.get("school")
         status_param = self.request.query_params.get("status")
-        if institution_id:
-            qs = qs.filter(institution_id=institution_id)
+        if school_id:
+            qs = qs.filter(school_id=school_id)
         if status_param:
             qs = qs.filter(status=status_param)
         return qs
@@ -62,7 +62,7 @@ class ImpersonationSessionViewSet(viewsets.ModelViewSet):
         with transaction.atomic():
             session = ImpersonationSession.objects.create(
                 staff_user=request.user,
-                institution_id=data["institution"],
+                school_id=data["school"],
                 target_user_id=data["target_user"],
                 justification=data["justification"],
                 started_at=started_at,
@@ -100,21 +100,21 @@ class DashboardViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     A clean place to assemble data from multiple modules.
 
     For now it's a stub that returns an empty list.
-    You’ll implement it by querying Institution (Module 1) and joining:
+    You’ll implement it by querying School (Module 1) and joining:
       - latest ProvisioningEvent
       - latest ImportJobLog
-      - suspension state from Institution model
+      - suspension state from School model
     """
     permission_classes = [IsVisionStaff]
-    serializer_class = InstitutionDashboardItemSerializer
+    serializer_class = SchoolDashboardItemSerializer
     
     def list(self, request, *args, **kwargs):
         # Validate query params (optional)
         filter_ser = DashboardFilterSerializer(data=request.query_params)
         filter_ser.is_valid(raise_exception=True)
 
-        # TODO: Build actual dashboard items here using Institution model.
-        # Return list of dicts matching InstitutionDashboardItemSerializer fields.
+        # TODO: Build actual dashboard items here using School model.
+        # Return list of dicts matching SchoolDashboardItemSerializer fields.
         items = []
 
         return Response(self.serializer_class(items, many=True).data, status=status.HTTP_200_OK)

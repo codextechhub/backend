@@ -7,7 +7,7 @@ from rest_framework import generics, permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from vs_institutions.models import Institution
+from vs_schools.models import School
 
 from .models import (
     ImportAuditLog,
@@ -67,26 +67,26 @@ class IsAuthenticatedStaff(permissions.IsAuthenticated):
 # =========================================================
 # Reusable mixins
 # =========================================================
-class InstitutionContextMixin:
+class SchoolContextMixin:
     """
-    Gets institution from URL and exposes it to serializers/views.
-    URL must include: institution_id
+    Gets school from URL and exposes it to serializers/views.
+    URL must include: school_id
     """
-    institution_lookup_url_kwarg = "institution_id"
+    school_lookup_url_kwarg = "school_id"
 
-    def get_institution(self):
-        institution_id = self.kwargs[self.institution_lookup_url_kwarg]
-        return get_object_or_404(Institution, id=institution_id)
+    def get_school(self):
+        school_id = self.kwargs[self.school_lookup_url_kwarg]
+        return get_object_or_404(School, id=school_id)
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
-        context["institution"] = self.get_institution()
+        context["school"] = self.get_school()
         return context
 
 
-class ImportBatchContextMixin(InstitutionContextMixin):
+class ImportBatchContextMixin(SchoolContextMixin):
     """
-    Gets an import batch belonging to the current institution.
+    Gets an import batch belonging to the current school.
     URL must include: batch_id
     """
     batch_lookup_url_kwarg = "batch_id"
@@ -94,14 +94,14 @@ class ImportBatchContextMixin(InstitutionContextMixin):
     def get_import_batch(self):
         return get_object_or_404(
             ImportBatch.objects.select_related(
-                "institution",
+                "school",
                 "uploaded_by",
                 "template",
             ).prefetch_related(
                 "template__columns",
             ),
             id=self.kwargs[self.batch_lookup_url_kwarg],
-            institution=self.get_institution(),
+            school=self.get_school(),
         )
 
     def get_serializer_context(self):
@@ -210,17 +210,17 @@ class SystemImportTemplateDownloadView(APIView):
 # =========================================================
 # Import Batch Views
 # =========================================================
-class ImportBatchListCreateView(InstitutionContextMixin, generics.ListCreateAPIView):
+class ImportBatchListCreateView(SchoolContextMixin, generics.ListCreateAPIView):
     """
-    GET  -> list import batches for an institution
+    GET  -> list import batches for an school
     POST -> upload a new import batch using a selected system template
     """
     permission_classes = [IsAuthenticatedStaff]
 
     def get_queryset(self):
         queryset = (
-            ImportBatch.objects.filter(institution=self.get_institution())
-            .select_related("institution", "uploaded_by", "template")
+            ImportBatch.objects.filter(school=self.get_school())
+            .select_related("school", "uploaded_by", "template")
             .order_by("-created_at")
         )
 
@@ -250,8 +250,8 @@ class ImportBatchDetailView(ImportBatchContextMixin, generics.RetrieveUpdateDest
 
     def get_queryset(self):
         return (
-            ImportBatch.objects.filter(institution=self.get_institution())
-            .select_related("institution", "uploaded_by", "template")
+            ImportBatch.objects.filter(school=self.get_school())
+            .select_related("school", "uploaded_by", "template")
             .prefetch_related(
                 "template__columns",
                 "validation_issues",
@@ -279,7 +279,7 @@ class ValidateImportBatchView(ImportBatchContextMixin, APIView):
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, institution_id, batch_id):
+    def post(self, request, school_id, batch_id):
         import_batch = self.get_import_batch()
 
         serializer = ValidateImportBatchSerializer(data=request.data)
@@ -379,7 +379,7 @@ class RevalidateAfterCorrectionView(ImportBatchContextMixin, APIView):
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, institution_id, batch_id):
+    def post(self, request, school_id, batch_id):
         import_batch = self.get_import_batch()
 
         serializer = RevalidateAfterCorrectionSerializer(data=request.data)
@@ -405,7 +405,7 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, institution_id, batch_id):
+    def post(self, request, school_id, batch_id):
         import_batch = self.get_import_batch()
 
         serializer = StartImportSerializer(
@@ -463,7 +463,7 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, institution_id, batch_id, job_id):
+    def post(self, request, school_id, batch_id, job_id):
         job = self.get_job()
 
         serializer = RollbackImportSerializer(

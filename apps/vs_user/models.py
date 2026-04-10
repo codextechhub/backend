@@ -13,8 +13,8 @@ from django.db.models import Q
 from django.db.models.functions import Lower
 from django.utils import timezone
 
-# Institution lives in Module 1 (Institution Management)
-from vs_institutions.models import Institution, Branch
+# School lives in Module 1 (School Management)
+from vs_schools.models import School, Branch
 
 class TimeStampedModel(models.Model):
     created_at = models.DateTimeField(default=timezone.now, editable=False)
@@ -63,13 +63,13 @@ class UserAccount(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     """
     Module 3 core identity object.
 
-    - Institution-aware: institution is REQUIRED for institution users; NULL for Vision staff.
+    - School-aware: school is REQUIRED for school users; NULL for Vision staff.
     - Enforces: forced password change after temp password login (FR-IDA-002).
     """
 
     class UserType(models.TextChoices):
         VISION_STAFF = "VS_STAFF", "Vision Staff"
-        INSTITUTION_ADMIN = "IN_AD", "Institution Admin"
+        SCHOOL_ADMIN = "SC_AD", "School Admin"
         STAFF = "STAFF", "Staff"
         STUDENT = "STUDENT", "Student"
         PARENT = "PARENT", "Parent/Guardian"
@@ -117,7 +117,7 @@ class UserAccount(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     
     class Meta:
         constraints = [
-            # Enforce institution binding rules
+            # Enforce school binding rules
             models.CheckConstraint(
                 condition=(
                     Q(user_type="VS_STAFF", branch__isnull=True)
@@ -131,9 +131,9 @@ class UserAccount(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         super().clean()
         
         if self.user_type != self.UserType.VISION_STAFF and self.branch_id is None:
-            raise ValidationError("Non-Vision staff users must be associated with an institution.")
+            raise ValidationError("Non-Vision staff users must be associated with an school.")
         if self.user_type == self.UserType.VISION_STAFF and self.branch_id is not None:
-            raise ValidationError("Vision staff users cannot be associated with an institution.")
+            raise ValidationError("Vision staff users cannot be associated with an school.")
         
     def mark_password_change(self):
         self.must_change_password = False
@@ -212,13 +212,13 @@ class LoginSession(TimeStampedModel):
     """
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="sessions")
-    institution = models.ForeignKey(
-        Institution,
+    school = models.ForeignKey(
+        School,
         on_delete=models.PROTECT,
         related_name="login_sessions",
         null=True,
         blank=True,
-        help_text="Copied from user/institution-context for fast filtering.",
+        help_text="Copied from user/school-context for fast filtering.",
     )
 
     # Observability fields
@@ -293,7 +293,7 @@ class AuthAttempt(TimeStampedModel):
         
      # What the client attempted
     email_entered = models.EmailField(max_length=254)
-    institution_context = models.CharField(
+    school_context = models.CharField(
         max_length=120,
         blank=True,
         default="",
@@ -308,8 +308,8 @@ class AuthAttempt(TimeStampedModel):
         blank=True,
         related_name="auth_attempts",
     )
-    institution = models.ForeignKey(
-        Institution,
+    school = models.ForeignKey(
+        School,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -324,7 +324,7 @@ class AuthAttempt(TimeStampedModel):
         max_length=64,
         blank=True,
         default="",
-        help_text="Examples: INVALID_CREDENTIALS / INSTITUTION_MISMATCH / LOCKED / SUSPENDED / RATE_LIMITED",
+        help_text="Examples: INVALID_CREDENTIALS / SCHOOL_MISMATCH / LOCKED / SUSPENDED / RATE_LIMITED",
     )
 
     metadata = models.JSONField(default=dict, blank=True)
@@ -400,7 +400,7 @@ class SuspiciousLoginEvent(TimeStampedModel):
     """
 
     class EventType(models.TextChoices):
-        INSTITUTION_MISMATCH = "INSTITUTION_MISMATCH", "Institution Mismatch"
+        SCHOOL_MISMATCH = "SCHOOL_MISMATCH", "School Mismatch"
         IMPOSSIBLE_TRAVEL = "IMPOSSIBLE_TRAVEL", "Impossible Travel"
         NEW_DEVICE = "NEW_DEVICE", "New Device"
         HIGH_FAILURE_RATE = "HIGH_FAILURE_RATE", "High Failure Rate"
@@ -419,7 +419,7 @@ class SuspiciousLoginEvent(TimeStampedModel):
         related_name="suspicious_events",
     )
     email_entered = models.EmailField(max_length=254, blank=True, default="")
-    institution_context = models.CharField(max_length=120, blank=True, default="")
+    school_context = models.CharField(max_length=120, blank=True, default="")
 
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     user_agent = models.TextField(blank=True, default="")
@@ -468,8 +468,8 @@ class AuthEventLog(TimeStampedModel):
         blank=True,
         related_name="auth_events_as_subject",
     )
-    institution = models.ForeignKey(
-        Institution,
+    school = models.ForeignKey(
+        School,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,

@@ -62,7 +62,7 @@ from vs_import_data.models import (
 TEMPLATES: list[dict] = [
     {
         # -----------------------------------------------------------------------
-        # Institutions
+        # Schools
         # -----------------------------------------------------------------------
         # Covers: identity, ownership, academic config, and primary admin contact.
         # Branding (logo) is excluded — files cannot be uploaded via spreadsheet.
@@ -72,19 +72,19 @@ TEMPLATES: list[dict] = [
         # Branches template. Admins must define it carefully and consistently.
         # -----------------------------------------------------------------------
         "template": {
-            "code": "institutions_master_v1",
-            "name": "Institutions Master Import",
-            "dataset_type": DatasetTypeChoices.INSTITUTIONS,
+            "code": "schools_master_v1",
+            "name": "Schools Master Import",
+            "dataset_type": DatasetTypeChoices.SCHOOLS,
             "version": "1.0",
             "status": TemplateStatusChoices.ACTIVE,
             "default_file_format": FileFormatChoices.XLSX,
             "description": (
-                "Template for bulk-creating Institution records on the platform. "
-                "Each row defines one institution (tenant). Import this before the "
-                "Branches template, as branches reference the Institution Slug column."
+                "Template for bulk-creating School records on the platform. "
+                "Each row defines one school (tenant). Import this before the "
+                "Branches template, as branches reference the School Slug column."
             ),
             "instructions": (
-                "Fill one institution per row. Slug must be lowercase letters and "
+                "Fill one school per row. Slug must be lowercase letters and "
                 "hyphens only — no spaces or special characters. Example: greenfield-academy. "
                 "Slugs cannot match reserved system words (admin, api, www, etc.). "
                 "Date columns must follow the format YYYY-MM-DD. "
@@ -92,9 +92,9 @@ TEMPLATES: list[dict] = [
             ),
             "allow_sample_row": True,
             "sample_row_data": {
-                "Institution Name":     "Greenfield Academy",
+                "School Name":     "Greenfield Academy",
                 "Slug":                 "greenfield-academy",
-                "Institution Code":     "GFA",
+                "School Code":     "GFA",
                 "Ownership Type":       "Private",
                 "Address":              "14 Admiralty Way, Lekki Phase 1, Lagos",
                 "Website":              "https://greenfieldacademy.edu.ng",
@@ -121,10 +121,10 @@ TEMPLATES: list[dict] = [
         "columns": [
             # --- Core identity ---
             {
-                "column_name":   "Institution Name",
+                "column_name":   "School Name",
                 "target_field":  "name",
-                "display_name":  "Institution Name",
-                "help_text":     "Full display name of the institution. Example: Greenfield Academy.",
+                "display_name":  "School Name",
+                "help_text":     "Full display name of the school. Example: Greenfield Academy.",
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   True,
                 "is_unique":     False,
@@ -148,9 +148,9 @@ TEMPLATES: list[dict] = [
                 "column_order":  2,
             },
             {
-                "column_name":   "Institution Code",
+                "column_name":   "School Code",
                 "target_field":  "code",
-                "display_name":  "Institution Code",
+                "display_name":  "School Code",
                 "help_text":     "Short alphanumeric code used in reports. Must be unique. Example: GFA.",
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   False,
@@ -163,7 +163,7 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Ownership Type",
                 "target_field":  "ownership_type",
                 "display_name":  "Ownership Type",
-                "help_text":     "Operational classification of the institution.",
+                "help_text":     "Operational classification of the school.",
                 "data_type":     TemplateColumnDataTypeChoices.CHOICE,
                 "is_required":   True,
                 "is_unique":     False,
@@ -177,7 +177,7 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Address",
                 "target_field":  "address",
                 "display_name":  "Address",
-                "help_text":     "Summary address for the institution's headquarters.",
+                "help_text":     "Summary address for the school's headquarters.",
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   False,
                 "is_unique":     False,
@@ -201,7 +201,7 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Motto",
                 "target_field":  "motto",
                 "display_name":  "Motto",
-                "help_text":     "Optional institution motto shown in onboarding and reports.",
+                "help_text":     "Optional school motto shown in onboarding and reports.",
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   False,
                 "is_unique":     False,
@@ -227,7 +227,7 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Term Structure",
                 "target_field":  "term_structure",
                 "display_name":  "Term Structure",
-                "help_text":     "Academic calendar format used by this institution.",
+                "help_text":     "Academic calendar format used by this school.",
                 "data_type":     TemplateColumnDataTypeChoices.CHOICE,
                 "is_required":   True,
                 "is_unique":     False,
@@ -239,7 +239,7 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Currency",
                 "target_field":  "currency",
                 "display_name":  "Currency",
-                "help_text":     "Preferred billing currency for this institution.",
+                "help_text":     "Preferred billing currency for this school.",
                 "data_type":     TemplateColumnDataTypeChoices.CHOICE,
                 "is_required":   True,
                 "is_unique":     False,
@@ -249,14 +249,14 @@ TEMPLATES: list[dict] = [
             },
     
             # --- Primary admin contact ---
-            # These columns create the ContactInfo and InstitutionPrimaryAdmin
+            # These columns create the ContactInfo and SchoolPrimaryAdmin
             # records during import. Prefixed with "Admin " to distinguish clearly
             # from any branch admin columns in other templates.
             {
                 "column_name":   "Admin Full Name",
                 "target_field":  "primary_admin_full_name",
                 "display_name":  "Primary Admin Full Name",
-                "help_text":     "Full name of the person who will be the institution's primary admin.",
+                "help_text":     "Full name of the person who will be the school's primary admin.",
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   True,
                 "is_unique":     False,
@@ -292,7 +292,7 @@ TEMPLATES: list[dict] = [
                 "target_field":  "primary_admin_role",
                 "display_name":  "Primary Admin Role Title",
                 "help_text": (
-                    "Job title of the primary admin within the institution. "
+                    "Job title of the primary admin within the school. "
                     "Example: IT Head, School Director, Proprietor."
                 ),
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
@@ -311,8 +311,8 @@ TEMPLATES: list[dict] = [
         # Branches
         # -----------------------------------------------------------------------
         # Covers: identity, type, contact, location, status, and branch admin.
-        # Institution Slug cross-references an existing Institution row —
-        # so the Institutions template must be imported first.
+        # School Slug cross-references an existing School row —
+        # so the Schools template must be imported first.
         #
         # Branch codes are auto-allocated by Branch.save(), so no Code column
         # is included. Admins do not supply codes manually.
@@ -325,20 +325,20 @@ TEMPLATES: list[dict] = [
             "status": TemplateStatusChoices.ACTIVE,
             "default_file_format": FileFormatChoices.XLSX,
             "description": (
-                "Template for bulk-creating Branch (campus) records for existing institutions. "
-                "Each row defines one branch. The Institution Slug column must match a slug "
-                "that already exists in the system. Import the Institutions template first."
+                "Template for bulk-creating Branch (campus) records for existing schools. "
+                "Each row defines one branch. The School Slug column must match a slug "
+                "that already exists in the system. Import the Schools template first."
             ),
             "instructions": (
-                "Fill one branch per row. Institution Slug must exactly match an existing "
-                "institution slug — check spelling carefully. "
-                "Only one branch per institution may have Is Main Branch set to TRUE. "
+                "Fill one branch per row. School Slug must exactly match an existing "
+                "school slug — check spelling carefully. "
+                "Only one branch per school may have Is Main Branch set to TRUE. "
                 "Branch codes are assigned automatically — do not add a code column. "
                 "Date columns must follow YYYY-MM-DD format."
             ),
             "allow_sample_row": True,
             "sample_row_data": {
-                "Institution Slug":     "greenfield-academy",
+                "School Slug":     "greenfield-academy",
                 "Branch Name":          "Lekki Campus",
                 "Branch Type":          "Secondary",
                 "Is Main Branch":       "TRUE",
@@ -354,28 +354,28 @@ TEMPLATES: list[dict] = [
                 "Admin Role":           "Head Teacher",
             },
             "validation_rules": {
-                "require_institution_slug": True,
-                "max_main_branches_per_institution": 1,
+                "require_school_slug": True,
+                "max_main_branches_per_school": 1,
                 "auto_allocate_branch_code": True,
             },
             "is_download_enabled": True,
         },
         "columns": [
-            # --- Institution linkage ---
+            # --- School linkage ---
             {
-                "column_name":   "Institution Slug",
-                "target_field":  "institution_slug",
-                "display_name":  "Institution Slug",
+                "column_name":   "School Slug",
+                "target_field":  "school_slug",
+                "display_name":  "School Slug",
                 "help_text": (
-                    "Slug of the institution this branch belongs to. "
-                    "Must exactly match an existing institution slug. Example: greenfield-academy."
+                    "Slug of the school this branch belongs to. "
+                    "Must exactly match an existing school slug. Example: greenfield-academy."
                 ),
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   True,
                 "is_unique":     False,
                 "max_length":    80,
                 "sample_value":  "greenfield-academy",
-                "reference_model":         "Institution",
+                "reference_model":         "School",
                 "reference_lookup_field":  "slug",
                 "column_order":  1,
             },
@@ -413,7 +413,7 @@ TEMPLATES: list[dict] = [
                 "target_field":  "is_main",
                 "display_name":  "Is Main Branch",
                 "help_text": (
-                    "Set to TRUE for the primary campus. Only one branch per institution "
+                    "Set to TRUE for the primary campus. Only one branch per school "
                     "may be TRUE. All others must be FALSE."
                 ),
                 "data_type":     TemplateColumnDataTypeChoices.BOOLEAN,
@@ -503,7 +503,7 @@ TEMPLATES: list[dict] = [
     
             # --- Branch primary admin contact ---
             # These columns create the ContactInfo and BranchPrimaryAdmin records
-            # during import. Prefixed "Admin " to distinguish from institution admin.
+            # during import. Prefixed "Admin " to distinguish from school admin.
             {
                 "column_name":   "Admin Full Name",
                 "target_field":  "branch_admin_full_name",

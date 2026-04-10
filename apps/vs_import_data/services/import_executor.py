@@ -104,13 +104,13 @@ def import_students_row(import_batch, payload: dict, queued_by) -> ImportExecuti
 
     serializer_payload = {
         **payload,
-        "institution": import_batch.institution.pk,
+        "school": import_batch.school.pk,
     }
 
     context = {
         "request": None,
         "actor": queued_by,
-        "institution": import_batch.institution,
+        "school": import_batch.school,
         "import_batch": import_batch,
     }
 
@@ -132,13 +132,13 @@ def import_staff_row(import_batch, payload: dict, queued_by) -> ImportExecutionR
 
     serializer_payload = {
         **payload,
-        "institution": import_batch.institution.pk,
+        "school": import_batch.school.pk,
     }
 
     context = {
         "request": None,
         "actor": queued_by,
-        "institution": import_batch.institution,
+        "school": import_batch.school,
         "import_batch": import_batch,
     }
 
@@ -311,7 +311,7 @@ def execute_import(import_batch, queued_by):
             )
 
             create_import_audit_log(
-                institution=import_batch.institution,
+                school=import_batch.school,
                 actor=queued_by,
                 import_batch=import_batch,
                 job=job,

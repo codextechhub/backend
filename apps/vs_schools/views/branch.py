@@ -6,7 +6,7 @@ from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 
-from ..models import Branch, BranchStatus, Institution
+from ..models import Branch, BranchStatus, School
 from ..permissions import IsVisionStaff
 from ..serializers import (
     BranchCreateSerializer,
@@ -28,13 +28,13 @@ class ActorContextMixin:
 class BranchListView(ActorContextMixin, generics.ListAPIView):
     permission_classes = [IsVisionStaff]
     serializer_class = BranchListSerializer
-    queryset = Branch.objects.all().select_related("institution")
+    queryset = Branch.objects.all().select_related("school")
 
     def get_queryset(self):
         qs = super().get_queryset()
 
-        # Filter by institution (tenant)
-        qs = qs.filter(institution__slug=self.kwargs.get("slug"))
+        # Filter by school (tenant)
+        qs = qs.filter(school__slug=self.kwargs.get("slug"))
 
         status_param = (self.request.query_params.get("status") or "").strip()
         if status_param:
@@ -73,8 +73,8 @@ class BranchListView(ActorContextMixin, generics.ListAPIView):
                 | Q(state__icontains=q)
                 | Q(country__icontains=q)
                 | Q(email__icontains=q)
-                | Q(institution__name__icontains=q)
-                | Q(institution__slug__icontains=q)
+                | Q(school__name__icontains=q)
+                | Q(school__slug__icontains=q)
             )
 
         ordering = (self.request.query_params.get("ordering") or "").strip()
@@ -88,7 +88,7 @@ class BranchStatsView(generics.GenericAPIView):
     Returns a single summary payload with branch counts broken down by status.
     Designed for the Branch Management dashboard stat cards.
 
-    Supports optional institution scoping via ?s=<institution_slug>
+    Supports optional school scoping via ?s=<school_slug>
 
     Response shape:
         {
@@ -110,7 +110,7 @@ class BranchStatsView(generics.GenericAPIView):
         qs = Branch.objects.all()
 
         i_slug = self.kwargs.get("slug")
-        qs = qs.filter(institution__slug=i_slug)
+        qs = qs.filter(school__slug=i_slug)
 
         result = qs.aggregate(
             all=Count("id"),
@@ -132,13 +132,13 @@ class BranchCreateView(ActorContextMixin, generics.CreateAPIView):
         ctx = super().get_serializer_context()
         i_slug = self.kwargs["i_slug"]
 
-        if not Institution.objects.filter(slug=i_slug).exists():
-            raise ValueError(f"Institution with slug '{i_slug}' does not exist.")
+        if not School.objects.filter(slug=i_slug).exists():
+            raise ValueError(f"School with slug '{i_slug}' does not exist.")
         
-        if Institution.objects.filter(slug=i_slug).first().status != "ACTIVE":
-            raise ValidationError({"detail": "Branches can only be created for active institutions."})
+        if School.objects.filter(slug=i_slug).first().status != "ACTIVE":
+            raise ValidationError({"detail": "Branches can only be created for active schools."})
 
-        ctx["institution"] = Institution.objects.filter(slug=i_slug).first()
+        ctx["school"] = School.objects.filter(slug=i_slug).first()
         return ctx
 
 
@@ -146,18 +146,18 @@ class BranchDetailView(ActorContextMixin, generics.RetrieveAPIView):
     permission_classes = [IsVisionStaff]
     serializer_class = BranchDetailSerializer
 
-    queryset = Branch.objects.all().select_related("institution")
+    queryset = Branch.objects.all().select_related("school")
     lookup_field = "code"
 
     def get_queryset(self):
         """
         Optional extra safety:
-        If institution slug is in the URL, scope branch lookup to that institution.
+        If school slug is in the URL, scope branch lookup to that school.
         """
         qs = super().get_queryset()
         i_slug = self.kwargs.get("i_slug")   # "s" for "slug" to keep it short in URL
         if i_slug:
-            qs = qs.filter(institution__slug=i_slug)
+            qs = qs.filter(school__slug=i_slug)
         return qs
 
 
@@ -168,14 +168,14 @@ class BranchUpdateView(ActorContextMixin, generics.UpdateAPIView):
     permission_classes = [IsVisionStaff]
     serializer_class = BranchUpdateSerializer
 
-    queryset = Branch.objects.all().select_related("institution")
+    queryset = Branch.objects.all().select_related("school")
     lookup_field = "code"
 
     def get_queryset(self):
         qs = super().get_queryset()
         i_slug = self.kwargs.get("i_slug")  # "s" for "slug" to keep it short in URL
         if i_slug:
-            qs = qs.filter(institution__slug=i_slug)
+            qs = qs.filter(school__slug=i_slug)
         return qs
 
     def update(self, request, *args, **kwargs):

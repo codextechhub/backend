@@ -5,15 +5,15 @@ from rest_framework import generics
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
-from ..models import Institution, InstitutionStatus
+from ..models import School, SchoolStatus
 from ..permissions import IsVisionStaff, IsVisionSuperAdmin
 from ..serializers import (
-    InstitutionCreateSerializer,
-    InstitutionDetailSerializer,
-    InstitutionListSerializer,
-    InstitutionUpdateSerializer,
+    SchoolCreateSerializer,
+    SchoolDetailSerializer,
+    SchoolListSerializer,
+    SchoolUpdateSerializer,
 )
-from ..paginations import InstitutionPagination
+from ..paginations import SchoolPagination
 
 
 class ActorContextMixin:
@@ -26,13 +26,13 @@ class ActorContextMixin:
         return ctx
 
 
-class InstitutionListView(ActorContextMixin, generics.ListAPIView):
+class SchoolListView(ActorContextMixin, generics.ListAPIView):
     permission_classes = [IsVisionStaff]
-    serializer_class = InstitutionListSerializer
-    pagination_class = InstitutionPagination
+    serializer_class = SchoolListSerializer
+    pagination_class = SchoolPagination
 
     queryset = (
-        Institution.objects.all()
+        School.objects.all()
         .select_related("branding",)
         .prefetch_related("branches")
     )
@@ -47,11 +47,11 @@ class InstitutionListView(ActorContextMixin, generics.ListAPIView):
 
         active_param = (self.request.query_params.get("active") or "").strip().lower()
         if active_param in ("1", "true", "yes"):
-            qs = qs.filter(status=InstitutionStatus.ACTIVE)
+            qs = qs.filter(status=SchoolStatus.ACTIVE)
 
         inactive_param = (self.request.query_params.get("inactive") or "").strip().lower()
         if inactive_param in ("1", "true", "yes"):
-            qs = qs.filter(status=InstitutionStatus.INACTIVE)
+            qs = qs.filter(status=SchoolStatus.INACTIVE)
 
         q = (self.request.query_params.get("q") or "").strip()
         if q:
@@ -71,9 +71,9 @@ class InstitutionListView(ActorContextMixin, generics.ListAPIView):
         return qs
 
 
-class InstitutionStatsView(generics.GenericAPIView):
+class SchoolStatsView(generics.GenericAPIView):
     """
-    Returns a single summary payload with institution counts broken down
+    Returns a single summary payload with school counts broken down
     by status. Designed for the School Management dashboard stat cards.
 
     Response shape:
@@ -91,43 +91,43 @@ class InstitutionStatsView(generics.GenericAPIView):
     def get(self, request, *args, **kwargs):
         from django.db.models import Count, Q
 
-        result = Institution.objects.aggregate(
+        result = School.objects.aggregate(
             all=Count("slug"),
-            active=Count("slug", filter=Q(status=InstitutionStatus.ACTIVE)),
-            pending=Count("slug", filter=Q(status=InstitutionStatus.PENDING)),
-            inactive=Count("slug", filter=Q(status=InstitutionStatus.INACTIVE)),
+            active=Count("slug", filter=Q(status=SchoolStatus.ACTIVE)),
+            pending=Count("slug", filter=Q(status=SchoolStatus.PENDING)),
+            inactive=Count("slug", filter=Q(status=SchoolStatus.INACTIVE)),
         )
 
         return Response(result)
     
 
-class InstitutionCreateView(ActorContextMixin, generics.CreateAPIView):
+class SchoolCreateView(ActorContextMixin, generics.CreateAPIView):
     permission_classes = [IsVisionStaff]
-    serializer_class = InstitutionCreateSerializer
+    serializer_class = SchoolCreateSerializer
 
 
-class InstitutionDetailView(ActorContextMixin, generics.RetrieveAPIView):
+class SchoolDetailView(ActorContextMixin, generics.RetrieveAPIView):
     permission_classes = [IsVisionStaff]
-    serializer_class = InstitutionDetailSerializer
+    serializer_class = SchoolDetailSerializer
 
     queryset = (
-        Institution.objects.all()
+        School.objects.all()
         .select_related("branding")
         .prefetch_related("branches")
     )
     lookup_field = "slug"
 
 
-class InstitutionUpdateView(ActorContextMixin, generics.UpdateAPIView):
+class SchoolUpdateView(ActorContextMixin, generics.UpdateAPIView):
     """
     Separate update endpoint. Returns a full detail payload after update
     so the UI doesn't need to refetch.
     """
     permission_classes = [IsVisionStaff]
-    serializer_class = InstitutionUpdateSerializer
+    serializer_class = SchoolUpdateSerializer
 
     queryset = (
-        Institution.objects.all()
+        School.objects.all()
         .select_related("branding")
         .prefetch_related("branches")
     )
@@ -135,7 +135,7 @@ class InstitutionUpdateView(ActorContextMixin, generics.UpdateAPIView):
 
     def update(self, request, *args, **kwargs):
         resp = super().update(request, *args, **kwargs)
-        institution = self.get_object()
+        school = self.get_object()
         return Response(
-            InstitutionDetailSerializer(institution, context=self.get_serializer_context()).data
+            SchoolDetailSerializer(school, context=self.get_serializer_context()).data
         )

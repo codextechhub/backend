@@ -2,12 +2,12 @@ from django.urls import path
 
 from .views.package import PackagePlanListView, XVSModuleListView
 
-from .views.institution import (
-    InstitutionCreateView,
-    InstitutionDetailView,
-    InstitutionListView,
-    InstitutionUpdateView,
-    InstitutionStatsView,
+from .views.school import (
+    SchoolCreateView,
+    SchoolDetailView,
+    SchoolListView,
+    SchoolUpdateView,
+    SchoolStatsView,
 )
 from .views.branch import (
     BranchListView,
@@ -18,22 +18,22 @@ from .views.branch import (
 )
 from .views.lifecycle import BranchTransitionView
 from .views.ops import (
-    InstitutionResetConfigView,
+    SchoolResetConfigView,
 )
 
 urlpatterns = [
-    # --------- Institutions ---------
-    # Institutions (separate list/create views)
-    path("", InstitutionListView.as_view(), name="institution-list"),
-    path("create/", InstitutionCreateView.as_view(), name="institution-create"),
-    path("stats/", InstitutionStatsView.as_view(), name="institution-stats"),
+    # --------- Schools ---------
+    # Schools (separate list/create views)
+    path("", SchoolListView.as_view(), name="school-list"),
+    path("create/", SchoolCreateView.as_view(), name="school-create"),
+    path("stats/", SchoolStatsView.as_view(), name="school-stats"),
 
-    # Institution record access (separate detail/update/delete views)
-    path("<str:slug>/", InstitutionDetailView.as_view(), name="institution-detail"),
-    path("<str:slug>/update/", InstitutionUpdateView.as_view(), name="institution-update"),
+    # School record access (separate detail/update/delete views)
+    path("<str:slug>/", SchoolDetailView.as_view(), name="school-detail"),
+    path("<str:slug>/update/", SchoolUpdateView.as_view(), name="school-update"),
 
     # Lifecycle / Reset
-    path("<str:slug>/reset-config/", InstitutionResetConfigView.as_view(), name="institution-reset-config"),
+    path("<str:slug>/reset-config/", SchoolResetConfigView.as_view(), name="school-reset-config"),
 
     # --------- Branches ---------
     # Branches (separate list/create views)

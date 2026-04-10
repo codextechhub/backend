@@ -7,7 +7,7 @@ from django.utils import timezone
 
 from rest_framework import serializers
 
-from vs_institutions.models import Institution, Branch
+from vs_schools.models import School, Branch
 from .models import (
     UserAccount,
     TemporaryPasswordIssue,
@@ -25,10 +25,10 @@ from .models import (
 # Small reusable helpers
 # -----------------------------------------------------------------------------
 
-class InstitutionSlimSerializer(serializers.ModelSerializer):
+class SchoolSlimSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Institution
-        fields = ("id", "name", "slug")  # adjust if your Institution fields differ
+        model = School
+        fields = ("id", "name", "slug")  # adjust if your School fields differ
 
 
 def _raise_password_error(exc: DjangoValidationError):
@@ -48,13 +48,13 @@ class UserAccountReadSerializer(serializers.ModelSerializer):
     """
     Read-only serializer for returning user info safely.
     """
-    institution = InstitutionSlimSerializer(source="branch.institution", read_only=True)
+    school = SchoolSlimSerializer(source="branch.school", read_only=True)
 
     class Meta:
         model = UserAccount
         fields = (
             "id",
-            "institution",
+            "school",
             "branch",
             "email",
             "user_type",
@@ -83,11 +83,11 @@ class UserAccountCreateSerializer(serializers.ModelSerializer):
       5) emit AuthEventLog / audit event
     """
     branch_id = serializers.PrimaryKeyRelatedField(
-        source="institution",
+        source="school",
         queryset=Branch.objects.all(),
         required=False,
         allow_null=True,
-        help_text="Required for institution users; must be null for Vision staff.",
+        help_text="Required for school users; must be null for Vision staff.",
     )
 
     temp_password_channel = serializers.ChoiceField(
@@ -208,11 +208,11 @@ class UserAccountUpdateSerializer(serializers.ModelSerializer):
 
 class LoginRequestSerializer(serializers.Serializer):
     """
-    Login payload (email + password + institution context).
-    This matches your FRD's "institution-aware login enforcement" (FR-IDA-012).
+    Login payload (email + password + school context).
+    This matches your FRD's "school-aware login enforcement" (FR-IDA-012).
 
     The view/service should:
-      - resolve institution from context (slug/subdomain) or explicit field
+      - resolve school from context (slug/subdomain) or explicit field
       - verify credentials
       - create session
       - issue JWT tokens
@@ -220,10 +220,10 @@ class LoginRequestSerializer(serializers.Serializer):
     """
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True, trim_whitespace=False)
-    institution_slug = serializers.CharField(
+    school_slug = serializers.CharField(
         required=False,
         allow_blank=True,
-        help_text="Explicit institution context (subdomain/slug). Required for institution users.",
+        help_text="Explicit school context (subdomain/slug). Required for school users.",
     )
     device_label = serializers.CharField(required=False, allow_blank=True)
 
@@ -284,7 +284,7 @@ class PasswordResetRequestSerializer(serializers.Serializer):
     Always return a generic success from the view to avoid user enumeration.
     """
     email = serializers.EmailField()
-    institution_slug = serializers.CharField(required=False, allow_blank=True)
+    school_slug = serializers.CharField(required=False, allow_blank=True)
 
 
 class PasswordResetConfirmSerializer(serializers.Serializer):
@@ -364,7 +364,7 @@ class LoginSessionReadSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "user",
-            "institution",
+            "school",
             "ip_address",
             "user_agent",
             "device_label",
@@ -402,9 +402,9 @@ class AuthAttemptReadSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "email_entered",
-            "institution_context",
+            "school_context",
             "user",
-            "institution",
+            "school",
             "ip_address",
             "result",
             "failure_code",
@@ -478,7 +478,7 @@ class SuspiciousLoginEventReadSerializer(serializers.ModelSerializer):
             "id",
             "user",
             "email_entered",
-            "institution_context",
+            "school_context",
             "ip_address",
             "event_type",
             "risk_score",
@@ -500,7 +500,7 @@ class AuthEventLogReadSerializer(serializers.ModelSerializer):
             "id",
             "actor",
             "subject",
-            "institution",
+            "school",
             "event",
             "ip_address",
             "user_agent",
