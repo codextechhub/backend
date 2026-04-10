@@ -9,7 +9,12 @@
       "Bash(python3 -c \":*)",
       "Bash(grep -l \"institution\" /Users/mac/Documents/GitHub/backend/.claude/worktrees/charming-dubinsky/apps/vs_institutions/views/*.py)",
       "Bash(find . -path \"*/migrations/*.py\" -not -name \"__init__.py\" -delete)",
-      "Bash(xargs -0 python3 -m py_compile)"
+      "Bash(xargs -0 python3 -m py_compile)",
+      "Bash(python manage.py test vs_rbac.tests --settings=apps.settings.test --verbosity=2)",
+      "Bash(python3 manage.py test vs_rbac.tests --settings=apps.settings.test --verbosity=2)",
+      "Read(//Users/mac/Documents/GitHub/backend/**)",
+      "Bash(pip3 list:*)",
+      "Bash(pip list:*)"
     ]
   }
 }

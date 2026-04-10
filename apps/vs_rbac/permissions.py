@@ -37,7 +37,7 @@ class IsVisionStaff(BasePermission):
         u = request.user
         if not u or not u.is_authenticated:
             return False
-        return getattr(u, "user_type", "") == "VISION_STAFF"
+        return getattr(u, "user_type", "") == "VS_STAFF"
 
 
 class IsSchoolAdmin(BasePermission):
@@ -51,7 +51,7 @@ class IsSchoolAdmin(BasePermission):
         u = request.user
         if not u or not u.is_authenticated:
             return False
-        return getattr(u, "user_type", "") == "SCHOOL_ADMIN"
+        return getattr(u, "user_type", "") == "SC_AD"
 
 
 class ReadOnly(BasePermission):
