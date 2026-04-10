@@ -1,636 +1,651 @@
+# views.py
+# All views for the vs_users module in one flat file.
+#
+# Contents (in order):
+#   AUTH       - LoginView, LogoutView, TokenRefreshView
+#   INVITATION - ActivationPreviewView, ActivationView, InvitationResendView
+#   PASSWORD   - PasswordChangeView, PasswordResetRequestView, PasswordResetConfirmView, AdminPasswordResetView
+#   USERS      - UserAccountViewSet, UserEmailChangeView, UserSuspendView, UserReactivateView, UserUnlockView
+#   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet, SuspiciousLoginEventViewSet
+
 from __future__ import annotations
-
 from datetime import timedelta
-
-from django.conf import settings
-from django.contrib.auth import authenticate
 from django.db import transaction
 from django.utils import timezone
-
-from rest_framework import status, viewsets, mixins, generics
+from rest_framework import status, viewsets, mixins
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-
-# If you use SimpleJWT:
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
-
-from vs_schools.models import School
-
 from .models import (
-    UserAccount,
-    TemporaryPasswordIssue,
-    LoginSession,
-    RevokedToken,
-    AuthAttempt,
-    AccountLockout,
-    PasswordResetRequest,
-    SuspiciousLoginEvent,
-    AuthEventLog,
+    User, UserInvitation, LoginSession, AuthAttempt,
+    AccountLockout, AuthEventLog, SuspiciousLoginEvent, PasswordResetRequest,
 )
 from .serializers import (
-    # Users
-    UserAccountReadSerializer,
-    UserAccountCreateSerializer,
-    UserAccountUpdateSerializer,
-    AdminCreateAccountSerializer,
-    # Auth
-    LoginRequestSerializer,
-    TokenRefreshSerializer,
-    TokenRevokeSerializer,
-    # Password
-    PasswordChangeSerializer,
-    PasswordResetRequestSerializer,
-    PasswordResetConfirmSerializer,
-    # Temp password
-    TemporaryPasswordIssueReadSerializer,
-    TemporaryPasswordIssueCreateSerializer,
-    # Sessions
-    LoginSessionReadSerializer,
-    ForceLogoutSerializer,
-    # Lockout / attempts
-    AuthAttemptReadSerializer,
-    AccountLockoutReadSerializer,
-    UnlockAccountSerializer,
-    # Revoked tokens
-    RevokedTokenReadSerializer,
-    # Security events
+    UserReadSerializer, UserListSerializer, UserCreateSerializer,
+    UserUpdateSerializer, EmailChangeSerializer,
+    ActivationSerializer, ActivationPreviewSerializer,
+    LoginRequestSerializer, TokenRefreshSerializer,
+    PasswordChangeSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
+    LoginSessionReadSerializer, ForceLogoutSerializer,
+    AuthAttemptReadSerializer, AccountLockoutReadSerializer,
+    UnlockAccountSerializer, AuthEventLogReadSerializer,
     SuspiciousLoginEventReadSerializer,
-    # Auth events
-    AuthEventLogReadSerializer,
 )
-from .permissions import (
-    IsVisionStaff,
-    IsSchoolAdminOrVisionStaff,
-    IsSelfOrVisionStaff,
-    IsVisionStaffOrSuperuser,
-)
+from .services.auth       import LoginService
+from .services.invitation import InvitationService
+from .services.password   import PasswordService
+from .services.user       import UserCreationService, EmailChangeService, UserStatusService
+from .services.audit      import log_auth_event, blacklist_all_user_tokens, get_client_ip
 
 
-# -----------------------------------------------------------------------------
-# Small “services” (kept simple so you can understand)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# # AUTH VIEWS
+# =============================================================================
 
-def _get_client_ip(request) -> str | None:
-    xf = request.META.get("HTTP_X_FORWARDED_FOR")
-    if xf:
-        return xf.split(",")[0].strip()
-    return request.META.get("REMOTE_ADDR")
-
-
-def _resolve_school_from_slug(slug: str) -> School | None:
-    if not slug:
-        return None
-    try:
-        return School.objects.get(slug=slug)
-    except School.DoesNotExist:
-        return None
-
-
-def _issue_tokens_for_user(user: UserAccount) -> dict:
+class LoginView(APIView):
     """
-    SimpleJWT token creation.
+    POST /auth/login/
+    Authenticates a user and returns a JWT token pair.
+    Handles lockout checks, school context, session creation,
+    and audit logging — all via LoginService.
     """
-    refresh = RefreshToken.for_user(user)
-    return {"refresh": str(refresh), "access": str(refresh.access_token), "refresh_jti": str(refresh["jti"])}
-
-def _user_school(user):
-    branch = getattr(user, "branch", None)
-    return getattr(branch, "school", None)
-
-
-def _log_auth_event(*, actor: UserAccount | None, subject: UserAccount | None, school: School | None,
-                    event: str, request, metadata: dict | None = None):
-    AuthEventLog.objects.create(
-        actor=actor,
-        subject=subject,
-        school=school,
-        event=event,
-        ip_address=_get_client_ip(request),
-        user_agent=request.META.get("HTTP_USER_AGENT", ""),
-        metadata=metadata or {},
-    )
-
-
-def _record_attempt(*, email_entered: str, school_context: str, user: UserAccount | None,
-                    school: School | None, result: str, failure_code: str, request, metadata: dict | None = None):
-    AuthAttempt.objects.create(
-        email_entered=email_entered,
-        school_context=school_context or "",
-        user=user,
-        school=school,
-        ip_address=_get_client_ip(request),
-        user_agent=request.META.get("HTTP_USER_AGENT", ""),
-        result=result,
-        failure_code=failure_code or "",
-        metadata=metadata or {},
-    )
-
-
-# -----------------------------------------------------------------------------
-# USERS (FR-IDA-001)
-# -----------------------------------------------------------------------------
-
-class UserAccountViewSet(viewsets.ModelViewSet):
-    """
-    /users/
-    - Vision staff can manage users broadly
-    - Non-vision users can read/update themselves (basic profile fields)
-    """
-    queryset = UserAccount.objects.select_related("branch").all()
-    # permission_classes = [IsVisionStaffOrSuperuser]  # default, overridden in get_permissions
-
-    def get_serializer_class(self):
-        if self.action in ("create",):
-            return UserAccountCreateSerializer
-        if self.action in ("update", "partial_update"):
-            return UserAccountUpdateSerializer
-        return UserAccountReadSerializer
-
-    def get_permissions(self):
-        if self.action in ("create", "list", "destroy"):
-            return [IsAuthenticated(), IsVisionStaffOrSuperuser()]
-
-        if self.action in ("retrieve", "update", "partial_update"):
-            return [IsAuthenticated(), IsSelfOrVisionStaff(), ]
-
-        return [IsAuthenticated()]
-
-    def perform_create(self, serializer):
-        """
-        IMPORTANT (FR-IDA-002): serializer only creates the user row.
-        You should generate/send temp password in a service.
-        Here we keep it simple and just create an audit-ish AuthEventLog.
-        """
-        user = serializer.save()
-        _log_auth_event(
-            actor=self.request.user,
-            subject=user,
-            school=getattr(user, "school", None),
-            event=AuthEventLog.Event.USER_CREATED,
-            request=self.request,
-            metadata={"via": "UserAccountViewSet.create"},
-        )
-        
-class AdminCreateAccountView(generics.CreateAPIView):
-    """
-    Admin endpoint to create a user with a temporary password (FR-IDA-002).
-    This is separate from the regular UserAccountViewSet create to enforce temp password flow.
-    """
-    queryset = UserAccount.objects.all()
-    serializer_class = AdminCreateAccountSerializer
     permission_classes = [AllowAny]
-
-
-# -----------------------------------------------------------------------------
-# AUTH (FR-IDA-003/004/005/012)
-# -----------------------------------------------------------------------------
-
-class LoginAPIView(APIView):
-    permission_classes = [AllowAny]
+    throttle_scope = 'login'
 
     def post(self, request):
         ser = LoginRequestSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-        email = ser.validated_data["email"].strip()
-        password = ser.validated_data["password"]
-        school_slug = ser.validated_data.get("school_slug", "").strip()
-        device_label = ser.validated_data.get("device_label", "")
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        school = _resolve_school_from_slug(school_slug) if school_slug else None
-       
-
-        # Find user (case-insensitive). This matches your uniqueness constraints.
-        user = UserAccount.objects.filter(email__iexact=email).first()
-
-        # Block “fail open” on school context (FR-IDA-012)
-        if user and user.user_type != UserAccount.UserType.VISION_STAFF:
-            if not school:
-                _record_attempt(
-                    email_entered=email, school_context=school_slug,
-                    user=user, school=None,
-                    result=AuthAttempt.Result.FAIL, failure_code="SCHOOL_CONTEXT_REQUIRED",
-                    request=request,
-                )
-                return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
-
-            if user.branch.school_id != school.id:
-                # do not reveal what was wrong
-                _record_attempt(
-                    email_entered=email, school_context=school_slug,
-                    user=user, school=_user_school(user),
-                    result=AuthAttempt.Result.FAIL, failure_code="SCHOOL_MISMATCH",
-                    request=request,
-                )
-                SuspiciousLoginEvent.objects.create(
-                    user=user,
-                    email_entered=email,
-                    school_context=school_slug,
-                    ip_address=_get_client_ip(request),
-                    user_agent=request.META.get("HTTP_USER_AGENT", ""),
-                    event_type=SuspiciousLoginEvent.EventType.SCHOOL_MISMATCH,
-                    risk_score=70,
-                    decision=SuspiciousLoginEvent.Decision.BLOCK,
-                    details={"expected_school_id": user.school_id, "got_school_id": school.id},
-                )
-                return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
-
-        # Use Django auth (if your AUTHENTICATION_BACKENDS support email)
-        # If not, replace with manual check_password on the user.
-        authed = authenticate(request=request, email=email, password=password)
-        if not authed:
-            _record_attempt(
-                email_entered=email, school_context=school_slug,
-                user=user, school=_user_school(user),
-                result=AuthAttempt.Result.FAIL, failure_code="INVALID_CREDENTIALS",
+        try:
+            result = LoginService.login(
+                email=ser.validated_data['email'],
+                password=ser.validated_data['password'],
+                school_slug=ser.validated_data.get('school_slug', ''),
+                device_label=ser.validated_data.get('device_label', ''),
                 request=request,
             )
-            return Response({"detail": "Invalid credentials."}, status=status.HTTP_401_UNAUTHORIZED)
-
-        # Business status checks
-        if authed.status in (UserAccount.Status.SUSPENDED, UserAccount.Status.DELETED, UserAccount.Status.LOCKED):
-            _record_attempt(
-                email_entered=email, school_context=school_slug,
-                user=authed,
-                school=_user_school(user),
-                result=AuthAttempt.Result.BLOCKED, failure_code=authed.status,
-                request=request,
+        except ValueError as e:
+            payload = e.args[0] if e.args else {}
+            blocked_codes = {
+                'ACCOUNT_LOCKED', 'ACCOUNT_SUSPENDED',
+                'ACCOUNT_DEACTIVATED', 'ACCOUNT_NOT_ACTIVATED',
+            }
+            http_status = (
+                status.HTTP_403_FORBIDDEN
+                if isinstance(payload, dict) and payload.get('error_code') in blocked_codes
+                else status.HTTP_401_UNAUTHORIZED
             )
-            return Response({"detail": "Account not available."}, status=status.HTTP_403_FORBIDDEN)
+            return Response(payload, status=http_status)
 
-        # Issue JWT
-        tokens = _issue_tokens_for_user(authed)
+        return Response(result, status=status.HTTP_200_OK)
 
-        # Create session record (FR-IDA-009)
-        session = LoginSession.objects.create(
-            user=authed,
-            school=_user_school(user),
-            ip_address=_get_client_ip(request),
-            user_agent=request.META.get("HTTP_USER_AGENT", ""),
-            device_label=device_label or "",
-            refresh_jti=tokens.get("refresh_jti", ""),
-            last_seen_at=timezone.now(),
-            is_active=True,
-        )
 
-        # Update user login timestamps
-        authed.last_login_at = timezone.now()
-        authed.save(update_fields=["last_login_at", "updated_at"])
+class LogoutView(APIView):
+    """
+    POST /auth/logout/
+    Blacklists the submitted refresh token, ending the current session.
+    Idempotent — always returns 200 even if the token is already blacklisted.
+    """
+    permission_classes = [IsAuthenticated]
 
-        _record_attempt(
-            email_entered=email, school_context=school_slug,
-            user=authed,
-            school=_user_school(user),
-            result=AuthAttempt.Result.SUCCESS, failure_code="",
+    def post(self, request):
+        refresh_token = request.data.get('refresh')
+        if not refresh_token:
+            return Response(
+                {'detail': 'Refresh token required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            RefreshToken(refresh_token).blacklist()
+        except TokenError:
+            # Already blacklisted or invalid — still 200, logout is idempotent.
+            pass
+
+        log_auth_event(
+            actor=request.user,
+            subject=request.user,
+            school=getattr(request.user, 'school', None),
+            event=AuthEventLog.Event.TOKEN_REVOKED,
             request=request,
         )
-        _log_auth_event(
-            actor=authed, subject=authed,
-            school=_user_school(authed),
-            event=AuthEventLog.Event.LOGIN_SUCCESS,
-            request=request,
-            metadata={"session_id": session.id},
-        )
-
-        # Force change password gate (FR-IDA-002)
-        return Response(
-            {
-                "access": tokens["access"],
-                "refresh": tokens["refresh"],
-                "must_change_password": bool(authed.must_change_password),
-                "session_id": session.id,
-                "user": UserAccountReadSerializer(authed).data,
-            },
-            status=status.HTTP_200_OK,
-        )
+        return Response({'detail': 'Logged out successfully.'}, status=status.HTTP_200_OK)
 
 
-class TokenRefreshAPIView(APIView):
+class TokenRefreshView(APIView):
+    """
+    POST /auth/token/refresh/
+    Issues a new access token using a valid refresh token.
+    """
     permission_classes = [AllowAny]
 
     def post(self, request):
         ser = TokenRefreshSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            refresh = RefreshToken(ser.validated_data["refresh"])
-            access = str(refresh.access_token)
-
-            # Optional rotation: if you rotate refresh, you would also store/blacklist old JTI here.
-            return Response({"access": access}, status=status.HTTP_200_OK)
+            refresh = RefreshToken(ser.validated_data['refresh'])
+            return Response(
+                {'access': str(refresh.access_token)},
+                status=status.HTTP_200_OK,
+            )
         except TokenError:
-            return Response({"detail": "Invalid or expired token."}, status=status.HTTP_401_UNAUTHORIZED)
+            return Response(
+                {'detail': 'Invalid or expired token.'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
 
+# =============================================================================
+# # INVITATION AND ACTIVATION VIEWS
+# =============================================================================
 
-class TokenRevokeAPIView(APIView):
+class ActivationPreviewView(APIView):
     """
-    Revoke by JTI (FR-IDA-005).
-    For SimpleJWT, you’ll typically revoke refresh tokens (and optionally access tokens).
+    GET /auth/activate/{user_id}/
+    Called when the user lands on the activation page.
+    Returns their name and email so the frontend can pre-fill
+    them as read-only fields — the user only needs to set a password.
     """
-    permission_classes = [IsAuthenticated, IsVisionStaffOrSuperuser]         # IsSchoolAdminOrVisionStaff
+    permission_classes = [AllowAny]
 
-    def post(self, request):
-        ser = TokenRevokeSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
+    def get(self, request, user_id):
+        try:
+            invitation = InvitationService.get_valid_invitation(user_id)
+        except ValueError as e:
+            return Response(e.args[0], status=status.HTTP_400_BAD_REQUEST)
 
-        jti = ser.validated_data["jti"]
-        token_type = ser.validated_data["token_type"]
-        reason = ser.validated_data.get("reason", "")
-
-        # Store JTI in revocation store
-        RevokedToken.objects.get_or_create(
-            jti=jti,
-            defaults={
-                "user": request.user,
-                "token_type": token_type,
-                "expires_at": None,
-                "reason": reason or "logout",
-                "revoked_by": request.user,
-            },
+        return Response(
+            ActivationPreviewSerializer(invitation.user).data,
+            status=status.HTTP_200_OK,
         )
 
-        _log_auth_event(
-            actor=request.user, subject=request.user, school=getattr(request.user, "school", None),
-            event=AuthEventLog.Event.TOKEN_REVOKED, request=request,
-            metadata={"jti": jti, "token_type": token_type, "reason": reason},
-        )
 
-        return Response({"detail": "Token revoked."}, status=status.HTTP_200_OK)
+class ActivationView(APIView):
+    """
+    POST /auth/activate/{user_id}/
+    User submits password + confirm_password.
+    On success: account is activated and JWT tokens are returned
+    so the user is logged in immediately — no separate login step.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request, user_id):
+        ser = ActivationSerializer(data=request.data)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        if ser.validated_data['password'] != ser.validated_data['confirm_password']:
+            return Response(
+                {'confirm_password': 'Passwords do not match.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            result = InvitationService.activate(
+                user_id=user_id,
+                password=ser.validated_data['password'],
+                request=request,
+            )
+        except ValueError as e:
+            return Response(e.args[0], status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(result, status=status.HTTP_200_OK)
 
 
-# -----------------------------------------------------------------------------
-# PASSWORD CHANGE / RESET (FR-IDA-002/011)
-# -----------------------------------------------------------------------------
+class InvitationResendView(APIView):
+    """
+    POST /users/{user_id}/invite/resend/
+    Resets the 7-day expiry and sends a new invitation email.
+    The URL the user receives stays the same —
+    vision.codexng.com/invite/{user_id}/ — only the expiry window refreshes.
+    Only valid for accounts with status=PENDING.
+    """
+    permission_classes = [IsAuthenticated, ]
 
-class PasswordChangeAPIView(APIView):
+    def post(self, request, user_id):
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if user.status != User.Status.PENDING:
+            return Response(
+                {'detail': 'Invitations can only be resent for accounts pending activation.'},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        try:
+            InvitationService.resend(
+                user=user,
+                requested_by=request.user,
+                request=request,
+            )
+        except Exception as e:
+            return Response(
+                e.args[0] if e.args else {'detail': 'Resend failed.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return Response({'detail': 'Invitation resent.'}, status=status.HTTP_200_OK)
+
+# =============================================================================
+# # PASSWORD VIEWS
+# =============================================================================
+
+class PasswordChangeView(APIView):
+    """
+    POST /auth/password/change/
+    Logged-in user changes their own password.
+    Requires current password for verification.
+    """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        ser = PasswordChangeSerializer(data=request.data, context={"request": request})
-        ser.is_valid(raise_exception=True)
+        ser = PasswordChangeSerializer(data=request.data, context={'request': request})
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        u: UserAccount = request.user
-        u.set_password(ser.validated_data["new_password"])
-        u.must_change_password = False
-        u.password_changed_at = timezone.now()
-        u.save(update_fields=["password", "must_change_password", "password_changed_at", "updated_at"])
+        try:
+            PasswordService.change(
+                user=request.user,
+                new_password=ser.validated_data['password'],
+                request=request,
+            )
+        except Exception as e:
+            return Response(
+                e.args[0] if e.args else {},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
-        _log_auth_event(
-            actor=u, subject=u, school=_user_school(u),
-            event=AuthEventLog.Event.PASSWORD_CHANGED,
-            request=request,
-            metadata={"forced_change_flow": True},
-        )
-        return Response({"detail": "Password updated."}, status=status.HTTP_200_OK)
+        return Response({'detail': 'Password updated.'}, status=status.HTTP_200_OK)
 
 
-class PasswordResetRequestAPIView(APIView):
+class PasswordResetRequestView(APIView):
+    """
+    POST /auth/password/reset/request/
+    Self-service reset request.
+    Always returns 200 regardless of whether the email exists
+    — prevents user enumeration.
+    """
     permission_classes = [AllowAny]
 
     def post(self, request):
         ser = PasswordResetRequestSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        email = ser.validated_data["email"].strip()
-        school_slug = (ser.validated_data.get("school_slug") or "").strip()
-        school = _resolve_school_from_slug(school_slug) if school_slug else None
+        # Service silently does nothing if the email is not found.
+        PasswordService.request_reset(
+            email=ser.validated_data['email'],
+            school_slug=ser.validated_data.get('school_slug', ''),
+            request=request,
+        )
 
-        # Generic response regardless of existence (avoid enumeration)
-        user_qs = UserAccount.objects.filter(email__iexact=email)
-        if school:
-            user_qs = user_qs.filter(school=school)
-        user = user_qs.first()
-
-        if user and user.status != UserAccount.Status.DELETED:
-            # Create a reset request with a hashed token.
-            raw_token = secrets.token_urlsafe(32)  # send this to user email via your notification service
-            token_hash = PasswordResetRequest.hash_token(raw_token)
-            PasswordResetRequest.objects.create(
-                user=user,
-                token_hash=token_hash,
-                expires_at=timezone.now() + timedelta(minutes=30),
-                requested_ip=_get_client_ip(request),
-                requested_user_agent=request.META.get("HTTP_USER_AGENT", ""),
-            )
-            _log_auth_event(
-                actor=None, subject=user, school=user.school,
-                event=AuthEventLog.Event.PASSWORD_RESET_REQUESTED,
-                request=request,
-                metadata={"school_slug": school_slug},
-            )
-            # NOTE: send raw_token via email/SMS here (not shown)
-
-        return Response({"detail": "If the account exists, reset instructions have been sent."}, status=status.HTTP_200_OK)
+        return Response(
+            {'detail': 'If the account exists, reset instructions have been sent.'},
+            status=status.HTTP_200_OK,
+        )
 
 
-class PasswordResetConfirmAPIView(APIView):
+class PasswordResetConfirmView(APIView):
+    """
+    POST /auth/password/reset/confirm/
+    Confirms a reset using the token from the email.
+    Ends all active sessions on success.
+    """
     permission_classes = [AllowAny]
 
     def post(self, request):
         ser = PasswordResetConfirmSerializer(data=request.data)
-        ser.is_valid(raise_exception=True)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        raw_token = ser.validated_data["token"]
-        token_hash = PasswordResetRequest.hash_token(raw_token)
+        try:
+            PasswordService.confirm_reset(
+                raw_token=ser.validated_data['token'],
+                new_password=ser.validated_data['password'],
+                request=request,
+            )
+        except ValueError as e:
+            return Response(e.args[0], status=status.HTTP_400_BAD_REQUEST)
 
-        pr = PasswordResetRequest.objects.filter(token_hash=token_hash, used_at__isnull=True).first()
-        if not pr or pr.is_expired():
-            return Response({"detail": "Invalid or expired token."}, status=status.HTTP_400_BAD_REQUEST)
-
-        user = pr.user
-        user.set_password(ser.validated_data["new_password"])
-        user.must_change_password = False
-        user.password_changed_at = timezone.now()
-
-        with transaction.atomic():
-            user.save(update_fields=["password", "must_change_password", "password_changed_at", "updated_at"])
-            pr.mark_used()
-            pr.save(update_fields=["used_at", "updated_at"])
-
-        _log_auth_event(
-            actor=None, subject=user, school=user.school,
-            event=AuthEventLog.Event.PASSWORD_RESET_COMPLETED,
-            request=request,
-        )
-        return Response({"detail": "Password reset successful."}, status=status.HTTP_200_OK)
+        return Response({'detail': 'Password reset successful.'}, status=status.HTTP_200_OK)
 
 
-# -----------------------------------------------------------------------------
-# TEMP PASSWORD ISSUANCE (FR-IDA-002) — admin operation
-# -----------------------------------------------------------------------------
+class AdminPasswordResetView(APIView):
+    """
+    POST /users/{user_id}/password-reset/
+    Admin triggers a 24-hour password reset for a specific user.
+    """
+    permission_classes = [IsAuthenticated]
 
-class TemporaryPasswordIssueViewSet(mixins.CreateModelMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
-    queryset = TemporaryPasswordIssue.objects.select_related("user").all()
+    def post(self, request, user_id):
+        from .models import User
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            PasswordService.admin_reset(
+                target_user=user,
+                requesting_user=request.user,
+                request=request,
+            )
+        except Exception as e:
+            return Response(
+                e.args[0] if e.args else {},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        return Response({'detail': 'Password reset email sent.'}, status=status.HTTP_200_OK)
+
+# =============================================================================
+# # USER MANAGEMENT VIEWS
+# =============================================================================
+
+class UserAccountViewSet(viewsets.ModelViewSet):
+    """
+    GET    /users/          — list users scoped to requesting admin's school
+    POST   /users/          — create user + dispatch invitation email
+    GET    /users/{id}/     — retrieve full user profile
+    PATCH  /users/{id}/     — update profile fields (not email, not status)
+    DELETE /users/{id}/     — soft-deactivate (never hard-delete)
+    """
 
     def get_serializer_class(self):
-        if self.action == "create":
-            return TemporaryPasswordIssueCreateSerializer
-        return TemporaryPasswordIssueReadSerializer
+        if self.action == 'create':
+            return UserCreateSerializer
+        if self.action in ('update', 'partial_update'):
+            return UserUpdateSerializer
+        if self.action == 'list':
+            return UserListSerializer
+        return UserReadSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        qs   = User.objects.select_related('school', 'branch', 'invited_by')
+        if getattr(user, 'user_type', None) == User.UserType.VISION_STAFF:
+            return qs.all()
+        # School Admins see only users within their own school.
+        return qs.filter(school=user.school)
 
     def get_permissions(self):
-        # Typically Vision staff only; adjust to allow school admins if policy allows
-        return [IsAuthenticated(), IsVisionStaff()]
+        if self.action in ('create', 'list'):
+            return [IsAuthenticated(), ()]
+        if self.action == 'destroy':
+            return [IsAuthenticated(), ()]
+        if self.action in ('retrieve', 'update', 'partial_update'):
+            return [IsAuthenticated(), ()]
+        return [IsAuthenticated()]
 
-    def create(self, request, *args, **kwargs):
-        ser = self.get_serializer(data=request.data)
-        ser.is_valid(raise_exception=True)
-
-        user: UserAccount = ser.validated_data["user"]
-        channel = ser.validated_data["channel"]
-        delivered_to = ser.validated_data["delivered_to"]
-        ttl_minutes = ser.validated_data["ttl_minutes"]
-
-        # Generate + hash verifier (do NOT store plaintext)
-        temp_password = TemporaryPasswordIssue.generate_temp_password()
-        verifier = TemporaryPasswordIssue.build_verifier(user.id, temp_password)
-
-        issue = TemporaryPasswordIssue.objects.create(
-            user=user,
-            channel=channel,
-            delivered_to=delivered_to,
-            expires_at=timezone.now() + timedelta(minutes=ttl_minutes),
-            delivered_at=None,
-            delivery_status="PENDING",
-            verifier_hash=verifier,
+    def perform_create(self, serializer):
+        UserCreationService.create(
+            validated_data=serializer.validated_data,
+            requesting_user=self.request.user,
+            request=self.request,
         )
 
-        # Enforce must-change on next login (FR-IDA-002)
-        user.set_password(temp_password)
-        user.must_change_password = True
-        user.save(update_fields=["password", "must_change_password", "updated_at"])
-
-        _log_auth_event(
-            actor=request.user, subject=user, school=user.school,
-            event=AuthEventLog.Event.TEMP_PASSWORD_ISSUED,
-            request=request,
-            metadata={"issue_id": issue.id, "channel": channel, "delivered_to": delivered_to},
+    def perform_destroy(self, instance):
+        # Never hard-delete. Records and audit history are always preserved.
+        UserStatusService.deactivate(
+            target_user=instance,
+            requesting_user=self.request.user,
+            request=self.request,
         )
 
-        # NOTE: Send temp_password via email in your notification service (not shown).
-        # Update issue.delivery_status to SENT/FAILED based on delivery result.
 
-        return Response(TemporaryPasswordIssueReadSerializer(issue).data, status=status.HTTP_201_CREATED)
+class UserEmailChangeView(APIView):
+    """
+    PATCH /users/{user_id}/email/
+    Admin-only. Change takes effect immediately and ends all active sessions.
+    The user logs in again with the new email and their existing password.
+    """
+    permission_classes = [IsAuthenticated, ]
+
+    def patch(self, request, user_id):
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        ser = EmailChangeSerializer(data=request.data)
+        if not ser.is_valid():
+            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            updated = EmailChangeService.change_email(
+                target_user=user,
+                new_email=ser.validated_data['email'],
+                requesting_user=request.user,
+                request=request,
+            )
+        except Exception as e:
+            detail = e.args[0] if e.args else {}
+            http_status = (
+                status.HTTP_409_CONFLICT
+                if isinstance(detail, dict) and detail.get('error_code') == 'DUPLICATE_EMAIL'
+                else status.HTTP_400_BAD_REQUEST
+            )
+            return Response(detail, status=http_status)
+
+        return Response(UserReadSerializer(updated).data, status=status.HTTP_200_OK)
 
 
-# -----------------------------------------------------------------------------
-# SESSIONS (FR-IDA-009/010)
-# -----------------------------------------------------------------------------
+class UserSuspendView(APIView):
+    """POST /users/{user_id}/suspend/"""
+    permission_classes = [IsAuthenticated, ]
+
+    def post(self, request, user_id):
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            updated = UserStatusService.suspend(user, request.user, request)
+        except Exception as e:
+            return Response(
+                e.args[0] if e.args else {},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        return Response(UserReadSerializer(updated).data, status=status.HTTP_200_OK)
+
+
+class UserReactivateView(APIView):
+    """POST /users/{user_id}/reactivate/"""
+    permission_classes = [IsAuthenticated, ]
+
+    def post(self, request, user_id):
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            updated = UserStatusService.reactivate(user, request.user, request)
+        except Exception as e:
+            return Response(
+                e.args[0] if e.args else {},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        return Response(UserReadSerializer(updated).data, status=status.HTTP_200_OK)
+
+
+class UserUnlockView(APIView):
+    """POST /users/{user_id}/unlock/"""
+    permission_classes = [IsAuthenticated, ]
+
+    def post(self, request, user_id):
+        try:
+            user = User.objects.get(id=user_id)
+        except User.DoesNotExist:
+            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            updated = UserStatusService.unlock(user, request.user, request)
+        except Exception as e:
+            return Response(
+                e.args[0] if e.args else {},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        return Response(UserReadSerializer(updated).data, status=status.HTTP_200_OK)
+
+# =============================================================================
+# # SECURITY AND SESSION VIEWS
+# =============================================================================
 
 class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
-    /sessions/
-    - list your own active sessions
-    - Vision staff can list all (optional)
+    GET /sessions/
+    A user sees only their own sessions.
+    Vision Staff see all sessions across the platform.
     """
-    serializer_class = LoginSessionReadSerializer
+    serializer_class   = LoginSessionReadSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        u = self.request.user
-        qs = LoginSession.objects.select_related("user", "school").order_by("-last_seen_at")
-        if getattr(u, "user_type", None) == "VISION_STAFF":
+        user = self.request.user
+        qs   = LoginSession.objects.select_related('user', 'school').order_by('-last_seen_at')
+        if getattr(user, 'user_type', None) == User.UserType.VISION_STAFF:
             return qs
-        return qs.filter(user=u)
+        return qs.filter(user=user)
 
-    @action(detail=False, methods=["post"], url_path="force-logout", permission_classes=[IsAuthenticated, IsSchoolAdminOrVisionStaff])
+    @action(
+        detail=False, methods=['post'], url_path='force-logout',
+        permission_classes=[IsAuthenticated, ],
+    )
     def force_logout(self, request):
+        """
+        POST /sessions/force-logout/
+        Ends sessions for a specific user or a specific session.
+        Also blacklists all outstanding JWT tokens for the user.
+        """
         ser = ForceLogoutSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
-        user = ser.validated_data.get("user_id")
-        session = ser.validated_data.get("session_id")
-        reason = ser.validated_data["reason"]
+        target_user = ser.validated_data.get('user_id')
+        session     = ser.validated_data.get('session_id')
+        reason      = ser.validated_data['reason']
+        ended       = 0
 
-        ended = 0
         if session:
-            session.end(reason="FORCE_LOGOUT")
-            session.save(update_fields=["is_active", "ended_at", "end_reason", "updated_at"])
+            session.end(reason='FORCE_LOGOUT')
+            session.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
             ended = 1
 
-        if user:
-            sessions = LoginSession.objects.filter(user=user, is_active=True)
+        if target_user:
+            sessions = LoginSession.objects.filter(user=target_user, is_active=True)
+            ended    = sessions.count()
             for s in sessions:
-                s.end(reason="FORCE_LOGOUT")
-                s.save(update_fields=["is_active", "ended_at", "end_reason", "updated_at"])
-                ended = sessions.count()
+                s.end(reason='FORCE_LOGOUT')
+                s.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
+            # Also blacklist all JWT tokens so the user cannot use existing access tokens.
+            blacklist_all_user_tokens(target_user)
 
-        _log_auth_event(
+        log_auth_event(
             actor=request.user,
-            subject=user if user else (session.user if session else None),
-            school=getattr(request.user, "school", None),
+            subject=target_user if target_user else (session.user if session else None),
+            school=getattr(request.user, 'school', None),
             event=AuthEventLog.Event.FORCE_LOGOUT,
             request=request,
-            metadata={"ended_sessions": ended, "reason": reason},
+            metadata={'ended_sessions': ended, 'reason': reason},
         )
-        return Response({"detail": "Force logout executed.", "ended_sessions": ended}, status=status.HTTP_200_OK)
+        return Response(
+            {'detail': 'Force logout executed.', 'ended_sessions': ended},
+            status=status.HTTP_200_OK,
+        )
 
-
-# -----------------------------------------------------------------------------
-# BRUTE FORCE / LOCKOUT (FR-IDA-006/007/008)
-# -----------------------------------------------------------------------------
 
 class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
-    serializer_class = AuthAttemptReadSerializer
-    permission_classes = [IsAuthenticated, IsVisionStaff]
-    queryset = AuthAttempt.objects.select_related("user", "school").order_by("-created_at")
+    """
+    GET /auth-attempts/
+    Vision Staff only. Shows all login attempts across the platform.
+    """
+    serializer_class   = AuthAttemptReadSerializer
+    permission_classes = [IsAuthenticated, ]
+    queryset           = AuthAttempt.objects.select_related('user', 'school').order_by('-created_at')
 
 
 class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
-    serializer_class = AccountLockoutReadSerializer
-    permission_classes = [IsAuthenticated, IsVisionStaff]
-    queryset = AccountLockout.objects.select_related("user").order_by("-updated_at")
+    """
+    GET /account-lockouts/
+    Vision Staff only — lists all locked accounts.
 
-    @action(detail=False, methods=["post"], url_path="unlock", permission_classes=[IsAuthenticated, IsVisionStaff])
+    POST /account-lockouts/unlock/
+    School Admins and Vision Staff can unlock accounts.
+    Optionally triggers a 24-hour admin password reset email.
+    """
+    serializer_class   = AccountLockoutReadSerializer
+    permission_classes = [IsAuthenticated, ]
+    queryset           = AccountLockout.objects.select_related('user').order_by('-updated_at')
+
+    @action(
+        detail=False, methods=['post'], url_path='unlock',
+        permission_classes=[IsAuthenticated, ],
+    )
     def unlock(self, request):
         ser = UnlockAccountSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
 
-        user: UserAccount = ser.validated_data["user"]
-        force_reset = ser.validated_data["force_password_reset"]
-        reason = ser.validated_data.get("reason", "")
+        user         = ser.validated_data['user']
+        force_reset  = ser.validated_data['force_password_reset']
+        reason       = ser.validated_data.get('reason', '')
 
+        # Clear the lockout record.
         lockout, _ = AccountLockout.objects.get_or_create(user=user)
         lockout.clear()
-        lockout.save(update_fields=["failure_count", "locked_until", "locked_reason", "updated_at"])
+        lockout.save(update_fields=['failure_count', 'locked_until', 'locked_reason', 'updated_at'])
 
-        # Also update user status if it was locked
-        if user.status == UserAccount.Status.LOCKED:
-            user.status = UserAccount.Status.ACTIVE
-            user.save(update_fields=["status", "updated_at"])
+        # Restore user status to ACTIVE if it was LOCKED.
+        if user.status == User.Status.LOCKED:
+            user.status = User.Status.ACTIVE
+            user.save(update_fields=['status', 'updated_at'])
 
-        _log_auth_event(
-            actor=request.user, subject=user, school=user.school,
+        # Optionally trigger a 24-hour admin password reset.
+        if force_reset:
+            PasswordService.admin_reset(
+                target_user=user,
+                requesting_user=request.user,
+                request=request,
+            )
+
+        log_auth_event(
+            actor=request.user,
+            subject=user,
+            school=getattr(user, 'school', None),
             event=AuthEventLog.Event.ACCOUNT_UNLOCKED,
             request=request,
-            metadata={"force_password_reset": force_reset, "reason": reason},
+            metadata={'force_password_reset': force_reset, 'reason': reason},
         )
-
-        return Response({"detail": "Account unlocked."}, status=status.HTTP_200_OK)
-
-
-# -----------------------------------------------------------------------------
-# TOKEN REVOCATION STORE (FR-IDA-005)
-# -----------------------------------------------------------------------------
-
-class RevokedTokenViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
-    serializer_class = RevokedTokenReadSerializer
-    permission_classes = [IsAuthenticated, IsVisionStaff]
-    queryset = RevokedToken.objects.select_related("user", "session", "revoked_by").order_by("-created_at")
-
-
-# -----------------------------------------------------------------------------
-# SECURITY EVENTS (optional surfaces)
-# -----------------------------------------------------------------------------
-
-class SuspiciousLoginEventViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
-    serializer_class = SuspiciousLoginEventReadSerializer
-    permission_classes = [IsAuthenticated, IsVisionStaff]
-    queryset = SuspiciousLoginEvent.objects.select_related("user").order_by("-created_at")
+        return Response({'detail': 'Account unlocked.'}, status=status.HTTP_200_OK)
 
 
 class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
-    serializer_class = AuthEventLogReadSerializer
-    permission_classes = [IsAuthenticated, IsVisionStaff]
-    queryset = AuthEventLog.objects.select_related("actor", "subject", "school").order_by("-created_at")
+    """
+    GET /auth-events/
+    Vision Staff only. Full audit event log.
+    """
+    serializer_class   = AuthEventLogReadSerializer
+    permission_classes = [IsAuthenticated, ]
+    queryset           = AuthEventLog.objects.select_related(
+        'actor', 'subject', 'school'
+    ).order_by('-created_at')
+
+
+class SuspiciousLoginEventViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    """
+    GET /suspicious-logins/
+    Deferred feature — endpoint kept but not yet active in login flow.
+    """
+    serializer_class   = SuspiciousLoginEventReadSerializer
+    permission_classes = [IsAuthenticated, ]
+    queryset           = SuspiciousLoginEvent.objects.select_related('user').order_by('-created_at')

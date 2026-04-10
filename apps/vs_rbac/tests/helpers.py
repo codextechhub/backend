@@ -51,7 +51,7 @@ def make_vision_user(email="vision@test.com", password="testpass123", **kwargs):
 
 def make_school_admin(branch, email="admin@test.com", password="testpass123", **kwargs):
     defaults = {
-        "user_type": "SC_AD",
+        "user_type": "SCHOOL_ADMIN",
         "status": "ACTIVE",
         "branch": branch,
         "full_name": "School Admin",

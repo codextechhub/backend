@@ -56,7 +56,7 @@ class Migration(migrations.Migration):
                     models.CharField(
                         choices=[
                             ("VS_STAFF", "Vision Staff"),
-                            ("SC_AD", "School Admin"),
+                            ("SCHOOL_ADMIN", "School Admin"),
                             ("STAFF", "Staff"),
                             ("STUDENT", "Student"),
                             ("PARENT", "Parent/Guardian"),

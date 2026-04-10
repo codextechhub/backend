@@ -128,7 +128,7 @@ class TenantBoundaryEnforcementMiddleware:
         if not school:
             # School user with no school context = security violation
             user_type = getattr(user, "user_type", None)
-            if user_type in {"SC_AD", "STAFF", "STUDENT", "PARENT"}:
+            if user_type in {"SCHOOL_ADMIN", "STAFF", "STUDENT", "PARENT"}:
                 raise PermissionDenied(
                     "School context required for school-scoped users."
                 )
