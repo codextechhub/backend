@@ -1,4 +1,4 @@
-# codex_db/management/commands/del_init.py
+# del_migration.py
 import os
 import glob
 from django.core.management.base import BaseCommand
