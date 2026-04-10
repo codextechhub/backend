@@ -60,6 +60,13 @@ class Command(BaseCommand):
             action='store_true',
             help='Auto-confirm all prompts (use with caution)'
         )
+        parser.add_argument(
+            '--post-commands',
+            nargs='+',
+            type=str,
+            default=None,
+            help='Commands to run after migration completes (e.g., seed_roles seed_schools)'
+        )
 
     def handle(self, *args, **options):
         """Main command handler"""
@@ -92,6 +99,9 @@ class Command(BaseCommand):
             self._run_fresh_migrations()
         else:
             self.stdout.write(self.style.NOTICE("Skipping fresh migrations"))
+        
+        # Step 4: Run post-migration commands (if provided)
+        self._run_post_migration_commands(options.get('post_commands'))
         
         # Success message
         self.stdout.write(self.style.SUCCESS("\n" + "="*60))
@@ -139,6 +149,7 @@ class Command(BaseCommand):
             'vs_schools',
             'vs_rbac',
             'vs_audit',
+            'vs_import_data',
             # Add more apps as needed
         ]
         
@@ -279,3 +290,50 @@ class Command(BaseCommand):
         except Exception as e:
             self.stdout.write(self.style.ERROR(f"Error during migration: {e}"))
             raise CommandError(f"Failed to run migrations: {e}")
+    
+    def _run_post_migration_commands(self, commands):
+        """
+        Step 4 (Optional): Run custom commands after migrations complete
+        Useful for seeding, creating superuser, loading fixtures, etc.
+        
+        Args:
+            commands: List of command names to execute
+        """
+        if not commands:
+            return
+        
+        self.stdout.write(self.style.NOTICE("\n" + "-"*60))
+        self.stdout.write(self.style.NOTICE("STEP 4: Running post-migration commands"))
+        self.stdout.write(self.style.NOTICE("-"*60))
+        
+        # Confirm before running
+        if not self.auto_confirm:
+            commands_str = ', '.join(commands)
+            if not self._confirm_action(f"Run these commands: {commands_str}?"):
+                self.stdout.write(self.style.WARNING("Skipping post-migration commands"))
+                return
+        
+        for command in commands:
+            try:
+                self.stdout.write(self.style.NOTICE(f"\nRunning: {command}"))
+                
+                # Split command into name and args if provided
+                # e.g., "seed_roles --initial" becomes ["seed_roles", "--initial"]
+                command_parts = command.split()
+                command_name = command_parts[0]
+                command_args = command_parts[1:] if len(command_parts) > 1 else []
+                
+                call_command(command_name, *command_args)
+                self.stdout.write(self.style.SUCCESS(f"  ✓ Completed: {command}"))
+                
+            except Exception as e:
+                self.stdout.write(self.style.ERROR(f"  ✗ Failed: {command}"))
+                self.stdout.write(self.style.ERROR(f"    Error: {e}"))
+                
+                # Ask if user wants to continue with remaining commands
+                if not self.auto_confirm:
+                    if not self._confirm_action("Continue with remaining commands?"):
+                        self.stdout.write(self.style.WARNING("Stopping post-migration commands"))
+                        return
+        
+        self.stdout.write(self.style.SUCCESS("\nPost-migration commands completed"))
