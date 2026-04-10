@@ -8,7 +8,6 @@
 #   LoginSession          - application-level session tracker
 #   AuthAttempt           - every login attempt, success or failure
 #   AccountLockout        - per-user brute-force lockout state
-#   SuspiciousLoginEvent  - anomalous login signals (deferred feature)
 #   PasswordResetRequest  - hashed reset token store
 #   AuthEventLog          - append-only audit event log
 

@@ -30,7 +30,7 @@ def user_has_rbac_permission(user, permission_key, school=None):
     user_type = getattr(user, "user_type", "")
 
     # Vision staff: check platform roles
-    if user_type == "VS_STAFF":
+    if user_type == "VISION_STAFF":
         return PlatformRolePermission.objects.filter(
             role__user_assignments__user=user,
             role__user_assignments__assignment_status="ACTIVE",
@@ -81,7 +81,7 @@ class IsVisionStaff(BasePermission):
         u = request.user
         if not u or not u.is_authenticated:
             return False
-        return getattr(u, "user_type", "") == "VS_STAFF"
+        return getattr(u, "user_type", "") == "VISION_STAFF"
 
 
 class IsSchoolAdmin(BasePermission):

@@ -38,7 +38,6 @@ from .views import (
     AuthAttemptViewSet,
     AccountLockoutViewSet,
     AuthEventLogViewSet,
-    SuspiciousLoginEventViewSet,
 )
 
 # ── Router-registered viewsets ────────────────────────────────────────────────
@@ -48,7 +47,6 @@ router.register(r'sessions',          SessionViewSet,             basename='sess
 router.register(r'auth-attempts',     AuthAttemptViewSet,         basename='auth-attempts')
 router.register(r'account-lockouts',  AccountLockoutViewSet,      basename='account-lockouts')
 router.register(r'auth-events',       AuthEventLogViewSet,        basename='auth-events')
-router.register(r'suspicious-logins', SuspiciousLoginEventViewSet, basename='suspicious-logins')
 
 urlpatterns = [
 
@@ -58,8 +56,10 @@ urlpatterns = [
     path('auth/token/refresh/',          TokenRefreshView.as_view(),         name='auth-token-refresh'),
 
     # ── Activation ────────────────────────────────────────────────────────────
-    path('auth/activate/<uuid:user_id>/',    ActivationPreviewView.as_view(), name='auth-activate-preview'),
-    path('auth/activate/<uuid:user_id>/',    ActivationView.as_view(),        name='auth-activate'),
+    # GET  → ActivationPreviewView (pre-fill form)
+    # POST → ActivationView (set password, activate)
+    path('auth/activate/<uuid:user_id>/preview/',  ActivationPreviewView.as_view(), name='auth-activate-preview'),
+    path('auth/activate/<uuid:user_id>/',          ActivationView.as_view(),        name='auth-activate'),
 
     # ── Password ──────────────────────────────────────────────────────────────
     path('auth/password/change/',            PasswordChangeView.as_view(),          name='password-change'),

@@ -6,7 +6,7 @@
 #   INVITATION - ActivationPreviewView, ActivationView, InvitationResendView
 #   PASSWORD   - PasswordChangeView, PasswordResetRequestView, PasswordResetConfirmView, AdminPasswordResetView
 #   USERS      - UserAccountViewSet, UserEmailChangeView, UserSuspendView, UserReactivateView, UserUnlockView
-#   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet, SuspiciousLoginEventViewSet
+#   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet
 
 from __future__ import annotations
 from datetime import timedelta
@@ -19,9 +19,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
+from vs_rbac.permissions import IsAuthenticatedAndActive, IsVisionStaff, HasRBACPermission
 from .models import (
     User, UserInvitation, LoginSession, AuthAttempt,
-    AccountLockout, AuthEventLog, SuspiciousLoginEvent, PasswordResetRequest,
+    AccountLockout, AuthEventLog, PasswordResetRequest,
 )
 from .serializers import (
     UserReadSerializer, UserListSerializer, UserCreateSerializer,
@@ -32,7 +33,6 @@ from .serializers import (
     LoginSessionReadSerializer, ForceLogoutSerializer,
     AuthAttemptReadSerializer, AccountLockoutReadSerializer,
     UnlockAccountSerializer, AuthEventLogReadSerializer,
-    SuspiciousLoginEventReadSerializer,
 )
 from .services.auth       import LoginService
 from .services.invitation import InvitationService
@@ -51,6 +51,9 @@ class LoginView(APIView):
     Authenticates a user and returns a JWT token pair.
     Handles lockout checks, school context, session creation,
     and audit logging — all via LoginService.
+
+    Permission: AllowAny (public endpoint).
+    RBAC: identity.school_aware_login.enforce
     """
     permission_classes = [AllowAny]
     throttle_scope = 'login'
@@ -89,6 +92,9 @@ class LogoutView(APIView):
     POST /auth/logout/
     Blacklists the submitted refresh token, ending the current session.
     Idempotent — always returns 200 even if the token is already blacklisted.
+
+    Permission: IsAuthenticated (any logged-in user can log themselves out).
+    RBAC: system.session.access.authenticate
     """
     permission_classes = [IsAuthenticated]
 
@@ -101,10 +107,20 @@ class LogoutView(APIView):
             )
 
         try:
-            RefreshToken(refresh_token).blacklist()
+            token = RefreshToken(refresh_token)
+            jti = token.get('jti', '')
+            token.blacklist()
         except TokenError:
-            # Already blacklisted or invalid — still 200, logout is idempotent.
-            pass
+            jti = ''
+
+        # End the LoginSession linked to this refresh token's JTI.
+        if jti:
+            session = LoginSession.objects.filter(
+                refresh_jti=jti, is_active=True,
+            ).first()
+            if session:
+                session.end(reason='LOGOUT')
+                session.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
 
         log_auth_event(
             actor=request.user,
@@ -120,6 +136,9 @@ class TokenRefreshView(APIView):
     """
     POST /auth/token/refresh/
     Issues a new access token using a valid refresh token.
+
+    Permission: AllowAny (public endpoint — token validity is the gate).
+    RBAC: identity.access_token.refresh
     """
     permission_classes = [AllowAny]
 
@@ -150,6 +169,9 @@ class ActivationPreviewView(APIView):
     Called when the user lands on the activation page.
     Returns their name and email so the frontend can pre-fill
     them as read-only fields — the user only needs to set a password.
+
+    Permission: AllowAny (public — user hasn't logged in yet).
+    RBAC: identity.user_account.activate
     """
     permission_classes = [AllowAny]
 
@@ -171,6 +193,9 @@ class ActivationView(APIView):
     User submits password + confirm_password.
     On success: account is activated and JWT tokens are returned
     so the user is logged in immediately — no separate login step.
+
+    Permission: AllowAny (public — user hasn't logged in yet).
+    RBAC: identity.user_account.activate
     """
     permission_classes = [AllowAny]
 
@@ -204,6 +229,12 @@ class InvitationResendView(APIView):
     The URL the user receives stays the same —
     vision.codexng.com/invite/{user_id}/ — only the expiry window refreshes.
     Only valid for accounts with status=PENDING.
+
+    Permission: IsAuthenticatedAndActive, HasRBACPermission
+    RBAC: identity.user_email.invite
+    TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
+          with rbac_permission = "identity.user_email.invite"
+          + tenant boundary check (target user must be in actor's school)
     """
     permission_classes = [IsAuthenticated, ]
 
@@ -242,6 +273,10 @@ class PasswordChangeView(APIView):
     POST /auth/password/change/
     Logged-in user changes their own password.
     Requires current password for verification.
+
+    Permission: IsAuthenticatedAndActive (any active user can change their own password).
+    RBAC: identity.password_policy.enforce
+    TODO: Wire up → [IsAuthenticatedAndActive]
     """
     permission_classes = [IsAuthenticated]
 
@@ -271,6 +306,9 @@ class PasswordResetRequestView(APIView):
     Self-service reset request.
     Always returns 200 regardless of whether the email exists
     — prevents user enumeration.
+
+    Permission: AllowAny (public — user may be locked out or forgot password).
+    RBAC: identity.user_password.reset
     """
     permission_classes = [AllowAny]
 
@@ -297,6 +335,9 @@ class PasswordResetConfirmView(APIView):
     POST /auth/password/reset/confirm/
     Confirms a reset using the token from the email.
     Ends all active sessions on success.
+
+    Permission: AllowAny (public — token validity is the gate).
+    RBAC: identity.user_password.reset
     """
     permission_classes = [AllowAny]
 
@@ -321,6 +362,12 @@ class AdminPasswordResetView(APIView):
     """
     POST /users/{user_id}/password-reset/
     Admin triggers a 24-hour password reset for a specific user.
+
+    Permission: IsAuthenticatedAndActive, HasRBACPermission
+    RBAC: identity.user_password.reset
+    TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
+          with rbac_permission = "identity.user_password.reset"
+          + tenant boundary check (target user must be in actor's school)
     """
     permission_classes = [IsAuthenticated]
 
@@ -356,6 +403,23 @@ class UserAccountViewSet(viewsets.ModelViewSet):
     GET    /users/{id}/     — retrieve full user profile
     PATCH  /users/{id}/     — update profile fields (not email, not status)
     DELETE /users/{id}/     — soft-deactivate (never hard-delete)
+
+    Permission matrix (TODO — wire up RBAC):
+      list:           IsAuthenticatedAndActive, HasRBACPermission
+                      RBAC: identity.user_account.create (read access implied by create)
+      create:         IsAuthenticatedAndActive, HasRBACPermission
+                      RBAC: identity.user_account.create
+      retrieve:       IsAuthenticatedAndActive (owner or admin)
+                      RBAC: identity.user_account.create (for non-owner access)
+      partial_update: IsAuthenticatedAndActive (owner or admin)
+                      RBAC: identity.user_account.create (for non-owner access)
+      destroy:        IsAuthenticatedAndActive, HasRBACPermission
+                      RBAC: identity.user_account.create
+                      + must not deactivate self (already enforced in service)
+                      + tenant boundary check
+
+    TODO: Replace () placeholders with actual RBAC permission classes.
+          Fix the () bug — DRF will crash on empty tuple in permission list.
     """
 
     def get_serializer_class(self):
@@ -375,14 +439,15 @@ class UserAccountViewSet(viewsets.ModelViewSet):
         # School Admins see only users within their own school.
         return qs.filter(school=user.school)
 
+    rbac_permission = "identity.user_account.create"
+
     def get_permissions(self):
-        if self.action in ('create', 'list'):
-            return [IsAuthenticated(), ()]
-        if self.action == 'destroy':
-            return [IsAuthenticated(), ()]
+        if self.action in ('create', 'list', 'destroy'):
+            return [IsAuthenticatedAndActive(), HasRBACPermission()]
         if self.action in ('retrieve', 'update', 'partial_update'):
-            return [IsAuthenticated(), ()]
-        return [IsAuthenticated()]
+            # Owner can view/edit their own profile; others need RBAC.
+            return [IsAuthenticatedAndActive()]
+        return [IsAuthenticatedAndActive()]
 
     def perform_create(self, serializer):
         UserCreationService.create(
@@ -405,6 +470,12 @@ class UserEmailChangeView(APIView):
     PATCH /users/{user_id}/email/
     Admin-only. Change takes effect immediately and ends all active sessions.
     The user logs in again with the new email and their existing password.
+
+    Permission: IsAuthenticatedAndActive, HasRBACPermission
+    RBAC: identity.email_address.verify
+    TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
+          with rbac_permission = "identity.email_address.verify"
+          + tenant boundary check (target user must be in actor's school)
     """
     permission_classes = [IsAuthenticated, ]
 
@@ -438,7 +509,15 @@ class UserEmailChangeView(APIView):
 
 
 class UserSuspendView(APIView):
-    """POST /users/{user_id}/suspend/"""
+    """
+    POST /users/{user_id}/suspend/
+
+    Permission: IsAuthenticatedAndActive, HasRBACPermission
+    RBAC: identity.user_account.lock
+    TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
+          with rbac_permission = "identity.user_account.lock"
+          + tenant boundary check (target user must be in actor's school)
+    """
     permission_classes = [IsAuthenticated, ]
 
     def post(self, request, user_id):
@@ -459,7 +538,15 @@ class UserSuspendView(APIView):
 
 
 class UserReactivateView(APIView):
-    """POST /users/{user_id}/reactivate/"""
+    """
+    POST /users/{user_id}/reactivate/
+
+    Permission: IsAuthenticatedAndActive, HasRBACPermission
+    RBAC: identity.user_account.unlock
+    TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
+          with rbac_permission = "identity.user_account.unlock"
+          + tenant boundary check (target user must be in actor's school)
+    """
     permission_classes = [IsAuthenticated, ]
 
     def post(self, request, user_id):
@@ -480,7 +567,15 @@ class UserReactivateView(APIView):
 
 
 class UserUnlockView(APIView):
-    """POST /users/{user_id}/unlock/"""
+    """
+    POST /users/{user_id}/unlock/
+
+    Permission: IsAuthenticatedAndActive, HasRBACPermission
+    RBAC: identity.user_account.unlock
+    TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
+          with rbac_permission = "identity.user_account.unlock"
+          + tenant boundary check (target user must be in actor's school)
+    """
     permission_classes = [IsAuthenticated, ]
 
     def post(self, request, user_id):
@@ -508,6 +603,14 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     GET /sessions/
     A user sees only their own sessions.
     Vision Staff see all sessions across the platform.
+
+    Permission: IsAuthenticatedAndActive
+    RBAC (list own):    system.session.view
+    RBAC (list all):    system.session.view (Vision Staff only)
+    RBAC (force-logout): system.session.force_logout + identity.user_logout.force
+    TODO: Wire up → [IsAuthenticatedAndActive] for list
+          Wire up → [IsAuthenticatedAndActive, HasRBACPermission] for force_logout
+          with rbac_permission = "system.session.force_logout"
     """
     serializer_class   = LoginSessionReadSerializer
     permission_classes = [IsAuthenticated]
@@ -522,6 +625,9 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     @action(
         detail=False, methods=['post'], url_path='force-logout',
         permission_classes=[IsAuthenticated, ],
+        # TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
+        #       with rbac_permission = "system.session.force_logout"
+        #       + tenant boundary check
     )
     def force_logout(self, request):
         """
@@ -569,6 +675,12 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     GET /auth-attempts/
     Vision Staff only. Shows all login attempts across the platform.
+
+    Permission: IsAuthenticatedAndActive, IsVisionStaff
+    RBAC: identity.authentication_events.log + system.audit.view
+    TODO: Wire up → [IsAuthenticatedAndActive, IsVisionStaff]
+          or [IsAuthenticatedAndActive, HasRBACPermission]
+          with rbac_permission = "identity.authentication_events.log"
     """
     serializer_class   = AuthAttemptReadSerializer
     permission_classes = [IsAuthenticated, ]
@@ -583,6 +695,15 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     POST /account-lockouts/unlock/
     School Admins and Vision Staff can unlock accounts.
     Optionally triggers a 24-hour admin password reset email.
+
+    Permission (list):   IsAuthenticatedAndActive, IsVisionStaff
+    RBAC (list):         identity.user_account.lock + system.audit.view
+    Permission (unlock): IsAuthenticatedAndActive, HasRBACPermission
+    RBAC (unlock):       identity.user_account.unlock
+    TODO: Wire up → [IsAuthenticatedAndActive, IsVisionStaff] for list
+          Wire up → [IsAuthenticatedAndActive, HasRBACPermission] for unlock
+          with rbac_permission = "identity.user_account.unlock"
+          + tenant boundary check on unlock action
     """
     serializer_class   = AccountLockoutReadSerializer
     permission_classes = [IsAuthenticated, ]
@@ -591,6 +712,9 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     @action(
         detail=False, methods=['post'], url_path='unlock',
         permission_classes=[IsAuthenticated, ],
+        # TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
+        #       with rbac_permission = "identity.user_account.unlock"
+        #       + tenant boundary check
     )
     def unlock(self, request):
         ser = UnlockAccountSerializer(data=request.data)
@@ -633,6 +757,12 @@ class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     GET /auth-events/
     Vision Staff only. Full audit event log.
+
+    Permission: IsAuthenticatedAndActive, IsVisionStaff
+    RBAC: system.audit.view + audit.audit_trail_entity.view
+    TODO: Wire up → [IsAuthenticatedAndActive, IsVisionStaff]
+          or [IsAuthenticatedAndActive, HasRBACPermission]
+          with rbac_permission = "system.audit.view"
     """
     serializer_class   = AuthEventLogReadSerializer
     permission_classes = [IsAuthenticated, ]
@@ -641,11 +771,3 @@ class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     ).order_by('-created_at')
 
 
-class SuspiciousLoginEventViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
-    """
-    GET /suspicious-logins/
-    Deferred feature — endpoint kept but not yet active in login flow.
-    """
-    serializer_class   = SuspiciousLoginEventReadSerializer
-    permission_classes = [IsAuthenticated, ]
-    queryset           = SuspiciousLoginEvent.objects.select_related('user').order_by('-created_at')

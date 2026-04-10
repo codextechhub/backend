@@ -18,7 +18,6 @@ from .models import (
     AuthAttempt,
     AccountLockout,
     PasswordResetRequest,
-    SuspiciousLoginEvent,
     AuthEventLog,
 )
 
@@ -369,12 +368,3 @@ class AuthEventLogReadSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class SuspiciousLoginEventReadSerializer(serializers.ModelSerializer):
-    class Meta:
-        model  = SuspiciousLoginEvent
-        fields = (
-            'id', 'user', 'email_entered', 'school_context',
-            'ip_address', 'event_type', 'risk_score', 'decision',
-            'details', 'created_at',
-        )
-        read_only_fields = fields
