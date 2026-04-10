@@ -42,7 +42,7 @@ def _get_school_from_request(request: HttpRequest):
     # Check if school was explicitly set (e.g., via JWT claim or header)
     if hasattr(request, "school_id"):
         try:
-            school = School.objects.get(id=request.school_id)
+            school = School.objects.get(pk=request.school_id)
             request._cached_school = school
             return school
         except School.DoesNotExist:
@@ -53,7 +53,7 @@ def _get_school_from_request(request: HttpRequest):
     
     if user_school_id:
         try:
-            school = School.objects.get(id=user_school_id)
+            school = School.objects.get(pk=user_school_id)
             request._cached_school = school
             return school
         except School.DoesNotExist:
@@ -84,11 +84,10 @@ class TenantContextMiddleware:
             lambda: _get_school_from_request(request)
         )
         
-        # Force evaluation and set in thread-local for ORM access
-        school = request.school  # This triggers lazy evaluation
-        
-        if school is not None:
-            set_current_school(school)
+        # Force evaluation of the lazy object and set in thread-local for ORM access
+        # Accessing via bool() triggers SimpleLazyObject._setup()
+        if request.school:
+            set_current_school(request.school)
         
         # Process request
         response = self.get_response(request)
