@@ -28,12 +28,12 @@ def log_auth_event(*, actor, subject, school, event: str, request=None, metadata
         )
     except Exception as exc:
         import logging
-        logging.getLogger('vs_users.audit').error(
+        logging.getLogger('vs_user.audit').error(
             f'log_auth_event failed for event={event}: {exc}'
         )
 
 
-def record_attempt(*, email_entered, school_context='', user=None,
+def record_attempt(*, email_entered, user=None,
                    school=None, result: str, failure_code: str = '',
                    request=None, metadata: dict | None = None):
     """
@@ -44,7 +44,6 @@ def record_attempt(*, email_entered, school_context='', user=None,
     try:
         AuthAttempt.objects.create(
             email_entered=email_entered,
-            school_context=school_context or '',
             user=user,
             school=school,
             ip_address=get_client_ip(request) if request else None,
@@ -55,7 +54,7 @@ def record_attempt(*, email_entered, school_context='', user=None,
         )
     except Exception as exc:
         import logging
-        logging.getLogger('vs_users.audit').error(
+        logging.getLogger('vs_user.audit').error(
             f'record_attempt failed: {exc}'
         )
 

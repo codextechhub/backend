@@ -62,13 +62,10 @@ class LoginView(APIView):
         ser = LoginRequestSerializer(data=request.data)
         if not ser.is_valid():
             return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
-
         try:
             result = LoginService.login(
                 email=ser.validated_data['email'],
                 password=ser.validated_data['password'],
-                school_slug=ser.validated_data.get('school_slug', ''),
-                device_label=ser.validated_data.get('device_label', ''),
                 request=request,
             )
         except ValueError as e:
@@ -417,10 +414,9 @@ class UserAccountViewSet(viewsets.ModelViewSet):
                       RBAC: identity.user_account.create
                       + must not deactivate self (already enforced in service)
                       + tenant boundary check
-
-    TODO: Replace () placeholders with actual RBAC permission classes.
-          Fix the () bug — DRF will crash on empty tuple in permission list.
     """
+    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    rbac_permission = ["identity.user_account.create", "identity.user_email.invite"] # "identity.user_account.view", "identity.user_account.update", "identity.user_account.delete"
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -439,11 +435,9 @@ class UserAccountViewSet(viewsets.ModelViewSet):
         # School Admins see only users within their own school.
         return qs.filter(school=user.school)
 
-    rbac_permission = "identity.user_account.create"
-
     def get_permissions(self):
         if self.action in ('create', 'list', 'destroy'):
-            return [IsAuthenticatedAndActive(), HasRBACPermission()]
+            return [IsAuthenticatedAndActive()]
         if self.action in ('retrieve', 'update', 'partial_update'):
             # Owner can view/edit their own profile; others need RBAC.
             return [IsAuthenticatedAndActive()]

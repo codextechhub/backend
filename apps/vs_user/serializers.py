@@ -98,7 +98,6 @@ class UserListSerializer(serializers.ModelSerializer):
 
 
 class UserCreateSerializer(serializers.Serializer):
-    # own password when they click the invitation link.
     first_name  = serializers.CharField(max_length=100)
     last_name   = serializers.CharField(max_length=100)
     email       = serializers.EmailField()
@@ -216,8 +215,6 @@ class ActivationPreviewSerializer(serializers.ModelSerializer):
 class LoginRequestSerializer(serializers.Serializer):
     email            = serializers.EmailField()
     password         = serializers.CharField(write_only=True, trim_whitespace=False)
-    school_slug = serializers.CharField(required=False, allow_blank=True)
-    device_label     = serializers.CharField(required=False, allow_blank=True)
 
     def validate(self, attrs):
         email = attrs.get('email', '').strip()
@@ -285,7 +282,7 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
 
 
 # =============================================================================
-# UserInvitation serializers -- REPLACES TemporaryPasswordIssue serializers
+# UserInvitation serializers
 # =============================================================================
 
 class UserInvitationReadSerializer(serializers.ModelSerializer):

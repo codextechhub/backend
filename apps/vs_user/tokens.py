@@ -57,7 +57,7 @@ class CodeXRefreshToken(RefreshToken):
 # ---------------------------------------------------------------------------
 # Custom TokenObtainPairSerializer
 # Used by the standard SimpleJWT token obtain view (if you ever use it directly).
-# For vs_users, the LoginService calls CodeXRefreshToken.for_user() directly,
+# For vs_user, the LoginService calls CodeXRefreshToken.for_user() directly,
 # but this serializer is registered in settings for completeness and for any
 # future use of the standard /token/ endpoint.
 # ---------------------------------------------------------------------------
