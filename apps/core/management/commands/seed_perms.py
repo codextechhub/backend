@@ -114,8 +114,11 @@ PERMISSIONS: list[tuple[str, str, str, str]] = [
     # ==========================================================================
     # TIER 1 — MODULE 3: USER IDENTITY, ACCOUNTS & AUTHENTICATION
     # ==========================================================================
-    ("identity.user_account.create",                "identity", "create",   "Create User Account."),
-    ("identity.user_email.invite",                  "identity", "invite",   "Invite User via Email."),
+    ("identity.user_account.create",                "identity", "create",   "Create User Account."), # used
+    ("identity.user_email.invite",                  "identity", "invite",   "Invite User via Email."), # used
+    ("identity.user_account.update",                "identity", "update",   "Update User Account."), # used
+    ("identity.user_account.delete",                "identity", "delete",   "Delete User Account."), # used
+    ("identity.user_account.view",                  "identity", "view",     "View User Account."),   # used
     ("identity.user_account.activate",              "identity", "activate", "Activate User Account."),
     ("identity.password_policy.enforce",            "identity", "enforce",  "Enforce Password Policy."),
     ("identity.access_token.refresh",               "identity", "refresh",  "Refresh Access Token."),
