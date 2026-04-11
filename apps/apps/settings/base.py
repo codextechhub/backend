@@ -25,7 +25,7 @@ TEMP_PASSWORD_PEPPER = config(
     default="a9f8s7d6g5h4j3k2l1q0w9e8r7t6y5u4i3o2p1z0x9c8v7b6n5m4#@hg!$%^^&*()",
 )
 
-AUTH_USER_MODEL = "vs_user.UserAccount"
+AUTH_USER_MODEL = "vs_user.User"
 
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
