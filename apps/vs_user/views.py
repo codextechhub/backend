@@ -119,13 +119,14 @@ class LogoutView(APIView):
                 session.end(reason='LOGOUT')
                 session.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
 
-        log_auth_event(
-            actor=request.user,
-            subject=request.user,
-            school=getattr(request.user, 'school', None),
-            event=AuthEventLog.Event.TOKEN_REVOKED,
-            request=request,
-        )
+            log_auth_event(
+                actor=request.user,
+                subject=request.user,
+                school=getattr(request.user, 'school', None),
+                event=AuthEventLog.Event.TOKEN_REVOKED,
+                request=request,
+            )
+            
         return Response({'detail': 'Logged out successfully.'}, status=status.HTTP_200_OK)
 
 

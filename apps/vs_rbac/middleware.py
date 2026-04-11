@@ -83,7 +83,7 @@ class TenantContextMiddleware:
         request.school = SimpleLazyObject(
             lambda: _get_school_from_request(request)
         )
-        print(f"TenantContextMiddleware: Resolved school={request.school} for user={getattr(request.user, 'id', None)}")  # Debug log
+        
         # Force evaluation of the lazy object and set in thread-local for ORM access
         # Accessing via bool() triggers SimpleLazyObject._setup()
         if request.school:
