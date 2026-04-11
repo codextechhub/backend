@@ -134,6 +134,19 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
+# Email settings (TEMPORARY - move to environment variables)
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # Prints to console for dev
+EMAIL_HOST = 'smtp.zoho.com'
+EMAIL_PORT = 587
+EMAIL_USE_TLS = True
+EMAIL_HOST_USER = 'noreply@codexvision.com'
+EMAIL_HOST_PASSWORD = 'YOUR_PASSWORD_HERE'  # ⚠️ NEVER commit this to Git
+DEFAULT_FROM_EMAIL = 'CodeX Vision <noreply@codexvision.com>'
+
+# Frontend URL
+FRONTEND_BASE_URL = 'http://127.0.0.1:8000/'  # Dev
+# FRONTEND_BASE_URL = 'https://vision.codexng.com'  # Production
+
 # Internationalization
 # https://docs.djangoproject.com/en/5.0/topics/i18n/
 

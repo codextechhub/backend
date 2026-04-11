@@ -58,8 +58,8 @@ urlpatterns = [
     # ── Activation ────────────────────────────────────────────────────────────
     # GET  → ActivationPreviewView (pre-fill form)
     # POST → ActivationView (set password, activate)
-    path('auth/activate/<uuid:user_id>/preview/',  ActivationPreviewView.as_view(), name='auth-activate-preview'),
-    path('auth/activate/<uuid:user_id>/',          ActivationView.as_view(),        name='auth-activate'),
+    path('auth/activate/<str:user_id>/preview/',  ActivationPreviewView.as_view(), name='auth-activate-preview'),
+    path('auth/activate/<str:user_id>/',          ActivationView.as_view(),        name='auth-activate'),
 
     # ── Password ──────────────────────────────────────────────────────────────
     path('auth/password/change/',            PasswordChangeView.as_view(),          name='password-change'),
@@ -67,12 +67,12 @@ urlpatterns = [
     path('auth/password/reset/confirm/',     PasswordResetConfirmView.as_view(),    name='password-reset-confirm'),
 
     # ── User management actions ───────────────────────────────────────────────
-    path('users/<uuid:user_id>/email/',          UserEmailChangeView.as_view(),   name='user-email-change'),
-    path('users/<uuid:user_id>/invite/resend/',  InvitationResendView.as_view(),  name='user-invite-resend'),
-    path('users/<uuid:user_id>/suspend/',        UserSuspendView.as_view(),       name='user-suspend'),
-    path('users/<uuid:user_id>/reactivate/',     UserReactivateView.as_view(),    name='user-reactivate'),
-    path('users/<uuid:user_id>/unlock/',         UserUnlockView.as_view(),        name='user-unlock'),
-    path('users/<uuid:user_id>/password-reset/', AdminPasswordResetView.as_view(),name='user-password-reset'),
+    path('users/<str:user_id>/email/',          UserEmailChangeView.as_view(),   name='user-email-change'),
+    path('users/<str:user_id>/invite/resend/',  InvitationResendView.as_view(),  name='user-invite-resend'),
+    path('users/<str:user_id>/suspend/',        UserSuspendView.as_view(),       name='user-suspend'),
+    path('users/<str:user_id>/reactivate/',     UserReactivateView.as_view(),    name='user-reactivate'),
+    path('users/<str:user_id>/unlock/',         UserUnlockView.as_view(),        name='user-unlock'),
+    path('users/<str:user_id>/password-reset/', AdminPasswordResetView.as_view(),name='user-password-reset'),
 
     # ── Router URLs ───────────────────────────────────────────────────────────
     path('', include(router.urls)),

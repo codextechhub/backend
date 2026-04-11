@@ -18,13 +18,14 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 import logging
+from smtplib import SMTPException
 
 from celery import shared_task
 from django.conf import settings
 from django.core.mail import send_mail
 from django.template.loader import render_to_string
 
-logger = logging.getLogger('vs_users.tasks')
+logger = logging.getLogger('vs_user.tasks')
 
 
 # =============================================================================
@@ -49,10 +50,10 @@ def send_invitation_email_task(self, user_id: str):
         user = User.objects.select_related('school').get(id=user_id)
 
         school_name = user.school.name if user.school else 'CodeX Vision'
-        base_url         = getattr(settings, 'FRONTEND_BASE_URL', 'https://app.codexvision.com')
+        base_url         = getattr(settings, 'FRONTEND_BASE_URL', 'https://vision.codexng.com')
 
-        # The invitation link uses the user's UUID — no token needed.
-        invitation_url = f'{base_url}/invite/{user.id}/'
+        # The invitation link uses the user's ID — no token needed.
+        invitation_url = f'{base_url}/v1/user/auth/activate/{user.id}/'
 
         context = {
             'user':             user,
@@ -62,20 +63,29 @@ def send_invitation_email_task(self, user_id: str):
         }
 
         # TODO: Replace send_mail with Notification Engine (Module 7) once available.
-        html_message  = render_to_string('vs_users/emails/invitation.html', context)
-        plain_message = render_to_string('vs_users/emails/invitation.txt', context)
+        html_message  = render_to_string('vs_user/emails/invitation.html', context)
+        plain_message = render_to_string('vs_user/emails/invitation.txt', context)
 
         send_mail(
-            subject=f'You have been invited to {school_name} on CodeX Vision',
+            subject=f'You have been invited to {school_name} on X Vision Systems',
             message=plain_message,
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[user.email],
-            html_message=html_message,
+            # html_message=plain_message,  # TEMPORARY: Use plain text for now until HTML template is ready
             fail_silently=False,
         )
 
         logger.info(f'Invitation email sent to {user.email}')
-
+        
+    except User.DoesNotExist:
+        logger.error(f'send_invitation_email_task: User {user_id} not found')
+        # Don't retry for non-existent users
+        return
+        
+    except SMTPException as smtp_exc:
+        logger.error(f'SMTP error sending invitation to user {user_id}: {smtp_exc}')
+        raise self.retry(exc=smtp_exc)
+    
     except Exception as exc:
         logger.error(f'send_invitation_email_task failed for user_id={user_id}: {exc}')
         raise self.retry(exc=exc)

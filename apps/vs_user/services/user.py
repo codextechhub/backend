@@ -29,8 +29,8 @@ class UserCreationService:
             last_name=validated_data['last_name'],
             phone=validated_data.get('phone', ''),
             user_type=validated_data['user_type'],
-            school=validated_data.get('school'),
-            branch=validated_data.get('branch'),
+            school=validated_data.get('school') if validated_data.get('school') else None,
+            branch=validated_data.get('branch') if validated_data.get('branch') else None,
             invited_by=requesting_user,
             status=User.Status.PENDING,
             is_active=False,
@@ -44,9 +44,15 @@ class UserCreationService:
             role_hint=validated_data.get('role_hint', ''),
         )
 
-        # Dispatch invitation email — async, does not block the response.
+        # TODO: Dispatch invitation email — async, does not block the response.
+        # from ..tasks import send_invitation_email_task
+        # send_invitation_email_task.delay(user_id=str(user.id))
+
+        # TEMPORARY: Call synchronously instead of async
         from ..tasks import send_invitation_email_task
-        send_invitation_email_task.delay(user_id=str(user.id))
+        
+        # Call the task function directly (not via Celery)
+        send_invitation_email_task(str(user.id))  # Remove .delay()
 
         log_auth_event(
             actor=requesting_user,

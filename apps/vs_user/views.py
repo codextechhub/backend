@@ -20,6 +20,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from vs_rbac.permissions import IsAuthenticatedAndActive, IsVisionStaff, HasRBACPermission
+from .paginations import UserPagination
 from .models import (
     User, UserInvitation, LoginSession, AuthAttempt,
     AccountLockout, AuthEventLog, PasswordResetRequest,
@@ -416,8 +417,9 @@ class UserAccountViewSet(viewsets.ModelViewSet):
                       + must not deactivate self (already enforced in service)
                       + tenant boundary check
     """
-    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    rbac_permission = ["identity.user_account.create", "identity.user_email.invite"] # "identity.user_account.view", "identity.user_account.update", "identity.user_account.delete"
+    
+    rbac_permission = "" # "identity.user_account.view", "identity.user_account.update", "identity.user_account.delete", "identity.user_account.create"
+    pagination_class = UserPagination
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -438,11 +440,11 @@ class UserAccountViewSet(viewsets.ModelViewSet):
 
     def get_permissions(self):
         if self.action in ('create', 'list', 'destroy'):
-            return [IsAuthenticatedAndActive()]
+            return [IsAuthenticatedAndActive(), HasRBACPermission()]
         if self.action in ('retrieve', 'update', 'partial_update'):
             # Owner can view/edit their own profile; others need RBAC.
-            return [IsAuthenticatedAndActive()]
-        return [IsAuthenticatedAndActive()]
+            return [IsAuthenticatedAndActive(), HasRBACPermission()]
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def perform_create(self, serializer):
         UserCreationService.create(

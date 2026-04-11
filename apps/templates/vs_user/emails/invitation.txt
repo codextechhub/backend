@@ -1,0 +1,18 @@
+{# vs_user/templates/vs_user/emails/invitation.txt #}
+Welcome to {{ school_name }}
+
+Hello {{ user.first_name }},
+
+You've been invited to join {{ school_name }} on X Vision Systems.
+
+To activate your account and set your password, please visit:
+
+{{ invitation_url }}
+
+⏱️ IMPORTANT: This invitation link will expire in {{ expiry_days }} days.
+
+If you did not expect this invitation, you can safely ignore this email.
+
+---
+This email was sent by {{ school_name }} via X Vision Systems.
+If you need assistance, please contact your institution administrator.

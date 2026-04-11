@@ -126,6 +126,7 @@ class InvitationService:
         user.password_changed_at = timezone.now()
         user.is_active           = True
         user.status              = User.Status.ACTIVE
+        
         user.save(update_fields=[
             'password', 'password_changed_at',
             'is_active', 'status', 'updated_at',
@@ -133,9 +134,6 @@ class InvitationService:
 
         # 5. Consume the invitation — link is now dead
         invitation.consume()
-
-        # 6. Issue JWT tokens — user is logged in immediately
-        refresh = CodeXRefreshToken.for_user(user)
 
         # 7. Audit log
         log_auth_event(
@@ -147,17 +145,7 @@ class InvitationService:
         )
 
         return {
-            'message': 'Account activated. You are now logged in.',
-            'access':  str(refresh.access_token),
-            'refresh': str(refresh),
-            'user': {
-                'id':             str(user.id),
-                'email':          user.email,
-                'full_name':      user.full_name,
-                'user_type':      user.user_type,
-                'school_id': str(user.school_id) if user.school_id else None,
-                'branch_id':      str(user.branch_id) if user.branch_id else None,
-            },
+            'message': 'Account activated. You can now log in.',
         }
 
     # ── Resend ────────────────────────────────────────────────────────────────

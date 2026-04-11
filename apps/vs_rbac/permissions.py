@@ -122,7 +122,7 @@ class HasRBACPermission(BasePermission):
             return False
 
         required = getattr(view, "rbac_permission", None)
-        if required is None:
+        if required is None or required == "" or required == []:
             return True  # no permission declared → pass through
 
         school = getattr(request, "school", None)
