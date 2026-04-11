@@ -19,6 +19,10 @@ Safety:
     - Requires explicit confirmation at each step
     - Can skip individual steps via flags
     - Graceful error handling and rollback
+
+Popular Use Cases:
+    - Full reset during development
+    - command: python manage.py reset_db --yes --post-commands seed_perms seed_missing_perms seed_role_perms
 """
 
 import os
