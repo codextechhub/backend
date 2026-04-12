@@ -119,7 +119,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     # ── Identity ──────────────────────────────────────────────────────────────
 
-    email      = models.EmailField(max_length=254, unique=True, primary_key=True)
+    email      = models.EmailField(max_length=254, unique=True)
     first_name = models.CharField(max_length=100)
     last_name  = models.CharField(max_length=100)
     gender     = models.CharField(max_length=20, blank=True, default='')

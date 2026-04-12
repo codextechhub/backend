@@ -8,7 +8,7 @@ from django.utils import timezone
 
 from ..models import User, AuthEventLog
 from .audit import log_auth_event, blacklist_all_user_tokens
-from ...vs_rbac import RoleTemplate, UserRoleAssignment
+from vs_rbac.models import RoleTemplate, UserRoleAssignment
 
 
 class UserCreationService:

@@ -10,7 +10,7 @@ from django.utils import timezone
 
 from rest_framework import serializers
 
-from apps.vs_rbac.models import RoleTemplate
+from vs_rbac.models import RoleTemplate
 from vs_schools.models import School, Branch
 from .models import (
     User,
