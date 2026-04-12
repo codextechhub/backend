@@ -10,6 +10,7 @@ from django.utils import timezone
 
 from rest_framework import serializers
 
+from apps.vs_rbac.models import RoleTemplate
 from vs_schools.models import School, Branch
 from .models import (
     User,
@@ -58,6 +59,7 @@ class UserReadSerializer(serializers.ModelSerializer):
             'full_name',
             'phone',
             'user_type',
+            'role',
             'status',
             'school_id',
             'school_name',
@@ -88,7 +90,7 @@ class UserListSerializer(serializers.ModelSerializer):
     class Meta:
         model  = User
         fields = (
-            'id', 'email', 'full_name', 'user_type',
+            'id', 'email', 'full_name', 'user_type', 'role',
             'status', 'branch_id', 'branch_name', 'created_at',
         )
         read_only_fields = fields
@@ -101,13 +103,13 @@ class UserCreateSerializer(serializers.Serializer):
     first_name  = serializers.CharField(max_length=100)
     last_name   = serializers.CharField(max_length=100)
     email       = serializers.EmailField()
+    gender      = serializers.CharField(max_length=20, required=True)
     user_type   = serializers.ChoiceField(choices=User.UserType.choices)
     phone       = serializers.CharField(max_length=32, required=False, allow_blank=True)
     # school and branch passed as UUIDs; resolved to objects in validate()
-    school = serializers.UUIDField(required=False, allow_null=True)
+    school      = serializers.UUIDField(required=False, allow_null=True)
     branch      = serializers.UUIDField(required=False, allow_null=True)
-    # Informational -- actual role assignment done in Module 4 (RBAC)
-    role_hint   = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    role        = serializers.CharField(max_length=50, required=False, allow_blank=True)
 
     def validate_email(self, value):
         return value.lower().strip()
@@ -158,6 +160,19 @@ class UserCreateSerializer(serializers.Serializer):
             if attrs['branch'].school_id != attrs['school'].id:
                 raise serializers.ValidationError(
                     {'branch': 'The selected branch does not belong to the selected school.'}
+                )
+            
+        if attrs.get('role') and user_type != User.UserType.VISION_STAFF:
+            role_name = attrs['role']
+            school = attrs.get('school')
+            if not school:
+                raise serializers.ValidationError(
+                    {'role': 'Role can only be assigned if an school is specified.'}
+                )
+            role = RoleTemplate.objects.filter(name=role_name, school=school).first()
+            if not role:
+                raise serializers.ValidationError(
+                    {'role': f'Role "{role_name}" not found in the specified school.'}
                 )
 
         return attrs

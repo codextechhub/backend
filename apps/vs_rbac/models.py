@@ -8,7 +8,7 @@ from django.db.models import Q
 from django.db.models.functions import Lower
 from django.utils import timezone
 
-from vs_schools.models import School
+from vs_schools.models import Branch, School
 
 User = settings.AUTH_USER_MODEL
 
@@ -144,6 +144,16 @@ class RoleTemplate(TimeStampedModel):
         School,
         on_delete=models.PROTECT,
         related_name="role_templates",
+        blank=True,
+        null=True,
+    )
+
+    branch = models.ForeignKey(
+        Branch,
+        on_delete=models.PROTECT,
+        related_name="role_templates",
+        blank=True,
+        null=True,
     )
 
     name = models.CharField(max_length=80)

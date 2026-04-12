@@ -33,13 +33,13 @@ logger = logging.getLogger('vs_user.tasks')
 # =============================================================================
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
-def send_invitation_email_task(self, user_id: str):
+def send_invitation_email_task(self, activation_key: str):
     """
     Sends the account activation email to a newly created user.
 
     The email contains:
       - The user's full name (so they can confirm the account is for them)
-      - The invitation link: {FRONTEND_BASE_URL}/invite/{user.id}/
+      - The invitation link: {FRONTEND_BASE_URL}/invite/{user.activation_key}/
       - The school name
       - An expiry notice (7 days)
 
@@ -47,13 +47,13 @@ def send_invitation_email_task(self, user_id: str):
     """
     try:
         from .models import User
-        user = User.objects.select_related('school').get(id=user_id)
+        user = User.objects.select_related('school').get(activation_key=activation_key)
 
         school_name = user.school.name if user.school else 'CodeX Vision'
         base_url         = getattr(settings, 'FRONTEND_BASE_URL', 'https://vision.codexng.com')
 
         # The invitation link uses the user's ID — no token needed.
-        invitation_url = f'{base_url}/v1/user/auth/activate/{user.id}/'
+        invitation_url = f'{base_url}/v1/user/auth/activate/{user.activation_key}/preview/'
 
         context = {
             'user':             user,
@@ -78,16 +78,16 @@ def send_invitation_email_task(self, user_id: str):
         logger.info(f'Invitation email sent to {user.email}')
         
     except User.DoesNotExist:
-        logger.error(f'send_invitation_email_task: User {user_id} not found')
+        logger.error(f'send_invitation_email_task: User {user.email} not found')
         # Don't retry for non-existent users
         return
         
     except SMTPException as smtp_exc:
-        logger.error(f'SMTP error sending invitation to user {user_id}: {smtp_exc}')
+        logger.error(f'SMTP error sending invitation to user {user.email}: {smtp_exc}')
         raise self.retry(exc=smtp_exc)
     
     except Exception as exc:
-        logger.error(f'send_invitation_email_task failed for user_id={user_id}: {exc}')
+        logger.error(f'send_invitation_email_task failed for user_id={user.email}: {exc}')
         raise self.retry(exc=exc)
 
 

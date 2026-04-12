@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from ..models import User, AuthEventLog
 from .audit import log_auth_event, blacklist_all_user_tokens
+from ...vs_rbac import RoleTemplate, UserRoleAssignment
 
 
 class UserCreationService:
@@ -27,8 +28,10 @@ class UserCreationService:
             password=None,
             first_name=validated_data['first_name'],
             last_name=validated_data['last_name'],
+            gender=validated_data['gender'],
             phone=validated_data.get('phone', ''),
             user_type=validated_data['user_type'],
+            role=validated_data.get('role', ''),
             school=validated_data.get('school') if validated_data.get('school') else None,
             branch=validated_data.get('branch') if validated_data.get('branch') else None,
             invited_by=requesting_user,
@@ -41,8 +44,18 @@ class UserCreationService:
         InvitationService.create(
             user=user,
             invited_by=requesting_user,
-            role_hint=validated_data.get('role_hint', ''),
         )
+
+        # Role Assignment
+        if user.school and user.role:
+            role = RoleTemplate.objects.filter(name=user.role, school=user.school).first()
+            if role:
+                UserRoleAssignment.objects.create(
+                    user=user,
+                    role=role,
+                    school=user.school,
+                    assigned_by=requesting_user,
+                )
 
         # TODO: Dispatch invitation email — async, does not block the response.
         # from ..tasks import send_invitation_email_task
@@ -52,7 +65,7 @@ class UserCreationService:
         from ..tasks import send_invitation_email_task
         
         # Call the task function directly (not via Celery)
-        send_invitation_email_task(str(user.id))  # Remove .delay()
+        send_invitation_email_task(str(user.activation_key))
 
         log_auth_event(
             actor=requesting_user,

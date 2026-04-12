@@ -1140,36 +1140,34 @@ class Command(BaseCommand):
 
         if not dry_run:
             with transaction.atomic():
-                for school in schools:
-                    for role_def in SCHOOL_ROLES:
-                        role, created = RoleTemplate.objects.update_or_create(
-                            school=school,
-                            name=role_def["name"],
-                            defaults=dict(
-                                description=role_def["description"],
-                                is_system_role=role_def.get("is_system_role", True),
-                                status=RoleTemplate.Status.ACTIVE,
-                            ),
-                        )
-                        if created:
-                            school_role_created += 1
-                            if not created:
-                                role.bump_version()
-                                role.save(update_fields=["version"])
-                        else:
-                            school_role_updated += 1
+                for role_def in SCHOOL_ROLES:
+                    role, created = RoleTemplate.objects.update_or_create(
+                        name=role_def["name"],
+                        defaults=dict(
+                            description=role_def["description"],
+                            is_system_role=role_def.get("is_system_role", True),
+                            status=RoleTemplate.Status.ACTIVE,
+                        ),
+                    )
+                    if created:
+                        school_role_created += 1
+                        if not created:
+                            role.bump_version()
+                            role.save(update_fields=["version"])
+                    else:
+                        school_role_updated += 1
 
-                        # Sync permissions
-                        for perm_key in role_def["permissions"]:
-                            rp, rp_created = RolePermission.objects.update_or_create(
-                                role=role,
-                                permission_id=perm_key,
-                                defaults=dict(granted=True),
-                            )
-                            if rp_created:
-                                school_rp_created += 1
-                            else:
-                                school_rp_updated += 1
+                    # Sync permissions
+                    for perm_key in role_def["permissions"]:
+                        rp, rp_created = RolePermission.objects.update_or_create(
+                            role=role,
+                            permission_id=perm_key,
+                            defaults=dict(granted=True),
+                        )
+                        if rp_created:
+                            school_rp_created += 1
+                        else:
+                            school_rp_updated += 1
         else:
             school_role_created = len(SCHOOL_ROLES) * schools.count()
             school_rp_created = sum(len(r["permissions"]) for r in SCHOOL_ROLES) * schools.count()

@@ -58,8 +58,8 @@ urlpatterns = [
     # ── Activation ────────────────────────────────────────────────────────────
     # GET  → ActivationPreviewView (pre-fill form)
     # POST → ActivationView (set password, activate)
-    path('auth/activate/<str:user_id>/preview/',  ActivationPreviewView.as_view(), name='auth-activate-preview'),
-    path('auth/activate/<str:user_id>/',          ActivationView.as_view(),        name='auth-activate'),
+    path('auth/activate/<uuid:activation_token>/preview/',  ActivationPreviewView.as_view(), name='auth-activate-preview'),
+    path('auth/activate/<uuid:activation_token>/',          ActivationView.as_view(),        name='auth-activate'),
 
     # ── Password ──────────────────────────────────────────────────────────────
     path('auth/password/change/',            PasswordChangeView.as_view(),          name='password-change'),

@@ -14,9 +14,9 @@
 from __future__ import annotations
 
 import hashlib
-import secrets
 from datetime import timedelta
 
+import uuid
 from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
@@ -92,6 +92,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     class UserType(models.TextChoices):
         VISION_STAFF      = 'VISION_STAFF',      'Vision Staff'
         SCHOOL_ADMIN      = 'SCHOOL_ADMIN',      'School Admin'
+        BRANCH_ADMIN       = 'BRANCH_ADMIN',       'Branch Admin'
         STAFF             = 'STAFF',             'Staff'
         STUDENT           = 'STUDENT',           'Student'
         PARENT            = 'PARENT',            'Parent/Guardian'
@@ -118,14 +119,16 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     # ── Identity ──────────────────────────────────────────────────────────────
 
-    email      = models.EmailField(max_length=254, unique=True)
+    email      = models.EmailField(max_length=254, unique=True, primary_key=True)
     first_name = models.CharField(max_length=100)
     last_name  = models.CharField(max_length=100)
+    gender     = models.CharField(max_length=20, blank=True, default='')
     phone      = models.CharField(max_length=32, blank=True, null=True, default='')
 
-    # ── Role and status ───────────────────────────────────────────────────────
+    # ──User type and status ───────────────────────────────────────────────────────
 
     user_type = models.CharField(max_length=32, choices=UserType.choices)
+    role      = models.CharField(max_length=50, blank=True, default='')  # Actual role assignment is done in RBAC.
     status    = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
 
     # ── Django auth flags ─────────────────────────────────────────────────────
@@ -135,6 +138,8 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     # False until the user completes activation via the invitation link.
     # Set to True by InvitationService.activate().
     is_active = models.BooleanField(default=False)
+    # activation_token is a UUID used to validate the invitation link.
+    activation_key = models.UUIDField(unique=True, default=uuid.uuid4, editable=False)
 
     # ── Audit timestamps ──────────────────────────────────────────────────────
 
@@ -249,9 +254,6 @@ class UserInvitation(TimeStampedModel):
         null=True,
         related_name='sent_invitations',
     )
-
-    # Informational only — actual role assignment is done in Module 4 (RBAC).
-    role_hint = models.CharField(max_length=50, blank=True, default='')
 
     # 7 days from creation. Reset to 7 days from now on resend.
     expires_at = models.DateTimeField()
