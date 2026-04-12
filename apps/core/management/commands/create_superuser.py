@@ -118,30 +118,32 @@ class Command(BaseCommand):
         
         # ── Validation ────────────────────────────────────────────────────────
         
+        existing_count, user_exist, len_pass = None, None, None
         # Check if Vision Staff already exists (unless --force is used)
         if not force:
             existing_count = User.objects.filter(user_type=User.UserType.VISION_STAFF).count()
-            if existing_count > 0:
-                raise CommandError(
-                    self.style.ERROR(
-                        f'\n❌ {existing_count} Vision Staff account(s) already exist.\n'
-                        '   Use the standard login flow or pass --force to override.\n'
-                    )
-                )
         
         # Check for duplicate email
         if User.objects.filter(email__iexact=email).exists():
-            raise CommandError(
-                self.style.ERROR(f'\n❌ A user with email "{email}" already exists.\n')
-            )
+            user_exist = True
         
         # Validate password length
         if len(password) < 8:
-            raise CommandError(
-                self.style.ERROR('\n❌ Password must be at least 8 characters.\n')
-            )
+            len_pass = True
         
         # ── Create Superuser ──────────────────────────────────────────────────
+        
+        if existing_count is not None and existing_count > 0:
+            self.stdout.write(self.style.ERROR('A Vision Staff superuser already exists. Use --force to override.'))
+            return
+        
+        if user_exist:  
+            self.stdout.write(self.style.ERROR('A user with this email already exists. Please choose a different email.'))
+            return
+        
+        if len_pass:
+            self.stdout.write(self.style.ERROR('Password must be at least 8 characters long. Please choose a stronger password.'))
+            return
         
         self.stdout.write(self.style.MIGRATE_LABEL('\n⏳ Creating Vision Staff superuser...'))
         
