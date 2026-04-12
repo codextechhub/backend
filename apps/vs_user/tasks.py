@@ -96,7 +96,7 @@ def send_invitation_email_task(self, activation_key: str):
 # =============================================================================
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
-def send_password_reset_email_task(self, user_id: str, token: str, origin: str):
+def send_password_reset_email_task(self, activation_key: str, origin: str):
     """
     Sends a password reset email.
 
@@ -109,10 +109,10 @@ def send_password_reset_email_task(self, user_id: str, token: str, origin: str):
     """
     try:
         from .models import User
-        user = User.objects.get(id=user_id)
+        user = User.objects.get(activation_key=activation_key)
 
-        base_url      = getattr(settings, 'FRONTEND_BASE_URL', 'https://app.codexvision.com')
-        reset_url     = f'{base_url}/reset-password/?token={token}'
+        base_url      = getattr(settings, 'FRONTEND_BASE_URL', 'https://vision.codexng.com')
+        reset_url     = f'{base_url}v1/user/auth/reset-password/{activation_key}/preview/'
         expiry_hours  = 1 if origin == 'SELF' else 24
 
         context = {
@@ -123,8 +123,8 @@ def send_password_reset_email_task(self, user_id: str, token: str, origin: str):
         }
 
         # TODO: Replace send_mail with Notification Engine (Module 7) once available.
-        html_message  = render_to_string('vs_users/emails/password_reset.html', context)
-        plain_message = render_to_string('vs_users/emails/password_reset.txt', context)
+        # html_message  = render_to_string('vs_user/emails/password_reset.html', context)
+        # plain_message = render_to_string('vs_user/emails/password_reset.txt', context)
 
         subject = (
             'Reset your CodeX Vision password'
@@ -134,15 +134,15 @@ def send_password_reset_email_task(self, user_id: str, token: str, origin: str):
 
         send_mail(
             subject=subject,
-            message=plain_message,
+            message=f"HI, {reset_url}", # TODO: Change to plain_message once TXT template is ready
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[user.email],
-            html_message=html_message,
+            # html_message=html_message,  # TEMPORARY: Use plain text for now until HTML template is ready
             fail_silently=False,
         )
 
         logger.info(f'Password reset email sent to {user.email} (origin={origin})')
 
     except Exception as exc:
-        logger.error(f'send_password_reset_email_task failed for user_id={user_id}: {exc}')
+        logger.error(f'send_password_reset_email_task failed for user_id={user.id}: {exc}')
         raise self.retry(exc=exc)

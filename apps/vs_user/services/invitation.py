@@ -29,7 +29,7 @@ class InvitationService:
     # ── Create ────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def create(user: User, invited_by: User, role_hint: str = '') -> UserInvitation:
+    def create(user: User, invited_by: User) -> UserInvitation:
         """
         Creates a UserInvitation record for a newly created user.
         Called by UserCreationService immediately after the user row is saved.
@@ -41,7 +41,6 @@ class InvitationService:
             user=user,
             defaults={
                 'invited_by': invited_by,
-                'role_hint':  role_hint,
                 'expires_at': timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS),
                 'is_used':    False,
             }
@@ -54,7 +53,7 @@ class InvitationService:
     # ── Validate ──────────────────────────────────────────────────────────────
 
     @staticmethod
-    def get_valid_invitation(user_id: str) -> UserInvitation:
+    def get_valid_invitation(activation_key: str) -> UserInvitation:
         """
         Looks up a UserInvitation by the user's UUID.
         This is called when the user lands on the activation screen
@@ -63,12 +62,18 @@ class InvitationService:
         Raises ValueError with a user-facing message on any failure.
         """
         try:
+            user = User.objects.get(activation_key=activation_key)
             invitation = (
                 UserInvitation.objects
                 .select_related('user__school')
-                .get(user_id=user_id)
+                .get(user_id=user.id)
             )
         except UserInvitation.DoesNotExist:
+            raise ValueError({
+                'error_code': 'INVITATION_NOT_FOUND',
+                'message':    'This invitation link is invalid.',
+            })
+        except User.DoesNotExist:
             raise ValueError({
                 'error_code': 'INVITATION_NOT_FOUND',
                 'message':    'This invitation link is invalid.',
@@ -92,12 +97,12 @@ class InvitationService:
 
     @staticmethod
     @transaction.atomic
-    def activate(user_id: str, password: str, request=None) -> dict:
+    def activate(activation_key: str, password: str, request=None) -> dict:
         """
         Activates a user account.
 
         Steps:
-          1. Validate the invitation by user_id
+          1. Validate the invitation by activation_key
           2. Validate the password against Django's password validators
           3. Set the password on the user
           4. Set is_active=True, status=ACTIVE
@@ -109,7 +114,7 @@ class InvitationService:
         so the frontend can log the user in without a separate login call.
         """
         # 1. Validate invitation
-        invitation = InvitationService.get_valid_invitation(user_id)
+        invitation = InvitationService.get_valid_invitation(activation_key)
         user = invitation.user
 
         # 2. Validate password strength

@@ -44,22 +44,13 @@ class PasswordService:
         )
 
     @staticmethod
-    def request_reset(email: str, school_slug: str = "", request=None):
+    def request_reset(email: str, request=None):
         """
         Self-service password reset request.
         Silently does nothing if the email is not found -- prevents enumeration.
         """
-        from vs_schools.models import School
+        user = User.objects.filter(email__iexact=email).first()
 
-        user_qs = User.objects.filter(email__iexact=email)
-        if school_slug:
-            try:
-                school = School.objects.get(slug=school_slug)
-                user_qs = user_qs.filter(school=school)
-            except School.DoesNotExist:
-                return  # Unknown school slug -- silently do nothing
-
-        user = user_qs.first()
         if not user or user.status == User.Status.DEACTIVATED:
             return  # Do not reveal whether the account exists
 
@@ -134,18 +125,11 @@ class PasswordService:
     def _create_and_send_reset(user, origin: str, request=None):
         """
         Creates a PasswordResetRequest record and dispatches the reset email.
-        Invalidates any previous unused tokens for the user first.
         """
-        # Invalidate all previous unused tokens.
-        PasswordResetRequest.objects.filter(user=user, used_at__isnull=True).update(used_at=timezone.now())
-
         expiry_hours = RESET_EXPIRY_SELF_HOURS if origin == "SELF" else RESET_EXPIRY_ADMIN_HOURS
-        raw_token  = secrets.token_urlsafe(32)
-        token_hash = PasswordResetRequest.hash_token(raw_token)
 
         PasswordResetRequest.objects.create(
             user=user,
-            token_hash=token_hash,
             expires_at=timezone.now() + timedelta(hours=expiry_hours),
             requested_by=origin,
             requested_ip=get_client_ip(request) if request else None,
@@ -153,4 +137,5 @@ class PasswordService:
         )
 
         from ..tasks import send_password_reset_email_task
-        send_password_reset_email_task.delay(user_id=str(user.id), token=raw_token, origin=origin)
+        # send_password_reset_email_task.delay(activation_key=str(user.activation_key), origin=origin)
+        send_password_reset_email_task(activation_key=str(user.activation_key), origin=origin)

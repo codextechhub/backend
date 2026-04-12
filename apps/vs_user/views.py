@@ -26,7 +26,7 @@ from .models import (
     AccountLockout, AuthEventLog, PasswordResetRequest,
 )
 from .serializers import (
-    UserReadSerializer, UserListSerializer, UserCreateSerializer,
+    PasswordResetPreviewSerializer, UserReadSerializer, UserListSerializer, UserCreateSerializer,
     UserUpdateSerializer, EmailChangeSerializer,
     ActivationSerializer, ActivationPreviewSerializer,
     LoginRequestSerializer, TokenRefreshSerializer,
@@ -174,9 +174,9 @@ class ActivationPreviewView(APIView):
     """
     permission_classes = [AllowAny]
 
-    def get(self, request, user_id):
+    def get(self, request, activation_key):
         try:
-            invitation = InvitationService.get_valid_invitation(user_id)
+            invitation = InvitationService.get_valid_invitation(activation_key=activation_key)
         except ValueError as e:
             return Response(e.args[0], status=status.HTTP_400_BAD_REQUEST)
 
@@ -277,7 +277,7 @@ class PasswordChangeView(APIView):
     RBAC: identity.password_policy.enforce
     TODO: Wire up → [IsAuthenticatedAndActive]
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticatedAndActive]
 
     def post(self, request):
         ser = PasswordChangeSerializer(data=request.data, context={'request': request})
@@ -319,7 +319,6 @@ class PasswordResetRequestView(APIView):
         # Service silently does nothing if the email is not found.
         PasswordService.request_reset(
             email=ser.validated_data['email'],
-            school_slug=ser.validated_data.get('school_slug', ''),
             request=request,
         )
 
@@ -328,6 +327,36 @@ class PasswordResetRequestView(APIView):
             status=status.HTTP_200_OK,
         )
 
+
+class PasswordResetPreviewView(APIView):
+    """
+    GET /auth/reset-password/{activation_key}/
+    Called when the user clicks the link in their email.
+    Verifies the token and returns the user's name and email
+    so the frontend can pre-fill them as read-only fields.
+
+    Permission: AllowAny (public — user hasn't logged in yet).
+    RBAC: identity.user_password.reset
+    """
+    permission_classes = [AllowAny]
+
+    def get(self, request, activation_key):
+        try:
+            user = User.objects.get(activation_key=activation_key)
+            reset_request = PasswordResetRequest.objects.filter(user=user).first()
+        except PasswordResetRequest.DoesNotExist:
+            return Response({'detail': 'Invalid or expired token.'}, status=status.HTTP_400_BAD_REQUEST)
+        except User.DoesNotExist:
+            return Response({'detail': 'Invalid or expired token.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if reset_request.expires_at < timezone.now():
+            return Response({'detail': 'Reset token has expired.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        return Response(
+            PasswordResetPreviewSerializer(reset_request.user).data,
+            status=status.HTTP_200_OK,
+        )
+    
 
 class PasswordResetConfirmView(APIView):
     """

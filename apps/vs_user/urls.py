@@ -17,6 +17,7 @@ from .views import (
     # Auth
     LoginView,
     LogoutView,
+    PasswordResetPreviewView,
     TokenRefreshView,
     # Activation — UUID-based, no token
     ActivationPreviewView,
@@ -58,13 +59,14 @@ urlpatterns = [
     # ── Activation ────────────────────────────────────────────────────────────
     # GET  → ActivationPreviewView (pre-fill form)
     # POST → ActivationView (set password, activate)
-    path('auth/activate/<uuid:activation_token>/preview/',  ActivationPreviewView.as_view(), name='auth-activate-preview'),
-    path('auth/activate/<uuid:activation_token>/',          ActivationView.as_view(),        name='auth-activate'),
+    path('auth/activate/<uuid:activation_key>/preview/',  ActivationPreviewView.as_view(), name='auth-activate-preview'),
+    path('auth/activate/<uuid:activation_key>/',          ActivationView.as_view(),        name='auth-activate'),
 
     # ── Password ──────────────────────────────────────────────────────────────
     path('auth/password/change/',            PasswordChangeView.as_view(),          name='password-change'),
     path('auth/password/reset/request/',     PasswordResetRequestView.as_view(),    name='password-reset-request'),
-    path('auth/password/reset/confirm/',     PasswordResetConfirmView.as_view(),    name='password-reset-confirm'),
+    path('auth/reset-password/<uuid:activation_key>/preview/', PasswordResetPreviewView.as_view(),    name='password-reset-preview'),
+    path('auth/password/reset/<uuid:activation_key>/confirm/', PasswordResetConfirmView.as_view(),    name='password-reset-confirm'),
 
     # ── User management actions ───────────────────────────────────────────────
     path('users/<str:user_id>/email/',          UserEmailChangeView.as_view(),   name='user-email-change'),

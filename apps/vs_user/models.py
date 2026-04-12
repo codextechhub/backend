@@ -441,9 +441,6 @@ class PasswordResetRequest(TimeStampedModel):
         related_name='password_resets',
     )
 
-    # SHA-256 hash of the raw token. Never store plaintext.
-    token_hash = models.CharField(max_length=64, unique=True, db_index=True)
-
     expires_at = models.DateTimeField()
     used_at    = models.DateTimeField(null=True, blank=True)
 
@@ -469,13 +466,6 @@ class PasswordResetRequest(TimeStampedModel):
 
     def mark_used(self):
         self.used_at = timezone.now()
-
-    # ── Token hashing ─────────────────────────────────────────────────────────
-
-    @staticmethod
-    def hash_token(raw_token: str) -> str:
-        """Hash a raw token before storing or looking it up. Never store plaintext."""
-        return hashlib.sha256(raw_token.encode('utf-8')).hexdigest()
 
     def __str__(self) -> str:
         state = 'used' if self.used_at else 'active'

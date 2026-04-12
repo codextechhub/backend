@@ -255,7 +255,7 @@ class TokenRevokeSerializer(serializers.Serializer):
 
 class PasswordChangeSerializer(serializers.Serializer):
     current_password = serializers.CharField(write_only=True, trim_whitespace=False)
-    password         = serializers.CharField(write_only=True, trim_whitespace=False)  # was: new_password
+    password         = serializers.CharField(write_only=True, trim_whitespace=False)
     confirm_password = serializers.CharField(write_only=True, trim_whitespace=False)
 
     def validate(self, attrs):
@@ -274,15 +274,24 @@ class PasswordChangeSerializer(serializers.Serializer):
 
 
 class PasswordResetRequestSerializer(serializers.Serializer):
-    email            = serializers.EmailField()
-    school_slug = serializers.CharField(required=False, allow_blank=True)
+    email = serializers.EmailField()
 
     def validate_email(self, value):
         return value.lower().strip()
 
 
+class PasswordResetPreviewSerializer(serializers.Serializer):
+    email       = serializers.EmailField(read_only=True)
+    full_name   = serializers.CharField(read_only=True)
+    school_name = serializers.CharField(source='school.name', read_only=True)
+
+    class Meta:
+        fields = ('email', 'full_name', 'school_name')
+    
+    def get_full_name(self, obj) -> str:
+        return obj.full_name
+
 class PasswordResetConfirmSerializer(serializers.Serializer):
-    token            = serializers.CharField(write_only=True)
     password         = serializers.CharField(write_only=True, trim_whitespace=False)
     confirm_password = serializers.CharField(write_only=True, trim_whitespace=False)
 
