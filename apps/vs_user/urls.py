@@ -69,12 +69,12 @@ urlpatterns = [
     path('auth/password/reset/<uuid:activation_key>/confirm/', PasswordResetConfirmView.as_view(),    name='password-reset-confirm'),
 
     # ── User management actions ───────────────────────────────────────────────
-    path('users/<str:user_id>/email/',          UserEmailChangeView.as_view(),   name='user-email-change'),
-    path('users/<str:user_id>/invite/resend/',  InvitationResendView.as_view(),  name='user-invite-resend'),
-    path('users/<str:user_id>/suspend/',        UserSuspendView.as_view(),       name='user-suspend'),
-    path('users/<str:user_id>/reactivate/',     UserReactivateView.as_view(),    name='user-reactivate'),
-    path('users/<str:user_id>/unlock/',         UserUnlockView.as_view(),        name='user-unlock'),
-    path('users/<str:user_id>/password-reset/', AdminPasswordResetView.as_view(),name='user-password-reset'),
+    path('<str:user_id>/email/',          UserEmailChangeView.as_view(),   name='user-email-change'),
+    path('<str:user_id>/invite/resend/',  InvitationResendView.as_view(),  name='user-invite-resend'),
+    path('<str:user_id>/suspend/',        UserSuspendView.as_view(),       name='user-suspend'),
+    path('<str:user_id>/reactivate/',     UserReactivateView.as_view(),    name='user-reactivate'),
+    path('<str:user_id>/unlock/',         UserUnlockView.as_view(),        name='user-unlock'),
+    path('<str:user_id>/password-reset/', AdminPasswordResetView.as_view(),name='user-password-reset'),
 
     # ── Router URLs ───────────────────────────────────────────────────────────
     path('', include(router.urls)),

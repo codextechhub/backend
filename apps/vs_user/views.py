@@ -404,7 +404,7 @@ class AdminPasswordResetView(APIView):
           with rbac_permission = "identity.user_password.reset"
           + tenant boundary check (target user must be in actor's school)
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticatedAndActive]
 
     def post(self, request, user_id):
         from .models import User
