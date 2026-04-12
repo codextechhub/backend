@@ -61,7 +61,7 @@ def validate_import_batch_task(self, import_batch_id: str) -> dict:
     Run validation for a template-driven import batch in the background.
     """
     import_batch = ImportBatch.objects.select_related(
-        "institution",
+        "school",
         "uploaded_by",
         "template",
     ).prefetch_related(
@@ -72,7 +72,7 @@ def validate_import_batch_task(self, import_batch_id: str) -> dict:
         result = validate_import_batch(import_batch)
 
         create_import_audit_log(
-            institution=import_batch.institution,
+            school=import_batch.school,
             actor=import_batch.uploaded_by,
             import_batch=import_batch,
             action="validation_completed",
@@ -123,7 +123,7 @@ def validate_import_batch_task(self, import_batch_id: str) -> dict:
         logger.exception("Validation task failed for import batch %s", import_batch_id)
 
         create_import_audit_log(
-            institution=import_batch.institution,
+            school=import_batch.school,
             actor=import_batch.uploaded_by,
             import_batch=import_batch,
             action="validation_failed",
@@ -156,7 +156,7 @@ def execute_import_batch_task(self, import_batch_id: str, queued_by_id: str | No
     Uses the template-driven, serializer-based import executor.
     """
     import_batch = ImportBatch.objects.select_related(
-        "institution",
+        "school",
         "uploaded_by",
         "template",
     ).prefetch_related(
@@ -191,7 +191,7 @@ def execute_import_batch_task(self, import_batch_id: str, queued_by_id: str | No
         )
 
         create_import_audit_log(
-            institution=import_batch.institution,
+            school=import_batch.school,
             actor=queued_by,
             import_batch=import_batch,
             job=job,
@@ -245,7 +245,7 @@ def execute_import_batch_task(self, import_batch_id: str, queued_by_id: str | No
         logger.exception("Import execution task failed for import batch %s", import_batch_id)
 
         create_import_audit_log(
-            institution=import_batch.institution,
+            school=import_batch.school,
             actor=queued_by,
             import_batch=import_batch,
             job=job,
@@ -284,7 +284,7 @@ def rollback_import_job_task(
     """
     job = ImportJob.objects.select_related(
         "import_batch",
-        "import_batch__institution",
+        "import_batch__school",
         "import_batch__template",
         "queued_by",
     ).get(id=job_id)
@@ -310,7 +310,7 @@ def rollback_import_job_task(
             )
 
         create_import_audit_log(
-            institution=job.import_batch.institution,
+            school=job.import_batch.school,
             actor=initiated_by,
             import_batch=job.import_batch,
             job=job,
@@ -340,7 +340,7 @@ def rollback_import_job_task(
         logger.exception("Rollback task failed for job %s", job_id)
 
         create_import_audit_log(
-            institution=job.import_batch.institution,
+            school=job.import_batch.school,
             actor=initiated_by,
             import_batch=job.import_batch,
             job=job,
@@ -473,7 +473,7 @@ def mark_stuck_import_jobs_task(minutes: int = 120) -> dict:
         started_at__lt=cutoff,
     ).select_related(
         "import_batch",
-        "import_batch__institution",
+        "import_batch__school",
         "import_batch__template",
     )
 
@@ -499,7 +499,7 @@ def mark_stuck_import_jobs_task(minutes: int = 120) -> dict:
             job.import_batch.save(update_fields=["status", "updated_at"])
 
             create_import_audit_log(
-                institution=job.import_batch.institution,
+                school=job.import_batch.school,
                 actor=None,
                 import_batch=job.import_batch,
                 job=job,

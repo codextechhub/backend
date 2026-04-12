@@ -9,17 +9,17 @@ from django.core.management.base import BaseCommand
 from django.db import transaction
 from django.utils import timezone
 
-from vs_institutions.models import (
+from vs_schools.models import (
     RESERVED_TENANT_SLUGS,
     AuditEvent,
     ContactInfo,
-    Institution,
-    InstitutionBranding,
-    InstitutionLifecycleEvent,
-    InstitutionModuleSetting,
-    InstitutionOperationEvent,
-    InstitutionPrimaryAdmin,
-    InstitutionStatus,
+    School,
+    SchoolBranding,
+    SchoolLifecycleEvent,
+    SchoolModuleSetting,
+    SchoolOperationEvent,
+    SchoolPrimaryAdmin,
+    SchoolStatus,
     InviteStatus,
     OperationOutcome,
     OperationType,
@@ -40,7 +40,7 @@ TIMEZONES = ["Africa/Lagos", "Africa/Accra", "Africa/Nairobi", "Africa/Johannesb
 CURRENCIES = ["NGN", "GHS", "KES", "ZAR", "EGP"]
 PLAN_TIERS = ["Starter", "Pro", "Enterprise"]
 CATEGORIES = ["School", "College", "Organization"]
-INSTITUTION_TYPES = ["Public", "Private"]
+SCHOOL_TYPES = ["Public", "Private"]
 
 MODULE_KEYS = [
     "STUDENTS",
@@ -58,7 +58,7 @@ MODULE_KEYS = [
 # Helpers
 # -----------------------------------------------------------------------------
 
-def _r_institution_name() -> str:
+def _r_school_name() -> str:
     return f"{random.choice(WORDS_A).title()} {random.choice(WORDS_B).title()}"
 
 
@@ -77,17 +77,17 @@ def _slugify_basic(text: str) -> str:
     return slug
 
 
-def _unique_institution_slug(base: str) -> str:
+def _unique_school_slug(base: str) -> str:
     base = _slugify_basic(base)
     if not base:
-        base = f"institution-{random.randint(1000, 9999)}"
+        base = f"school-{random.randint(1000, 9999)}"
 
     if base in RESERVED_TENANT_SLUGS:
         base = f"{base}-inst"
 
     slug = base
     i = 2
-    while Institution.objects.filter(institution_slug=slug).exists() or slug in RESERVED_TENANT_SLUGS:
+    while School.objects.filter(school_slug=slug).exists() or slug in RESERVED_TENANT_SLUGS:
         slug = f"{base}-{i}"
         i += 1
     return slug
@@ -116,14 +116,14 @@ def _pick_final_status() -> str:
     """
     roll = random.random()
     if roll < 0.55:
-        return InstitutionStatus.LIVE
+        return SchoolStatus.LIVE
     if roll < 0.85:
-        return InstitutionStatus.READY
+        return SchoolStatus.READY
     if roll < 0.93:
-        return InstitutionStatus.SUSPENDED
+        return SchoolStatus.SUSPENDED
     if roll < 0.98:
-        return InstitutionStatus.LOCKED
-    return InstitutionStatus.DELETED_SOFT
+        return SchoolStatus.LOCKED
+    return SchoolStatus.DELETED_SOFT
 
 
 def _lifecycle_path_to(final_status: str) -> List[str]:
@@ -132,29 +132,29 @@ def _lifecycle_path_to(final_status: str) -> List[str]:
     We keep it forward-moving for demo realism.
     """
     base = [
-        InstitutionStatus.CREATED,
-        InstitutionStatus.CONFIGURING,
-        InstitutionStatus.DATA_IMPORTING,
-        InstitutionStatus.READY,
+        SchoolStatus.CREATED,
+        SchoolStatus.CONFIGURING,
+        SchoolStatus.DATA_IMPORTING,
+        SchoolStatus.READY,
     ]
-    if final_status == InstitutionStatus.READY:
+    if final_status == SchoolStatus.READY:
         return base
-    if final_status == InstitutionStatus.LIVE:
-        return base + [InstitutionStatus.LIVE]
-    if final_status == InstitutionStatus.SUSPENDED:
-        return base + [InstitutionStatus.LIVE, InstitutionStatus.SUSPENDED]
-    if final_status == InstitutionStatus.LOCKED:
+    if final_status == SchoolStatus.LIVE:
+        return base + [SchoolStatus.LIVE]
+    if final_status == SchoolStatus.SUSPENDED:
+        return base + [SchoolStatus.LIVE, SchoolStatus.SUSPENDED]
+    if final_status == SchoolStatus.LOCKED:
         # Locked can happen during configuring or importing
-        lock_point = random.choice([InstitutionStatus.CONFIGURING, InstitutionStatus.DATA_IMPORTING])
-        return [InstitutionStatus.CREATED, lock_point, InstitutionStatus.LOCKED]
-    if final_status == InstitutionStatus.DELETED_SOFT:
-        return base + [InstitutionStatus.LIVE, InstitutionStatus.DELETED_SOFT]
+        lock_point = random.choice([SchoolStatus.CONFIGURING, SchoolStatus.DATA_IMPORTING])
+        return [SchoolStatus.CREATED, lock_point, SchoolStatus.LOCKED]
+    if final_status == SchoolStatus.DELETED_SOFT:
+        return base + [SchoolStatus.LIVE, SchoolStatus.DELETED_SOFT]
     return base
 
 
 @dataclass
 class SeedStats:
-    institutions: int = 0
+    schools: int = 0
     branding: int = 0
     module_settings: int = 0
     lifecycle_events: int = 0
@@ -166,15 +166,15 @@ class SeedStats:
 
 
 class Command(BaseCommand):
-    help = "Seed Module 1 (Institution & Tenant Management) demo data."
+    help = "Seed Module 1 (School & Tenant Management) demo data."
 
     def add_arguments(self, parser):
-        parser.add_argument("--count", type=int, default=5, help="Number of institutions to create (default: 5).")
+        parser.add_argument("--count", type=int, default=5, help="Number of schools to create (default: 5).")
         parser.add_argument(
-            "--modules-per-institution",
+            "--modules-per-school",
             type=int,
             default=5,
-            help="Module settings per institution (default: 5).",
+            help="Module settings per school (default: 5).",
         )
         parser.add_argument(
             "--actor-id",
@@ -185,7 +185,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **kwargs):
         count: int = kwargs["count"]
-        modules_per_institution: int = kwargs["modules_per_institution"]
+        modules_per_school: int = kwargs["modules_per_school"]
         actor_id: str = kwargs["actor_id"]
 
         if count < 1:
@@ -196,24 +196,24 @@ class Command(BaseCommand):
 
         with transaction.atomic():
             for i in range(count):
-                institution = self._create_institution(actor_id=actor_id)
-                stats.institutions += 1
+                school = self._create_school(actor_id=actor_id)
+                stats.schools += 1
 
-                self._ensure_branding(institution, stats)
-                self._seed_module_settings(institution, modules_per_institution, actor_id, stats)
-                self._seed_primary_admin(institution, actor_id, stats)
-                self._seed_provisioning_record(institution, stats)
-                self._seed_lifecycle_events_and_state(institution, actor_id, stats)
-                self._seed_ops_and_audit(institution, actor_id, stats)
+                self._ensure_branding(school, stats)
+                self._seed_module_settings(school, modules_per_school, actor_id, stats)
+                self._seed_primary_admin(school, actor_id, stats)
+                self._seed_provisioning_record(school, stats)
+                self._seed_lifecycle_events_and_state(school, actor_id, stats)
+                self._seed_ops_and_audit(school, actor_id, stats)
 
                 self.stdout.write(self.style.SUCCESS(
-                    f"[{i+1}/{count}] Created institution '{institution.institution_name}' ({institution.institution_slug}) status={institution.status}"
+                    f"[{i+1}/{count}] Created school '{school.school_name}' ({school.school_slug}) status={school.status}"
                 ))
 
         self.stdout.write(self.style.SUCCESS("\nSeed complete."))
         self.stdout.write(
             self.style.SUCCESS(
-                f"Institution={stats.institutions} | Branding={stats.branding} | ModuleSettings={stats.module_settings} | "
+                f"School={stats.schools} | Branding={stats.branding} | ModuleSettings={stats.module_settings} | "
                 f"LifecycleEvents={stats.lifecycle_events} | Provisioning={stats.provisioning_records} | "
                 f"Contacts={stats.contacts} | PrimaryAdmins={stats.primary_admin_links} | "
                 f"OpEvents={stats.operation_events} | AuditEvents={stats.audit_events}"
@@ -221,24 +221,24 @@ class Command(BaseCommand):
         )
 
     # -----------------------------------------------------------------------------
-    # Create core institution
+    # Create core school
     # -----------------------------------------------------------------------------
 
-    def _create_institution(self, *, actor_id: str) -> Institution:
-        name = _r_institution_name()
-        slug = _unique_institution_slug(name)
+    def _create_school(self, *, actor_id: str) -> School:
+        name = _r_school_name()
+        slug = _unique_school_slug(name)
 
         country = random.choice(COUNTRIES)
         region = random.choice(REGIONS)
         tz = random.choice(TIMEZONES)
         currency = random.choice(CURRENCIES)
 
-        inst = Institution.objects.create(
-            institution_name=name,
-            institution_slug=slug,
-            institution_group=_r_group(),
+        inst = School.objects.create(
+            school_name=name,
+            school_slug=slug,
+            school_group=_r_group(),
             category=random.choice(CATEGORIES),
-            institution_type=random.choice(INSTITUTION_TYPES),
+            school_type=random.choice(SCHOOL_TYPES),
             plan_tier=random.choice(PLAN_TIERS),
             country=country,
             region=region,
@@ -247,18 +247,18 @@ class Command(BaseCommand):
             primary_contact_name=f"{random.choice(['Ife', 'Ada', 'Tunde', 'Kwame', 'Amina'])} {random.choice(['Okafor', 'Mensah', 'Adeyemi', 'Kamau', 'Hassan'])}",
             primary_contact_email=_email_for(name),
             primary_contact_phone=_phone(),
-            status=InstitutionStatus.CREATED,
+            status=SchoolStatus.CREATED,
         )
 
         # Optional: run model validation
         # inst.full_clean()
 
-        # Audit: institution created
+        # Audit: school created
         AuditEvent.objects.create(
-            institution=inst,
+            school=inst,
             actor_id=actor_id,
-            action="INSTITUTION_CREATE",
-            resource_type="Institution",
+            action="SCHOOL_CREATE",
+            resource_type="School",
             resource_id=str(inst.id),
             before_hash="",
             after_hash=_short_hash(),
@@ -270,9 +270,9 @@ class Command(BaseCommand):
     # Branding
     # -----------------------------------------------------------------------------
 
-    def _ensure_branding(self, inst: Institution, stats: SeedStats) -> None:
+    def _ensure_branding(self, inst: School, stats: SeedStats) -> None:
         # Your branding now has only `logo` (ImageField). We keep it null for seeding.
-        branding, created = InstitutionBranding.objects.get_or_create(institution=inst)
+        branding, created = SchoolBranding.objects.get_or_create(school=inst)
         if created:
             stats.branding += 1
 
@@ -280,13 +280,13 @@ class Command(BaseCommand):
     # Module Settings
     # -----------------------------------------------------------------------------
 
-    def _seed_module_settings(self, inst: Institution, per_inst: int, actor_id: str, stats: SeedStats) -> None:
+    def _seed_module_settings(self, inst: School, per_inst: int, actor_id: str, stats: SeedStats) -> None:
         keys = random.sample(MODULE_KEYS, k=min(per_inst, len(MODULE_KEYS)))
         now = timezone.now()
 
         for k in keys:
-            obj, created = InstitutionModuleSetting.objects.get_or_create(
-                institution=inst,
+            obj, created = SchoolModuleSetting.objects.get_or_create(
+                school=inst,
                 module_key=k,
                 defaults={
                     "enabled": random.choice([True, False, True]),  # bias slightly toward enabled
@@ -299,10 +299,10 @@ class Command(BaseCommand):
 
         # Audit backstop
         AuditEvent.objects.create(
-            institution=inst,
+            school=inst,
             actor_id=actor_id,
-            action="INSTITUTION_MODULE_SETTINGS_SEEDED",
-            resource_type="Institution",
+            action="SCHOOL_MODULE_SETTINGS_SEEDED",
+            resource_type="School",
             resource_id=str(inst.id),
             before_hash="",
             after_hash=_short_hash(),
@@ -314,21 +314,21 @@ class Command(BaseCommand):
     # Primary Admin + Contact
     # -----------------------------------------------------------------------------
 
-    def _seed_primary_admin(self, inst: Institution, actor_id: str, stats: SeedStats) -> None:
+    def _seed_primary_admin(self, inst: School, actor_id: str, stats: SeedStats) -> None:
         # Create contact
         contact = ContactInfo.objects.create(
             full_name=f"{random.choice(['Mary', 'John', 'Seyi', 'Fatima', 'Chidi'])} {random.choice(['Okoro', 'Diallo', 'Boateng', 'Njoroge', 'El-Sayed'])}",
-            email=_email_for(inst.institution_name),
+            email=_email_for(inst.school_name),
             phone=_phone(),
         )
         stats.contacts += 1
 
         # Link as primary admin
-        link, created = InstitutionPrimaryAdmin.objects.get_or_create(
-            institution=inst,
+        link, created = SchoolPrimaryAdmin.objects.get_or_create(
+            school=inst,
             defaults={
                 "contact": contact,
-                "role_label": random.choice(["Institution Admin", "Head Admin", "Registrar", "Operations Lead"]),
+                "role_label": random.choice(["School Admin", "Head Admin", "Registrar", "Operations Lead"]),
                 "invite_status": InviteStatus.QUEUED,
                 "invite_queued_at": timezone.now(),
             },
@@ -340,10 +340,10 @@ class Command(BaseCommand):
             stats.primary_admin_links += 1
 
         AuditEvent.objects.create(
-            institution=inst,
+            school=inst,
             actor_id=actor_id,
-            action="INSTITUTION_PRIMARY_ADMIN_ASSIGNED",
-            resource_type="InstitutionPrimaryAdmin",
+            action="SCHOOL_PRIMARY_ADMIN_ASSIGNED",
+            resource_type="SchoolPrimaryAdmin",
             resource_id=str(link.id),
             before_hash="",
             after_hash=_short_hash(),
@@ -355,54 +355,54 @@ class Command(BaseCommand):
     # Provisioning Record
     # -----------------------------------------------------------------------------
 
-    def _seed_provisioning_record(self, inst: Institution, stats: SeedStats) -> None:
+    def _seed_provisioning_record(self, inst: School, stats: SeedStats) -> None:
         # Make provisioning roughly consistent with likely lifecycle outcomes
         # Live/Ready -> Succeeded, Locked -> Failed, Suspended -> Succeeded
-        if inst.status in (InstitutionStatus.CREATED, InstitutionStatus.CONFIGURING, InstitutionStatus.DATA_IMPORTING):
+        if inst.status in (SchoolStatus.CREATED, SchoolStatus.CONFIGURING, SchoolStatus.DATA_IMPORTING):
             prov_status = random.choice([ProvisioningStatus.QUEUED, ProvisioningStatus.RUNNING])
         else:
             prov_status = ProvisioningStatus.SUCCEEDED
 
         # we'll adjust later after lifecycle sets final status; create now as queued
         prov, created = ProvisioningRecord.objects.get_or_create(
-            institution=inst,
+            school=inst,
             defaults={"provisioning_status": ProvisioningStatus.QUEUED},
         )
         if created:
             stats.provisioning_records += 1
 
     # -----------------------------------------------------------------------------
-    # Lifecycle events + final status (uses your Institution.transition helpers)
+    # Lifecycle events + final status (uses your School.transition helpers)
     # -----------------------------------------------------------------------------
 
-    def _seed_lifecycle_events_and_state(self, inst: Institution, actor_id: str, stats: SeedStats) -> None:
+    def _seed_lifecycle_events_and_state(self, inst: School, actor_id: str, stats: SeedStats) -> None:
         final_status = _pick_final_status()
         path = _lifecycle_path_to(final_status)
 
         # Start from current status (should be CREATED)
-        # We'll use transition() so it generates InstitutionLifecycleEvent rows itself.
+        # We'll use transition() so it generates SchoolLifecycleEvent rows itself.
         # Note: transition() blocks illegal jumps (good).
         current = inst.status
         for state in path[1:]:
             # If soft delete is in path, call soft_delete to properly set deleted_at
-            if state == InstitutionStatus.DELETED_SOFT:
+            if state == SchoolStatus.DELETED_SOFT:
                 inst.soft_delete(actor_id=actor_id, reason="Seeded soft-delete for demo")
             else:
                 inst.transition(to_state=state, actor_id=actor_id, reason="Seeded lifecycle transition")
             current = state
 
-        # Count lifecycle events created (approx): query per institution, since transition() creates them internally
-        created_events = InstitutionLifecycleEvent.objects.filter(institution=inst).count()
+        # Count lifecycle events created (approx): query per school, since transition() creates them internally
+        created_events = SchoolLifecycleEvent.objects.filter(school=inst).count()
         stats.lifecycle_events += created_events
 
         # Align provisioning status to final outcome
         prov = inst.provisioning
-        if final_status == InstitutionStatus.LOCKED:
+        if final_status == SchoolStatus.LOCKED:
             prov.provisioning_status = ProvisioningStatus.FAILED
             prov.last_error_code = "PROVISIONING_FAILED"
             prov.last_error_message = "Seeded failure: simulated provisioning error."
             prov.completed_at = timezone.now()
-        elif final_status in (InstitutionStatus.READY, InstitutionStatus.LIVE, InstitutionStatus.SUSPENDED, InstitutionStatus.DELETED_SOFT):
+        elif final_status in (SchoolStatus.READY, SchoolStatus.LIVE, SchoolStatus.SUSPENDED, SchoolStatus.DELETED_SOFT):
             prov.provisioning_status = ProvisioningStatus.SUCCEEDED
             prov.completed_at = timezone.now()
         else:
@@ -415,11 +415,11 @@ class Command(BaseCommand):
     # Operation Events + Audit
     # -----------------------------------------------------------------------------
 
-    def _seed_ops_and_audit(self, inst: Institution, actor_id: str, stats: SeedStats) -> None:
+    def _seed_ops_and_audit(self, inst: School, actor_id: str, stats: SeedStats) -> None:
         # Create operation events only for states that imply an operation
-        if inst.status == InstitutionStatus.SUSPENDED:
-            InstitutionOperationEvent.objects.create(
-                institution=inst,
+        if inst.status == SchoolStatus.SUSPENDED:
+            SchoolOperationEvent.objects.create(
+                school=inst,
                 operation_type=OperationType.SUSPEND,
                 actor_id=actor_id,
                 reason="Seeded suspension for demo",
@@ -428,10 +428,10 @@ class Command(BaseCommand):
             stats.operation_events += 1
 
             AuditEvent.objects.create(
-                institution=inst,
+                school=inst,
                 actor_id=actor_id,
-                action="INSTITUTION_SUSPEND",
-                resource_type="Institution",
+                action="SCHOOL_SUSPEND",
+                resource_type="School",
                 resource_id=str(inst.id),
                 before_hash=_short_hash(),
                 after_hash=_short_hash(),
@@ -439,9 +439,9 @@ class Command(BaseCommand):
             )
             stats.audit_events += 1
 
-        if inst.status == InstitutionStatus.DELETED_SOFT:
-            InstitutionOperationEvent.objects.create(
-                institution=inst,
+        if inst.status == SchoolStatus.DELETED_SOFT:
+            SchoolOperationEvent.objects.create(
+                school=inst,
                 operation_type=OperationType.SOFT_DELETE,
                 actor_id=actor_id,
                 reason="Seeded soft-delete for demo",
@@ -451,10 +451,10 @@ class Command(BaseCommand):
             stats.operation_events += 1
 
             AuditEvent.objects.create(
-                institution=inst,
+                school=inst,
                 actor_id=actor_id,
-                action="INSTITUTION_SOFT_DELETE",
-                resource_type="Institution",
+                action="SCHOOL_SOFT_DELETE",
+                resource_type="School",
                 resource_id=str(inst.id),
                 before_hash=_short_hash(),
                 after_hash=_short_hash(),
@@ -462,23 +462,23 @@ class Command(BaseCommand):
             )
             stats.audit_events += 1
 
-        if inst.status == InstitutionStatus.LOCKED:
-            InstitutionOperationEvent.objects.create(
-                institution=inst,
+        if inst.status == SchoolStatus.LOCKED:
+            SchoolOperationEvent.objects.create(
+                school=inst,
                 operation_type=OperationType.RESET,
                 actor_id=actor_id,
                 reason="Seeded lock scenario for demo; reset recommended",
                 outcome=OperationOutcome.FAILED,
-                error_code="LOCKED_INSTITUTION",
-                error_message="Seeded locked institution; manual intervention required.",
+                error_code="LOCKED_SCHOOL",
+                error_message="Seeded locked school; manual intervention required.",
             )
             stats.operation_events += 1
 
             AuditEvent.objects.create(
-                institution=inst,
+                school=inst,
                 actor_id=actor_id,
-                action="INSTITUTION_LOCKED",
-                resource_type="Institution",
+                action="SCHOOL_LOCKED",
+                resource_type="School",
                 resource_id=str(inst.id),
                 before_hash=_short_hash(),
                 after_hash=_short_hash(),

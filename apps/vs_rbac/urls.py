@@ -28,39 +28,39 @@ urlpatterns = [
     ),
 
     # -------------------------------------------------------------------------
-    # Branch-scoped Role Templates
+    # School-scoped Role Templates
     # -------------------------------------------------------------------------
     path(
-        "branches/<uuid:branch_id>/roles/",
+        "schools/<slug:school_id>/roles/",
         views.RoleTemplateListCreateView.as_view(),
         name="rbac-role-list-create",
     ),
     path(
-        "branches/<uuid:branch_id>/roles/<int:id>/",
+        "schools/<slug:school_id>/roles/<int:id>/",
         views.RoleTemplateDetailView.as_view(),
         name="rbac-role-detail",
     ),
 
     # -------------------------------------------------------------------------
-    # Branch-scoped Role Assignments
+    # School-scoped Role Assignments
     # -------------------------------------------------------------------------
     path(
-        "branches/<uuid:branch_id>/role-assignments/",
+        "schools/<slug:school_id>/role-assignments/",
         views.UserRoleAssignmentListCreateView.as_view(),
         name="rbac-assignment-list-create",
     ),
     path(
-        "branches/<uuid:branch_id>/role-assignments/<int:id>/",
+        "schools/<slug:school_id>/role-assignments/<int:id>/",
         views.UserRoleAssignmentDetailView.as_view(),
         name="rbac-assignment-detail",
     ),
 
     # -------------------------------------------------------------------------
-    # Branch -> Vision Role Change Requests
+    # School -> Vision Role Change Requests
     # -------------------------------------------------------------------------
     path(
-        "branches/<uuid:branch_id>/role-change-requests/",
-        views.BranchRoleChangeRequestListCreateView.as_view(),
+        "schools/<slug:school_id>/role-change-requests/",
+        views.SchoolRoleChangeRequestListCreateView.as_view(),
         name="rbac-role-change-request-list-create",
     ),
 
@@ -104,7 +104,7 @@ urlpatterns = [
         name="platform-rbac-assignment-list-create",
     ),
     path(
-        "platform/role-assignments/<uuid:id>/",
+        "platform/role-assignments/<int:id>/",
         views.PlatformUserRoleAssignmentDetailView.as_view(),
         name="platform-rbac-assignment-detail",
     ),
@@ -118,12 +118,12 @@ urlpatterns = [
         name="platform-rbac-role-change-request-list-create",
     ),
     path(
-        "platform/role-change-requests/<uuid:id>/",
+        "platform/role-change-requests/<int:id>/",
         views.PlatformRoleChangeRequestDetailView.as_view(),
         name="platform-rbac-role-change-detail",
     ),
     path(
-        "platform/role-change-requests/<uuid:request_id>/decide/",
+        "platform/role-change-requests/<int:request_id>/decide/",
         views.PlatformRoleChangeRequestDecisionView.as_view(),
         name="platform-rbac-role-change-decide",
     ),

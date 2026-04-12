@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+from datetime import timedelta
+
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
@@ -7,408 +10,325 @@ from django.utils import timezone
 
 from rest_framework import serializers
 
-from vs_institutions.models import Institution, Branch
+from vs_schools.models import School, Branch
 from .models import (
-    UserAccount,
-    TemporaryPasswordIssue,
+    User,
+    UserInvitation,
     LoginSession,
-    RevokedToken,
     AuthAttempt,
     AccountLockout,
     PasswordResetRequest,
-    SuspiciousLoginEvent,
     AuthEventLog,
 )
 
 
-# -----------------------------------------------------------------------------
-# Small reusable helpers
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Helpers -- UNCHANGED FROM ORIGINAL
+# =============================================================================
 
-class InstitutionSlimSerializer(serializers.ModelSerializer):
+class SchoolSlimSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Institution
-        fields = ("id", "name", "slug")  # adjust if your Institution fields differ
+        model = School
+        fields = ('id', 'name', 'slug')
 
 
 def _raise_password_error(exc: DjangoValidationError):
-    """
-    Turn Django password validation errors into DRF-friendly messages.
-    """
-    if hasattr(exc, "messages"):
-        raise serializers.ValidationError({"new_password": exc.messages})
-    raise serializers.ValidationError({"new_password": ["Invalid password."]})
+    if hasattr(exc, 'messages'):
+        raise serializers.ValidationError({'password': exc.messages})
+    raise serializers.ValidationError({'password': ['Invalid password.']})
 
 
-# -----------------------------------------------------------------------------
-# USER ACCOUNT (FR-IDA-001, FR-IDA-002, FR-IDA-012)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# User serializers
+# =============================================================================
 
-class UserAccountReadSerializer(serializers.ModelSerializer):
-    """
-    Read-only serializer for returning user info safely.
-    """
-    institution = InstitutionSlimSerializer(source="branch.institution", read_only=True)
+class UserReadSerializer(serializers.ModelSerializer):
+    full_name        = serializers.SerializerMethodField()
+    school_name = serializers.CharField(source='school.name', read_only=True, default=None)
+    branch_name      = serializers.CharField(source='branch.name', read_only=True, default=None)
+    invited_by_name  = serializers.SerializerMethodField()
 
     class Meta:
-        model = UserAccount
+        model  = User
         fields = (
-            "id",
-            "institution",
-            "branch",
-            "email",
-            "user_type",
-            "status",
-            "full_name",
-            "phone",
-            "must_change_password",
-            "password_changed_at",
-            "last_login_at",
-            "created_at",
-            "updated_at",
+            'id',
+            'email',
+            'first_name',
+            'last_name',
+            'full_name',
+            'phone',
+            'user_type',
+            'status',
+            'school_id',
+            'school_name',
+            'branch_id',
+            'branch_name',
+            'invited_by_id',
+            'invited_by_name',
+            'password_changed_at',
+            'last_login_at',
+            'created_at',
+            'updated_at',
         )
         read_only_fields = fields
 
+    def get_full_name(self, obj) -> str:
+        return obj.full_name
 
-class UserAccountCreateSerializer(serializers.ModelSerializer):
-    """
-    Create user accounts in a simple way (FR-IDA-001).
+    def get_invited_by_name(self, obj) -> str | None:
+        if obj.invited_by:
+            return obj.invited_by.full_name
+        return None
 
-    IMPORTANT: This serializer does NOT email the temp password.
-    Your view/service should:
-      1) create user with a generated temp password
-      2) create TemporaryPasswordIssue record
-      3) send the password via chosen channel
-      4) set must_change_password=True
-      5) emit AuthEventLog / audit event
-    """
-    branch_id = serializers.PrimaryKeyRelatedField(
-        source="institution",
-        queryset=Branch.objects.all(),
-        required=False,
-        allow_null=True,
-        help_text="Required for institution users; must be null for Vision staff.",
-    )
 
-    temp_password_channel = serializers.ChoiceField(
-        choices=TemporaryPasswordIssue.Channel.choices,
-        write_only=True,
-        required=False,
-        help_text="USER_EMAIL or SUPERVISOR_EMAIL (FR-IDA-002).",
-    )
-    supervisor_email = serializers.EmailField(
-        write_only=True,
-        required=False,
-        allow_blank=True,
-        help_text="Required only if temp_password_channel=SUPERVISOR_EMAIL.",
-    )
+class UserListSerializer(serializers.ModelSerializer):
+    full_name    = serializers.SerializerMethodField()
+    branch_name  = serializers.CharField(source='branch.name', read_only=True, default=None)
 
     class Meta:
-        model = UserAccount
+        model  = User
         fields = (
-            "branch_id",
-            "email",
-            "user_type",
-            "status",
-            "full_name",
-            "phone",
-            "temp_password_channel",
-            "supervisor_email",
+            'id', 'email', 'full_name', 'user_type',
+            'status', 'branch_id', 'branch_name', 'created_at',
         )
+        read_only_fields = fields
+
+    def get_full_name(self, obj) -> str:
+        return obj.full_name
+
+
+class UserCreateSerializer(serializers.Serializer):
+    first_name  = serializers.CharField(max_length=100)
+    last_name   = serializers.CharField(max_length=100)
+    email       = serializers.EmailField()
+    user_type   = serializers.ChoiceField(choices=User.UserType.choices)
+    phone       = serializers.CharField(max_length=32, required=False, allow_blank=True)
+    # school and branch passed as UUIDs; resolved to objects in validate()
+    school = serializers.UUIDField(required=False, allow_null=True)
+    branch      = serializers.UUIDField(required=False, allow_null=True)
+    # Informational -- actual role assignment done in Module 4 (RBAC)
+    role_hint   = serializers.CharField(max_length=50, required=False, allow_blank=True)
+
+    def validate_email(self, value):
+        return value.lower().strip()
 
     def validate(self, attrs):
-        user_type = attrs.get("user_type")
-        branch = attrs.get("branch")
+        user_type = attrs.get('user_type')
 
-        # Enforce your model rule in serializer too (nice UX)
-        if user_type == UserAccount.UserType.VISION_STAFF:
-            if branch is not None:
+        # Resolve school UUID to instance
+        school_id = attrs.pop('school', None)
+        branch_id      = attrs.pop('branch', None)
+
+        if school_id:
+            try:
+                attrs['school'] = School.objects.get(id=school_id)
+            except School.DoesNotExist:
+                raise serializers.ValidationError({'school': 'School not found.'})
+        else:
+            attrs['school'] = None
+
+        if branch_id:
+            try:
+                attrs['branch'] = Branch.objects.get(id=branch_id)
+            except Branch.DoesNotExist:
+                raise serializers.ValidationError({'branch': 'Branch not found.'})
+        else:
+            attrs['branch'] = None
+
+        # Vision Staff must not have school or branch
+        if user_type == User.UserType.VISION_STAFF:
+            if attrs['school'] or attrs['branch']:
                 raise serializers.ValidationError(
-                    {"branch_id": "Vision staff users cannot be associated with an branch."}
+                    {'user_type': 'Vision Staff accounts cannot be assigned to an school or branch.'}
                 )
         else:
-            if branch is None:
+            # All other user types must have an school
+            if not attrs['school']:
                 raise serializers.ValidationError(
-                    {"branch_id": "Non-Vision staff users must be associated with an branch."}
+                    {'school': 'This user type must be assigned to an school.'}
+                )
+            # Branch-level users must have a branch
+            if user_type not in (User.UserType.SCHOOL_ADMIN,) and not attrs['branch']:
+                raise serializers.ValidationError(
+                    {'branch': f'User type {user_type} must be assigned to a branch.'}
                 )
 
-        # Temp password channel rules (FR-IDA-002)
-        ch = attrs.get("temp_password_channel")
-        sup = attrs.get("supervisor_email", "")
-        if ch == TemporaryPasswordIssue.Channel.SUPERVISOR_EMAIL and not sup:
-            raise serializers.ValidationError(
-                {"supervisor_email": "Supervisor email is required for SUPERVISOR_EMAIL delivery."}
-            )
+        # Branch must belong to the school
+        if attrs.get('branch') and attrs.get('school'):
+            if attrs['branch'].school_id != attrs['school'].id:
+                raise serializers.ValidationError(
+                    {'branch': 'The selected branch does not belong to the selected school.'}
+                )
 
         return attrs
 
-    def create(self, validated_data):
-        # Remove serializer-only fields
-        validated_data.pop("temp_password_channel", None)
-        validated_data.pop("supervisor_email", None)
 
-        # This serializer creates the account only.
-        # Your service/view should handle temp password generation + delivery + TemporaryPasswordIssue.
-        try:
-            with transaction.atomic():
-                user = UserAccount.objects.create(**validated_data)
-                return user
-        except IntegrityError:
-            # Most common: email uniqueness constraints (case-insensitive per branch / staff)
-            raise serializers.ValidationError(
-                {"email": "This email is already used under the applicable uniqueness policy."}
-            )
-
-# create acct directly with password (admin console use case) - bypass temp password flow and email
-class AdminCreateAccountSerializer(serializers.ModelSerializer):
-    """
-    Admin create with direct password set (bypassing temp password flow).
-    Use with caution and enforce strict permissions on the view.
-    """
-    password = serializers.CharField(write_only=True, trim_whitespace=False)
-
+class UserUpdateSerializer(serializers.ModelSerializer):
     class Meta:
-        model = UserAccount
-        fields = (
-            "email",
-            "full_name",
-            "phone",
-            "password",
-        )
-
-    def create(self, validated_data):
-        password = validated_data.pop("password")
-        user = UserAccount.objects.create_superuser(email=validated_data["email"], 
-                                                    password=password, 
-                                                    full_name=validated_data.get("full_name", "Admin User"), 
-                                                    phone=validated_data.get("phone", ""),
-                                                    branch=None,
-                                                    user_type=UserAccount.UserType.VISION_STAFF,
-                                                    status=UserAccount.Status.ACTIVE,
-                                                    password_changed_at=timezone.now())
-        return user
-
-class UserAccountUpdateSerializer(serializers.ModelSerializer):
-    """
-    Simple partial update for profile-ish fields.
-    Avoid editing status/user_type here unless your policy allows it.
-    """
-    class Meta:
-        model = UserAccount
-        fields = ("full_name", "phone", "status")
-        extra_kwargs = {
-            "status": {"required": False},
-        }
+        model  = User
+        fields = ('first_name', 'last_name', 'phone')
+        # Note: email changes go through a separate /email/ endpoint
+        # because they require ending all active sessions.
 
 
-# -----------------------------------------------------------------------------
-# LOGIN / TOKEN (FR-IDA-003, FR-IDA-004, FR-IDA-005, FR-IDA-012)
-# -----------------------------------------------------------------------------
-
-class LoginRequestSerializer(serializers.Serializer):
-    """
-    Login payload (email + password + institution context).
-    This matches your FRD's "institution-aware login enforcement" (FR-IDA-012).
-
-    The view/service should:
-      - resolve institution from context (slug/subdomain) or explicit field
-      - verify credentials
-      - create session
-      - issue JWT tokens
-      - enforce must_change_password if needed
-    """
+class EmailChangeSerializer(serializers.Serializer):
     email = serializers.EmailField()
-    password = serializers.CharField(write_only=True, trim_whitespace=False)
-    institution_slug = serializers.CharField(
-        required=False,
-        allow_blank=True,
-        help_text="Explicit institution context (subdomain/slug). Required for institution users.",
-    )
-    device_label = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_email(self, value):
+        return value.lower().strip()
+
+
+# =============================================================================
+# Activation serializer
+# =============================================================================
+class ActivationSerializer(serializers.Serializer):
+    password         = serializers.CharField(write_only=True, trim_whitespace=False)
+    confirm_password = serializers.CharField(write_only=True, trim_whitespace=False)
 
     def validate(self, attrs):
-        email = attrs.get("email", "").strip()
+        if attrs['password'] != attrs['confirm_password']:
+            raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
+        try:
+            validate_password(attrs['password'])
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({'password': exc.messages})
+        return attrs
+
+
+class ActivationPreviewSerializer(serializers.ModelSerializer):
+    full_name        = serializers.SerializerMethodField()
+    school_name = serializers.CharField(source='school.name', read_only=True, default=None)
+
+    class Meta:
+        model  = User
+        fields = ('email', 'first_name', 'last_name', 'full_name', 'school_name')
+        read_only_fields = fields
+
+    def get_full_name(self, obj) -> str:
+        return obj.full_name
+
+
+# =============================================================================
+# Login / Token serializers 
+# =============================================================================
+
+class LoginRequestSerializer(serializers.Serializer):
+    email            = serializers.EmailField()
+    password         = serializers.CharField(write_only=True, trim_whitespace=False)
+
+    def validate(self, attrs):
+        email = attrs.get('email', '').strip()
         if not email:
-            raise serializers.ValidationError({"email": "Email is required."})
+            raise serializers.ValidationError({'email': 'Email is required.'})
+        attrs['email'] = email.lower()
         return attrs
 
 
 class TokenRefreshSerializer(serializers.Serializer):
-    refresh = serializers.CharField(write_only=True, help_text="Refresh token")
+    refresh = serializers.CharField(write_only=True)
 
 
 class TokenRevokeSerializer(serializers.Serializer):
-    """
-    Revoke token by JTI (or by token, depending on your implementation).
-    Keep this simple.
-    """
-    jti = serializers.CharField()
-    token_type = serializers.ChoiceField(choices=[("access", "access"), ("refresh", "refresh")])
-    reason = serializers.CharField(required=False, allow_blank=True)
+    jti        = serializers.CharField()
+    token_type = serializers.ChoiceField(choices=[('access', 'access'), ('refresh', 'refresh')])
+    reason     = serializers.CharField(required=False, allow_blank=True)
 
 
-# -----------------------------------------------------------------------------
-# PASSWORD CHANGE / RESET (FR-IDA-002, FR-IDA-011)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Password serializers
+# =============================================================================
 
 class PasswordChangeSerializer(serializers.Serializer):
-    """
-    Used when user is logged in and must change password (FR-IDA-002).
-    """
     current_password = serializers.CharField(write_only=True, trim_whitespace=False)
-    new_password = serializers.CharField(write_only=True, trim_whitespace=False)
+    password         = serializers.CharField(write_only=True, trim_whitespace=False)  # was: new_password
+    confirm_password = serializers.CharField(write_only=True, trim_whitespace=False)
 
     def validate(self, attrs):
-        user = self.context["request"].user
-
-        if not user.check_password(attrs["current_password"]):
-            raise serializers.ValidationError({"current_password": "Current password is incorrect."})
-
-        # Validate password strength using Django validators
+        user = self.context['request'].user
+        if not user.check_password(attrs['current_password']):
+            raise serializers.ValidationError({'current_password': 'Current password is incorrect.'})
         try:
-            validate_password(attrs["new_password"], user=user)
+            validate_password(attrs['password'], user=user)
         except DjangoValidationError as exc:
-            _raise_password_error(exc)
-
-        # Block re-using current password
-        if attrs["new_password"] == attrs["current_password"]:
-            raise serializers.ValidationError({"new_password": "New password must be different."})
-
+            raise serializers.ValidationError({'password': exc.messages})
+        if attrs['password'] == attrs['current_password']:
+            raise serializers.ValidationError({'password': 'New password must differ from current password.'})
+        if attrs['password'] != attrs['confirm_password']:
+            raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
         return attrs
 
 
 class PasswordResetRequestSerializer(serializers.Serializer):
-    """
-    Request a password reset (FR-IDA-011).
-    Always return a generic success from the view to avoid user enumeration.
-    """
-    email = serializers.EmailField()
-    institution_slug = serializers.CharField(required=False, allow_blank=True)
+    email            = serializers.EmailField()
+    school_slug = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_email(self, value):
+        return value.lower().strip()
 
 
 class PasswordResetConfirmSerializer(serializers.Serializer):
-    """
-    Confirm reset with raw token + new password.
-    Your service should:
-      - hash token (PasswordResetRequest.hash_token)
-      - find active reset request
-      - set new password
-      - mark used
-    """
-    token = serializers.CharField(write_only=True)
-    new_password = serializers.CharField(write_only=True, trim_whitespace=False)
+    token            = serializers.CharField(write_only=True)
+    password         = serializers.CharField(write_only=True, trim_whitespace=False)
+    confirm_password = serializers.CharField(write_only=True, trim_whitespace=False)
 
     def validate(self, attrs):
+        if attrs['password'] != attrs['confirm_password']:
+            raise serializers.ValidationError({'confirm_password': 'Passwords do not match.'})
         try:
-            validate_password(attrs["new_password"])
+            validate_password(attrs['password'])
         except DjangoValidationError as exc:
-            _raise_password_error(exc)
+            raise serializers.ValidationError({'password': exc.messages})
         return attrs
 
 
-# -----------------------------------------------------------------------------
-# TEMP PASSWORD ISSUANCE (FR-IDA-002)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# UserInvitation serializers
+# =============================================================================
 
-class TemporaryPasswordIssueReadSerializer(serializers.ModelSerializer):
+class UserInvitationReadSerializer(serializers.ModelSerializer):
+    user_email = serializers.CharField(source='user.email', read_only=True)
+
     class Meta:
-        model = TemporaryPasswordIssue
+        model  = UserInvitation
         fields = (
-            "id",
-            "user",
-            "channel",
-            "delivered_to",
-            "expires_at",
-            "delivered_at",
-            "delivery_status",
-            "failure_reason",
-            "created_at",
+            'id', 'user', 'user_email', 'invited_by',
+            'role_hint', 'expires_at', 'is_used', 'created_at',
         )
         read_only_fields = fields
 
 
-class TemporaryPasswordIssueCreateSerializer(serializers.Serializer):
-    """
-    A small serializer for "regenerate/resend temp password" operations.
-
-    The actual generation & sending should happen in a service.
-    Serializer just validates input and returns normalized intent.
-    """
-    user_id = serializers.PrimaryKeyRelatedField(queryset=UserAccount.objects.all(), source="user")
-    channel = serializers.ChoiceField(choices=TemporaryPasswordIssue.Channel.choices)
-    delivered_to = serializers.EmailField()
-    ttl_minutes = serializers.IntegerField(min_value=5, max_value=1440, default=60)
-
-    def validate(self, attrs):
-        user: UserAccount = attrs["user"]
-
-        # Only allow for invited/active users per your policy (adjust as needed)
-        if user.status in (UserAccount.Status.DELETED,):
-            raise serializers.ValidationError("Cannot issue temp password for deleted users.")
-
-        # For supervisor channel, delivered_to should not equal the user's email (optional rule)
-        if attrs["channel"] == TemporaryPasswordIssue.Channel.SUPERVISOR_EMAIL and attrs["delivered_to"].lower() == user.email.lower():
-            raise serializers.ValidationError({"delivered_to": "Supervisor email should differ from user email."})
-
-        return attrs
-
-
-# -----------------------------------------------------------------------------
-# SESSIONS (FR-IDA-009, FR-IDA-010)
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Session, Lockout, Attempt, AuthEvent serializers
+# =============================================================================
 
 class LoginSessionReadSerializer(serializers.ModelSerializer):
     class Meta:
-        model = LoginSession
+        model  = LoginSession
         fields = (
-            "id",
-            "user",
-            "institution",
-            "ip_address",
-            "user_agent",
-            "device_label",
-            "last_seen_at",
-            "is_active",
-            "ended_at",
-            "end_reason",
-            "created_at",
+            'id', 'user', 'school', 'ip_address', 'user_agent',
+            'device_label', 'last_seen_at', 'is_active', 'ended_at',
+            'end_reason', 'created_at',
         )
         read_only_fields = fields
 
 
 class ForceLogoutSerializer(serializers.Serializer):
-    """
-    Force logout can be targeted at a session or user.
-    Your service should revoke tokens + end sessions (FR-IDA-010).
-    """
-    user_id = serializers.PrimaryKeyRelatedField(queryset=UserAccount.objects.all(), required=False)
+    user_id    = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False)
     session_id = serializers.PrimaryKeyRelatedField(queryset=LoginSession.objects.all(), required=False)
-    reason = serializers.CharField()
+    reason     = serializers.CharField()
 
     def validate(self, attrs):
-        if not attrs.get("user_id") and not attrs.get("session_id"):
-            raise serializers.ValidationError("Provide either user_id or session_id.")
+        if not attrs.get('user_id') and not attrs.get('session_id'):
+            raise serializers.ValidationError('Provide either user_id or session_id.')
         return attrs
 
 
-# -----------------------------------------------------------------------------
-# BRUTE FORCE / LOCKOUT (FR-IDA-006, FR-IDA-007, FR-IDA-008)
-# -----------------------------------------------------------------------------
-
 class AuthAttemptReadSerializer(serializers.ModelSerializer):
     class Meta:
-        model = AuthAttempt
+        model  = AuthAttempt
         fields = (
-            "id",
-            "email_entered",
-            "institution_context",
-            "user",
-            "institution",
-            "ip_address",
-            "result",
-            "failure_code",
-            "metadata",
-            "created_at",
+            'id', 'email_entered', 'school_context', 'user', 'school',
+            'ip_address', 'result', 'failure_code', 'metadata', 'created_at',
         )
         read_only_fields = fields
 
@@ -417,93 +337,31 @@ class AccountLockoutReadSerializer(serializers.ModelSerializer):
     is_locked_now = serializers.SerializerMethodField()
 
     class Meta:
-        model = AccountLockout
+        model  = AccountLockout
         fields = (
-            "user",
-            "locked_until",
-            "locked_reason",
-            "failure_count",
-            "last_failure_at",
-            "last_failure_ip",
-            "is_locked_now",
-            "created_at",
-            "updated_at",
+            'user', 'locked_until', 'locked_reason', 'failure_count',
+            'last_failure_at', 'last_failure_ip', 'is_locked_now',
+            'created_at', 'updated_at',
         )
         read_only_fields = fields
 
-    def get_is_locked_now(self, obj: AccountLockout) -> bool:
+    def get_is_locked_now(self, obj) -> bool:
         return obj.is_locked_now()
 
 
 class UnlockAccountSerializer(serializers.Serializer):
-    """
-    Admin unlock request (FR-IDA-008).
-    Your service may also force password reset (policy).
-    """
-    user_id = serializers.PrimaryKeyRelatedField(queryset=UserAccount.objects.all(), source="user")
-    reason = serializers.CharField(required=False, allow_blank=True)
-    force_password_reset = serializers.BooleanField(default=True)
+    user_id              = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), source='user')
+    reason               = serializers.CharField(required=False, allow_blank=True)
+    force_password_reset = serializers.BooleanField(default=False)
 
-
-# -----------------------------------------------------------------------------
-# TOKEN REVOCATION STORE (FR-IDA-005)
-# -----------------------------------------------------------------------------
-
-class RevokedTokenReadSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = RevokedToken
-        fields = (
-            "id",
-            "user",
-            "jti",
-            "token_type",
-            "expires_at",
-            "session",
-            "reason",
-            "revoked_by",
-            "created_at",
-        )
-        read_only_fields = fields
-
-
-# -----------------------------------------------------------------------------
-# SUSPICIOUS EVENTS (FR-IDA-012, FR-IDA-006 optional signals)
-# -----------------------------------------------------------------------------
-
-class SuspiciousLoginEventReadSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = SuspiciousLoginEvent
-        fields = (
-            "id",
-            "user",
-            "email_entered",
-            "institution_context",
-            "ip_address",
-            "event_type",
-            "risk_score",
-            "decision",
-            "details",
-            "created_at",
-        )
-        read_only_fields = fields
-
-
-# -----------------------------------------------------------------------------
-# AUTH EVENT LOG (FR-IDA-013)
-# -----------------------------------------------------------------------------
 
 class AuthEventLogReadSerializer(serializers.ModelSerializer):
     class Meta:
-        model = AuthEventLog
+        model  = AuthEventLog
         fields = (
-            "id",
-            "actor",
-            "subject",
-            "institution",
-            "event",
-            "ip_address",
-            "user_agent",
-            "metadata",
-            "created_at",
+            'id', 'actor', 'subject', 'school', 'event',
+            'ip_address', 'user_agent', 'metadata', 'created_at',
         )
         read_only_fields = fields
+
+

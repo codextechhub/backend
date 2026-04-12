@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from vs_institutions.models import Institution
+from vs_schools.models import School
 from .models import (
     AuditEvent,
     EntityAuditTrail,
@@ -26,14 +26,14 @@ User = get_user_model()
 # Small reusable serializers
 # -----------------------------------------------------------------------------
 
-class InstitutionSlimSerializer(serializers.ModelSerializer):
+class SchoolSlimSerializer(serializers.ModelSerializer):
     """
-    Small institution serializer.
-    Use this when you only want basic institution details inside another response.
+    Small school serializer.
+    Use this when you only want basic school details inside another response.
     """
 
     class Meta:
-        model = Institution
+        model = School
         fields = ("id", "name", "slug")
 
 
@@ -213,7 +213,7 @@ class ComplianceRuleListSerializer(serializers.ModelSerializer):
     Lighter serializer for listing compliance rules.
     """
 
-    institution = InstitutionSlimSerializer(read_only=True)
+    school = SchoolSlimSerializer(read_only=True)
 
     class Meta:
         model = ComplianceRule
@@ -221,7 +221,7 @@ class ComplianceRuleListSerializer(serializers.ModelSerializer):
             "id",
             "name",
             "rule_type",
-            "institution",
+            "school",
             "module_key",
             "action_type",
             "is_active",
@@ -234,7 +234,7 @@ class ComplianceRuleDetailSerializer(serializers.ModelSerializer):
     Full serializer for one compliance rule.
     """
 
-    institution = InstitutionSlimSerializer(read_only=True)
+    school = SchoolSlimSerializer(read_only=True)
 
     class Meta:
         model = ComplianceRule
@@ -243,7 +243,7 @@ class ComplianceRuleDetailSerializer(serializers.ModelSerializer):
             "name",
             "description",
             "rule_type",
-            "institution",
+            "school",
             "module_key",
             "action_type",
             "is_active",
@@ -266,7 +266,7 @@ class ComplianceRuleCreateUpdateSerializer(serializers.ModelSerializer):
             "name",
             "description",
             "rule_type",
-            "institution",
+            "school",
             "module_key",
             "action_type",
             "is_active",

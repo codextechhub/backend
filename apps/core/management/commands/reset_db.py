@@ -1,128 +1,343 @@
+"""
+Django Management Command: reset_db.py
+Location: <your_project>/management/commands/reset_db.py
+
+Purpose:
+    Unified command that performs a complete database and migration reset in the correct order:
+    1. Delete all migration files (except __init__.py)
+    2. Drop all database tables
+    3. Run fresh makemigrations and migrate
+
+Usage:
+    python manage.py reset_db
+    python manage.py reset_db --database default
+    python manage.py reset_db --skip-migrations  # Skip step 1
+    python manage.py reset_db --skip-drop        # Skip step 2
+    python manage.py reset_db --skip-migrate     # Skip step 3
+
+Safety:
+    - Requires explicit confirmation at each step
+    - Can skip individual steps via flags
+    - Graceful error handling and rollback
+
+Popular Use Cases:
+    - Full reset during development
+    - command: python manage.py reset_db --yes --post-commands seed_perms seed_missing_perms seed_role_perms
+"""
+
 import os
 import glob
-import sys
-import pymysql as sql
-
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.core.management import call_command
+from django.conf import settings
+from django.db import connections
 
 
 class Command(BaseCommand):
-    help = "Delete migration files, drop database tables, and migrate again"
+    help = 'Complete database reset: delete migrations, drop tables, and run fresh migrations'
 
     def add_arguments(self, parser):
+        """Add command-line arguments"""
         parser.add_argument(
-            "db_name",
+            '--database',
             type=str,
-            help="Name of the database to reset",
+            default='default',
+            help='Database alias to use (default: "default")'
+        )
+        parser.add_argument(
+            '--skip-migrations',
+            action='store_true',
+            help='Skip deleting migration files'
+        )
+        parser.add_argument(
+            '--skip-drop',
+            action='store_true',
+            help='Skip dropping database tables'
+        )
+        parser.add_argument(
+            '--skip-migrate',
+            action='store_true',
+            help='Skip running makemigrations and migrate'
+        )
+        parser.add_argument(
+            '--yes',
+            action='store_true',
+            help='Auto-confirm all prompts (use with caution)'
+        )
+        parser.add_argument(
+            '--post-commands',
+            nargs='+',
+            type=str,
+            default=["seed_perms", "seed_missing_perms", "seed_role_perms", "create_superuser"],
+            help='Commands to run after migration completes (e.g., seed_roles seed_schools)'
         )
 
     def handle(self, *args, **options):
-        db_name = options["db_name"]
-
-        # Update this list to match your actual apps
-        installed_apps = [
-            "vs_admin_console",
-            "vs_user",
-            "vs_institutions",
-            "vs_rbac",
-            "vs_audit",
-        ]
-
-        self.stdout.write(self.style.WARNING(
-            f"\nThis will do the following on database `{db_name}`:\n"
-            f"1. Delete migration files in: {', '.join(installed_apps)}\n"
-            f"2. Drop all tables in the database\n"
-            f"3. Run makemigrations\n"
-            f"4. Run migrate\n"
-        ))
-
-        self.stdout.write("Continue? [y/N]: ")
-        confirm = sys.stdin.readline().strip().lower()
-
-        if confirm.strip().lower() not in ("y", "yes"):
-            self.stdout.write(self.style.WARNING("Operation cancelled by user."))
-            return
-
-        # -----------------------------
-        # STEP 1: DELETE MIGRATION FILES
-        # -----------------------------
-        self.stdout.write(self.style.NOTICE("\nDeleting migration files..."))
-        deleted_files = []
-
-        for app in installed_apps:
-            migration_dir = os.path.join(os.getcwd(), app, "migrations")
-
-            if os.path.exists(migration_dir):
-                migration_files = glob.glob(os.path.join(migration_dir, "*.py"))
-
-                for file_path in migration_files:
-                    if os.path.basename(file_path) == "__init__.py":
-                        continue
-
-                    try:
-                        os.remove(file_path)
-                        deleted_files.append(file_path)
-                        self.stdout.write(self.style.SUCCESS(f"Deleted {file_path}"))
-                    except Exception as e:
-                        self.stdout.write(
-                            self.style.ERROR(f"Failed to delete {file_path}: {str(e)}")
-                        )
-
-        if deleted_files:
-            self.stdout.write(
-                self.style.SUCCESS(f"Deleted {len(deleted_files)} migration file(s).")
-            )
+        """Main command handler"""
+        self.database_alias = options['database']
+        self.auto_confirm = options['yes']
+        
+        # Display warning banner
+        self._display_warning()
+        
+        # Global confirmation
+        if not self.auto_confirm:
+            if not self._confirm_action("This will PERMANENTLY reset your database. Continue?"):
+                self.stdout.write(self.style.WARNING("Operation cancelled."))
+                return
+        
+        # Step 1: Delete migration files
+        if not options['skip_migrations']:
+            self._delete_migration_files()
         else:
-            self.stdout.write(self.style.WARNING("No migration files found to delete."))
+            self.stdout.write(self.style.NOTICE("Skipping migration file deletion"))
+        
+        # Step 2: Drop database tables
+        if not options['skip_drop']:
+            self._drop_database_tables()
+        else:
+            self.stdout.write(self.style.NOTICE("Skipping table drop"))
+        
+        # Step 3: Run fresh migrations
+        if not options['skip_migrate']:
+            self._run_fresh_migrations()
+        else:
+            self.stdout.write(self.style.NOTICE("Skipping fresh migrations"))
+        
+        # Step 4: Run post-migration commands (if provided)
+        self._run_post_migration_commands(options.get('post_commands'))
+        
+        # Success message
+        self.stdout.write(self.style.SUCCESS("\n" + "="*60))
+        self.stdout.write(self.style.SUCCESS("Database reset completed successfully!"))
+        self.stdout.write(self.style.SUCCESS("="*60))
 
-        # -----------------------------
-        # STEP 2: DROP ALL TABLES
-        # -----------------------------
-        self.stdout.write(self.style.NOTICE(f"\nDropping all tables in `{db_name}`..."))
+    def _display_warning(self):
+        """Display warning banner"""
+        self.stdout.write(self.style.WARNING("\n" + "="*60))
+        self.stdout.write(self.style.WARNING("WARNING: DATABASE RESET OPERATION"))
+        self.stdout.write(self.style.WARNING("="*60))
+        self.stdout.write(self.style.WARNING("This command will:"))
+        self.stdout.write(self.style.WARNING("  1. Delete all migration files"))
+        self.stdout.write(self.style.WARNING("  2. Drop all database tables"))
+        self.stdout.write(self.style.WARNING("  3. Run fresh migrations"))
+        self.stdout.write(self.style.WARNING("="*60 + "\n"))
 
-        conn = None
+    def _confirm_action(self, message):
+        """
+        Prompt user for confirmation
+        Returns True if user confirms, False otherwise
+        """
         try:
-            conn = sql.connect(
-                host="localhost",
-                user="root",
-                password="",
-                database=db_name,
-            )
-            cursor = conn.cursor()
+            prompt = f"{message} [y/N]: "
+            confirm = input(prompt)
+            return confirm.strip().lower() in ('y', 'yes')
+        except (EOFError, KeyboardInterrupt):
+            self.stdout.write(self.style.WARNING("\nNo input received."))
+            return False
 
-            cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
-            cursor.execute("SHOW TABLES")
-            tables = cursor.fetchall()
+    def _delete_migration_files(self):
+        """
+        Step 1: Delete all migration files across specified apps
+        Preserves __init__.py files
+        """
+        self.stdout.write(self.style.NOTICE("\n" + "-"*60))
+        self.stdout.write(self.style.NOTICE("STEP 1: Deleting migration files"))
+        self.stdout.write(self.style.NOTICE("-"*60))
+        
+        # List of apps to process
+        # You can modify this list or make it dynamic based on settings.INSTALLED_APPS
+        installed_apps = [
+            'vs_admin_console',
+            'vs_user',
+            'vs_schools',
+            'vs_rbac',
+            'vs_audit',
+            'vs_import_data',
+            # Add more apps as needed
+        ]
+        
+        # Confirm before deletion
+        if not self.auto_confirm:
+            apps_list = ', '.join(installed_apps)
+            if not self._confirm_action(f"Delete migrations from: {apps_list}?"):
+                self.stdout.write(self.style.WARNING("Skipping migration deletion"))
+                return
+        
+        deleted_files = []
+        
+        for app in installed_apps:
+            migration_dir = os.path.join(os.getcwd(), app, 'migrations')
+            
+            if not os.path.exists(migration_dir):
+                self.stdout.write(self.style.WARNING(f"  No migrations dir for {app}"))
+                continue
+            
+            # Get all Python files except __init__.py
+            migration_files = glob.glob(os.path.join(migration_dir, "*.py"))
+            
+            for file_path in migration_files:
+                if os.path.basename(file_path) == '__init__.py':
+                    continue  # Preserve __init__.py
+                
+                try:
+                    os.remove(file_path)
+                    deleted_files.append(file_path)
+                    self.stdout.write(self.style.SUCCESS(f"  ✓ Deleted {os.path.basename(file_path)}"))
+                except Exception as e:
+                    self.stdout.write(self.style.ERROR(f"  ✗ Failed to delete {file_path}: {e}"))
+        
+        if deleted_files:
+            self.stdout.write(self.style.SUCCESS(f"\nDeleted {len(deleted_files)} migration file(s)"))
+        else:
+            self.stdout.write(self.style.SUCCESS("No migration files found to delete"))
 
-            for table in tables:
-                table_name = table[0]
-                cursor.execute(f"DROP TABLE IF EXISTS `{table_name}`")
-                self.stdout.write(self.style.SUCCESS(f"Dropped table `{table_name}`"))
-
-            cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
-            conn.commit()
-
-            self.stdout.write(self.style.SUCCESS("All tables dropped successfully."))
-
+    def _drop_database_tables(self):
+        """
+        Step 2: Drop all tables in the database
+        Uses Django's database connection API (database-agnostic)
+        """
+        self.stdout.write(self.style.NOTICE("\n" + "-"*60))
+        self.stdout.write(self.style.NOTICE("STEP 2: Dropping database tables"))
+        self.stdout.write(self.style.NOTICE("-"*60))
+        
+        # Confirm before dropping
+        if not self.auto_confirm:
+            if not self._confirm_action("Drop ALL tables in the database?"):
+                self.stdout.write(self.style.WARNING("Skipping table drop"))
+                return
+        
+        try:
+            connection = connections[self.database_alias]
+            cursor = connection.cursor()
+            
+            # Get database vendor (postgresql, mysql, sqlite, etc.)
+            vendor = connection.vendor
+            self.stdout.write(self.style.NOTICE(f"Database vendor: {vendor}"))
+            
+            # Get list of all tables
+            table_names = connection.introspection.table_names()
+            
+            if not table_names:
+                self.stdout.write(self.style.SUCCESS("No tables found in database"))
+                return
+            
+            self.stdout.write(f"Found {len(table_names)} table(s) to drop")
+            
+            # Disable foreign key checks (vendor-specific)
+            if vendor == 'postgresql':
+                # PostgreSQL: Drop tables with CASCADE
+                for table_name in table_names:
+                    try:
+                        cursor.execute(f'DROP TABLE IF EXISTS "{table_name}" CASCADE')
+                        self.stdout.write(self.style.SUCCESS(f"  ✓ Dropped {table_name}"))
+                    except Exception as e:
+                        self.stdout.write(self.style.ERROR(f"  ✗ Failed to drop {table_name}: {e}"))
+                        
+            elif vendor == 'mysql':
+                # MySQL: Disable foreign key checks, drop tables, re-enable checks
+                cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
+                for table_name in table_names:
+                    try:
+                        cursor.execute(f"DROP TABLE IF EXISTS `{table_name}`")
+                        self.stdout.write(self.style.SUCCESS(f"  ✓ Dropped {table_name}"))
+                    except Exception as e:
+                        self.stdout.write(self.style.ERROR(f"  ✗ Failed to drop {table_name}: {e}"))
+                cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
+                
+            elif vendor == 'sqlite':
+                # SQLite: Simply drop each table
+                for table_name in table_names:
+                    try:
+                        cursor.execute(f"DROP TABLE IF EXISTS '{table_name}'")
+                        self.stdout.write(self.style.SUCCESS(f"  ✓ Dropped {table_name}"))
+                    except Exception as e:
+                        self.stdout.write(self.style.ERROR(f"  ✗ Failed to drop {table_name}: {e}"))
+            else:
+                raise CommandError(f"Unsupported database vendor: {vendor}")
+            
+            # Commit changes
+            connection.commit()
+            self.stdout.write(self.style.SUCCESS(f"\nSuccessfully dropped {len(table_names)} table(s)"))
+            
         except Exception as e:
-            self.stderr.write(self.style.ERROR(f"Error while dropping tables: {e}"))
-            return
-
+            self.stdout.write(self.style.ERROR(f"Error during table drop: {e}"))
+            raise CommandError(f"Failed to drop tables: {e}")
         finally:
-            if conn:
-                conn.close()
+            cursor.close()
 
-        # -----------------------------
-        # STEP 3: MAKE MIGRATIONS
-        # -----------------------------
-        self.stdout.write(self.style.NOTICE("\nMaking migrations..."))
-        call_command("makemigrations")
-
-        # -----------------------------
-        # STEP 4: MIGRATE
-        # -----------------------------
-        self.stdout.write(self.style.NOTICE("\nRunning migrations..."))
-        call_command("migrate", database="default")
-
-        self.stdout.write(self.style.SUCCESS("\nDatabase reset complete."))
+    def _run_fresh_migrations(self):
+        """
+        Step 3: Run makemigrations and migrate to create fresh schema
+        """
+        self.stdout.write(self.style.NOTICE("\n" + "-"*60))
+        self.stdout.write(self.style.NOTICE("STEP 3: Running fresh migrations"))
+        self.stdout.write(self.style.NOTICE("-"*60))
+        
+        # Confirm before migrating
+        if not self.auto_confirm:
+            if not self._confirm_action("Run makemigrations and migrate?"):
+                self.stdout.write(self.style.WARNING("Skipping fresh migrations"))
+                return
+        
+        try:
+            # Step 3a: makemigrations
+            self.stdout.write(self.style.NOTICE("\nRunning makemigrations..."))
+            call_command('makemigrations')
+            
+            # Step 3b: migrate
+            self.stdout.write(self.style.NOTICE("\nRunning migrate..."))
+            call_command('migrate', database=self.database_alias)
+            
+            self.stdout.write(self.style.SUCCESS("\nFresh migrations completed successfully"))
+            
+        except Exception as e:
+            self.stdout.write(self.style.ERROR(f"Error during migration: {e}"))
+            raise CommandError(f"Failed to run migrations: {e}")
+    
+    def _run_post_migration_commands(self, commands):
+        """
+        Step 4 (Optional): Run custom commands after migrations complete
+        Useful for seeding, creating superuser, loading fixtures, etc.
+        
+        Args:
+            commands: List of command names to execute
+        """
+        if not commands:
+            return
+        
+        self.stdout.write(self.style.NOTICE("\n" + "-"*60))
+        self.stdout.write(self.style.NOTICE("STEP 4: Running post-migration commands"))
+        self.stdout.write(self.style.NOTICE("-"*60))
+        
+        # Confirm before running
+        if not self.auto_confirm:
+            commands_str = ', '.join(commands)
+            if not self._confirm_action(f"Run these commands: {commands_str}?"):
+                self.stdout.write(self.style.WARNING("Skipping post-migration commands"))
+                return
+        
+        for command in commands:
+            try:
+                self.stdout.write(self.style.NOTICE(f"\nRunning: {command}"))
+                
+                # Split command into name and args if provided
+                # e.g., "seed_roles --initial" becomes ["seed_roles", "--initial"]
+                command_parts = command.split()
+                command_name = command_parts[0]
+                command_args = command_parts[1:] if len(command_parts) > 1 else []
+                
+                call_command(command_name, *command_args)
+                self.stdout.write(self.style.SUCCESS(f"  ✓ Completed: {command}"))
+                
+            except Exception as e:
+                self.stdout.write(self.style.ERROR(f"  ✗ Failed: {command}"))
+                self.stdout.write(self.style.ERROR(f"    Error: {e}"))
+                
+                # Ask if user wants to continue with remaining commands
+                if not self.auto_confirm:
+                    if not self._confirm_action("Continue with remaining commands?"):
+                        self.stdout.write(self.style.WARNING("Stopping post-migration commands"))
+                        return
+        
+        self.stdout.write(self.style.SUCCESS("\nPost-migration commands completed"))
