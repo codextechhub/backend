@@ -18,7 +18,6 @@ from .models import (
     BranchPrimaryAdmin,
     InstitutionBranding,
     BranchLifecycle,
-    InstitutionModuleSetting,
     InstitutionStatus,
     PlanTier,
 )
@@ -91,27 +90,6 @@ class InstitutionBrandingSerializer(serializers.ModelSerializer):
         # Minimal “token” validation hooks; keep it light and let BrandingService enforce deeper rules.
         # If you have a design token registry, validate theme_pack_key against it here.
         return attrs
-
-
-class InstitutionModuleSettingSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = InstitutionModuleSetting
-        fields = [
-            "module_key",
-            "enabled",
-            "effective_from",
-            "changed_by_actor_id",
-            "created_at",
-            "updated_at",
-        ]
-        read_only_fields = [ "created_at", "updated_at"]
-
-    def validate_module_key(self, value: str) -> str:
-        value = (value or "").strip()
-        if not value:
-            raise serializers.ValidationError("module_key is required.")
-        return value
-
 
 class BranchLifecycleSerializer(serializers.ModelSerializer):
     class Meta:
@@ -472,8 +450,7 @@ class InstitutionDetailSerializer(serializers.ModelSerializer):
     branches = BranchDetailSerializer(many=True, read_only=True)
     main_branch = BranchDetailSerializer(read_only=True)
     branding = InstitutionBrandingSerializer(read_only=True)
-    module_settings = InstitutionModuleSettingSerializer(many=True, read_only=True)
-
+    
     class Meta:
         model = Institution
         fields = [
@@ -513,7 +490,6 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
 
     slug = serializers.CharField(required=False, allow_blank=True)
     branding = InstitutionBrandingSerializer(required=False)
-    module_settings = InstitutionModuleSettingSerializer(many=True, required=False)
 
     class Meta:
         model = Institution
@@ -570,16 +546,6 @@ class InstitutionCreateSerializer(serializers.ModelSerializer):
         if branding_data:
             InstitutionBranding.objects.create(institution=institution, **branding_data)
 
-        # Optional module settings (bulk upsert-friendly approach)
-        for ms in module_settings_data:
-            InstitutionModuleSetting.objects.create(
-                institution=institution,
-                module_key=ms["module_key"],
-                enabled=ms.get("enabled", False),
-                effective_from=ms.get("effective_from"),
-                changed_by_actor_id=str(self.context.get("actor_id", "")),
-            )
-
         audit_e = AuditEvent.objects.create(
             module_key=AuditModuleKey.INSTITUTION,
             action_type=AuditActionType.CREATE,
@@ -612,8 +578,7 @@ class InstitutionUpdateSerializer(serializers.ModelSerializer):
     """
 
     branding = InstitutionBrandingSerializer(required=False)
-    module_settings = InstitutionModuleSettingSerializer(many=True, required=False)
-
+    
     class Meta:
         model = Institution
         fields = [
@@ -657,19 +622,6 @@ class InstitutionUpdateSerializer(serializers.ModelSerializer):
                 institution=instance,
                 defaults=branding_data,
             )
-
-        # Module settings upsert (per institution+module_key)
-        if module_settings_data is not None:
-            for ms in module_settings_data:
-                InstitutionModuleSetting.objects.update_or_create(
-                    institution=instance,
-                    module_key=ms["module_key"],
-                    defaults={
-                        "enabled": ms.get("enabled", False),
-                        "effective_from": ms.get("effective_from"),
-                        "changed_by_actor_id": str(actor_id),
-                    },
-                )
 
         return instance
 
@@ -730,6 +682,5 @@ class InstitutionResetConfigSerializer(serializers.Serializer):
         # - Disable all modules (or re-seed defaults depending on your product policy)
         # - Clear localization (optional; many teams keep localization)
         InstitutionBranding.objects.filter(institution=institution).delete()
-        InstitutionModuleSetting.objects.filter(institution=institution).update(enabled=False, changed_by_actor_id=actor_id)
 
         return institution

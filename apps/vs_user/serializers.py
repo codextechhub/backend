@@ -178,7 +178,6 @@ class AdminCreateAccountSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         password = validated_data.pop("password")
-        
         user = UserAccount.objects.create_superuser(email=validated_data["email"], 
                                                     password=password, 
                                                     full_name=validated_data.get("full_name", "Admin User"), 
