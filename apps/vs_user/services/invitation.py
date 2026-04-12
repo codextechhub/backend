@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import uuid
 
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -131,10 +132,12 @@ class InvitationService:
         user.password_changed_at = timezone.now()
         user.is_active           = True
         user.status              = User.Status.ACTIVE
+        user.activation_key       = uuid.uuid4() # Invalidate the activation key immediately
         
         user.save(update_fields=[
             'password', 'password_changed_at',
             'is_active', 'status', 'updated_at',
+            'activation_key',
         ])
 
         # 5. Consume the invitation — link is now dead

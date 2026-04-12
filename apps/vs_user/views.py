@@ -343,14 +343,14 @@ class PasswordResetPreviewView(APIView):
     def get(self, request, activation_key):
         try:
             user = User.objects.get(activation_key=activation_key)
-            reset_request = PasswordResetRequest.objects.filter(user=user).first()
+            reset_request = PasswordResetRequest.objects.filter(user=user, used_at__isnull=True).last()
         except PasswordResetRequest.DoesNotExist:
-            return Response({'detail': 'Invalid or expired token.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'Invalid or expired key. Contact your administrator for assistance.'}, status=status.HTTP_400_BAD_REQUEST)
         except User.DoesNotExist:
-            return Response({'detail': 'Invalid or expired token.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'Invalid or expired key. Contact your administrator for assistance.'}, status=status.HTTP_400_BAD_REQUEST)
 
         if reset_request.expires_at < timezone.now():
-            return Response({'detail': 'Reset token has expired.'}, status=status.HTTP_400_BAD_REQUEST)
+            return Response({'detail': 'Reset key has expired. Try Again.'}, status=status.HTTP_400_BAD_REQUEST)
 
         return Response(
             PasswordResetPreviewSerializer(reset_request.user).data,
@@ -369,14 +369,21 @@ class PasswordResetConfirmView(APIView):
     """
     permission_classes = [AllowAny]
 
-    def post(self, request):
+    def post(self, request, activation_key):
         ser = PasswordResetConfirmSerializer(data=request.data)
         if not ser.is_valid():
             return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
 
         try:
+            user = User.objects.get(activation_key=activation_key)
+            if not user:
+                return Response({'detail': 'Invalid or expired key. Contact your administrator for assistance.'}, status=status.HTTP_400_BAD_REQUEST)
+        except User.DoesNotExist:
+            return Response({'detail': 'Invalid or expired key. Contact your administrator for assistance.'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
             PasswordService.confirm_reset(
-                raw_token=ser.validated_data['token'],
+                user=user,
                 new_password=ser.validated_data['password'],
                 request=request,
             )

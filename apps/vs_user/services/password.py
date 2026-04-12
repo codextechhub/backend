@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-import secrets
 from datetime import timedelta
+import uuid
 
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -75,29 +75,26 @@ class PasswordService:
 
     @staticmethod
     @transaction.atomic
-    def confirm_reset(raw_token: str, new_password: str, request=None):
+    def confirm_reset(user, new_password: str, request=None):
         """
-        Confirms a password reset using the raw token from the email.
-        Hashes the token before the DB lookup -- plaintext is never stored.
+        Confirms a password reset using the activation key.
         Ends all active sessions on success.
         """
-        token_hash = PasswordResetRequest.hash_token(raw_token)
-
         pr = PasswordResetRequest.objects.filter(
-            token_hash=token_hash, used_at__isnull=True
-        ).first()
+            user=user, used_at__isnull=True
+        ).last()
 
         if not pr or pr.is_expired():
-            raise ValueError({"error_code": "RESET_TOKEN_INVALID", "message": "Invalid or expired reset link."})
+            raise ValueError({"error_code": "RESET_KEY_INVALID", "message": "Invalid or expired reset link."})
 
         try:
-            validate_password(new_password, user=pr.user)
+            validate_password(new_password, user=user)
         except DjangoValidationError as e:
             raise ValueError({"error_code": "PASSWORD_POLICY_VIOLATION", "messages": list(e.messages)})
 
-        user = pr.user
         user.set_password(new_password)
         user.password_changed_at = timezone.now()
+        user.activation_key = uuid.uuid4() # Invalidate the reset key immediately
 
         # If account was locked, restore it on successful reset.
         if user.status == User.Status.LOCKED:
@@ -107,7 +104,7 @@ class PasswordService:
                 lockout.clear()
                 lockout.save(update_fields=["failure_count", "locked_until", "locked_reason", "updated_at"])
 
-        user.save(update_fields=["password", "password_changed_at", "status", "updated_at"])
+        user.save(update_fields=["password", "password_changed_at", "status", "updated_at", "activation_key"])
         pr.mark_used()
         pr.save(update_fields=["used_at", "updated_at"])
         blacklist_all_user_tokens(user)
