@@ -104,7 +104,7 @@ class UserCreateSerializer(serializers.Serializer):
     last_name   = serializers.CharField(max_length=100)
     email       = serializers.EmailField()
     gender      = serializers.CharField(max_length=20, required=True)
-    user_type   = serializers.ChoiceField(choices=User.UserType.choices)
+    user_type   = serializers.ChoiceField(choices=User.UserType.choices, required=False)
     phone       = serializers.CharField(max_length=32, required=False, allow_blank=True)
     # school and branch passed as UUIDs; resolved to objects in validate()
     school      = serializers.UUIDField(required=False, allow_null=True)
@@ -116,6 +116,14 @@ class UserCreateSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         user_type = attrs.get('user_type')
+
+        if not user_type:
+            if self.context['request'].user.user_type == User.UserType.VISION_STAFF:
+                user_type = User.UserType.VISION_STAFF
+            else:                
+                user_type = User.UserType.SCHOOL_ADMIN
+                
+        attrs['user_type'] = user_type
 
         # Resolve school UUID to instance
         school_id = attrs.pop('school', None)
