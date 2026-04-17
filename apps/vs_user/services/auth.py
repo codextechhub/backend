@@ -145,7 +145,7 @@ class LoginService:
             'refresh':    tokens['refresh'],
             'session_id': session.id,
             'user':       UserReadSerializer(authed).data,
-            'cached_school': request._cached_school,
+            # 'cached_school': request._cached_school,
         }
 
     # ── Private helpers ───────────────────────────────────────────────────────
