@@ -106,19 +106,20 @@ class LogoutView(APIView):
 
         try:
             token = RefreshToken(refresh_token)
+            blacklist_all_user_tokens(request.user) # Also blacklist all outstanding tokens to ensure complete logout across all sessions.
             jti = token.get('jti', '')
-            token.blacklist()
         except TokenError:
             jti = ''
 
-        # End the LoginSession linked to this refresh token's JTI.
         if jti:
-            session = LoginSession.objects.filter(
-                refresh_jti=jti, is_active=True,
-            ).first()
-            if session:
-                session.end(reason='LOGOUT')
-                session.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
+            sessions = LoginSession.objects.filter(
+                user=request.user, is_active=True,
+            )
+            if sessions.exists():
+                # Logout is session-based, not only token-based, so we end all active sessions for the user.
+                for session in sessions:
+                    session.end(reason='LOGOUT')
+                    session.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
 
             log_auth_event(
                 actor=request.user,
