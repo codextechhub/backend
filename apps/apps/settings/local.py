@@ -4,6 +4,9 @@ DEBUG = True
 
 ALLOWED_HOSTS = []
 
+# Frontend URL
+FRONTEND_BASE_URL = 'http://127.0.0.1:8000/'  # Dev
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.mysql",

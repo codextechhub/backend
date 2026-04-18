@@ -5,6 +5,9 @@ DEBUG = False
 
 ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="*").split(",")
 
+# Frontend URL
+FRONTEND_BASE_URL = 'https://api.codexng.com'  # Production
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.postgresql",

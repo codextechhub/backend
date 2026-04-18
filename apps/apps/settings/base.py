@@ -134,18 +134,22 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
-# Email settings (TEMPORARY - move to environment variables)
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'  # Prints to console for dev
-EMAIL_HOST = 'smtp.zoho.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = 'noreply@codexvision.com'
-EMAIL_HOST_PASSWORD = 'YOUR_PASSWORD_HERE'  # ⚠️ NEVER commit this to Git
-DEFAULT_FROM_EMAIL = 'CodeX Vision <noreply@codexvision.com>'
-
-# Frontend URL
-FRONTEND_BASE_URL = 'http://127.0.0.1:8000/'  # Dev
-# FRONTEND_BASE_URL = 'https://vision.codexng.com'  # Production
+# Email settings — Zoho SMTP (credentials come from environment)
+EMAIL_BACKEND = config(
+    "EMAIL_BACKEND",
+    default="django.core.mail.backends.smtp.EmailBackend",
+)
+EMAIL_HOST = config("EMAIL_HOST", default="smtp.zoho.com")
+EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
+EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
+EMAIL_USE_SSL = config("EMAIL_USE_SSL", default=False, cast=bool)
+EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
+EMAIL_TIMEOUT = config("EMAIL_TIMEOUT", default=20, cast=int)
+DEFAULT_FROM_EMAIL = config(
+    "DEFAULT_FROM_EMAIL",
+    default="CodeX Vision <chidera.ohanenye@codexng.com>",
+)
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.0/topics/i18n/

@@ -11,3 +11,8 @@ Others/
 .qodo/
 frontend_2/
 staticfiles/
+
+# -- secrets / env --
+.env
+.env.*
+!.env.example
