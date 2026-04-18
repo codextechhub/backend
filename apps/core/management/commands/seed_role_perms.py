@@ -1,13 +1,29 @@
 """
 Management command: seed_roles_and_permissions
 ===============================================
+Single authoritative seeder for the full RBAC permission registry, role
+templates, and permission groups. Supersedes the former seed_missing_perms
+command — all school-domain and platform-domain permission keys are now
+declared here.
+
 Idempotently seeds:
 
-  1. Permission registry        → Permission
-  2. School role templates       → RoleTemplate  (school-scoped)
-  3. School role↔permission map  → RolePermission
-  4. Platform role templates     → PlatformRoleTemplate  (Vision-owned)
-  5. Platform role↔permission    → PlatformRolePermission
+  1. Permission registry               → Permission          (161 keys)
+  2. Permission dependencies           → PermissionDependency
+  3. Permission groups (reusable)      → PermissionGroup + GroupPermission
+  4. School role templates             → RoleTemplate        (school-scoped)
+  5. School role↔permission direct map → RolePermission      (residuals only)
+  6. School role↔group attachments     → RoleGroup
+  7. Platform role templates           → PlatformRoleTemplate (Vision-owned)
+  8. Platform role↔permission direct   → PlatformRolePermission (residuals)
+  9. Platform role↔group attachments   → PlatformRoleGroup
+
+Permission namespaces
+---------------------
+  dashboard.*      students.*     staff.*        academics.*    assessments.*
+  attendance.*     finance.*      library.*      health.*       communication.*
+  admissions.*     hostel.*       transport.*    canteen.*      events.*
+  alumni.*         settings.*     reports.*      audit.*        platform.*
 
 Run
 ---
@@ -19,9 +35,10 @@ Notes
 -----
 * Every write uses update_or_create so the command is safe to re-run.
 * --dry-run prints a summary without touching the database.
-* School roles are seeded against every active school unless --school-slug
-  is supplied.
-* Platform roles are global; they are always seeded.
+* Direct RolePermission rows are only created for permissions NOT already
+  covered by an attached group (residuals), so the effective permission set
+  equals the explicitly declared ``permissions`` list for every role.
+* Platform roles are global; they are always seeded regardless of school.
 """
 
 from __future__ import annotations
@@ -30,241 +47,1133 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 
 # ---------------------------------------------------------------------------
-# ① PERMISSION REGISTRY
+# 1. PERMISSION REGISTRY
 #    Format: (key, module_key, action, description, sensitivity, is_restricted)
 # ---------------------------------------------------------------------------
 
 PERMISSIONS: list[tuple] = [
 
     # ── DASHBOARD ──────────────────────────────────────────────────────────
-    ("dashboard.overview.view",         "dashboard",    "view",     "View main dashboard overview",                     "NORMAL",    False),
-    ("dashboard.analytics.view",        "dashboard",    "view",     "View analytics widgets on dashboard",              "NORMAL",    False),
-    ("dashboard.announcements.manage",  "dashboard",    "manage",   "Create and publish school announcements",          "NORMAL",    False),
-
+    ("dashboard.overview.view",         "dashboard",    "view",     "View the main school dashboard overview panel.",                     "NORMAL",    False),    ("dashboard.analytics.view",        "dashboard",    "view",     "View analytics and summary widgets on the dashboard.",              "NORMAL",    False),    ("dashboard.announcements.manage",  "dashboard",    "manage",   "Create, edit and publish school-wide announcements.",          "NORMAL",    False),
     # ── STUDENTS ───────────────────────────────────────────────────────────
-    ("students.profile.view",           "students",     "view",     "View student profiles",                            "NORMAL",    False),
-    ("students.profile.create",         "students",     "create",   "Enrol a new student",                              "NORMAL",    False),
-    ("students.profile.update",         "students",     "update",   "Edit student profile details",                     "NORMAL",    False),
-    ("students.profile.delete",         "students",     "delete",   "Remove a student record permanently",              "CRITICAL",  True),
-    ("students.profile.export",         "students",     "export",   "Export student records to CSV/XLSX",               "SENSITIVE", True),
-    ("students.class.assign",           "students",     "assign",   "Assign student to a class/arm",                    "NORMAL",    False),
-    ("students.class.transfer",         "students",     "transfer", "Transfer student between classes or branches",     "SENSITIVE", True),
-    ("students.disciplinary.view",      "students",     "view",     "View disciplinary records",                        "SENSITIVE", False),
-    ("students.disciplinary.manage",    "students",     "manage",   "Add/update disciplinary notes",                    "SENSITIVE", False),
-    ("students.medical.view",           "students",     "view",     "View student medical records",                     "CRITICAL",  True),
-    ("students.medical.manage",         "students",     "manage",   "Update student medical/health records",            "CRITICAL",  True),
-    ("students.guardian.view",          "students",     "view",     "View linked guardian/parent records",              "NORMAL",    False),
-    ("students.guardian.manage",        "students",     "manage",   "Link or update guardian records",                  "NORMAL",    False),
-    ("students.id_card.generate",       "students",     "generate", "Generate and print student ID cards",              "NORMAL",    False),
-
+    ("students.profile.view",           "students",     "view",     "View student profiles within the school tenant.",                            "NORMAL",    False),    ("students.profile.create",         "students",     "create",   "Enrol a new student and create their profile record.",                              "NORMAL",    False),    ("students.profile.update",         "students",     "update",   "Edit student profile details (name, DOB, contact, etc.).",                     "NORMAL",    False),    ("students.profile.delete",         "students",     "delete",   "Remove a student record permanently",              "CRITICAL",  True),
+    ("students.profile.export",         "students",     "export",   "Export student profile records to CSV or XLSX.",               "SENSITIVE", True),    ("students.class.assign",           "students",     "assign",   "Assign a student to a class or arm.",                    "NORMAL",    False),    ("students.class.transfer",         "students",     "transfer", "Transfer a student between classes or branches.",     "SENSITIVE", True),    ("students.disciplinary.view",      "students",     "view",     "View a student's disciplinary history and notes.",                        "SENSITIVE", False),    ("students.disciplinary.manage",    "students",     "manage",   "Add or update disciplinary records for a student.",                    "SENSITIVE", False),    ("students.medical.view",           "students",     "view",     "View student medical and health records.",                     "CRITICAL",  True),    ("students.medical.manage",         "students",     "manage",   "Update student medical/health records",            "CRITICAL",  True),
+    ("students.guardian.view",          "students",     "view",     "View linked parent or guardian records for a student.",              "NORMAL",    False),    ("students.guardian.manage",        "students",     "manage",   "Link, edit or remove parent/guardian records.",                  "NORMAL",    False),    ("students.id_card.generate",       "students",     "generate", "Generate and print student ID cards.",              "NORMAL",    False),
     # ── STAFF ──────────────────────────────────────────────────────────────
-    ("staff.profile.view",              "staff",        "view",     "View staff profiles",                              "NORMAL",    False),
-    ("staff.profile.create",            "staff",        "create",   "Onboard a new staff member",                       "SENSITIVE", False),
-    ("staff.profile.update",            "staff",        "update",   "Edit staff profile details",                       "SENSITIVE", False),
-    ("staff.profile.delete",            "staff",        "delete",   "Remove a staff record",                            "CRITICAL",  True),
-    ("staff.profile.export",            "staff",        "export",   "Export staff records",                             "SENSITIVE", True),
-    ("staff.salary.view",               "staff",        "view",     "View salary/payroll entries",                      "CRITICAL",  True),
-    ("staff.salary.manage",             "staff",        "manage",   "Create or modify payroll entries",                 "CRITICAL",  True),
+    ("staff.profile.view",              "staff",        "view",     "View staff member profiles within the school.",                              "NORMAL",    False),    ("staff.profile.create",            "staff",        "create",   "Onboard a new staff member and create their account.",                       "SENSITIVE", False),    ("staff.profile.update",            "staff",        "update",   "Edit staff member profile and contact details.",                       "SENSITIVE", False),    ("staff.profile.delete",            "staff",        "delete",   "Remove a staff record",                            "CRITICAL",  True),
+    ("staff.profile.export",            "staff",        "export",   "Export staff records to CSV or XLSX.",                             "SENSITIVE", True),    ("staff.salary.view",               "staff",        "view",     "View staff salary and payroll information.",                      "CRITICAL",  True),    ("staff.salary.manage",             "staff",        "manage",   "Create or modify payroll entries",                 "CRITICAL",  True),
     ("staff.leave.apply",               "staff",        "apply",    "Submit a leave request",                           "NORMAL",    False),
-    ("staff.leave.approve",             "staff",        "approve",  "Approve or reject staff leave requests",           "SENSITIVE", False),
-    ("staff.appraisal.view",            "staff",        "view",     "View staff appraisal records",                     "SENSITIVE", False),
-    ("staff.appraisal.manage",          "staff",        "manage",   "Conduct and submit staff appraisals",              "SENSITIVE", False),
-    ("staff.attendance.view",           "staff",        "view",     "View staff attendance records",                    "NORMAL",    False),
-    ("staff.attendance.mark",           "staff",        "mark",     "Mark or edit staff attendance",                    "NORMAL",    False),
-
+    ("staff.leave.approve",             "staff",        "approve",  "Approve or reject staff leave requests.",           "SENSITIVE", False),    ("staff.appraisal.view",            "staff",        "view",     "View staff performance appraisal records.",                     "SENSITIVE", False),    ("staff.appraisal.manage",          "staff",        "manage",   "Conduct, update and submit staff appraisal reports.",              "SENSITIVE", False),    ("staff.attendance.view",           "staff",        "view",     "View staff attendance and punctuality records.",                    "NORMAL",    False),    ("staff.attendance.mark",           "staff",        "mark",     "Mark or edit daily staff attendance.",                    "NORMAL",    False),
     # ── ACADEMICS ──────────────────────────────────────────────────────────
-    ("academics.curriculum.view",       "academics",    "view",     "View curriculum and scheme of work",               "NORMAL",    False),
-    ("academics.curriculum.manage",     "academics",    "manage",   "Edit curriculum structures",                       "SENSITIVE", False),
-    ("academics.timetable.view",        "academics",    "view",     "View class timetables",                            "NORMAL",    False),
-    ("academics.timetable.manage",      "academics",    "manage",   "Create and publish timetables",                    "NORMAL",    False),
-    ("academics.subjects.view",         "academics",    "view",     "View subject catalogue",                           "NORMAL",    False),
-    ("academics.subjects.manage",       "academics",    "manage",   "Add/edit subjects and assign teachers",            "NORMAL",    False),
-    ("academics.class.view",            "academics",    "view",     "View class and arm listings",                      "NORMAL",    False),
-    ("academics.class.manage",          "academics",    "manage",   "Create and manage classes/arms",                   "NORMAL",    False),
-    ("academics.lesson_notes.view",     "academics",    "view",     "View lesson notes/plans",                          "NORMAL",    False),
-    ("academics.lesson_notes.manage",   "academics",    "manage",   "Upload or edit lesson notes",                      "NORMAL",    False),
-    ("academics.lesson_notes.approve",  "academics",    "approve",  "Approve lesson notes before publishing",          "NORMAL",    False),
-
+    ("academics.curriculum.view",       "academics",    "view",     "View the school curriculum and scheme of work.",               "NORMAL",    False),    ("academics.curriculum.manage",     "academics",    "manage",   "Create and edit curriculum content and learning objectives.",                       "SENSITIVE", False),    ("academics.timetable.view",        "academics",    "view",     "View published class timetables.",                            "NORMAL",    False),    ("academics.timetable.manage",      "academics",    "manage",   "Create, edit and publish timetable schedules.",                    "NORMAL",    False),    ("academics.subjects.view",         "academics",    "view",     "View the school subject catalogue.",                           "NORMAL",    False),    ("academics.subjects.manage",       "academics",    "manage",   "Add, edit subjects and assign them to teachers.",            "NORMAL",    False),    ("academics.class.view",            "academics",    "view",     "View class and arm listings.",                      "NORMAL",    False),    ("academics.class.manage",          "academics",    "manage",   "Create and manage classes and arms.",                   "NORMAL",    False),    ("academics.lesson_notes.view",     "academics",    "view",     "View uploaded lesson notes and plans.",                          "NORMAL",    False),    ("academics.lesson_notes.manage",   "academics",    "manage",   "Upload and edit lesson notes for assigned subjects.",                      "NORMAL",    False),    ("academics.lesson_notes.approve",  "academics",    "approve",  "Approve lesson notes before they are published to students.",           "NORMAL",    False),
     # ── ASSESSMENTS & RESULTS ──────────────────────────────────────────────
-    ("assessments.scores.view",         "assessments",  "view",     "View student assessment scores",                   "NORMAL",    False),
-    ("assessments.scores.enter",        "assessments",  "enter",    "Enter CA/test scores for assigned subjects",       "NORMAL",    False),
-    ("assessments.scores.edit",         "assessments",  "edit",     "Edit previously submitted scores",                 "SENSITIVE", True),
-    ("assessments.scores.approve",      "assessments",  "approve",  "Approve/ratify score sheets",                      "SENSITIVE", False),
-    ("assessments.results.publish",     "assessments",  "publish",  "Publish term/semester results to students",        "SENSITIVE", False),
-    ("assessments.results.export",      "assessments",  "export",   "Export result sheets",                             "SENSITIVE", True),
-    ("assessments.report_card.print",   "assessments",  "print",    "Print student report cards",                       "NORMAL",    False),
-    ("assessments.exam_schedule.view",  "assessments",  "view",     "View examination timetable",                       "NORMAL",    False),
-    ("assessments.exam_schedule.manage","assessments",  "manage",   "Create and publish exam timetables",               "SENSITIVE", False),
-    ("assessments.grading.manage",      "assessments",  "manage",   "Configure grading scales and promotion rules",     "SENSITIVE", True),
-
+    ("assessments.scores.view",         "assessments",  "view",     "View student assessment and examination scores.",                   "NORMAL",    False),    ("assessments.scores.enter",        "assessments",  "enter",    "Enter CA or test scores for assigned subjects.",       "NORMAL",    False),    ("assessments.scores.edit",         "assessments",  "edit",     "Edit previously submitted score entries.",                 "SENSITIVE", True),    ("assessments.scores.approve",      "assessments",  "approve",  "Approve and ratify submitted score sheets.",                      "SENSITIVE", False),    ("assessments.results.publish",     "assessments",  "publish",  "Publish term or semester results to students and parents.",        "SENSITIVE", False),    ("assessments.results.export",      "assessments",  "export",   "Export result sheets and grade reports.",                             "SENSITIVE", True),    ("assessments.report_card.print",   "assessments",  "print",    "Generate and print student report cards.",                       "NORMAL",    False),    ("assessments.exam_schedule.view",  "assessments",  "view",     "View the published examination timetable.",                       "NORMAL",    False),    ("assessments.exam_schedule.manage","assessments",  "manage",   "Create and publish examination timetables.",               "SENSITIVE", False),    ("assessments.grading.manage",      "assessments",  "manage",   "Configure grading scales, boundaries and promotion rules.",     "SENSITIVE", True),
     # ── ATTENDANCE ─────────────────────────────────────────────────────────
-    ("attendance.student.view",         "attendance",   "view",     "View student attendance records",                  "NORMAL",    False),
-    ("attendance.student.mark",         "attendance",   "mark",     "Mark daily/period attendance for students",        "NORMAL",    False),
-    ("attendance.student.edit",         "attendance",   "edit",     "Edit previously marked attendance",                "SENSITIVE", True),
-    ("attendance.student.export",       "attendance",   "export",   "Export attendance reports",                        "SENSITIVE", True),
-    ("attendance.student.report",       "attendance",   "report",   "Generate attendance summary reports",              "NORMAL",    False),
-
+    ("attendance.student.view",         "attendance",   "view",     "View student attendance records and summaries.",                  "NORMAL",    False),    ("attendance.student.mark",         "attendance",   "mark",     "Mark daily or period-level student attendance.",        "NORMAL",    False),    ("attendance.student.edit",         "attendance",   "edit",     "Edit previously marked attendance entries.",                "SENSITIVE", True),    ("attendance.student.export",       "attendance",   "export",   "Export student attendance data reports.",                        "SENSITIVE", True),    ("attendance.student.report",       "attendance",   "report",   "Generate attendance summary and anomaly reports.",              "NORMAL",    False),
     # ── FINANCE ────────────────────────────────────────────────────────────
-    ("finance.fees.view",               "finance",      "view",     "View fee schedules and student fee records",       "SENSITIVE", False),
-    ("finance.fees.manage",             "finance",      "manage",   "Create and update fee structures",                 "CRITICAL",  True),
-    ("finance.fees.waive",              "finance",      "waive",    "Grant full or partial fee waivers",                "CRITICAL",  True),
-    ("finance.invoice.view",            "finance",      "view",     "View student invoices",                            "SENSITIVE", False),
-    ("finance.invoice.create",          "finance",      "create",   "Generate invoices for students",                   "SENSITIVE", False),
-    ("finance.invoice.approve",         "finance",      "approve",  "Approve invoices before sending",                  "CRITICAL",  True),
-    ("finance.payment.record",          "finance",      "record",   "Record manual payment receipts",                   "SENSITIVE", False),
-    ("finance.payment.verify",          "finance",      "verify",   "Verify payment proof/receipt uploads",             "SENSITIVE", False),
-    ("finance.payment.reverse",         "finance",      "reverse",  "Reverse or void a payment record",                 "CRITICAL",  True),
-    ("finance.expenditure.view",        "finance",      "view",     "View school expenditure records",                  "CRITICAL",  True),
-    ("finance.expenditure.manage",      "finance",      "manage",   "Record and approve school expenditures",           "CRITICAL",  True),
-    ("finance.reports.view",            "finance",      "view",     "View financial summary reports",                   "CRITICAL",  True),
-    ("finance.reports.export",          "finance",      "export",   "Export financial reports",                         "CRITICAL",  True),
-    ("finance.budget.view",             "finance",      "view",     "View annual school budget",                        "CRITICAL",  True),
-    ("finance.budget.manage",           "finance",      "manage",   "Create and approve budget lines",                  "CRITICAL",  True),
-
+    ("finance.fees.view",               "finance",      "view",     "View school fee schedules and student fee records.",       "SENSITIVE", False),    ("finance.fees.manage",             "finance",      "manage",   "Create and update school fee structures.",                 "CRITICAL",  True),    ("finance.fees.waive",              "finance",      "waive",    "Grant full or partial fee waivers to students.",                "CRITICAL",  True),    ("finance.invoice.view",            "finance",      "view",     "View student fee invoices.",                            "SENSITIVE", False),    ("finance.invoice.create",          "finance",      "create",   "Generate invoices for individual students.",                   "SENSITIVE", False),    ("finance.invoice.approve",         "finance",      "approve",  "Approve invoices before they are sent to parents.",                  "CRITICAL",  True),    ("finance.payment.record",          "finance",      "record",   "Record manual cash or bank payment receipts.",                   "SENSITIVE", False),    ("finance.payment.verify",          "finance",      "verify",   "Verify uploaded proof-of-payment documents.",             "SENSITIVE", False),    ("finance.payment.reverse",         "finance",      "reverse",  "Reverse or void an incorrectly recorded payment.",                 "CRITICAL",  True),    ("finance.expenditure.view",        "finance",      "view",     "View school expenditure and petty cash records.",                  "CRITICAL",  True),    ("finance.expenditure.manage",      "finance",      "manage",   "Record and approve school expenditure entries.",           "CRITICAL",  True),    ("finance.reports.view",            "finance",      "view",     "View financial summary and income/expense reports.",                   "CRITICAL",  True),    ("finance.reports.export",          "finance",      "export",   "Export financial reports to PDF or XLSX.",                         "CRITICAL",  True),    ("finance.budget.view",             "finance",      "view",     "View the school's annual budget allocations.",                        "CRITICAL",  True),    ("finance.budget.manage",           "finance",      "manage",   "Create, edit and approve school budget line items.",                  "CRITICAL",  True),
     # ── LIBRARY ────────────────────────────────────────────────────────────
-    ("library.catalog.view",            "library",      "view",     "View library book catalogue",                      "NORMAL",    False),
-    ("library.catalog.manage",          "library",      "manage",   "Add/edit/remove books in catalogue",               "NORMAL",    False),
-    ("library.borrow.record",           "library",      "record",   "Issue books to borrowers",                         "NORMAL",    False),
-    ("library.borrow.return",           "library",      "return",   "Process book returns",                             "NORMAL",    False),
-    ("library.overdue.manage",          "library",      "manage",   "Manage overdue books and fines",                   "NORMAL",    False),
-    ("library.reports.view",            "library",      "view",     "View library usage reports",                       "NORMAL",    False),
-
+    ("library.catalog.view",            "library",      "view",     "View the school library book catalogue.",                      "NORMAL",    False),    ("library.catalog.manage",          "library",      "manage",   "Add, edit and remove books in the catalogue.",               "NORMAL",    False),    ("library.borrow.record",           "library",      "record",   "Issue books to students or staff borrowers.",                         "NORMAL",    False),    ("library.borrow.return",           "library",      "return",   "Process the return of borrowed library books.",                             "NORMAL",    False),    ("library.overdue.manage",          "library",      "manage",   "Manage overdue book follow-ups and fines.",                   "NORMAL",    False),    ("library.reports.view",            "library",      "view",     "View library usage and circulation reports.",                       "NORMAL",    False),
     # ── HEALTH / MEDICAL ───────────────────────────────────────────────────
-    ("health.visits.view",              "health",       "view",     "View student sick-bay visit logs",                 "SENSITIVE", False),
-    ("health.visits.record",            "health",       "record",   "Log a student sick-bay visit",                     "SENSITIVE", False),
-    ("health.medication.manage",        "health",       "manage",   "Manage medication stock and administration logs",  "CRITICAL",  True),
-    ("health.reports.view",             "health",       "view",     "View health/medical summary reports",              "CRITICAL",  True),
-
+    ("health.visits.view",              "health",       "view",     "View student sick-bay visit logs.",                 "SENSITIVE", False),    ("health.visits.record",            "health",       "record",   "Log a student sick-bay or medical visit.",                     "SENSITIVE", False),    ("health.medication.manage",        "health",       "manage",   "Manage medication stock and administration records.",  "CRITICAL",  True),    ("health.reports.view",             "health",       "view",     "View school health and medical summary reports.",              "CRITICAL",  True),
     # ── COMMUNICATION ──────────────────────────────────────────────────────
-    ("communication.sms.send",          "communication","send",     "Send SMS notifications to parents/staff",          "NORMAL",    False),
-    ("communication.email.send",        "communication","send",     "Send email broadcasts",                            "NORMAL",    False),
-    ("communication.announcement.post", "communication","post",     "Post announcements on the notice board",           "NORMAL",    False),
-    ("communication.chat.view",         "communication","view",     "View internal messaging threads",                  "NORMAL",    False),
-    ("communication.chat.send",         "communication","send",     "Send messages in internal chat",                   "NORMAL",    False),
-
+    ("communication.sms.send",          "communication","send",     "Send SMS notifications to parents or staff.",          "NORMAL",    False),    ("communication.email.send",        "communication","send",     "Send broadcast emails to school stakeholders.",                            "NORMAL",    False),    ("communication.announcement.post", "communication","post",     "Post announcements on the school notice board.",           "NORMAL",    False),    ("communication.chat.view",         "communication","view",     "View internal school messaging threads.",                  "NORMAL",    False),    ("communication.chat.send",         "communication","send",     "Send messages in internal school chat.",                   "NORMAL",    False),
     # ── ADMISSIONS ─────────────────────────────────────────────────────────
-    ("admissions.application.view",     "admissions",   "view",     "View incoming admission applications",             "NORMAL",    False),
-    ("admissions.application.process",  "admissions",   "process",  "Shortlist, interview and decide on applicants",    "SENSITIVE", False),
-    ("admissions.application.approve",  "admissions",   "approve",  "Formally approve or reject applications",          "SENSITIVE", True),
-    ("admissions.enrollment.confirm",   "admissions",   "confirm",  "Convert accepted applicant to enrolled student",   "SENSITIVE", False),
-
+    ("admissions.application.view",     "admissions",   "view",     "View incoming admission applications.",             "NORMAL",    False),    ("admissions.application.process",  "admissions",   "process",  "Shortlist applicants and schedule interviews.",    "SENSITIVE", False),    ("admissions.application.approve",  "admissions",   "approve",  "Formally approve or reject admission applications.",          "SENSITIVE", True),    ("admissions.enrollment.confirm",   "admissions",   "confirm",  "Convert an accepted applicant to an enrolled student.",   "SENSITIVE", False),
     # ── HOSTEL / BOARDING ──────────────────────────────────────────────────
-    ("hostel.room.view",                "hostel",       "view",     "View hostel room listings and allocations",        "NORMAL",    False),
-    ("hostel.room.manage",              "hostel",       "manage",   "Create/edit rooms and allocate students",          "NORMAL",    False),
-    ("hostel.attendance.mark",          "hostel",       "mark",     "Take hostel roll call",                            "NORMAL",    False),
-    ("hostel.incident.report",          "hostel",       "report",   "Log hostel incidents",                             "SENSITIVE", False),
-    ("hostel.incident.manage",          "hostel",       "manage",   "Resolve and escalate hostel incidents",            "SENSITIVE", False),
-
+    ("hostel.room.view",                "hostel",       "view",     "View hostel room listings and student allocations.",        "NORMAL",    False),    ("hostel.room.manage",              "hostel",       "manage",   "Create rooms and allocate students to hostel rooms.",          "NORMAL",    False),    ("hostel.attendance.mark",          "hostel",       "mark",     "Conduct hostel roll call and record attendance.",                            "NORMAL",    False),    ("hostel.incident.report",          "hostel",       "report",   "Log a hostel or boarding incident.",                             "SENSITIVE", False),    ("hostel.incident.manage",          "hostel",       "manage",   "Review, resolve and escalate hostel incidents.",            "SENSITIVE", False),
     # ── TRANSPORT ──────────────────────────────────────────────────────────
-    ("transport.routes.view",           "transport",    "view",     "View transport routes and vehicles",               "NORMAL",    False),
-    ("transport.routes.manage",         "transport",    "manage",   "Create/edit routes and assign vehicles",           "NORMAL",    False),
-    ("transport.students.assign",       "transport",    "assign",   "Assign students to transport routes",              "NORMAL",    False),
-    ("transport.tracking.view",         "transport",    "view",     "View live vehicle/GPS tracking",                   "NORMAL",    False),
-
+    ("transport.routes.view",           "transport",    "view",     "View school bus routes and vehicle assignments.",               "NORMAL",    False),    ("transport.routes.manage",         "transport",    "manage",   "Create and edit transport routes and vehicle records.",           "NORMAL",    False),    ("transport.students.assign",       "transport",    "assign",   "Assign students to transport routes.",              "NORMAL",    False),    ("transport.tracking.view",         "transport",    "view",     "View live GPS or vehicle tracking data.",                   "NORMAL",    False),
     # ── CANTEEN / CAFETERIA ────────────────────────────────────────────────
-    ("canteen.menu.view",               "canteen",      "view",     "View canteen menu and prices",                     "NORMAL",    False),
-    ("canteen.menu.manage",             "canteen",      "manage",   "Update canteen menu and pricing",                  "NORMAL",    False),
-    ("canteen.orders.manage",           "canteen",      "manage",   "Process and fulfil canteen orders",                "NORMAL",    False),
-    ("canteen.sales.report",            "canteen",      "report",   "Generate canteen daily/weekly sales reports",      "NORMAL",    False),
-
+    ("canteen.menu.view",               "canteen",      "view",     "View the canteen menu and pricing.",                     "NORMAL",    False),    ("canteen.menu.manage",             "canteen",      "manage",   "Update canteen menu items and prices.",                  "NORMAL",    False),    ("canteen.orders.manage",           "canteen",      "manage",   "Process and fulfil canteen orders.",                "NORMAL",    False),    ("canteen.sales.report",            "canteen",      "report",   "Generate canteen daily and weekly sales reports.",      "NORMAL",    False),
     # ── EVENTS ─────────────────────────────────────────────────────────────
-    ("events.calendar.view",            "events",       "view",     "View school event calendar",                       "NORMAL",    False),
-    ("events.calendar.manage",          "events",       "manage",   "Create/edit events on the school calendar",        "NORMAL",    False),
-    ("events.attendance.track",         "events",       "track",    "Track attendance at school events",                "NORMAL",    False),
-
+    ("events.calendar.view",            "events",       "view",     "View the school events calendar.",                       "NORMAL",    False),    ("events.calendar.manage",          "events",       "manage",   "Create and edit events on the school calendar.",        "NORMAL",    False),    ("events.attendance.track",         "events",       "track",    "Record attendance at school events.",                "NORMAL",    False),
     # ── ALUMNI ─────────────────────────────────────────────────────────────
-    ("alumni.profile.view",             "alumni",       "view",     "View alumni directory",                            "NORMAL",    False),
-    ("alumni.profile.manage",           "alumni",       "manage",   "Update alumni records",                            "NORMAL",    False),
-    ("alumni.communications.send",      "alumni",       "send",     "Send communications to alumni",                    "NORMAL",    False),
-
+    ("alumni.profile.view",             "alumni",       "view",     "View the alumni directory and profiles.",                            "NORMAL",    False),    ("alumni.profile.manage",           "alumni",       "manage",   "Update alumni profile records.",                            "NORMAL",    False),    ("alumni.communications.send",      "alumni",       "send",     "Send communications and newsletters to alumni.",                    "NORMAL",    False),
     # ── SETTINGS / CONFIGURATION ───────────────────────────────────────────
-    ("settings.school.view",            "settings",     "view",     "View school configuration settings",               "NORMAL",    False),
-    ("settings.school.manage",          "settings",     "manage",   "Edit school-wide configuration",                   "CRITICAL",  True),
-    ("settings.branch.view",            "settings",     "view",     "View branch configuration",                        "NORMAL",    False),
-    ("settings.branch.manage",          "settings",     "manage",   "Edit branch-level configuration",                  "SENSITIVE", True),
-    ("settings.academic_session.manage","settings",     "manage",   "Open/close academic sessions and terms",           "CRITICAL",  True),
-    ("settings.roles.view",             "settings",     "view",     "View role and permission configurations",          "SENSITIVE", False),
-    ("settings.roles.manage",           "settings",     "manage",   "Create/edit school roles and assign permissions",  "CRITICAL",  True),
-
+    ("settings.school.view",            "settings",     "view",     "View school-wide configuration settings.",               "NORMAL",    False),    ("settings.school.manage",          "settings",     "manage",   "Edit school-wide configuration and branding.",                   "CRITICAL",  True),    ("settings.branch.view",            "settings",     "view",     "View branch-level configuration settings.",                        "NORMAL",    False),    ("settings.branch.manage",          "settings",     "manage",   "Edit branch-level configuration.",                  "SENSITIVE", True),    ("settings.academic_session.manage","settings",     "manage",   "Open, close and roll over academic sessions and terms.",           "CRITICAL",  True),    ("settings.roles.view",             "settings",     "view",     "View role and permission configurations for the school.",          "SENSITIVE", False),    ("settings.roles.manage",           "settings",     "manage",   "Create and edit school roles and assign permissions.",  "CRITICAL",  True),
     # ── REPORTS (cross-module) ─────────────────────────────────────────────
-    ("reports.school_wide.view",        "reports",      "view",     "Access school-wide consolidated reports",          "SENSITIVE", False),
-    ("reports.school_wide.export",      "reports",      "export",   "Export school-wide consolidated reports",          "SENSITIVE", True),
-
+    ("reports.school_wide.view",        "reports",      "view",     "Access consolidated school-wide reports.",          "SENSITIVE", False),    ("reports.school_wide.export",      "reports",      "export",   "Export consolidated school-wide reports.",          "SENSITIVE", True),
     # ── AUDIT LOG ──────────────────────────────────────────────────────────
-    ("audit.logs.view",                 "audit",        "view",     "View system audit trail",                          "CRITICAL",  True),
-    ("audit.logs.export",               "audit",        "export",   "Export audit logs",                                "CRITICAL",  True),
-
+    ("audit.logs.view",                 "audit",        "view",     "View the school-scoped system audit trail.",                          "CRITICAL",  True),    ("audit.logs.export",               "audit",        "export",   "Export school-scoped audit log records.",                                "CRITICAL",  True),
     # ══════════════════════════════════════════════════════════════════════
     # PLATFORM-ONLY PERMISSIONS (Vision internal — used by PlatformRoleTemplate)
     # ══════════════════════════════════════════════════════════════════════
 
     # ── PLATFORM: SCHOOL MANAGEMENT ────────────────────────────────────────
-    ("platform.schools.view",           "platform",     "view",     "View all schools on the platform",                 "SENSITIVE", False),
-    ("platform.schools.create",         "platform",     "create",   "Onboard a new school onto the platform",           "CRITICAL",  True),
-    ("platform.schools.update",         "platform",     "update",   "Update school profile and configuration",          "CRITICAL",  True),
-    ("platform.schools.suspend",        "platform",     "suspend",  "Suspend or reactivate a school account",           "CRITICAL",  True),
-    ("platform.schools.delete",         "platform",     "delete",   "Permanently delete a school record",               "CRITICAL",  True),
-
+    ("platform.schools.view",           "platform",     "view",     "View all schools registered on the XVS platform.",                 "SENSITIVE", False),    ("platform.schools.create",         "platform",     "create",   "Onboard a new school onto the XVS platform.",           "CRITICAL",  True),    ("platform.schools.update",         "platform",     "update",   "Update any school's profile and configuration.",          "CRITICAL",  True),    ("platform.schools.suspend",        "platform",     "suspend",  "Suspend or reactivate a school account platform-wide.",           "CRITICAL",  True),    ("platform.schools.delete",         "platform",     "delete",   "Permanently delete a school and all its data.",               "CRITICAL",  True),
     # ── PLATFORM: BILLING / SUBSCRIPTIONS ─────────────────────────────────
-    ("platform.billing.view",           "platform",     "view",     "View school billing and subscription records",     "CRITICAL",  True),
-    ("platform.billing.manage",         "platform",     "manage",   "Edit plans, issue credits, manage invoices",       "CRITICAL",  True),
-    ("platform.billing.export",         "platform",     "export",   "Export billing data",                              "CRITICAL",  True),
-
+    ("platform.billing.view",           "platform",     "view",     "View school billing records and subscription plans.",     "CRITICAL",  True),    ("platform.billing.manage",         "platform",     "manage",   "Edit plans, issue credits and manage platform invoices.",       "CRITICAL",  True),    ("platform.billing.export",         "platform",     "export",   "Export platform billing and subscription data.",                              "CRITICAL",  True),
     # ── PLATFORM: USER MANAGEMENT ─────────────────────────────────────────
-    ("platform.users.view",             "platform",     "view",     "View all platform and school user accounts",       "SENSITIVE", False),
-    ("platform.users.impersonate",      "platform",     "impersonate","Impersonate a school user for support",          "CRITICAL",  True),
-    ("platform.users.suspend",          "platform",     "suspend",  "Suspend or reactivate user accounts",              "CRITICAL",  True),
-    ("platform.users.delete",           "platform",     "delete",   "Permanently delete user accounts",                 "CRITICAL",  True),
-
+    ("platform.users.view",             "platform",     "view",     "View all platform and school-level user accounts.",       "SENSITIVE", False),    ("platform.users.impersonate",      "platform",     "impersonate","Impersonate a school user for audited support diagnostics.",          "CRITICAL",  True),    ("platform.users.suspend",          "platform",     "suspend",  "Suspend or reactivate any user account platform-wide.",              "CRITICAL",  True),    ("platform.users.delete",           "platform",     "delete",   "Permanently delete a user account.",                 "CRITICAL",  True),
     # ── PLATFORM: ROLES & PERMISSIONS ─────────────────────────────────────
-    ("platform.roles.view",             "platform",     "view",     "View platform role templates and permissions",     "SENSITIVE", False),
-    ("platform.roles.manage",           "platform",     "manage",   "Create/edit platform role templates",              "CRITICAL",  True),
-    ("platform.permissions.manage",     "platform",     "manage",   "Add/remove entries in the permission registry",    "CRITICAL",  True),
-
+    ("platform.roles.view",             "platform",     "view",     "View platform role templates and their permission sets.",     "SENSITIVE", False),    ("platform.roles.manage",           "platform",     "manage",   "Create and edit platform-level role templates.",              "CRITICAL",  True),    ("platform.permissions.manage",     "platform",     "manage",   "Add or remove entries in the global permission registry.",    "CRITICAL",  True),
     # ── PLATFORM: SUPPORT ─────────────────────────────────────────────────
-    ("platform.support.tickets.view",   "platform",     "view",     "View support tickets from all schools",            "SENSITIVE", False),
-    ("platform.support.tickets.manage", "platform",     "manage",   "Respond to and resolve support tickets",           "SENSITIVE", False),
-    ("platform.support.escalate",       "platform",     "escalate", "Escalate a ticket to engineering or management",   "SENSITIVE", False),
-
+    ("platform.support.tickets.view",   "platform",     "view",     "View support tickets submitted by all schools.",            "SENSITIVE", False),    ("platform.support.tickets.manage", "platform",     "manage",   "Respond to and resolve school support tickets.",           "SENSITIVE", False),    ("platform.support.escalate",       "platform",     "escalate", "Escalate a support ticket to engineering or leadership.",   "SENSITIVE", False),
     # ── PLATFORM: ANALYTICS & REPORTING ───────────────────────────────────
-    ("platform.analytics.view",         "platform",     "view",     "View platform-wide analytics dashboards",          "SENSITIVE", False),
-    ("platform.analytics.export",       "platform",     "export",   "Export platform analytics datasets",               "CRITICAL",  True),
-    ("platform.reports.financial",      "platform",     "view",     "View platform-wide financial reports",             "CRITICAL",  True),
-
+    ("platform.analytics.view",         "platform",     "view",     "View platform-wide analytics dashboards.",          "SENSITIVE", False),    ("platform.analytics.export",       "platform",     "export",   "Export platform-wide analytics datasets.",               "CRITICAL",  True),    ("platform.reports.financial",      "platform",     "view",     "View consolidated platform financial reports.",             "CRITICAL",  True),
     # ── PLATFORM: SYSTEM / INFRA ───────────────────────────────────────────
-    ("platform.system.config.view",     "platform",     "view",     "View platform system configuration",               "CRITICAL",  True),
-    ("platform.system.config.manage",   "platform",     "manage",   "Edit platform-level system settings",              "CRITICAL",  True),
-    ("platform.system.deployments.view","platform",     "view",     "View deployment history and release notes",        "SENSITIVE", False),
-    ("platform.system.deployments.trigger","platform",  "trigger",  "Trigger deployments or rollbacks",                 "CRITICAL",  True),
-    ("platform.system.logs.view",       "platform",     "view",     "View system/application logs",                     "CRITICAL",  True),
-    ("platform.system.maintenance.manage","platform",   "manage",   "Enable/disable maintenance mode globally",         "CRITICAL",  True),
-    ("platform.integrations.view",      "platform",     "view",     "View third-party integration configurations",      "SENSITIVE", False),
-    ("platform.integrations.manage",    "platform",     "manage",   "Add/edit/revoke platform integrations",            "CRITICAL",  True),
-
+    ("platform.system.config.view",     "platform",     "view",     "View platform-level system configuration values.",               "CRITICAL",  True),    ("platform.system.config.manage",   "platform",     "manage",   "Edit platform-level system settings and config.",              "CRITICAL",  True),    ("platform.system.deployments.view","platform",     "view",     "View deployment history, release notes and rollout status.",        "SENSITIVE", False),    ("platform.system.deployments.trigger","platform",  "trigger",  "Trigger production deployments or initiate rollbacks.",                 "CRITICAL",  True),    ("platform.system.logs.view",       "platform",     "view",     "View application and server-side system logs.",                     "CRITICAL",  True),    ("platform.system.maintenance.manage","platform",   "manage",   "Enable or disable global maintenance mode.",         "CRITICAL",  True),    ("platform.integrations.view",      "platform",     "view",     "View third-party integration configurations.",      "SENSITIVE", False),    ("platform.integrations.manage",    "platform",     "manage",   "Add, edit and revoke platform-level integrations.",            "CRITICAL",  True),
     # ── PLATFORM: COMPLIANCE & AUDIT ──────────────────────────────────────
-    ("platform.compliance.view",        "platform",     "view",     "View compliance frameworks and checklists",        "CRITICAL",  True),
-    ("platform.compliance.manage",      "platform",     "manage",   "Manage compliance records and evidence",           "CRITICAL",  True),
-    ("platform.audit.logs.view",        "platform",     "view",     "View platform-wide audit log",                     "CRITICAL",  True),
-    ("platform.audit.logs.export",      "platform",     "export",   "Export platform audit logs",                       "CRITICAL",  True),
-
+    ("platform.compliance.view",        "platform",     "view",     "View compliance frameworks, checklists and evidence.",        "CRITICAL",  True),    ("platform.compliance.manage",      "platform",     "manage",   "Create and update compliance records and evidence packs.",           "CRITICAL",  True),    ("platform.audit.logs.view",        "platform",     "view",     "View the platform-wide immutable audit log.",                     "CRITICAL",  True),    ("platform.audit.logs.export",      "platform",     "export",   "Export platform-wide audit log records.",                       "CRITICAL",  True),
     # ── PLATFORM: DATA ENGINEERING ────────────────────────────────────────
-    ("platform.data.pipelines.view",    "platform",     "view",     "View data pipeline statuses",                      "SENSITIVE", False),
-    ("platform.data.pipelines.manage",  "platform",     "manage",   "Create/edit/trigger data pipelines",               "CRITICAL",  True),
-    ("platform.data.migrations.run",    "platform",     "run",      "Execute schema and data migrations",               "CRITICAL",  True),
-    ("platform.data.backups.view",      "platform",     "view",     "View backup schedules and restore points",         "CRITICAL",  True),
-    ("platform.data.backups.manage",    "platform",     "manage",   "Create, schedule, and restore backups",            "CRITICAL",  True),
-
+    ("platform.data.pipelines.view",    "platform",     "view",     "View data pipeline definitions and run statuses.",                      "SENSITIVE", False),    ("platform.data.pipelines.manage",  "platform",     "manage",   "Create, edit and trigger data pipeline runs.",               "CRITICAL",  True),    ("platform.data.migrations.run",    "platform",     "run",      "Execute database schema and data migrations.",               "CRITICAL",  True),    ("platform.data.backups.view",      "platform",     "view",     "View backup schedules and available restore points.",         "CRITICAL",  True),    ("platform.data.backups.manage",    "platform",     "manage",   "Create, schedule and restore from database backups.",            "CRITICAL",  True),
     # ── PLATFORM: SECURITY ────────────────────────────────────────────────
-    ("platform.security.incidents.view","platform",     "view",     "View security incident records",                   "CRITICAL",  True),
-    ("platform.security.incidents.manage","platform",   "manage",   "Investigate and resolve security incidents",       "CRITICAL",  True),
-    ("platform.security.pen_test.manage","platform",    "manage",   "Manage penetration test plans and findings",       "CRITICAL",  True),
+    ("platform.security.incidents.view","platform",     "view",     "View security incident records and investigation notes.",                   "CRITICAL",  True),    ("platform.security.incidents.manage","platform",   "manage",   "Investigate, update and resolve security incidents.",       "CRITICAL",  True),    ("platform.security.pen_test.manage","platform",    "manage",   "Manage penetration test plans, scopes and findings.",       "CRITICAL",  True),]
+
+
+# ---------------------------------------------------------------------------
+# 2. PERMISSION DEPENDENCIES
+#    Format: (permission_key, depends_on_key)
+#
+#    Each tuple says "you cannot hold <permission_key> unless you also hold
+#    <depends_on_key>". Dependency checks run against the *flattened* role
+#    permission set so a role can satisfy a dependency via a direct grant or
+#    via a permission group attached to the role.
+# ---------------------------------------------------------------------------
+
+PERMISSION_DEPENDENCIES: list[tuple[str, str]] = [
+
+    # ── STUDENTS ───────────────────────────────────────────────────────────
+    ("students.profile.update",     "students.profile.view"),
+    ("students.profile.delete",     "students.profile.view"),
+    ("students.profile.export",     "students.profile.view"),
+    ("students.class.assign",       "students.profile.view"),
+    ("students.class.transfer",     "students.profile.view"),
+    ("students.disciplinary.manage","students.disciplinary.view"),
+    ("students.medical.manage",     "students.medical.view"),
+    ("students.guardian.manage",    "students.guardian.view"),
+    ("students.id_card.generate",   "students.profile.view"),
+
+    # ── STAFF ──────────────────────────────────────────────────────────────
+    ("staff.profile.update",        "staff.profile.view"),
+    ("staff.profile.delete",        "staff.profile.view"),
+    ("staff.profile.export",        "staff.profile.view"),
+    ("staff.salary.manage",         "staff.salary.view"),
+    ("staff.appraisal.manage",      "staff.appraisal.view"),
+    ("staff.attendance.mark",       "staff.attendance.view"),
+
+    # ── ACADEMICS ──────────────────────────────────────────────────────────
+    ("academics.curriculum.manage", "academics.curriculum.view"),
+    ("academics.timetable.manage",  "academics.timetable.view"),
+    ("academics.subjects.manage",   "academics.subjects.view"),
+    ("academics.class.manage",      "academics.class.view"),
+    ("academics.lesson_notes.manage","academics.lesson_notes.view"),
+    ("academics.lesson_notes.approve","academics.lesson_notes.view"),
+
+    # ── ASSESSMENTS ────────────────────────────────────────────────────────
+    ("assessments.scores.edit",     "assessments.scores.view"),
+    ("assessments.scores.approve",  "assessments.scores.view"),
+    ("assessments.results.publish", "assessments.scores.view"),
+    ("assessments.results.export",  "assessments.scores.view"),
+    ("assessments.report_card.print","assessments.scores.view"),
+    ("assessments.exam_schedule.manage","assessments.exam_schedule.view"),
+
+    # ── ATTENDANCE ─────────────────────────────────────────────────────────
+    ("attendance.student.mark",     "attendance.student.view"),
+    ("attendance.student.edit",     "attendance.student.view"),
+    ("attendance.student.export",   "attendance.student.view"),
+    ("attendance.student.report",   "attendance.student.view"),
+
+    # ── FINANCE ────────────────────────────────────────────────────────────
+    ("finance.fees.manage",         "finance.fees.view"),
+    ("finance.fees.waive",          "finance.fees.view"),
+    ("finance.invoice.create",      "finance.invoice.view"),
+    ("finance.invoice.approve",     "finance.invoice.view"),
+    ("finance.payment.record",      "finance.fees.view"),
+    ("finance.payment.verify",      "finance.invoice.view"),
+    ("finance.payment.reverse",     "finance.invoice.view"),
+    ("finance.expenditure.manage",  "finance.expenditure.view"),
+    ("finance.reports.export",      "finance.reports.view"),
+    ("finance.budget.manage",       "finance.budget.view"),
+
+    # ── LIBRARY ────────────────────────────────────────────────────────────
+    ("library.catalog.manage",      "library.catalog.view"),
+    ("library.borrow.record",       "library.catalog.view"),
+    ("library.borrow.return",       "library.catalog.view"),
+    ("library.overdue.manage",      "library.catalog.view"),
+
+    # ── HEALTH ─────────────────────────────────────────────────────────────
+    ("health.visits.record",        "health.visits.view"),
+    ("health.medication.manage",    "health.visits.view"),
+
+    # ── ADMISSIONS ─────────────────────────────────────────────────────────
+    ("admissions.application.process","admissions.application.view"),
+    ("admissions.application.approve","admissions.application.view"),
+    ("admissions.enrollment.confirm", "admissions.application.view"),
+
+    # ── HOSTEL ─────────────────────────────────────────────────────────────
+    ("hostel.room.manage",          "hostel.room.view"),
+    ("hostel.incident.manage",      "hostel.incident.report"),
+
+    # ── TRANSPORT ──────────────────────────────────────────────────────────
+    ("transport.routes.manage",     "transport.routes.view"),
+    ("transport.students.assign",   "transport.routes.view"),
+
+    # ── CANTEEN ────────────────────────────────────────────────────────────
+    ("canteen.menu.manage",         "canteen.menu.view"),
+
+    # ── EVENTS ─────────────────────────────────────────────────────────────
+    ("events.calendar.manage",      "events.calendar.view"),
+    ("events.attendance.track",     "events.calendar.view"),
+
+    # ── ALUMNI ─────────────────────────────────────────────────────────────
+    ("alumni.profile.manage",       "alumni.profile.view"),
+    ("alumni.communications.send",  "alumni.profile.view"),
+
+    # ── SETTINGS ───────────────────────────────────────────────────────────
+    ("settings.school.manage",      "settings.school.view"),
+    ("settings.branch.manage",      "settings.branch.view"),
+    ("settings.roles.manage",       "settings.roles.view"),
+
+    # ── REPORTS ────────────────────────────────────────────────────────────
+    ("reports.school_wide.export",  "reports.school_wide.view"),
+
+    # ── AUDIT ──────────────────────────────────────────────────────────────
+    ("audit.logs.export",           "audit.logs.view"),
+
+    # ── PLATFORM ───────────────────────────────────────────────────────────
+    ("platform.schools.create",     "platform.schools.view"),
+    ("platform.schools.update",     "platform.schools.view"),
+    ("platform.schools.suspend",    "platform.schools.view"),
+    ("platform.schools.delete",     "platform.schools.view"),
+    ("platform.billing.manage",     "platform.billing.view"),
+    ("platform.billing.export",     "platform.billing.view"),
+    ("platform.users.impersonate",  "platform.users.view"),
+    ("platform.users.suspend",      "platform.users.view"),
+    ("platform.users.delete",       "platform.users.view"),
+    ("platform.roles.manage",       "platform.roles.view"),
+    ("platform.support.tickets.manage","platform.support.tickets.view"),
+    ("platform.support.escalate",   "platform.support.tickets.view"),
+    ("platform.analytics.export",   "platform.analytics.view"),
+    ("platform.system.config.manage","platform.system.config.view"),
+    ("platform.system.deployments.trigger","platform.system.deployments.view"),
+    ("platform.integrations.manage","platform.integrations.view"),
+    ("platform.compliance.manage",  "platform.compliance.view"),
+    ("platform.audit.logs.export",  "platform.audit.logs.view"),
+    ("platform.data.pipelines.manage","platform.data.pipelines.view"),
+    ("platform.data.backups.manage","platform.data.backups.view"),
+    ("platform.security.incidents.manage","platform.security.incidents.view"),
 ]
 
 
 # ---------------------------------------------------------------------------
-# ② SCHOOL ROLE TEMPLATES
-#    Format: (slug_name, description, is_system_role, permissions_list)
-#    permissions_list → list of permission keys granted to this role
+# 3. PERMISSION GROUPS
+#    Reusable permission bundles shared across school and platform role
+#    templates. Each group is a named, discoverable bucket of permissions
+#    that one or more roles attach to.
+#
+#    Format: dict(name, description, permissions=[key, ...])
+# ---------------------------------------------------------------------------
+
+PERMISSION_GROUPS: list[dict] = [
+
+    # ── CORE / SHARED ──────────────────────────────────────────────────────
+    {
+        "name": "Dashboard - Basic",
+        "description": "Landing dashboard access for any authenticated user.",
+        "permissions": [
+            "dashboard.overview.view",
+        ],
+    },
+    {
+        "name": "Dashboard - Analytics",
+        "description": "Dashboard plus analytics widgets for leadership.",
+        "permissions": [
+            "dashboard.overview.view",
+            "dashboard.analytics.view",
+        ],
+    },
+    {
+        "name": "Announcements - Post",
+        "description": "Post announcements on the notice board.",
+        "permissions": [
+            "communication.announcement.post",
+        ],
+    },
+    {
+        "name": "Announcements - Manage",
+        "description": "Manage dashboard announcements and notice board.",
+        "permissions": [
+            "dashboard.announcements.manage",
+            "communication.announcement.post",
+        ],
+    },
+    {
+        "name": "Internal Chat",
+        "description": "Use the built-in internal messaging system.",
+        "permissions": [
+            "communication.chat.view",
+            "communication.chat.send",
+        ],
+    },
+    {
+        "name": "Messaging - Broadcast",
+        "description": "Send SMS and email broadcasts to parents/staff.",
+        "permissions": [
+            "communication.sms.send",
+            "communication.email.send",
+        ],
+    },
+
+    # ── STUDENTS ───────────────────────────────────────────────────────────
+    {
+        "name": "Students - View",
+        "description": "Read-only access to student profiles and guardian records.",
+        "permissions": [
+            "students.profile.view",
+            "students.guardian.view",
+        ],
+    },
+    {
+        "name": "Students - Manage",
+        "description": "Full create/update authority over student and guardian records.",
+        "permissions": [
+            "students.profile.view",
+            "students.profile.create",
+            "students.profile.update",
+            "students.profile.export",
+            "students.class.assign",
+            "students.class.transfer",
+            "students.guardian.view",
+            "students.guardian.manage",
+            "students.id_card.generate",
+        ],
+    },
+    {
+        "name": "Students - Enrolment Admin",
+        "description": "Admissions-oriented student admin (no class transfer, no export).",
+        "permissions": [
+            "students.profile.view",
+            "students.profile.create",
+            "students.profile.update",
+            "students.guardian.view",
+            "students.guardian.manage",
+            "students.id_card.generate",
+        ],
+    },
+    {
+        "name": "Students - Discipline",
+        "description": "Manage student disciplinary records.",
+        "permissions": [
+            "students.profile.view",
+            "students.disciplinary.view",
+            "students.disciplinary.manage",
+        ],
+    },
+    {
+        "name": "Students - Discipline (Read)",
+        "description": "Read-only access to disciplinary records.",
+        "permissions": [
+            "students.profile.view",
+            "students.disciplinary.view",
+        ],
+    },
+    {
+        "name": "Students - Medical (Read)",
+        "description": "Read-only access to student medical records.",
+        "permissions": [
+            "students.profile.view",
+            "students.medical.view",
+        ],
+    },
+    {
+        "name": "Students - Medical (Manage)",
+        "description": "Full access to student medical records (nurse/clinician).",
+        "permissions": [
+            "students.profile.view",
+            "students.medical.view",
+            "students.medical.manage",
+        ],
+    },
+
+    # ── STAFF ──────────────────────────────────────────────────────────────
+    {
+        "name": "Staff - View",
+        "description": "Read-only access to staff directory and attendance.",
+        "permissions": [
+            "staff.profile.view",
+            "staff.attendance.view",
+        ],
+    },
+    {
+        "name": "Staff - Manage",
+        "description": "Full authority to onboard and edit staff records.",
+        "permissions": [
+            "staff.profile.view",
+            "staff.profile.create",
+            "staff.profile.update",
+            "staff.profile.export",
+            "staff.attendance.view",
+            "staff.attendance.mark",
+        ],
+    },
+    {
+        "name": "Staff - Leave Approve",
+        "description": "Approve or reject staff leave requests.",
+        "permissions": [
+            "staff.leave.approve",
+        ],
+    },
+    {
+        "name": "Staff - Appraisal",
+        "description": "Conduct and submit staff appraisals.",
+        "permissions": [
+            "staff.profile.view",
+            "staff.appraisal.view",
+            "staff.appraisal.manage",
+        ],
+    },
+    {
+        "name": "Staff - Appraisal (Read)",
+        "description": "Read-only access to staff appraisal records.",
+        "permissions": [
+            "staff.profile.view",
+            "staff.appraisal.view",
+        ],
+    },
+    {
+        "name": "Staff - Payroll (Read)",
+        "description": "Read-only access to payroll entries (leadership).",
+        "permissions": [
+            "staff.profile.view",
+            "staff.salary.view",
+        ],
+    },
+    {
+        "name": "Staff - Payroll (Manage)",
+        "description": "Full authority over payroll entries.",
+        "permissions": [
+            "staff.profile.view",
+            "staff.salary.view",
+            "staff.salary.manage",
+        ],
+    },
+
+    # ── ACADEMICS ──────────────────────────────────────────────────────────
+    {
+        "name": "Academics - View",
+        "description": "Read curriculum, timetable, subjects, classes and lesson notes.",
+        "permissions": [
+            "academics.curriculum.view",
+            "academics.timetable.view",
+            "academics.subjects.view",
+            "academics.class.view",
+            "academics.lesson_notes.view",
+        ],
+    },
+    {
+        "name": "Academics - Structure Manage",
+        "description": "Manage curriculum, timetable, subjects, classes (no lesson notes).",
+        "permissions": [
+            "academics.curriculum.view",
+            "academics.curriculum.manage",
+            "academics.timetable.view",
+            "academics.timetable.manage",
+            "academics.subjects.view",
+            "academics.subjects.manage",
+            "academics.class.view",
+            "academics.class.manage",
+        ],
+    },
+    {
+        "name": "Academics - Lesson Notes (Manage)",
+        "description": "Upload and edit lesson notes.",
+        "permissions": [
+            "academics.lesson_notes.view",
+            "academics.lesson_notes.manage",
+        ],
+    },
+    {
+        "name": "Academics - Lesson Notes (Approve)",
+        "description": "Approve lesson notes before publishing.",
+        "permissions": [
+            "academics.lesson_notes.view",
+            "academics.lesson_notes.approve",
+        ],
+    },
+    {
+        "name": "Academics - Portal View",
+        "description": "Student/parent portal view of academics (timetable, subjects, lesson notes).",
+        "permissions": [
+            "academics.timetable.view",
+            "academics.subjects.view",
+            "academics.lesson_notes.view",
+        ],
+    },
+
+    # ── ASSESSMENTS ────────────────────────────────────────────────────────
+    {
+        "name": "Assessments - Teacher",
+        "description": "Enter and view scores for assigned subjects.",
+        "permissions": [
+            "assessments.scores.view",
+            "assessments.scores.enter",
+            "assessments.exam_schedule.view",
+        ],
+    },
+    {
+        "name": "Assessments - Approve",
+        "description": "Approve/ratify score sheets submitted by teachers.",
+        "permissions": [
+            "assessments.scores.view",
+            "assessments.scores.approve",
+        ],
+    },
+    {
+        "name": "Assessments - Exam Office",
+        "description": "Full exam processing, results publication, and grading configuration.",
+        "permissions": [
+            "assessments.scores.view",
+            "assessments.scores.enter",
+            "assessments.scores.edit",
+            "assessments.scores.approve",
+            "assessments.results.publish",
+            "assessments.results.export",
+            "assessments.report_card.print",
+            "assessments.exam_schedule.view",
+            "assessments.exam_schedule.manage",
+            "assessments.grading.manage",
+        ],
+    },
+    {
+        "name": "Assessments - Leadership",
+        "description": "Leadership oversight of scores, results, and report cards.",
+        "permissions": [
+            "assessments.scores.view",
+            "assessments.scores.approve",
+            "assessments.results.publish",
+            "assessments.results.export",
+            "assessments.report_card.print",
+            "assessments.exam_schedule.view",
+            "assessments.exam_schedule.manage",
+        ],
+    },
+    {
+        "name": "Assessments - Portal View",
+        "description": "Read-only results and schedule for students/parents.",
+        "permissions": [
+            "assessments.scores.view",
+            "assessments.report_card.print",
+            "assessments.exam_schedule.view",
+        ],
+    },
+
+    # ── ATTENDANCE ─────────────────────────────────────────────────────────
+    {
+        "name": "Attendance - Teacher",
+        "description": "Mark daily/period student attendance.",
+        "permissions": [
+            "attendance.student.view",
+            "attendance.student.mark",
+            "attendance.student.report",
+        ],
+    },
+    {
+        "name": "Attendance - Manage",
+        "description": "Mark, edit, export and report on attendance.",
+        "permissions": [
+            "attendance.student.view",
+            "attendance.student.mark",
+            "attendance.student.edit",
+            "attendance.student.export",
+            "attendance.student.report",
+        ],
+    },
+    {
+        "name": "Attendance - Report",
+        "description": "Read-only attendance with reporting + export.",
+        "permissions": [
+            "attendance.student.view",
+            "attendance.student.report",
+            "attendance.student.export",
+        ],
+    },
+    {
+        "name": "Attendance - View Only",
+        "description": "Read-only attendance access (no edits).",
+        "permissions": [
+            "attendance.student.view",
+            "attendance.student.report",
+        ],
+    },
+    {
+        "name": "Attendance - Portal View",
+        "description": "Basic attendance read for students/parents.",
+        "permissions": [
+            "attendance.student.view",
+        ],
+    },
+
+    # ── FINANCE ────────────────────────────────────────────────────────────
+    {
+        "name": "Finance - Clerk",
+        "description": "Day-to-day invoice creation and payment entry.",
+        "permissions": [
+            "finance.fees.view",
+            "finance.invoice.view",
+            "finance.invoice.create",
+            "finance.payment.record",
+            "finance.payment.verify",
+        ],
+    },
+    {
+        "name": "Finance - Bursar",
+        "description": "Full finance administration including approval and waivers.",
+        "permissions": [
+            "finance.fees.view",
+            "finance.fees.manage",
+            "finance.fees.waive",
+            "finance.invoice.view",
+            "finance.invoice.create",
+            "finance.invoice.approve",
+            "finance.payment.record",
+            "finance.payment.verify",
+            "finance.payment.reverse",
+            "finance.expenditure.view",
+            "finance.expenditure.manage",
+            "finance.reports.view",
+            "finance.reports.export",
+            "finance.budget.view",
+            "finance.budget.manage",
+        ],
+    },
+    {
+        "name": "Finance - Leadership Read",
+        "description": "Read finance summaries plus payment entry for leadership.",
+        "permissions": [
+            "finance.fees.view",
+            "finance.invoice.view",
+            "finance.payment.record",
+            "finance.payment.verify",
+            "finance.expenditure.view",
+            "finance.reports.view",
+            "finance.reports.export",
+            "finance.budget.view",
+        ],
+    },
+    {
+        "name": "Finance - Portal View",
+        "description": "Fees and invoices read-only for students/parents.",
+        "permissions": [
+            "finance.fees.view",
+            "finance.invoice.view",
+        ],
+    },
+
+    # ── LIBRARY ────────────────────────────────────────────────────────────
+    {
+        "name": "Library - Staff",
+        "description": "Full library catalogue and loan management.",
+        "permissions": [
+            "library.catalog.view",
+            "library.catalog.manage",
+            "library.borrow.record",
+            "library.borrow.return",
+            "library.overdue.manage",
+            "library.reports.view",
+        ],
+    },
+    {
+        "name": "Library - Leadership Read",
+        "description": "Read the library catalogue and usage reports.",
+        "permissions": [
+            "library.catalog.view",
+            "library.reports.view",
+        ],
+    },
+    {
+        "name": "Library - Member",
+        "description": "Browse the library catalogue.",
+        "permissions": [
+            "library.catalog.view",
+        ],
+    },
+
+    # ── HEALTH ─────────────────────────────────────────────────────────────
+    {
+        "name": "Health - Nurse",
+        "description": "Full sick-bay, medication and reporting access.",
+        "permissions": [
+            "health.visits.view",
+            "health.visits.record",
+            "health.medication.manage",
+            "health.reports.view",
+        ],
+    },
+    {
+        "name": "Health - Leadership Read",
+        "description": "Read-only sick-bay logs and health reports.",
+        "permissions": [
+            "health.visits.view",
+            "health.reports.view",
+        ],
+    },
+    {
+        "name": "Health - Visits (Read)",
+        "description": "Read-only access to sick-bay visit logs.",
+        "permissions": [
+            "health.visits.view",
+        ],
+    },
+
+    # ── ADMISSIONS ─────────────────────────────────────────────────────────
+    {
+        "name": "Admissions - Processing",
+        "description": "Process applications through interview and enrolment.",
+        "permissions": [
+            "admissions.application.view",
+            "admissions.application.process",
+            "admissions.enrollment.confirm",
+        ],
+    },
+    {
+        "name": "Admissions - Approve",
+        "description": "Approve/reject applications and confirm enrolment.",
+        "permissions": [
+            "admissions.application.view",
+            "admissions.application.process",
+            "admissions.application.approve",
+            "admissions.enrollment.confirm",
+        ],
+    },
+
+    # ── HOSTEL ─────────────────────────────────────────────────────────────
+    {
+        "name": "Hostel - Manage",
+        "description": "Manage rooms, attendance and incidents in boarding houses.",
+        "permissions": [
+            "hostel.room.view",
+            "hostel.room.manage",
+            "hostel.attendance.mark",
+            "hostel.incident.report",
+            "hostel.incident.manage",
+        ],
+    },
+    {
+        "name": "Hostel - Leadership Read",
+        "description": "Leadership oversight of hostel operations.",
+        "permissions": [
+            "hostel.room.view",
+            "hostel.incident.report",
+            "hostel.incident.manage",
+        ],
+    },
+    {
+        "name": "Hostel - Rooms View",
+        "description": "Read-only access to hostel room listings.",
+        "permissions": [
+            "hostel.room.view",
+        ],
+    },
+
+    # ── TRANSPORT ──────────────────────────────────────────────────────────
+    {
+        "name": "Transport - Coordinator",
+        "description": "Manage transport routes, assignments and tracking.",
+        "permissions": [
+            "transport.routes.view",
+            "transport.routes.manage",
+            "transport.students.assign",
+            "transport.tracking.view",
+        ],
+    },
+    {
+        "name": "Transport - Leadership",
+        "description": "Leadership oversight of transport routes and tracking.",
+        "permissions": [
+            "transport.routes.view",
+            "transport.students.assign",
+            "transport.tracking.view",
+        ],
+    },
+    {
+        "name": "Transport - View",
+        "description": "Read-only transport routes and live tracking.",
+        "permissions": [
+            "transport.routes.view",
+            "transport.tracking.view",
+        ],
+    },
+    {
+        "name": "Transport - Routes Only",
+        "description": "Read-only transport routes (no tracking).",
+        "permissions": [
+            "transport.routes.view",
+        ],
+    },
+
+    # ── CANTEEN ────────────────────────────────────────────────────────────
+    {
+        "name": "Canteen - Manage",
+        "description": "Manage canteen menu, orders and sales.",
+        "permissions": [
+            "canteen.menu.view",
+            "canteen.menu.manage",
+            "canteen.orders.manage",
+            "canteen.sales.report",
+        ],
+    },
+
+    # ── EVENTS ─────────────────────────────────────────────────────────────
+    {
+        "name": "Events - Manage",
+        "description": "Manage events calendar and event attendance tracking.",
+        "permissions": [
+            "events.calendar.view",
+            "events.calendar.manage",
+            "events.attendance.track",
+        ],
+    },
+    {
+        "name": "Events - Calendar Manage",
+        "description": "Create and edit events on the school calendar.",
+        "permissions": [
+            "events.calendar.view",
+            "events.calendar.manage",
+        ],
+    },
+    {
+        "name": "Events - View",
+        "description": "Read-only events calendar.",
+        "permissions": [
+            "events.calendar.view",
+        ],
+    },
+
+    # ── ALUMNI ─────────────────────────────────────────────────────────────
+    {
+        "name": "Alumni - Manage",
+        "description": "Manage alumni directory and outbound communications.",
+        "permissions": [
+            "alumni.profile.view",
+            "alumni.profile.manage",
+            "alumni.communications.send",
+        ],
+    },
+    {
+        "name": "Alumni - View",
+        "description": "Read-only alumni directory.",
+        "permissions": [
+            "alumni.profile.view",
+        ],
+    },
+
+    # ── SETTINGS / ROLES ───────────────────────────────────────────────────
+    {
+        "name": "Settings - View",
+        "description": "Read-only school and branch configuration.",
+        "permissions": [
+            "settings.school.view",
+            "settings.branch.view",
+        ],
+    },
+    {
+        "name": "Settings - School Admin",
+        "description": "Manage school/branch settings and academic sessions.",
+        "permissions": [
+            "settings.school.view",
+            "settings.school.manage",
+            "settings.branch.view",
+            "settings.branch.manage",
+            "settings.academic_session.manage",
+        ],
+    },
+    {
+        "name": "Settings - Academic Session",
+        "description": "Open/close academic sessions and terms.",
+        "permissions": [
+            "settings.academic_session.manage",
+        ],
+    },
+    {
+        "name": "Settings - Roles (Read)",
+        "description": "Read role and permission configuration.",
+        "permissions": [
+            "settings.roles.view",
+        ],
+    },
+    {
+        "name": "Settings - Roles (Manage)",
+        "description": "Create/edit school roles and assign permissions.",
+        "permissions": [
+            "settings.roles.view",
+            "settings.roles.manage",
+        ],
+    },
+
+    # ── REPORTS / AUDIT ────────────────────────────────────────────────────
+    {
+        "name": "Reports - School-wide Read",
+        "description": "Read consolidated school-wide reports.",
+        "permissions": [
+            "reports.school_wide.view",
+        ],
+    },
+    {
+        "name": "Reports - School-wide Export",
+        "description": "Read and export consolidated school-wide reports.",
+        "permissions": [
+            "reports.school_wide.view",
+            "reports.school_wide.export",
+        ],
+    },
+    {
+        "name": "Audit - Read",
+        "description": "View the system audit trail.",
+        "permissions": [
+            "audit.logs.view",
+        ],
+    },
+    {
+        "name": "Audit - Export",
+        "description": "View and export audit logs.",
+        "permissions": [
+            "audit.logs.view",
+            "audit.logs.export",
+        ],
+    },
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # PLATFORM-SIDE GROUPS (used by PlatformRoleTemplate)
+    # ═══════════════════════════════════════════════════════════════════════
+    {
+        "name": "Platform - Schools (Read)",
+        "description": "Read all schools on the platform.",
+        "permissions": [
+            "platform.schools.view",
+        ],
+    },
+    {
+        "name": "Platform - Schools (Manage)",
+        "description": "Create, update, suspend and delete schools.",
+        "permissions": [
+            "platform.schools.view",
+            "platform.schools.create",
+            "platform.schools.update",
+            "platform.schools.suspend",
+            "platform.schools.delete",
+        ],
+    },
+    {
+        "name": "Platform - Schools (Onboard)",
+        "description": "Create and update schools (no suspend/delete).",
+        "permissions": [
+            "platform.schools.view",
+            "platform.schools.create",
+            "platform.schools.update",
+        ],
+    },
+    {
+        "name": "Platform - Users (Read)",
+        "description": "Read platform and school user accounts.",
+        "permissions": [
+            "platform.users.view",
+        ],
+    },
+    {
+        "name": "Platform - Users (Elevated)",
+        "description": "Impersonate, suspend and delete user accounts.",
+        "permissions": [
+            "platform.users.view",
+            "platform.users.impersonate",
+            "platform.users.suspend",
+            "platform.users.delete",
+        ],
+    },
+    {
+        "name": "Platform - Users (Support)",
+        "description": "View + impersonate users for advanced support.",
+        "permissions": [
+            "platform.users.view",
+            "platform.users.impersonate",
+        ],
+    },
+    {
+        "name": "Platform - Roles (Read)",
+        "description": "Read platform role templates.",
+        "permissions": [
+            "platform.roles.view",
+        ],
+    },
+    {
+        "name": "Platform - Roles (Manage)",
+        "description": "Manage platform role templates and permission registry.",
+        "permissions": [
+            "platform.roles.view",
+            "platform.roles.manage",
+            "platform.permissions.manage",
+        ],
+    },
+    {
+        "name": "Platform - Billing (Read)",
+        "description": "Read-only billing access.",
+        "permissions": [
+            "platform.billing.view",
+        ],
+    },
+    {
+        "name": "Platform - Billing (Full)",
+        "description": "Full billing administration plus financial reporting.",
+        "permissions": [
+            "platform.billing.view",
+            "platform.billing.manage",
+            "platform.billing.export",
+            "platform.reports.financial",
+        ],
+    },
+    {
+        "name": "Platform - Support (Tier 1)",
+        "description": "Handle support tickets without impersonation.",
+        "permissions": [
+            "platform.support.tickets.view",
+            "platform.support.tickets.manage",
+        ],
+    },
+    {
+        "name": "Platform - Support (Escalate)",
+        "description": "Escalate tickets beyond tier 1.",
+        "permissions": [
+            "platform.support.tickets.view",
+            "platform.support.tickets.manage",
+            "platform.support.escalate",
+        ],
+    },
+    {
+        "name": "Platform - Support (Tickets Read)",
+        "description": "Read-only access to support tickets.",
+        "permissions": [
+            "platform.support.tickets.view",
+        ],
+    },
+    {
+        "name": "Platform - Analytics (Read)",
+        "description": "Read platform analytics dashboards.",
+        "permissions": [
+            "platform.analytics.view",
+        ],
+    },
+    {
+        "name": "Platform - Analytics (Full)",
+        "description": "Read and export analytics plus financial reports.",
+        "permissions": [
+            "platform.analytics.view",
+            "platform.analytics.export",
+            "platform.reports.financial",
+        ],
+    },
+    {
+        "name": "Platform - Financial Reports",
+        "description": "Read platform-wide financial reports.",
+        "permissions": [
+            "platform.reports.financial",
+        ],
+    },
+    {
+        "name": "Platform - System (Read)",
+        "description": "Read system configuration, deployments, logs and integrations.",
+        "permissions": [
+            "platform.system.config.view",
+            "platform.system.deployments.view",
+            "platform.system.logs.view",
+            "platform.integrations.view",
+        ],
+    },
+    {
+        "name": "Platform - System (Manage)",
+        "description": "Manage system config, deployments, integrations and maintenance mode.",
+        "permissions": [
+            "platform.system.config.view",
+            "platform.system.config.manage",
+            "platform.system.deployments.view",
+            "platform.system.deployments.trigger",
+            "platform.system.logs.view",
+            "platform.system.maintenance.manage",
+            "platform.integrations.view",
+            "platform.integrations.manage",
+        ],
+    },
+    {
+        "name": "Platform - System Logs",
+        "description": "Read system and application logs.",
+        "permissions": [
+            "platform.system.logs.view",
+        ],
+    },
+    {
+        "name": "Platform - Data (Read)",
+        "description": "Read pipelines and backup status.",
+        "permissions": [
+            "platform.data.pipelines.view",
+            "platform.data.backups.view",
+        ],
+    },
+    {
+        "name": "Platform - Data (Manage)",
+        "description": "Manage pipelines, run migrations and manage backups.",
+        "permissions": [
+            "platform.data.pipelines.view",
+            "platform.data.pipelines.manage",
+            "platform.data.migrations.run",
+            "platform.data.backups.view",
+            "platform.data.backups.manage",
+        ],
+    },
+    {
+        "name": "Platform - Security",
+        "description": "Investigate incidents and manage pen-test findings.",
+        "permissions": [
+            "platform.security.incidents.view",
+            "platform.security.incidents.manage",
+            "platform.security.pen_test.manage",
+        ],
+    },
+    {
+        "name": "Platform - Compliance",
+        "description": "Manage compliance records plus export audit logs.",
+        "permissions": [
+            "platform.compliance.view",
+            "platform.compliance.manage",
+            "platform.audit.logs.view",
+            "platform.audit.logs.export",
+        ],
+    },
+    {
+        "name": "Platform - Audit (Read)",
+        "description": "Read platform audit logs.",
+        "permissions": [
+            "platform.audit.logs.view",
+        ],
+    },
+    {
+        "name": "Platform - Audit (Export)",
+        "description": "Read and export platform audit logs.",
+        "permissions": [
+            "platform.audit.logs.view",
+            "platform.audit.logs.export",
+        ],
+    },
+    {
+        "name": "Platform - Integrations (Read)",
+        "description": "Read third-party integration configuration.",
+        "permissions": [
+            "platform.integrations.view",
+        ],
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# 4. SCHOOL ROLE TEMPLATES
+#    Each role declares:
+#      * name, description, is_system_role
+#      * groups       : list of group names to attach
+#      * permissions  : canonical full permission set for this role
+#
+#    The seeder attaches the groups, then creates direct ``RolePermission``
+#    rows only for permissions in ``permissions`` that are not already
+#    covered by the attached groups. The resulting effective set is
+#    identical to ``permissions``.
 # ---------------------------------------------------------------------------
 
 SCHOOL_ROLES: list[dict] = [
@@ -279,6 +1188,36 @@ SCHOOL_ROLES: list[dict] = [
             "Principal (US/NG/IN), Director (international schools)."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Analytics",
+            "Announcements - Manage",
+            "Internal Chat",
+            "Messaging - Broadcast",
+            "Students - Manage",
+            "Students - Discipline",
+            "Students - Medical (Read)",
+            "Staff - Manage",
+            "Staff - Leave Approve",
+            "Staff - Appraisal",
+            "Staff - Payroll (Read)",
+            "Academics - Structure Manage",
+            "Academics - Lesson Notes (Approve)",
+            "Assessments - Leadership",
+            "Attendance - Report",
+            "Finance - Leadership Read",
+            "Library - Leadership Read",
+            "Health - Leadership Read",
+            "Admissions - Approve",
+            "Hostel - Leadership Read",
+            "Transport - Leadership",
+            "Events - Manage",
+            "Alumni - View",
+            "Settings - View",
+            "Settings - Academic Session",
+            "Settings - Roles (Read)",
+            "Reports - School-wide Export",
+            "Audit - Read",
+        ],
         "permissions": [
             "dashboard.overview.view", "dashboard.analytics.view", "dashboard.announcements.manage",
             "students.profile.view", "students.profile.create", "students.profile.update",
@@ -310,9 +1249,9 @@ SCHOOL_ROLES: list[dict] = [
             "communication.announcement.post", "communication.chat.view", "communication.chat.send",
             "admissions.application.view", "admissions.application.process",
             "admissions.application.approve", "admissions.enrollment.confirm",
-            "hostel.room.view", "hostel.incident.manage",
+            "hostel.room.view", "hostel.incident.report", "hostel.incident.manage",
             "transport.routes.view", "transport.students.assign", "transport.tracking.view",
-            "events.calendar.view", "events.calendar.manage",
+            "events.calendar.view", "events.calendar.manage", "events.attendance.track",
             "alumni.profile.view",
             "settings.school.view", "settings.branch.view",
             "settings.academic_session.manage", "settings.roles.view",
@@ -329,10 +1268,26 @@ SCHOOL_ROLES: list[dict] = [
             "Known as Deputy Head Teacher (UK), Vice Principal Academics (NG/US/IN)."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Analytics",
+            "Students - View",
+            "Students - Discipline",
+            "Staff - Appraisal",
+            "Academics - Structure Manage",
+            "Academics - Lesson Notes (Manage)",
+            "Academics - Lesson Notes (Approve)",
+            "Assessments - Exam Office",
+            "Attendance - View Only",
+            "Announcements - Post",
+            "Internal Chat",
+            "Events - Manage",
+            "Reports - School-wide Read",
+        ],
         "permissions": [
             "dashboard.overview.view", "dashboard.analytics.view",
             "students.profile.view", "students.class.assign", "students.class.transfer",
             "students.disciplinary.view", "students.disciplinary.manage",
+            "students.guardian.view",
             "staff.profile.view", "staff.appraisal.view", "staff.appraisal.manage",
             "staff.attendance.view",
             "academics.curriculum.view", "academics.curriculum.manage",
@@ -341,14 +1296,15 @@ SCHOOL_ROLES: list[dict] = [
             "academics.class.view", "academics.class.manage",
             "academics.lesson_notes.view", "academics.lesson_notes.manage",
             "academics.lesson_notes.approve",
-            "assessments.scores.view", "assessments.scores.approve",
+            "assessments.scores.view", "assessments.scores.enter", "assessments.scores.edit",
+            "assessments.scores.approve",
             "assessments.results.publish", "assessments.results.export",
             "assessments.report_card.print",
             "assessments.exam_schedule.view", "assessments.exam_schedule.manage",
             "assessments.grading.manage",
             "attendance.student.view", "attendance.student.report",
             "communication.announcement.post", "communication.chat.view", "communication.chat.send",
-            "events.calendar.view", "events.calendar.manage",
+            "events.calendar.view", "events.calendar.manage", "events.attendance.track",
             "reports.school_wide.view",
         ],
     },
@@ -360,6 +1316,22 @@ SCHOOL_ROLES: list[dict] = [
             "logistics, events, and general school administration."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Students - View",
+            "Students - Discipline",
+            "Staff - View",
+            "Staff - Leave Approve",
+            "Attendance - Teacher",
+            "Announcements - Post",
+            "Internal Chat",
+            "Messaging - Broadcast",
+            "Hostel - Manage",
+            "Transport - Leadership",
+            "Events - Manage",
+            "Settings - View",
+            "Reports - School-wide Read",
+        ],
         "permissions": [
             "dashboard.overview.view",
             "students.profile.view", "students.disciplinary.view", "students.disciplinary.manage",
@@ -373,7 +1345,7 @@ SCHOOL_ROLES: list[dict] = [
             "communication.announcement.post", "communication.chat.view", "communication.chat.send",
             "hostel.room.view", "hostel.room.manage", "hostel.attendance.mark",
             "hostel.incident.report", "hostel.incident.manage",
-            "transport.routes.view", "transport.students.assign",
+            "transport.routes.view", "transport.students.assign", "transport.tracking.view",
             "events.calendar.view", "events.calendar.manage", "events.attendance.track",
             "settings.school.view", "settings.branch.view",
             "reports.school_wide.view",
@@ -390,11 +1362,23 @@ SCHOOL_ROLES: list[dict] = [
             "Form Tutor (UK)."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Students - View",
+            "Students - Discipline",
+            "Academics - View",
+            "Academics - Lesson Notes (Manage)",
+            "Assessments - Teacher",
+            "Attendance - Teacher",
+            "Internal Chat",
+            "Events - View",
+        ],
         "permissions": [
             "dashboard.overview.view",
             "students.profile.view", "students.disciplinary.view", "students.disciplinary.manage",
             "students.guardian.view", "students.id_card.generate",
             "academics.timetable.view", "academics.subjects.view", "academics.class.view",
+            "academics.curriculum.view",
             "academics.lesson_notes.view", "academics.lesson_notes.manage",
             "assessments.scores.view", "assessments.scores.enter",
             "assessments.report_card.print", "assessments.exam_schedule.view",
@@ -412,14 +1396,25 @@ SCHOOL_ROLES: list[dict] = [
             "for their assigned subjects only."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Students - View",
+            "Academics - View",
+            "Academics - Lesson Notes (Manage)",
+            "Assessments - Teacher",
+            "Attendance - Teacher",
+            "Internal Chat",
+            "Events - View",
+        ],
         "permissions": [
             "dashboard.overview.view",
-            "students.profile.view",
+            "students.profile.view", "students.guardian.view",
+            "academics.curriculum.view",
             "academics.timetable.view", "academics.subjects.view", "academics.class.view",
             "academics.lesson_notes.view", "academics.lesson_notes.manage",
             "assessments.scores.view", "assessments.scores.enter",
             "assessments.exam_schedule.view",
-            "attendance.student.view", "attendance.student.mark",
+            "attendance.student.view", "attendance.student.mark", "attendance.student.report",
             "communication.chat.view", "communication.chat.send",
             "events.calendar.view",
         ],
@@ -433,13 +1428,29 @@ SCHOOL_ROLES: list[dict] = [
             "for their department. Known as HOD worldwide."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Analytics",
+            "Students - View",
+            "Staff - Appraisal (Read)",
+            # "Academics - Structure Manage" intentionally omitted: HoD doesn't
+            # get `academics.timetable.manage`; subject/class/curriculum manage
+            # perms fall through as residual direct grants instead.
+            "Academics - Lesson Notes (Manage)",
+            "Academics - Lesson Notes (Approve)",
+            "Assessments - Teacher",
+            "Assessments - Approve",
+            "Attendance - View Only",
+            "Internal Chat",
+            "Events - View",
+            "Reports - School-wide Read",
+        ],
         "permissions": [
             "dashboard.overview.view", "dashboard.analytics.view",
-            "students.profile.view",
+            "students.profile.view", "students.guardian.view",
             "staff.profile.view", "staff.appraisal.view",
             "academics.curriculum.view", "academics.curriculum.manage",
             "academics.timetable.view", "academics.subjects.view", "academics.subjects.manage",
-            "academics.class.view",
+            "academics.class.view", "academics.class.manage",
             "academics.lesson_notes.view", "academics.lesson_notes.manage",
             "academics.lesson_notes.approve",
             "assessments.scores.view", "assessments.scores.enter", "assessments.scores.approve",
@@ -459,9 +1470,17 @@ SCHOOL_ROLES: list[dict] = [
             "Known as Exams Officer (UK/NG/GH) or Registrar (US/tertiary contexts)."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Students - View",
+            "Assessments - Exam Office",
+            "Announcements - Post",
+            "Internal Chat",
+            "Reports - School-wide Export",
+        ],
         "permissions": [
             "dashboard.overview.view",
-            "students.profile.view", "students.id_card.generate",
+            "students.profile.view", "students.guardian.view", "students.id_card.generate",
             "academics.class.view", "academics.subjects.view", "academics.timetable.view",
             "assessments.scores.view", "assessments.scores.enter", "assessments.scores.edit",
             "assessments.scores.approve", "assessments.results.publish",
@@ -482,6 +1501,16 @@ SCHOOL_ROLES: list[dict] = [
             "School Counsellor (US/CA), Pastoral Care Officer (UK/AU)."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Students - View",
+            "Students - Discipline (Read)",
+            "Students - Medical (Read)",
+            "Attendance - View Only",
+            "Health - Visits (Read)",
+            "Internal Chat",
+            "Events - View",
+        ],
         "permissions": [
             "dashboard.overview.view",
             "students.profile.view", "students.disciplinary.view",
@@ -504,11 +1533,23 @@ SCHOOL_ROLES: list[dict] = [
             "or Registrar in various systems."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Students - Enrolment Admin",
+            "Staff - View",
+            "Attendance - Portal View",
+            "Announcements - Post",
+            "Internal Chat",
+            "Messaging - Broadcast",
+            "Admissions - Processing",
+            "Events - Calendar Manage",
+            "Alumni - View",
+        ],
         "permissions": [
             "dashboard.overview.view",
             "students.profile.view", "students.profile.create", "students.profile.update",
             "students.guardian.view", "students.guardian.manage", "students.id_card.generate",
-            "staff.profile.view",
+            "staff.profile.view", "staff.attendance.view",
             "academics.timetable.view", "academics.class.view",
             "attendance.student.view",
             "communication.sms.send", "communication.email.send",
@@ -527,6 +1568,14 @@ SCHOOL_ROLES: list[dict] = [
             "enrolment confirmation. Common in secondary, tertiary, and international schools."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Students - Enrolment Admin",
+            "Internal Chat",
+            "Messaging - Broadcast",
+            "Admissions - Approve",
+            "Reports - School-wide Read",
+        ],
         "permissions": [
             "dashboard.overview.view",
             "students.profile.view", "students.profile.create", "students.profile.update",
@@ -549,9 +1598,17 @@ SCHOOL_ROLES: list[dict] = [
             "Known as Bursar (NG/UK), Finance Officer (US/AU/international schools)."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Analytics",
+            "Students - View",
+            "Finance - Bursar",
+            "Messaging - Broadcast",
+            "Internal Chat",
+            "Reports - School-wide Export",
+        ],
         "permissions": [
             "dashboard.overview.view", "dashboard.analytics.view",
-            "students.profile.view",
+            "students.profile.view", "students.guardian.view",
             "finance.fees.view", "finance.fees.manage", "finance.fees.waive",
             "finance.invoice.view", "finance.invoice.create", "finance.invoice.approve",
             "finance.payment.record", "finance.payment.verify", "finance.payment.reverse",
@@ -571,9 +1628,15 @@ SCHOOL_ROLES: list[dict] = [
             "and basic financial data entry. Has no approval authority."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Students - View",
+            "Finance - Clerk",
+            "Internal Chat",
+        ],
         "permissions": [
             "dashboard.overview.view",
-            "students.profile.view",
+            "students.profile.view", "students.guardian.view",
             "finance.fees.view",
             "finance.invoice.view", "finance.invoice.create",
             "finance.payment.record", "finance.payment.verify",
@@ -590,6 +1653,12 @@ SCHOOL_ROLES: list[dict] = [
             "reports. Known as School Health Officer in some African contexts."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Students - Medical (Manage)",
+            "Health - Nurse",
+            "Internal Chat",
+        ],
         "permissions": [
             "dashboard.overview.view",
             "students.profile.view", "students.medical.view", "students.medical.manage",
@@ -609,6 +1678,14 @@ SCHOOL_ROLES: list[dict] = [
             "handling overdue books, and generating usage reports."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            # "Students - View" omitted: Librarian only needs students.profile.view,
+            # not students.guardian.view. The profile.view perm is applied as a
+            # direct grant below.
+            "Library - Staff",
+            "Internal Chat",
+        ],
         "permissions": [
             "dashboard.overview.view",
             "students.profile.view",
@@ -628,6 +1705,13 @@ SCHOOL_ROLES: list[dict] = [
             "Does not have access to confidential student or financial data."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Analytics",
+            "Settings - View",
+            "Settings - Roles (Manage)",
+            "Audit - Read",
+            "Internal Chat",
+        ],
         "permissions": [
             "dashboard.overview.view", "dashboard.analytics.view",
             "settings.school.view", "settings.branch.view",
@@ -646,6 +1730,15 @@ SCHOOL_ROLES: list[dict] = [
             "Known as Dorm Supervisor (US/CA), House Parent (international schools)."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Students - Discipline",
+            "Students - Medical (Read)",
+            "Health - Visits (Read)",
+            "Hostel - Manage",
+            "Internal Chat",
+            "Events - View",
+        ],
         "permissions": [
             "dashboard.overview.view",
             "students.profile.view", "students.disciplinary.view", "students.disciplinary.manage",
@@ -666,9 +1759,15 @@ SCHOOL_ROLES: list[dict] = [
             "Tracks GPS and handles transport-related communications with parents."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Students - View",
+            "Transport - Coordinator",
+            "Internal Chat",
+        ],
         "permissions": [
             "dashboard.overview.view",
-            "students.profile.view",
+            "students.profile.view", "students.guardian.view",
             "transport.routes.view", "transport.routes.manage",
             "transport.students.assign", "transport.tracking.view",
             "communication.sms.send", "communication.chat.view", "communication.chat.send",
@@ -683,6 +1782,11 @@ SCHOOL_ROLES: list[dict] = [
             "and sales reporting. Known as Cafeteria Manager (US) or Dining Hall Supervisor."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Canteen - Manage",
+            "Internal Chat",
+        ],
         "permissions": [
             "dashboard.overview.view",
             "canteen.menu.view", "canteen.menu.manage",
@@ -700,10 +1804,22 @@ SCHOOL_ROLES: list[dict] = [
             "communicate with the school. Portal access role used worldwide."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Academics - Portal View",
+            "Assessments - Portal View",
+            "Attendance - Portal View",
+            "Finance - Portal View",
+            "Library - Member",
+            "Transport - View",
+            "Events - View",
+            "Internal Chat",
+        ],
         "permissions": [
             "dashboard.overview.view",
             "students.profile.view",
-            "academics.timetable.view",
+            "academics.timetable.view", "academics.subjects.view",
+            "academics.lesson_notes.view",
             "assessments.scores.view", "assessments.report_card.print",
             "assessments.exam_schedule.view",
             "attendance.student.view",
@@ -723,6 +1839,17 @@ SCHOOL_ROLES: list[dict] = [
             "profile, results, timetable, attendance, and communicate within the platform."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Academics - Portal View",
+            "Assessments - Portal View",
+            "Attendance - Portal View",
+            "Finance - Portal View",
+            "Library - Member",
+            "Transport - Routes Only",
+            "Events - View",
+            "Internal Chat",
+        ],
         "permissions": [
             "dashboard.overview.view",
             "students.profile.view",
@@ -747,6 +1874,12 @@ SCHOOL_ROLES: list[dict] = [
             "school communications. Limited read-only access."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Alumni - View",
+            "Events - View",
+            "Internal Chat",
+        ],
         "permissions": [
             "dashboard.overview.view",
             "alumni.profile.view",
@@ -763,10 +1896,16 @@ SCHOOL_ROLES: list[dict] = [
             "and log entry/exit events. No access to academic or financial data."
         ),
         "is_system_role": True,
+        "groups": [
+            "Dashboard - Basic",
+            "Students - View",
+            "Staff - View",
+            "Transport - View",
+        ],
         "permissions": [
             "dashboard.overview.view",
-            "students.profile.view",
-            "staff.profile.view",
+            "students.profile.view", "students.guardian.view",
+            "staff.profile.view", "staff.attendance.view",
             "transport.routes.view", "transport.tracking.view",
             "communication.chat.view",
         ],
@@ -775,7 +1914,7 @@ SCHOOL_ROLES: list[dict] = [
 
 
 # ---------------------------------------------------------------------------
-# ③ PLATFORM ROLE TEMPLATES (Vision-owned / tech-org context)
+# 5. PLATFORM ROLE TEMPLATES (Vision-owned / tech-org context)
 # ---------------------------------------------------------------------------
 
 PLATFORM_ROLES: list[dict] = [
@@ -789,8 +1928,20 @@ PLATFORM_ROLES: list[dict] = [
         ),
         "is_system_role": True,
         "is_locked": True,
+        "groups": [
+            "Platform - Schools (Manage)",
+            "Platform - Users (Elevated)",
+            "Platform - Roles (Manage)",
+            "Platform - Billing (Full)",
+            "Platform - Support (Escalate)",
+            "Platform - Analytics (Full)",
+            "Platform - System (Manage)",
+            "Platform - Data (Manage)",
+            "Platform - Security",
+            "Platform - Compliance",
+            "Platform - Audit (Export)",
+        ],
         "permissions": [p[0] for p in PERMISSIONS if p[0].startswith("platform.")],
-        # Gets ALL platform permissions
     },
 
     {
@@ -801,6 +1952,15 @@ PLATFORM_ROLES: list[dict] = [
         ),
         "is_system_role": True,
         "is_locked": False,
+        "groups": [
+            "Platform - Schools (Read)",
+            "Platform - Users (Read)",
+            "Platform - Roles (Read)",
+            "Platform - Analytics (Read)",
+            "Platform - System (Manage)",
+            "Platform - Data (Manage)",
+            "Platform - Audit (Read)",
+        ],
         "permissions": [
             "platform.schools.view",
             "platform.users.view",
@@ -826,6 +1986,14 @@ PLATFORM_ROLES: list[dict] = [
         ),
         "is_system_role": True,
         "is_locked": False,
+        "groups": [
+            "Platform - Schools (Read)",
+            "Platform - Users (Read)",
+            "Platform - Roles (Read)",
+            "Platform - System (Read)",
+            "Platform - Data (Read)",
+            "Platform - Audit (Read)",
+        ],
         "permissions": [
             "platform.schools.view",
             "platform.users.view",
@@ -849,6 +2017,12 @@ PLATFORM_ROLES: list[dict] = [
         ),
         "is_system_role": True,
         "is_locked": False,
+        "groups": [
+            "Platform - Schools (Read)",
+            "Platform - System (Manage)",
+            "Platform - Data (Manage)",
+            "Platform - Audit (Read)",
+        ],
         "permissions": [
             "platform.schools.view",
             "platform.system.config.view", "platform.system.config.manage",
@@ -870,6 +2044,17 @@ PLATFORM_ROLES: list[dict] = [
         ),
         "is_system_role": True,
         "is_locked": False,
+        "groups": [
+            "Platform - Schools (Read)",
+            "Platform - Users (Read)",
+            "Platform - Roles (Read)",
+            # "Platform - System (Read)" omitted: QA doesn't need
+            # platform.integrations.view. System config/deployments/logs perms
+            # are applied as residual direct grants below.
+            "Platform - Data (Read)",
+            "Platform - Analytics (Read)",
+            "Platform - Audit (Read)",
+        ],
         "permissions": [
             "platform.schools.view",
             "platform.users.view",
@@ -893,6 +2078,14 @@ PLATFORM_ROLES: list[dict] = [
         ),
         "is_system_role": True,
         "is_locked": False,
+        "groups": [
+            "Platform - Schools (Read)",
+            "Platform - Users (Read)",
+            "Platform - Roles (Read)",
+            "Platform - Analytics (Full)",
+            "Platform - Support (Tickets Read)",
+            "Platform - Audit (Read)",
+        ],
         "permissions": [
             "platform.schools.view",
             "platform.users.view",
@@ -913,6 +2106,12 @@ PLATFORM_ROLES: list[dict] = [
         ),
         "is_system_role": True,
         "is_locked": False,
+        "groups": [
+            "Platform - Schools (Read)",
+            "Platform - Analytics (Full)",
+            "Platform - Data (Read)",
+            "Platform - Audit (Export)",
+        ],
         "permissions": [
             "platform.schools.view",
             "platform.analytics.view", "platform.analytics.export",
@@ -931,6 +2130,14 @@ PLATFORM_ROLES: list[dict] = [
         ),
         "is_system_role": True,
         "is_locked": False,
+        "groups": [
+            "Platform - Schools (Read)",
+            "Platform - Analytics (Read)",
+            "Platform - Data (Manage)",
+            "Platform - System Logs",
+            "Platform - Integrations (Read)",
+            "Platform - Audit (Read)",
+        ],
         "permissions": [
             "platform.schools.view",
             "platform.analytics.view",
@@ -951,6 +2158,13 @@ PLATFORM_ROLES: list[dict] = [
         ),
         "is_system_role": True,
         "is_locked": False,
+        "groups": [
+            "Platform - Schools (Read)",
+            "Platform - Users (Read)",
+            "Platform - Support (Tier 1)",
+            "Platform - Analytics (Read)",
+            "Platform - Audit (Read)",
+        ],
         "permissions": [
             "platform.schools.view",
             "platform.users.view",
@@ -968,6 +2182,14 @@ PLATFORM_ROLES: list[dict] = [
         ),
         "is_system_role": True,
         "is_locked": False,
+        "groups": [
+            "Platform - Schools (Read)",
+            "Platform - Users (Support)",
+            "Platform - Support (Escalate)",
+            "Platform - System Logs",
+            "Platform - Analytics (Read)",
+            "Platform - Audit (Read)",
+        ],
         "permissions": [
             "platform.schools.view",
             "platform.users.view", "platform.users.impersonate",
@@ -988,6 +2210,13 @@ PLATFORM_ROLES: list[dict] = [
         ),
         "is_system_role": True,
         "is_locked": False,
+        "groups": [
+            "Platform - Schools (Read)",
+            "Platform - Users (Read)",
+            "Platform - Compliance",
+            "Platform - Analytics (Read)",
+            "Platform - Financial Reports",
+        ],
         "permissions": [
             "platform.schools.view",
             "platform.users.view",
@@ -1007,6 +2236,14 @@ PLATFORM_ROLES: list[dict] = [
         ),
         "is_system_role": True,
         "is_locked": False,
+        "groups": [
+            "Platform - Schools (Read)",
+            "Platform - Users (Read)",
+            "Platform - System Logs",
+            "Platform - Audit (Export)",
+            "Platform - Security",
+            "Platform - Integrations (Read)",
+        ],
         "permissions": [
             "platform.schools.view",
             "platform.users.view",
@@ -1028,6 +2265,12 @@ PLATFORM_ROLES: list[dict] = [
         ),
         "is_system_role": True,
         "is_locked": False,
+        "groups": [
+            "Platform - Schools (Read)",
+            "Platform - Billing (Full)",
+            "Platform - Analytics (Read)",
+            "Platform - Audit (Read)",
+        ],
         "permissions": [
             "platform.schools.view",
             "platform.billing.view", "platform.billing.manage", "platform.billing.export",
@@ -1046,6 +2289,14 @@ PLATFORM_ROLES: list[dict] = [
         ),
         "is_system_role": True,
         "is_locked": False,
+        "groups": [
+            "Platform - Schools (Onboard)",
+            "Platform - Users (Read)",
+            "Platform - Billing (Read)",
+            "Platform - Analytics (Read)",
+            "Platform - Support (Tickets Read)",
+            "Platform - Audit (Read)",
+        ],
         "permissions": [
             "platform.schools.view", "platform.schools.create", "platform.schools.update",
             "platform.users.view",
@@ -1063,7 +2314,10 @@ PLATFORM_ROLES: list[dict] = [
 # ===========================================================================
 
 class Command(BaseCommand):
-    help = "Idempotently seed Permissions, school RoleTemplates, and PlatformRoleTemplates."
+    help = (
+        "Idempotently seed Permissions, PermissionDependencies, PermissionGroups, "
+        "school RoleTemplates, and PlatformRoleTemplates."
+    )
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -1087,16 +2341,21 @@ class Command(BaseCommand):
 
         # Import models here so Django is fully initialised
         from vs_rbac.models import (
+            GroupPermission,
             Permission,
-            RoleTemplate,
-            RolePermission,
-            PlatformRoleTemplate,
+            PermissionDependency,
+            PermissionGroup,
+            PlatformRoleGroup,
             PlatformRolePermission,
+            PlatformRoleTemplate,
+            RoleGroup,
+            RolePermission,
+            RoleTemplate,
         )
         from vs_schools.models import School
 
         # ── 1. Permissions ────────────────────────────────────────────────
-        self.stdout.write("\n[1/3] Seeding Permission registry …")
+        self.stdout.write("\n[1/5] Seeding Permission registry …")
         perm_created = perm_updated = 0
 
         if not dry_run:
@@ -1127,8 +2386,100 @@ class Command(BaseCommand):
             )
         )
 
-        # ── 2. School Role Templates ──────────────────────────────────────
-        self.stdout.write("\n[2/3] Seeding School RoleTemplates …")
+        # ── 2. Permission Dependencies ────────────────────────────────────
+        self.stdout.write("\n[2/5] Seeding Permission dependencies …")
+        dep_created = dep_updated = 0
+
+        if not dry_run:
+            with transaction.atomic():
+                for perm_key, depends_on_key in PERMISSION_DEPENDENCIES:
+                    _, created = PermissionDependency.objects.update_or_create(
+                        permission_id=perm_key,
+                        depends_on_id=depends_on_key,
+                        defaults={},
+                    )
+                    if created:
+                        dep_created += 1
+                    else:
+                        dep_updated += 1
+        else:
+            dep_created = len(PERMISSION_DEPENDENCIES)
+
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"  PermissionDependencies → {dep_created} created / {dep_updated} updated  "
+                f"(total defined: {len(PERMISSION_DEPENDENCIES)})"
+            )
+        )
+
+        # ── 3. Permission Groups ──────────────────────────────────────────
+        self.stdout.write("\n[3/5] Seeding Permission groups …")
+        group_created = group_updated = gp_created = gp_updated = gp_deleted = 0
+
+        # Build a name → set(permission_key) lookup; the role-seeding phase
+        # below uses this to compute residual direct grants.
+        groups_by_name: dict[str, set[str]] = {}
+
+        if not dry_run:
+            with transaction.atomic():
+                for group_def in PERMISSION_GROUPS:
+                    group, created = PermissionGroup.objects.update_or_create(
+                        name=group_def["name"],
+                        defaults=dict(
+                            description=group_def["description"],
+                            is_system=True,
+                            is_active=True,
+                        ),
+                    )
+                    if created:
+                        group_created += 1
+                    else:
+                        group_updated += 1
+
+                    desired_keys = set(group_def["permissions"])
+                    groups_by_name[group.name] = desired_keys
+
+                    existing_keys = set(
+                        GroupPermission.objects.filter(group=group).values_list(
+                            "permission_id", flat=True
+                        )
+                    )
+
+                    to_add = desired_keys - existing_keys
+                    to_remove = existing_keys - desired_keys
+
+                    if to_remove:
+                        deleted, _ = GroupPermission.objects.filter(
+                            group=group, permission_id__in=to_remove
+                        ).delete()
+                        gp_deleted += deleted
+
+                    if to_add:
+                        perms = Permission.objects.filter(key__in=to_add)
+                        GroupPermission.objects.bulk_create(
+                            [
+                                GroupPermission(group=group, permission=perm)
+                                for perm in perms
+                            ]
+                        )
+                        gp_created += len(to_add)
+
+                    # Count kept memberships as "updated" for reporting parity
+                    gp_updated += len(desired_keys & existing_keys)
+        else:
+            group_created = len(PERMISSION_GROUPS)
+            for group_def in PERMISSION_GROUPS:
+                groups_by_name[group_def["name"]] = set(group_def["permissions"])
+
+        self.stdout.write(
+            self.style.SUCCESS(
+                f"  PermissionGroups     → {group_created} created / {group_updated} updated\n"
+                f"  GroupPermissions     → {gp_created} created / {gp_updated} kept / {gp_deleted} removed"
+            )
+        )
+
+        # ── 4. School Role Templates ──────────────────────────────────────
+        self.stdout.write("\n[4/5] Seeding School RoleTemplates …")
 
         schools = School.objects.filter(status="ACTIVE")
         if school_slug:
@@ -1136,7 +2487,9 @@ class Command(BaseCommand):
             if not schools.exists():
                 raise CommandError(f"No active school found with slug '{school_slug}'.")
 
-        school_role_created = school_role_updated = school_rp_created = school_rp_updated = 0
+        school_role_created = school_role_updated = 0
+        school_rp_created = school_rp_updated = school_rp_deleted = 0
+        school_rg_created = school_rg_kept = school_rg_deleted = 0
 
         if not dry_run:
             with transaction.atomic():
@@ -1151,37 +2504,101 @@ class Command(BaseCommand):
                     )
                     if created:
                         school_role_created += 1
-                        if not created:
-                            role.bump_version()
-                            role.save(update_fields=["version"])
                     else:
                         school_role_updated += 1
+                        role.bump_version()
+                        role.save(update_fields=["version", "updated_at"])
 
-                    # Sync permissions
-                    for perm_key in role_def["permissions"]:
-                        rp, rp_created = RolePermission.objects.update_or_create(
-                            role=role,
-                            permission_id=perm_key,
-                            defaults=dict(granted=True),
+                    # 4a. Sync attached permission groups for this role
+                    desired_group_names = role_def.get("groups", [])
+                    desired_group_objs = PermissionGroup.objects.filter(
+                        name__in=desired_group_names
+                    )
+                    desired_group_ids = set(
+                        desired_group_objs.values_list("id", flat=True)
+                    )
+                    existing_group_ids = set(
+                        RoleGroup.objects.filter(role=role).values_list(
+                            "group_id", flat=True
                         )
-                        if rp_created:
-                            school_rp_created += 1
-                        else:
-                            school_rp_updated += 1
+                    )
+
+                    to_add_gids = desired_group_ids - existing_group_ids
+                    to_remove_gids = existing_group_ids - desired_group_ids
+
+                    if to_remove_gids:
+                        deleted, _ = RoleGroup.objects.filter(
+                            role=role, group_id__in=to_remove_gids
+                        ).delete()
+                        school_rg_deleted += deleted
+
+                    if to_add_gids:
+                        RoleGroup.objects.bulk_create(
+                            [
+                                RoleGroup(role=role, group_id=gid)
+                                for gid in to_add_gids
+                            ]
+                        )
+                        school_rg_created += len(to_add_gids)
+
+                    school_rg_kept += len(desired_group_ids & existing_group_ids)
+
+                    # 4b. Compute residual direct permissions — everything in
+                    #     role_def["permissions"] that is NOT already provided
+                    #     by one of the attached groups.
+                    role_permission_keys = set(role_def["permissions"])
+                    group_covered_keys: set[str] = set()
+                    for gname in desired_group_names:
+                        group_covered_keys |= groups_by_name.get(gname, set())
+
+                    residual_direct_keys = role_permission_keys - group_covered_keys
+
+                    existing_direct_keys = set(
+                        RolePermission.objects.filter(
+                            role=role, granted=True
+                        ).values_list("permission_id", flat=True)
+                    )
+
+                    to_add_direct = residual_direct_keys - existing_direct_keys
+                    to_remove_direct = existing_direct_keys - residual_direct_keys
+
+                    if to_remove_direct:
+                        deleted, _ = RolePermission.objects.filter(
+                            role=role, permission_id__in=to_remove_direct
+                        ).delete()
+                        school_rp_deleted += deleted
+
+                    if to_add_direct:
+                        perms = Permission.objects.filter(key__in=to_add_direct)
+                        RolePermission.objects.bulk_create(
+                            [
+                                RolePermission(
+                                    role=role,
+                                    permission=perm,
+                                    granted=True,
+                                )
+                                for perm in perms
+                            ]
+                        )
+                        school_rp_created += len(to_add_direct)
+
+                    school_rp_updated += len(residual_direct_keys & existing_direct_keys)
         else:
-            school_role_created = len(SCHOOL_ROLES) * schools.count()
-            school_rp_created = sum(len(r["permissions"]) for r in SCHOOL_ROLES) * schools.count()
+            school_role_created = len(SCHOOL_ROLES)
 
         self.stdout.write(
             self.style.SUCCESS(
                 f"  School RoleTemplates → {school_role_created} created / {school_role_updated} updated\n"
-                f"  RolePermissions     → {school_rp_created} created / {school_rp_updated} updated"
+                f"  RolePermissions      → {school_rp_created} created / {school_rp_updated} kept / {school_rp_deleted} removed\n"
+                f"  RoleGroups           → {school_rg_created} attached / {school_rg_kept} kept / {school_rg_deleted} detached"
             )
         )
 
-        # ── 3. Platform Role Templates ────────────────────────────────────
-        self.stdout.write("\n[3/3] Seeding PlatformRoleTemplates …")
-        plat_role_created = plat_role_updated = plat_rp_created = plat_rp_updated = 0
+        # ── 5. Platform Role Templates ────────────────────────────────────
+        self.stdout.write("\n[5/5] Seeding PlatformRoleTemplates …")
+        plat_role_created = plat_role_updated = 0
+        plat_rp_created = plat_rp_updated = plat_rp_deleted = 0
+        plat_rg_created = plat_rg_kept = plat_rg_deleted = 0
 
         if not dry_run:
             with transaction.atomic():
@@ -1200,26 +2617,87 @@ class Command(BaseCommand):
                     else:
                         plat_role_updated += 1
                         role.bump_version()
-                        role.save(update_fields=["version"])
+                        role.save(update_fields=["version", "updated_at"])
 
-                    for perm_key in role_def["permissions"]:
-                        rp, rp_created = PlatformRolePermission.objects.update_or_create(
-                            role=role,
-                            permission_id=perm_key,
-                            defaults=dict(granted=True),
+                    # 5a. Sync attached permission groups
+                    desired_group_names = role_def.get("groups", [])
+                    desired_group_ids = set(
+                        PermissionGroup.objects.filter(
+                            name__in=desired_group_names
+                        ).values_list("id", flat=True)
+                    )
+                    existing_group_ids = set(
+                        PlatformRoleGroup.objects.filter(role=role).values_list(
+                            "group_id", flat=True
                         )
-                        if rp_created:
-                            plat_rp_created += 1
-                        else:
-                            plat_rp_updated += 1
+                    )
+
+                    to_add_gids = desired_group_ids - existing_group_ids
+                    to_remove_gids = existing_group_ids - desired_group_ids
+
+                    if to_remove_gids:
+                        deleted, _ = PlatformRoleGroup.objects.filter(
+                            role=role, group_id__in=to_remove_gids
+                        ).delete()
+                        plat_rg_deleted += deleted
+
+                    if to_add_gids:
+                        PlatformRoleGroup.objects.bulk_create(
+                            [
+                                PlatformRoleGroup(role=role, group_id=gid)
+                                for gid in to_add_gids
+                            ]
+                        )
+                        plat_rg_created += len(to_add_gids)
+
+                    plat_rg_kept += len(desired_group_ids & existing_group_ids)
+
+                    # 5b. Residual direct permissions
+                    role_permission_keys = set(role_def["permissions"])
+                    group_covered_keys: set[str] = set()
+                    for gname in desired_group_names:
+                        group_covered_keys |= groups_by_name.get(gname, set())
+
+                    residual_direct_keys = role_permission_keys - group_covered_keys
+
+                    existing_direct_keys = set(
+                        PlatformRolePermission.objects.filter(
+                            role=role, granted=True
+                        ).values_list("permission_id", flat=True)
+                    )
+
+                    to_add_direct = residual_direct_keys - existing_direct_keys
+                    to_remove_direct = existing_direct_keys - residual_direct_keys
+
+                    if to_remove_direct:
+                        deleted, _ = PlatformRolePermission.objects.filter(
+                            role=role, permission_id__in=to_remove_direct
+                        ).delete()
+                        plat_rp_deleted += deleted
+
+                    if to_add_direct:
+                        perms = Permission.objects.filter(key__in=to_add_direct)
+                        PlatformRolePermission.objects.bulk_create(
+                            [
+                                PlatformRolePermission(
+                                    role=role,
+                                    permission=perm,
+                                    granted=True,
+                                )
+                                for perm in perms
+                            ]
+                        )
+                        plat_rp_created += len(to_add_direct)
+
+                    plat_rp_updated += len(residual_direct_keys & existing_direct_keys)
         else:
             plat_role_created = len(PLATFORM_ROLES)
-            plat_rp_created = sum(len(r["permissions"]) for r in PLATFORM_ROLES)
 
         self.stdout.write(
             self.style.SUCCESS(
                 f"  PlatformRoleTemplates → {plat_role_created} created / {plat_role_updated} updated\n"
-                f"  PlatformRolePerms     → {plat_rp_created} created / {plat_rp_updated} updated"
+                f"  PlatformRolePerms     → {plat_rp_created} created / {plat_rp_updated} kept / {plat_rp_deleted} removed\n"
+                f"  PlatformRoleGroups    → {plat_rg_created} attached / {plat_rg_kept} kept / {plat_rg_deleted} detached"
             )
         )
 
@@ -1228,7 +2706,9 @@ class Command(BaseCommand):
             self.style.SUCCESS(
                 f"\n✅  Seeding complete.\n"
                 f"    Permissions        : {len(PERMISSIONS)}\n"
-                f"    School Roles       : {len(SCHOOL_ROLES)} (per school)\n"
+                f"    Dependencies       : {len(PERMISSION_DEPENDENCIES)}\n"
+                f"    Permission Groups  : {len(PERMISSION_GROUPS)}\n"
+                f"    School Roles       : {len(SCHOOL_ROLES)}\n"
                 f"    Platform Roles     : {len(PLATFORM_ROLES)}\n"
             )
         )

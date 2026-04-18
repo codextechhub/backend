@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python manage.py makemigrations vs_rbac)",
+      "Bash(python manage.py makemigrations vs_rbac --dry-run)",
+      "Bash(python manage.py migrate vs_rbac)",
+      "Bash(python manage.py seed_role_perms)",
+      "Bash(python -c \"from django.conf import settings; import django; django.setup\\(\\)\")",
+      "Bash(python manage.py shell -c \"from vs_rbac.models import RoleTemplate; print\\(RoleTemplate.objects.count\\(\\)\\)\")",
+      "Bash(python manage.py shell -c ' *)",
+      "Bash(python -c ' *)"
+    ]
+  }
+}
