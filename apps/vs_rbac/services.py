@@ -13,15 +13,17 @@ from django.db import transaction
 from django.utils import timezone
 
 from .models import (
-    RoleChangeRequest,
-    RoleChangeDeltaItem,
-    RoleTemplate,
-    RolePermission,
-    Permission,
-    PlatformRoleChangeRequest,
     PlatformRoleChangeDeltaItem,
-    PlatformRoleTemplate,
+    PlatformRoleChangeRequest,
+    PlatformRoleGroup,
     PlatformRolePermission,
+    PlatformRoleTemplate,
+    Permission,
+    RoleChangeDeltaItem,
+    RoleChangeRequest,
+    RoleGroup,
+    RolePermission,
+    RoleTemplate,
 )
 from .validators import validate_role_permissions
 
@@ -59,10 +61,18 @@ def apply_school_role_change_request(obj: RoleChangeRequest, reviewer, notes: st
             elif item.operation == RoleChangeDeltaItem.Operation.REMOVE:
                 current_keys.discard(item.permission_id)
         
-        # Validate final permission set
+        # Validate final permission set — include permissions coming from any
+        # groups already attached to the role so dependency checks pass for
+        # permissions provided via groups rather than direct grants.
         final_keys = sorted(current_keys)
-        validate_role_permissions(final_keys)  # Raises ValidationError if invalid
-        
+        attached_group_ids = list(
+            RoleGroup.objects.filter(role=target_role).values_list("group_id", flat=True)
+        )
+        validate_role_permissions(
+            permission_keys=final_keys,
+            group_ids=attached_group_ids,
+        )  # Raises ValidationError if invalid
+
         # Apply changes
         RolePermission.objects.filter(role=target_role).delete()
         
@@ -119,10 +129,18 @@ def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer,
             elif item.operation == PlatformRoleChangeDeltaItem.Operation.REMOVE:
                 current_keys.discard(item.permission_id)
         
-        # Validate final permission set
+        # Validate final permission set (includes group-derived permissions)
         final_keys = sorted(current_keys)
-        validate_role_permissions(final_keys)
-        
+        attached_group_ids = list(
+            PlatformRoleGroup.objects.filter(role=target_role).values_list(
+                "group_id", flat=True
+            )
+        )
+        validate_role_permissions(
+            permission_keys=final_keys,
+            group_ids=attached_group_ids,
+        )
+
         # Apply changes
         PlatformRolePermission.objects.filter(role=target_role).delete()
         
