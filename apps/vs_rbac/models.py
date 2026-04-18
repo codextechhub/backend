@@ -117,6 +117,86 @@ class PermissionDependency(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
+# Permission Groups (shared — attachable to both school and platform roles)
+# -----------------------------------------------------------------------------
+class PermissionGroup(TimeStampedModel):
+    """Named, reusable bundle of permissions.
+
+    Groups are containers only — they grant nothing on their own. Role
+    templates (school and platform) can attach one or more groups and the
+    runtime evaluator flattens group permissions into the effective set.
+
+    Attributes:
+        name: Human-readable group label (case-insensitive unique).
+        description: Purpose and intended audience for the group.
+        is_system: True for Vision-seeded groups; False for custom groups.
+        is_active: Soft-delete / hide toggle.
+        permissions: M2M to ``Permission`` via ``GroupPermission``.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True)
+
+    is_system = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+
+    permissions = models.ManyToManyField(
+        Permission,
+        through="GroupPermission",
+        related_name="groups",
+        blank=True,
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(Lower("name"), name="idx_perm_group_name_lower"),
+            models.Index(fields=["is_active"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                Lower("name"),
+                name="uq_perm_group_name_ci",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class GroupPermission(TimeStampedModel):
+    """Join table placing a ``Permission`` inside a ``PermissionGroup``."""
+
+    group = models.ForeignKey(
+        PermissionGroup,
+        on_delete=models.CASCADE,
+        related_name="group_permissions",
+    )
+    permission = models.ForeignKey(
+        Permission,
+        to_field="key",
+        db_column="permission_key",
+        on_delete=models.CASCADE,
+        related_name="group_memberships",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["group", "permission"],
+                name="uq_group_permission_once",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["group"]),
+            models.Index(fields=["permission"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.group_id}:{self.permission_id}"
+
+
+# -----------------------------------------------------------------------------
 # Role Templates (school-scoped)
 # -----------------------------------------------------------------------------
 class RoleTemplate(TimeStampedModel):
@@ -182,6 +262,14 @@ class RoleTemplate(TimeStampedModel):
     permissions = models.ManyToManyField(
         Permission,
         through="RolePermission",
+        related_name="roles",
+        blank=True,
+    )
+
+    # Permission groups attached to this role (flattened at runtime)
+    groups = models.ManyToManyField(
+        "PermissionGroup",
+        through="RoleGroup",
         related_name="roles",
         blank=True,
     )
@@ -256,6 +344,49 @@ class RolePermission(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.role_id}:{self.permission_id} ({'grant' if self.granted else 'deny'})"
+
+
+class RoleGroup(TimeStampedModel):
+    """Attaches a ``PermissionGroup`` to a school ``RoleTemplate``.
+
+    Permissions from attached groups are unioned with any direct
+    ``RolePermission`` grants at runtime. Explicit denies on
+    ``RolePermission`` still win over grants derived from groups.
+    """
+
+    role = models.ForeignKey(
+        RoleTemplate,
+        on_delete=models.CASCADE,
+        related_name="role_groups",
+    )
+    group = models.ForeignKey(
+        PermissionGroup,
+        on_delete=models.CASCADE,
+        related_name="role_attachments",
+    )
+    attached_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="attached_role_groups",
+    )
+    attached_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["role", "group"],
+                name="uq_role_group_once",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["role"]),
+            models.Index(fields=["group"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.role_id}:{self.group_id}"
 
 
 # -----------------------------------------------------------------------------
@@ -556,6 +687,13 @@ class PlatformRoleTemplate(TimeStampedModel):
         blank=True,
     )
 
+    groups = models.ManyToManyField(
+        "PermissionGroup",
+        through="PlatformRoleGroup",
+        related_name="platform_roles",
+        blank=True,
+    )
+
     class Meta:
         indexes = [
             models.Index(fields=["status"]),
@@ -632,6 +770,46 @@ class PlatformRolePermission(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.role_id}:{self.permission_id} ({'grant' if self.granted else 'deny'})"
+
+
+class PlatformRoleGroup(TimeStampedModel):
+    """Attaches a ``PermissionGroup`` to a ``PlatformRoleTemplate``."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+
+    role = models.ForeignKey(
+        PlatformRoleTemplate,
+        on_delete=models.CASCADE,
+        related_name="role_groups",
+    )
+    group = models.ForeignKey(
+        PermissionGroup,
+        on_delete=models.CASCADE,
+        related_name="platform_role_attachments",
+    )
+    attached_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="attached_platform_role_groups",
+    )
+    attached_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["role", "group"],
+                name="uq_platform_role_group_once",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["role"]),
+            models.Index(fields=["group"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.role_id}:{self.group_id}"
 
 
 # -----------------------------------------------------------------------------
