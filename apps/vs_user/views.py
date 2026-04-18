@@ -197,7 +197,7 @@ class ActivationView(APIView):
     """
     permission_classes = [AllowAny]
 
-    def post(self, request, user_id):
+    def post(self, request, activation_key):
         ser = ActivationSerializer(data=request.data)
         if not ser.is_valid():
             return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -210,7 +210,7 @@ class ActivationView(APIView):
 
         try:
             result = InvitationService.activate(
-                user_id=user_id,
+                activation_key=activation_key,
                 password=ser.validated_data['password'],
                 request=request,
             )
