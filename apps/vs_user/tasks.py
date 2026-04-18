@@ -49,7 +49,7 @@ def send_invitation_email_task(self, activation_key: str):
         from .models import User
         user = User.objects.select_related('school').get(activation_key=activation_key)
 
-        school_name = user.school.name if user.school else 'CodeX Vision'
+        school_name = user.school.name if user.school else 'CodeX'
         base_url         = getattr(settings, 'FRONTEND_BASE_URL', 'https://vision.codexng.com')
 
         # The invitation link uses the user's ID — no token needed.
@@ -66,12 +66,14 @@ def send_invitation_email_task(self, activation_key: str):
         html_message  = render_to_string('vs_user/emails/invitation.html', context)
         plain_message = render_to_string('vs_user/emails/invitation.txt', context)
 
+        subject = f'You have been invited to {school_name} on X Vision Systems' if user.school else 'You have been invited to X Vision Systems'
+
         send_mail(
-            subject=f'You have been invited to {school_name} on X Vision Systems',
+            subject=subject,
             message=plain_message,
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[user.email],
-            # html_message=plain_message,  # TEMPORARY: Use plain text for now until HTML template is ready
+            html_message=html_message,
             fail_silently=False,
         )
 
@@ -123,8 +125,8 @@ def send_password_reset_email_task(self, activation_key: str, origin: str):
         }
 
         # TODO: Replace send_mail with Notification Engine (Module 7) once available.
-        # html_message  = render_to_string('vs_user/emails/password_reset.html', context)
-        # plain_message = render_to_string('vs_user/emails/password_reset.txt', context)
+        html_message  = render_to_string('vs_user/emails/password_reset.html', context)
+        plain_message = render_to_string('vs_user/emails/password_reset.txt', context)
 
         subject = (
             'Reset your CodeX Vision password'
@@ -134,10 +136,10 @@ def send_password_reset_email_task(self, activation_key: str, origin: str):
 
         send_mail(
             subject=subject,
-            message=f"HI, {reset_url}", # TODO: Change to plain_message once TXT template is ready
+            message=plain_message,
             from_email=settings.DEFAULT_FROM_EMAIL,
             recipient_list=[user.email],
-            # html_message=html_message,  # TEMPORARY: Use plain text for now until HTML template is ready
+            html_message=html_message,
             fail_silently=False,
         )
 
