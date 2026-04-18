@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Set, List, Dict
 from django.core.exceptions import ValidationError
 
-from .models import Permission, PermissionDependency
+from .models import GroupPermission, Permission, PermissionDependency
 
 
 class PermissionDependencyValidator:
@@ -125,25 +125,58 @@ class PermissionDependencyValidator:
         return errors
 
 
-def validate_role_permissions(permission_keys: List[str]) -> None:
+def flatten_permission_keys(
+    permission_keys: List[str] | None = None,
+    group_ids: List = None,
+) -> List[str]:
+    """Flatten direct permission keys + group ids into a unique permission list.
+
+    Used before dependency validation when a role is configured with a mix of
+    individual permission grants and attached permission groups.
     """
-    Validate permission list before assigning to a role.
-    
+    result: Set[str] = set(permission_keys or [])
+
+    if group_ids:
+        result.update(
+            GroupPermission.objects.filter(group_id__in=group_ids).values_list(
+                "permission_id", flat=True
+            )
+        )
+
+    return sorted(result)
+
+
+def validate_role_permissions(
+    permission_keys: List[str] | None = None,
+    group_ids: List = None,
+) -> None:
+    """
+    Validate the effective permission set before assigning to a role.
+
+    Accepts direct permission keys and/or group ids. The two inputs are
+    flattened into a single permission set, which is then checked against the
+    permission dependency graph.
+
     Raises ValidationError if dependencies are not satisfied.
     """
+    effective_keys = flatten_permission_keys(permission_keys, group_ids)
+
+    if not effective_keys:
+        return
+
     validator = PermissionDependencyValidator()
-    result = validator.validate_permission_set(permission_keys)
-    
+    result = validator.validate_permission_set(effective_keys)
+
     if not result['valid']:
         error_messages = []
-        
+
         for perm, missing in result['missing_dependencies'].items():
             error_messages.append(
                 f"Permission '{perm}' requires: {', '.join(missing)}"
             )
-        
+
         error_messages.extend(result['errors'])
-        
+
         raise ValidationError({
             'permission_keys': error_messages
         })
