@@ -9,24 +9,27 @@ from rest_framework.views import APIView
 from .models import (
     Permission,
     PermissionDependency,
-    RoleTemplate,
-    UserRoleAssignment,
-    RoleChangeRequest,
+    PermissionGroup,
+    PlatformRoleChangeRequest,
     PlatformRoleTemplate,
     PlatformUserRoleAssignment,
-    PlatformRoleChangeRequest,
+    RoleChangeRequest,
+    RoleTemplate,
+    UserRoleAssignment,
 )
 from .serializers import (
-    PermissionSerializer,
     PermissionDependencySerializer,
-    RoleTemplateListSerializer,
-    RoleTemplateDetailSerializer,
-    UserRoleAssignmentSerializer,
-    RoleChangeRequestSerializer,
-    PlatformRoleTemplateListSerializer,
-    PlatformRoleTemplateDetailSerializer,
-    PlatformUserRoleAssignmentSerializer,
+    PermissionGroupDetailSerializer,
+    PermissionGroupListSerializer,
+    PermissionSerializer,
     PlatformRoleChangeRequestSerializer,
+    PlatformRoleTemplateDetailSerializer,
+    PlatformRoleTemplateListSerializer,
+    PlatformUserRoleAssignmentSerializer,
+    RoleChangeRequestSerializer,
+    RoleTemplateDetailSerializer,
+    RoleTemplateListSerializer,
+    UserRoleAssignmentSerializer,
 )
 from .permissions import (
     IsAuthenticatedAndActive,
@@ -62,6 +65,64 @@ class PermissionDependencyDetailView(generics.RetrieveDestroyAPIView):
     serializer_class = PermissionDependencySerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     lookup_field = "id"
+
+
+# -----------------------------------------------------------------------------
+# Permission Groups (Vision-owned, shared across school + platform roles)
+# -----------------------------------------------------------------------------
+class PermissionGroupListCreateView(generics.ListCreateAPIView):
+    """
+    Vision-facing:
+    - GET: list all permission groups
+    - POST: create a new permission group with optional permission_keys
+    """
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+
+    def get_queryset(self):
+        qs = (
+            PermissionGroup.objects.all()
+            .annotate(permissions_count=Count("group_permissions", distinct=True))
+            .order_by("name")
+        )
+
+        is_active = self.request.query_params.get("is_active")
+        is_system = self.request.query_params.get("is_system")
+
+        if is_active is not None:
+            lowered = is_active.lower()
+            if lowered in {"true", "1"}:
+                qs = qs.filter(is_active=True)
+            elif lowered in {"false", "0"}:
+                qs = qs.filter(is_active=False)
+
+        if is_system is not None:
+            lowered = is_system.lower()
+            if lowered in {"true", "1"}:
+                qs = qs.filter(is_system=True)
+            elif lowered in {"false", "0"}:
+                qs = qs.filter(is_system=False)
+
+        return qs
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return PermissionGroupDetailSerializer
+        return PermissionGroupListSerializer
+
+
+class PermissionGroupDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    Vision-facing:
+    - GET: group detail with expanded permissions
+    - PATCH/PUT: update group fields and optionally replace permission_keys
+    - DELETE: hard delete (system groups should be protected by UI layer)
+    """
+    serializer_class = PermissionGroupDetailSerializer
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    lookup_field = "id"
+
+    def get_queryset(self):
+        return PermissionGroup.objects.all().prefetch_related("permissions")
 
 
 # -----------------------------------------------------------------------------
@@ -120,7 +181,10 @@ class RoleTemplateDetailView(generics.RetrieveUpdateDestroyAPIView):
         return (
             RoleTemplate.objects.filter(school_id=school_id)
             .select_related("created_by", "school")
-            .prefetch_related("role_permissions__permission")
+            .prefetch_related(
+                "role_permissions__permission",
+                "role_groups__group",
+            )
         )
 
 
@@ -420,7 +484,10 @@ class PlatformRoleTemplateDetailView(generics.RetrieveUpdateDestroyAPIView):
         return (
             PlatformRoleTemplate.objects.all()
             .select_related("created_by")
-            .prefetch_related("role_permissions__permission")
+            .prefetch_related(
+                "role_permissions__permission",
+                "role_groups__group",
+            )
         )
 
 

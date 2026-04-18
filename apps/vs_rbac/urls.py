@@ -28,6 +28,20 @@ urlpatterns = [
     ),
 
     # -------------------------------------------------------------------------
+    # Vision-owned Permission Groups (shared across school + platform roles)
+    # -------------------------------------------------------------------------
+    path(
+        "vision/permission-groups/",
+        views.PermissionGroupListCreateView.as_view(),
+        name="rbac-permission-group-list-create",
+    ),
+    path(
+        "vision/permission-groups/<uuid:id>/",
+        views.PermissionGroupDetailView.as_view(),
+        name="rbac-permission-group-detail",
+    ),
+
+    # -------------------------------------------------------------------------
     # School-scoped Role Templates
     # -------------------------------------------------------------------------
     path(
