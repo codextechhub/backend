@@ -220,11 +220,10 @@ class ActivationSerializer(serializers.Serializer):
 
 class ActivationPreviewSerializer(serializers.ModelSerializer):
     full_name        = serializers.SerializerMethodField()
-    school_name = serializers.CharField(source='school.name', read_only=True, default=None)
 
     class Meta:
         model  = User
-        fields = ('email', 'first_name', 'last_name', 'full_name', 'school_name')
+        fields = ('email', 'first_name', 'last_name', 'full_name')
         read_only_fields = fields
 
     def get_full_name(self, obj) -> str:

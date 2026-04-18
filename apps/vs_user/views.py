@@ -165,13 +165,11 @@ class TokenRefreshView(APIView):
 
 class ActivationPreviewView(APIView):
     """
-    GET /auth/activate/{user_id}/
     Called when the user lands on the activation page.
     Returns their name and email so the frontend can pre-fill
     them as read-only fields — the user only needs to set a password.
 
     Permission: AllowAny (public — user hasn't logged in yet).
-    RBAC: identity.user_account.activate
     """
     permission_classes = [AllowAny]
 
