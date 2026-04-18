@@ -1,18 +1,26 @@
-{# vs_user/templates/vs_user/emails/invitation.txt #}
 Welcome to {{ school_name }}
 
 Hello {{ user.first_name }},
 
-You've been invited to join {{ school_name }} on X Vision Systems.
+You have been invited to join {{ school_name }} on CodeX Vision System.
 
-To activate your account and set your password, please visit:
+YOUR ACCOUNT DETAILS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Email:       {{ user.email }}
+Institution: {{ school_name }}
+Role:        {{ user.get_user_type_display }}
+
+ACTIVATE YOUR ACCOUNT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Click the link below to set up your password and activate your account:
 
 {{ invitation_url }}
 
-⏱️ IMPORTANT: This invitation link will expire in {{ expiry_days }} days.
+⏰ IMPORTANT: This invitation link will expire in {{ expiry_days }} days.
 
-If you did not expect this invitation, you can safely ignore this email.
+If you didn't expect this invitation or have any questions, please contact your administrator.
 
----
-This email was sent by {{ school_name }} via X Vision Systems.
-If you need assistance, please contact your institution administrator.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CodeX Vision System
+Powering Smart Institutions
