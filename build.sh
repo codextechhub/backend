@@ -12,6 +12,5 @@ python manage.py migrate
 
 # Run seeding commands AFTER migrate succeeds
 python manage.py seed_perms
-python manage.py seed_missing_perms
 python manage.py seed_role_perms
 python manage.py create_superuser
