@@ -113,6 +113,16 @@ class HasRBACPermission(BasePermission):
 
             rbac_permission = ["finance.invoice.approve", "finance.invoice.admin"]
 
+    For group-based permissions (all-of), use rbac_group_permission::
+
+            rbac_group_permission = "finance_group"
+
+    Or multiple groups::
+
+            rbac_group_permission = ["finance_group", "admin_group"]
+
+    If both rbac_permission and rbac_group_permission are set, both conditions must be met.
+
     The school context is read from ``request.school`` (set by
     ``TenantContextMiddleware``).
     """
@@ -123,31 +133,31 @@ class HasRBACPermission(BasePermission):
             return False
 
         rbac_perms = getattr(view, "rbac_permission", None)
-        if rbac_perms is None or rbac_perms == "" or rbac_perms == []:
-            return True  # no permission declared → pass through
-        elif rbac_perms:
-            school = getattr(request, "school", None)
+        rbac_group_perms = getattr(view, "rbac_group_permission", None)
 
+        passed = True
+        school = getattr(request, "school", None)
+
+        if rbac_perms and rbac_perms != "" and rbac_perms != []:
             if isinstance(rbac_perms, str):
                 rbac_perms = [rbac_perms]
 
-            return any(
+            if not any(
                 has_permission(u, perm_key, school=school)
                 for perm_key in rbac_perms
-            )
-        
-        rbac_group_perms = getattr(view, "rbac_group_permission", None)
-        if rbac_group_perms is None or rbac_group_perms == "" or rbac_group_perms == []:
-            return True  # no permission declared → pass through
-        elif rbac_group_perms:
-            school = getattr(request, "school", None)
+            ):
+                passed = False
 
+        if rbac_group_perms and rbac_group_perms != "" and rbac_group_perms != []:
             if isinstance(rbac_group_perms, str):
                 rbac_group_perms = [rbac_group_perms]
             
             perm_keys = _group_permission_keys(rbac_group_perms)
 
-            return has_all_permissions(u, perm_keys, school=school)
+            if not has_all_permissions(u, perm_keys, school=school):
+                passed = False
+
+        return passed
 
 
 class ReadOnly(BasePermission):
