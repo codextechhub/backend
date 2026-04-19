@@ -149,13 +149,13 @@ class UserCreateSerializer(serializers.Serializer):
         if user_type == User.UserType.VISION_STAFF:
             if attrs['school'] or attrs['branch']:
                 raise serializers.ValidationError(
-                    {'user_type': 'Vision Staff accounts cannot be assigned to an school or branch.'}
+                    {'user_type': 'Vision Staff accounts cannot be assigned to a school or branch.'}
                 )
         else:
-            # All other user types must have an school
+            # All other user types must have a school
             if not attrs['school']:
                 raise serializers.ValidationError(
-                    {'school': 'This user type must be assigned to an school.'}
+                    {'school': 'This user type must be assigned to a school.'}
                 )
             # Branch-level users must have a branch
             if user_type not in (User.UserType.SCHOOL_ADMIN,) and not attrs['branch']:
@@ -175,7 +175,7 @@ class UserCreateSerializer(serializers.Serializer):
             school = attrs.get('school')
             if not school:
                 raise serializers.ValidationError(
-                    {'role': 'Role can only be assigned if an school is specified.'}
+                    {'role': 'Role can only be assigned if a school is specified.'}
                 )
             role = RoleTemplate.objects.filter(name=role_name, school=school).first()
             if not role:
@@ -290,10 +290,9 @@ class PasswordResetRequestSerializer(serializers.Serializer):
 class PasswordResetPreviewSerializer(serializers.Serializer):
     email       = serializers.EmailField(read_only=True)
     full_name   = serializers.CharField(read_only=True)
-    school_name = serializers.CharField(source='school.name', read_only=True)
 
     class Meta:
-        fields = ('email', 'full_name', 'school_name')
+        fields = ('email', 'full_name')
     
     def get_full_name(self, obj) -> str:
         return obj.full_name

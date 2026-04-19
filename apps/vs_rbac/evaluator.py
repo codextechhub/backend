@@ -90,7 +90,7 @@ def get_effective_permissions(user, school=None) -> Set[str]:
             granted.update(_group_permission_keys(group_ids))
 
     # Platform-level roles (Vision staff)
-    if user_type == "VS_STAFF":
+    if user_type == "VISION_STAFF":
         active_platform_role_ids = list(
             PlatformUserRoleAssignment.objects.filter(
                 user=user,

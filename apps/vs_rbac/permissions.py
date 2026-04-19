@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from django.db.models import Q
 from rest_framework.permissions import BasePermission, SAFE_METHODS
+from .evaluator import _group_permission_keys, has_permission, has_all_permissions
 
 
 def _get_user(obj, request):
@@ -121,19 +122,32 @@ class HasRBACPermission(BasePermission):
         if not u or not u.is_authenticated:
             return False
 
-        required = getattr(view, "rbac_permission", None)
-        if required is None or required == "" or required == []:
+        rbac_perms = getattr(view, "rbac_permission", None)
+        if rbac_perms is None or rbac_perms == "" or rbac_perms == []:
             return True  # no permission declared → pass through
+        elif rbac_perms:
+            school = getattr(request, "school", None)
 
-        school = getattr(request, "school", None)
+            if isinstance(rbac_perms, str):
+                rbac_perms = [rbac_perms]
 
-        if isinstance(required, str):
-            required = [required]
+            return any(
+                has_permission(u, perm_key, school=school)
+                for perm_key in rbac_perms
+            )
+        
+        rbac_group_perms = getattr(request, "rbac_group_permission", None)
+        if rbac_group_perms is None or rbac_group_perms == "" or rbac_group_perms == []:
+            return True  # no permission declared → pass through
+        elif rbac_group_perms:
+            school = getattr(request, "school", None)
 
-        return any(
-            user_has_rbac_permission(u, perm_key, school=school)
-            for perm_key in required
-        )
+            if isinstance(rbac_group_perms, str):
+                rbac_group_perms = [rbac_group_perms]
+            
+            perm_keys = _group_permission_keys(rbac_group_perms)
+
+            return has_all_permissions(u, perm_keys, school=school)
 
 
 class ReadOnly(BasePermission):
