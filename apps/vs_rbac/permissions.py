@@ -136,7 +136,7 @@ class HasRBACPermission(BasePermission):
                 for perm_key in rbac_perms
             )
         
-        rbac_group_perms = getattr(request, "rbac_group_permission", None)
+        rbac_group_perms = getattr(view, "rbac_group_permission", None)
         if rbac_group_perms is None or rbac_group_perms == "" or rbac_group_perms == []:
             return True  # no permission declared → pass through
         elif rbac_group_perms:
