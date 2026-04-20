@@ -132,7 +132,6 @@ class PasswordService:
             requested_ip=get_client_ip(request) if request else None,
             requested_user_agent=request.META.get("HTTP_USER_AGENT", "") if request else "",
         )
-
         from ..tasks import send_password_reset_email_task
         # send_password_reset_email_task.delay(activation_key=str(user.activation_key), origin=origin)
-        send_password_reset_email_task(activation_key=str(user.activation_key), origin=origin)
+        send_password_reset_email_task(activation_key=user.activation_key, origin=origin)

@@ -113,6 +113,7 @@ def send_password_reset_email_task(self, activation_key: str, origin: str):
         from .models import User
         user = User.objects.get(activation_key=activation_key)
 
+        # TODO: In the future, we need to change FRONTEND_BASE_URL to include the API version, e.g. https://vision.codexng.com/
         base_url      = getattr(settings, 'FRONTEND_BASE_URL', 'https://vision.codexng.com')
         reset_url     = f'{base_url}v1/user/auth/reset-password/{activation_key}/preview/'
         expiry_hours  = 1 if origin == 'SELF' else 24

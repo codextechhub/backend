@@ -395,7 +395,7 @@ class PasswordResetConfirmView(APIView):
 
 class AdminPasswordResetView(APIView):
     """
-    POST /users/{user_id}/password-reset/
+    POST /{user_id}/password-reset/
     Admin triggers a 24-hour password reset for a specific user.
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
@@ -567,7 +567,7 @@ class UserEmailChangeView(APIView):
 
 class UserSuspendView(APIView):
     """
-    POST /users/{user_id}/suspend/
+    POST /{user_id}/suspend/
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.user_account.lock
@@ -575,7 +575,7 @@ class UserSuspendView(APIView):
           with rbac_permission = "identity.user_account.lock"
           + tenant boundary check (target user must be in actor's school)
     """
-    permission_classes = [IsAuthenticated, ]
+    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
 
     def post(self, request, user_id):
         try:
@@ -591,12 +591,12 @@ class UserSuspendView(APIView):
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
-        return Response(UserReadSerializer(updated).data, status=status.HTTP_200_OK)
+        return Response(UserListSerializer(updated).data, status=status.HTTP_200_OK)
 
 
 class UserReactivateView(APIView):
     """
-    POST /users/{user_id}/reactivate/
+    POST /{user_id}/reactivate/
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.user_account.unlock
@@ -604,7 +604,7 @@ class UserReactivateView(APIView):
           with rbac_permission = "identity.user_account.unlock"
           + tenant boundary check (target user must be in actor's school)
     """
-    permission_classes = [IsAuthenticated, ]
+    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
 
     def post(self, request, user_id):
         try:
@@ -620,12 +620,12 @@ class UserReactivateView(APIView):
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
-        return Response(UserReadSerializer(updated).data, status=status.HTTP_200_OK)
+        return Response(UserListSerializer(updated).data, status=status.HTTP_200_OK)
 
 
 class UserUnlockView(APIView):
     """
-    POST /users/{user_id}/unlock/
+    POST /{user_id}/unlock/
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.user_account.unlock
@@ -633,7 +633,7 @@ class UserUnlockView(APIView):
           with rbac_permission = "identity.user_account.unlock"
           + tenant boundary check (target user must be in actor's school)
     """
-    permission_classes = [IsAuthenticated, ]
+    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
 
     def post(self, request, user_id):
         try:
@@ -649,7 +649,7 @@ class UserUnlockView(APIView):
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
-        return Response(UserReadSerializer(updated).data, status=status.HTTP_200_OK)
+        return Response(UserListSerializer(updated).data, status=status.HTTP_200_OK)
 
 # =============================================================================
 # # SECURITY AND SESSION VIEWS

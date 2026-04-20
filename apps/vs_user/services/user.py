@@ -123,7 +123,7 @@ class EmailChangeService:
         return target_user
 
 
-class UserStatusService:
+class  UserStatusService:
     """
     Manages all account status transitions.
     Every transition is atomic, logged, and ends active sessions where appropriate.
@@ -138,6 +138,15 @@ class UserStatusService:
         target_user.status = User.Status.SUSPENDED
         target_user.save(update_fields=['status', 'updated_at'])
         blacklist_all_user_tokens(target_user)
+
+        sessions = LoginSession.objects.filter(
+            user=target_user, is_active=True,
+        )
+        if sessions.exists():
+            # End all active sessions for the user.
+            for session in sessions:
+                session.end(reason='EMAIL_CHANGE')
+                session.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
 
         log_auth_event(
             actor=requesting_user, subject=target_user,
