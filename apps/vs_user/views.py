@@ -21,7 +21,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from vs_rbac.permissions import IsAuthenticatedAndActive, IsVisionStaff, HasRBACPermission
-from .paginations import UserPagination
+from .paginations import SessionPagination, UserPagination
 from .models import (
     User, UserInvitation, LoginSession, AuthAttempt,
     AccountLockout, AuthEventLog, PasswordResetRequest,
@@ -670,18 +670,29 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
           with rbac_permission = "system.session.force_logout"
     """
     serializer_class   = LoginSessionReadSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    pagination_class  = SessionPagination
 
     def get_queryset(self):
         user = self.request.user
         qs   = LoginSession.objects.select_related('user', 'school').order_by('-last_seen_at')
+        
         if getattr(user, 'user_type', None) == User.UserType.VISION_STAFF:
-            return qs
-        return qs.filter(user=user)
+            pass  # no tenant boundary — sees all sessions
+        else:
+            qs = qs.filter(user=user)
+
+        if is_active := self.request.query_params.get('is_active'):
+            qs = qs.filter(is_active=is_active.lower() == 'true')
+
+        if user_id := self.request.query_params.get('user_id'):
+            qs = qs.filter(user_id=user_id)
+
+        return qs
 
     @action(
         detail=False, methods=['post'], url_path='force-logout',
-        permission_classes=[IsAuthenticated, ],
+        permission_classes=[IsAuthenticatedAndActive, HasRBACPermission],
         # TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
         #       with rbac_permission = "system.session.force_logout"
         #       + tenant boundary check
