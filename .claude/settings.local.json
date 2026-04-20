@@ -8,7 +8,12 @@
       "Bash(python -c \"from django.conf import settings; import django; django.setup\\(\\)\")",
       "Bash(python manage.py shell -c \"from vs_rbac.models import RoleTemplate; print\\(RoleTemplate.objects.count\\(\\)\\)\")",
       "Bash(python manage.py shell -c ' *)",
-      "Bash(python -c ' *)"
+      "Bash(python -c ' *)",
+      "Bash(npm create *)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(curl -s http://localhost:5174)",
+      "Bash(pkill -f \"vite --port 5174\")"
     ]
   }
 }

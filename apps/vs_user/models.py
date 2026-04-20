@@ -92,7 +92,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     class UserType(models.TextChoices):
         VISION_STAFF      = 'VISION_STAFF',      'Vision Staff'
         SCHOOL_ADMIN      = 'SCHOOL_ADMIN',      'School Admin'
-        BRANCH_ADMIN       = 'BRANCH_ADMIN',     'Branch Admin'
+        BRANCH_ADMIN      = 'BRANCH_ADMIN',      'Branch Admin'
         STAFF             = 'STAFF',             'Staff'
         STUDENT           = 'STUDENT',           'Student'
         PARENT            = 'PARENT',            'Parent/Guardian'
@@ -185,7 +185,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             models.Index(fields=['school', 'branch']),
             models.Index(fields=['email', 'status']),
         ]
-        ordering = ['last_name', 'first_name']
+        ordering = ['-updated_at']
 
     # ── Validation ────────────────────────────────────────────────────────────
 

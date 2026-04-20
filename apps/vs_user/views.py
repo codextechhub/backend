@@ -11,6 +11,7 @@
 from __future__ import annotations
 from datetime import timedelta
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status, viewsets, mixins
 from rest_framework.decorators import action
@@ -466,12 +467,33 @@ class UserAccountViewSet(viewsets.ModelViewSet):
         return UserReadSerializer
 
     def get_queryset(self):
-        user = self.request.user
-        qs   = User.objects.select_related('school', 'branch', 'invited_by')
+        user   = self.request.user
+        params = self.request.query_params
+
+        qs = User.objects.select_related('school', 'branch', 'invited_by')
+
         if getattr(user, 'user_type', None) == User.UserType.VISION_STAFF:
-            return qs.all()
-        # School Admins see only users within their own school.
-        return qs.filter(school=user.school)
+            pass  # no tenant boundary — sees all users
+        else:
+            qs = qs.filter(school=user.school)
+
+        if status := params.get('status'):
+            qs = qs.filter(status=status)
+
+        if user_type := params.get('user_type'):
+            qs = qs.filter(user_type=user_type)
+
+        if branch_id := params.get('branch_id'):
+            qs = qs.filter(branch_id=branch_id)
+
+        if search := params.get('search'):
+            qs = qs.filter(
+                Q(first_name__icontains=search)
+                | Q(last_name__icontains=search)
+                | Q(email__icontains=search)
+            )
+
+        return qs
 
     def get_permissions(self):
         if self.action in ('create', 'list', 'destroy'):
