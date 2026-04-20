@@ -521,7 +521,7 @@ class UserAccountViewSet(viewsets.ModelViewSet):
 
 class UserEmailChangeView(APIView):
     """
-    PATCH /users/{user_id}/email/
+    PATCH /user/{user_id}/email/change/
     Admin-only. Change takes effect immediately and ends all active sessions.
     The user logs in again with the new email and their existing password.
 
@@ -531,7 +531,7 @@ class UserEmailChangeView(APIView):
           with rbac_permission = "identity.email_address.verify"
           + tenant boundary check (target user must be in actor's school)
     """
-    permission_classes = [IsAuthenticated, ]
+    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
 
     def patch(self, request, user_id):
         try:
@@ -542,6 +542,9 @@ class UserEmailChangeView(APIView):
         ser = EmailChangeSerializer(data=request.data)
         if not ser.is_valid():
             return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        if ser.validated_data['email'] == user.email:
+            return Response({'detail': 'New email is the same as the current email.'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
             updated = EmailChangeService.change_email(
@@ -559,7 +562,7 @@ class UserEmailChangeView(APIView):
             )
             return Response(detail, status=http_status)
 
-        return Response(UserReadSerializer(updated).data, status=status.HTTP_200_OK)
+        return Response(UserListSerializer(updated).data, status=status.HTTP_200_OK)
 
 
 class UserSuspendView(APIView):

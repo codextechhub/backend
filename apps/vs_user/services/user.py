@@ -6,7 +6,7 @@ from __future__ import annotations
 from django.db import transaction
 from django.utils import timezone
 
-from ..models import User, AuthEventLog
+from ..models import LoginSession, User, AuthEventLog
 from .audit import log_auth_event, blacklist_all_user_tokens
 from vs_rbac.models import RoleTemplate, UserRoleAssignment
 
@@ -100,6 +100,16 @@ class EmailChangeService:
 
         # End all sessions — user logs in again with the new email.
         blacklist_all_user_tokens(target_user)
+
+        sessions = LoginSession.objects.filter(
+            user=target_user, is_active=True,
+        )
+        if sessions.exists():
+            # End all active sessions for the user.
+            for session in sessions:
+                session.end(reason='EMAIL_CHANGE')
+                session.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
+
 
         log_auth_event(
             actor=requesting_user,
