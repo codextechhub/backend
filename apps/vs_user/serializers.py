@@ -363,7 +363,7 @@ class AuthAttemptReadSerializer(serializers.ModelSerializer):
     class Meta:
         model  = AuthAttempt
         fields = (
-            'id', 'email_entered', 'school_context', 'user', 'school',
+            'id', 'email_entered', 'user', 'school',
             'ip_address', 'result', 'failure_code', 'metadata', 'created_at',
         )
         read_only_fields = fields

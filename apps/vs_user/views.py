@@ -751,8 +751,38 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
           with rbac_permission = "identity.authentication_events.log"
     """
     serializer_class   = AuthAttemptReadSerializer
-    permission_classes = [IsAuthenticated, ]
-    queryset           = AuthAttempt.objects.select_related('user', 'school').order_by('-created_at')
+    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    pagination_class   = UserPagination
+
+    def get_queryset(self):
+        params = self.request.query_params
+        qs = AuthAttempt.objects.select_related('user', 'school').order_by('-created_at')
+
+        if user_id := params.get('user_id'):
+            qs = qs.filter(user_id=user_id)
+
+        if school_id := params.get('school_id'):
+            qs = qs.filter(school_id=school_id)
+
+        if email := params.get('email'):
+            qs = qs.filter(email_entered__icontains=email)
+
+        if ip_address := params.get('ip_address'):
+            qs = qs.filter(ip_address=ip_address)
+
+        if result := params.get('result'):
+            qs = qs.filter(result=result)
+
+        if failure_code := params.get('failure_code'):
+            qs = qs.filter(failure_code=failure_code)
+
+        if date_from := params.get('date_from'):
+            qs = qs.filter(created_at__date__gte=date_from)
+
+        if date_to := params.get('date_to'):
+            qs = qs.filter(created_at__date__lte=date_to)
+
+        return qs
 
 
 class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
@@ -774,12 +804,40 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
           + tenant boundary check on unlock action
     """
     serializer_class   = AccountLockoutReadSerializer
-    permission_classes = [IsAuthenticated, ]
-    queryset           = AccountLockout.objects.select_related('user').order_by('-updated_at')
+    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    pagination_class   = UserPagination
+
+    def get_queryset(self):
+        params = self.request.query_params
+        qs = AccountLockout.objects.select_related('user').order_by('-updated_at')
+
+        if user_id := params.get('user_id'):
+            qs = qs.filter(user_id=user_id)
+
+        if locked_reason := params.get('locked_reason'):
+            qs = qs.filter(locked_reason=locked_reason)
+
+        if last_failure_ip := params.get('last_failure_ip'):
+            qs = qs.filter(last_failure_ip=last_failure_ip)
+
+        if is_locked := params.get('is_locked'):
+            now = timezone.now()
+            if is_locked.lower() == 'true':
+                qs = qs.filter(locked_until__gt=now)
+            else:
+                qs = qs.filter(Q(locked_until__isnull=True) | Q(locked_until__lte=now))
+
+        if date_from := params.get('date_from'):
+            qs = qs.filter(created_at__date__gte=date_from)
+
+        if date_to := params.get('date_to'):
+            qs = qs.filter(created_at__date__lte=date_to)
+
+        return qs
 
     @action(
         detail=False, methods=['post'], url_path='unlock',
-        permission_classes=[IsAuthenticated, ],
+        permission_classes=[IsAuthenticatedAndActive, HasRBACPermission],
         # TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
         #       with rbac_permission = "identity.user_account.unlock"
         #       + tenant boundary check
@@ -833,9 +891,34 @@ class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
           with rbac_permission = "system.audit.view"
     """
     serializer_class   = AuthEventLogReadSerializer
-    permission_classes = [IsAuthenticated, ]
-    queryset           = AuthEventLog.objects.select_related(
-        'actor', 'subject', 'school'
-    ).order_by('-created_at')
+    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    pagination_class   = UserPagination
+
+    def get_queryset(self):
+        params = self.request.query_params
+        qs = AuthEventLog.objects.select_related('actor', 'subject', 'school').order_by('-created_at')
+
+        if actor_id := params.get('actor_id'):
+            qs = qs.filter(actor_id=actor_id)
+
+        if subject_id := params.get('subject_id'):
+            qs = qs.filter(subject_id=subject_id)
+
+        if school_id := params.get('school_id'):
+            qs = qs.filter(school_id=school_id)
+
+        if event := params.get('event'):
+            qs = qs.filter(event=event)
+
+        if ip_address := params.get('ip_address'):
+            qs = qs.filter(ip_address=ip_address)
+
+        if date_from := params.get('date_from'):
+            qs = qs.filter(created_at__date__gte=date_from)
+
+        if date_to := params.get('date_to'):
+            qs = qs.filter(created_at__date__lte=date_to)
+
+        return qs
 
 
