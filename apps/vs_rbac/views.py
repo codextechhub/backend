@@ -6,6 +6,7 @@ from rest_framework import generics, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .paginations import RBACPagination
 from .models import (
     Permission,
     PermissionDependency,
@@ -45,6 +46,26 @@ class PermissionListCreateView(generics.ListCreateAPIView):
     queryset = Permission.objects.all().order_by("module_key", "action", "key")
     serializer_class = PermissionSerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    pagination_class = RBACPagination
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        qp = self.request.query_params
+
+        if module_key := qp.get("module_key"):
+            qs = qs.filter(module_key=module_key)
+        if action := qp.get("action"):
+            qs = qs.filter(action=action)
+        if is_restricted := qp.get("is_restricted"):
+            lowered = is_restricted.lower()
+            if lowered in {"true", "1"}:
+                qs = qs.filter(is_restricted=True)
+            elif lowered in {"false", "0"}:
+                qs = qs.filter(is_restricted=False)
+        if sensitivity_level := qp.get("sensitivity_level"):
+            qs = qs.filter(sensitivity_level=sensitivity_level)
+
+        return qs
 
 
 class PermissionDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -52,6 +73,62 @@ class PermissionDetailView(generics.RetrieveUpdateDestroyAPIView):
     serializer_class = PermissionSerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     lookup_field = "key"
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop("partial", False)
+        try:
+            instance = self.get_object()
+        except Exception:
+            return Response(
+                {"detail": "Permission not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = self.get_serializer(instance, data=request.data, partial=partial)
+        if not serializer.is_valid():
+            return Response(
+                {"detail": "Invalid data.", "errors": serializer.errors},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            new_key = serializer.validated_data.pop("key", None)
+            if new_key and new_key != instance.key:
+                Permission.objects.filter(key=instance.key).update(key=new_key)
+                instance.key = new_key
+            self.perform_update(serializer)
+        except Exception as exc:
+            return Response(
+                {"detail": "Update failed.", "error": str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {"detail": "Permission updated successfully.", "data": serializer.data},
+            status=status.HTTP_200_OK,
+        )
+
+    def delete(self, request, *args, **kwargs):
+        try:
+            instance = self.get_object()
+        except Exception:
+            return Response(
+                {"detail": "Permission not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            self.perform_destroy(instance)
+        except Exception as exc:
+            return Response(
+                {"detail": "Delete failed.", "error": str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        return Response(
+            {"detail": "Permission deleted successfully."},
+            status=status.HTTP_200_OK,
+        )
 
 
 class PermissionDependencyListCreateView(generics.ListCreateAPIView):
