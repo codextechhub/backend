@@ -38,6 +38,9 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
     ],
+    "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
+    "DEFAULT_PAGINATION_CLASS": "core.pagination.XVSPagination",
+    "PAGE_SIZE": 10,
 }
 
 SIMPLE_JWT = {

@@ -58,6 +58,7 @@ class LoginView(APIView):
     RBAC: identity.school_aware_login.enforce
     """
     permission_classes = [AllowAny]
+    authentication_classes = []
     throttle_scope = 'login'
 
     def post(self, request):
