@@ -43,7 +43,6 @@ class CreateModelMixin:
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
-        headers = self.get_success_headers(serializer.data)
         return success_response(
             message="Created successfully.",
             data=serializer.data,
@@ -52,13 +51,6 @@ class CreateModelMixin:
 
     def perform_create(self, serializer):
         serializer.save()
-
-    def get_success_headers(self, data):
-        try:
-            from rest_framework.reverse import reverse
-            return {"Location": str(data.get("url", ""))}
-        except (TypeError, KeyError):
-            return {}
 
 
 class UpdateModelMixin:
