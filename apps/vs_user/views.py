@@ -21,6 +21,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from vs_rbac.permissions import IsAuthenticatedAndActive, IsVisionStaff, HasRBACPermission
+from core.response import success_response, error_response
 from .paginations import SessionPagination, UserPagination
 from .models import (
     User, UserInvitation, LoginSession, AuthAttempt,
@@ -84,7 +85,7 @@ class LoginView(APIView):
             )
             return Response(payload, status=http_status)
 
-        return Response(result, status=status.HTTP_200_OK)
+        return success_response(message="Login successful.", data=result, status=status.HTTP_200_OK)
 
 
 class LogoutView(APIView):
@@ -101,10 +102,7 @@ class LogoutView(APIView):
     def post(self, request):
         refresh_token = request.data.get('refresh')
         if not refresh_token:
-            return Response(
-                {'detail': 'Refresh token required.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            return error_response(message="Refresh token is required.", status=status.HTTP_400_BAD_REQUEST)
 
         try:
             token = RefreshToken(refresh_token)
@@ -131,7 +129,7 @@ class LogoutView(APIView):
                 request=request,
             )
             
-        return Response({'detail': 'Logged out successfully.'}, status=status.HTTP_200_OK)
+        return success_response(message="Logged out successfully.", status=status.HTTP_200_OK)
 
 
 class TokenRefreshView(APIView):
@@ -151,14 +149,15 @@ class TokenRefreshView(APIView):
 
         try:
             refresh = RefreshToken(ser.validated_data['refresh'])
-            return Response(
-                {'access': str(refresh.access_token)},
-                status=status.HTTP_200_OK,
+            return success_response(
+                message="Token refreshed successfully.",
+                data={'access': str(refresh.access_token)},
+                status=status.HTTP_200_OK
             )
         except TokenError:
-            return Response(
-                {'detail': 'Invalid or expired token.'},
-                status=status.HTTP_401_UNAUTHORIZED,
+            return error_response(
+                message="Invalid or expired token.",
+                status=status.HTTP_401_UNAUTHORIZED
             )
 
 # =============================================================================
@@ -217,7 +216,7 @@ class ActivationView(APIView):
                 request=request,
             )
         except ValueError as e:
-            return Response(e.args[0], status=status.HTTP_400_BAD_REQUEST)
+            return error_response(message=e.args[0], status=status.HTTP_400_BAD_REQUEST)
 
         return Response(result, status=status.HTTP_200_OK)
 
