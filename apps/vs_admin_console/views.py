@@ -4,7 +4,9 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
-from rest_framework.response import Response
+
+from core.mixins import XVSModelViewSetMixin
+from core.response import success_response, error_response
 
 from .models import (
     ImpersonationSession,
@@ -19,7 +21,7 @@ from .serializers import (
 )
 
 
-class ImpersonationSessionViewSet(viewsets.ModelViewSet):
+class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     """
     Basic CRUD + start/end actions.
 
@@ -70,7 +72,11 @@ class ImpersonationSessionViewSet(viewsets.ModelViewSet):
                 status='ACTIVE',
             )
             
-            return Response(ImpersonationSessionSerializer(session).data, status=status.HTTP_201_CREATED)
+            return success_response(
+                message="Impersonation session started.",
+                data=ImpersonationSessionSerializer(session).data,
+                status=status.HTTP_201_CREATED,
+            )
         
     @action(detail=False, methods=["post"], url_path="end")
     def end(self, request):
@@ -85,14 +91,17 @@ class ImpersonationSessionViewSet(viewsets.ModelViewSet):
         
         session = ImpersonationSession.objects.filter(id=session_id).first()
         if not session:
-            return Response({"detail": "Impersonation session not found."}, status=status.HTTP_404_NOT_FOUND)
+            return error_response(message="Impersonation session not found.", status=status.HTTP_404_NOT_FOUND)
         if session.status != 'ACTIVE':
-            return Response({"detail": "Impersonation session is not ACTIVE."}, status=status.HTTP_400_BAD_REQUEST)
-        
+            return error_response(message="Impersonation session is not ACTIVE.")
+
         with transaction.atomic():
             session.end()
 
-        return Response(ImpersonationSessionSerializer(session).data, status=status.HTTP_200_OK)
+        return success_response(
+            message="Impersonation session ended.",
+            data=ImpersonationSessionSerializer(session).data,
+        )
     
 class DashboardViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
@@ -117,7 +126,10 @@ class DashboardViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         # Return list of dicts matching SchoolDashboardItemSerializer fields.
         items = []
 
-        return Response(self.serializer_class(items, many=True).data, status=status.HTTP_200_OK)
+        return success_response(
+            message="Dashboard data retrieved.",
+            data=self.serializer_class(items, many=True).data,
+        )
 
             
         
