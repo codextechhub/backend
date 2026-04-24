@@ -1081,6 +1081,75 @@ class PlatformUserRoleAssignmentSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+    def validate(self, attrs):
+        request = self.context.get("request")
+        actor = request.user if request and request.user.is_authenticated else None
+
+        user = attrs.get("user", getattr(self.instance, "user", None))
+        role = attrs.get("role", getattr(self.instance, "role", None))
+        new_status = attrs.get(
+            "assignment_status",
+            getattr(
+                self.instance,
+                "assignment_status",
+                PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
+            ),
+        )
+
+        if not actor:
+            raise serializers.ValidationError({"assigned_by": "Authenticated actor is required."})
+
+        if not user:
+            raise serializers.ValidationError({"user": "User is required."})
+
+        if not role:
+            raise serializers.ValidationError({"role": "Role is required."})
+
+        # 1. Platform roles should only be assigned to Vision/internal users.
+        if not getattr(user, "is_vision_staff", False) and not getattr(user, "is_staff", False):
+            raise serializers.ValidationError(
+                {"user": "Platform roles can only be assigned to Vision/internal users."}
+            )
+
+        # 2. Prevent users from assigning platform roles to themselves.
+        if self.instance is None and user == actor:
+            raise serializers.ValidationError(
+                {"user": "You cannot assign a platform role to yourself."}
+            )
+
+        # 3. Prevent duplicate active assignment.
+        qs = PlatformUserRoleAssignment.objects.filter(
+            user=user,
+            role=role,
+            assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
+        )
+
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+
+        if new_status == PlatformUserRoleAssignment.AssignmentStatus.ACTIVE and qs.exists():
+            raise serializers.ValidationError(
+                {
+                    "role": (
+                        "This user already has an active assignment "
+                        "for this platform role."
+                    )
+                }
+            )
+
+        # 4. Prevent revoked assignment from being reactivated through normal update.
+        if (
+            self.instance
+            and self.instance.assignment_status == PlatformUserRoleAssignment.AssignmentStatus.REVOKED
+            and new_status == PlatformUserRoleAssignment.AssignmentStatus.ACTIVE
+        ):
+            raise serializers.ValidationError(
+                {"role": "A revoked platform role assignment cannot be reactivated. Create a new assignment instead."}
+            )
+
+        return attrs
+
+    @transaction.atomic
     def create(self, validated_data):
         request = self.context.get("request")
         actor = request.user if request and request.user.is_authenticated else None
@@ -1088,6 +1157,7 @@ class PlatformUserRoleAssignmentSerializer(serializers.ModelSerializer):
         validated_data["assigned_by"] = actor
         return super().create(validated_data)
 
+    @transaction.atomic
     def update(self, instance, validated_data):
         new_status = validated_data.get("assignment_status", instance.assignment_status)
 
@@ -1102,6 +1172,7 @@ class PlatformUserRoleAssignmentSerializer(serializers.ModelSerializer):
             instance.revoke(
                 by_user=actor,
                 reason=validated_data.get("reason_note", instance.reason_note),
+                save=False
             )
 
         for field, value in validated_data.items():
