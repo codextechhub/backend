@@ -3,8 +3,10 @@ from __future__ import annotations
 from django.db.models import Q
 from django.forms import ValidationError
 from rest_framework import generics
-from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
+
+from core.mixins import RetrieveModelMixin, CreateModelMixin
+from core.response import success_response, error_response
 
 from ..models import Branch, BranchStatus, School
 from ..permissions import IsVisionStaff
@@ -121,10 +123,10 @@ class BranchStatsView(generics.GenericAPIView):
             closed=Count("id", filter=Q(status=BranchStatus.CLOSED)),
         )
 
-        return Response(result)
+        return success_response(message="Branch statistics retrieved.", data=result)
     
 
-class BranchCreateView(ActorContextMixin, generics.CreateAPIView):
+class BranchCreateView(CreateModelMixin, ActorContextMixin, generics.CreateAPIView):
     permission_classes = [IsVisionStaff]
     serializer_class = BranchCreateSerializer
 
@@ -142,7 +144,7 @@ class BranchCreateView(ActorContextMixin, generics.CreateAPIView):
         return ctx
 
 
-class BranchDetailView(ActorContextMixin, generics.RetrieveAPIView):
+class BranchDetailView(RetrieveModelMixin, ActorContextMixin, generics.RetrieveAPIView):
     permission_classes = [IsVisionStaff]
     serializer_class = BranchDetailSerializer
 
@@ -179,6 +181,9 @@ class BranchUpdateView(ActorContextMixin, generics.UpdateAPIView):
         return qs
 
     def update(self, request, *args, **kwargs):
-        resp = super().update(request, *args, **kwargs)
+        super().update(request, *args, **kwargs)
         branch = self.get_object()
-        return Response(BranchDetailSerializer(branch, context=self.get_serializer_context()).data)
+        return success_response(
+            message="Branch updated successfully.",
+            data=BranchDetailSerializer(branch, context=self.get_serializer_context()).data,
+        )

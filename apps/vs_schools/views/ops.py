@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from rest_framework import generics
-from rest_framework.response import Response
+
+from core.response import success_response, error_response
 
 from ..models import School
 from ..permissions import IsVisionStaff, IsVisionSuperAdmin
@@ -33,7 +34,10 @@ class _SchoolOpBaseView(ActorContextMixin, generics.GenericAPIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         school.refresh_from_db()
-        return Response(SchoolDetailSerializer(school, context=self.get_serializer_context()).data)
+        return success_response(
+            message="School operation completed successfully.",
+            data=SchoolDetailSerializer(school, context=self.get_serializer_context()).data,
+        )
 
 
 class SchoolResetConfigView(_SchoolOpBaseView):

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from rest_framework import generics
-from rest_framework.response import Response
+
+from core.response import success_response, error_response
 
 from ..models import Branch
 from ..permissions import IsVisionStaff
@@ -28,4 +29,7 @@ class BranchTransitionView(ActorContextMixin, generics.GenericAPIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         branch.refresh_from_db()
-        return Response(BranchDetailSerializer(branch, context=self.get_serializer_context()).data)
+        return success_response(
+            message="Branch state updated successfully.",
+            data=BranchDetailSerializer(branch, context=self.get_serializer_context()).data,
+        )

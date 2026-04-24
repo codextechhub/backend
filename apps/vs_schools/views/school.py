@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from django.db.models import Q
 from rest_framework import generics
-from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
+from core.mixins import RetrieveModelMixin, CreateModelMixin
+from core.pagination import XVSPagination
+from core.response import success_response, error_response
 from ..models import School, SchoolStatus
 from ..permissions import IsVisionStaff, IsVisionSuperAdmin
 from ..serializers import (
@@ -13,7 +15,6 @@ from ..serializers import (
     SchoolListSerializer,
     SchoolUpdateSerializer,
 )
-from ..paginations import SchoolPagination
 
 
 class ActorContextMixin:
@@ -29,7 +30,7 @@ class ActorContextMixin:
 class SchoolListView(ActorContextMixin, generics.ListAPIView):
     permission_classes = [IsVisionStaff]
     serializer_class = SchoolListSerializer
-    pagination_class = SchoolPagination
+    pagination_class = XVSPagination
 
     queryset = (
         School.objects.all()
@@ -98,15 +99,15 @@ class SchoolStatsView(generics.GenericAPIView):
             inactive=Count("slug", filter=Q(status=SchoolStatus.INACTIVE)),
         )
 
-        return Response(result)
+        return success_response(message="School statistics retrieved.", data=result)
     
 
-class SchoolCreateView(ActorContextMixin, generics.CreateAPIView):
+class SchoolCreateView(CreateModelMixin, ActorContextMixin, generics.CreateAPIView):
     permission_classes = [IsVisionStaff]
     serializer_class = SchoolCreateSerializer
 
 
-class SchoolDetailView(ActorContextMixin, generics.RetrieveAPIView):
+class SchoolDetailView(RetrieveModelMixin, ActorContextMixin, generics.RetrieveAPIView):
     permission_classes = [IsVisionStaff]
     serializer_class = SchoolDetailSerializer
 
@@ -134,8 +135,9 @@ class SchoolUpdateView(ActorContextMixin, generics.UpdateAPIView):
     lookup_field = "slug"
 
     def update(self, request, *args, **kwargs):
-        resp = super().update(request, *args, **kwargs)
+        super().update(request, *args, **kwargs)
         school = self.get_object()
-        return Response(
-            SchoolDetailSerializer(school, context=self.get_serializer_context()).data
+        return success_response(
+            message="School updated successfully.",
+            data=SchoolDetailSerializer(school, context=self.get_serializer_context()).data,
         )
