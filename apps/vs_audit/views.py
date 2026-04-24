@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from django.db.models import Q
 from rest_framework import generics, permissions
-from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, DestroyModelMixin
+from core.response import success_response, error_response
 
 from .models import (
     AuditEvent,
@@ -133,7 +135,7 @@ class AuditEventListView(generics.ListAPIView):
         return queryset.order_by("-event_at")
 
 
-class AuditEventDetailView(generics.RetrieveAPIView):
+class AuditEventDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     """
     GET /audit/events/<uuid:id>/
 
@@ -174,10 +176,8 @@ class EntityAuditTrailDetailView(APIView):
 
         trail = trail_qs.first()
         if not trail:
-            return Response(
-                {
-                    "detail": "No audit trail found for this entity."
-                },
+            return error_response(
+                message="No audit trail found for this entity.",
                 status=404,
             )
 
@@ -190,7 +190,10 @@ class EntityAuditTrailDetailView(APIView):
         }
 
         serializer = EntityAuditTrailDetailSerializer(data)
-        return Response(serializer.data)
+        return success_response(
+            message="Audit trail retrieved successfully.",
+            data=serializer.data,
+        )
 
 
 # -----------------------------------------------------------------------------
@@ -220,7 +223,7 @@ class AuditExportJobListView(generics.ListAPIView):
         return queryset.order_by("-requested_at")
 
 
-class AuditExportJobDetailView(generics.RetrieveAPIView):
+class AuditExportJobDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     """
     GET /audit/exports/<uuid:id>/
     """
@@ -237,7 +240,7 @@ class AuditExportJobDetailView(generics.RetrieveAPIView):
 # Compliance Rule Views
 # -----------------------------------------------------------------------------
 
-class ComplianceRuleListCreateView(generics.ListCreateAPIView):
+class ComplianceRuleListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     GET /audit/compliance-rules/
     POST /audit/compliance-rules/
@@ -274,7 +277,7 @@ class ComplianceRuleListCreateView(generics.ListCreateAPIView):
         return ComplianceRuleListSerializer
 
 
-class ComplianceRuleDetailView(generics.RetrieveUpdateDestroyAPIView):
+class ComplianceRuleDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
     """
     GET /audit/compliance-rules/<uuid:id>/
     PUT /audit/compliance-rules/<uuid:id>/
