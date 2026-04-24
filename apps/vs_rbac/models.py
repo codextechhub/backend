@@ -5,7 +5,6 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
-from django.db.models.functions import Lower
 from django.utils import timezone
 
 from vs_schools.models import Branch, School
@@ -150,18 +149,18 @@ class PermissionGroup(TimeStampedModel):
 
     class Meta:
         indexes = [
-            models.Index(Lower("name"), name="idx_perm_group_name_lower"),
             models.Index(fields=["is_active"]),
-        ]
-        constraints = [
-            models.UniqueConstraint(
-                Lower("name"),
-                name="uq_perm_group_name_ci",
-            )
         ]
 
     def __str__(self) -> str:
         return self.name
+
+    def clean(self):
+        qs = PermissionGroup.objects.filter(name__iexact=self.name)
+        if self.pk:
+            qs = qs.exclude(pk=self.pk)
+        if qs.exists():
+            raise ValidationError({"name": "A permission group with this name already exists (case-insensitive)."})
 
 
 class GroupPermission(TimeStampedModel):
@@ -278,25 +277,18 @@ class RoleTemplate(TimeStampedModel):
         indexes = [
             models.Index(fields=["school", "status"]),
             models.Index(fields=["school", "is_locked"]),
-            models.Index(Lower("name"), name="idx_role_name_lower"),
-        ]
-        constraints = [
-            # role names unique per school (case-insensitive)
-            models.UniqueConstraint(
-                Lower("name"),
-                "school",
-                name="uq_role_name_per_school_ci",
-            )
         ]
 
     def __str__(self) -> str:
         return f"{self.school_id}:{self.name}"
 
     def clean(self):
-        # Safety: archived roles should not be locked/unlocked by mistake (policy choice)
-        if self.status == self.Status.ARCHIVED and self.is_locked is False:
-            # Not strictly required; remove if you don't want this rule
-            pass
+        if self.school_id:
+            qs = RoleTemplate.objects.filter(school_id=self.school_id, name__iexact=self.name)
+            if self.pk:
+                qs = qs.exclude(pk=self.pk)
+            if qs.exists():
+                raise ValidationError({"name": "A role with this name already exists in this school (case-insensitive)."})
 
     def bump_version(self):
         self.version = (self.version or 1) + 1
@@ -462,23 +454,25 @@ class UserRoleAssignment(TimeStampedModel):
             models.Index(fields=["school", "user", "assignment_status"]),
             models.Index(fields=["school", "role", "assignment_status"]),
         ]
-        constraints = [
-            # Prevent duplicate active assignment of same role to same user in same school
-            models.UniqueConstraint(
-                fields=["school", "user", "role"],
-                condition=Q(assignment_status="ACTIVE"),
-                name="uq_active_assignment_user_role_school",
-            )
-        ]
+        constraints = []
 
     def __str__(self) -> str:
         return f"{self.school_id}:{self.user_id}->{self.role_id} ({self.assignment_status})"
 
     def clean(self):
-        # Cross-school safety: role must belong to the same school
         if self.role_id and self.school_id and self.role.school_id != self.school_id:
             raise ValidationError("Role must belong to the same school as the assignment.")
-        # You can add a similar check for user.school if your UserAccount has school FK.
+        if self.assignment_status == self.AssignmentStatus.ACTIVE and self.school_id and self.user_id and self.role_id:
+            qs = UserRoleAssignment.objects.filter(
+                school_id=self.school_id,
+                user_id=self.user_id,
+                role_id=self.role_id,
+                assignment_status=self.AssignmentStatus.ACTIVE,
+            )
+            if self.pk:
+                qs = qs.exclude(pk=self.pk)
+            if qs.exists():
+                raise ValidationError("This user already has an active assignment for this role in this school.")
 
     def revoke(self, by_user=None, reason: str = ""):
         self.assignment_status = self.AssignmentStatus.REVOKED
@@ -698,17 +692,17 @@ class PlatformRoleTemplate(TimeStampedModel):
         indexes = [
             models.Index(fields=["status"]),
             models.Index(fields=["is_locked"]),
-            models.Index(Lower("name"), name="idx_platform_role_name_lower"),
-        ]
-        constraints = [
-            models.UniqueConstraint(
-                Lower("name"),
-                name="uq_platform_role_name_ci",
-            )
         ]
 
     def __str__(self) -> str:
         return self.name
+
+    def clean(self):
+        qs = PlatformRoleTemplate.objects.filter(name__iexact=self.name)
+        if self.pk:
+            qs = qs.exclude(pk=self.pk)
+        if qs.exists():
+            raise ValidationError({"name": "A platform role with this name already exists (case-insensitive)."})
 
     def bump_version(self):
         self.version = (self.version or 1) + 1
@@ -878,16 +872,22 @@ class PlatformUserRoleAssignment(TimeStampedModel):
             models.Index(fields=["user", "assignment_status"]),
             models.Index(fields=["role", "assignment_status"]),
         ]
-        constraints = [
-            models.UniqueConstraint(
-                fields=["user", "role"],
-                condition=Q(assignment_status="ACTIVE"),
-                name="uq_active_platform_assignment_user_role",
-            )
-        ]
+        constraints = []
 
     def __str__(self) -> str:
         return f"{self.user_id}->{self.role_id} ({self.assignment_status})"
+
+    def clean(self):
+        if self.assignment_status == self.AssignmentStatus.ACTIVE and self.user_id and self.role_id:
+            qs = PlatformUserRoleAssignment.objects.filter(
+                user_id=self.user_id,
+                role_id=self.role_id,
+                assignment_status=self.AssignmentStatus.ACTIVE,
+            )
+            if self.pk:
+                qs = qs.exclude(pk=self.pk)
+            if qs.exists():
+                raise ValidationError("This user already has an active assignment for this platform role.")
 
     def revoke(self, by_user=None, reason: str = ""):
         self.assignment_status = self.AssignmentStatus.REVOKED

@@ -265,21 +265,7 @@ class Branch(TimeStampedModel):
             models.Index(fields=["school", "status"]),
             models.Index(fields=["school", "code"]),
         ]
-        constraints = [
-            # Optional: if code is supplied, enforce uniqueness within school
-            models.UniqueConstraint(
-                fields=["school", "code"],
-                condition=~Q(code=0),  # AutoField starts at 1, so code=0 can represent "not set"
-                name="uniq_branch_code_per_school_when_present",
-            ),
-
-            # Enforce only ONE main branch per school
-            models.UniqueConstraint(
-                fields=["school"],
-                condition=Q(is_main=True),
-                name="uniq_one_main_branch_per_school",
-            ),
-        ]
+        constraints = []
 
     def __str__(self) -> str:
         return f"{self.school.slug}:{self.code}"
@@ -287,9 +273,22 @@ class Branch(TimeStampedModel):
     def clean(self):
         super().clean()
 
-        # Closed implies closed_at (optional policy)
         if self.status == BranchStatus.CLOSED and self.closed_at is None:
             self.closed_at = timezone.now()
+
+        if self.school_id and self.code:
+            qs = Branch.objects.filter(school_id=self.school_id, code=self.code)
+            if self.pk:
+                qs = qs.exclude(pk=self.pk)
+            if qs.exists():
+                raise ValidationError({"code": "A branch with this code already exists for this school."})
+
+        if self.is_main and self.school_id:
+            qs = Branch.objects.filter(school_id=self.school_id, is_main=True)
+            if self.pk:
+                qs = qs.exclude(pk=self.pk)
+            if qs.exists():
+                raise ValidationError({"is_main": "This school already has a main branch."})
     
     @staticmethod
     def allocate_next_code(*, school: School) -> int:
