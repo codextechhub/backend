@@ -27,7 +27,7 @@ def custom_exception_handler(exc, context):
     if response is not None:
         return Response({
             "success": False,
-            "message": response.data.get("detail", "An error occurred."),
+            "message": response.data.get("detail", "An error occurred. Check the error details for more information."),
             "error": {
                 "code": "REQUEST_ERROR",
                 "detail": response.data

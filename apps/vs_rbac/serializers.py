@@ -908,7 +908,7 @@ class PlatformRoleTemplateDetailSerializer(
         if instance:
             qs = qs.exclude(pk=instance.pk)
         if qs.exists():
-            raise serializers.ValidationError("A Vision staff role with this name already exists.")
+            raise serializers.ValidationError(detail="An XVS staff role with this name already exists.")
         return value
 
     def validate_group_ids(self, value):

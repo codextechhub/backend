@@ -16,7 +16,13 @@
       "Bash(pkill -f \"vite --port 5174\")",
       "Bash(python manage.py makemigrations vs_rbac vs_schools --name \"remove_mariadb_unsupported_constraints\")",
       "Bash(python manage.py check)",
-      "Bash(python -c \"from vs_rbac.serializers import PlatformRoleTemplateDetailSerializer, PermissionGroupDetailSerializer, RoleTemplateDetailSerializer; print\\('OK'\\)\")"
+      "Bash(python -c \"from vs_rbac.serializers import PlatformRoleTemplateDetailSerializer, PermissionGroupDetailSerializer, RoleTemplateDetailSerializer; print\\('OK'\\)\")",
+      "mcp__Claude_in_Chrome__tabs_context_mcp",
+      "WebFetch(domain:codex-backoffice.vercel.app)",
+      "Bash(curl -s \"https://codex-backoffice.vercel.app/\")",
+      "Bash(curl -s \"https://codex-backoffice.vercel.app/assets/index-BDYgim2A.js\" -o /tmp/bundle.js)",
+      "Read(//tmp/**)",
+      "Bash(node -e ' *)"
     ]
   }
 }
