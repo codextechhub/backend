@@ -3,10 +3,11 @@ from __future__ import annotations
 from django.db import transaction
 from django.db.models import Count, Q
 from rest_framework import generics, status
-from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .paginations import RBACPagination
+from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, DestroyModelMixin
+from core.pagination import XVSPagination
+from core.response import success_response, error_response
 from .models import (
     Permission,
     PermissionDependency,
@@ -42,11 +43,11 @@ from .permissions import (
 # -----------------------------------------------------------------------------
 # Global Permission Registry (Vision-owned)
 # -----------------------------------------------------------------------------
-class PermissionListCreateView(generics.ListCreateAPIView):
+class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     queryset = Permission.objects.all().order_by("module_key", "action", "key")
     serializer_class = PermissionSerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
-    pagination_class = RBACPagination
+    pagination_class = XVSPagination
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -68,7 +69,7 @@ class PermissionListCreateView(generics.ListCreateAPIView):
         return qs
 
 
-class PermissionDetailView(generics.RetrieveUpdateDestroyAPIView):
+class PermissionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
     queryset = Permission.objects.all()
     serializer_class = PermissionSerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
@@ -79,16 +80,16 @@ class PermissionDetailView(generics.RetrieveUpdateDestroyAPIView):
         try:
             instance = self.get_object()
         except Exception:
-            return Response(
-                {"detail": "Permission not found."},
+            return error_response(
+                message="Permission not found.",
                 status=status.HTTP_404_NOT_FOUND,
             )
 
         serializer = self.get_serializer(instance, data=request.data, partial=partial)
         if not serializer.is_valid():
-            return Response(
-                {"detail": "Invalid data.", "errors": serializer.errors},
-                status=status.HTTP_400_BAD_REQUEST,
+            return error_response(
+                message="Invalid data.",
+                error={"errors": serializer.errors},
             )
 
         try:
@@ -98,46 +99,45 @@ class PermissionDetailView(generics.RetrieveUpdateDestroyAPIView):
                 instance.key = new_key
             self.perform_update(serializer)
         except Exception as exc:
-            return Response(
-                {"detail": "Update failed.", "error": str(exc)},
+            return error_response(
+                message="Update failed.",
+                error={"error": str(exc)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        return Response(
-            {"detail": "Permission updated successfully.", "data": serializer.data},
-            status=status.HTTP_200_OK,
+        return success_response(
+            message="Permission updated successfully.",
+            data=serializer.data,
         )
 
     def delete(self, request, *args, **kwargs):
         try:
             instance = self.get_object()
         except Exception:
-            return Response(
-                {"detail": "Permission not found."},
+            return error_response(
+                message="Permission not found.",
                 status=status.HTTP_404_NOT_FOUND,
             )
 
         try:
             self.perform_destroy(instance)
         except Exception as exc:
-            return Response(
-                {"detail": "Delete failed.", "error": str(exc)},
+            return error_response(
+                message="Delete failed.",
+                error={"error": str(exc)},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
 
-        return Response(
-            {"detail": "Permission deleted successfully."},
-            status=status.HTTP_200_OK,
-        )
+        return success_response(message="Permission deleted successfully.")
 
 
-class PermissionDependencyListCreateView(generics.ListCreateAPIView):
+class PermissionDependencyListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     queryset = PermissionDependency.objects.select_related("permission", "depends_on").all()
     serializer_class = PermissionDependencySerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
 
 
-class PermissionDependencyDetailView(generics.RetrieveDestroyAPIView):
+class PermissionDependencyDetailView(RetrieveModelMixin, DestroyModelMixin, generics.RetrieveDestroyAPIView):
     queryset = PermissionDependency.objects.select_related("permission", "depends_on").all()
     serializer_class = PermissionDependencySerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
@@ -147,7 +147,7 @@ class PermissionDependencyDetailView(generics.RetrieveDestroyAPIView):
 # -----------------------------------------------------------------------------
 # Permission Groups (Vision-owned, shared across school + platform roles)
 # -----------------------------------------------------------------------------
-class PermissionGroupListCreateView(generics.ListCreateAPIView):
+class PermissionGroupListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     Vision-facing:
     - GET: list all permission groups
@@ -187,7 +187,7 @@ class PermissionGroupListCreateView(generics.ListCreateAPIView):
         return PermissionGroupListSerializer
 
 
-class PermissionGroupDetailView(generics.RetrieveUpdateDestroyAPIView):
+class PermissionGroupDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
     """
     Vision-facing:
     - GET: group detail with expanded permissions
@@ -205,7 +205,7 @@ class PermissionGroupDetailView(generics.RetrieveUpdateDestroyAPIView):
 # -----------------------------------------------------------------------------
 # School Role Templates
 # -----------------------------------------------------------------------------
-class RoleTemplateListCreateView(generics.ListCreateAPIView):
+class RoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     School-facing:
     - GET: list role templates in a school
@@ -242,7 +242,7 @@ class RoleTemplateListCreateView(generics.ListCreateAPIView):
         serializer.save(school_slug=self.kwargs["school_slug"])
 
 
-class RoleTemplateDetailView(generics.RetrieveUpdateDestroyAPIView):
+class RoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
     """
     School-facing:
     - GET: role detail
@@ -268,7 +268,7 @@ class RoleTemplateDetailView(generics.RetrieveUpdateDestroyAPIView):
 # -----------------------------------------------------------------------------
 # School User Role Assignments
 # -----------------------------------------------------------------------------
-class UserRoleAssignmentListCreateView(generics.ListCreateAPIView):
+class UserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     School-facing:
     - GET: list assignments in a school
@@ -303,7 +303,7 @@ class UserRoleAssignmentListCreateView(generics.ListCreateAPIView):
         serializer.save(school_slug=self.kwargs["school_slug"])
 
 
-class UserRoleAssignmentDetailView(generics.RetrieveUpdateAPIView):
+class UserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin, generics.RetrieveUpdateAPIView):
     """
     School-facing:
     - GET: one assignment
@@ -324,7 +324,7 @@ class UserRoleAssignmentDetailView(generics.RetrieveUpdateAPIView):
 # -----------------------------------------------------------------------------
 # School Role Change Requests (School -> Vision)
 # -----------------------------------------------------------------------------
-class SchoolRoleChangeRequestListCreateView(generics.ListCreateAPIView):
+class SchoolRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     School-facing:
     - GET: list requests for a school
@@ -386,7 +386,7 @@ class VisionRoleChangeRequestQueueView(generics.ListAPIView):
         return qs
 
 
-class VisionRoleChangeRequestDetailView(generics.RetrieveAPIView):
+class VisionRoleChangeRequestDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     """
     Vision-facing:
     - GET: single school role change request
@@ -422,22 +422,22 @@ class VisionRoleChangeRequestDecisionView(APIView):
         try:
             obj = RoleChangeRequest.objects.select_related("target_role", "school").get(id=request_id)
         except RoleChangeRequest.DoesNotExist:
-            return Response(
-                {"detail": "Request not found."},
+            return error_response(
+                message="Request not found.",
                 status=status.HTTP_404_NOT_FOUND,
             )
 
         if obj.status != RoleChangeRequest.Status.PENDING:
-            return Response(
-                {"detail": f"Request already decided ({obj.status})."},
+            return error_response(
+                message=f"Request already decided ({obj.status}).",
                 status=status.HTTP_409_CONFLICT,
             )
 
         if action == "DENY":
             if not notes:
-                return Response(
-                    {"notes": ["Denial reason is required."]},
-                    status=status.HTTP_400_BAD_REQUEST,
+                return error_response(
+                    message="Denial reason is required.",
+                    error={"notes": ["Denial reason is required."]},
                 )
 
             obj.mark_denied(reviewer=request.user, notes=notes)
@@ -450,9 +450,9 @@ class VisionRoleChangeRequestDecisionView(APIView):
                     "updated_at",
                 ]
             )
-            return Response(
-                RoleChangeRequestSerializer(obj, context={"request": request}).data,
-                status=status.HTTP_200_OK,
+            return success_response(
+                message="Role change request denied.",
+                data=RoleChangeRequestSerializer(obj, context={"request": request}).data,
             )
 
         if action == "APPROVE":
@@ -477,29 +477,27 @@ class VisionRoleChangeRequestDecisionView(APIView):
                         "updated_at",
                     ]
                 )
-                return Response(
-                    {
-                        "detail": "Approval failed while applying changes.",
-                        "error": str(exc),
-                    },
+                return error_response(
+                    message="Approval failed while applying changes.",
+                    error={"error": str(exc)},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
 
-            return Response(
-                RoleChangeRequestSerializer(obj, context={"request": request}).data,
-                status=status.HTTP_200_OK,
+            return success_response(
+                message="Role change request approved.",
+                data=RoleChangeRequestSerializer(obj, context={"request": request}).data,
             )
 
-        return Response(
-            {"action": ["Must be APPROVE or DENY."]},
-            status=status.HTTP_400_BAD_REQUEST,
+        return error_response(
+            message="Invalid action. Must be APPROVE or DENY.",
+            error={"action": ["Must be APPROVE or DENY."]},
         )
 
 
 # -----------------------------------------------------------------------------
 # Platform Role Templates (Vision/internal)
 # -----------------------------------------------------------------------------
-class PlatformRoleTemplateListCreateView(generics.ListCreateAPIView):
+class PlatformRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     Vision-facing:
     - GET: list platform roles
@@ -547,7 +545,7 @@ class PlatformRoleTemplateListCreateView(generics.ListCreateAPIView):
         return PlatformRoleTemplateListSerializer
 
 
-class PlatformRoleTemplateDetailView(generics.RetrieveUpdateDestroyAPIView):
+class PlatformRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
     """
     Vision-facing:
     - GET: detail of a platform role
@@ -571,7 +569,7 @@ class PlatformRoleTemplateDetailView(generics.RetrieveUpdateDestroyAPIView):
 # -----------------------------------------------------------------------------
 # Platform User Role Assignments
 # -----------------------------------------------------------------------------
-class PlatformUserRoleAssignmentListCreateView(generics.ListCreateAPIView):
+class PlatformUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     Vision-facing:
     - GET: list platform user role assignments
@@ -604,7 +602,7 @@ class PlatformUserRoleAssignmentListCreateView(generics.ListCreateAPIView):
         serializer.save()
 
 
-class PlatformUserRoleAssignmentDetailView(generics.RetrieveUpdateAPIView):
+class PlatformUserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin, generics.RetrieveUpdateAPIView):
     """
     Vision-facing:
     - GET: one platform assignment
@@ -624,7 +622,7 @@ class PlatformUserRoleAssignmentDetailView(generics.RetrieveUpdateAPIView):
 # -----------------------------------------------------------------------------
 # Platform Role Change Requests
 # -----------------------------------------------------------------------------
-class PlatformRoleChangeRequestListCreateView(generics.ListCreateAPIView):
+class PlatformRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     Vision-facing:
     - GET: list platform role change requests
@@ -652,7 +650,7 @@ class PlatformRoleChangeRequestListCreateView(generics.ListCreateAPIView):
         return qs
 
 
-class PlatformRoleChangeRequestDetailView(generics.RetrieveAPIView):
+class PlatformRoleChangeRequestDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     serializer_class = PlatformRoleChangeRequestSerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     lookup_field = "id"
@@ -684,22 +682,22 @@ class PlatformRoleChangeRequestDecisionView(APIView):
         try:
             obj = PlatformRoleChangeRequest.objects.select_related("target_role").get(id=request_id)
         except PlatformRoleChangeRequest.DoesNotExist:
-            return Response(
-                {"detail": "Request not found."},
+            return error_response(
+                message="Request not found.",
                 status=status.HTTP_404_NOT_FOUND,
             )
 
         if obj.status != PlatformRoleChangeRequest.Status.PENDING:
-            return Response(
-                {"detail": f"Request already decided ({obj.status})."},
+            return error_response(
+                message=f"Request already decided ({obj.status}).",
                 status=status.HTTP_409_CONFLICT,
             )
 
         if action == "DENY":
             if not notes:
-                return Response(
-                    {"notes": ["Denial reason is required."]},
-                    status=status.HTTP_400_BAD_REQUEST,
+                return error_response(
+                    message="Denial reason is required.",
+                    error={"notes": ["Denial reason is required."]},
                 )
 
             obj.mark_denied(reviewer=request.user, notes=notes)
@@ -712,9 +710,9 @@ class PlatformRoleChangeRequestDecisionView(APIView):
                     "updated_at",
                 ]
             )
-            return Response(
-                PlatformRoleChangeRequestSerializer(obj, context={"request": request}).data,
-                status=status.HTTP_200_OK,
+            return success_response(
+                message="Platform role change request denied.",
+                data=PlatformRoleChangeRequestSerializer(obj, context={"request": request}).data,
             )
 
         if action == "APPROVE":
@@ -746,20 +744,18 @@ class PlatformRoleChangeRequestDecisionView(APIView):
                         "updated_at",
                     ]
                 )
-                return Response(
-                    {
-                        "detail": "Approval failed while applying changes.",
-                        "error": str(exc),
-                    },
+                return error_response(
+                    message="Approval failed while applying changes.",
+                    error={"error": str(exc)},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
 
-            return Response(
-                PlatformRoleChangeRequestSerializer(obj, context={"request": request}).data,
-                status=status.HTTP_200_OK,
+            return success_response(
+                message="Platform role change request approved.",
+                data=PlatformRoleChangeRequestSerializer(obj, context={"request": request}).data,
             )
 
-        return Response(
-            {"action": ["Must be APPROVE or DENY."]},
-            status=status.HTTP_400_BAD_REQUEST,
+        return error_response(
+            message="Invalid action. Must be APPROVE or DENY.",
+            error={"action": ["Must be APPROVE or DENY."]},
         )
