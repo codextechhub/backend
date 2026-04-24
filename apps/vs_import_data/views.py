@@ -4,8 +4,10 @@ from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 
 from rest_framework import generics, permissions, status
-from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, DestroyModelMixin
+from core.response import success_response, error_response
 
 from vs_schools.models import School
 
@@ -156,7 +158,7 @@ class SystemImportTemplateListView(generics.ListAPIView):
         return queryset
 
 
-class SystemImportTemplateDetailView(generics.RetrieveAPIView):
+class SystemImportTemplateDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     """
     GET -> retrieve one official system template.
     """
@@ -210,7 +212,7 @@ class SystemImportTemplateDownloadView(APIView):
 # =========================================================
 # Import Batch Views
 # =========================================================
-class ImportBatchListCreateView(SchoolContextMixin, generics.ListCreateAPIView):
+class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.ListCreateAPIView):
     """
     GET  -> list import batches for an school
     POST -> upload a new import batch using a selected system template
@@ -240,7 +242,7 @@ class ImportBatchListCreateView(SchoolContextMixin, generics.ListCreateAPIView):
         return ImportBatchListSerializer
 
 
-class ImportBatchDetailView(ImportBatchContextMixin, generics.RetrieveUpdateDestroyAPIView):
+class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, ImportBatchContextMixin, generics.RetrieveUpdateDestroyAPIView):
     """
     GET    -> full import batch details
     PATCH  -> update simple metadata only
@@ -287,12 +289,9 @@ class ValidateImportBatchView(ImportBatchContextMixin, APIView):
 
         result = validate_import_batch(import_batch)
 
-        return Response(
-            {
-                "message": "Validation completed successfully.",
-                "summary": result["summary"],
-            },
-            status=status.HTTP_200_OK,
+        return success_response(
+            message="Validation completed successfully.",
+            data={"summary": result["summary"]},
         )
 
 
@@ -326,7 +325,7 @@ class ImportValidationIssueListView(ImportBatchContextMixin, generics.ListAPIVie
         return queryset
 
 
-class ImportValidationIssueDetailView(ImportBatchContextMixin, generics.RetrieveAPIView):
+class ImportValidationIssueDetailView(RetrieveModelMixin, ImportBatchContextMixin, generics.RetrieveAPIView):
     """
     GET -> retrieve one validation issue.
     """
@@ -338,7 +337,7 @@ class ImportValidationIssueDetailView(ImportBatchContextMixin, generics.Retrieve
         return ImportValidationIssue.objects.filter(import_batch=self.get_import_batch())
 
 
-class ResolveImportValidationIssueView(ImportBatchContextMixin, generics.UpdateAPIView):
+class ResolveImportValidationIssueView(UpdateModelMixin, ImportBatchContextMixin, generics.UpdateAPIView):
     """
     PATCH -> mark a validation issue as resolved.
     """
@@ -353,7 +352,7 @@ class ResolveImportValidationIssueView(ImportBatchContextMixin, generics.UpdateA
 # =========================================================
 # Row Correction Views
 # =========================================================
-class ImportRowCorrectionListCreateView(ImportBatchContextMixin, generics.ListCreateAPIView):
+class ImportRowCorrectionListCreateView(CreateModelMixin, ImportBatchContextMixin, generics.ListCreateAPIView):
     """
     GET  -> list row corrections
     POST -> create a row correction
@@ -387,12 +386,9 @@ class RevalidateAfterCorrectionView(ImportBatchContextMixin, APIView):
 
         result = validate_import_batch(import_batch)
 
-        return Response(
-            {
-                "message": "Revalidation completed successfully.",
-                "summary": result["summary"],
-            },
-            status=status.HTTP_200_OK,
+        return success_response(
+            message="Revalidation completed successfully.",
+            data={"summary": result["summary"]},
         )
 
 
@@ -416,13 +412,9 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
 
         job = execute_import(import_batch=import_batch, queued_by=request.user)
 
-        return Response(
-            {
-                "message": "Import started successfully.",
-                "job_id": str(job.id),
-                "job_status": job.status,
-            },
-            status=status.HTTP_200_OK,
+        return success_response(
+            message="Import started successfully.",
+            data={"job_id": str(job.id), "job_status": job.status},
         )
 
 
@@ -441,7 +433,7 @@ class ImportJobListView(ImportBatchContextMixin, generics.ListAPIView):
         )
 
 
-class ImportJobDetailView(ImportJobContextMixin, generics.RetrieveAPIView):
+class ImportJobDetailView(RetrieveModelMixin, ImportJobContextMixin, generics.RetrieveAPIView):
     """
     GET -> retrieve one import job with row results.
     """
@@ -478,13 +470,12 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
             reason=serializer.validated_data.get("reason", ""),
         )
 
-        return Response(
-            {
-                "message": "Rollback completed successfully.",
+        return success_response(
+            message="Rollback completed successfully.",
+            data={
                 "rollback_id": str(rollback_record.id),
                 "reverted_rows_count": rollback_record.reverted_rows_count,
             },
-            status=status.HTTP_200_OK,
         )
 
 
