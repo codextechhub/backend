@@ -22,7 +22,10 @@
       "Bash(curl -s \"https://codex-backoffice.vercel.app/\")",
       "Bash(curl -s \"https://codex-backoffice.vercel.app/assets/index-BDYgim2A.js\" -o /tmp/bundle.js)",
       "Read(//tmp/**)",
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "WebSearch",
+      "mcp__Claude_in_Chrome__navigate",
+      "mcp__Claude_in_Chrome__computer"
     ]
   }
 }
