@@ -135,6 +135,7 @@ class PermissionDependencyListCreateView(CreateModelMixin, generics.ListCreateAP
     queryset = PermissionDependency.objects.select_related("permission", "depends_on").all()
     serializer_class = PermissionDependencySerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    pagination_class = XVSPagination
 
 
 class PermissionDependencyDetailView(RetrieveModelMixin, DestroyModelMixin, generics.RetrieveDestroyAPIView):
@@ -154,6 +155,7 @@ class PermissionGroupListCreateView(CreateModelMixin, generics.ListCreateAPIView
     - POST: create a new permission group with optional permission_keys
     """
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    pagination_class = XVSPagination
 
     def get_queryset(self):
         qs = (
@@ -192,7 +194,7 @@ class PermissionGroupDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMod
     Vision-facing:
     - GET: group detail with expanded permissions
     - PATCH/PUT: update group fields and optionally replace permission_keys
-    - DELETE: hard delete (system groups should be protected by UI layer)
+    - DELETE: blocked for system groups
     """
     serializer_class = PermissionGroupDetailSerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
@@ -200,6 +202,15 @@ class PermissionGroupDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMod
 
     def get_queryset(self):
         return PermissionGroup.objects.all().prefetch_related("permissions")
+
+    def delete(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.is_system:
+            return error_response(
+                message="System permission groups cannot be deleted.",
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().delete(request, *args, **kwargs)
 
 
 # -----------------------------------------------------------------------------
@@ -212,11 +223,12 @@ class RoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     - POST: create a role template in a school
     """
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
+    pagination_class = XVSPagination
 
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
         return (
-            RoleTemplate.objects.filter(school_slug=school_slug)
+            RoleTemplate.objects.filter(school_id=school_slug)
             .annotate(
                 assigned_users_count=Count(
                     "user_assignments",
@@ -239,7 +251,7 @@ class RoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIView):
         return RoleTemplateListSerializer
 
     def perform_create(self, serializer):
-        serializer.save(school_slug=self.kwargs["school_slug"])
+        serializer.save(school_id=self.kwargs["school_slug"])
 
 
 class RoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
@@ -247,7 +259,7 @@ class RoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelM
     School-facing:
     - GET: role detail
     - PATCH/PUT: update role fields and optionally replace permission_keys
-    - DELETE: hard delete (if your policy allows it)
+    - DELETE: blocked for system or locked roles
     """
     serializer_class = RoleTemplateDetailSerializer
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
@@ -256,13 +268,41 @@ class RoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelM
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
         return (
-            RoleTemplate.objects.filter(school_slug=school_slug)
+            RoleTemplate.objects.filter(school_id=school_slug)
             .select_related("created_by", "school")
             .prefetch_related(
                 "role_permissions__permission",
                 "role_groups__group",
             )
         )
+
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.is_locked:
+            return error_response(
+                message="This role is locked and cannot be modified.",
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if instance.is_system_role:
+            return error_response(
+                message="System roles cannot be modified.",
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().update(request, *args, **kwargs)
+
+    def delete(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.is_system_role:
+            return error_response(
+                message="System roles cannot be deleted.",
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if instance.is_locked:
+            return error_response(
+                message="This role is locked and cannot be deleted.",
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().delete(request, *args, **kwargs)
 
 
 # -----------------------------------------------------------------------------
@@ -276,12 +316,13 @@ class UserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCreateAPIV
     """
     serializer_class = UserRoleAssignmentSerializer
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
+    pagination_class = XVSPagination
 
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
 
         qs = (
-            UserRoleAssignment.objects.filter(school_slug=school_slug)
+            UserRoleAssignment.objects.filter(school_id=school_slug)
             .select_related("user", "role", "assigned_by", "revoked_by", "school")
             .order_by("-created_at")
         )
@@ -300,7 +341,7 @@ class UserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCreateAPIV
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(school_slug=self.kwargs["school_slug"])
+        serializer.save(school_id=self.kwargs["school_slug"])
 
 
 class UserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin, generics.RetrieveUpdateAPIView):
@@ -316,7 +357,7 @@ class UserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin, generic
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
         return (
-            UserRoleAssignment.objects.filter(school_slug=school_slug)
+            UserRoleAssignment.objects.filter(school_id=school_slug)
             .select_related("user", "role", "assigned_by", "revoked_by", "school")
         )
 
@@ -332,11 +373,12 @@ class SchoolRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCreat
     """
     serializer_class = RoleChangeRequestSerializer
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
+    pagination_class = XVSPagination
 
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
         qs = (
-            RoleChangeRequest.objects.filter(school_slug=school_slug)
+            RoleChangeRequest.objects.filter(school_id=school_slug)
             .select_related("requested_by", "reviewer", "target_role", "school")
             .prefetch_related("delta_items__permission")
             .order_by("-submitted_at")
@@ -353,7 +395,7 @@ class SchoolRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCreat
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(school_slug=self.kwargs["school_slug"])
+        serializer.save(school_id=self.kwargs["school_slug"])
 
 
 class VisionRoleChangeRequestQueueView(generics.ListAPIView):
@@ -363,6 +405,7 @@ class VisionRoleChangeRequestQueueView(generics.ListAPIView):
     """
     serializer_class = RoleChangeRequestSerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    pagination_class = XVSPagination
 
     def get_queryset(self):
         qs = (
@@ -379,7 +422,7 @@ class VisionRoleChangeRequestQueueView(generics.ListAPIView):
         if status_q:
             qs = qs.filter(status=status_q)
         if school_slug:
-            qs = qs.filter(school_slug=school_slug)
+            qs = qs.filter(school_id=school_slug)
         if target_role:
             qs = qs.filter(target_role_id=target_role)
 
@@ -504,6 +547,7 @@ class PlatformRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAP
     - POST: create platform role
     """
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    pagination_class = XVSPagination
 
     def get_queryset(self):
         qs = (
@@ -549,7 +593,8 @@ class PlatformRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, Destr
     """
     Vision-facing:
     - GET: detail of a platform role
-    - PATCH/PUT: update role and permission_keys
+    - PATCH/PUT: blocked for locked or system roles
+    - DELETE: blocked for system or locked roles
     """
     serializer_class = PlatformRoleTemplateDetailSerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
@@ -565,6 +610,34 @@ class PlatformRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, Destr
             )
         )
 
+    def update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.is_locked:
+            return error_response(
+                message="This platform role is locked and cannot be modified.",
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if instance.is_system_role:
+            return error_response(
+                message="System platform roles cannot be modified.",
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().update(request, *args, **kwargs)
+
+    def delete(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.is_system_role:
+            return error_response(
+                message="System platform roles cannot be deleted.",
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if instance.is_locked:
+            return error_response(
+                message="This platform role is locked and cannot be deleted.",
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return super().delete(request, *args, **kwargs)
+
 
 # -----------------------------------------------------------------------------
 # Platform User Role Assignments
@@ -577,6 +650,7 @@ class PlatformUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCr
     """
     serializer_class = PlatformUserRoleAssignmentSerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    pagination_class = XVSPagination
 
     def get_queryset(self):
         qs = (
@@ -630,6 +704,7 @@ class PlatformRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCre
     """
     serializer_class = PlatformRoleChangeRequestSerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    pagination_class = XVSPagination
 
     def get_queryset(self):
         qs = (
@@ -718,19 +793,11 @@ class PlatformRoleChangeRequestDecisionView(APIView):
         if action == "APPROVE":
             try:
                 with transaction.atomic():
-                    # Recommended:
-                    # apply_platform_role_change_request(obj=obj, reviewer=request.user, notes=notes)
-
-                    # Placeholder version:
-                    obj.mark_approved(reviewer=request.user, notes=notes)
-                    obj.save(
-                        update_fields=[
-                            "status",
-                            "reviewer",
-                            "reviewer_notes",
-                            "decided_at",
-                            "updated_at",
-                        ]
+                    from .services import apply_platform_role_change_request
+                    apply_platform_role_change_request(
+                        obj=obj,
+                        reviewer=request.user,
+                        notes=notes,
                     )
 
             except Exception as exc:

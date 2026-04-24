@@ -844,7 +844,7 @@ class PlatformUserRoleAssignment(TimeStampedModel):
     def __str__(self) -> str:
         return f"{self.user_id}->{self.role_id} ({self.assignment_status})"
 
-    def revoke(self, by_user=None, reason: str = "", save: bool = True):
+    def revoke(self, by_user=None, reason: str = ""):
         if self.assignment_status == self.AssignmentStatus.REVOKED:
             return self
 
@@ -854,17 +854,6 @@ class PlatformUserRoleAssignment(TimeStampedModel):
 
         if reason:
             self.reason_note = reason
-
-        if save:
-            self.save(
-                update_fields=[
-                    "assignment_status",
-                    "revoked_at",
-                    "revoked_by",
-                    "reason_note",
-                    "updated_at",
-                ]
-            )
 
         return self
 

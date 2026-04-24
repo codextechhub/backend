@@ -325,6 +325,7 @@ class RoleTemplateListSerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "school",
+            "branch",
             "name",
             "status",
             "is_system_role",
@@ -403,6 +404,7 @@ class RoleTemplateDetailSerializer(
         fields = [
             "id",
             "school",
+            "branch",
             "name",
             "description",
             "status",
@@ -618,10 +620,38 @@ class UserRoleAssignmentSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
         school = attrs.get("school") or getattr(self.instance, "school", None)
         role = attrs.get("role") or getattr(self.instance, "role", None)
+        user = attrs.get("user") or getattr(self.instance, "user", None)
+        new_status = attrs.get(
+            "assignment_status",
+            getattr(self.instance, "assignment_status", UserRoleAssignment.AssignmentStatus.ACTIVE),
+        )
 
         if school and role and role.school_id != school.pk:
             raise serializers.ValidationError(
-                "Role must belong to the same school as the assignment."
+                {"role": "Role must belong to the same school as the assignment."}
+            )
+
+        if new_status == UserRoleAssignment.AssignmentStatus.ACTIVE and school and user and role:
+            qs = UserRoleAssignment.objects.filter(
+                school=school,
+                user=user,
+                role=role,
+                assignment_status=UserRoleAssignment.AssignmentStatus.ACTIVE,
+            )
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError(
+                    {"role": "This user already has an active assignment for this role in this school."}
+                )
+
+        if (
+            self.instance
+            and self.instance.assignment_status == UserRoleAssignment.AssignmentStatus.REVOKED
+            and new_status == UserRoleAssignment.AssignmentStatus.ACTIVE
+        ):
+            raise serializers.ValidationError(
+                {"assignment_status": "A revoked assignment cannot be reactivated. Create a new assignment instead."}
             )
 
         return attrs
@@ -749,7 +779,12 @@ class RoleChangeRequestSerializer(serializers.ModelSerializer):
 
         if school and target_role and target_role.school_id != school.pk:
             raise serializers.ValidationError(
-                "Target role must belong to the same school as the request."
+                {"target_role": "Target role must belong to the same school as the request."}
+            )
+
+        if not attrs.get("delta_items"):
+            raise serializers.ValidationError(
+                {"delta_items": "At least one delta item is required."}
             )
 
         return attrs
@@ -1172,7 +1207,6 @@ class PlatformUserRoleAssignmentSerializer(serializers.ModelSerializer):
             instance.revoke(
                 by_user=actor,
                 reason=validated_data.get("reason_note", instance.reason_note),
-                save=False
             )
 
         for field, value in validated_data.items():
@@ -1250,6 +1284,13 @@ class PlatformRoleChangeRequestSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def validate(self, attrs):
+        if not attrs.get("delta_items"):
+            raise serializers.ValidationError(
+                {"delta_items": "At least one delta item is required."}
+            )
+        return attrs
 
     @transaction.atomic
     def create(self, validated_data):
