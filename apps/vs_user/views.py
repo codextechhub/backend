@@ -16,13 +16,13 @@ from django.utils import timezone
 from rest_framework import status, viewsets, mixins
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from vs_rbac.permissions import IsAuthenticatedAndActive, IsVisionStaff, HasRBACPermission
+from core.mixins import XVSModelViewSetMixin
+from core.pagination import XVSPagination
 from core.response import success_response, error_response
-from .paginations import SessionPagination, UserPagination
 from .models import (
     User, UserInvitation, LoginSession, AuthAttempt,
     AccountLockout, AuthEventLog, PasswordResetRequest,
@@ -65,7 +65,8 @@ class LoginView(APIView):
     def post(self, request):
         ser = LoginRequestSerializer(data=request.data)
         if not ser.is_valid():
-            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+            return error_response(message="Invalid request.", error=ser.errors)
+
         try:
             result = LoginService.login(
                 email=ser.validated_data['email'],
@@ -83,9 +84,10 @@ class LoginView(APIView):
                 if isinstance(payload, dict) and payload.get('error_code') in blocked_codes
                 else status.HTTP_401_UNAUTHORIZED
             )
-            return Response(payload, status=http_status)
+            message = payload.get('detail', 'Authentication failed.') if isinstance(payload, dict) else str(payload)
+            return error_response(message=message, error=payload, status=http_status)
 
-        return success_response(message="Login successful.", data=result, status=status.HTTP_200_OK)
+        return success_response(message="Login successful.", data=result)
 
 
 class LogoutView(APIView):
@@ -102,7 +104,7 @@ class LogoutView(APIView):
     def post(self, request):
         refresh_token = request.data.get('refresh')
         if not refresh_token:
-            return error_response(message="Refresh token is required.", status=status.HTTP_400_BAD_REQUEST)
+            return error_response(message="Refresh token is required.")
 
         try:
             token = RefreshToken(refresh_token)
@@ -128,8 +130,8 @@ class LogoutView(APIView):
                 event=AuthEventLog.Event.TOKEN_REVOKED,
                 request=request,
             )
-            
-        return success_response(message="Logged out successfully.", status=status.HTTP_200_OK)
+
+        return success_response(message="Logged out successfully.")
 
 
 class TokenRefreshView(APIView):
@@ -145,19 +147,18 @@ class TokenRefreshView(APIView):
     def post(self, request):
         ser = TokenRefreshSerializer(data=request.data)
         if not ser.is_valid():
-            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+            return error_response(message="Invalid request.", error=ser.errors)
 
         try:
             refresh = RefreshToken(ser.validated_data['refresh'])
             return success_response(
                 message="Token refreshed successfully.",
                 data={'access': str(refresh.access_token)},
-                status=status.HTTP_200_OK
             )
         except TokenError:
             return error_response(
                 message="Invalid or expired token.",
-                status=status.HTTP_401_UNAUTHORIZED
+                status=status.HTTP_401_UNAUTHORIZED,
             )
 
 # =============================================================================
@@ -178,11 +179,13 @@ class ActivationPreviewView(APIView):
         try:
             invitation = InvitationService.get_valid_invitation(activation_key=activation_key)
         except ValueError as e:
-            return Response(e.args[0], status=status.HTTP_400_BAD_REQUEST)
+            payload = e.args[0] if e.args else {}
+            message = payload.get('detail', 'Invalid activation key.') if isinstance(payload, dict) else str(payload)
+            return error_response(message=message, error=payload)
 
-        return Response(
-            ActivationPreviewSerializer(invitation.user).data,
-            status=status.HTTP_200_OK,
+        return success_response(
+            message="User data retrieved successfully.",
+            data=ActivationPreviewSerializer(invitation.user).data,
         )
 
 
@@ -201,12 +204,12 @@ class ActivationView(APIView):
     def post(self, request, activation_key):
         ser = ActivationSerializer(data=request.data)
         if not ser.is_valid():
-            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+            return error_response(message="Invalid request.", error=ser.errors)
 
         if ser.validated_data['password'] != ser.validated_data['confirm_password']:
-            return Response(
-                {'confirm_password': 'Passwords do not match.'},
-                status=status.HTTP_400_BAD_REQUEST,
+            return error_response(
+                message="Passwords do not match.",
+                error={'confirm_password': 'Passwords do not match.'},
             )
 
         try:
@@ -216,9 +219,11 @@ class ActivationView(APIView):
                 request=request,
             )
         except ValueError as e:
-            return error_response(message=e.args[0], status=status.HTTP_400_BAD_REQUEST)
+            payload = e.args[0] if e.args else {}
+            message = payload.get('detail', 'Activation failed.') if isinstance(payload, dict) else str(payload)
+            return error_response(message=message, error=payload)
 
-        return Response(result, status=status.HTTP_200_OK)
+        return success_response(message="Account activated successfully.", data=result)
 
 
 class InvitationResendView(APIView):
@@ -241,11 +246,11 @@ class InvitationResendView(APIView):
         try:
             user = User.objects.get(id=user_id)
         except User.DoesNotExist:
-            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+            return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         if user.status != User.Status.PENDING:
-            return Response(
-                {'detail': 'Invitations can only be resent for accounts pending activation.'},
+            return error_response(
+                message="Invitations can only be resent for accounts pending activation.",
                 status=status.HTTP_422_UNPROCESSABLE_ENTITY,
             )
 
@@ -256,12 +261,11 @@ class InvitationResendView(APIView):
                 request=request,
             )
         except Exception as e:
-            return Response(
-                e.args[0] if e.args else {'detail': 'Resend failed.'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            payload = e.args[0] if e.args else {}
+            message = payload.get('detail', 'Resend failed.') if isinstance(payload, dict) else str(payload)
+            return error_response(message=message, error=payload)
 
-        return Response({'detail': 'Invitation resent.'}, status=status.HTTP_200_OK)
+        return success_response(message="Invitation resent successfully.")
 
 # =============================================================================
 # # PASSWORD VIEWS
@@ -282,7 +286,7 @@ class PasswordChangeView(APIView):
     def post(self, request):
         ser = PasswordChangeSerializer(data=request.data, context={'request': request})
         if not ser.is_valid():
-            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+            return error_response(message="Invalid request.", error=ser.errors)
 
         try:
             PasswordService.change(
@@ -291,12 +295,11 @@ class PasswordChangeView(APIView):
                 request=request,
             )
         except Exception as e:
-            return Response(
-                e.args[0] if e.args else {},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+            payload = e.args[0] if e.args else {}
+            message = payload.get('detail', 'Password change failed.') if isinstance(payload, dict) else str(payload)
+            return error_response(message=message, error=payload)
 
-        return Response({'detail': 'Password updated.'}, status=status.HTTP_200_OK)
+        return success_response(message="Password updated successfully.")
 
 
 class PasswordResetRequestView(APIView):
@@ -314,7 +317,7 @@ class PasswordResetRequestView(APIView):
     def post(self, request):
         ser = PasswordResetRequestSerializer(data=request.data)
         if not ser.is_valid():
-            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+            return error_response(message="Invalid request.", error=ser.errors)
 
         # Service silently does nothing if the email is not found.
         PasswordService.request_reset(
@@ -322,10 +325,7 @@ class PasswordResetRequestView(APIView):
             request=request,
         )
 
-        return Response(
-            {'detail': 'If the account exists, reset instructions have been sent.'},
-            status=status.HTTP_200_OK,
-        )
+        return success_response(message="If the account exists, reset instructions have been sent.")
 
 
 class PasswordResetPreviewView(APIView):
@@ -345,18 +345,18 @@ class PasswordResetPreviewView(APIView):
             user = User.objects.get(activation_key=activation_key)
             reset_request = PasswordResetRequest.objects.filter(user=user, used_at__isnull=True).last()
         except PasswordResetRequest.DoesNotExist:
-            return Response({'detail': 'Invalid or expired key. Contact your administrator for assistance.'}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response(message="Invalid or expired key. Contact your administrator for assistance.")
         except User.DoesNotExist:
-            return Response({'detail': 'Invalid or expired key. Contact your administrator for assistance.'}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response(message="Invalid or expired key. Contact your administrator for assistance.")
 
         if reset_request.expires_at < timezone.now():
-            return Response({'detail': 'Reset key has expired. Try Again.'}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response(message="Reset key has expired. Try again.")
 
-        return Response(
-            PasswordResetPreviewSerializer(reset_request.user).data,
-            status=status.HTTP_200_OK,
+        return success_response(
+            message="User data retrieved successfully.",
+            data=PasswordResetPreviewSerializer(reset_request.user).data,
         )
-    
+
 
 class PasswordResetConfirmView(APIView):
     """
@@ -372,15 +372,15 @@ class PasswordResetConfirmView(APIView):
     def post(self, request, activation_key):
         ser = PasswordResetConfirmSerializer(data=request.data)
         if not ser.is_valid():
-            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+            return error_response(message="Invalid request.", error=ser.errors)
 
         try:
             user = User.objects.get(activation_key=activation_key)
             if not user:
-                return Response({'detail': 'Invalid or expired key. Contact your administrator for assistance.'}, status=status.HTTP_400_BAD_REQUEST)
+                return error_response(message="Invalid or expired key. Contact your administrator for assistance.")
         except User.DoesNotExist:
-            return Response({'detail': 'Invalid or expired key. Contact your administrator for assistance.'}, status=status.HTTP_400_BAD_REQUEST)
-        
+            return error_response(message="Invalid or expired key. Contact your administrator for assistance.")
+
         try:
             PasswordService.confirm_reset(
                 user=user,
@@ -388,9 +388,11 @@ class PasswordResetConfirmView(APIView):
                 request=request,
             )
         except ValueError as e:
-            return Response(e.args[0], status=status.HTTP_400_BAD_REQUEST)
+            payload = e.args[0] if e.args else {}
+            message = payload.get('detail', 'Password reset failed.') if isinstance(payload, dict) else str(payload)
+            return error_response(message=message, error=payload)
 
-        return Response({'detail': 'Password reset successful.'}, status=status.HTTP_200_OK)
+        return success_response(message="Password reset successful.")
 
 
 class AdminPasswordResetView(APIView):
@@ -411,7 +413,7 @@ class AdminPasswordResetView(APIView):
         try:
             user = User.objects.get(id=user_id)
         except User.DoesNotExist:
-            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+            return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         try:
             PasswordService.admin_reset(
@@ -420,18 +422,17 @@ class AdminPasswordResetView(APIView):
                 request=request,
             )
         except Exception as e:
-            return Response(
-                e.args[0] if e.args else {},
-                status=status.HTTP_403_FORBIDDEN,
-            )
+            payload = e.args[0] if e.args else {}
+            message = payload.get('detail', 'Password reset failed.') if isinstance(payload, dict) else str(payload)
+            return error_response(message=message, error=payload, status=status.HTTP_403_FORBIDDEN)
 
-        return Response({'detail': 'Password reset email sent.'}, status=status.HTTP_200_OK)
+        return success_response(message="Password reset email sent.")
 
 # =============================================================================
 # # USER MANAGEMENT VIEWS
 # =============================================================================
 
-class UserAccountViewSet(viewsets.ModelViewSet):
+class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     """
     GET    /users/          — list users scoped to requesting admin's school
     POST   /users/          — create user + dispatch invitation email
@@ -453,9 +454,9 @@ class UserAccountViewSet(viewsets.ModelViewSet):
                       + must not deactivate self (already enforced in service)
                       + tenant boundary check
     """
-    
+
     rbac_permission = "" # "identity.user_account.view", "identity.user_account.update", "identity.user_account.delete", "identity.user_account.create"
-    pagination_class = UserPagination
+    pagination_class = XVSPagination
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -477,8 +478,8 @@ class UserAccountViewSet(viewsets.ModelViewSet):
         else:
             qs = qs.filter(school=user.school)
 
-        if status := params.get('status'):
-            qs = qs.filter(status=status)
+        if status_val := params.get('status'):
+            qs = qs.filter(status=status_val)
 
         if user_type := params.get('user_type'):
             qs = qs.filter(user_type=user_type)
@@ -537,14 +538,14 @@ class UserEmailChangeView(APIView):
         try:
             user = User.objects.get(id=user_id)
         except User.DoesNotExist:
-            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+            return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         ser = EmailChangeSerializer(data=request.data)
         if not ser.is_valid():
-            return Response(ser.errors, status=status.HTTP_400_BAD_REQUEST)
+            return error_response(message="Invalid request.", error=ser.errors)
 
         if ser.validated_data['email'] == user.email:
-            return Response({'detail': 'New email is the same as the current email.'}, status=status.HTTP_400_BAD_REQUEST)
+            return error_response(message="New email is the same as the current email.")
 
         try:
             updated = EmailChangeService.change_email(
@@ -560,9 +561,13 @@ class UserEmailChangeView(APIView):
                 if isinstance(detail, dict) and detail.get('error_code') == 'DUPLICATE_EMAIL'
                 else status.HTTP_400_BAD_REQUEST
             )
-            return Response(detail, status=http_status)
+            message = detail.get('detail', 'Email change failed.') if isinstance(detail, dict) else str(detail)
+            return error_response(message=message, error=detail, status=http_status)
 
-        return Response(UserListSerializer(updated).data, status=status.HTTP_200_OK)
+        return success_response(
+            message="Email updated successfully.",
+            data=UserListSerializer(updated).data,
+        )
 
 
 class UserSuspendView(APIView):
@@ -581,17 +586,19 @@ class UserSuspendView(APIView):
         try:
             user = User.objects.get(id=user_id)
         except User.DoesNotExist:
-            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+            return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         try:
             updated = UserStatusService.suspend(user, request.user, request)
         except Exception as e:
-            return Response(
-                e.args[0] if e.args else {},
-                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            )
+            payload = e.args[0] if e.args else {}
+            message = payload.get('detail', 'Suspend failed.') if isinstance(payload, dict) else str(payload)
+            return error_response(message=message, error=payload, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
-        return Response(UserListSerializer(updated).data, status=status.HTTP_200_OK)
+        return success_response(
+            message="User suspended successfully.",
+            data=UserListSerializer(updated).data,
+        )
 
 
 class UserReactivateView(APIView):
@@ -610,17 +617,19 @@ class UserReactivateView(APIView):
         try:
             user = User.objects.get(id=user_id)
         except User.DoesNotExist:
-            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+            return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         try:
             updated = UserStatusService.reactivate(user, request.user, request)
         except Exception as e:
-            return Response(
-                e.args[0] if e.args else {},
-                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            )
+            payload = e.args[0] if e.args else {}
+            message = payload.get('detail', 'Reactivation failed.') if isinstance(payload, dict) else str(payload)
+            return error_response(message=message, error=payload, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
-        return Response(UserListSerializer(updated).data, status=status.HTTP_200_OK)
+        return success_response(
+            message="User reactivated successfully.",
+            data=UserListSerializer(updated).data,
+        )
 
 
 class UserUnlockView(APIView):
@@ -639,17 +648,19 @@ class UserUnlockView(APIView):
         try:
             user = User.objects.get(id=user_id)
         except User.DoesNotExist:
-            return Response({'detail': 'User not found.'}, status=status.HTTP_404_NOT_FOUND)
+            return error_response(message="User not found.", status=status.HTTP_404_NOT_FOUND)
 
         try:
             updated = UserStatusService.unlock(user, request.user, request)
         except Exception as e:
-            return Response(
-                e.args[0] if e.args else {},
-                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            )
+            payload = e.args[0] if e.args else {}
+            message = payload.get('detail', 'Unlock failed.') if isinstance(payload, dict) else str(payload)
+            return error_response(message=message, error=payload, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
 
-        return Response(UserListSerializer(updated).data, status=status.HTTP_200_OK)
+        return success_response(
+            message="User unlocked successfully.",
+            data=UserListSerializer(updated).data,
+        )
 
 # =============================================================================
 # # SECURITY AND SESSION VIEWS
@@ -671,12 +682,12 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     serializer_class   = LoginSessionReadSerializer
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    pagination_class  = SessionPagination
+    pagination_class   = XVSPagination
 
     def get_queryset(self):
         user = self.request.user
         qs   = LoginSession.objects.select_related('user', 'school').order_by('-last_seen_at')
-        
+
         if getattr(user, 'user_type', None) == User.UserType.VISION_STAFF:
             pass  # no tenant boundary — sees all sessions
         else:
@@ -733,9 +744,9 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             request=request,
             metadata={'ended_sessions': ended, 'reason': reason},
         )
-        return Response(
-            {'detail': 'Force logout executed.', 'ended_sessions': ended},
-            status=status.HTTP_200_OK,
+        return success_response(
+            message="Force logout executed.",
+            data={'ended_sessions': ended},
         )
 
 
@@ -752,7 +763,7 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     serializer_class   = AuthAttemptReadSerializer
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    pagination_class   = UserPagination
+    pagination_class   = XVSPagination
 
     def get_queryset(self):
         params = self.request.query_params
@@ -805,7 +816,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     serializer_class   = AccountLockoutReadSerializer
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    pagination_class   = UserPagination
+    pagination_class   = XVSPagination
 
     def get_queryset(self):
         params = self.request.query_params
@@ -876,7 +887,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             request=request,
             metadata={'force_password_reset': force_reset, 'reason': reason},
         )
-        return Response({'detail': 'Account unlocked.'}, status=status.HTTP_200_OK)
+        return success_response(message="Account unlocked successfully.")
 
 
 class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
@@ -892,7 +903,7 @@ class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     serializer_class   = AuthEventLogReadSerializer
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    pagination_class   = UserPagination
+    pagination_class   = XVSPagination
 
     def get_queryset(self):
         params = self.request.query_params
@@ -920,5 +931,3 @@ class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             qs = qs.filter(created_at__date__lte=date_to)
 
         return qs
-
-
