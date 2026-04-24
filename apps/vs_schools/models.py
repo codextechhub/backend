@@ -275,20 +275,6 @@ class Branch(TimeStampedModel):
 
         if self.status == BranchStatus.CLOSED and self.closed_at is None:
             self.closed_at = timezone.now()
-
-        if self.school_id and self.code:
-            qs = Branch.objects.filter(school_id=self.school_id, code=self.code)
-            if self.pk:
-                qs = qs.exclude(pk=self.pk)
-            if qs.exists():
-                raise ValidationError({"code": "A branch with this code already exists for this school."})
-
-        if self.is_main and self.school_id:
-            qs = Branch.objects.filter(school_id=self.school_id, is_main=True)
-            if self.pk:
-                qs = qs.exclude(pk=self.pk)
-            if qs.exists():
-                raise ValidationError({"is_main": "This school already has a main branch."})
     
     @staticmethod
     def allocate_next_code(*, school: School) -> int:

@@ -195,6 +195,14 @@ class PermissionGroupDetailSerializer(
             "updated_at",
         ]
 
+    def validate_name(self, value):
+        qs = PermissionGroup.objects.filter(name__iexact=value)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("A permission group with this name already exists.")
+        return value
+
     @transaction.atomic
     def create(self, validated_data):
         permission_keys = validated_data.pop("permission_keys", [])
@@ -421,6 +429,13 @@ class RoleTemplateDetailSerializer(
         school = attrs.get("school") or getattr(self.instance, "school", None)
         if not school:
             raise serializers.ValidationError({"school": "school is required."})
+        name = attrs.get("name") or getattr(self.instance, "name", None)
+        if name and school:
+            qs = RoleTemplate.objects.filter(school=school, name__iexact=name)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError({"name": "A role with this name already exists in this school."})
         return attrs
 
     def validate_group_ids(self, value):
@@ -886,6 +901,15 @@ class PlatformRoleTemplateDetailSerializer(
             "created_at",
             "updated_at",
         ]
+
+    def validate_name(self, value):
+        qs = PlatformRoleTemplate.objects.filter(name__iexact=value)
+        instance = self.instance
+        if instance:
+            qs = qs.exclude(pk=instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("A Vision staff role with this name already exists.")
+        return value
 
     def validate_group_ids(self, value):
         if not value:

@@ -155,13 +155,6 @@ class PermissionGroup(TimeStampedModel):
     def __str__(self) -> str:
         return self.name
 
-    def clean(self):
-        qs = PermissionGroup.objects.filter(name__iexact=self.name)
-        if self.pk:
-            qs = qs.exclude(pk=self.pk)
-        if qs.exists():
-            raise ValidationError({"name": "A permission group with this name already exists (case-insensitive)."})
-
 
 class GroupPermission(TimeStampedModel):
     """Join table placing a ``Permission`` inside a ``PermissionGroup``."""
@@ -281,14 +274,6 @@ class RoleTemplate(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.school_id}:{self.name}"
-
-    def clean(self):
-        if self.school_id:
-            qs = RoleTemplate.objects.filter(school_id=self.school_id, name__iexact=self.name)
-            if self.pk:
-                qs = qs.exclude(pk=self.pk)
-            if qs.exists():
-                raise ValidationError({"name": "A role with this name already exists in this school (case-insensitive)."})
 
     def bump_version(self):
         self.version = (self.version or 1) + 1
@@ -462,17 +447,6 @@ class UserRoleAssignment(TimeStampedModel):
     def clean(self):
         if self.role_id and self.school_id and self.role.school_id != self.school_id:
             raise ValidationError("Role must belong to the same school as the assignment.")
-        if self.assignment_status == self.AssignmentStatus.ACTIVE and self.school_id and self.user_id and self.role_id:
-            qs = UserRoleAssignment.objects.filter(
-                school_id=self.school_id,
-                user_id=self.user_id,
-                role_id=self.role_id,
-                assignment_status=self.AssignmentStatus.ACTIVE,
-            )
-            if self.pk:
-                qs = qs.exclude(pk=self.pk)
-            if qs.exists():
-                raise ValidationError("This user already has an active assignment for this role in this school.")
 
     def revoke(self, by_user=None, reason: str = ""):
         self.assignment_status = self.AssignmentStatus.REVOKED
@@ -697,13 +671,6 @@ class PlatformRoleTemplate(TimeStampedModel):
     def __str__(self) -> str:
         return self.name
 
-    def clean(self):
-        qs = PlatformRoleTemplate.objects.filter(name__iexact=self.name)
-        if self.pk:
-            qs = qs.exclude(pk=self.pk)
-        if qs.exists():
-            raise ValidationError({"name": "A platform role with this name already exists (case-insensitive)."})
-
     def bump_version(self):
         self.version = (self.version or 1) + 1
 
@@ -876,18 +843,6 @@ class PlatformUserRoleAssignment(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.user_id}->{self.role_id} ({self.assignment_status})"
-
-    def clean(self):
-        if self.assignment_status == self.AssignmentStatus.ACTIVE and self.user_id and self.role_id:
-            qs = PlatformUserRoleAssignment.objects.filter(
-                user_id=self.user_id,
-                role_id=self.role_id,
-                assignment_status=self.AssignmentStatus.ACTIVE,
-            )
-            if self.pk:
-                qs = qs.exclude(pk=self.pk)
-            if qs.exists():
-                raise ValidationError("This user already has an active assignment for this platform role.")
 
     def revoke(self, by_user=None, reason: str = ""):
         self.assignment_status = self.AssignmentStatus.REVOKED

@@ -15,7 +15,8 @@
       "Bash(curl -s http://localhost:5174)",
       "Bash(pkill -f \"vite --port 5174\")",
       "Bash(python manage.py makemigrations vs_rbac vs_schools --name \"remove_mariadb_unsupported_constraints\")",
-      "Bash(python manage.py check)"
+      "Bash(python manage.py check)",
+      "Bash(python -c \"from vs_rbac.serializers import PlatformRoleTemplateDetailSerializer, PermissionGroupDetailSerializer, RoleTemplateDetailSerializer; print\\('OK'\\)\")"
     ]
   }
 }
