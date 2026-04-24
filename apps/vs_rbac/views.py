@@ -214,9 +214,9 @@ class RoleTemplateListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
 
     def get_queryset(self):
-        school_id = self.kwargs["school_id"]
+        school_slug = self.kwargs["school_slug"]
         return (
-            RoleTemplate.objects.filter(school_id=school_id)
+            RoleTemplate.objects.filter(school_slug=school_slug)
             .annotate(
                 assigned_users_count=Count(
                     "user_assignments",
@@ -239,7 +239,7 @@ class RoleTemplateListCreateView(generics.ListCreateAPIView):
         return RoleTemplateListSerializer
 
     def perform_create(self, serializer):
-        serializer.save(school_id=self.kwargs["school_id"])
+        serializer.save(school_slug=self.kwargs["school_slug"])
 
 
 class RoleTemplateDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -254,9 +254,9 @@ class RoleTemplateDetailView(generics.RetrieveUpdateDestroyAPIView):
     lookup_field = "id"
 
     def get_queryset(self):
-        school_id = self.kwargs["school_id"]
+        school_slug = self.kwargs["school_slug"]
         return (
-            RoleTemplate.objects.filter(school_id=school_id)
+            RoleTemplate.objects.filter(school_slug=school_slug)
             .select_related("created_by", "school")
             .prefetch_related(
                 "role_permissions__permission",
@@ -278,10 +278,10 @@ class UserRoleAssignmentListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
 
     def get_queryset(self):
-        school_id = self.kwargs["school_id"]
+        school_slug = self.kwargs["school_slug"]
 
         qs = (
-            UserRoleAssignment.objects.filter(school_id=school_id)
+            UserRoleAssignment.objects.filter(school_slug=school_slug)
             .select_related("user", "role", "assigned_by", "revoked_by", "school")
             .order_by("-created_at")
         )
@@ -300,7 +300,7 @@ class UserRoleAssignmentListCreateView(generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(school_id=self.kwargs["school_id"])
+        serializer.save(school_slug=self.kwargs["school_slug"])
 
 
 class UserRoleAssignmentDetailView(generics.RetrieveUpdateAPIView):
@@ -314,9 +314,9 @@ class UserRoleAssignmentDetailView(generics.RetrieveUpdateAPIView):
     lookup_field = "id"
 
     def get_queryset(self):
-        school_id = self.kwargs["school_id"]
+        school_slug = self.kwargs["school_slug"]
         return (
-            UserRoleAssignment.objects.filter(school_id=school_id)
+            UserRoleAssignment.objects.filter(school_slug=school_slug)
             .select_related("user", "role", "assigned_by", "revoked_by", "school")
         )
 
@@ -334,9 +334,9 @@ class SchoolRoleChangeRequestListCreateView(generics.ListCreateAPIView):
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
 
     def get_queryset(self):
-        school_id = self.kwargs["school_id"]
+        school_slug = self.kwargs["school_slug"]
         qs = (
-            RoleChangeRequest.objects.filter(school_id=school_id)
+            RoleChangeRequest.objects.filter(school_slug=school_slug)
             .select_related("requested_by", "reviewer", "target_role", "school")
             .prefetch_related("delta_items__permission")
             .order_by("-submitted_at")
@@ -353,7 +353,7 @@ class SchoolRoleChangeRequestListCreateView(generics.ListCreateAPIView):
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(school_id=self.kwargs["school_id"])
+        serializer.save(school_slug=self.kwargs["school_slug"])
 
 
 class VisionRoleChangeRequestQueueView(generics.ListAPIView):
@@ -373,13 +373,13 @@ class VisionRoleChangeRequestQueueView(generics.ListAPIView):
         )
 
         status_q = self.request.query_params.get("status")
-        school_id = self.request.query_params.get("school_id")
+        school_slug = self.request.query_params.get("school_slug")
         target_role = self.request.query_params.get("target_role")
 
         if status_q:
             qs = qs.filter(status=status_q)
-        if school_id:
-            qs = qs.filter(school_id=school_id)
+        if school_slug:
+            qs = qs.filter(school_slug=school_slug)
         if target_role:
             qs = qs.filter(target_role_id=target_role)
 

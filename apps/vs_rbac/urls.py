@@ -45,12 +45,12 @@ urlpatterns = [
     # School-scoped Role Templates
     # -------------------------------------------------------------------------
     path(
-        "schools/<slug:school_id>/roles/",
+        "schools/<slug:school_slug>/roles/",
         views.RoleTemplateListCreateView.as_view(),
         name="rbac-role-list-create",
     ),
     path(
-        "schools/<slug:school_id>/roles/<int:id>/",
+        "schools/<slug:school_slug>/roles/<int:id>/",
         views.RoleTemplateDetailView.as_view(),
         name="rbac-role-detail",
     ),
@@ -59,12 +59,12 @@ urlpatterns = [
     # School-scoped Role Assignments
     # -------------------------------------------------------------------------
     path(
-        "schools/<slug:school_id>/role-assignments/",
+        "schools/<slug:school_slug>/role-assignments/",
         views.UserRoleAssignmentListCreateView.as_view(),
         name="rbac-assignment-list-create",
     ),
     path(
-        "schools/<slug:school_id>/role-assignments/<int:id>/",
+        "schools/<slug:school_slug>/role-assignments/<int:id>/",
         views.UserRoleAssignmentDetailView.as_view(),
         name="rbac-assignment-detail",
     ),
@@ -73,7 +73,7 @@ urlpatterns = [
     # School -> Vision Role Change Requests
     # -------------------------------------------------------------------------
     path(
-        "schools/<slug:school_id>/role-change-requests/",
+        "schools/<slug:school_slug>/role-change-requests/",
         views.SchoolRoleChangeRequestListCreateView.as_view(),
         name="rbac-role-change-request-list-create",
     ),
