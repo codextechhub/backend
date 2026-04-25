@@ -37,7 +37,8 @@
       "Bash(xargs cat *)",
       "Bash(python manage.py makemigrations *)",
       "Bash(python manage.py migrate *)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(npx --no-install eslint src/pages/Dashboard.jsx)"
     ]
   }
 }

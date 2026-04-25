@@ -334,7 +334,9 @@ class LoginSession(TimeStampedModel):
         max_length=64, blank=True, default='',
         help_text='LOGOUT / FORCE_LOGOUT / EXPIRED',
     )
-
+    class Meta:
+        ordering = ['-last_seen_at']
+        
     def end(self, reason: str = 'LOGOUT'):
         self.is_active  = False
         self.ended_at   = timezone.now()
