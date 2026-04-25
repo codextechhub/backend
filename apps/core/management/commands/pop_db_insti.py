@@ -11,7 +11,6 @@ from django.utils import timezone
 
 from vs_schools.models import (
     RESERVED_TENANT_SLUGS,
-    AuditEvent,
     ContactInfo,
     School,
     SchoolBranding,
@@ -26,6 +25,8 @@ from vs_schools.models import (
     ProvisioningRecord,
     ProvisioningStatus,
 )
+from vs_audit.models import AuditModuleKey, AuditActionType
+from vs_audit.services import emit_audit_event
 
 # -----------------------------------------------------------------------------
 # Random data pools
@@ -254,15 +255,13 @@ class Command(BaseCommand):
         # inst.full_clean()
 
         # Audit: school created
-        AuditEvent.objects.create(
-            school=inst,
-            actor_id=actor_id,
-            action="SCHOOL_CREATE",
-            resource_type="School",
-            resource_id=str(inst.id),
-            before_hash="",
-            after_hash=_short_hash(),
-            outcome=OperationOutcome.SUCCEEDED,
+        emit_audit_event(
+            module_key=AuditModuleKey.SCHOOL,
+            action_type=AuditActionType.CREATE,
+            entity_type="School",
+            entity_id=str(inst.id),
+            entity_label=getattr(inst, "name", str(inst.id)),
+            summary="School created via seed command",
         )
         return inst
 
@@ -298,15 +297,13 @@ class Command(BaseCommand):
                 stats.module_settings += 1
 
         # Audit backstop
-        AuditEvent.objects.create(
-            school=inst,
-            actor_id=actor_id,
-            action="SCHOOL_MODULE_SETTINGS_SEEDED",
-            resource_type="School",
-            resource_id=str(inst.id),
-            before_hash="",
-            after_hash=_short_hash(),
-            outcome=OperationOutcome.SUCCEEDED,
+        emit_audit_event(
+            module_key=AuditModuleKey.SCHOOL,
+            action_type=AuditActionType.CONFIG_CHANGED,
+            entity_type="School",
+            entity_id=str(inst.id),
+            entity_label=getattr(inst, "name", str(inst.id)),
+            summary="Module settings seeded",
         )
         stats.audit_events += 1
 
@@ -339,15 +336,13 @@ class Command(BaseCommand):
         else:
             stats.primary_admin_links += 1
 
-        AuditEvent.objects.create(
-            school=inst,
-            actor_id=actor_id,
-            action="SCHOOL_PRIMARY_ADMIN_ASSIGNED",
-            resource_type="SchoolPrimaryAdmin",
-            resource_id=str(link.id),
-            before_hash="",
-            after_hash=_short_hash(),
-            outcome=OperationOutcome.SUCCEEDED,
+        emit_audit_event(
+            module_key=AuditModuleKey.SCHOOL,
+            action_type=AuditActionType.CREATE,
+            entity_type="SchoolPrimaryAdmin",
+            entity_id=str(link.id),
+            entity_label=getattr(inst, "name", str(inst.id)),
+            summary="Primary admin assigned via seed",
         )
         stats.audit_events += 1
 
@@ -427,15 +422,13 @@ class Command(BaseCommand):
             )
             stats.operation_events += 1
 
-            AuditEvent.objects.create(
-                school=inst,
-                actor_id=actor_id,
-                action="SCHOOL_SUSPEND",
-                resource_type="School",
-                resource_id=str(inst.id),
-                before_hash=_short_hash(),
-                after_hash=_short_hash(),
-                outcome=OperationOutcome.SUCCEEDED,
+            emit_audit_event(
+                module_key=AuditModuleKey.SCHOOL,
+                action_type=AuditActionType.UPDATE,
+                entity_type="School",
+                entity_id=str(inst.id),
+                entity_label=getattr(inst, "name", str(inst.id)),
+                summary="School suspended (seeded)",
             )
             stats.audit_events += 1
 
@@ -450,15 +443,13 @@ class Command(BaseCommand):
             )
             stats.operation_events += 1
 
-            AuditEvent.objects.create(
-                school=inst,
-                actor_id=actor_id,
-                action="SCHOOL_SOFT_DELETE",
-                resource_type="School",
-                resource_id=str(inst.id),
-                before_hash=_short_hash(),
-                after_hash=_short_hash(),
-                outcome=OperationOutcome.SUCCEEDED,
+            emit_audit_event(
+                module_key=AuditModuleKey.SCHOOL,
+                action_type=AuditActionType.DELETE,
+                entity_type="School",
+                entity_id=str(inst.id),
+                entity_label=getattr(inst, "name", str(inst.id)),
+                summary="School soft-deleted (seeded)",
             )
             stats.audit_events += 1
 
@@ -474,14 +465,13 @@ class Command(BaseCommand):
             )
             stats.operation_events += 1
 
-            AuditEvent.objects.create(
-                school=inst,
-                actor_id=actor_id,
-                action="SCHOOL_LOCKED",
-                resource_type="School",
-                resource_id=str(inst.id),
-                before_hash=_short_hash(),
-                after_hash=_short_hash(),
-                outcome=OperationOutcome.FAILED,
+            emit_audit_event(
+                module_key=AuditModuleKey.SCHOOL,
+                action_type=AuditActionType.UPDATE,
+                entity_type="School",
+                entity_id=str(inst.id),
+                entity_label=getattr(inst, "name", str(inst.id)),
+                status="FAILED",
+                summary="School locked (seeded)",
             )
             stats.audit_events += 1

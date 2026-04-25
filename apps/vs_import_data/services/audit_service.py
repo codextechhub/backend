@@ -1,7 +1,19 @@
 from __future__ import annotations
 
-from vs_audit.services import AuditDiffService
-from ..models import ImportAuditLog
+from vs_audit.models import AuditModuleKey, AuditActionType
+from vs_audit.services import emit_audit_event
+
+# Maps the string action labels used internally in the import pipeline to
+# the canonical AuditActionType choices stored in AuditEvent.
+_ACTION_MAP: dict[str, str] = {
+    "batch_uploaded": AuditActionType.DATA_FILE_UPLOADED,
+    "import_triggered": AuditActionType.DATA_IMPORT_STARTED,
+    "import_row_success": AuditActionType.DATA_IMPORT_ROW_PROCESSED,
+    "import_completed": AuditActionType.DATA_IMPORT_COMPLETED,
+    "import_failed": AuditActionType.DATA_IMPORT_FAILED,
+    "import_rollback": AuditActionType.DATA_IMPORT_ROLLED_BACK,
+    "validation_completed": AuditActionType.DATA_IMPORT_COMPLETED,
+}
 
 
 def create_import_audit_log(
@@ -19,25 +31,39 @@ def create_import_audit_log(
     metadata: dict | None = None,
 ):
     """
-    Save one import-related audit log entry.
+    Record one import-pipeline action as a vs_audit AuditEvent.
+
+    The function signature is kept stable so existing callers (import_executor,
+    rollback_service) do not need to change. Import-specific context (branch,
+    batch, job) is forwarded into the event's metadata.
     """
+    from vs_audit.services import AuditDiffService
+
     before_data = before_data or {}
     after_data = after_data or {}
     metadata = metadata or {}
 
     diff_data = AuditDiffService.diff_dicts(before_data, after_data)
 
-    return ImportAuditLog.objects.create(
-        branch=branch,
-        import_batch=import_batch,
-        job=job,
-        actor=actor,
-        action=action,
-        entity_type=entity_type,
-        entity_id=str(entity_id) if entity_id else "",
+    action_type = _ACTION_MAP.get(action, AuditActionType.CUSTOM)
+
+    extra_meta = {
+        "import_action": action,
+        "branch_id": str(branch.pk) if branch else None,
+        "import_batch_id": str(import_batch.pk) if import_batch else None,
+        "job_id": str(job.pk) if job else None,
+        "message": message,
+        **metadata,
+    }
+
+    return emit_audit_event(
+        module_key=AuditModuleKey.IMPORT,
+        action_type=action_type,
+        actor_user=actor,
+        entity_type=entity_type or "ImportBatch",
+        entity_id=str(entity_id) if entity_id else (str(import_batch.pk) if import_batch else ""),
+        entity_label=str(import_batch) if import_batch else "",
         before_data=before_data,
-        after_data=after_data,
         diff_data=diff_data,
-        message=message,
-        metadata=metadata,
+        metadata=extra_meta,
     )

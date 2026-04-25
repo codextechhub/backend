@@ -57,7 +57,8 @@ class AuditStatus(models.TextChoices):
 class AuditModuleKey(models.TextChoices):
     """High-level product surface or module where the action occurred."""
     ONBOARDING = "ONBOARDING", "Onboarding"
-    IDENTITY = "IDENTITY", "Identity"
+    IDENTITY = "IDENTITY", "Identity & Auth"
+    USER = "USER", "User Management"
     RBAC = "RBAC", "Roles & Permissions"
     IMPORT = "IMPORT", "Data Import"
     CONFIG = "CONFIG", "System Configuration"
@@ -70,17 +71,43 @@ class AuditModuleKey(models.TextChoices):
 
 class AuditActionType(models.TextChoices):
     """Specific auditable actions that can be emitted by the platform."""
+    # Generic CRUD
     CREATE = "CREATE", "Create"
     UPDATE = "UPDATE", "Update"
+    DELETE = "DELETE", "Delete"
+
+    # Identity / authentication
+    USER_CREATED = "USER_CREATED", "User Created"
+    USER_INVITED = "USER_INVITED", "User Invited"
+    ACCOUNT_ACTIVATED = "ACCOUNT_ACTIVATED", "Account Activated"
     LOGIN_SUCCESS = "LOGIN_SUCCESS", "Login Success"
     LOGIN_FAILED = "LOGIN_FAILED", "Login Failed"
+    TOKEN_REVOKED = "TOKEN_REVOKED", "Token Revoked"
+    FORCE_LOGOUT = "FORCE_LOGOUT", "Force Logout"
+    ACCOUNT_LOCKED = "ACCOUNT_LOCKED", "Account Locked"
+    ACCOUNT_UNLOCKED = "ACCOUNT_UNLOCKED", "Account Unlocked"
+    ACCOUNT_SUSPENDED = "ACCOUNT_SUSPENDED", "Account Suspended"
+    ACCOUNT_REACTIVATED = "ACCOUNT_REACTIVATED", "Account Reactivated"
+    ACCOUNT_DEACTIVATED = "ACCOUNT_DEACTIVATED", "Account Deactivated"
+    PASSWORD_RESET_REQUESTED = "PASSWORD_RESET_REQUESTED", "Password Reset Requested"
     PASSWORD_RESET = "PASSWORD_RESET", "Password Reset"
+    PASSWORD_CHANGED = "PASSWORD_CHANGED", "Password Changed"
+    EMAIL_CHANGED = "EMAIL_CHANGED", "Email Changed"
+
+    # Data import
     DATA_FILE_UPLOADED = "DATA_FILE_UPLOADED", "Data File Uploaded"
     DATA_IMPORT_STARTED = "DATA_IMPORT_STARTED", "Data Import Started"
+    DATA_IMPORT_ROW_PROCESSED = "DATA_IMPORT_ROW_PROCESSED", "Data Import Row Processed"
     DATA_IMPORT_COMPLETED = "DATA_IMPORT_COMPLETED", "Data Import Completed"
     DATA_IMPORT_FAILED = "DATA_IMPORT_FAILED", "Data Import Failed"
+    DATA_IMPORT_ROLLED_BACK = "DATA_IMPORT_ROLLED_BACK", "Data Import Rolled Back"
+
+    # RBAC
+    ROLE_ASSIGNED = "ROLE_ASSIGNED", "Role Assigned"
     ROLE_CHANGED = "ROLE_CHANGED", "Role Changed"
     PERMISSION_CHANGED = "PERMISSION_CHANGED", "Permission Changed"
+
+    # Other
     CONFIG_CHANGED = "CONFIG_CHANGED", "Configuration Changed"
     FINANCIAL_TRANSACTION = "FINANCIAL_TRANSACTION", "Financial Transaction"
     PROCUREMENT_ACTION = "PROCUREMENT_ACTION", "Procurement Action"

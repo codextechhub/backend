@@ -1,13 +1,71 @@
-# backend/apps/audit_logging/services.py
-
 from __future__ import annotations
 
+import logging
 from copy import deepcopy
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID
 
 from django.forms.models import model_to_dict
+
+logger = logging.getLogger("vs_audit")
+
+
+def emit_audit_event(
+    *,
+    module_key: str,
+    action_type: str,
+    entity_type: str,
+    entity_id: str,
+    actor_user=None,
+    entity_label: str = "",
+    severity: str = "INFO",
+    status: str = "SUCCESS",
+    summary: str = "",
+    before_data: dict | None = None,
+    diff_data: dict | None = None,
+    metadata: dict | None = None,
+):
+    """
+    Central helper: creates an AuditEvent + upserts EntityAuditTrail.
+
+    - actor_user: pass a User instance; if None the event is attributed to SYSTEM.
+    - Never raises — audit failures must never block business logic.
+    - Returns the created AuditEvent, or None on failure.
+    """
+    from .models import AuditEvent, AuditActorType, EntityAuditTrail
+
+    try:
+        actor_type = AuditActorType.USER if actor_user is not None else AuditActorType.SYSTEM
+
+        event = AuditEvent.objects.create(
+            module_key=module_key,
+            action_type=action_type,
+            actor_type=actor_type,
+            actor_user=actor_user if actor_type == AuditActorType.USER else None,
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            entity_label=entity_label or "",
+            severity=severity,
+            status=status,
+            summary=summary,
+            before_data=before_data or {},
+            diff_data=diff_data or {},
+            metadata=metadata or {},
+        )
+
+        trail, _ = EntityAuditTrail.objects.get_or_create(
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            defaults={"entity_label": entity_label or ""},
+        )
+        trail.register_event(event)
+
+        return event
+
+    except Exception as exc:
+        logger.error("emit_audit_event failed [%s/%s entity=%s:%s]: %s", module_key, action_type, entity_type, entity_id, exc)
+        return None
 
 
 class AuditDiffService:

@@ -44,15 +44,15 @@ class LoginService:
 
         # 2. Find user
         user = User.objects.filter(email__iexact=email).first()
-        school_slug = user.school.slug if user.school else ''
-        school = user.school if user.school else None
+        school_slug = user.school.slug if (user and user.school) else ''
+        school      = user.school if user else None
 
         # 3. Check lockout before attempting the password
         if user:
             lockout = AccountLockout.objects.filter(user=user).first()
             if lockout and lockout.is_locked_now():
                 record_attempt(
-                    email_entered=email, school_context=school_slug,
+                    email_entered=email,
                     user=user, school=school,
                     result=AuthAttempt.Result.BLOCKED, failure_code='LOCKED',
                     request=request,
@@ -67,7 +67,7 @@ class LoginService:
         if user and user.user_type != User.UserType.VISION_STAFF:
             if not school:
                 record_attempt(
-                    email_entered=email, school_context=school_slug,
+                    email_entered=email,
                     user=user, school=None,
                     result=AuthAttempt.Result.FAIL, failure_code='SCHOOL_CONTEXT_REQUIRED',
                     request=request,
@@ -77,7 +77,7 @@ class LoginService:
 
             if user.school_id != school.id:
                 record_attempt(
-                    email_entered=email, school_context=school_slug,
+                    email_entered=email,
                     user=user, school=user.school,
                     result=AuthAttempt.Result.FAIL, failure_code='SCHOOL_MISMATCH',
                     request=request,
@@ -94,7 +94,7 @@ class LoginService:
         status_error = LoginService._check_status(authed)
         if status_error:
             record_attempt(
-                email_entered=email, school_context=school_slug,
+                email_entered=email,
                 user=authed, school=authed.school,
                 result=AuthAttempt.Result.BLOCKED, failure_code=authed.status,
                 request=request,
@@ -207,7 +207,6 @@ class LoginService:
 
         record_attempt(
             email_entered=user.email if user else '',
-            school_context=school_slug,
             user=user, school=school,
             result=AuthAttempt.Result.FAIL, failure_code='INVALID_CREDENTIALS',
             request=request,

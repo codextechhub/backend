@@ -35,7 +35,7 @@ from .serializers import (
     PasswordChangeSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
     LoginSessionReadSerializer, ForceLogoutSerializer,
     AuthAttemptReadSerializer, AccountLockoutReadSerializer,
-    UnlockAccountSerializer, AuthEventLogReadSerializer,
+    UnlockAccountSerializer,
 )
 from .services.auth       import LoginService
 from .services.invitation import InvitationService
@@ -893,41 +893,44 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     GET /auth-events/
-    Vision Staff only. Full audit event log.
-
-    Permission: IsAuthenticatedAndActive, IsVisionStaff
-    RBAC: system.audit.view + audit.audit_trail_entity.view
-    TODO: Wire up → [IsAuthenticatedAndActive, IsVisionStaff]
-          or [IsAuthenticatedAndActive, HasRBACPermission]
-          with rbac_permission = "system.audit.view"
+    Returns identity/auth AuditEvents from the central vs_audit store.
+    Filters: actor_id, subject_id (entity_id), school_id, event (action_type),
+             ip_address, date_from, date_to.
     """
-    serializer_class   = AuthEventLogReadSerializer
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
     pagination_class   = XVSPagination
 
+    def get_serializer_class(self):
+        from vs_audit.serializers import AuditEventListSerializer
+        return AuditEventListSerializer
+
     def get_queryset(self):
+        from vs_audit.models import AuditEvent, AuditModuleKey
         params = self.request.query_params
-        qs = AuthEventLog.objects.select_related('actor', 'subject', 'school').order_by('-created_at')
+        qs = AuditEvent.objects.filter(
+            module_key=AuditModuleKey.IDENTITY
+        ).select_related('actor_user').order_by('-event_at')
 
         if actor_id := params.get('actor_id'):
-            qs = qs.filter(actor_id=actor_id)
+            qs = qs.filter(actor_user_id=actor_id)
 
         if subject_id := params.get('subject_id'):
-            qs = qs.filter(subject_id=subject_id)
+            # subject is stored as entity_id (the User the action targeted)
+            qs = qs.filter(entity_id=subject_id)
 
         if school_id := params.get('school_id'):
-            qs = qs.filter(school_id=school_id)
+            qs = qs.filter(metadata__school_id=school_id)
 
         if event := params.get('event'):
-            qs = qs.filter(event=event)
+            qs = qs.filter(action_type=event)
 
         if ip_address := params.get('ip_address'):
-            qs = qs.filter(ip_address=ip_address)
+            qs = qs.filter(metadata__ip_address=ip_address)
 
         if date_from := params.get('date_from'):
-            qs = qs.filter(created_at__date__gte=date_from)
+            qs = qs.filter(event_at__date__gte=date_from)
 
         if date_to := params.get('date_to'):
-            qs = qs.filter(created_at__date__lte=date_to)
+            qs = qs.filter(event_at__date__lte=date_to)
 
         return qs

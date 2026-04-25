@@ -16,7 +16,9 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.conf import settings
 
-from vs_user.models import User, AuthEventLog
+from vs_user.models import User
+from vs_user.services.audit import log_auth_event
+from vs_user.models import AuthEventLog
 
 
 class Command(BaseCommand):
@@ -164,14 +166,11 @@ class Command(BaseCommand):
         )
         
         # ── Audit Log ─────────────────────────────────────────────────────────
-        
-        AuthEventLog.objects.create(
-            actor=None,  # Bootstrap action — no actor
+        log_auth_event(
+            actor=None,
             subject=user,
             school=None,
             event=AuthEventLog.Event.USER_CREATED,
-            ip_address=None,
-            user_agent='Django Management Command',
             metadata={
                 'bootstrap': True,
                 'user_type': User.UserType.VISION_STAFF,

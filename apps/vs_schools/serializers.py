@@ -23,14 +23,8 @@ from .models import (
     PackagePlan,
     XVSModules,
 )
-from vs_audit.models import (
-    AuditEvent, 
-    EntityAuditTrail,
-    AuditModuleKey,
-    AuditActionType
-)
-
-from vs_audit.services import AuditDiffService
+from vs_audit.models import AuditModuleKey, AuditActionType
+from vs_audit.services import AuditDiffService, emit_audit_event
 
 
 # -----------------------------------------------------------------------------
@@ -107,22 +101,6 @@ class BranchLifecycleSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class AuditEventSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = AuditEvent
-        fields = [
-            "actor_id",
-            "action",
-            "resource_type",
-            "resource_slug",
-            "before_hash",
-            "after_hash",
-            "outcome",
-            "occurred_at",
-            "created_at",
-            "updated_at",
-        ]
-        read_only_fields = fields
 
 
 # ---------------------------------------------------------------
@@ -470,27 +448,19 @@ class BranchCreateSerializer(serializers.ModelSerializer):
         else:
             raise serializers.ValidationError({"primary_admin_data": "Primary admin information is required to create a branch."})
         
-        audit_e = AuditEvent.objects.create(
+        emit_audit_event(
             module_key=AuditModuleKey.BRANCH,
             action_type=AuditActionType.CREATE,
-            actor_user=self.context.get("actor_id", "system"),
+            actor_user=self.context.get("actor_id"),
             entity_type="Branch",
             entity_id=str(branch.code),
             entity_label=branch.name,
-            before_data={},
             diff_data=AuditDiffService.from_instances(
-                before_instance=None, 
+                before_instance=None,
                 after_instance=branch,
                 exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deleted_at"],
             )['diff'],
         )
-
-        trail = EntityAuditTrail.objects.create(
-            entity_type="Branch",
-            entity_id=str(branch.code),
-            entity_label=branch.name,
-        )
-        trail.register_event(audit_e)
 
         return branch
 
@@ -552,10 +522,10 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
             exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deleted_at"],
         )
 
-        audit_e = AuditEvent.objects.create(
+        emit_audit_event(
             module_key=AuditModuleKey.BRANCH,
             action_type=AuditActionType.UPDATE,
-            actor_user=self.context.get("actor_id", "system"),
+            actor_user=self.context.get("actor_id"),
             entity_type="Branch",
             entity_id=str(instance.code),
             entity_label=instance.name,
@@ -563,15 +533,8 @@ class BranchUpdateSerializer(serializers.ModelSerializer):
             diff_data=AuditDiffService.diff_dicts(
                 before_data=before_instance,
                 after_data=after_instance,
-            )
+            ),
         )
-
-        trail, _ = EntityAuditTrail.objects.get_or_create(
-            entity_type="Branch",
-            entity_id=str(instance.code),
-            defaults={"entity_label": instance.name},
-        )
-        _.register_event(audit_e) if _ else trail.register_event(audit_e)
 
         return instance
 
@@ -852,27 +815,19 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 )
         
             # branch audit trail for creation
-            audit_branch = AuditEvent.objects.create(
+            emit_audit_event(
                 module_key=AuditModuleKey.BRANCH,
                 action_type=AuditActionType.CREATE,
-                actor_user=self.context.get("actor_id", "system"),
+                actor_user=self.context.get("actor_id"),
                 entity_type="Branch",
                 entity_id=str(branch.code),
                 entity_label=branch.name,
-                before_data={},
                 diff_data=AuditDiffService.from_instances(
-                    before_instance=None, 
+                    before_instance=None,
                     after_instance=branch,
                     exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deleted_at"],
                 )['diff'],
             )
-
-            trail = EntityAuditTrail.objects.create(
-                entity_type="Branch",
-                entity_id=f"{str(branch.school.slug)}-{str(branch.code)}",
-                entity_label=branch.name,
-            )
-            trail.register_event(audit_branch)
         
         # --- 5. Optional package setup ---
         if package_setup_data:
@@ -896,26 +851,19 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 setup.enabled_modules.set(enabled_modules)
 
         # --- 6. Audit trail for school ---
-        audit_school = AuditEvent.objects.create(
+        emit_audit_event(
             module_key=AuditModuleKey.SCHOOL,
             action_type=AuditActionType.CREATE,
-            actor_user=self.context.get("actor_id", "system"),
+            actor_user=self.context.get("actor_id"),
             entity_type="School",
             entity_id=str(school.slug),
             entity_label=school.name,
-            before_data={},
             diff_data=AuditDiffService.from_instances(
                 before_instance=None,
                 after_instance=school,
                 exclude_fields=["created_at", "updated_at", "activated_at", "deactivated_at"],
             )['diff'],
         )
-        trail = EntityAuditTrail.objects.create(
-            entity_type="School",
-            entity_id=str(school.slug),
-            entity_label=school.name,
-        )
-        trail.register_event(audit_school)
 
         return school
     

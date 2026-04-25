@@ -497,16 +497,24 @@ class ImportRollbackRecordListView(ImportJobContextMixin, generics.ListAPIView):
 # =========================================================
 class ImportAuditLogListView(ImportBatchContextMixin, generics.ListAPIView):
     """
-    GET -> list audit logs for one import batch.
+    GET -> list AuditEvents for one import batch, scoped by batch pk in metadata.
     """
     permission_classes = [IsAuthenticatedStaff]
-    serializer_class = ImportAuditLogSerializer
+
+    def get_serializer_class(self):
+        from vs_audit.serializers import AuditEventListSerializer
+        return AuditEventListSerializer
 
     def get_queryset(self):
+        from vs_audit.models import AuditEvent, AuditModuleKey
+        batch = self.get_import_batch()
         return (
-            ImportAuditLog.objects.filter(import_batch=self.get_import_batch())
-            .select_related("actor")
-            .order_by("-created_at")
+            AuditEvent.objects.filter(
+                module_key=AuditModuleKey.IMPORT,
+                metadata__import_batch_id=str(batch.pk),
+            )
+            .select_related("actor_user")
+            .order_by("-event_at")
         )
 
 

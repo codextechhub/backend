@@ -311,7 +311,7 @@ def execute_import(import_batch, queued_by):
             )
 
             create_import_audit_log(
-                school=import_batch.school,
+                branch=import_batch.branch,
                 actor=queued_by,
                 import_batch=import_batch,
                 job=job,
