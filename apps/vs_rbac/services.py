@@ -12,6 +12,9 @@ from __future__ import annotations
 from django.db import transaction
 from django.utils import timezone
 
+from vs_audit.models import AuditModuleKey, AuditActionType
+from vs_audit.services import emit_audit_event
+
 from .models import (
     PlatformRoleChangeDeltaItem,
     PlatformRoleChangeRequest,
@@ -102,6 +105,21 @@ def apply_school_role_change_request(obj: RoleChangeRequest, reviewer, notes: st
             'updated_at',
         ])
 
+        emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.PERMISSION_CHANGED,
+            actor_user=reviewer,
+            entity_type="RoleTemplate",
+            entity_id=str(target_role.pk),
+            entity_label=getattr(target_role, "name", str(target_role.pk)),
+            summary=f"School role '{getattr(target_role, 'name', target_role.pk)}' permissions updated via approved change request",
+            metadata={
+                "change_request_id": str(obj.pk),
+                "final_permission_keys": final_keys,
+                "reviewer_notes": notes,
+            },
+        )
+
 
 def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer, notes: str = ""):
     """
@@ -169,3 +187,18 @@ def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer,
             'decided_at',
             'updated_at',
         ])
+
+        emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.PERMISSION_CHANGED,
+            actor_user=reviewer,
+            entity_type="PlatformRoleTemplate",
+            entity_id=str(target_role.pk),
+            entity_label=getattr(target_role, "name", str(target_role.pk)),
+            summary=f"Platform role '{getattr(target_role, 'name', target_role.pk)}' permissions updated via approved change request",
+            metadata={
+                "change_request_id": str(obj.pk),
+                "final_permission_keys": final_keys,
+                "reviewer_notes": notes,
+            },
+        )

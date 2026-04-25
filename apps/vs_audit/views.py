@@ -91,9 +91,6 @@ class AuditEventListView(generics.ListAPIView):
         date_to = filters.get("date_to")
         search = filters.get("search")
 
-        if i_slug:
-            queryset = queryset.filter(i_slug=i_slug)
-
         if module_key:
             queryset = queryset.filter(module_key=module_key)
 
@@ -184,7 +181,7 @@ class EntityAuditTrailDetailView(APIView):
         data = {
             "trail": EntityAuditTrailSerializer(trail).data,
             "events": AuditEventListSerializer(
-                event_qs.order_by("-event_at", "-created_at"),
+                event_qs.order_by("-event_at"),
                 many=True,
             ).data,
         }
@@ -256,9 +253,6 @@ class ComplianceRuleListCreateView(CreateModelMixin, generics.ListCreateAPIView)
         i_slug = self.request.query_params.get("i_slug")
         rule_type = self.request.query_params.get("rule_type")
         is_active = self.request.query_params.get("is_active")
-
-        if i_slug:
-            queryset = queryset.filter(i_slug=i_slug)
 
         if rule_type:
             queryset = queryset.filter(rule_type=rule_type)

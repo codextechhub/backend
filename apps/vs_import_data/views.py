@@ -12,7 +12,6 @@ from core.response import success_response, error_response
 from vs_schools.models import School
 
 from .models import (
-    ImportAuditLog,
     ImportBatch,
     ImportJob,
     ImportNotification,
@@ -24,7 +23,6 @@ from .models import (
     FileFormatChoices,
 )
 from .serializers import (
-    ImportAuditLogSerializer,
     ImportBatchDetailSerializer,
     ImportBatchListSerializer,
     ImportBatchUpdateSerializer,

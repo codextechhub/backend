@@ -205,6 +205,12 @@ class AuditEvent(models.Model):
         blank=True,
         related_name="performed_audit_events",
     )
+    actor_label = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Human-readable fallback for system or service actors (email, name, service id).",
+    )
 
     # Target / entity trail support
     entity_type = models.CharField(
@@ -272,7 +278,7 @@ class AuditEvent(models.Model):
     def clean(self):
         """Run model-level validation to guarantee required context."""
         # If actor type is USER, try to enforce presence of actor_user
-        if self.actor_type == AuditActorType.USER and not self.actor_user:
+        if self.actor_type == AuditActorType.USER and not self.actor_user and not self.actor_label:
             raise ValidationError("User-attributed audit events require actor_user or actor_label.")
 
         # Global event can have school=None, but school-scoped events usually should not
@@ -549,7 +555,7 @@ class ComplianceRule(TimeStampedModel):
         if not self.is_active:
             return False
 
-        if self.school_id and event.school_id != self.school_id:
+        if self.school_id and str(self.school_id) != str((event.metadata or {}).get("school_id", "")):
             return False
 
         if self.module_key and event.module_key != self.module_key:

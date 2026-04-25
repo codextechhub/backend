@@ -7,7 +7,6 @@ from rest_framework import serializers
 
 from .models import (
     FileFormatChoices,
-    ImportAuditLog,
     ImportBatch,
     ImportJob,
     ImportJobRowResult,
@@ -440,47 +439,6 @@ class ImportRollbackRecordSerializer(serializers.ModelSerializer):
         if not obj.initiated_by:
             return None
         user = obj.initiated_by
-        return {
-            "id": str(user.id),
-            "email": getattr(user, "email", ""),
-            "full_name": getattr(user, "full_name", ""),
-        }
-
-
-# =========================================================
-# Audit Log Serializers
-# =========================================================
-class ImportAuditLogSerializer(serializers.ModelSerializer):
-    """
-    Serializer for import audit records.
-    """
-    actor = serializers.SerializerMethodField()
-
-    class Meta:
-        model = ImportAuditLog
-        fields = (
-            "id",
-            "school",
-            "import_batch",
-            "job",
-            "actor",
-            "action",
-            "entity_type",
-            "entity_id",
-            "before_data",
-            "after_data",
-            "diff_data",
-            "message",
-            "metadata",
-            "created_at",
-            "updated_at",
-        )
-        read_only_fields = fields
-
-    def get_actor(self, obj):
-        if not obj.actor:
-            return None
-        user = obj.actor
         return {
             "id": str(user.id),
             "email": getattr(user, "email", ""),
