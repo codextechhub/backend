@@ -34,7 +34,10 @@
       "mcp__Claude_in_Chrome__read_page",
       "mcp__Claude_in_Chrome__read_console_messages",
       "mcp__Claude_in_Chrome__javascript_tool",
-      "Bash(xargs cat *)"
+      "Bash(xargs cat *)",
+      "Bash(python manage.py makemigrations *)",
+      "Bash(python manage.py migrate *)",
+      "Bash(git *)"
     ]
   }
 }
