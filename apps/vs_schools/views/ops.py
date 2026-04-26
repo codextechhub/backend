@@ -5,7 +5,7 @@ from rest_framework import generics
 from core.response import success_response, error_response
 
 from ..models import School
-from ..permissions import IsVisionStaff, IsVisionSuperAdmin
+from vs_rbac.permissions import IsVisionSuperAdmin
 from ..serializers import (
     SchoolDetailSerializer,
     SchoolResetConfigSerializer,

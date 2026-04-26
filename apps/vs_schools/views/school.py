@@ -8,7 +8,7 @@ from core.mixins import RetrieveModelMixin, CreateModelMixin
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
 from ..models import School, SchoolStatus
-from ..permissions import IsVisionStaff, IsVisionSuperAdmin
+from vs_rbac.permissions import IsVisionStaff, IsAuthenticatedAndActive
 from ..serializers import (
     SchoolCreateSerializer,
     SchoolDetailSerializer,
@@ -28,7 +28,7 @@ class ActorContextMixin:
 
 
 class SchoolListView(ActorContextMixin, generics.ListAPIView):
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = SchoolListSerializer
     pagination_class = XVSPagination
 
@@ -87,7 +87,7 @@ class SchoolStatsView(generics.GenericAPIView):
 
     One DB query using conditional aggregation — no N+1.
     """
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
 
     def get(self, request, *args, **kwargs):
         from django.db.models import Count, Q
@@ -103,12 +103,12 @@ class SchoolStatsView(generics.GenericAPIView):
     
 
 class SchoolCreateView(CreateModelMixin, ActorContextMixin, generics.CreateAPIView):
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = SchoolCreateSerializer
 
 
 class SchoolDetailView(RetrieveModelMixin, ActorContextMixin, generics.RetrieveAPIView):
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = SchoolDetailSerializer
 
     queryset = (
@@ -124,7 +124,7 @@ class SchoolUpdateView(ActorContextMixin, generics.UpdateAPIView):
     Separate update endpoint. Returns a full detail payload after update
     so the UI doesn't need to refetch.
     """
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = SchoolUpdateSerializer
 
     queryset = (

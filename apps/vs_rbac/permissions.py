@@ -85,6 +85,20 @@ class IsVisionStaff(BasePermission):
         return getattr(u, "user_type", "") == "VISION_STAFF"
 
 
+class IsVisionSuperAdmin(BasePermission):
+    """
+    Vision super admin can do everything, including managing schools and roles.
+    This is a simplified check: we treat user_type == VISION_SUPER_ADMIN as super admin.
+    If you want "anyone with permission", wire it to your RBAC evaluator later.
+    """
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u or not u.is_authenticated:
+            return False
+        return getattr(u, "is_superuser", False)
+
+
 class IsSchoolAdmin(BasePermission):
     """
     School admin can manage roles within their school.

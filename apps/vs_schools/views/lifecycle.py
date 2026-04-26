@@ -5,7 +5,7 @@ from rest_framework import generics
 from core.response import success_response, error_response
 
 from ..models import Branch
-from ..permissions import IsVisionStaff
+from vs_rbac.permissions import IsVisionStaff, IsAuthenticatedAndActive
 from ..serializers import BranchDetailSerializer, BranchStateTransitionSerializer
 
 
@@ -18,7 +18,7 @@ class ActorContextMixin:
 
 
 class BranchTransitionView(ActorContextMixin, generics.GenericAPIView):
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = BranchStateTransitionSerializer
     queryset = Branch.objects.all()
     lookup_field = "code"

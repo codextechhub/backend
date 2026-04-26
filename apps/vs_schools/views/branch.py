@@ -9,7 +9,7 @@ from core.mixins import RetrieveModelMixin, CreateModelMixin
 from core.response import success_response, error_response
 
 from ..models import Branch, BranchStatus, School
-from ..permissions import IsVisionStaff
+from vs_rbac.permissions import IsVisionStaff, IsAuthenticatedAndActive
 from ..serializers import (
     BranchCreateSerializer,
     BranchDetailSerializer,
@@ -28,7 +28,7 @@ class ActorContextMixin:
 
 
 class BranchListView(ActorContextMixin, generics.ListAPIView):
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = BranchListSerializer
     queryset = Branch.objects.all().select_related("school")
 
@@ -104,7 +104,7 @@ class BranchStatsView(generics.GenericAPIView):
 
     One DB query using conditional aggregation — no N+1.
     """
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
 
     def get(self, request, *args, **kwargs):
         from django.db.models import Count, Q
@@ -127,7 +127,7 @@ class BranchStatsView(generics.GenericAPIView):
     
 
 class BranchCreateView(CreateModelMixin, ActorContextMixin, generics.CreateAPIView):
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = BranchCreateSerializer
 
     def get_serializer_context(self):
@@ -145,7 +145,7 @@ class BranchCreateView(CreateModelMixin, ActorContextMixin, generics.CreateAPIVi
 
 
 class BranchDetailView(RetrieveModelMixin, ActorContextMixin, generics.RetrieveAPIView):
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = BranchDetailSerializer
 
     queryset = Branch.objects.all().select_related("school")
@@ -167,7 +167,7 @@ class BranchUpdateView(ActorContextMixin, generics.UpdateAPIView):
     """
     Returns a full detail payload after update so the UI doesn't need to refetch.
     """
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = BranchUpdateSerializer
 
     queryset = Branch.objects.all().select_related("school")
