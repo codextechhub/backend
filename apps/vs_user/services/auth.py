@@ -44,8 +44,7 @@ class LoginService:
 
         # 2. Find user
         user = User.objects.filter(email__iexact=email).first()
-        school_slug = user.school.slug if (user and user.school) else ''
-        school      = user.school if user else None
+        school = user.school if user else None
 
         # 3. Check lockout before attempting the password
         if user:
@@ -75,19 +74,10 @@ class LoginService:
                 # Generic message — do not reveal whether the email was found.
                 raise ValueError({'error_code': 'INVALID_CREDENTIALS', 'message': 'Invalid credentials.'})
 
-            if user.school_id != school.id:
-                record_attempt(
-                    email_entered=email,
-                    user=user, school=user.school,
-                    result=AuthAttempt.Result.FAIL, failure_code='SCHOOL_MISMATCH',
-                    request=request,
-                )
-                raise ValueError({'error_code': 'INVALID_CREDENTIALS', 'message': 'Invalid credentials.'})
-
         # 5. Authenticate credentials
         authed = authenticate(request=request, username=email, password=password)
         if not authed:
-            LoginService._handle_failed_attempt(user, school, school_slug, request)
+            LoginService._handle_failed_attempt(user, school, school.slug if school else '', request)
             raise ValueError({'error_code': 'INVALID_CREDENTIALS', 'message': 'Invalid credentials.'})
 
         # 6. Check account status
