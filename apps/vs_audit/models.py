@@ -246,7 +246,7 @@ class AuditEvent(models.Model):
     diff_data = models.JSONField(
         default=dict,
         blank=True,
-        help_text="State diff or change summary. Useful for large objects where before/after would be too heavy."
+        help_text="Field-level diff: {field: {before, after}}. Summary of what changed."
     )
 
     # Extra metadata (IP, user agent, job ids, references, etc.)

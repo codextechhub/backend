@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from django.db import transaction
 from rest_framework import serializers
+from django.utils import timezone
 
 from .models import (
     GroupPermission,
@@ -1190,6 +1191,17 @@ class PlatformUserRoleAssignmentSerializer(serializers.ModelSerializer):
         actor = request.user if request and request.user.is_authenticated else None
 
         validated_data["assigned_by"] = actor
+
+        # Update role for existing active assignment if exists, otherwise create new assignment.
+        if validated_data["user"] and validated_data["role"]:      
+            existing_qs = PlatformUserRoleAssignment.objects.filter(
+                user=validated_data["user"],
+                assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
+            )
+            if existing_qs.exists():
+                existing_qs.update(role=validated_data["role"], assigned_by=actor, assigned_at=timezone.now(), updated_at=timezone.now())
+                return existing_qs.first()
+
         return super().create(validated_data)
 
     @transaction.atomic

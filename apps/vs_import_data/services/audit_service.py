@@ -18,7 +18,7 @@ _ACTION_MAP: dict[str, str] = {
 
 def create_import_audit_log(
     *,
-    branch,
+    school,
     action: str,
     actor=None,
     import_batch=None,
@@ -49,7 +49,7 @@ def create_import_audit_log(
 
     extra_meta = {
         "import_action": action,
-        "branch_id": str(branch.pk) if branch else None,
+        "school_id": str(school.pk) if school else None,
         "import_batch_id": str(import_batch.pk) if import_batch else None,
         "job_id": str(job.pk) if job else None,
         "message": message,
