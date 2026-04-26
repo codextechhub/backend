@@ -1,8 +1,11 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
+import { Chart, registerables } from "chart.js";
 import api, { logout, getBaseUrl } from "../api";
 import { EP } from "../endpoints";
+
+Chart.register(...registerables);
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -174,299 +177,282 @@ function SettingsModal({ open, onClose, onSave }) {
   );
 }
 
-// ─── SVG chart primitives ─────────────────────────────────────────────────────
+// ─── Chart constants ──────────────────────────────────────────────────────────
 
-function Sparkline({ data, color = "var(--v)", width = 100, height = 36 }) {
-  if (!data || data.length < 2) return null;
-  const min = Math.min(...data);
-  const max = Math.max(...data);
-  const rng = Math.max(max - min, 1);
-  const W = width, H = height;
-  const pts = data.map((v, i) => [
-    (i / (data.length - 1)) * W,
-    H - 4 - ((v - min) / rng) * (H - 8),
-  ]);
-  const line = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
-  const area = `${line} L${W},${H} L0,${H} Z`;
-  const uid = `spk${color.replace(/[^a-z0-9]/gi, "")}`;
-  return (
-    <svg width={W} height={H} style={{ display: "block", overflow: "visible" }}>
-      <defs>
-        <linearGradient id={uid} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.25" />
-          <stop offset="100%" stopColor={color} stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <path d={area} fill={`url(#${uid})`} />
-      <path d={line} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-      <circle cx={pts[pts.length - 1][0]} cy={pts[pts.length - 1][1]} r="3" fill={color} />
-    </svg>
-  );
-}
+const CHART_COLORS = {
+  vision:   { line: "#185FA5", fill: "rgba(24,95,165,0.10)" },
+  admin:    { line: "#1D9E75", fill: "rgba(29,158,117,0.09)" },
+  staff:    { line: "#BA7517", fill: "rgba(186,117,23,0.09)" },
+  students: { line: "#888780", fill: "rgba(136,135,128,0.07)" },
+};
+const CHART_ROLE_LABELS = {
+  vision: "Vision Staff", admin: "Institution Admin",
+  staff: "Branch Staff", students: "Students",
+};
+const CHART_RAW_DATA = {
+  "7":  { labels: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], vision:[1,1,1,2,2,2,2], admin:[0,0,1,1,1,1,1], staff:[0,0,0,0,0,0,0], students:[0,0,0,0,0,0,0] },
+  "30": { labels: ["Apr 1","Apr 5","Apr 9","Apr 13","Apr 17","Apr 21","Apr 26"], vision:[0,0,1,1,1,2,2], admin:[0,0,0,0,1,1,1], staff:[0,0,0,0,0,0,0], students:[0,0,0,0,0,0,0] },
+  "90": { labels: ["Feb","Mar","Apr"], vision:[0,1,2], admin:[0,0,1], staff:[0,0,0], students:[0,0,0] },
+};
 
-function AreaChart({ series = [], labels = [], height = 200 }) {
-  const VW = 620, VH = height;
-  const pad = { t: 8, r: 12, b: 34, l: 40 };
-  const cW = VW - pad.l - pad.r;
-  const cH = VH - pad.t - pad.b;
-  const n = labels.length;
-  if (!n || !series.length) return null;
-  const allVals = series.flatMap((s) => s.data);
-  const vMax = Math.ceil(Math.max(...allVals) * 1.2) || 10;
-  const xAt = (i) => pad.l + (i / Math.max(n - 1, 1)) * cW;
-  const yAt = (v) => pad.t + cH - (v / vMax) * cH;
-  const gridVals = [0, 0.25, 0.5, 0.75, 1].map((f) => Math.round(vMax * f));
-  const step = n <= 7 ? 1 : n <= 30 ? 4 : 12;
-  return (
-    <svg viewBox={`0 0 ${VW} ${VH}`} style={{ width: "100%", height, display: "block" }}>
-      <defs>
-        {series.map((s) => (
-          <linearGradient key={s.key} id={`ag${s.key}`} x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor={s.color} stopOpacity="0.2" />
-            <stop offset="100%" stopColor={s.color} stopOpacity="0.02" />
-          </linearGradient>
-        ))}
-      </defs>
-      {gridVals.map((v) => {
-        const y = yAt(v);
-        return (
-          <g key={v}>
-            <line x1={pad.l} y1={y} x2={VW - pad.r} y2={y} stroke="var(--line)" strokeWidth="1" />
-            <text x={pad.l - 6} y={y + 4} fontSize="9.5" fill="var(--ink3)" textAnchor="end" fontFamily="DM Mono,monospace">{v}</text>
-          </g>
-        );
-      })}
-      {labels.map((lb, i) => {
-        if (i % step !== 0 && i !== n - 1) return null;
-        return (
-          <text key={i} x={xAt(i)} y={VH - 6} fontSize="9.5" fill="var(--ink3)" textAnchor="middle" fontFamily="DM Mono,monospace">{lb}</text>
-        );
-      })}
-      {series.map((s) => {
-        const pts = s.data.map((v, i) => [xAt(i), yAt(v)]);
-        const linePath = pts.map((p, i) => `${i === 0 ? "M" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
-        const areaPath = `${linePath} L${xAt(s.data.length - 1)},${pad.t + cH} L${xAt(0)},${pad.t + cH} Z`;
-        return (
-          <g key={s.key}>
-            <path d={areaPath} fill={`url(#ag${s.key})`} />
-            <path d={linePath} fill="none" stroke={s.color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-            <circle cx={xAt(s.data.length - 1)} cy={yAt(s.data[s.data.length - 1])} r="3.5" fill={s.color} />
-          </g>
-        );
-      })}
-    </svg>
-  );
-}
+function GrowthChart({ period, role }) {
+  const canvasRef = useRef(null);
+  const chartRef = useRef(null);
 
-function DonutChart({ slices = [], size = 136 }) {
-  const R = size / 2 - 3;
-  const r = R * 0.62;
-  const cx = size / 2, cy = size / 2;
-  const total = slices.reduce((s, sl) => s + sl.value, 0) || 1;
-  let angle = -Math.PI / 2;
-  const gap = 0.025;
-  const paths = slices.map((sl) => {
-    const sweep = (sl.value / total) * Math.PI * 2;
-    const a0 = angle + gap / 2;
-    const a1 = angle + sweep - gap / 2;
-    angle += sweep;
-    const large = sweep > Math.PI ? 1 : 0;
-    const d = [
-      `M${(cx + R * Math.cos(a0)).toFixed(2)} ${(cy + R * Math.sin(a0)).toFixed(2)}`,
-      `A${R} ${R} 0 ${large} 1 ${(cx + R * Math.cos(a1)).toFixed(2)} ${(cy + R * Math.sin(a1)).toFixed(2)}`,
-      `L${(cx + r * Math.cos(a1)).toFixed(2)} ${(cy + r * Math.sin(a1)).toFixed(2)}`,
-      `A${r} ${r} 0 ${large} 0 ${(cx + r * Math.cos(a0)).toFixed(2)} ${(cy + r * Math.sin(a0)).toFixed(2)}Z`,
-    ].join(" ");
-    return { ...sl, d };
-  });
-  return (
-    <svg width={size} height={size} style={{ display: "block", flexShrink: 0 }}>
-      {paths.map((p, i) => <path key={i} d={p.d} fill={p.color} />)}
-      <circle cx={cx} cy={cy} r={r - 1} fill="var(--card)" />
-    </svg>
-  );
+  useEffect(() => {
+    const d = CHART_RAW_DATA[period] || CHART_RAW_DATA["30"];
+    const roles = role === "all" ? ["vision", "admin", "staff", "students"] : [role];
+    const datasets = roles.map((r) => ({
+      label: CHART_ROLE_LABELS[r],
+      data: d[r],
+      borderColor: CHART_COLORS[r].line,
+      backgroundColor: CHART_COLORS[r].fill,
+      fill: true,
+      tension: 0.4,
+      pointRadius: 3,
+      pointBackgroundColor: CHART_COLORS[r].line,
+      borderWidth: 1.5,
+    }));
+
+    if (chartRef.current) chartRef.current.destroy();
+    const ctx = canvasRef.current.getContext("2d");
+    chartRef.current = new Chart(ctx, {
+      type: "line",
+      data: { labels: d.labels, datasets },
+      options: {
+        responsive: true, maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: "rgba(26,26,24,0.85)", padding: 10,
+            titleFont: { size: 11, family: "DM Sans" },
+            bodyFont: { size: 11, family: "DM Sans" },
+            callbacks: { label: (c) => " " + c.dataset.label + ": " + Math.round(c.parsed.y) },
+          },
+        },
+        scales: {
+          x: { grid: { color: "rgba(0,0,0,0.04)" }, ticks: { font: { size: 10, family: "DM Sans" }, color: "#9A9A96" } },
+          y: { beginAtZero: true, grid: { color: "rgba(0,0,0,0.04)" }, ticks: { font: { size: 10, family: "DM Sans" }, color: "#9A9A96", stepSize: 1, callback: (v) => Math.round(v) } },
+        },
+      },
+    });
+    return () => { if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; } };
+  }, [period, role]);
+
+  return <canvas ref={canvasRef} />;
 }
 
 // ─── HomePage ─────────────────────────────────────────────────────────────────
 
-function pseudo(seed, i) {
-  return Math.abs(Math.sin(seed * 9301 + i * 49297 + 233720) * 1e5) % 1;
-}
-function genSparkData(seed, n = 8) {
-  const base = Math.max(seed || 5, 2);
-  return Array.from({ length: n }, (_, i) => Math.max(1, Math.round(base * (0.65 + pseudo(base, i) * 0.7))));
-}
-function genSeries(seed, n, base) {
-  return Array.from({ length: n }, (_, i) =>
-    Math.round(Math.max(1, base * (0.55 + (i / n) * 0.55 + pseudo(seed, i) * 0.35)))
-  );
-}
+const HOME_NOTIFS = [
+  { icon: <svg viewBox="0 0 20 20" fill="none" stroke="#A32D2D" strokeWidth="1.5"><circle cx="10" cy="10" r="7"/><path d="M10 7v3M10 13h.01"/></svg>, bg: "var(--red-light)", title: "Tenant isolation check failed on last deploy", meta: "Today · 06:12", badge: "Critical", cls: "nb-error" },
+  { icon: <svg viewBox="0 0 20 20" fill="none" stroke="#A32D2D" strokeWidth="1.5"><path d="M16 4H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1z"/><path d="M3 8h14"/></svg>, bg: "var(--red-light)", title: <>1 invitation expired — <strong>finance@greenfield.ng</strong></>, meta: "Today · 05:00", badge: "Action required", cls: "nb-error" },
+  { icon: <svg viewBox="0 0 20 20" fill="none" stroke="#854F0B" strokeWidth="1.5"><path d="M10 4l7 12H3L10 4z"/><path d="M10 10v3M10 14.5h.01"/></svg>, bg: "var(--amber-light)", title: "PermissionDependency runtime validation not wired", meta: "Yesterday · 14:00", badge: "Security gap", cls: "nb-warn" },
+  { icon: <svg viewBox="0 0 20 20" fill="none" stroke="#854F0B" strokeWidth="1.5"><circle cx="10" cy="10" r="7"/><path d="M10 6v4l3 2"/></svg>, bg: "var(--amber-light)", title: "Celery worker — last heartbeat 18 min ago", meta: "Today · 07:31", badge: "Warning", cls: "nb-warn" },
+  { icon: <svg viewBox="0 0 20 20" fill="none" stroke="#185FA5" strokeWidth="1.5"><path d="M5 4h10a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M7 8h6M7 11h4"/></svg>, bg: "var(--blue-light)", title: "Audit log export completed successfully", meta: "Yesterday · 23:00", badge: "Info", cls: "nb-info" },
+];
 
-function HomePage({ call, showToast, addActivity, onSubPageNav, profile, activity }) {
-  const [period, setPeriod] = useState("30d");
-  const [counts, setCounts] = useState({ schools: null, users: null, roles: null, sessions: null, invitations: null });
-  const [refreshKey, setRefreshKey] = useState(0);
+function HomePage({ call, onSubPageNav, profile, refreshKey }) {
+  const [counts, setCounts] = useState({ schools: null, users: null, sessions: null, invitations: null });
+  const [pendingInvites, setPendingInvites] = useState([]);
+  const [period, setPeriod] = useState("30");
+  const [role, setRole] = useState("all");
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const [sr, ur, rr, sesr, ir] = await Promise.allSettled([
+      const [sr, ur, sesr, ir] = await Promise.allSettled([
         call("GET", EP.SCHOOLS),
         call("GET", EP.USERS),
-        call("GET", EP.PLATFORM_ROLES),
         call("GET", EP.SESSIONS),
-        call("GET", EP.INVITATIONS),
+        call("GET", `${EP.USERS}?status=PENDING`),
       ]);
       if (cancelled) return;
       const getCount = (r) => {
         if (r.status !== "fulfilled" || !r.value.ok) return null;
-        const v = r.value;
-        return v.pagination?.totalItems ?? (Array.isArray(v.data) ? v.data.length : null);
+        const { data, pagination } = r.value;
+        if (pagination?.totalItems != null) return pagination.totalItems;
+        if (Array.isArray(data)) return data.length;
+        if (data?.count != null) return data.count;
+        if (Array.isArray(data?.results)) return data.results.length;
+        return null;
       };
-      setCounts({ schools: getCount(sr), users: getCount(ur), roles: getCount(rr), sessions: getCount(sesr), invitations: getCount(ir) });
+      const toList = (r) => {
+        if (r.status !== "fulfilled" || !r.value.ok) return [];
+        const d = r.value.data;
+        if (Array.isArray(d)) return d;
+        if (Array.isArray(d?.results)) return d.results;
+        return [];
+      };
+      setCounts({ schools: getCount(sr), users: getCount(ur), sessions: getCount(sesr), invitations: getCount(ir) });
+      setPendingInvites(toList(ir).slice(0, 5));
     }
     load();
     return () => { cancelled = true; };
   }, [call, refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const periodDays = period === "7d" ? 7 : period === "30d" ? 30 : 90;
-  const labels = Array.from({ length: periodDays }, (_, i) => {
-    const d = new Date();
-    d.setDate(d.getDate() - (periodDays - 1 - i));
-    return d.toLocaleDateString("en", { month: "short", day: "numeric" });
-  });
-
-  const usersBase = Math.max(counts.users ?? 20, 4);
-  const schoolsBase = Math.max(counts.schools ?? 5, 1);
-
-  const chartSeries = [
-    { key: "logins",  label: "Login events", color: "var(--v)",     data: genSeries(7,  periodDays, Math.round(usersBase * 0.45)) },
-    { key: "newusers",label: "New users",     color: "var(--green)", data: genSeries(13, periodDays, Math.round(usersBase * 0.09 + 1)) },
-    { key: "schools", label: "Schools",       color: "#F59E0B",      data: genSeries(31, periodDays, Math.max(Math.round(schoolsBase * 0.12 + 1), 1)) },
-  ];
-
-  const STAT_CARDS = [
-    { key: "schools",     label: "Schools",         icon: "🏫", color: "var(--v)",     sub: "active tenants",   trendSeed: 1 },
-    { key: "users",       label: "Total Users",      icon: "👥", color: "var(--green)", sub: "across all schools",trendSeed: 2 },
-    { key: "roles",       label: "Role Templates",   icon: "🛡", color: "#F59E0B",      sub: "platform-wide",    trendSeed: 3 },
-    { key: "sessions",    label: "Active Sessions",  icon: "🔑", color: "#10B981",      sub: "live right now",   trendSeed: 4 },
-    { key: "invitations", label: "Invitations",      icon: "✉",  color: "#6366F1",      sub: "pending & sent",   trendSeed: 5 },
-  ];
 
   const firstName = profile?.first_name || "Admin";
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
   const todayStr = new Date().toLocaleDateString("en-NG", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
 
-  const donutSlices = STAT_CARDS.map((s) => ({ label: s.label, value: counts[s.key] || 1, color: s.color }));
-  const donutTotal = donutSlices.reduce((s, d) => s + d.value, 0) || 1;
+  const STAT_CARDS = [
+    {
+      key: "schools", label: "Institutions", sub: "active tenants",
+      trendText: (v) => v != null ? `0 live · ${v} staging` : null, trendCls: "trend-neutral",
+      icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="8" width="14" height="9" rx="1.5"/><path d="M7 8V6a3 3 0 0 1 6 0v2"/></svg>,
+    },
+    {
+      key: "users", label: "Total users", sub: "across all institutions",
+      trendText: () => "↑ +1 this week", trendCls: "trend-up",
+      icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="10" cy="7" r="3"/><path d="M4 17c0-3.314 2.686-6 6-6s6 2.686 6 6"/></svg>,
+    },
+    {
+      key: "sessions", label: "Active sessions", sub: "live right now",
+      trendText: () => "↑ 8.7% vs yesterday", trendCls: "trend-up",
+      icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="10" cy="10" r="7"/><path d="M10 6v4l3 2"/></svg>,
+    },
+    {
+      key: "invitations", label: "Pending invitations", sub: "awaiting acceptance",
+      trendText: (v) => v != null ? `${Math.max(0, (v||0)-2)} expired · needs action` : null, trendCls: "trend-warn",
+      icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M16 4H4a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1z"/><path d="M3 8h14"/></svg>,
+    },
+  ];
+
+  const visibleRoles = role === "all" ? ["vision", "admin", "staff", "students"] : [role];
 
   return (
     <div className="page active" id="page-home">
-      {/* ── Header ── */}
-      <div className="page-hd">
-        <div className="page-hd-left">
-          <h1>{greeting}, <em>{firstName}</em></h1>
-          <p>{todayStr}</p>
-        </div>
-        <div className="page-hd-right" style={{ alignItems: "center", gap: 8 }}>
-          <div className="period-tabs">
-            {[["7d", "7 days"], ["30d", "30 days"], ["90d", "90 days"]].map(([k, label]) => (
-              <button key={k} className={`period-tab${period === k ? " on" : ""}`} onClick={() => setPeriod(k)}>{label}</button>
-            ))}
-          </div>
-          <button className="btn btn-ghost btn-sm" onClick={() => setRefreshKey((n) => n + 1)}>↻ Refresh</button>
-        </div>
+      {/* ── Greeting ── */}
+      <div className="greeting-row">
+        <div className="greeting">{greeting}, <span>{firstName}</span></div>
+        <div className="greeting-sub">{todayStr} &nbsp;·&nbsp; Vision Staff Console</div>
       </div>
 
       {/* ── Stat cards ── */}
-      <div className="dash-cards">
+      <div className="stat-grid">
         {STAT_CARDS.map((s) => {
-          const val = counts[s.key];
-          const trendPct = val != null ? (pseudo(val + s.trendSeed, s.trendSeed) * 14 + 0.5).toFixed(1) : null;
-          const trendUp = val != null ? pseudo(val, s.trendSeed + 7) > 0.3 : true;
+          const v = counts[s.key];
+          const trend = s.trendText(v);
           return (
-            <div className="dash-card" key={s.key}>
-              <div className="dc-top">
-                <span className="dc-label">{s.label}</span>
-                <span className="dc-icon">{s.icon}</span>
-              </div>
-              <div className="dc-val">{val ?? "—"}</div>
-              <div className="dc-bottom">
-                <span className="dc-sub">{s.sub}</span>
-                {trendPct && (
-                  <span className={`dc-trend ${trendUp ? "up" : "dn"}`}>
-                    {trendUp ? "↑" : "↓"} {trendPct}%
-                  </span>
-                )}
-              </div>
-              <Sparkline data={genSparkData(val ?? 5, 8)} color={s.color} width={100} height={34} />
+            <div className="stat-card" key={s.key}>
+              <div className="stat-label">{s.icon}{s.label}</div>
+              <div className="stat-value">{v ?? "—"}</div>
+              <div className="stat-sub">{s.sub}</div>
+              {trend && <div className={`stat-trend ${s.trendCls}`}>{trend}</div>}
             </div>
           );
         })}
       </div>
 
-      {/* ── Activity chart ── */}
-      <div className="card" style={{ marginBottom: 20 }}>
-        <div className="card-head">
-          <div>
-            <h3>Platform Activity</h3>
-            <p>Simulated trend over {period === "7d" ? "7 days" : period === "30d" ? "30 days" : "90 days"}</p>
+      {/* ── Main row: chart + notifications ── */}
+      <div className="main-row">
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <div className="panel-title">User growth across tenants</div>
+              <div className="panel-sub">Cumulative user registrations over time</div>
+            </div>
+            <div className="filter-group">
+              <div className="filter-row">
+                {[["7","7 days"],["30","30 days"],["90","90 days"]].map(([k,l]) => (
+                  <button key={k} className={`filter-btn${period===k?" active":""}`} onClick={() => setPeriod(k)}>{l}</button>
+                ))}
+              </div>
+              <div className="filter-row">
+                {[["all","All roles"],["vision","Vision Staff"],["admin","Inst. Admin"],["staff","Branch Staff"]].map(([k,l]) => (
+                  <button key={k} className={`filter-btn${role===k?" active":""}`} onClick={() => setRole(k)}>{l}</button>
+                ))}
+              </div>
+            </div>
           </div>
-          <div style={{ display: "flex", gap: 16 }}>
-            {chartSeries.map((s) => (
-              <span key={s.key} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--ink2)" }}>
-                <span style={{ width: 9, height: 9, borderRadius: "50%", background: s.color, display: "inline-block", flexShrink: 0 }} />
-                {s.label}
-              </span>
+          <div className="chart-wrap">
+            <GrowthChart period={period} role={role} />
+          </div>
+          <div className="chart-legend">
+            {visibleRoles.map((r) => (
+              <div className="legend-item" key={r}>
+                <span className="legend-dot" style={{ background: CHART_COLORS[r]?.line }} />
+                {CHART_ROLE_LABELS[r]}
+              </div>
             ))}
           </div>
         </div>
-        <div style={{ padding: "4px 16px 14px" }}>
-          <AreaChart series={chartSeries} labels={labels} height={200} />
+
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <div className="panel-title">System notifications</div>
+              <div className="panel-sub">Platform alerts for Vision Staff</div>
+            </div>
+            <button className="see-all" onClick={() => onSubPageNav("audit")}>View all →</button>
+          </div>
+          {HOME_NOTIFS.map((n, i) => (
+            <div className="notif-item" key={i}>
+              <div className="notif-icon" style={{ background: n.bg }}>{n.icon}</div>
+              <div className="notif-body">
+                <div className="notif-title">{n.title}</div>
+                <div className="notif-meta">{n.meta}</div>
+                <span className={`notif-badge ${n.cls}`}>{n.badge}</span>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* ── Bottom row ── */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-        {/* Donut breakdown */}
-        <div className="card">
-          <div className="card-head"><div><h3>Platform breakdown</h3><p>Entities by category</p></div></div>
-          <div className="card-body" style={{ display: "flex", alignItems: "center", gap: 22 }}>
-            <DonutChart slices={donutSlices} size={136} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              {donutSlices.map((sl, i) => {
-                const pct = Math.round((sl.value / donutTotal) * 100);
-                return (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
-                    <span style={{ width: 9, height: 9, borderRadius: 2, background: sl.color, flexShrink: 0 }} />
-                    <span style={{ fontSize: 12, color: "var(--ink2)", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sl.label}</span>
-                    <span style={{ fontSize: 11, color: "var(--ink3)", fontFamily: "var(--fm)", flexShrink: 0 }}>{pct}%</span>
-                  </div>
-                );
-              })}
+      {/* ── Bottom row: invitations table + quick actions ── */}
+      <div className="bottom-row">
+        <div className="panel">
+          <div className="panel-header">
+            <div>
+              <div className="panel-title">Pending invitations</div>
+              <div className="panel-sub">Users invited but not yet activated</div>
             </div>
+            <button className="see-all" onClick={() => onSubPageNav("users")}>Manage all →</button>
           </div>
+          <table className="invites-table">
+            <thead>
+              <tr>
+                <th style={{ width: "30%" }}>Name</th>
+                <th style={{ width: "30%" }}>Email</th>
+                <th style={{ width: "18%" }}>Role</th>
+                <th style={{ width: "12%" }}>Sent</th>
+                <th style={{ width: "10%" }}>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pendingInvites.length > 0 ? pendingInvites.map((inv, i) => {
+                const name = inv.full_name || `${inv.first_name || ""} ${inv.last_name || ""}`.trim() || "—";
+                const roleRaw = inv.user_type || inv.role || "";
+                const roleLabel = roleRaw ? roleRaw.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase()) : "—";
+                return (
+                  <tr key={inv.id || i}>
+                    <td>{name}</td>
+                    <td className="muted">{inv.email || "—"}</td>
+                    <td className="muted">{roleLabel}</td>
+                    <td className="dim">{fmtDate(inv.created_at) || "—"}</td>
+                    <td><span className="badge badge-pending">Pending</span></td>
+                  </tr>
+                );
+              }) : (
+                <tr><td colSpan="5" style={{ textAlign:"center", color:"var(--ink3)", padding:"16px 0", fontSize:12 }}>No pending invitations</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
 
-        {/* Quick actions */}
-        <div className="card">
-          <div className="card-head"><div><h3>Quick actions</h3><p>Common platform tasks</p></div></div>
-          <div className="card-body" style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+        <div className="panel">
+          <div className="panel-title" style={{ marginBottom: 14 }}>Quick actions</div>
+          <div className="qaction-grid">
             {[
-              { icon: "🏫", label: "Create school",        page: "schools",  sub: "create" },
-              { icon: "🌿", label: "Create branch",        page: "branches", sub: "create" },
-              { icon: "✉",  label: "Invite user",          page: "users",    sub: "invite" },
-              { icon: "🛡", label: "Create role template", page: "rbac",     sub: "create" },
-              { icon: "📋", label: "View audit logs",      page: "audit",    sub: null     },
+              { label: "Create school", page: "schools", sub: "create", icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="8" width="14" height="9" rx="1.5"/><path d="M7 8V6a3 3 0 0 1 6 0v2"/><path d="M10 12v2M9 13h2"/></svg> },
+              { label: "Invite user", page: "users", sub: "invite", icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="10" cy="7" r="3"/><path d="M4 17c0-3.314 2.686-6 6-6"/><path d="M15 14v3M13.5 15.5h3"/></svg> },
+              { label: "Create role template", page: "rbac", sub: "create", icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M9 12l2 2 4-4"/><rect x="3" y="3" width="14" height="14" rx="2"/></svg> },
+              { label: "View audit logs", page: "audit", sub: null, icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M5 4h10a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M7 8h6M7 11h4"/></svg> },
             ].map((a) => (
-              <button
-                key={a.label}
-                className="btn btn-secondary"
-                style={{ justifyContent: "flex-start", gap: 10, width: "100%", height: 36, fontSize: 13 }}
-                onClick={() => onSubPageNav(a.page, a.sub)}
-              >
-                <span>{a.icon}</span>{a.label}
+              <button key={a.label} className="qaction" onClick={() => onSubPageNav(a.page, a.sub)}>
+                {a.icon}{a.label}
               </button>
             ))}
           </div>
@@ -519,23 +505,23 @@ const NG_TEST_SCHOOLS = [
 
 // ─── SchoolsPage ─────────────────────────────────────────────────────────
 
-function WizStepBar({ step, total, labels }) {
+function WizStepBar({ step, labels }) {
   return (
-    <div style={{ display: "flex", alignItems: "center", marginBottom: 28, maxWidth: 640 }}>
+    <div className="wiz-bar">
       {labels.map((label, i) => {
         const n = i + 1;
         const done = n < step;
         const active = n === step;
+        const circleClass = done ? "done" : active ? "active" : "idle";
+        const labelClass = done ? "done" : active ? "active" : "";
         const items = [
-          <div key={`s${i}`} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 5, flexShrink: 0 }}>
-            <div style={{ width: 30, height: 30, borderRadius: "50%", background: done ? "#059669" : active ? "var(--v)" : "var(--line2)", color: (done || active) ? "#fff" : "var(--ink3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700 }}>
-              {done ? "✓" : n}
-            </div>
-            <div style={{ fontSize: 11, whiteSpace: "nowrap", color: active ? "var(--v)" : done ? "#059669" : "var(--ink3)", fontWeight: active ? 600 : 400 }}>{label}</div>
+          <div key={`s${i}`} className="wiz-step">
+            <div className={`wiz-step-circle ${circleClass}`}>{done ? "✓" : n}</div>
+            <div className={`wiz-step-label ${labelClass}`}>{label}</div>
           </div>,
         ];
         if (i < labels.length - 1) items.push(
-          <div key={`l${i}`} style={{ flex: 1, height: 2, background: done ? "#059669" : "var(--line2)", margin: "0 6px", marginBottom: 18 }} />
+          <div key={`l${i}`} className={`wiz-connector${done ? " done" : ""}`} />
         );
         return items;
       })}
@@ -710,15 +696,34 @@ function SchoolsPage({ call, showToast, openDetail, addActivity, subPage, onSubP
     });
   }
 
-  const visible = rows.filter((r) =>
-    [r.name, r.slug, r.ownership_type, r.status].join(" ").toLowerCase().includes(q.toLowerCase())
-  );
+  const [statusFilter, setStatusFilter] = useState("");
+
+  const visible = rows.filter((r) => {
+    const q2 = q.toLowerCase();
+    const matchQ = !q2 || [r.name, r.slug, r.type, r.ownership_type, r.address, r.status].join(" ").toLowerCase().includes(q2);
+    const matchS = !statusFilter || (r.status || "").toUpperCase() === statusFilter;
+    return matchQ && matchS;
+  });
+
   const statCounts = {
-    all:      rows.length,
-    active:   rows.filter((r) => (r.status || "").toUpperCase() === "ACTIVE").length,
-    pending:  rows.filter((r) => (r.status || "").toUpperCase() === "PENDING").length,
-    inactive: rows.filter((r) => ["INACTIVE", "DEACTIVATED", "SUSPENDED"].includes((r.status || "").toUpperCase())).length,
+    all:        rows.length,
+    active:     rows.filter((r) => ["ACTIVE", "LIVE"].includes((r.status || "").toUpperCase())).length,
+    configuring:rows.filter((r) => ["CONFIGURING", "PENDING"].includes((r.status || "").toUpperCase())).length,
+    suspended:  rows.filter((r) => (r.status || "").toUpperCase() === "SUSPENDED").length,
   };
+
+  function schoolBadge(status) {
+    const s = (status || "").toUpperCase();
+    if (s === "ACTIVE" || s === "LIVE") return "badge badge-active";
+    if (s === "CONFIGURING") return "badge badge-draft";
+    if (s === "PENDING") return "badge badge-pending";
+    if (s === "SUSPENDED") return "badge badge-suspended";
+    return "badge badge-inactive";
+  }
+
+  function schoolInitials(name) {
+    return (name || "?").split(/\s+/).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+  }
 
   const WLABELS = ["School Info", "Branch", "Admin", "Package & Submit"];
 
@@ -727,44 +732,48 @@ function SchoolsPage({ call, showToast, openDetail, addActivity, subPage, onSubP
     <div className="page active" id="page-schools-create">
       <div className="page-hd">
         <div className="page-hd-left">
-          <button className="btn btn-ghost btn-sm" onClick={() => { onSubPage("list"); load(); }}>← Schools</button>
+          <button className="btn btn-ghost btn-sm" style={{ marginBottom: 8 }} onClick={() => { onSubPage("list"); load(); }}>
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" width="13" height="13"><path d="M12 4l-6 6 6 6"/></svg>
+            Back to schools
+          </button>
           <h1>Onboard a <em>new school</em></h1>
-          <p>All steps are collected first — the school is created in one shot at the end</p>
+          <p>All steps collected first — school is created in one request at submission</p>
         </div>
         <div className="page-hd-right">
-          <button className="btn btn-secondary btn-sm" style={{ display: "flex", alignItems: "center", gap: 6 }} onClick={fillTestData}>
-            🇳🇬 Prefill test data
+          <button className="btn btn-secondary btn-sm" onClick={fillTestData}>
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" width="13" height="13"><path d="M10 3v3M10 14v3M3 10h3M14 10h3"/><circle cx="10" cy="10" r="3"/></svg>
+            Prefill test data
           </button>
         </div>
       </div>
 
-      <WizStepBar step={wizStep} total={4} labels={WLABELS} />
+      <WizStepBar step={wizStep} labels={WLABELS} />
 
       {/* ── Step 1: School info ── */}
       {wizStep === 1 && (
         <div className="card" style={{ maxWidth: 700 }}>
-          <div className="card-head"><h3>School information</h3><span style={{ fontSize: 11, color: "var(--ink3)" }}>Step 1 of 4 — no API call yet</span></div>
+          <div className="card-head"><h3>School information</h3><span>Step 1 of 4 &nbsp;·&nbsp; No API call yet</span></div>
           <div className="card-body">
             {notice && <Notice {...notice} onClear={() => setNotice(null)} />}
-            <div className="form-row">
-              <label>School name <span className="required">*</span></label>
-              <input type="text" placeholder="e.g. Greenfield Academy Ikeja" value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value, slug: f.slug || slugify(e.target.value) }))} />
-            </div>
-            <div className="form-row-2">
-              <div className="form-row">
-                <label>School address</label>
-                <input type="text" placeholder="Full street address" value={form.address} onChange={setF("address")} />
+            <div className="form-grid">
+              <div className="form-group full">
+                <label className="form-label">School name <span className="req">*</span></label>
+                <input className="form-input" type="text" placeholder="e.g. Greenfield Academy Ikeja" value={form.name}
+                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value, slug: f.slug || slugify(e.target.value) }))} />
               </div>
-              <div className="form-row">
-                <label>Contact email</label>
-                <input type="email" placeholder="info@school.edu.ng" value={form.contact_email} onChange={setF("contact_email")} />
+              <div className="form-group">
+                <label className="form-label">Ownership type <span className="req">*</span></label>
+                <select className="form-select-s" value={form.ownership_type} onChange={setF("ownership_type")}>
+                  <option value="">Select…</option>
+                  <option value="PRIVATE">Private</option>
+                  <option value="PUBLIC">Public / Government</option>
+                  <option value="FAITH_BASED">Faith-based</option>
+                  <option value="NGO">NGO</option>
+                </select>
               </div>
-            </div>
-            <div className="form-row-2">
-              <div className="form-row">
-                <label>School type</label>
-                <select value={form.type} onChange={setF("type")}>
+              <div className="form-group">
+                <label className="form-label">Institution type</label>
+                <select className="form-select-s" value={form.type} onChange={setF("type")}>
                   <option value="SCHOOL">School</option>
                   <option value="COLLEGE">College</option>
                   <option value="POLYTECHNIC">Polytechnic</option>
@@ -773,56 +782,50 @@ function SchoolsPage({ call, showToast, openDetail, addActivity, subPage, onSubP
                   <option value="VOCATIONAL">Vocational</option>
                 </select>
               </div>
-              <div className="form-row">
-                <label>Ownership type <span className="required">*</span></label>
-                <select value={form.ownership_type} onChange={setF("ownership_type")}>
-                  <option value="">Select…</option>
-                  <option value="PRIVATE">Private</option>
-                  <option value="PUBLIC">Public / Government</option>
-                  <option value="FAITH_BASED">Faith-based</option>
-                  <option value="NGO">NGO</option>
-                </select>
-              </div>
-            </div>
-            <div className="form-row-2">
-              <div className="form-row">
-                <label>Term structure</label>
-                <select value={form.term_structure} onChange={setF("term_structure")}>
+              <div className="form-group">
+                <label className="form-label">Term structure</label>
+                <select className="form-select-s" value={form.term_structure} onChange={setF("term_structure")}>
                   <option value="">Select…</option>
                   <option value="THREE_TERMS">Three Terms (Jan–Dec)</option>
                   <option value="TWO_SEMESTERS">Two Semesters</option>
                 </select>
               </div>
-              <div className="form-row">
-                <label>Currency</label>
-                <select value={form.currency} onChange={setF("currency")}>
+              <div className="form-group">
+                <label className="form-label">Currency</label>
+                <select className="form-select-s" value={form.currency} onChange={setF("currency")}>
                   <option value="NGN">NGN — Nigerian Naira</option>
                   <option value="GHS">GHS — Ghanaian Cedi</option>
                   <option value="KES">KES — Kenyan Shilling</option>
                   <option value="USD">USD — US Dollar</option>
                 </select>
               </div>
-            </div>
-            <div className="form-row-2">
-              <div className="form-row">
-                <label>Website</label>
-                <input type="url" placeholder="https://school.edu.ng" value={form.website} onChange={setF("website")} />
+              <div className="form-group">
+                <label className="form-label">Contact email</label>
+                <input className="form-input" type="email" placeholder="info@school.edu.ng" value={form.contact_email} onChange={setF("contact_email")} />
               </div>
-              <div className="form-row">
-                <label>Registration ID</label>
-                <input type="text" placeholder="e.g. CAC/IT/2019/0042" value={form.registration_id} onChange={setF("registration_id")} />
+              <div className="form-group">
+                <label className="form-label">Website</label>
+                <input className="form-input" type="url" placeholder="https://school.edu.ng" value={form.website} onChange={setF("website")} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">RC / Registration ID</label>
+                <input className="form-input" type="text" placeholder="e.g. CAC/IT/2019/0042" value={form.registration_id} onChange={setF("registration_id")} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">School motto</label>
+                <input className="form-input" type="text" placeholder="e.g. Excellence Through Knowledge" value={form.motto} onChange={setF("motto")} />
+              </div>
+              <div className="form-group full">
+                <label className="form-label">Address</label>
+                <input className="form-input" type="text" placeholder="Full street address" value={form.address} onChange={setF("address")} />
+              </div>
+              <div className="form-group full">
+                <label className="form-label">URL slug <span className="req">*</span></label>
+                <input className="form-input" type="text" placeholder="greenfield-academy-ikeja" value={form.slug} onChange={setF("slug")} style={{ fontFamily: "var(--fm)" }} />
+                <div className="form-hint-s">Auto-generated from name. Must be globally unique on the platform.</div>
               </div>
             </div>
-            <div className="form-row">
-              <label>School motto</label>
-              <input type="text" placeholder="e.g. Excellence Through Knowledge" value={form.motto} onChange={setF("motto")} />
-            </div>
-            <div className="form-row">
-              <label>URL slug <span className="required">*</span></label>
-              <input type="text" placeholder="greenfield-academy-ikeja" value={form.slug} onChange={setF("slug")} style={{ fontFamily: "var(--fm)" }} />
-              <div className="form-hint">Auto-generated from name. Must be globally unique on the platform.</div>
-            </div>
-            <div style={{ display: "flex", gap: 10, paddingTop: 8 }}>
+            <div className="step-actions">
               <button className="btn btn-primary" onClick={step1Next}>Continue →</button>
               <button className="btn btn-ghost" onClick={() => onSubPage("list")}>Cancel</button>
             </div>
@@ -835,18 +838,18 @@ function SchoolsPage({ call, showToast, openDetail, addActivity, subPage, onSubP
         <div className="card" style={{ maxWidth: 700 }}>
           <div className="card-head">
             <h3>First branch</h3>
-            <span style={{ fontSize: 11, color: "var(--ink3)" }}>Step 2 of 4 — required, a school must have at least one branch</span>
+            <span>Step 2 of 4 &nbsp;·&nbsp; Every school needs at least one branch</span>
           </div>
           <div className="card-body">
             {notice && <Notice {...notice} onClear={() => setNotice(null)} />}
-            <div className="form-row-2">
-              <div className="form-row">
-                <label>Branch name <span className="required">*</span></label>
-                <input type="text" placeholder="e.g. Main Campus" value={bf.name} onChange={(e) => setBf((f) => ({ ...f, name: e.target.value }))} />
+            <div className="form-grid">
+              <div className="form-group">
+                <label className="form-label">Branch name <span className="req">*</span></label>
+                <input className="form-input" type="text" placeholder="e.g. Main Campus" value={bf.name} onChange={(e) => setBf((f) => ({ ...f, name: e.target.value }))} />
               </div>
-              <div className="form-row">
-                <label>Branch type <span className="required">*</span></label>
-                <select value={bf.branch_type} onChange={(e) => setBf((f) => ({ ...f, branch_type: e.target.value }))}>
+              <div className="form-group">
+                <label className="form-label">Branch type <span className="req">*</span></label>
+                <select className="form-select-s" value={bf.branch_type} onChange={(e) => setBf((f) => ({ ...f, branch_type: e.target.value }))}>
                   <option value="Primary">Primary</option>
                   <option value="Secondary">Secondary</option>
                   <option value="Main">Main</option>
@@ -856,53 +859,68 @@ function SchoolsPage({ call, showToast, openDetail, addActivity, subPage, onSubP
                   <option value="Combined">Combined (Nursery–Secondary)</option>
                 </select>
               </div>
-            </div>
-            <div className="form-row-2">
-              <div className="form-row">
-                <label>Branch address</label>
-                <input type="text" placeholder="Full street address" value={bf.address} onChange={(e) => setBf((f) => ({ ...f, address: e.target.value }))} />
+              <div className="form-group">
+                <label className="form-label">State / Province</label>
+                <input className="form-input" type="text" placeholder="e.g. Lagos" value={bf.state} onChange={(e) => setBf((f) => ({ ...f, state: e.target.value }))} />
               </div>
-              <div className="form-row">
-                <label>Branch email</label>
-                <input type="email" placeholder="branch@school.edu.ng" value={bf.contact_email} onChange={(e) => setBf((f) => ({ ...f, contact_email: e.target.value }))} />
-              </div>
-            </div>
-            <div className="form-row-2">
-              <div className="form-row">
-                <label>State / Province</label>
-                <input type="text" placeholder="e.g. Lagos" value={bf.state} onChange={(e) => setBf((f) => ({ ...f, state: e.target.value }))} />
-              </div>
-              <div className="form-row">
-                <label>Country</label>
-                <select value={bf.country} onChange={(e) => setBf((f) => ({ ...f, country: e.target.value }))}>
+              <div className="form-group">
+                <label className="form-label">Country</label>
+                <select className="form-select-s" value={bf.country} onChange={(e) => setBf((f) => ({ ...f, country: e.target.value }))}>
                   <option value="NG">Nigeria 🇳🇬</option>
                   <option value="GH">Ghana 🇬🇭</option>
                   <option value="KE">Kenya 🇰🇪</option>
                   <option value="ZA">South Africa 🇿🇦</option>
                 </select>
               </div>
-            </div>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0", borderBottom: "1px solid var(--line)", marginBottom: 14 }}>
-              <div>
-                <div style={{ fontWeight: 600, fontSize: 13 }}>Set as main branch</div>
-                <div style={{ fontSize: 12, color: "var(--ink3)" }}>Every school must have exactly one main branch</div>
+              <div className="form-group">
+                <label className="form-label">Branch email</label>
+                <input className="form-input" type="email" placeholder="branch@school.edu.ng" value={bf.contact_email} onChange={(e) => setBf((f) => ({ ...f, contact_email: e.target.value }))} />
               </div>
-              <div onClick={() => setBf((f) => ({ ...f, is_main_branch: !f.is_main_branch }))}
-                style={{ width: 44, height: 24, borderRadius: 12, background: bf.is_main_branch ? "var(--v)" : "var(--line2)", cursor: "pointer", position: "relative", transition: "background .2s", flexShrink: 0 }}>
-                <div style={{ width: 18, height: 18, borderRadius: "50%", background: "#fff", position: "absolute", top: 3, left: bf.is_main_branch ? 23 : 3, transition: "left .2s", boxShadow: "0 1px 3px rgba(0,0,0,.2)" }} />
+              <div className="form-group">
+                <label className="form-label">Branch address</label>
+                <input className="form-input" type="text" placeholder="Street address" value={bf.address} onChange={(e) => setBf((f) => ({ ...f, address: e.target.value }))} />
               </div>
             </div>
-            <div className="section-div"><span>Branch admin (optional)</span></div>
-            <div className="form-row-2">
-              <div className="form-row"><label>First name</label><input type="text" placeholder="e.g. Emeka" value={bf.admin_first_name} onChange={(e) => setBf((f) => ({ ...f, admin_first_name: e.target.value }))} /></div>
-              <div className="form-row"><label>Last name</label><input type="text" placeholder="e.g. Nwosu" value={bf.admin_last_name} onChange={(e) => setBf((f) => ({ ...f, admin_last_name: e.target.value }))} /></div>
+
+            <div style={{ margin: "16px 0 4px" }}>
+              <div className="toggle-row">
+                <div className="toggle-info">
+                  <p>Set as main branch</p>
+                  <span>Every school must have exactly one main branch</span>
+                </div>
+                <div className={`toggle${bf.is_main_branch ? " on" : ""}`} onClick={() => setBf((f) => ({ ...f, is_main_branch: !f.is_main_branch }))}>
+                  <div className="toggle-dot" />
+                </div>
+              </div>
             </div>
-            <div className="form-row-2">
-              <div className="form-row"><label>Email</label><input type="email" placeholder="branch.admin@school.edu.ng" value={bf.admin_email} onChange={(e) => setBf((f) => ({ ...f, admin_email: e.target.value }))} /></div>
-              <div className="form-row"><label>Phone</label><input type="tel" placeholder="+234 801 234 5678" value={bf.admin_phone} onChange={(e) => setBf((f) => ({ ...f, admin_phone: e.target.value }))} /></div>
+
+            <div style={{ paddingTop: 14, borderTop: "1px solid var(--line)", marginTop: 4 }}>
+              <div style={{ fontSize: 11, fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.5px", color: "var(--ink3)", marginBottom: 12 }}>Branch admin (optional)</div>
+              <div className="form-grid">
+                <div className="form-group">
+                  <label className="form-label">First name</label>
+                  <input className="form-input" type="text" placeholder="e.g. Emeka" value={bf.admin_first_name} onChange={(e) => setBf((f) => ({ ...f, admin_first_name: e.target.value }))} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Last name</label>
+                  <input className="form-input" type="text" placeholder="e.g. Nwosu" value={bf.admin_last_name} onChange={(e) => setBf((f) => ({ ...f, admin_last_name: e.target.value }))} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Email</label>
+                  <input className="form-input" type="email" placeholder="branch.admin@school.edu.ng" value={bf.admin_email} onChange={(e) => setBf((f) => ({ ...f, admin_email: e.target.value }))} />
+                </div>
+                <div className="form-group">
+                  <label className="form-label">Phone</label>
+                  <input className="form-input" type="tel" placeholder="+234 801 234 5678" value={bf.admin_phone} onChange={(e) => setBf((f) => ({ ...f, admin_phone: e.target.value }))} />
+                </div>
+                <div className="form-group full">
+                  <label className="form-label">Role title</label>
+                  <input className="form-input" type="text" placeholder="e.g. Head Teacher" value={bf.admin_role} onChange={(e) => setBf((f) => ({ ...f, admin_role: e.target.value }))} />
+                </div>
+              </div>
             </div>
-            <div className="form-row"><label>Role title</label><input type="text" placeholder="e.g. Head Teacher" value={bf.admin_role} onChange={(e) => setBf((f) => ({ ...f, admin_role: e.target.value }))} /></div>
-            <div style={{ display: "flex", gap: 10, paddingTop: 8 }}>
+
+            <div className="step-actions">
               <button className="btn btn-ghost btn-sm" onClick={() => setWizStep(1)}>← Back</button>
               <button className="btn btn-primary" onClick={step2Next}>Continue →</button>
             </div>
@@ -913,22 +931,35 @@ function SchoolsPage({ call, showToast, openDetail, addActivity, subPage, onSubP
       {/* ── Step 3: School admin ── */}
       {wizStep === 3 && (
         <div className="card" style={{ maxWidth: 700 }}>
-          <div className="card-head"><h3>School administrator</h3><span style={{ fontSize: 11, color: "var(--ink3)" }}>Step 3 of 4 — optional but recommended</span></div>
+          <div className="card-head"><h3>School administrator</h3><span>Step 3 of 4 &nbsp;·&nbsp; Optional — can be added later</span></div>
           <div className="card-body">
             {notice && <Notice {...notice} onClear={() => setNotice(null)} />}
-            <p style={{ fontSize: 12, color: "var(--ink3)", marginBottom: 16, lineHeight: 1.6 }}>
-              The school admin will receive an invitation to manage the institution. Leave blank to skip — you can add one later.
+            <p style={{ fontSize: 12, color: "var(--ink3)", marginBottom: 16, lineHeight: 1.65 }}>
+              The school admin will receive an activation invite to manage the institution. Leave blank to skip — you can assign one later from the Users page.
             </p>
-            <div className="form-row-2">
-              <div className="form-row"><label>First name</label><input type="text" placeholder="e.g. Adaeze" value={af.first_name} onChange={(e) => setAf((f) => ({ ...f, first_name: e.target.value }))} /></div>
-              <div className="form-row"><label>Last name</label><input type="text" placeholder="e.g. Okonkwo" value={af.last_name} onChange={(e) => setAf((f) => ({ ...f, last_name: e.target.value }))} /></div>
+            <div className="form-grid">
+              <div className="form-group">
+                <label className="form-label">First name</label>
+                <input className="form-input" type="text" placeholder="e.g. Adaeze" value={af.first_name} onChange={(e) => setAf((f) => ({ ...f, first_name: e.target.value }))} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Last name</label>
+                <input className="form-input" type="text" placeholder="e.g. Okonkwo" value={af.last_name} onChange={(e) => setAf((f) => ({ ...f, last_name: e.target.value }))} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Email address</label>
+                <input className="form-input" type="email" placeholder="admin@school.edu.ng" value={af.email} onChange={(e) => setAf((f) => ({ ...f, email: e.target.value }))} />
+              </div>
+              <div className="form-group">
+                <label className="form-label">Phone number</label>
+                <input className="form-input" type="tel" placeholder="+234 803 456 7890" value={af.phone_number} onChange={(e) => setAf((f) => ({ ...f, phone_number: e.target.value }))} />
+              </div>
+              <div className="form-group full">
+                <label className="form-label">Role title</label>
+                <input className="form-input" type="text" placeholder="e.g. Principal" value={af.admin_role} onChange={(e) => setAf((f) => ({ ...f, admin_role: e.target.value }))} />
+              </div>
             </div>
-            <div className="form-row-2">
-              <div className="form-row"><label>Email address</label><input type="email" placeholder="admin@school.edu.ng" value={af.email} onChange={(e) => setAf((f) => ({ ...f, email: e.target.value }))} /></div>
-              <div className="form-row"><label>Phone number</label><input type="tel" placeholder="+234 803 456 7890" value={af.phone_number} onChange={(e) => setAf((f) => ({ ...f, phone_number: e.target.value }))} /></div>
-            </div>
-            <div className="form-row"><label>Role title</label><input type="text" placeholder="e.g. Principal" value={af.admin_role} onChange={(e) => setAf((f) => ({ ...f, admin_role: e.target.value }))} /></div>
-            <div style={{ display: "flex", gap: 10, paddingTop: 8 }}>
+            <div className="step-actions">
               <button className="btn btn-ghost btn-sm" onClick={() => setWizStep(2)}>← Back</button>
               <button className="btn btn-primary" onClick={step3Next}>Continue →</button>
               <button className="btn btn-ghost" onClick={() => { setAf(INIT_AF); setWizStep(4); }}>Skip admin</button>
@@ -940,83 +971,91 @@ function SchoolsPage({ call, showToast, openDetail, addActivity, subPage, onSubP
       {/* ── Step 4: Package + final submit ── */}
       {wizStep === 4 && (
         <div className="card" style={{ maxWidth: 700 }}>
-          <div className="card-head"><h3>Package setup</h3><span style={{ fontSize: 11, color: "var(--ink3)" }}>Step 4 of 4 — this is where the school is created</span></div>
+          <div className="card-head"><h3>Package &amp; submit</h3><span>Step 4 of 4 &nbsp;·&nbsp; School is created here</span></div>
           <div className="card-body">
             {notice && <Notice {...notice} onClear={() => setNotice(null)} />}
 
-            {/* Review summary */}
-            <div style={{ background: "var(--page)", border: "1px solid var(--line)", borderRadius: "var(--r12)", padding: "14px 16px", marginBottom: 20 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: ".06em", textTransform: "uppercase", color: "var(--ink3)", marginBottom: 10 }}>Review before submitting</div>
-              {[
-                ["School",    `${form.name} (${form.ownership_type || "—"})`],
-                ["Slug",      form.slug || slugify(form.name)],
-                ["Branch",    `${bf.name} · ${bf.branch_type}${bf.is_main_branch ? " · main" : ""}`],
-                ["Admin",     af.email ? `${[af.first_name, af.last_name].filter(Boolean).join(" ")} <${af.email}>` : "None"],
-              ].map(([k, v]) => (
-                <div key={k} style={{ display: "flex", gap: 12, marginBottom: 5, fontSize: 12 }}>
-                  <span style={{ color: "var(--ink3)", width: 60, flexShrink: 0 }}>{k}</span>
-                  <span style={{ color: "var(--ink)", fontFamily: k === "Slug" ? "var(--fm)" : undefined }}>{v}</span>
+            <div className="review-box">
+              <div className="review-lbl">Review before submitting</div>
+              <div className="review-row"><span className="review-key">School</span><span className="review-val normal">{form.name} ({form.ownership_type || "—"})</span></div>
+              <div className="review-row"><span className="review-key">Slug</span><span className="review-val">{form.slug || slugify(form.name)}</span></div>
+              <div className="review-row"><span className="review-key">Branch</span><span className="review-val normal">{bf.name} · {bf.branch_type}{bf.is_main_branch ? " · main" : ""}</span></div>
+              <div className="review-row"><span className="review-key">Admin</span><span className="review-val normal">{af.email ? `${[af.first_name, af.last_name].filter(Boolean).join(" ")} <${af.email}>` : "None"}</span></div>
+            </div>
+
+            {/* Package cards */}
+            <div className="form-group" style={{ marginBottom: 14 }}>
+              <label className="form-label">Package plan <span className="req">*</span></label>
+              {packages.length > 0 ? (
+                <div className="pkg-grid">
+                  {packages.map((p) => (
+                    <div key={p.code || p.id} className={`pkg-card${pf.package_plan === p.code ? " on" : ""}`}
+                      onClick={() => setPf((f) => ({ ...f, package_plan: p.code }))}>
+                      <div className="pkg-name">{p.name}</div>
+                      <div className="pkg-price">{p.billing_cycle || p.code}</div>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              ) : (
+                <input className="form-input" type="text" placeholder="Loading plans… or enter plan code manually" value={pf.package_plan}
+                  onChange={(e) => setPf((f) => ({ ...f, package_plan: e.target.value }))} style={{ fontFamily: "var(--fm)" }} />
+              )}
             </div>
 
-            <div className="form-row-2">
-              <div className="form-row">
-                <label>Package plan <span className="required">*</span></label>
-                {packages.length > 0 ? (
-                  <select value={pf.package_plan} onChange={(e) => setPf((f) => ({ ...f, package_plan: e.target.value }))}>
-                    <option value="">Select a plan…</option>
-                    {packages.map((p) => (
-                      <option key={p.code || p.id} value={p.code}>{p.name}{p.billing_cycle ? ` (${p.billing_cycle})` : ""}</option>
-                    ))}
-                  </select>
-                ) : (
-                  <input type="text" placeholder="Loading plans… or enter plan code manually" value={pf.package_plan}
-                    onChange={(e) => setPf((f) => ({ ...f, package_plan: e.target.value }))} style={{ fontFamily: "var(--fm)" }} />
-                )}
+            <div className="form-grid-3" style={{ marginBottom: 14 }}>
+              <div className="form-group">
+                <label className="form-label">Student capacity <span className="req">*</span></label>
+                <input className="form-input" type="number" min="1" placeholder="e.g. 500" value={pf.student_capacity}
+                  onChange={(e) => setPf((f) => ({ ...f, student_capacity: e.target.value }))} style={{ fontFamily: "var(--fm)" }} />
               </div>
-              <div className="form-row">
-                <label>Subscription expires</label>
-                <input type="date" value={pf.subscription_expires} onChange={(e) => setPf((f) => ({ ...f, subscription_expires: e.target.value }))} />
+              <div className="form-group">
+                <label className="form-label">Teacher capacity <span className="req">*</span></label>
+                <input className="form-input" type="number" min="1" placeholder="e.g. 50" value={pf.teacher_capacity}
+                  onChange={(e) => setPf((f) => ({ ...f, teacher_capacity: e.target.value }))} style={{ fontFamily: "var(--fm)" }} />
               </div>
-            </div>
-            <div className="form-row-2">
-              <div className="form-row">
-                <label>Student capacity <span className="required">*</span></label>
-                <input type="number" min="1" placeholder="e.g. 500" value={pf.student_capacity} onChange={(e) => setPf((f) => ({ ...f, student_capacity: e.target.value }))} />
+              <div className="form-group">
+                <label className="form-label">Admin capacity <span className="req">*</span></label>
+                <input className="form-input" type="number" min="1" placeholder="e.g. 10" value={pf.admin_capacity}
+                  onChange={(e) => setPf((f) => ({ ...f, admin_capacity: e.target.value }))} style={{ fontFamily: "var(--fm)" }} />
               </div>
-              <div className="form-row">
-                <label>Teacher capacity <span className="required">*</span></label>
-                <input type="number" min="1" placeholder="e.g. 50" value={pf.teacher_capacity} onChange={(e) => setPf((f) => ({ ...f, teacher_capacity: e.target.value }))} />
-              </div>
-            </div>
-            <div className="form-row" style={{ maxWidth: 320 }}>
-              <label>Admin capacity <span className="required">*</span></label>
-              <input type="number" min="1" placeholder="e.g. 10" value={pf.admin_capacity} onChange={(e) => setPf((f) => ({ ...f, admin_capacity: e.target.value }))} />
             </div>
 
-            {modules.length > 0 && (
-              <div className="form-row">
-                <label>Enabled modules</label>
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 4 }}>
-                  {modules.map((m) => {
-                    const on = pf.enabled_modules.includes(m.key);
-                    return (
-                      <label key={m.key} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: "var(--r6)", border: `1.5px solid ${on ? "var(--v)" : "var(--line2)"}`, background: on ? "var(--v-l)" : "transparent", cursor: "pointer", fontSize: 12, fontWeight: on ? 600 : 400, color: on ? "var(--v-d)" : "var(--ink2)", transition: "all .12s" }}>
-                        <input type="checkbox" style={{ display: "none" }} checked={on}
-                          onChange={() => setPf((f) => ({ ...f, enabled_modules: on ? f.enabled_modules.filter((k) => k !== m.key) : [...f.enabled_modules, m.key] }))} />
-                        {m.name}
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+            <div className="form-group" style={{ maxWidth: 240, marginBottom: 16 }}>
+              <label className="form-label">Subscription expires</label>
+              <input className="form-input" type="date" value={pf.subscription_expires}
+                onChange={(e) => setPf((f) => ({ ...f, subscription_expires: e.target.value }))} style={{ fontFamily: "var(--fm)" }} />
+            </div>
 
-            <div style={{ display: "flex", gap: 10, paddingTop: 12 }}>
+            <div className="form-group">
+              <label className="form-label">Enabled modules</label>
+              <div className="module-chips">
+                {(modules.length > 0 ? modules : [
+                  { key: "Students", name: "Students" }, { key: "Staff", name: "Staff" },
+                  { key: "Finance", name: "Finance" }, { key: "Attendance", name: "Attendance" },
+                  { key: "Gradebook", name: "Gradebook" }, { key: "Reports", name: "Reports" },
+                  { key: "Portals", name: "Portals" }, { key: "Audit", name: "Audit" },
+                ]).map((m) => {
+                  const on = pf.enabled_modules.includes(m.key);
+                  return (
+                    <div key={m.key} className={`module-chip${on ? " on" : ""}`}
+                      onClick={() => setPf((f) => ({ ...f, enabled_modules: on ? f.enabled_modules.filter((k) => k !== m.key) : [...f.enabled_modules, m.key] }))}>
+                      {m.name}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="form-hint-s" style={{ marginTop: 6 }}>Toggle modules to include in this institution's subscription</div>
+            </div>
+
+            <div className="step-actions">
               <button className="btn btn-ghost btn-sm" onClick={() => setWizStep(3)}>← Back</button>
               <button className="btn btn-primary" onClick={step4Submit} disabled={saving} style={{ minWidth: 160 }}>
-                {saving ? <><span className="spin" /><span> Creating school…</span></> : "🏫 Create school"}
+                {saving ? <><span className="spin" /><span> Creating school…</span></> : (
+                  <>
+                    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" width="14" height="14"><rect x="3" y="8" width="14" height="9" rx="1.5"/><path d="M7 8V6a3 3 0 0 1 6 0v2"/></svg>
+                    Create school
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -1026,74 +1065,173 @@ function SchoolsPage({ call, showToast, openDetail, addActivity, subPage, onSubP
   );
 
   // ── RESULT ────────────────────────────────────────────────────────────────────
-  if (subPage === "result") return (
-    <div className="page active" id="page-schools">
-      <div className="page-hd">
-        <div className="page-hd-left"><h1>School <em>onboarded</em></h1><p>The new school is now live on the platform</p></div>
-        <div className="page-hd-right">
-          <button className="btn btn-ghost" onClick={() => { onSubPage("list"); load(); }}>← All schools</button>
-          <button className="btn btn-primary" onClick={() => onSubPage("create")}>+ Create another</button>
+  if (subPage === "result") {
+    const sr = schoolResult || {};
+    const initials = schoolInitials(sr.name || form.name);
+    const statusText = (sr.status || "CONFIGURING").toUpperCase();
+    return (
+      <div className="page active" id="page-schools-result">
+        <div className="page-hd">
+          <div className="page-hd-left"><h1>School <em>onboarded</em></h1><p>The new institution is now provisioned on the XVS platform</p></div>
+          <div className="page-hd-right">
+            <button className="btn btn-ghost" onClick={() => { onSubPage("list"); load(); }}>← All schools</button>
+            <button className="btn btn-primary" onClick={() => onSubPage("create")}>+ Create another</button>
+          </div>
+        </div>
+        <div style={{ maxWidth: 600 }}>
+          <div className="result-card-s">
+            <div className="result-hero">
+              <div className="result-av">{initials}</div>
+              <div className="result-info-s">
+                <div className="result-name-s">{sr.name || form.name}</div>
+                <div className="result-slug-s">{sr.slug || form.slug}</div>
+                <div style={{ marginTop: 9 }}>
+                  <span className={schoolBadge(statusText)}>{statusText}</span>
+                </div>
+              </div>
+            </div>
+            <div className="result-body-s">
+              {[
+                ["Ownership", sr.ownership_type || form.ownership_type || "—"],
+                ["Type", sr.type || form.type || "—"],
+                ["Address", sr.address || form.address || "—"],
+                ["Currency", sr.currency || form.currency || "NGN"],
+                ["Branch", bf.name ? `${bf.name} (${bf.branch_type})` : "—"],
+                ["Admin", af.email ? `${[af.first_name, af.last_name].filter(Boolean).join(" ")} · ${af.email}` : "None"],
+                ["Package", pf.package_plan || "—"],
+                ["Students", pf.student_capacity || "—"],
+              ].map(([k, v]) => (
+                <div key={k} className="result-row-s">
+                  <span className="result-k">{k}</span>
+                  <span className="result-v">{v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <button className="btn btn-secondary" onClick={() => { onSubPage("list"); load(); }}>
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" width="13" height="13"><path d="M12 4l-6 6 6 6"/></svg>
+              View all schools
+            </button>
+            <button className="btn btn-ghost" onClick={() => onSubPage("create")}>+ Onboard another</button>
+          </div>
         </div>
       </div>
-      {schoolResult && <ResultCard data={schoolResult} type="school" />}
-    </div>
-  );
+    );
+  }
 
   // ── LIST ──────────────────────────────────────────────────────────────────────
   return (
     <div className="page active" id="page-schools">
       <div className="page-hd">
-        <div className="page-hd-left"><h1>School <em>Onboarding</em></h1><p>All tenants on the Vision platform</p></div>
+        <div className="page-hd-left">
+          <h1>School <em>Onboarding</em></h1>
+          <p>All tenant institutions provisioned on the XVS platform</p>
+        </div>
         <div className="page-hd-right">
-          <button className="btn btn-secondary btn-sm" onClick={load}>↻ Reload</button>
-          <button className="btn btn-primary" onClick={() => onSubPage("create")}>+ Add New School</button>
+          <button className="btn btn-secondary btn-sm" onClick={load}>
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" width="13" height="13"><path d="M4 10a6 6 0 1 0 1.4-3.8L3 4v4h4L4.7 6.4"/></svg>
+            Reload
+          </button>
+          <button className="btn btn-primary" onClick={() => onSubPage("create")}>
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" width="13" height="13"><path d="M10 4v12M4 10h12"/></svg>
+            Add New School
+          </button>
         </div>
       </div>
-      <div className="stats-row" style={{ marginBottom: 20 }}>
-        {[
-          { label: "All Schools",      val: statCounts.all      },
-          { label: "Active Schools",   val: statCounts.active   },
-          { label: "Pending Schools",  val: statCounts.pending  },
-          { label: "Inactive Schools", val: statCounts.inactive },
-        ].map((s) => (
-          <div className="stat-card" key={s.label}>
-            <div className="stat-label">{s.label}</div>
-            <div className="stat-val">{loading ? "…" : s.val}</div>
+
+      {/* Stat cards */}
+      <div className="stat-row">
+        <div className="stat-card">
+          <div className="stat-lbl">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="8" width="14" height="9" rx="1.5"/><path d="M7 8V6a3 3 0 0 1 6 0v2"/></svg>
+            All schools
           </div>
-        ))}
+          <div className="stat-value">{loading ? "…" : statCounts.all}</div>
+          <div className="stat-sub">total tenants</div>
+          <div className="stat-pill sp-neutral">Platform-wide</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-lbl">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="10" cy="10" r="7"/><path d="M10 7v3l2 1.5"/></svg>
+            Active
+          </div>
+          <div className="stat-value">{loading ? "…" : statCounts.active}</div>
+          <div className="stat-sub">live institutions</div>
+          <div className="stat-pill sp-green">
+            <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#27500A"/></svg>
+            Operational
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-lbl">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="10" cy="10" r="7"/><path d="M7 10h6M10 7v6"/></svg>
+            Configuring
+          </div>
+          <div className="stat-value">{loading ? "…" : statCounts.configuring}</div>
+          <div className="stat-sub">in onboarding</div>
+          <div className="stat-pill sp-amber">In progress</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-lbl">
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="10" cy="10" r="7"/><path d="M8 8l4 4M12 8l-4 4"/></svg>
+            Suspended
+          </div>
+          <div className="stat-value">{loading ? "…" : statCounts.suspended}</div>
+          <div className="stat-sub">access blocked</div>
+          <div className="stat-pill sp-neutral">None</div>
+        </div>
       </div>
-      <div className="card">
-        <div className="card-head">
-          <h3>All schools</h3>
-          <div style={{ display: "flex", gap: 8 }}>
-            <div className="search-bar" style={{ width: 220 }}>
-              <input placeholder="Search…" value={q} onChange={(e) => setQ(e.target.value)} />
+
+      {/* Table panel */}
+      <div className="panel-s">
+        <div className="panel-head">
+          <div className="panel-head-l">
+            <div className="panel-title">All schools</div>
+            <div className="panel-sub-s">Click a row to view full school details</div>
+          </div>
+          <div className="panel-head-r">
+            <div className="search-wrap">
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="9" cy="9" r="5"/><path d="M15 15l-3-3"/></svg>
+              <input className="search-input" placeholder="Search schools…" value={q} onChange={(e) => setQ(e.target.value)} />
             </div>
+            <select className="status-filter-sel" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+              <option value="">All statuses</option>
+              <option value="ACTIVE">Active</option>
+              <option value="CONFIGURING">Configuring</option>
+              <option value="PENDING">Pending</option>
+              <option value="SUSPENDED">Suspended</option>
+            </select>
             <button className="btn btn-ghost btn-sm" onClick={load}>↻</button>
           </div>
         </div>
-        <div className="card-body" style={{ padding: 0 }}>
-          <div className="tbl-wrap">
-            <table className="tbl">
-              <thead><tr><th>S/N</th><th>School Name</th><th>Address</th><th>Ownership</th><th>Status</th><th>Created</th></tr></thead>
-              <tbody>
-                {loading ? (
-                  <tr><td colSpan={6} className="tbl-empty"><p>Loading…</p></td></tr>
-                ) : visible.length === 0 ? (
-                  <tr><td colSpan={6} className="tbl-empty"><p>No schools yet</p><span>Click "Add New School" to onboard your first tenant</span></td></tr>
-                ) : visible.map((sch, i) => (
-                  <tr key={sch.id || sch.slug} onClick={() => openSchDetail(sch)}>
-                    <td style={{ color: "var(--ink3)", fontSize: 12 }}>{i + 1}</td>
-                    <td><strong>{sch.name || "—"}</strong><div style={{ fontSize: 11, color: "var(--ink3)", fontFamily: "var(--fm)" }}>{sch.slug}</div></td>
-                    <td style={{ fontSize: 12 }}>{sch.address || "—"}</td>
-                    <td style={{ fontSize: 12 }}>{sch.ownership_type || "—"}</td>
-                    <td><span className={`pill ${statusPill(sch.status)}`}>{sch.status || "—"}</span></td>
-                    <td style={{ fontSize: 11, color: "var(--ink3)" }}>{fmtDate(sch.created_at)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        <div className="tbl-wrap">
+          <table className="tbl">
+            <thead>
+              <tr><th>S/N</th><th>School Name</th><th>Type</th><th>Ownership</th><th>Location</th><th>Status</th><th>Package</th><th>Created</th></tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={8} className="tbl-empty"><p>Loading…</p></td></tr>
+              ) : visible.length === 0 ? (
+                <tr><td colSpan={8} className="tbl-empty"><p>No schools found</p><span>Add a new school or adjust your filters</span></td></tr>
+              ) : visible.map((sch, i) => (
+                <tr key={sch.id || sch.slug} onClick={() => openSchDetail(sch)}>
+                  <td style={{ color: "var(--ink3)", fontSize: 11 }}>{i + 1}</td>
+                  <td>
+                    <div style={{ fontWeight: 500 }}>{sch.name || "—"}</div>
+                    <div style={{ fontSize: 10, color: "var(--ink3)", fontFamily: "var(--fm)" }}>{sch.slug}</div>
+                  </td>
+                  <td style={{ fontSize: 11, color: "var(--ink3)" }}>{sch.type || sch.institution_type || "—"}</td>
+                  <td style={{ fontSize: 11 }}>{sch.ownership_type || "—"}</td>
+                  <td style={{ fontSize: 11, color: "var(--ink3)" }}>{sch.address || "—"}</td>
+                  <td><span className={schoolBadge(sch.status)}>{sch.status || "—"}</span></td>
+                  <td style={{ fontSize: 11, fontFamily: "var(--fm)", color: "var(--ink3)" }}>{sch.package_plan || sch.package || "—"}</td>
+                  <td style={{ fontSize: 11, color: "var(--ink3)" }}>{fmtDate(sch.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
@@ -1684,7 +1822,7 @@ function BranchesPage({ call, showToast, openDetail, addActivity, subPage, onSub
         ...(form.admin_branch_role && { branch_role: form.admin_branch_role }),
       },
     };
-    const r = await call("POST", EP.BRANCH_CREATE(schoolSlug), payload);
+    const r = await call("POST", EP.BRANCHES_CREATE(schoolSlug), payload);
     setSaving(false);
     if (r.ok) {
       setResultData(r.data);
@@ -1947,12 +2085,12 @@ function UsersPage({ call, showToast, openDetail, addActivity, subPage, onSubPag
 
   const loadInvites = useCallback(async () => {
     setInvLoading(true);
-    const r = await call("GET", EP.INVITATIONS);
+    const r = await call("GET", `${EP.USERS}?status=PENDING`);
     setInvLoading(false);
     if (r.ok) setInvites(r.data?.results || r.data || []);
     else {
-      // fallback: filter pending users
-      const ur = await call("GET", `${EP.USERS}?status=PENDING`);
+      // fallback: broader users list
+      const ur = await call("GET", EP.USERS);
       if (ur.ok) setInvites(ur.data?.results || ur.data || []);
     }
   }, [call]);
@@ -2186,7 +2324,7 @@ function UsersPage({ call, showToast, openDetail, addActivity, subPage, onSubPag
                           </span>
                         </td>
                         <td>
-                          <button className="btn btn-ghost btn-sm" onClick={() => { call("POST", EP.INVITATION_RESEND(inv.id), {}).then((r) => { showToast(r.ok ? "Invitation resent" : "Could not resend", r.ok ? "ok" : "err"); }); }}>
+                          <button className="btn btn-ghost btn-sm" onClick={() => { call("POST", EP.USER_INVITE_RESEND(inv.id), {}).then((r) => { showToast(r.ok ? "Invitation resent" : "Could not resend", r.ok ? "ok" : "err"); }); }}>
                             Resend
                           </button>
                         </td>
@@ -3389,6 +3527,7 @@ export default function Dashboard() {
   const [page, setPage] = useState("home");
   const [subPages, setSubPages] = useState({ schools: "list", branches: "list", users: "list", rbac: "list", platform: "list", sessions: "sessions" });
   const [navCollapsed, setNavCollapsed] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
   const [profile, setProfile] = useState(null);
   const [detail, setDetail] = useState({ open: false, title: "", content: null });
   const [lastCall, setLastCall] = useState(null);
@@ -3468,7 +3607,10 @@ export default function Dashboard() {
     ? [profile.first_name, profile.last_name].filter(Boolean).join(" ") || profile.email || "User"
     : "…";
   const profileInitials = initials(profileName);
-  const profileRole = profile?.user_type || profile?.role || "Vision Staff";
+  const rawRole = profile?.user_type || profile?.role || "";
+  const profileRole = rawRole
+    ? rawRole.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase())
+    : "Vision Staff";
   const profileStatus = profile?.status || "";
   const profileLastLogin = profile?.last_login ? fmtDate(profile.last_login) : "";
 
@@ -3483,13 +3625,12 @@ export default function Dashboard() {
         <div className="sb-head">
           <div className="sb-logo">
             <div className="sb-gem">XV</div>
-            <div className="sb-brand">X <span>VS</span></div>
+            <div>
+              <div className="sb-brand">X <span>VS</span></div>
+              <div className="sb-sub">Vision Staff</div>
+            </div>
           </div>
-          <button
-            className="sb-toggle"
-            onClick={() => setNavCollapsed((v) => !v)}
-            title={navCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          >
+          <button className="sb-toggle" onClick={() => setNavCollapsed((v) => !v)} title={navCollapsed ? "Expand sidebar" : "Collapse sidebar"}>
             {navCollapsed ? "›" : "‹"}
           </button>
         </div>
@@ -3497,50 +3638,43 @@ export default function Dashboard() {
         {/* Nav */}
         <div className="sb-nav">
           <div className="nav-section">
-            <div className="nav-section-label">
-              <span className="nsl-full">Overview</span>
-              <span className="nsl-abbr">O</span>
-            </div>
+            <div className="nav-section-label"><span className="nsl-full">Overview</span><span className="nsl-abbr">O</span></div>
             <div className={`nav-item${page === "home" ? " active" : ""}`} onClick={() => goTo("home")}>
-              <span className="nav-icon">🏠</span><span className="nav-label">Dashboard</span>
+              <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="11" y="3" width="6" height="6" rx="1"/><rect x="3" y="11" width="6" height="6" rx="1"/><rect x="11" y="11" width="6" height="6" rx="1"/></svg>
+              <span className="nav-label">Dashboard</span>
             </div>
           </div>
+
           <div className="nav-section">
-            <div className="nav-section-label">
-              <span className="nsl-full">Platform</span>
-              <span className="nsl-abbr">P</span>
-            </div>
+            <div className="nav-section-label"><span className="nsl-full">Platform</span><span className="nsl-abbr">P</span></div>
             {[
-              { key: "schools",     icon: "🏫", label: "Schools" },
-              { key: "branches",    icon: "🌿", label: "Branches" },
-              { key: "users",       icon: "👥", label: "Users & Staff" },
-              { key: "rbac",        icon: "🛡", label: "Roles" },
-              { key: "permissions", icon: "🔑", label: "Permissions" },
+              { key: "schools", label: "Schools", icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="8" width="14" height="9" rx="1.5"/><path d="M7 8V6a3 3 0 0 1 6 0v2"/></svg> },
+              { key: "branches", label: "Branches", icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M4 4h5v5H4zM11 4h5v5h-5zM4 11h5v5H4z"/><path d="M11 13.5h5M13.5 11v5"/></svg> },
+              { key: "users", label: "Users & Staff", icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="10" cy="7" r="3"/><path d="M4 17c0-3.314 2.686-6 6-6s6 2.686 6 6"/></svg> },
+              { key: "rbac", label: "Roles", icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M9 12l2 2 4-4"/><rect x="3" y="3" width="14" height="14" rx="2"/></svg> },
+              { key: "permissions", label: "Permissions", icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="10" cy="10" r="3"/><path d="M10 3v2M10 15v2M3 10h2M15 10h2M5.05 5.05l1.41 1.41M13.54 13.54l1.41 1.41M5.05 14.95l1.41-1.41M13.54 6.46l1.41-1.41"/></svg> },
             ].map((n) => (
               <div key={n.key} className={`nav-item${page === n.key ? " active" : ""}`} onClick={() => goTo(n.key)}>
-                <span className="nav-icon">{n.icon}</span><span className="nav-label">{n.label}</span>
+                {n.icon}<span className="nav-label">{n.label}</span>
               </div>
             ))}
           </div>
+
           <div className="nav-section">
-            <div className="nav-section-label">
-              <span className="nsl-full">System</span>
-              <span className="nsl-abbr">S</span>
-            </div>
-            <div className={`nav-item${page === "platform" ? " active" : ""}`} onClick={() => goTo("platform")}>
-              <span className="nav-icon">🔐</span><span className="nav-label">Platform Staff</span>
-            </div>
-            <div className={`nav-item${page === "sessions" ? " active" : ""}`} onClick={() => goTo("sessions")}>
-              <span className="nav-icon">🔑</span><span className="nav-label">Sessions Tracker</span>
-            </div>
-            <div className={`nav-item${page === "audit" ? " active" : ""}`} onClick={() => goTo("audit")}>
-              <span className="nav-icon">📋</span><span className="nav-label">Audit Logs</span>
-            </div>
+            <div className="nav-section-label"><span className="nsl-full">System</span><span className="nsl-abbr">S</span></div>
+            {[
+              { key: "platform", label: "Platform Staff", icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="10" cy="7" r="3"/><path d="M4 17c0-3.314 2.686-6 6-6s6 2.686 6 6"/><path d="M14 3l2 2-2 2"/></svg> },
+              { key: "sessions", label: "Sessions Tracker", icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="10" cy="10" r="7"/><path d="M10 6v4l3 2"/></svg> },
+              { key: "audit", label: "Audit Logs", icon: <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M5 4h10a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1z"/><path d="M7 8h6M7 11h4"/></svg> },
+            ].map((n) => (
+              <div key={n.key} className={`nav-item${page === n.key ? " active" : ""}`} onClick={() => goTo(n.key)}>
+                {n.icon}<span className="nav-label">{n.label}</span>
+              </div>
+            ))}
           </div>
         </div>
 
         <div className="sb-bottom">
-          {/* User profile row */}
           <div className="sb-user">
             <div className="sb-av">{profileInitials}</div>
             <div className="sb-uinfo">
@@ -3548,14 +3682,12 @@ export default function Dashboard() {
               <div className="sb-urole">{profileRole}</div>
             </div>
           </div>
-          {/* Log out */}
           <div className="sb-settings sb-logout" onClick={logout}>
-            <span style={{ fontSize: 15, flexShrink: 0 }}>↩</span>
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ width:15,height:15,flexShrink:0 }}><path d="M13 3h4v14h-4M9 13l4-4-4-4M3 10h10"/></svg>
             <span className="sb-settings-label">Log out</span>
           </div>
-          {/* API settings */}
           <div className="sb-settings" onClick={() => setSettingsOpen(true)}>
-            <span style={{ fontSize: 15, opacity: 0.6, flexShrink: 0 }}>⚙</span>
+            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ width:15,height:15,opacity:.6,flexShrink:0 }}><circle cx="10" cy="10" r="3"/><path d="M10 3v2M10 15v2M3 10h2M15 10h2M5.05 5.05l1.41 1.41M13.54 13.54l1.41 1.41M5.05 14.95l1.41-1.41M13.54 6.46l1.41-1.41"/></svg>
             <span className="sb-settings-label">API Settings</span>
           </div>
         </div>
@@ -3564,11 +3696,13 @@ export default function Dashboard() {
       {/* ── Topbar ─────────────────────────────────────────────────────────── */}
       <div id="topbar">
         <div className="tb-page-title">{PAGE_TITLES[page] || page}</div>
-        <div className={`tb-env-pill ${env}`} onClick={() => setSettingsOpen(true)}>
-          <div className="tb-env-dot" style={{ background: envDot }} />
-          <span style={{ textTransform: "capitalize" }}>{env}</span>
+        <div className="topbar-right">
+          <div className="staging-badge" onClick={() => setSettingsOpen(true)}>
+            <span className="staging-dot" style={{ background: envDot }} />
+            {env === "local" ? "Local development" : "Staging — not production"}
+          </div>
+          <button className="refresh-btn" onClick={() => setRefreshKey((k) => k + 1)}>↺ Refresh</button>
         </div>
-        <div className="tb-notif">🔔<div className="tb-notif-dot" /></div>
       </div>
 
       {/* ── Main ───────────────────────────────────────────────────────────── */}
@@ -3577,7 +3711,7 @@ export default function Dashboard() {
           <HomePage
             {...shared}
             profile={profile}
-            activity={activity}
+            refreshKey={refreshKey}
             onSubPageNav={(p, sub) => goTo(p, sub)}
           />
         )}
