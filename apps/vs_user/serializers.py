@@ -112,6 +112,11 @@ class UserCreateSerializer(serializers.Serializer):
     role        = serializers.CharField(max_length=50, required=False, allow_blank=True)
 
     def validate_email(self, value):
+        # Enforce email uniqueness here to provide a clear error message, rather than relying on DB constraint which raises IntegrityError.
+        if User.objects.filter(email__iexact=value.lower().strip()).exists():
+            raise serializers.ValidationError({'email': 'A user with this email already exists.'})
+
+        print("Validating email:", value)
         return value.lower().strip()
 
     def validate(self, attrs):
