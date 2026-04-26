@@ -240,7 +240,7 @@ class InvitationResendView(APIView):
           with rbac_permission = "identity.user_email.invite"
           + tenant boundary check (target user must be in actor's school)
     """
-    permission_classes = [IsAuthenticated, ]
+    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
 
     def post(self, request, user_id):
         try:

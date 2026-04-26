@@ -181,7 +181,7 @@ class InvitationService:
 
         # Dispatch email asynchronously
         from ..tasks import send_invitation_email_task
-        send_invitation_email_task.delay(str(user.activation_key))
+        send_invitation_email_task(str(user.activation_key))
 
         log_auth_event(
             actor=requested_by,
