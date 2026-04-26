@@ -436,7 +436,7 @@ class BranchCreateSerializer(serializers.ModelSerializer):
             # Link model lives in models.py; import inside to avoid circular
             from .models import BranchPrimaryAdmin
 
-            BranchPrimaryAdmin.objects.create(
+            admin_link = BranchPrimaryAdmin.objects.create(
                 branch=branch,
                 contact=contact,
                 branch_role=primary_admin_data.get("branch_role", "Head Teacher"),
@@ -445,9 +445,25 @@ class BranchCreateSerializer(serializers.ModelSerializer):
                 invite_queued_at=timezone.now(),
                 invite_sent_at=None,
             )
+
+            from .services.admin_provisioning import provision_admin_user
+            provision_admin_user(
+                contact=contact,
+                admin_link=admin_link,
+                school=school,
+                branch=branch,
+                user_type="BRANCH_ADMIN",
+                role=primary_admin_data.get("branch_role", "Head Teacher"),
+                actor=self.context.get("actor_id"),
+            )
         else:
             raise serializers.ValidationError({"primary_admin_data": "Primary admin information is required to create a branch."})
         
+        _snap = AuditDiffService.from_instances(
+            before_instance=None,
+            after_instance=branch,
+            exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deleted_at"],
+        )
         emit_audit_event(
             module_key=AuditModuleKey.BRANCH,
             action_type=AuditActionType.CREATE,
@@ -455,11 +471,8 @@ class BranchCreateSerializer(serializers.ModelSerializer):
             entity_type="Branch",
             entity_id=str(branch.code),
             entity_label=branch.name,
-            diff_data=AuditDiffService.from_instances(
-                before_instance=None,
-                after_instance=branch,
-                exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deleted_at"],
-            )['diff'],
+            before_data=_snap["before_data"],
+            diff_data=_snap["diff"],
         )
 
         return branch
@@ -760,6 +773,8 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         if branding_data:
             SchoolBranding.objects.create(school=school, **branding_data)
 
+        from .services.admin_provisioning import provision_admin_user
+
         # --- 3. Optional school-level primary admin ---
         if primary_admin_data:
             contact = ContactInfo.objects.create(
@@ -767,7 +782,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 email=primary_admin_data["email"],
                 phone=primary_admin_data.get("phone", ""),
             )
-            SchoolPrimaryAdmin.objects.create(
+            school_admin_link = SchoolPrimaryAdmin.objects.create(
                 school=school,
                 contact=contact,
                 school_role=primary_admin_data.get("school_role", "IT Head"),
@@ -775,6 +790,15 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 invite_status=InviteStatus.QUEUED,
                 invite_queued_at=timezone.now(),
                 invite_sent_at=None,
+            )
+            provision_admin_user(
+                contact=contact,
+                admin_link=school_admin_link,
+                school=school,
+                branch=None,
+                user_type="SCHOOL_ADMIN",
+                role=primary_admin_data.get("school_role", "IT Head"),
+                actor=self.context.get("actor_id"),
             )
 
         # --- 4. Create branches inline ---
@@ -804,7 +828,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                     email=branch_admin_data["email"],
                     phone=branch_admin_data.get("phone", ""),
                 )
-                BranchPrimaryAdmin.objects.create(
+                branch_admin_link = BranchPrimaryAdmin.objects.create(
                     branch=branch,
                     contact=contact,
                     branch_role=branch_admin_data.get("branch_role", "Head Teacher"),
@@ -813,8 +837,22 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                     invite_queued_at=timezone.now(),
                     invite_sent_at=None,
                 )
+                provision_admin_user(
+                    contact=contact,
+                    admin_link=branch_admin_link,
+                    school=school,
+                    branch=branch,
+                    user_type="BRANCH_ADMIN",
+                    role=branch_admin_data.get("branch_role", "Head Teacher"),
+                    actor=self.context.get("actor_id"),
+                )
         
             # branch audit trail for creation
+            _branch_snap = AuditDiffService.from_instances(
+                before_instance=None,
+                after_instance=branch,
+                exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deleted_at"],
+            )
             emit_audit_event(
                 module_key=AuditModuleKey.BRANCH,
                 action_type=AuditActionType.CREATE,
@@ -822,11 +860,8 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 entity_type="Branch",
                 entity_id=str(branch.code),
                 entity_label=branch.name,
-                diff_data=AuditDiffService.from_instances(
-                    before_instance=None,
-                    after_instance=branch,
-                    exclude_fields=["created_at", "updated_at", "activated_at", "closed_at", "deleted_at"],
-                )['diff'],
+                before_data=_branch_snap["before_data"],
+                diff_data=_branch_snap["diff"],
             )
         
         # --- 5. Optional package setup ---
@@ -851,6 +886,11 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 setup.enabled_modules.set(enabled_modules)
 
         # --- 6. Audit trail for school ---
+        _school_snap = AuditDiffService.from_instances(
+            before_instance=None,
+            after_instance=school,
+            exclude_fields=["created_at", "updated_at", "activated_at", "deactivated_at"],
+        )
         emit_audit_event(
             module_key=AuditModuleKey.SCHOOL,
             action_type=AuditActionType.CREATE,
@@ -858,11 +898,8 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             entity_type="School",
             entity_id=str(school.slug),
             entity_label=school.name,
-            diff_data=AuditDiffService.from_instances(
-                before_instance=None,
-                after_instance=school,
-                exclude_fields=["created_at", "updated_at", "activated_at", "deactivated_at"],
-            )['diff'],
+            before_data=_school_snap["before_data"],
+            diff_data=_school_snap["diff"],
         )
 
         return school
