@@ -47,23 +47,24 @@ def apply_school_role_change_request(obj: RoleChangeRequest, reviewer, notes: st
     with transaction.atomic():
         target_role = obj.target_role
         
-        # Get current permission keys
+        # Get current permission keys — snapshot before any changes are applied
         current_keys = set(
             RolePermission.objects.filter(
                 role=target_role,
                 granted=True
             ).values_list('permission_id', flat=True)
         )
-        
+        before_keys = sorted(current_keys)  # captured before mutations
+
         # Apply delta items
         delta_items = obj.delta_items.select_related('permission').all()
-        
+
         for item in delta_items:
             if item.operation == RoleChangeDeltaItem.Operation.ADD:
                 current_keys.add(item.permission_id)
             elif item.operation == RoleChangeDeltaItem.Operation.REMOVE:
                 current_keys.discard(item.permission_id)
-        
+
         # Validate final permission set — include permissions coming from any
         # groups already attached to the role so dependency checks pass for
         # permissions provided via groups rather than direct grants.
@@ -113,9 +114,10 @@ def apply_school_role_change_request(obj: RoleChangeRequest, reviewer, notes: st
             entity_id=str(target_role.pk),
             entity_label=getattr(target_role, "name", str(target_role.pk)),
             summary=f"School role '{getattr(target_role, 'name', target_role.pk)}' permissions updated via approved change request",
+            before_data={"permission_keys": before_keys},
+            diff_data={"permission_keys": {"before": before_keys, "after": final_keys}},
             metadata={
                 "change_request_id": str(obj.pk),
-                "final_permission_keys": final_keys,
                 "reviewer_notes": notes,
             },
         )
@@ -130,23 +132,24 @@ def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer,
     with transaction.atomic():
         target_role = obj.target_role
         
-        # Get current permission keys
+        # Get current permission keys — snapshot before any changes are applied
         current_keys = set(
             PlatformRolePermission.objects.filter(
                 role=target_role,
                 granted=True
             ).values_list('permission_id', flat=True)
         )
-        
+        before_keys = sorted(current_keys)  # captured before mutations
+
         # Apply delta items
         delta_items = obj.delta_items.select_related('permission').all()
-        
+
         for item in delta_items:
             if item.operation == PlatformRoleChangeDeltaItem.Operation.ADD:
                 current_keys.add(item.permission_id)
             elif item.operation == PlatformRoleChangeDeltaItem.Operation.REMOVE:
                 current_keys.discard(item.permission_id)
-        
+
         # Validate final permission set (includes group-derived permissions)
         final_keys = sorted(current_keys)
         attached_group_ids = list(
@@ -196,9 +199,10 @@ def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer,
             entity_id=str(target_role.pk),
             entity_label=getattr(target_role, "name", str(target_role.pk)),
             summary=f"Platform role '{getattr(target_role, 'name', target_role.pk)}' permissions updated via approved change request",
+            before_data={"permission_keys": before_keys},
+            diff_data={"permission_keys": {"before": before_keys, "after": final_keys}},
             metadata={
                 "change_request_id": str(obj.pk),
-                "final_permission_keys": final_keys,
                 "reviewer_notes": notes,
             },
         )

@@ -43,6 +43,8 @@ def audit_platform_role_assignment(sender, instance, created, **kwargs):
         .first()
     )
 
+    current_user_role = getattr(user, "role", "")
+
     emit_audit_event(
         module_key=AuditModuleKey.RBAC,
         action_type=action_type,
@@ -51,9 +53,18 @@ def audit_platform_role_assignment(sender, instance, created, **kwargs):
         entity_id=str(user.pk),
         entity_label=getattr(user, "email", str(user.pk)),
         summary=f"Platform role '{role_name}' {'assigned' if created else 'updated'} for {getattr(user, 'email', user.pk)}",
+        before_data={"role_name": "" if created else current_user_role},
+        diff_data={
+            "role_name": {
+                "before": "" if created else current_user_role,
+                "after": role_name,
+            },
+            "assignment_status": {
+                "before": None if created else "previous",
+                "after": getattr(instance, "assignment_status", ""),
+            },
+        },
         metadata={
-            "role_name": role_name,
-            "assignment_status": getattr(instance, "assignment_status", ""),
             "assignment_id": str(instance.pk),
         },
     )
