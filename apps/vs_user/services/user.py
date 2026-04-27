@@ -23,6 +23,9 @@ class UserCreationService:
         The user's UUID becomes the identifier in the invitation URL:
         vision.codexng.com/invite/{user.id}/
         """
+        if role := validated_data.get('role'):
+            role = RoleTemplate.objects.filter(id__iexact=role)
+
         user = User.objects.create_user(
             email=validated_data['email'].lower().strip(),
             password=None,
@@ -31,7 +34,7 @@ class UserCreationService:
             gender=validated_data['gender'],
             phone=validated_data.get('phone', ''),
             user_type=validated_data['user_type'],
-            role=validated_data.get('role', ''),
+            role=role if role else None,
             school=validated_data.get('school') if validated_data.get('school') else None,
             branch=validated_data.get('branch') if validated_data.get('branch') else None,
             invited_by=requesting_user,
@@ -48,13 +51,13 @@ class UserCreationService:
         )
 
         # Role Assignment
-        if user.school and user.role:
-            role = RoleTemplate.objects.filter(name=user.role, school=user.school).first()
+        if user.role:
+            role = RoleTemplate.objects.filter(id=user.role.id, school=user.school if user.school else None)
             if role:
                 UserRoleAssignment.objects.create(
                     user=user,
                     role=role,
-                    school=user.school,
+                    school=user.school if user.school else None,
                     assigned_by=requesting_user,
                 )
 

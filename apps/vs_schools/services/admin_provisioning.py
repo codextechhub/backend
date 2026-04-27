@@ -70,6 +70,9 @@ def provision_admin_user(
             first_name, last_name = _split_name(contact.full_name)
             invited_by = actor if isinstance(actor, User) else None
 
+            if role := validated_data.get('role'):
+                role = RoleTemplate.objects.filter(id__iexact=role)
+
             user = User.objects.create_user(
                 email=email,
                 password=None,
@@ -78,7 +81,7 @@ def provision_admin_user(
                 gender="",
                 phone=getattr(contact, "phone", "") or "",
                 user_type=user_type,
-                role=role or "",
+                role=role if role else None,
                 school=school,
                 branch=branch,
                 invited_by=invited_by,
@@ -86,6 +89,17 @@ def provision_admin_user(
                 is_active=False,
                 is_staff=False,
             )
+
+            # Role Assignment
+            if user.role:
+                role = RoleTemplate.objects.filter(id=user.role.id, school=user.school if user.school else None)
+                if role:
+                    UserRoleAssignment.objects.create(
+                        user=user,
+                        role=role,
+                        school=user.school if user.school else None,
+                        assigned_by=invited_by,
+                    )
 
             # Invitation record — expiry gate for the activation link.
             InvitationService.create(user=user, invited_by=invited_by or user)
