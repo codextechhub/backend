@@ -12,6 +12,7 @@ from rest_framework import serializers
 
 from vs_rbac.models import RoleTemplate
 from vs_schools.models import School, Branch
+from vs_rbac.models import RoleTemplate, PlatformRoleTemplate
 from .models import (
     User,
     UserInvitation,
@@ -174,18 +175,25 @@ class UserCreateSerializer(serializers.Serializer):
                     {'branch': 'The selected branch does not belong to the selected school.'}
                 )
             
-        if attrs.get('role') and user_type != User.UserType.VISION_STAFF:
-            role_name = attrs['role']
-            school = attrs.get('school')
-            if not school:
-                raise serializers.ValidationError(
-                    {'role': 'Role can only be assigned if a school is specified.'}
-                )
-            role = RoleTemplate.objects.filter(name=role_name, school=school).first()
-            if not role:
-                raise serializers.ValidationError(
-                    {'role': f'Role "{role_name}" not found in the specified school.'}
-                )
+        if attrs.get('role'):
+            role_id = attrs['role']
+            if user_type == User.UserType.VISION_STAFF:
+                # Platform users: validate against PlatformRoleTemplate
+                if not PlatformRoleTemplate.objects.filter(id=role_id).exists():
+                    raise serializers.ValidationError(
+                        {'role': f'Platform role with id "{role_id}" not found.'}
+                    )
+            else:
+                # School users: validate against RoleTemplate scoped to school
+                school = attrs.get('school')
+                if not school:
+                    raise serializers.ValidationError(
+                        {'role': 'Role can only be assigned if a school is specified.'}
+                    )
+                if not RoleTemplate.objects.filter(id=role_id, school=school).exists():
+                    raise serializers.ValidationError(
+                        {'role': f'Role with id "{role_id}" not found in the specified school.'}
+                    )
 
         return attrs
 
