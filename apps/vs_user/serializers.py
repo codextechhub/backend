@@ -58,6 +58,7 @@ class UserReadSerializer(serializers.ModelSerializer):
             'first_name',
             'last_name',
             'full_name',
+            'gender',
             'phone',
             'user_type',
             'role',
@@ -91,7 +92,7 @@ class UserListSerializer(serializers.ModelSerializer):
     class Meta:
         model  = User
         fields = (
-            'id', 'email', 'full_name', 'user_type', 'role',
+            'id', 'email', 'full_name', 'gender', 'user_type', 'role',
             'status', 'branch_id', 'branch_name', 'created_at',
         )
         read_only_fields = fields
@@ -178,25 +179,27 @@ class UserCreateSerializer(serializers.Serializer):
         if attrs.get('role'):
             role_id = attrs['role']
             if user_type == User.UserType.VISION_STAFF:
-                # Platform users: validate against PlatformRoleTemplate
-                if not PlatformRoleTemplate.objects.filter(id=role_id).exists():
+                try:
+                    role = PlatformRoleTemplate.objects.get(id=role_id)
+                except PlatformRoleTemplate.DoesNotExist:
                     raise serializers.ValidationError(
                         {'role': f'Platform role with id "{role_id}" not found.'}
                     )
             else:
-                # School users: validate against RoleTemplate scoped to school
                 school = attrs.get('school')
                 if not school:
                     raise serializers.ValidationError(
                         {'role': 'Role can only be assigned if a school is specified.'}
                     )
-                if not RoleTemplate.objects.filter(id=role_id, school=school).exists():
+                try:
+                    role = RoleTemplate.objects.get(id=role_id, school=school)
+                except RoleTemplate.DoesNotExist:
                     raise serializers.ValidationError(
                         {'role': f'Role with id "{role_id}" not found in the specified school.'}
                     )
-            
-            attrs['role'] = role.name          # name stored on User.role CharField
-            attrs['role_instance'] = role      # instance passed to service for assignment
+
+            attrs['role'] = role.name
+            attrs['role_instance'] = role
 
         return attrs
 
