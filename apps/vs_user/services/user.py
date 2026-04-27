@@ -8,7 +8,7 @@ from django.utils import timezone
 
 from ..models import LoginSession, User, AuthEventLog
 from .audit import log_auth_event, blacklist_all_user_tokens
-from vs_rbac.models import RoleTemplate, UserRoleAssignment
+from vs_rbac.models import RoleTemplate, UserRoleAssignment, PlatformRoleTemplate, PlatformUserRoleAssignment
 
 
 class UserCreationService:
@@ -23,6 +23,8 @@ class UserCreationService:
         The user's UUID becomes the identifier in the invitation URL:
         vision.codexng.com/invite/{user.id}/
         """
+        role_instance = validated_data.pop('role_instance', None)
+
         user = User.objects.create_user(
             email=validated_data['email'].lower().strip(),
             password=None,
@@ -31,7 +33,7 @@ class UserCreationService:
             gender=validated_data['gender'],
             phone=validated_data.get('phone', ''),
             user_type=validated_data['user_type'],
-            role=role=validated_data.get('role', ''),
+            role=validated_data.get('role', ''),
             school=validated_data.get('school') if validated_data.get('school') else None,
             branch=validated_data.get('branch') if validated_data.get('branch') else None,
             invited_by=requesting_user,
@@ -48,24 +50,20 @@ class UserCreationService:
         )
 
         # Role Assignment
-        if user.role:
-            if user.user_type == User.UserType.VISION_STAFF:
-                platform_role = PlatformRoleTemplate.objects.filter(id=user.role).first()
-                if platform_role:
-                    PlatformUserRoleAssignment.objects.create(
-                        user=user,
-                        role=platform_role,
-                        assigned_by=requesting_user,
-                    )
+        if role_instance:
+            if isinstance(role_instance, PlatformRoleTemplate):
+                PlatformUserRoleAssignment.objects.create(
+                    user=user,
+                    role=role_instance,
+                    assigned_by=requesting_user,
+                )
             elif user.school:
-                role = RoleTemplate.objects.filter(id=user.role, school=user.school).first()
-                if role:
-                    UserRoleAssignment.objects.create(
-                        user=user,
-                        role=role,
-                        school=user.school,
-                        assigned_by=requesting_user,
-                    )
+                UserRoleAssignment.objects.create(
+                    user=user,
+                    role=role_instance,
+                    school=user.school,
+                    assigned_by=requesting_user,
+                )
 
         # TODO: Dispatch invitation email — async, does not block the response.
         # from ..tasks import send_invitation_email_task

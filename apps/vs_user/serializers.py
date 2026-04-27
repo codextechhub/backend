@@ -194,6 +194,9 @@ class UserCreateSerializer(serializers.Serializer):
                     raise serializers.ValidationError(
                         {'role': f'Role with id "{role_id}" not found in the specified school.'}
                     )
+            
+            attrs['role'] = role.name          # name stored on User.role CharField
+            attrs['role_instance'] = role      # instance passed to service for assignment
 
         return attrs
 

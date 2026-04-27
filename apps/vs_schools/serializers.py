@@ -773,6 +773,19 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         if branding_data:
             SchoolBranding.objects.create(school=school, **branding_data)
 
+        # Verify School and Branch role ID
+        branch_role_id = primary_admin_data.get("branch_role", "")
+        if branch_role_id and not RoleTemplate.objects.filter(id=branch_role_id, school=school).exists():
+            raise serializers.ValidationError(
+                {"branch_role": f'Role with id "{branch_role_id}" not found in the specified school.'}
+            )
+
+        school_role_id = primary_admin_data.get("school_role", "")
+        if school_role_id and not RoleTemplate.objects.filter(id=school_role_id, school=school).exists():
+            raise serializers.ValidationError(
+                {"school_role": f'Role with id "{school_role_id}" not found in the specified school.'}
+            )
+
         from .services.admin_provisioning import provision_admin_user
 
         # --- 3. Optional school-level primary admin ---
@@ -786,7 +799,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 school=school,
                 contact=contact,
                 school_role=primary_admin_data.get("school_role", "IT Head"),
-                role_label=primary_admin_data.get("role_label", "SCHOOL_ADMIN"),
+                role_label=school_role_id,
                 invite_status=InviteStatus.QUEUED,
                 invite_queued_at=timezone.now(),
                 invite_sent_at=None,
@@ -832,7 +845,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                     branch=branch,
                     contact=contact,
                     branch_role=branch_admin_data.get("branch_role", "Head Teacher"),
-                    role_label=branch_admin_data.get("role_label", "BRANCH_ADMIN"),
+                    role_label=branch_role_id,
                     invite_status=InviteStatus.QUEUED,
                     invite_queued_at=timezone.now(),
                     invite_sent_at=None,
