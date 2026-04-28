@@ -151,6 +151,9 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         'self', on_delete=models.SET_NULL,
         null=True, blank=True, related_name='invited_users',
     )
+    # Denormalized snapshot of the inviter's name at invite time.
+    # Survives deletion of the inviting admin's account.
+    invited_by_name = models.CharField(max_length=200, blank=True, default='')
 
     # ── Auth config ───────────────────────────────────────────────────────────
 

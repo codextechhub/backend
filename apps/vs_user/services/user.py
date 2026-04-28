@@ -37,6 +37,7 @@ class UserCreationService:
             school=validated_data.get('school') if validated_data.get('school') else None,
             branch=validated_data.get('branch') if validated_data.get('branch') else None,
             invited_by=requesting_user,
+            invited_by_name=getattr(requesting_user, 'full_name', '') or '',
             status=User.Status.PENDING,
             is_active=False,
             is_staff=True if validated_data['user_type'] == "VISION_STAFF" else False,
