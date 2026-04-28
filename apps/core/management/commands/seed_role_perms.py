@@ -1665,22 +1665,6 @@ PLATFORM_ROLES: list[dict] = [
 ]
 
 
-# Renames applied before seeding so existing DB records are migrated in-place
-# to new slugs rather than creating duplicates. Maps old_slug → new_slug.
-# Add an entry here whenever a platform role is renamed; clear after the first
-# successful run on each environment.
-PLATFORM_ROLE_RENAMES: dict[str, str] = {
-    "platform-engineering-lead":        "vision-platform-admin",
-    "devops-infrastructure-engineer":   "devops-engineer",
-    "qa-test-engineer":                 "qa-engineer",
-    "data-analyst":                     "data-operations-specialist",
-    "customer-support-officer":         "support-agent",
-    "compliance-reviewer":              "compliance-officer",
-    "security-engineer":                "security-analyst",
-    "school-onboarding-specialist":     "onboarding-specialist",
-}
-
-
 # ===========================================================================
 # MANAGEMENT COMMAND
 # ===========================================================================
@@ -1882,34 +1866,6 @@ class Command(BaseCommand):
 
         if not dry_run:
             with transaction.atomic():
-                # Migrate old slugs to new slugs before upserting.
-                # For each rename: create a new record with the new slug, move all FK
-                # references across, then delete the old record. This keeps existing
-                # assignments and permission grants intact.
-                for old_slug, new_slug in PLATFORM_ROLE_RENAMES.items():
-                    if not PlatformRoleTemplate.objects.filter(id=old_slug).exists():
-                        continue
-                    if PlatformRoleTemplate.objects.filter(id=new_slug).exists():
-                        # New slug already exists — the old record is a leftover orphan
-                        PlatformRoleTemplate.objects.filter(id=old_slug).delete()
-                        continue
-                    old = PlatformRoleTemplate.objects.get(id=old_slug)
-                    new = PlatformRoleTemplate.objects.create(
-                        id=new_slug,
-                        name=old.name,
-                        description=old.description,
-                        status=old.status,
-                        is_system_role=old.is_system_role,
-                        is_locked=old.is_locked,
-                        version=old.version,
-                    )
-                    PlatformRolePermission.objects.filter(role=old).update(role=new)
-                    PlatformRoleGroup.objects.filter(role=old).update(role=new)
-                    PlatformUserRoleAssignment.objects.filter(role=old).update(role=new)
-                    PlatformRoleChangeRequest.objects.filter(target_role=old).update(target_role=new)
-                    old.delete()
-                    self.stdout.write(f"  Renamed slug: {old_slug} → {new_slug}")
-
                 for role_def in PLATFORM_ROLES:
                     slug = slugify(role_def["name"])
                     role, created = PlatformRoleTemplate.objects.update_or_create(
@@ -2000,52 +1956,6 @@ class Command(BaseCommand):
                         plat_rp_created += len(to_add_direct)
 
                     plat_rp_updated += len(residual_direct_keys & existing_direct_keys)
-
-                # Clean up any legacy records whose id is a UUID string rather than
-                # a slug (left over from before the PK type change). Migrate their
-                # FK references to the canonical slug-id record, then delete them.
-                import re
-                _UUID_RE = re.compile(
-                    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
-                )
-                orphans = [
-                    r for r in PlatformRoleTemplate.objects.all()
-                    if _UUID_RE.match(str(r.id))
-                ]
-                for old in orphans:
-                    old_slug_from_name = slugify(old.name)
-                    new_slug = PLATFORM_ROLE_RENAMES.get(old_slug_from_name, old_slug_from_name)
-                    try:
-                        new = PlatformRoleTemplate.objects.get(id=new_slug)
-
-                        # Permissions: drop duplicates, migrate the rest
-                        existing_perm_ids = set(
-                            PlatformRolePermission.objects.filter(role=new)
-                            .values_list("permission_id", flat=True)
-                        )
-                        PlatformRolePermission.objects.filter(
-                            role=old, permission_id__in=existing_perm_ids
-                        ).delete()
-                        PlatformRolePermission.objects.filter(role=old).update(role=new)
-
-                        # Groups: drop duplicates, migrate the rest
-                        existing_group_ids = set(
-                            PlatformRoleGroup.objects.filter(role=new)
-                            .values_list("group_id", flat=True)
-                        )
-                        PlatformRoleGroup.objects.filter(
-                            role=old, group_id__in=existing_group_ids
-                        ).delete()
-                        PlatformRoleGroup.objects.filter(role=old).update(role=new)
-
-                        # Assignments and change requests have no unique constraint on role
-                        PlatformUserRoleAssignment.objects.filter(role=old).update(role=new)
-                        PlatformRoleChangeRequest.objects.filter(target_role=old).update(target_role=new)
-
-                    except PlatformRoleTemplate.DoesNotExist:
-                        pass  # Removed from seed list — drop without migrating
-                    old.delete()
-                    self.stdout.write(f"  Removed legacy UUID record: {old.id} ({old.name})")
 
         else:
             plat_role_created = len(PLATFORM_ROLES)
