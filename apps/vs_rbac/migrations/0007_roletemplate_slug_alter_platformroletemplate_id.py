@@ -40,11 +40,13 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        # Add slug as nullable first so existing rows don't violate unique
+        # Add slug as nullable first so existing rows don't violate unique.
+        # db_index=False prevents the _like (varchar_pattern_ops) index from
+        # being created here; AlterField below creates it alongside unique=True.
         migrations.AddField(
             model_name="roletemplate",
             name="slug",
-            field=models.SlugField(blank=True, max_length=120, null=True),
+            field=models.SlugField(blank=True, db_index=False, max_length=120, null=True),
         ),
         # Backfill slugs for existing rows
         migrations.RunPython(_populate_roletemplate_slugs, migrations.RunPython.noop),
