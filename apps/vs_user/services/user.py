@@ -64,6 +64,11 @@ class UserCreationService:
                     school=user.school,
                     assigned_by=requesting_user,
                 )
+            else:
+                raise ValueError({
+                    'error_code': 'ROLE_ASSIGNMENT_FAILED',
+                    'message': 'Cannot assign a school role to a user with no school.',
+                })
 
         # TODO: Dispatch invitation email — async, does not block the response.
         # from ..tasks import send_invitation_email_task
