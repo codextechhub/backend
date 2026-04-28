@@ -454,7 +454,6 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                       + tenant boundary check
     """
 
-    rbac_permission = "" # "identity.user_account.view", "identity.user_account.update", "identity.user_account.delete", "identity.user_account.create"
     pagination_class = XVSPagination
 
     def get_serializer_class(self):
@@ -496,11 +495,15 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         return qs
 
     def get_permissions(self):
-        if self.action in ('create', 'list', 'destroy'):
-            return [IsAuthenticatedAndActive(), HasRBACPermission()]
-        if self.action in ('retrieve', 'update', 'partial_update'):
-            # Owner can view/edit their own profile; others need RBAC.
-            return [IsAuthenticatedAndActive(), HasRBACPermission()]
+        action_permissions = {
+            'list':           'identity.user_account.view',
+            'retrieve':       'identity.user_account.view',
+            'create':         'identity.user_account.create',
+            'update':         'identity.user_account.update',
+            'partial_update': 'identity.user_account.update',
+            'destroy':        'identity.user_account.delete',
+        }
+        self.rbac_permission = action_permissions.get(self.action, 'identity.user_account.view')
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def perform_create(self, serializer):
