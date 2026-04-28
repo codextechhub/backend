@@ -38,17 +38,17 @@ class InvitationService:
         Uses get_or_create so it is safe to call multiple times —
         if a record already exists it is reset instead of duplicated.
         """
-        invitation, created = UserInvitation.objects.get_or_create(
-            user=user,
-            defaults={
-                'invited_by': invited_by,
-                'expires_at': timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS),
-                'is_used':    False,
-            }
-        )
-        if not created:
-            # Record already existed — reset it to a fresh 7-day window.
-            invitation.reset(invited_by=invited_by)
+        with transaction.atomic():
+            invitation = UserInvitation.objects.select_for_update().filter(user=user).first()
+            if invitation:
+                invitation.reset(invited_by=invited_by)
+            else:
+                invitation = UserInvitation.objects.create(
+                    user=user,
+                    invited_by=invited_by,
+                    expires_at=timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS),
+                    is_used=False,
+                )
         return invitation
 
     # ── Validate ──────────────────────────────────────────────────────────────
