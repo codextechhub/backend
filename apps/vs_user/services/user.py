@@ -116,15 +116,9 @@ class EmailChangeService:
         # End all sessions — user logs in again with the new email.
         blacklist_all_user_tokens(target_user)
 
-        sessions = LoginSession.objects.filter(
-            user=target_user, is_active=True,
+        LoginSession.objects.filter(user=target_user, is_active=True).update(
+            is_active=False, ended_at=timezone.now(), end_reason='EMAIL_CHANGE',
         )
-        if sessions.exists():
-            # End all active sessions for the user.
-            for session in sessions:
-                session.end(reason='EMAIL_CHANGE')
-                session.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
-
 
         log_auth_event(
             actor=requesting_user,
@@ -155,14 +149,9 @@ class  UserStatusService:
         target_user.save(update_fields=['status', 'is_active', 'updated_at'])
         blacklist_all_user_tokens(target_user)
 
-        sessions = LoginSession.objects.filter(
-            user=target_user, is_active=True,
+        LoginSession.objects.filter(user=target_user, is_active=True).update(
+            is_active=False, ended_at=timezone.now(), end_reason='SUSPENDED',
         )
-        if sessions.exists():
-            # End all active sessions for the user.
-            for session in sessions:
-                session.end(reason='EMAIL_CHANGE')
-                session.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
 
         log_auth_event(
             actor=requesting_user, subject=target_user,
