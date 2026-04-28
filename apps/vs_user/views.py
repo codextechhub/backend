@@ -202,6 +202,7 @@ class ActivationView(APIView):
     RBAC: identity.user_account.activate
     """
     permission_classes = [AllowAny]
+    throttle_scope = 'activation'
 
     def post(self, request, activation_key):
         ser = ActivationSerializer(data=request.data)
@@ -313,6 +314,7 @@ class PasswordResetRequestView(APIView):
     RBAC: identity.user_password.reset
     """
     permission_classes = [AllowAny]
+    throttle_scope = 'password_reset'
 
     def post(self, request):
         ser = PasswordResetRequestSerializer(data=request.data)
