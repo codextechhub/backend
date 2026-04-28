@@ -98,6 +98,9 @@ class EmailChangeService:
         new_email      = new_email.lower().strip()
         previous_email = target_user.email
 
+        if new_email == target_user.email.lower():
+            raise ValueError({'error_code': 'SAME_EMAIL', 'message': 'This is already your email address.'})
+
         # Global uniqueness check — email must be unique across the whole platform.
         if User.objects.filter(email__iexact=new_email).exclude(pk=target_user.pk).exists():
             raise ValueError({'error_code': 'DUPLICATE_EMAIL', 'message': 'This email is already in use.'})
