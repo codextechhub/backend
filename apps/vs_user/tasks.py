@@ -80,8 +80,7 @@ def send_invitation_email_task(self, activation_key: str):
         logger.info(f'Invitation email sent to {user.email}')
         
     except User.DoesNotExist:
-        logger.error(f'send_invitation_email_task: User {user.email} not found')
-        # Don't retry for non-existent users
+        logger.error(f'send_invitation_email_task: no user with activation_key={activation_key}')
         return
         
     except SMTPException as smtp_exc:
@@ -146,6 +145,9 @@ def send_password_reset_email_task(self, activation_key: str, origin: str):
 
         logger.info(f'Password reset email sent to {user.email} (origin={origin})')
 
+    except User.DoesNotExist:
+        logger.error(f'send_password_reset_email_task: no user with activation_key={activation_key}')
+        return
     except Exception as exc:
-        logger.error(f'send_password_reset_email_task failed for user_id={user.id}: {exc}')
+        logger.error(f'send_password_reset_email_task failed for activation_key={activation_key}: {exc}')
         raise self.retry(exc=exc)
