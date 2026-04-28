@@ -240,7 +240,7 @@ class InvitationResendView(APIView):
     RBAC: identity.user_email.invite
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    rbac_permission    = "identity.user_email.invite"
+    # rbac_permission    = "identity.user_email.invite"
 
     def post(self, request, user_id):
         try:
@@ -403,7 +403,7 @@ class AdminPasswordResetView(APIView):
     RBAC: identity.user_password.reset
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    rbac_permission    = "identity.user_password.reset"
+    # rbac_permission    = "identity.user_password.reset"
 
     def post(self, request, user_id):
         from .models import User
@@ -501,7 +501,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             'partial_update': 'identity.user_account.update',
             'destroy':        'identity.user_account.delete',
         }
-        self.rbac_permission = action_permissions.get(self.action, 'identity.user_account.view')
+        # self.rbac_permission = action_permissions.get(self.action, 'identity.user_account.view')
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def perform_create(self, serializer):
@@ -530,7 +530,7 @@ class UserEmailChangeView(APIView):
     RBAC: identity.email_address.verify
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    rbac_permission    = "identity.email_address.verify"
+    # rbac_permission    = "identity.email_address.verify"
 
     def patch(self, request, user_id):
         try:
@@ -576,7 +576,7 @@ class UserSuspendView(APIView):
     RBAC: identity.user_account.lock
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    rbac_permission    = "identity.user_account.lock"
+    # rbac_permission    = "identity.user_account.lock"
 
     def post(self, request, user_id):
         try:
@@ -605,7 +605,7 @@ class UserReactivateView(APIView):
     RBAC: identity.user_account.unlock
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    rbac_permission    = "identity.user_account.unlock"
+    # rbac_permission    = "identity.user_account.unlock"
 
     def post(self, request, user_id):
         try:
@@ -634,7 +634,7 @@ class UserUnlockView(APIView):
     RBAC: identity.user_account.unlock
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    rbac_permission    = "identity.user_account.unlock"
+    # rbac_permission    = "identity.user_account.unlock"
 
     def post(self, request, user_id):
         try:
@@ -674,7 +674,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_permissions(self):
         if self.action == 'force_logout':
-            self.rbac_permission = 'system.session.force_logout'
+            # self.rbac_permission = 'system.session.force_logout'
             return [IsAuthenticatedAndActive(), HasRBACPermission()]
         return [IsAuthenticatedAndActive()]
 
@@ -800,7 +800,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_permissions(self):
         if self.action == 'unlock':
-            self.rbac_permission = 'identity.user_account.unlock'
+            # self.rbac_permission = 'identity.user_account.unlock'
             return [IsAuthenticatedAndActive(), HasRBACPermission()]
         return [IsAuthenticatedAndActive(), IsVisionStaff()]
 
