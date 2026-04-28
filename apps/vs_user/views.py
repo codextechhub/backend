@@ -236,11 +236,9 @@ class InvitationResendView(APIView):
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.user_email.invite
-    TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
-          with rbac_permission = "identity.user_email.invite"
-          + tenant boundary check (target user must be in actor's school)
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    rbac_permission    = "identity.user_email.invite"
 
     def post(self, request, user_id):
         try:
@@ -401,11 +399,9 @@ class AdminPasswordResetView(APIView):
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.user_password.reset
-    TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
-          with rbac_permission = "identity.user_password.reset"
-          + tenant boundary check (target user must be in actor's school)
     """
-    permission_classes = [IsAuthenticatedAndActive]
+    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    rbac_permission    = "identity.user_password.reset"
 
     def post(self, request, user_id):
         from .models import User
@@ -530,11 +526,9 @@ class UserEmailChangeView(APIView):
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.email_address.verify
-    TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
-          with rbac_permission = "identity.email_address.verify"
-          + tenant boundary check (target user must be in actor's school)
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    rbac_permission    = "identity.email_address.verify"
 
     def patch(self, request, user_id):
         try:
@@ -578,11 +572,9 @@ class UserSuspendView(APIView):
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.user_account.lock
-    TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
-          with rbac_permission = "identity.user_account.lock"
-          + tenant boundary check (target user must be in actor's school)
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    rbac_permission    = "identity.user_account.lock"
 
     def post(self, request, user_id):
         try:
@@ -609,11 +601,9 @@ class UserReactivateView(APIView):
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.user_account.unlock
-    TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
-          with rbac_permission = "identity.user_account.unlock"
-          + tenant boundary check (target user must be in actor's school)
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    rbac_permission    = "identity.user_account.unlock"
 
     def post(self, request, user_id):
         try:
@@ -640,11 +630,9 @@ class UserUnlockView(APIView):
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.user_account.unlock
-    TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
-          with rbac_permission = "identity.user_account.unlock"
-          + tenant boundary check (target user must be in actor's school)
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    rbac_permission    = "identity.user_account.unlock"
 
     def post(self, request, user_id):
         try:
@@ -678,13 +666,15 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     RBAC (list own):    system.session.view
     RBAC (list all):    system.session.view (Vision Staff only)
     RBAC (force-logout): system.session.force_logout + identity.user_logout.force
-    TODO: Wire up → [IsAuthenticatedAndActive] for list
-          Wire up → [IsAuthenticatedAndActive, HasRBACPermission] for force_logout
-          with rbac_permission = "system.session.force_logout"
     """
-    serializer_class   = LoginSessionReadSerializer
-    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    pagination_class   = XVSPagination
+    serializer_class = LoginSessionReadSerializer
+    pagination_class = XVSPagination
+
+    def get_permissions(self):
+        if self.action == 'force_logout':
+            self.rbac_permission = 'system.session.force_logout'
+            return [IsAuthenticatedAndActive(), HasRBACPermission()]
+        return [IsAuthenticatedAndActive()]
 
     def get_queryset(self):
         user = self.request.user
@@ -703,13 +693,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
         return qs
 
-    @action(
-        detail=False, methods=['post'], url_path='force-logout',
-        permission_classes=[IsAuthenticatedAndActive, HasRBACPermission],
-        # TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
-        #       with rbac_permission = "system.session.force_logout"
-        #       + tenant boundary check
-    )
+    @action(detail=False, methods=['post'], url_path='force-logout')
     def force_logout(self, request):
         """
         POST /sessions/force-logout/
@@ -759,12 +743,9 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     Permission: IsAuthenticatedAndActive, IsVisionStaff
     RBAC: identity.authentication_events.log + system.audit.view
-    TODO: Wire up → [IsAuthenticatedAndActive, IsVisionStaff]
-          or [IsAuthenticatedAndActive, HasRBACPermission]
-          with rbac_permission = "identity.authentication_events.log"
     """
     serializer_class   = AuthAttemptReadSerializer
-    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive, IsVisionStaff]
     pagination_class   = XVSPagination
 
     def get_queryset(self):
@@ -811,14 +792,15 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     RBAC (list):         identity.user_account.lock + system.audit.view
     Permission (unlock): IsAuthenticatedAndActive, HasRBACPermission
     RBAC (unlock):       identity.user_account.unlock
-    TODO: Wire up → [IsAuthenticatedAndActive, IsVisionStaff] for list
-          Wire up → [IsAuthenticatedAndActive, HasRBACPermission] for unlock
-          with rbac_permission = "identity.user_account.unlock"
-          + tenant boundary check on unlock action
     """
-    serializer_class   = AccountLockoutReadSerializer
-    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    pagination_class   = XVSPagination
+    serializer_class = AccountLockoutReadSerializer
+    pagination_class = XVSPagination
+
+    def get_permissions(self):
+        if self.action == 'unlock':
+            self.rbac_permission = 'identity.user_account.unlock'
+            return [IsAuthenticatedAndActive(), HasRBACPermission()]
+        return [IsAuthenticatedAndActive(), IsVisionStaff()]
 
     def get_queryset(self):
         params = self.request.query_params
@@ -848,13 +830,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
         return qs
 
-    @action(
-        detail=False, methods=['post'], url_path='unlock',
-        permission_classes=[IsAuthenticatedAndActive, HasRBACPermission],
-        # TODO: Wire up → [IsAuthenticatedAndActive, HasRBACPermission]
-        #       with rbac_permission = "identity.user_account.unlock"
-        #       + tenant boundary check
-    )
+    @action(detail=False, methods=['post'], url_path='unlock')
     def unlock(self, request):
         ser = UnlockAccountSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
