@@ -6,10 +6,25 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.db.models import Q
 from django.utils import timezone
+from django.utils.text import slugify
 
 from vs_schools.models import Branch, School
 
 User = settings.AUTH_USER_MODEL
+
+
+def _unique_slug(model_class, name, slug_field="slug", exclude_pk=None):
+    base = slugify(name)
+    slug = base
+    n = 1
+    while True:
+        qs = model_class.objects.filter(**{slug_field: slug})
+        if exclude_pk is not None:
+            qs = qs.exclude(pk=exclude_pk)
+        if not qs.exists():
+            return slug
+        slug = f"{base}-{n}"
+        n += 1
 
 
 # -----------------------------------------------------------------------------
@@ -189,6 +204,79 @@ class GroupPermission(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
+# Suggested Role Templates (platform-owned library)
+# -----------------------------------------------------------------------------
+class SuggestedRoleTemplate(models.Model):
+    """Platform-owned library of pre-built role suggestions.
+
+    These are read-only records seeded by CodeX Vision.
+    No institution owns or modifies these directly.
+    When an institution selects one, a RoleTemplate is created
+    for their institution using this suggestion as the source.
+    """
+
+    key = models.CharField(max_length=100, unique=True)
+    name = models.CharField(max_length=150)
+    description = models.TextField(blank=True, default='')
+
+    scope = models.CharField(
+        max_length=20,
+        choices=[
+            ('institution', 'Institution-wide'),
+            ('branch', 'Branch-scoped'),
+            ('class', 'Class-scoped'),
+            ('portal', 'Portal only'),
+        ]
+    )
+
+    tier = models.CharField(
+        max_length=1,
+        choices=[('A', 'Core'), ('B', 'Module-Dependent'), ('C', 'Optional')],
+        default='A'
+    )
+
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['tier', 'name']
+        verbose_name = 'Suggested Role Template'
+        verbose_name_plural = 'Suggested Role Templates'
+
+    def __str__(self):
+        return f'{self.name} ({self.key})'
+
+
+class SuggestedRolePermission(models.Model):
+    """Default permissions attached to a SuggestedRoleTemplate.
+
+    When an institution selects this suggestion, these permissions
+    are copied into their RoleTemplate's RolePermission records.
+    """
+    suggested_role = models.ForeignKey(
+        SuggestedRoleTemplate,
+        on_delete=models.CASCADE,
+        related_name='default_permissions'
+    )
+    permission = models.ForeignKey(
+        'Permission',
+        to_field='key',
+        db_column='permission_key',
+        on_delete=models.CASCADE,
+        related_name='suggested_role_defaults'
+    )
+
+    class Meta:
+        unique_together = [['suggested_role', 'permission']]
+        verbose_name = 'Suggested Role Permission'
+        verbose_name_plural = 'Suggested Role Permissions'
+
+    def __str__(self):
+        return f'{self.suggested_role.key}:{self.permission_id}'
+
+
+# -----------------------------------------------------------------------------
 # Role Templates (school-scoped)
 # -----------------------------------------------------------------------------
 class RoleTemplate(TimeStampedModel):
@@ -228,7 +316,16 @@ class RoleTemplate(TimeStampedModel):
         null=True,
     )
 
+    suggested_from = models.ForeignKey(
+        'SuggestedRoleTemplate',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_roles',
+    )
+
     name = models.CharField(max_length=80)
+    slug = models.SlugField(max_length=120, unique=True, blank=True)
     description = models.TextField(blank=True)
 
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
@@ -277,6 +374,11 @@ class RoleTemplate(TimeStampedModel):
 
     def bump_version(self):
         self.version = (self.version or 1) + 1
+
+    def save(self, *args, **kwargs):
+        if not self.slug:
+            self.slug = _unique_slug(RoleTemplate, self.name, exclude_pk=self.pk)
+        super().save(*args, **kwargs)
 
 
 class RolePermission(TimeStampedModel):
@@ -620,7 +722,7 @@ class PlatformRoleTemplate(TimeStampedModel):
         INACTIVE = "INACTIVE", "Inactive"
         ARCHIVED = "ARCHIVED", "Archived"
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.SlugField(max_length=120, primary_key=True, editable=False)
 
     name = models.CharField(max_length=80)
     description = models.TextField(blank=True)
@@ -673,6 +775,11 @@ class PlatformRoleTemplate(TimeStampedModel):
 
     def bump_version(self):
         self.version = (self.version or 1) + 1
+
+    def save(self, *args, **kwargs):
+        if not self.id:
+            self.id = _unique_slug(PlatformRoleTemplate, self.name, slug_field="id")
+        super().save(*args, **kwargs)
 
 
 # -----------------------------------------------------------------------------

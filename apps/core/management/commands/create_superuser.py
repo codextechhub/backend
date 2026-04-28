@@ -19,6 +19,7 @@ from django.conf import settings
 from vs_user.models import User
 from vs_user.services.audit import log_auth_event
 from vs_user.models import AuthEventLog
+from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
 
 
 class Command(BaseCommand):
@@ -86,11 +87,21 @@ class Command(BaseCommand):
             action='store_true',
             help='Prompt for values instead of using defaults',
         )
+        parser.add_argument(
+            '--assign-role',
+            action='store_true',
+            help='Skip user creation — just assign Vision Super Admin role to an existing user (use with --email)',
+        )
     
     @transaction.atomic
     def handle(self, *args, **options):
+        # ── Assign-role-only mode ─────────────────────────────────────────────
+        if options['assign_role']:
+            self._assign_role_to_existing(options)
+            return
+
         # ── Interactive Mode ──────────────────────────────────────────────────
-        
+
         if options['interactive']:
             email      = self._prompt('Email', self.DEFAULT_EMAIL)
             first_name = self._prompt('First Name', self.DEFAULT_FIRST_NAME)
@@ -165,6 +176,23 @@ class Command(BaseCommand):
             invited_by=None,    # Self-created (bootstrap account)
         )
         
+        # ── Assign Vision Super Admin role ────────────────────────────────────
+        try:
+            super_admin_role = PlatformRoleTemplate.objects.get(id='vision-super-admin')
+            PlatformUserRoleAssignment.objects.get_or_create(
+                user=user,
+                role=super_admin_role,
+                defaults={
+                    'assignment_status': PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
+                    'assigned_by': None,
+                },
+            )
+        except PlatformRoleTemplate.DoesNotExist:
+            self.stdout.write(self.style.WARNING(
+                "  ⚠️  'vision-super-admin' platform role not found. "
+                "Run seed_role_perms first to create it."
+            ))
+
         # ── Audit Log ─────────────────────────────────────────────────────────
         log_auth_event(
             actor=None,
@@ -191,6 +219,7 @@ class Command(BaseCommand):
         self.stdout.write(f'  Name:       {user.full_name}')
         self.stdout.write(f'  User Type:  {user.user_type}')
         self.stdout.write(f'  Status:     {user.status}')
+        self.stdout.write(f'  Role:       Vision Super Admin')
         self.stdout.write(f'  ID:         {user.id}')
         
         self.stdout.write('\n' + self.style.MIGRATE_LABEL('Login Information:'))
@@ -213,7 +242,44 @@ class Command(BaseCommand):
         )
     
     # ── Helper Methods ────────────────────────────────────────────────────────
-    
+
+    def _assign_role_to_existing(self, options):
+        email = options['email'].strip().lower()
+
+        try:
+            user = User.objects.get(email__iexact=email)
+        except User.DoesNotExist:
+            self.stdout.write(self.style.ERROR(f"No user found with email: {email}"))
+            return
+
+        try:
+            role = PlatformRoleTemplate.objects.get(id='vision-super-admin')
+        except PlatformRoleTemplate.DoesNotExist:
+            self.stdout.write(self.style.ERROR(
+                "'vision-super-admin' platform role not found. Run seed_role_perms first."
+            ))
+            return
+
+        assignment, created = PlatformUserRoleAssignment.objects.get_or_create(
+            user=user,
+            role=role,
+            defaults={
+                'assignment_status': PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
+                'assigned_by': None,
+            },
+        )
+
+        if not created and assignment.assignment_status == PlatformUserRoleAssignment.AssignmentStatus.REVOKED:
+            assignment.assignment_status = PlatformUserRoleAssignment.AssignmentStatus.ACTIVE
+            assignment.revoked_at = None
+            assignment.revoked_by = None
+            assignment.save(update_fields=['assignment_status', 'revoked_at', 'revoked_by', 'updated_at'])
+            self.stdout.write(self.style.SUCCESS(f"  ✅ Vision Super Admin role re-activated for {user.email}"))
+        elif created:
+            self.stdout.write(self.style.SUCCESS(f"  ✅ Vision Super Admin role assigned to {user.email}"))
+        else:
+            self.stdout.write(self.style.WARNING(f"  ℹ️  {user.email} already has Vision Super Admin role (active)."))
+
     def _prompt(self, field_name, default):
         """Prompt user for input with a default value."""
         if default:

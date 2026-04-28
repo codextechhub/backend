@@ -27,6 +27,8 @@ from .models import (
     RoleGroup,
     RolePermission,
     RoleTemplate,
+    SuggestedRolePermission,
+    SuggestedRoleTemplate,
 )
 from .validators import validate_role_permissions
 
@@ -206,3 +208,39 @@ def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer,
                 "reviewer_notes": notes,
             },
         )
+
+
+@transaction.atomic
+def create_role_from_suggestion(suggestion_key: str, school, created_by) -> RoleTemplate:
+    """
+    Creates a RoleTemplate for a school based on a SuggestedRoleTemplate.
+
+    Looks up the suggestion by key, creates a RoleTemplate scoped to the school
+    with the suggestion's name/scope, then bulk-copies the default permissions.
+    The SuggestedRoleTemplate is never modified.
+
+    Raises SuggestedRoleTemplate.DoesNotExist if the key is not found.
+    Raises ValueError if the school already has a role with this name.
+    """
+    suggestion = SuggestedRoleTemplate.objects.get(key=suggestion_key, is_active=True)
+
+    if RoleTemplate.objects.filter(school=school, name=suggestion.name).exists():
+        raise ValueError(
+            f'This school already has a role named "{suggestion.name}". '
+            f'Rename the existing role before creating another with this name.'
+        )
+
+    role = RoleTemplate.objects.create(
+        name=suggestion.name,
+        school=school,
+        suggested_from=suggestion,
+        created_by=created_by,
+    )
+
+    default_permissions = suggestion.default_permissions.select_related('permission').all()
+    RolePermission.objects.bulk_create([
+        RolePermission(role=role, permission=dp.permission)
+        for dp in default_permissions
+    ], ignore_conflicts=True)
+
+    return role

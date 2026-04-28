@@ -618,7 +618,7 @@ PERMISSION_GROUPS: list[dict] = [
         ],
     },
     {
-        "name": "Finance - Bursar",
+        "name": "Finance - Admin",  # UPDATED: replaced job title with role title
         "description": "Full finance administration including approval and waivers.",
         "permissions": [
             "finance.fees.view",
@@ -1176,741 +1176,10 @@ PERMISSION_GROUPS: list[dict] = [
 #    identical to ``permissions``.
 # ---------------------------------------------------------------------------
 
-SCHOOL_ROLES: list[dict] = [
-
-    # ── LEADERSHIP ──────────────────────────────────────────────────────────
-    {
-        "name": "School Principal",
-        "description": (
-            "Top administrator responsible for all academic and operational decisions. "
-            "Has full visibility across students, staff, finance, and settings. "
-            "Applicable globally as Head Teacher (UK), Headmaster/Headmistress, "
-            "Principal (US/NG/IN), Director (international schools)."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Analytics",
-            "Announcements - Manage",
-            "Internal Chat",
-            "Messaging - Broadcast",
-            "Students - Manage",
-            "Students - Discipline",
-            "Students - Medical (Read)",
-            "Staff - Manage",
-            "Staff - Leave Approve",
-            "Staff - Appraisal",
-            "Staff - Payroll (Read)",
-            "Academics - Structure Manage",
-            "Academics - Lesson Notes (Approve)",
-            "Assessments - Leadership",
-            "Attendance - Report",
-            "Finance - Leadership Read",
-            "Library - Leadership Read",
-            "Health - Leadership Read",
-            "Admissions - Approve",
-            "Hostel - Leadership Read",
-            "Transport - Leadership",
-            "Events - Manage",
-            "Alumni - View",
-            "Settings - View",
-            "Settings - Academic Session",
-            "Settings - Roles (Read)",
-            "Reports - School-wide Export",
-            "Audit - Read",
-        ],
-        "permissions": [
-            "dashboard.overview.view", "dashboard.analytics.view", "dashboard.announcements.manage",
-            "students.profile.view", "students.profile.create", "students.profile.update",
-            "students.profile.export", "students.class.assign", "students.class.transfer",
-            "students.disciplinary.view", "students.disciplinary.manage",
-            "students.medical.view", "students.guardian.view", "students.guardian.manage",
-            "students.id_card.generate",
-            "staff.profile.view", "staff.profile.create", "staff.profile.update",
-            "staff.profile.export", "staff.salary.view",
-            "staff.leave.approve", "staff.appraisal.view", "staff.appraisal.manage",
-            "staff.attendance.view", "staff.attendance.mark",
-            "academics.curriculum.view", "academics.curriculum.manage",
-            "academics.timetable.view", "academics.timetable.manage",
-            "academics.subjects.view", "academics.subjects.manage",
-            "academics.class.view", "academics.class.manage",
-            "academics.lesson_notes.view", "academics.lesson_notes.approve",
-            "assessments.scores.view", "assessments.scores.approve",
-            "assessments.results.publish", "assessments.results.export",
-            "assessments.report_card.print", "assessments.exam_schedule.view",
-            "assessments.exam_schedule.manage",
-            "attendance.student.view", "attendance.student.report", "attendance.student.export",
-            "finance.fees.view", "finance.invoice.view",
-            "finance.payment.record", "finance.payment.verify",
-            "finance.expenditure.view", "finance.reports.view", "finance.reports.export",
-            "finance.budget.view",
-            "library.catalog.view", "library.reports.view",
-            "health.visits.view", "health.reports.view",
-            "communication.sms.send", "communication.email.send",
-            "communication.announcement.post", "communication.chat.view", "communication.chat.send",
-            "admissions.application.view", "admissions.application.process",
-            "admissions.application.approve", "admissions.enrollment.confirm",
-            "hostel.room.view", "hostel.incident.report", "hostel.incident.manage",
-            "transport.routes.view", "transport.students.assign", "transport.tracking.view",
-            "events.calendar.view", "events.calendar.manage", "events.attendance.track",
-            "alumni.profile.view",
-            "settings.school.view", "settings.branch.view",
-            "settings.academic_session.manage", "settings.roles.view",
-            "reports.school_wide.view", "reports.school_wide.export",
-            "audit.logs.view",
-        ],
-    },
-
-    {
-        "name": "Vice Principal (Academics)",
-        "description": (
-            "Deputy head with primary oversight of academic programmes, curriculum, "
-            "timetabling, assessments, and teacher performance. "
-            "Known as Deputy Head Teacher (UK), Vice Principal Academics (NG/US/IN)."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Analytics",
-            "Students - View",
-            "Students - Discipline",
-            "Staff - Appraisal",
-            "Academics - Structure Manage",
-            "Academics - Lesson Notes (Manage)",
-            "Academics - Lesson Notes (Approve)",
-            "Assessments - Exam Office",
-            "Attendance - View Only",
-            "Announcements - Post",
-            "Internal Chat",
-            "Events - Manage",
-            "Reports - School-wide Read",
-        ],
-        "permissions": [
-            "dashboard.overview.view", "dashboard.analytics.view",
-            "students.profile.view", "students.class.assign", "students.class.transfer",
-            "students.disciplinary.view", "students.disciplinary.manage",
-            "students.guardian.view",
-            "staff.profile.view", "staff.appraisal.view", "staff.appraisal.manage",
-            "staff.attendance.view",
-            "academics.curriculum.view", "academics.curriculum.manage",
-            "academics.timetable.view", "academics.timetable.manage",
-            "academics.subjects.view", "academics.subjects.manage",
-            "academics.class.view", "academics.class.manage",
-            "academics.lesson_notes.view", "academics.lesson_notes.manage",
-            "academics.lesson_notes.approve",
-            "assessments.scores.view", "assessments.scores.enter", "assessments.scores.edit",
-            "assessments.scores.approve",
-            "assessments.results.publish", "assessments.results.export",
-            "assessments.report_card.print",
-            "assessments.exam_schedule.view", "assessments.exam_schedule.manage",
-            "assessments.grading.manage",
-            "attendance.student.view", "attendance.student.report",
-            "communication.announcement.post", "communication.chat.view", "communication.chat.send",
-            "events.calendar.view", "events.calendar.manage", "events.attendance.track",
-            "reports.school_wide.view",
-        ],
-    },
-
-    {
-        "name": "Vice Principal (Administration)",
-        "description": (
-            "Deputy head overseeing non-academic operations: staff welfare, discipline, "
-            "logistics, events, and general school administration."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Students - View",
-            "Students - Discipline",
-            "Staff - View",
-            "Staff - Leave Approve",
-            "Attendance - Teacher",
-            "Announcements - Post",
-            "Internal Chat",
-            "Messaging - Broadcast",
-            "Hostel - Manage",
-            "Transport - Leadership",
-            "Events - Manage",
-            "Settings - View",
-            "Reports - School-wide Read",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "students.profile.view", "students.disciplinary.view", "students.disciplinary.manage",
-            "students.guardian.view", "students.guardian.manage",
-            "staff.profile.view", "staff.profile.update",
-            "staff.leave.approve", "staff.attendance.view", "staff.attendance.mark",
-            "academics.timetable.view", "academics.class.view",
-            "attendance.student.view", "attendance.student.mark",
-            "attendance.student.report",
-            "communication.sms.send", "communication.email.send",
-            "communication.announcement.post", "communication.chat.view", "communication.chat.send",
-            "hostel.room.view", "hostel.room.manage", "hostel.attendance.mark",
-            "hostel.incident.report", "hostel.incident.manage",
-            "transport.routes.view", "transport.students.assign", "transport.tracking.view",
-            "events.calendar.view", "events.calendar.manage", "events.attendance.track",
-            "settings.school.view", "settings.branch.view",
-            "reports.school_wide.view",
-        ],
-    },
-
-    # ── TEACHING STAFF ──────────────────────────────────────────────────────
-    {
-        "name": "Class Teacher",
-        "description": (
-            "Primary teacher assigned to a specific class/form. Responsible for daily "
-            "attendance, welfare, report card comments, and pastoral care of students "
-            "in their class. Known as Form Teacher (NG/GH/KE), Homeroom Teacher (US), "
-            "Form Tutor (UK)."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Students - View",
-            "Students - Discipline",
-            "Academics - View",
-            "Academics - Lesson Notes (Manage)",
-            "Assessments - Teacher",
-            "Attendance - Teacher",
-            "Internal Chat",
-            "Events - View",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "students.profile.view", "students.disciplinary.view", "students.disciplinary.manage",
-            "students.guardian.view", "students.id_card.generate",
-            "academics.timetable.view", "academics.subjects.view", "academics.class.view",
-            "academics.curriculum.view",
-            "academics.lesson_notes.view", "academics.lesson_notes.manage",
-            "assessments.scores.view", "assessments.scores.enter",
-            "assessments.report_card.print", "assessments.exam_schedule.view",
-            "attendance.student.view", "attendance.student.mark", "attendance.student.report",
-            "communication.chat.view", "communication.chat.send",
-            "events.calendar.view",
-        ],
-    },
-
-    {
-        "name": "Subject Teacher",
-        "description": (
-            "Teacher responsible for delivering a specific subject across one or more "
-            "classes. Enters scores, uploads lesson notes, and views student records "
-            "for their assigned subjects only."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Students - View",
-            "Academics - View",
-            "Academics - Lesson Notes (Manage)",
-            "Assessments - Teacher",
-            "Attendance - Teacher",
-            "Internal Chat",
-            "Events - View",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "students.profile.view", "students.guardian.view",
-            "academics.curriculum.view",
-            "academics.timetable.view", "academics.subjects.view", "academics.class.view",
-            "academics.lesson_notes.view", "academics.lesson_notes.manage",
-            "assessments.scores.view", "assessments.scores.enter",
-            "assessments.exam_schedule.view",
-            "attendance.student.view", "attendance.student.mark", "attendance.student.report",
-            "communication.chat.view", "communication.chat.send",
-            "events.calendar.view",
-        ],
-    },
-
-    {
-        "name": "Head of Department",
-        "description": (
-            "Senior teacher managing a subject department (e.g., Sciences, Languages, "
-            "Arts). Approves lesson notes, reviews scores, and coordinates curriculum "
-            "for their department. Known as HOD worldwide."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Analytics",
-            "Students - View",
-            "Staff - Appraisal (Read)",
-            # "Academics - Structure Manage" intentionally omitted: HoD doesn't
-            # get `academics.timetable.manage`; subject/class/curriculum manage
-            # perms fall through as residual direct grants instead.
-            "Academics - Lesson Notes (Manage)",
-            "Academics - Lesson Notes (Approve)",
-            "Assessments - Teacher",
-            "Assessments - Approve",
-            "Attendance - View Only",
-            "Internal Chat",
-            "Events - View",
-            "Reports - School-wide Read",
-        ],
-        "permissions": [
-            "dashboard.overview.view", "dashboard.analytics.view",
-            "students.profile.view", "students.guardian.view",
-            "staff.profile.view", "staff.appraisal.view",
-            "academics.curriculum.view", "academics.curriculum.manage",
-            "academics.timetable.view", "academics.subjects.view", "academics.subjects.manage",
-            "academics.class.view", "academics.class.manage",
-            "academics.lesson_notes.view", "academics.lesson_notes.manage",
-            "academics.lesson_notes.approve",
-            "assessments.scores.view", "assessments.scores.enter", "assessments.scores.approve",
-            "assessments.exam_schedule.view", "assessments.exam_schedule.manage",
-            "attendance.student.view", "attendance.student.report",
-            "communication.chat.view", "communication.chat.send",
-            "events.calendar.view",
-            "reports.school_wide.view",
-        ],
-    },
-
-    {
-        "name": "Exam Officer",
-        "description": (
-            "Coordinates examinations: scheduling, score collection, result processing, "
-            "and report card generation. Has elevated access to assessment modules. "
-            "Known as Exams Officer (UK/NG/GH) or Registrar (US/tertiary contexts)."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Students - View",
-            "Assessments - Exam Office",
-            "Announcements - Post",
-            "Internal Chat",
-            "Reports - School-wide Export",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "students.profile.view", "students.guardian.view", "students.id_card.generate",
-            "academics.class.view", "academics.subjects.view", "academics.timetable.view",
-            "assessments.scores.view", "assessments.scores.enter", "assessments.scores.edit",
-            "assessments.scores.approve", "assessments.results.publish",
-            "assessments.results.export", "assessments.report_card.print",
-            "assessments.exam_schedule.view", "assessments.exam_schedule.manage",
-            "assessments.grading.manage",
-            "communication.sms.send", "communication.announcement.post",
-            "communication.chat.view", "communication.chat.send",
-            "reports.school_wide.view", "reports.school_wide.export",
-        ],
-    },
-
-    {
-        "name": "Guidance Counsellor",
-        "description": (
-            "Provides pastoral support and counselling to students. Accesses disciplinary, "
-            "academic, and welfare records to support student development. Known as "
-            "School Counsellor (US/CA), Pastoral Care Officer (UK/AU)."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Students - View",
-            "Students - Discipline (Read)",
-            "Students - Medical (Read)",
-            "Attendance - View Only",
-            "Health - Visits (Read)",
-            "Internal Chat",
-            "Events - View",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "students.profile.view", "students.disciplinary.view",
-            "students.medical.view", "students.guardian.view",
-            "academics.timetable.view",
-            "assessments.scores.view",
-            "attendance.student.view", "attendance.student.report",
-            "health.visits.view",
-            "communication.chat.view", "communication.chat.send",
-            "events.calendar.view",
-        ],
-    },
-
-    # ── ADMINISTRATIVE STAFF ────────────────────────────────────────────────
-    {
-        "name": "School Secretary",
-        "description": (
-            "Front-office administrator handling correspondence, admissions paperwork, "
-            "scheduling, and general school records. Known as Administrative Assistant "
-            "or Registrar in various systems."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Students - Enrolment Admin",
-            "Staff - View",
-            "Attendance - Portal View",
-            "Announcements - Post",
-            "Internal Chat",
-            "Messaging - Broadcast",
-            "Admissions - Processing",
-            "Events - Calendar Manage",
-            "Alumni - View",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "students.profile.view", "students.profile.create", "students.profile.update",
-            "students.guardian.view", "students.guardian.manage", "students.id_card.generate",
-            "staff.profile.view", "staff.attendance.view",
-            "academics.timetable.view", "academics.class.view",
-            "attendance.student.view",
-            "communication.sms.send", "communication.email.send",
-            "communication.announcement.post", "communication.chat.view", "communication.chat.send",
-            "admissions.application.view", "admissions.application.process",
-            "admissions.enrollment.confirm",
-            "events.calendar.view", "events.calendar.manage",
-            "alumni.profile.view",
-        ],
-    },
-
-    {
-        "name": "Admissions Officer",
-        "description": (
-            "Manages the full admissions pipeline from application receipt through to "
-            "enrolment confirmation. Common in secondary, tertiary, and international schools."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Students - Enrolment Admin",
-            "Internal Chat",
-            "Messaging - Broadcast",
-            "Admissions - Approve",
-            "Reports - School-wide Read",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "students.profile.view", "students.profile.create", "students.profile.update",
-            "students.guardian.view", "students.guardian.manage", "students.id_card.generate",
-            "academics.class.view",
-            "communication.sms.send", "communication.email.send",
-            "communication.chat.view", "communication.chat.send",
-            "admissions.application.view", "admissions.application.process",
-            "admissions.application.approve", "admissions.enrollment.confirm",
-            "reports.school_wide.view",
-        ],
-    },
-
-    # ── FINANCE ─────────────────────────────────────────────────────────────
-    {
-        "name": "School Bursar",
-        "description": (
-            "Chief financial officer of the school. Manages fee structures, invoicing, "
-            "payment collection, expenditure, and financial reporting. "
-            "Known as Bursar (NG/UK), Finance Officer (US/AU/international schools)."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Analytics",
-            "Students - View",
-            "Finance - Bursar",
-            "Messaging - Broadcast",
-            "Internal Chat",
-            "Reports - School-wide Export",
-        ],
-        "permissions": [
-            "dashboard.overview.view", "dashboard.analytics.view",
-            "students.profile.view", "students.guardian.view",
-            "finance.fees.view", "finance.fees.manage", "finance.fees.waive",
-            "finance.invoice.view", "finance.invoice.create", "finance.invoice.approve",
-            "finance.payment.record", "finance.payment.verify", "finance.payment.reverse",
-            "finance.expenditure.view", "finance.expenditure.manage",
-            "finance.reports.view", "finance.reports.export",
-            "finance.budget.view", "finance.budget.manage",
-            "communication.sms.send", "communication.email.send",
-            "communication.chat.view", "communication.chat.send",
-            "reports.school_wide.view", "reports.school_wide.export",
-        ],
-    },
-
-    {
-        "name": "Finance Clerk",
-        "description": (
-            "Assists the Bursar with day-to-day payment collection, receipt recording, "
-            "and basic financial data entry. Has no approval authority."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Students - View",
-            "Finance - Clerk",
-            "Internal Chat",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "students.profile.view", "students.guardian.view",
-            "finance.fees.view",
-            "finance.invoice.view", "finance.invoice.create",
-            "finance.payment.record", "finance.payment.verify",
-            "communication.chat.view", "communication.chat.send",
-        ],
-    },
-
-    # ── HEALTH ──────────────────────────────────────────────────────────────
-    {
-        "name": "School Nurse",
-        "description": (
-            "Healthcare professional managing the school sick bay. Records student "
-            "visits, administers first aid, tracks medication, and generates health "
-            "reports. Known as School Health Officer in some African contexts."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Students - Medical (Manage)",
-            "Health - Nurse",
-            "Internal Chat",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "students.profile.view", "students.medical.view", "students.medical.manage",
-            "students.guardian.view",
-            "health.visits.view", "health.visits.record",
-            "health.medication.manage", "health.reports.view",
-            "communication.chat.view", "communication.chat.send",
-            "communication.sms.send",
-        ],
-    },
-
-    # ── LIBRARY ─────────────────────────────────────────────────────────────
-    {
-        "name": "Librarian",
-        "description": (
-            "Manages the school library: cataloguing books, processing loans/returns, "
-            "handling overdue books, and generating usage reports."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            # "Students - View" omitted: Librarian only needs students.profile.view,
-            # not students.guardian.view. The profile.view perm is applied as a
-            # direct grant below.
-            "Library - Staff",
-            "Internal Chat",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "students.profile.view",
-            "library.catalog.view", "library.catalog.manage",
-            "library.borrow.record", "library.borrow.return",
-            "library.overdue.manage", "library.reports.view",
-            "communication.chat.view", "communication.chat.send",
-        ],
-    },
-
-    # ── IT ───────────────────────────────────────────────────────────────────
-    {
-        "name": "School IT Administrator",
-        "description": (
-            "Manages the school's technology infrastructure and the XVS platform at the "
-            "school level. Configures roles, imports data, and monitors system health. "
-            "Does not have access to confidential student or financial data."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Analytics",
-            "Settings - View",
-            "Settings - Roles (Manage)",
-            "Audit - Read",
-            "Internal Chat",
-        ],
-        "permissions": [
-            "dashboard.overview.view", "dashboard.analytics.view",
-            "settings.school.view", "settings.branch.view",
-            "settings.roles.view", "settings.roles.manage",
-            "audit.logs.view",
-            "communication.chat.view", "communication.chat.send",
-        ],
-    },
-
-    # ── HOSTEL / BOARDING ────────────────────────────────────────────────────
-    {
-        "name": "House Master / House Mistress",
-        "description": (
-            "Boarding staff member responsible for a residential house/dorm. Conducts "
-            "roll calls, manages incidents, and oversees student welfare in the hostel. "
-            "Known as Dorm Supervisor (US/CA), House Parent (international schools)."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Students - Discipline",
-            "Students - Medical (Read)",
-            "Health - Visits (Read)",
-            "Hostel - Manage",
-            "Internal Chat",
-            "Events - View",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "students.profile.view", "students.disciplinary.view", "students.disciplinary.manage",
-            "students.medical.view", "students.guardian.view",
-            "health.visits.view",
-            "hostel.room.view", "hostel.room.manage",
-            "hostel.attendance.mark", "hostel.incident.report", "hostel.incident.manage",
-            "communication.chat.view", "communication.chat.send", "communication.sms.send",
-            "events.calendar.view",
-        ],
-    },
-
-    # ── TRANSPORT ────────────────────────────────────────────────────────────
-    {
-        "name": "Transport Coordinator",
-        "description": (
-            "Manages bus routes, vehicle assignments, and student transport allocations. "
-            "Tracks GPS and handles transport-related communications with parents."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Students - View",
-            "Transport - Coordinator",
-            "Internal Chat",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "students.profile.view", "students.guardian.view",
-            "transport.routes.view", "transport.routes.manage",
-            "transport.students.assign", "transport.tracking.view",
-            "communication.sms.send", "communication.chat.view", "communication.chat.send",
-        ],
-    },
-
-    # ── CANTEEN ──────────────────────────────────────────────────────────────
-    {
-        "name": "Canteen Manager",
-        "description": (
-            "Oversees daily canteen operations including menu management, order processing, "
-            "and sales reporting. Known as Cafeteria Manager (US) or Dining Hall Supervisor."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Canteen - Manage",
-            "Internal Chat",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "canteen.menu.view", "canteen.menu.manage",
-            "canteen.orders.manage", "canteen.sales.report",
-            "communication.chat.view", "communication.chat.send",
-        ],
-    },
-
-    # ── PARENT / GUARDIAN ────────────────────────────────────────────────────
-    {
-        "name": "Parent / Guardian",
-        "description": (
-            "Read-only access for parents and guardians linked to enrolled students. "
-            "Can view their ward's profile, results, attendance, fee status, and "
-            "communicate with the school. Portal access role used worldwide."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Academics - Portal View",
-            "Assessments - Portal View",
-            "Attendance - Portal View",
-            "Finance - Portal View",
-            "Library - Member",
-            "Transport - View",
-            "Events - View",
-            "Internal Chat",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "students.profile.view",
-            "academics.timetable.view", "academics.subjects.view",
-            "academics.lesson_notes.view",
-            "assessments.scores.view", "assessments.report_card.print",
-            "assessments.exam_schedule.view",
-            "attendance.student.view",
-            "finance.fees.view", "finance.invoice.view",
-            "library.catalog.view",
-            "transport.routes.view", "transport.tracking.view",
-            "events.calendar.view",
-            "communication.chat.view", "communication.chat.send",
-        ],
-    },
-
-    # ── STUDENT ──────────────────────────────────────────────────────────────
-    {
-        "name": "Student",
-        "description": (
-            "Self-service portal access for enrolled students. Can view their own "
-            "profile, results, timetable, attendance, and communicate within the platform."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Academics - Portal View",
-            "Assessments - Portal View",
-            "Attendance - Portal View",
-            "Finance - Portal View",
-            "Library - Member",
-            "Transport - Routes Only",
-            "Events - View",
-            "Internal Chat",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "students.profile.view",
-            "academics.timetable.view", "academics.subjects.view",
-            "academics.lesson_notes.view",
-            "assessments.scores.view", "assessments.report_card.print",
-            "assessments.exam_schedule.view",
-            "attendance.student.view",
-            "finance.fees.view", "finance.invoice.view",
-            "library.catalog.view",
-            "transport.routes.view",
-            "events.calendar.view",
-            "communication.chat.view", "communication.chat.send",
-        ],
-    },
-
-    # ── ALUMNI ───────────────────────────────────────────────────────────────
-    {
-        "name": "Alumni Member",
-        "description": (
-            "Graduated student with access to the alumni network, directory, and "
-            "school communications. Limited read-only access."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Alumni - View",
-            "Events - View",
-            "Internal Chat",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "alumni.profile.view",
-            "events.calendar.view",
-            "communication.chat.view", "communication.chat.send",
-        ],
-    },
-
-    # ── SECURITY / GATE ─────────────────────────────────────────────────────
-    {
-        "name": "Security Officer",
-        "description": (
-            "Gate and premises security staff. Can verify student/staff identity "
-            "and log entry/exit events. No access to academic or financial data."
-        ),
-        "is_system_role": True,
-        "groups": [
-            "Dashboard - Basic",
-            "Students - View",
-            "Staff - View",
-            "Transport - View",
-        ],
-        "permissions": [
-            "dashboard.overview.view",
-            "students.profile.view", "students.guardian.view",
-            "staff.profile.view", "staff.attendance.view",
-            "transport.routes.view", "transport.tracking.view",
-            "communication.chat.view",
-        ],
-    },
-]
+# School roles are now created per-institution from SuggestedRoleTemplate.
+# This list is intentionally empty — the old seeder-created records are
+# removed at step 4 below.
+SCHOOL_ROLES: list[dict] = []
 
 
 # ---------------------------------------------------------------------------
@@ -1945,27 +1214,29 @@ PLATFORM_ROLES: list[dict] = [
     },
 
     {
-        "name": "Platform Engineering Lead",
+        "name": "Vision Platform Admin",
         "description": (
-            "Senior engineer with access to system config, deployments, data pipelines, "
-            "logs, and integration management. No billing or school deletion access."
+            "Full operational access to tenant management, provisioning, configuration, "
+            "and module flags. Can suspend, restore, and reset tenants. Cannot perform "
+            "hard deletes or override audit logs (Super Admin only)."
         ),
         "is_system_role": True,
         "is_locked": False,
         "groups": [
-            "Platform - Schools (Read)",
-            "Platform - Users (Read)",
-            "Platform - Roles (Read)",
-            "Platform - Analytics (Read)",
+            "Platform - Schools (Manage)",
+            "Platform - Users (Elevated)",
+            "Platform - Roles (Manage)",
+            "Platform - Analytics (Full)",
             "Platform - System (Manage)",
             "Platform - Data (Manage)",
             "Platform - Audit (Read)",
         ],
         "permissions": [
-            "platform.schools.view",
-            "platform.users.view",
-            "platform.roles.view",
-            "platform.analytics.view",
+            "platform.schools.view", "platform.schools.create",
+            "platform.schools.update", "platform.schools.suspend", "platform.schools.restore",
+            "platform.users.view", "platform.users.manage",
+            "platform.roles.view", "platform.roles.manage",
+            "platform.analytics.view", "platform.analytics.export",
             "platform.system.config.view", "platform.system.config.manage",
             "platform.system.deployments.view", "platform.system.deployments.trigger",
             "platform.system.logs.view", "platform.system.maintenance.manage",
@@ -2009,11 +1280,11 @@ PLATFORM_ROLES: list[dict] = [
     },
 
     {
-        "name": "DevOps / Infrastructure Engineer",
+        "name": "DevOps Engineer",
         "description": (
-            "Responsible for CI/CD pipelines, deployment infrastructure, database "
-            "operations, and backup management on the platform. "
-            "No access to school-level data or billing."
+            "Manages infrastructure dashboards, deployment pipelines, error tracking, "
+            "and database health metrics. Can trigger deployments and manage server scaling. "
+            "No access to institution data or billing."
         ),
         "is_system_role": True,
         "is_locked": False,
@@ -2037,10 +1308,11 @@ PLATFORM_ROLES: list[dict] = [
     },
 
     {
-        "name": "QA / Test Engineer",
+        "name": "QA Engineer",
         "description": (
-            "Runs quality assurance and testing cycles across the platform. "
-            "Read access to configurations and logs. No write access to production data."
+            "Full access to the staging environment with test tenant access. "
+            "Can create, configure, and reset test institutions. "
+            "Zero production access by default."
         ),
         "is_system_role": True,
         "is_locked": False,
@@ -2098,11 +1370,11 @@ PLATFORM_ROLES: list[dict] = [
     },
 
     {
-        "name": "Data Analyst",
+        "name": "Data Operations Specialist",
         "description": (
-            "Analyses school and platform data to produce insights and reports. "
-            "Read-only access to analytics, pipelines, and audit logs. "
-            "Can export datasets for analysis."
+            "Access to the import and validation engine. Can upload, validate, clean, "
+            "and execute bulk data imports for institutions. Can view and remediate import "
+            "job errors. No access to tenant configuration or RBAC settings."
         ),
         "is_system_role": True,
         "is_locked": False,
@@ -2123,35 +1395,7 @@ PLATFORM_ROLES: list[dict] = [
     },
 
     {
-        "name": "Data Engineer",
-        "description": (
-            "Builds and maintains data pipelines, ETL processes, and the data "
-            "warehouse that powers platform analytics and reporting."
-        ),
-        "is_system_role": True,
-        "is_locked": False,
-        "groups": [
-            "Platform - Schools (Read)",
-            "Platform - Analytics (Read)",
-            "Platform - Data (Manage)",
-            "Platform - System Logs",
-            "Platform - Integrations (Read)",
-            "Platform - Audit (Read)",
-        ],
-        "permissions": [
-            "platform.schools.view",
-            "platform.analytics.view",
-            "platform.data.pipelines.view", "platform.data.pipelines.manage",
-            "platform.data.migrations.run",
-            "platform.data.backups.view", "platform.data.backups.manage",
-            "platform.system.logs.view",
-            "platform.integrations.view",
-            "platform.audit.logs.view",
-        ],
-    },
-
-    {
-        "name": "Customer Support Officer",
+        "name": "Support Agent",
         "description": (
             "First-line support agent responding to school tickets. Can view school "
             "profiles and user accounts for diagnostics. No impersonation or deletion rights."
@@ -2202,11 +1446,11 @@ PLATFORM_ROLES: list[dict] = [
     },
 
     {
-        "name": "Compliance Reviewer",
+        "name": "Compliance Officer",
         "description": (
-            "Responsible for data protection, regulatory audits, and compliance "
-            "framework management. Read access across compliance records and audit logs. "
-            "No system config or deployment access."
+            "Read access to audit logs across all tenants. Can export audit logs for "
+            "compliance reporting. Can view security alerts and anomaly flags. "
+            "Cannot modify any tenant data or configuration."
         ),
         "is_system_role": True,
         "is_locked": False,
@@ -2229,10 +1473,11 @@ PLATFORM_ROLES: list[dict] = [
     },
 
     {
-        "name": "Security Engineer",
+        "name": "Security Analyst",
         "description": (
-            "Platform security specialist managing incident response, vulnerability "
-            "assessments, and penetration testing coordination."
+            "Access to security event logs, failed login reports, anomaly flags, and IP "
+            "monitoring dashboards. Can trigger account locks and session terminations in "
+            "response to security incidents. Cannot access institution data or modify RBAC."
         ),
         "is_system_role": True,
         "is_locked": False,
@@ -2281,11 +1526,11 @@ PLATFORM_ROLES: list[dict] = [
     },
 
     {
-        "name": "School Onboarding Specialist",
+        "name": "Onboarding Specialist",
         "description": (
-            "Creates and configures new school accounts on the platform. "
-            "Handles initial data import, branch setup, and account activation. "
-            "No deletion or suspension rights."
+            "Creates and configures new institution tenants. Executes the full onboarding "
+            "workflow — tenant provisioning, data import, module configuration, role seeding, "
+            "and handoff. Cannot delete tenants or reset production data."
         ),
         "is_system_role": True,
         "is_locked": False,
@@ -2306,7 +1551,134 @@ PLATFORM_ROLES: list[dict] = [
             "platform.audit.logs.view",
         ],
     },
+
+    {
+        "name": "Frontend Engineer",
+        "description": (
+            "Access to API documentation, design system tooling, and staging API endpoints. "
+            "No institution data access. No admin console access."
+        ),
+        "is_system_role": True,
+        "is_locked": False,
+        "groups": [],
+        "permissions": [
+            "platform.schools.view",
+        ],
+    },
+
+    {
+        "name": "UI/UX Designer",
+        "description": (
+            "Access to design tooling and staging environment for design review. "
+            "No admin console access. No institution data access."
+        ),
+        "is_system_role": True,
+        "is_locked": False,
+        "groups": [],
+        "permissions": [
+            "platform.schools.view",
+        ],
+    },
+
+    {
+        "name": "Operations Manager",
+        "description": (
+            "Oversight of all onboarding workflows. Can view all tenant statuses, onboarding "
+            "progress, import job summaries, and platform health metrics. Can reassign "
+            "onboarding tasks. Cannot modify tenant configuration directly."
+        ),
+        "is_system_role": True,
+        "is_locked": False,
+        "groups": [
+            "Platform - Schools (Read)",
+            "Platform - Users (Read)",
+            "Platform - Analytics (Read)",
+            "Platform - Support (Tickets Read)",
+            "Platform - Audit (Read)",
+        ],
+        "permissions": [
+            "platform.schools.view",
+            "platform.users.view",
+            "platform.analytics.view",
+            "platform.support.tickets.view",
+            "platform.audit.logs.view",
+        ],
+    },
+
+    {
+        "name": "Customer Success Manager",
+        "description": (
+            "Views assigned institution health metrics, usage data, and onboarding progress. "
+            "Can raise internal escalation tickets. Read-only — cannot access student or "
+            "financial data."
+        ),
+        "is_system_role": True,
+        "is_locked": False,
+        "groups": [
+            "Platform - Schools (Read)",
+            "Platform - Analytics (Read)",
+            "Platform - Support (Tickets Read)",
+        ],
+        "permissions": [
+            "platform.schools.view",
+            "platform.analytics.view",
+            "platform.support.tickets.view",
+        ],
+    },
+
+    {
+        "name": "Sales Representative",
+        "description": (
+            "Access to the institution pipeline dashboard — prospect status, onboarding "
+            "stage, and conversion metrics. Demo environment access only. "
+            "No live institution data access."
+        ),
+        "is_system_role": True,
+        "is_locked": False,
+        "groups": [
+            "Platform - Analytics (Read)",
+        ],
+        "permissions": [
+            "platform.schools.view",
+            "platform.analytics.view",
+        ],
+    },
+
+    {
+        "name": "Partnerships Manager",
+        "description": (
+            "Same as Sales Representative, plus access to partner-specific configuration "
+            "such as reseller accounts and referral tracking. No institution data access."
+        ),
+        "is_system_role": True,
+        "is_locked": False,
+        "groups": [
+            "Platform - Analytics (Read)",
+            "Platform - Billing (Read)",
+        ],
+        "permissions": [
+            "platform.schools.view",
+            "platform.analytics.view",
+            "platform.billing.view",
+        ],
+    },
 ]
+
+
+# Renames applied before seeding so existing DB records are migrated in-place
+# to new slugs rather than creating duplicates. Maps old_slug → new_slug.
+# Add an entry here whenever a platform role is renamed; clear after the first
+# successful run on each environment.
+PLATFORM_ROLE_RENAMES: dict[str, str] = {
+    "platform-engineering-lead":        "vision-platform-admin",
+    "devops-infrastructure-engineer":   "devops-engineer",
+    "qa-test-engineer":                 "qa-engineer",
+    "data-analyst":                     "data-operations-specialist",
+    "customer-support-officer":         "support-agent",
+    "compliance-reviewer":              "compliance-officer",
+    "security-engineer":                "security-analyst",
+    "school-onboarding-specialist":     "onboarding-specialist",
+}
 
 
 # ===========================================================================
@@ -2340,14 +1712,18 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING("DRY RUN — no database writes."))
 
         # Import models here so Django is fully initialised
+        from django.utils.text import slugify
+
         from vs_rbac.models import (
             GroupPermission,
             Permission,
             PermissionDependency,
             PermissionGroup,
+            PlatformRoleChangeRequest,
             PlatformRoleGroup,
             PlatformRolePermission,
             PlatformRoleTemplate,
+            PlatformUserRoleAssignment,
             RoleGroup,
             RolePermission,
             RoleTemplate,
@@ -2478,120 +1854,24 @@ class Command(BaseCommand):
             )
         )
 
-        # ── 4. School Role Templates ──────────────────────────────────────
-        self.stdout.write("\n[4/5] Seeding School RoleTemplates …")
-
-        schools = School.objects.filter(status="ACTIVE")
-        if school_slug:
-            schools = schools.filter(slug=school_slug)
-            if not schools.exists():
-                raise CommandError(f"No active school found with slug '{school_slug}'.")
-
-        school_role_created = school_role_updated = 0
-        school_rp_created = school_rp_updated = school_rp_deleted = 0
-        school_rg_created = school_rg_kept = school_rg_deleted = 0
+        # ── 4. Remove legacy school-less RoleTemplates ───────────────────
+        # School roles are now created per-institution from SuggestedRoleTemplate.
+        # Any RoleTemplate with school=None was seeded by the old approach and
+        # must be removed so the new structure is the single source of truth.
+        self.stdout.write("\n[4/5] Removing legacy school-less RoleTemplates …")
+        removed_count = 0
 
         if not dry_run:
             with transaction.atomic():
-                for role_def in SCHOOL_ROLES:
-                    role, created = RoleTemplate.objects.update_or_create(
-                        name=role_def["name"],
-                        defaults=dict(
-                            description=role_def["description"],
-                            is_system_role=role_def.get("is_system_role", True),
-                            status=RoleTemplate.Status.ACTIVE,
-                        ),
-                    )
-                    if created:
-                        school_role_created += 1
-                    else:
-                        school_role_updated += 1
-                        role.bump_version()
-                        role.save(update_fields=["version", "updated_at"])
-
-                    # 4a. Sync attached permission groups for this role
-                    desired_group_names = role_def.get("groups", [])
-                    desired_group_objs = PermissionGroup.objects.filter(
-                        name__in=desired_group_names
-                    )
-                    desired_group_ids = set(
-                        desired_group_objs.values_list("id", flat=True)
-                    )
-                    existing_group_ids = set(
-                        RoleGroup.objects.filter(role=role).values_list(
-                            "group_id", flat=True
-                        )
-                    )
-
-                    to_add_gids = desired_group_ids - existing_group_ids
-                    to_remove_gids = existing_group_ids - desired_group_ids
-
-                    if to_remove_gids:
-                        deleted, _ = RoleGroup.objects.filter(
-                            role=role, group_id__in=to_remove_gids
-                        ).delete()
-                        school_rg_deleted += deleted
-
-                    if to_add_gids:
-                        RoleGroup.objects.bulk_create(
-                            [
-                                RoleGroup(role=role, group_id=gid)
-                                for gid in to_add_gids
-                            ]
-                        )
-                        school_rg_created += len(to_add_gids)
-
-                    school_rg_kept += len(desired_group_ids & existing_group_ids)
-
-                    # 4b. Compute residual direct permissions — everything in
-                    #     role_def["permissions"] that is NOT already provided
-                    #     by one of the attached groups.
-                    role_permission_keys = set(role_def["permissions"])
-                    group_covered_keys: set[str] = set()
-                    for gname in desired_group_names:
-                        group_covered_keys |= groups_by_name.get(gname, set())
-
-                    residual_direct_keys = role_permission_keys - group_covered_keys
-
-                    existing_direct_keys = set(
-                        RolePermission.objects.filter(
-                            role=role, granted=True
-                        ).values_list("permission_id", flat=True)
-                    )
-
-                    to_add_direct = residual_direct_keys - existing_direct_keys
-                    to_remove_direct = existing_direct_keys - residual_direct_keys
-
-                    if to_remove_direct:
-                        deleted, _ = RolePermission.objects.filter(
-                            role=role, permission_id__in=to_remove_direct
-                        ).delete()
-                        school_rp_deleted += deleted
-
-                    if to_add_direct:
-                        perms = Permission.objects.filter(key__in=to_add_direct)
-                        RolePermission.objects.bulk_create(
-                            [
-                                RolePermission(
-                                    role=role,
-                                    permission=perm,
-                                    granted=True,
-                                )
-                                for perm in perms
-                            ]
-                        )
-                        school_rp_created += len(to_add_direct)
-
-                    school_rp_updated += len(residual_direct_keys & existing_direct_keys)
+                legacy_qs = RoleTemplate.objects.filter(school__isnull=True)
+                removed_count = legacy_qs.count()
+                if removed_count:
+                    legacy_qs.delete()
         else:
-            school_role_created = len(SCHOOL_ROLES)
+            removed_count = RoleTemplate.objects.filter(school__isnull=True).count()
 
         self.stdout.write(
-            self.style.SUCCESS(
-                f"  School RoleTemplates → {school_role_created} created / {school_role_updated} updated\n"
-                f"  RolePermissions      → {school_rp_created} created / {school_rp_updated} kept / {school_rp_deleted} removed\n"
-                f"  RoleGroups           → {school_rg_created} attached / {school_rg_kept} kept / {school_rg_deleted} detached"
-            )
+            self.style.SUCCESS(f"  Removed {removed_count} legacy school-less RoleTemplate(s).")
         )
 
         # ── 5. Platform Role Templates ────────────────────────────────────
@@ -2602,10 +1882,40 @@ class Command(BaseCommand):
 
         if not dry_run:
             with transaction.atomic():
+                # Migrate old slugs to new slugs before upserting.
+                # For each rename: create a new record with the new slug, move all FK
+                # references across, then delete the old record. This keeps existing
+                # assignments and permission grants intact.
+                for old_slug, new_slug in PLATFORM_ROLE_RENAMES.items():
+                    if not PlatformRoleTemplate.objects.filter(id=old_slug).exists():
+                        continue
+                    if PlatformRoleTemplate.objects.filter(id=new_slug).exists():
+                        # New slug already exists — the old record is a leftover orphan
+                        PlatformRoleTemplate.objects.filter(id=old_slug).delete()
+                        continue
+                    old = PlatformRoleTemplate.objects.get(id=old_slug)
+                    new = PlatformRoleTemplate.objects.create(
+                        id=new_slug,
+                        name=old.name,
+                        description=old.description,
+                        status=old.status,
+                        is_system_role=old.is_system_role,
+                        is_locked=old.is_locked,
+                        version=old.version,
+                    )
+                    PlatformRolePermission.objects.filter(role=old).update(role=new)
+                    PlatformRoleGroup.objects.filter(role=old).update(role=new)
+                    PlatformUserRoleAssignment.objects.filter(role=old).update(role=new)
+                    PlatformRoleChangeRequest.objects.filter(target_role=old).update(target_role=new)
+                    old.delete()
+                    self.stdout.write(f"  Renamed slug: {old_slug} → {new_slug}")
+
                 for role_def in PLATFORM_ROLES:
+                    slug = slugify(role_def["name"])
                     role, created = PlatformRoleTemplate.objects.update_or_create(
-                        name=role_def["name"],
+                        id=slug,
                         defaults=dict(
+                            name=role_def["name"],
                             description=role_def["description"],
                             is_system_role=role_def.get("is_system_role", True),
                             is_locked=role_def.get("is_locked", False),
@@ -2690,6 +2000,53 @@ class Command(BaseCommand):
                         plat_rp_created += len(to_add_direct)
 
                     plat_rp_updated += len(residual_direct_keys & existing_direct_keys)
+
+                # Clean up any legacy records whose id is a UUID string rather than
+                # a slug (left over from before the PK type change). Migrate their
+                # FK references to the canonical slug-id record, then delete them.
+                import re
+                _UUID_RE = re.compile(
+                    r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                )
+                orphans = [
+                    r for r in PlatformRoleTemplate.objects.all()
+                    if _UUID_RE.match(str(r.id))
+                ]
+                for old in orphans:
+                    old_slug_from_name = slugify(old.name)
+                    new_slug = PLATFORM_ROLE_RENAMES.get(old_slug_from_name, old_slug_from_name)
+                    try:
+                        new = PlatformRoleTemplate.objects.get(id=new_slug)
+
+                        # Permissions: drop duplicates, migrate the rest
+                        existing_perm_ids = set(
+                            PlatformRolePermission.objects.filter(role=new)
+                            .values_list("permission_id", flat=True)
+                        )
+                        PlatformRolePermission.objects.filter(
+                            role=old, permission_id__in=existing_perm_ids
+                        ).delete()
+                        PlatformRolePermission.objects.filter(role=old).update(role=new)
+
+                        # Groups: drop duplicates, migrate the rest
+                        existing_group_ids = set(
+                            PlatformRoleGroup.objects.filter(role=new)
+                            .values_list("group_id", flat=True)
+                        )
+                        PlatformRoleGroup.objects.filter(
+                            role=old, group_id__in=existing_group_ids
+                        ).delete()
+                        PlatformRoleGroup.objects.filter(role=old).update(role=new)
+
+                        # Assignments and change requests have no unique constraint on role
+                        PlatformUserRoleAssignment.objects.filter(role=old).update(role=new)
+                        PlatformRoleChangeRequest.objects.filter(target_role=old).update(target_role=new)
+
+                    except PlatformRoleTemplate.DoesNotExist:
+                        pass  # Removed from seed list — drop without migrating
+                    old.delete()
+                    self.stdout.write(f"  Removed legacy UUID record: {old.id} ({old.name})")
+
         else:
             plat_role_created = len(PLATFORM_ROLES)
 
@@ -2708,7 +2065,7 @@ class Command(BaseCommand):
                 f"    Permissions        : {len(PERMISSIONS)}\n"
                 f"    Dependencies       : {len(PERMISSION_DEPENDENCIES)}\n"
                 f"    Permission Groups  : {len(PERMISSION_GROUPS)}\n"
-                f"    School Roles       : {len(SCHOOL_ROLES)}\n"
+                f"    Legacy school roles removed : {removed_count}\n"
                 f"    Platform Roles     : {len(PLATFORM_ROLES)}\n"
             )
         )
