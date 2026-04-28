@@ -108,7 +108,10 @@ class LogoutView(APIView):
 
         try:
             token = RefreshToken(refresh_token)
-            blacklist_all_user_tokens(request.user) # Also blacklist all outstanding tokens to ensure complete logout across all sessions.
+            token_user_id = token.get('user_id')
+            if str(token_user_id) != str(request.user.id):
+                return error_response(message="Token does not belong to the current user.", status=status.HTTP_400_BAD_REQUEST)
+            blacklist_all_user_tokens(request.user)
             jti = token.get('jti', '')
         except TokenError:
             jti = ''
