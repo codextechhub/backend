@@ -92,22 +92,22 @@ class PasswordService:
         except DjangoValidationError as e:
             raise ValueError({"error_code": "PASSWORD_POLICY_VIOLATION", "messages": list(e.messages)})
 
-        user.set_password(new_password)
-        user.password_changed_at = timezone.now()
-        user.activation_key = uuid.uuid4() # Invalidate the reset key immediately
+        with transaction.atomic():
+            user.set_password(new_password)
+            user.password_changed_at = timezone.now()
+            user.activation_key = uuid.uuid4()
 
-        # If account was locked, restore it on successful reset.
-        if user.status == User.Status.LOCKED:
-            user.status = User.Status.ACTIVE
-            lockout = AccountLockout.objects.filter(user=user).first()
-            if lockout:
-                lockout.clear()
-                lockout.save(update_fields=["failure_count", "locked_until", "locked_reason", "updated_at"])
+            if user.status == User.Status.LOCKED:
+                user.status = User.Status.ACTIVE
+                lockout = AccountLockout.objects.select_for_update().filter(user=user).first()
+                if lockout:
+                    lockout.clear()
+                    lockout.save(update_fields=["failure_count", "locked_until", "locked_reason", "updated_at"])
 
-        user.save(update_fields=["password", "password_changed_at", "status", "updated_at", "activation_key"])
-        pr.mark_used()
-        pr.save(update_fields=["used_at", "updated_at"])
-        blacklist_all_user_tokens(user)
+            user.save(update_fields=["password", "password_changed_at", "status", "updated_at", "activation_key"])
+            pr.mark_used()
+            pr.save(update_fields=["used_at", "updated_at"])
+            blacklist_all_user_tokens(user)
 
         log_auth_event(
             actor=None, subject=user, school=user.school,
