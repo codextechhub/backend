@@ -339,7 +339,7 @@ class UserInvitationReadSerializer(serializers.ModelSerializer):
         model  = UserInvitation
         fields = (
             'id', 'user', 'user_email', 'invited_by',
-            'role_hint', 'expires_at', 'is_used', 'created_at',
+            'expires_at', 'is_used', 'created_at',
         )
         read_only_fields = fields
 
