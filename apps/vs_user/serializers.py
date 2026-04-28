@@ -313,9 +313,6 @@ class PasswordResetPreviewSerializer(serializers.Serializer):
 
     class Meta:
         fields = ('email', 'full_name')
-    
-    def get_full_name(self, obj) -> str:
-        return obj.full_name
 
 class PasswordResetConfirmSerializer(serializers.Serializer):
     password         = serializers.CharField(write_only=True, trim_whitespace=False)
