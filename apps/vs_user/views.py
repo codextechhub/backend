@@ -343,10 +343,11 @@ class PasswordResetPreviewView(APIView):
     def get(self, request, activation_key):
         try:
             user = User.objects.get(activation_key=activation_key)
-            reset_request = PasswordResetRequest.objects.filter(user=user, used_at__isnull=True).last()
-        except PasswordResetRequest.DoesNotExist:
-            return error_response(message="Invalid or expired key. Contact your administrator for assistance.")
         except User.DoesNotExist:
+            return error_response(message="Invalid or expired key. Contact your administrator for assistance.")
+
+        reset_request = PasswordResetRequest.objects.filter(user=user, used_at__isnull=True).last()
+        if not reset_request:
             return error_response(message="Invalid or expired key. Contact your administrator for assistance.")
 
         if reset_request.expires_at < timezone.now():
