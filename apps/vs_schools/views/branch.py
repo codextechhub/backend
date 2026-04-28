@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.db.models import Q
 from django.forms import ValidationError
 from rest_framework import generics
+from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from core.mixins import RetrieveModelMixin, CreateModelMixin
@@ -134,13 +135,13 @@ class BranchCreateView(CreateModelMixin, ActorContextMixin, generics.CreateAPIVi
         ctx = super().get_serializer_context()
         i_slug = self.kwargs["i_slug"]
 
-        if not School.objects.filter(slug=i_slug).exists():
-            raise ValueError(f"School with slug '{i_slug}' does not exist.")
-        
-        if School.objects.filter(slug=i_slug).first().status != "ACTIVE":
+        school = School.objects.filter(slug=i_slug).first()
+        if not school:
+            raise NotFound(f"School with slug '{i_slug}' does not exist.")
+        if school.status != "ACTIVE":
             raise ValidationError({"detail": "Branches can only be created for active schools."})
 
-        ctx["school"] = School.objects.filter(slug=i_slug).first()
+        ctx["school"] = school
         return ctx
 
 
