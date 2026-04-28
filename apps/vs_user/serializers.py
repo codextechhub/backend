@@ -211,11 +211,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         # Note: email changes go through a separate /email/ endpoint
         # because they require ending all active sessions.
     
-    def validate(self, attrs):
-        # prevent email updates through this serializer
-        if self.instance.email != attrs.get('email'):
-            raise serializers.ValidationError({'email': 'Email cannot be updated through this endpoint.'})
-        return super().validate(attrs)
+    pass
 
 
 class EmailChangeSerializer(serializers.Serializer):
