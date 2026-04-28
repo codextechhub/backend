@@ -377,8 +377,6 @@ class PasswordResetConfirmView(APIView):
 
         try:
             user = User.objects.get(activation_key=activation_key)
-            if not user:
-                return error_response(message="Invalid or expired key. Contact your administrator for assistance.")
         except User.DoesNotExist:
             return error_response(message="Invalid or expired key. Contact your administrator for assistance.")
 
