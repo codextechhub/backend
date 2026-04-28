@@ -105,7 +105,7 @@ class UserCreateSerializer(serializers.Serializer):
     first_name  = serializers.CharField(max_length=100)
     last_name   = serializers.CharField(max_length=100)
     email       = serializers.EmailField()
-    gender      = serializers.CharField(max_length=20, required=True)
+    gender      = serializers.CharField(max_length=20, required=False, allow_blank=True)
     user_type   = serializers.ChoiceField(choices=User.UserType.choices, required=False)
     phone       = serializers.CharField(max_length=32, required=False, allow_blank=True)
     # school and branch passed as UUIDs; resolved to objects in validate()
