@@ -10,6 +10,7 @@ from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, 
 from core.response import success_response, error_response
 
 from vs_schools.models import School
+from vs_user.models import User
 
 from .models import (
     ImportBatch,
@@ -56,12 +57,21 @@ from .services.validation_service import validate_import_batch
 # Placeholder permission
 # Replace later with your actual custom permission classes
 # =========================================================
-class IsAuthenticatedStaff(permissions.IsAuthenticated):
+class IsAuthenticatedStaff(permissions.BasePermission):
     """
-    Placeholder permission.
-    Replace with your real module permissions later.
+    Allows access only to authenticated VISION_STAFF or SCHOOL_ADMIN users
+    who are not suspended, locked, or deleted.
     """
-    pass
+    def has_permission(self, request, view):
+        u = request.user
+        if not u or not u.is_authenticated:
+            return False
+        if getattr(u, 'status', None) in {'SUSPENDED', 'LOCKED', 'DELETED'}:
+            return False
+        return getattr(u, 'user_type', None) in {
+            User.UserType.VISION_STAFF,
+            User.UserType.SCHOOL_ADMIN,
+        }
 
 
 # =========================================================
