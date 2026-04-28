@@ -200,6 +200,17 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             if self.school_id or self.branch_id:
                 raise ValidationError('Vision Staff must not be assigned to an school or branch.')
 
+    def save(self, *args, **kwargs):
+        if self.status in (self.Status.SUSPENDED, self.Status.DEACTIVATED, self.Status.PENDING):
+            self.is_active = False
+        elif self.status == self.Status.ACTIVE:
+            self.is_active = True
+        # LOCKED: is_active left unchanged — blocked at RBAC layer, not Django auth
+        update_fields = kwargs.get('update_fields')
+        if update_fields is not None and 'status' in update_fields and 'is_active' not in update_fields:
+            kwargs['update_fields'] = list(update_fields) + ['is_active']
+        super().save(*args, **kwargs)
+
     # ── Properties ────────────────────────────────────────────────────────────
 
     @property

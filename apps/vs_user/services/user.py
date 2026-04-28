@@ -150,8 +150,9 @@ class  UserStatusService:
         if target_user.status not in (User.Status.ACTIVE, User.Status.LOCKED):
             raise ValueError({'error_code': 'INVALID_STATUS_TRANSITION', 'message': f'Cannot suspend a {target_user.status} account.'})
 
-        target_user.status = User.Status.SUSPENDED
-        target_user.save(update_fields=['status', 'updated_at'])
+        target_user.status    = User.Status.SUSPENDED
+        target_user.is_active = False
+        target_user.save(update_fields=['status', 'is_active', 'updated_at'])
         blacklist_all_user_tokens(target_user)
 
         sessions = LoginSession.objects.filter(
@@ -220,8 +221,9 @@ class  UserStatusService:
             lockout.clear()
             lockout.save(update_fields=['failure_count', 'locked_until', 'locked_reason', 'updated_at'])
 
-        target_user.status = User.Status.ACTIVE
-        target_user.save(update_fields=['status', 'updated_at'])
+        target_user.status    = User.Status.ACTIVE
+        target_user.is_active = True
+        target_user.save(update_fields=['status', 'is_active', 'updated_at'])
 
         log_auth_event(
             actor=requesting_user, subject=target_user,
