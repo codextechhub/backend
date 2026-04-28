@@ -85,8 +85,14 @@ class SchoolContextMixin:
     school_lookup_url_kwarg = "school_id"
 
     def get_school(self):
+        from rest_framework.exceptions import PermissionDenied
         school_id = self.kwargs[self.school_lookup_url_kwarg]
-        return get_object_or_404(School, id=school_id)
+        school = get_object_or_404(School, id=school_id)
+        user = self.request.user
+        if getattr(user, 'user_type', None) != User.UserType.VISION_STAFF:
+            if not user.school_id or str(user.school_id) != str(school_id):
+                raise PermissionDenied("You do not have access to this school.")
+        return school
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
