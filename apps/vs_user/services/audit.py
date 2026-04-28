@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken, BlacklistedToken
+
+logger = logging.getLogger('vs_user.audit')
 
 from vs_audit.models import AuditModuleKey, AuditActionType, AuditStatus
 from vs_audit.services import emit_audit_event
@@ -59,16 +63,19 @@ def log_auth_event(*, actor, subject, school, event: str, request=None, metadata
     entity_id = str(entity.pk) if entity else "unknown"
     entity_label = getattr(entity, "email", "") or getattr(entity, "username", "") if entity else ""
 
-    emit_audit_event(
-        module_key=AuditModuleKey.IDENTITY,
-        action_type=action_type,
-        actor_user=actor,
-        entity_type="User",
-        entity_id=entity_id,
-        entity_label=entity_label,
-        status=status,
-        metadata=extra_meta,
-    )
+    try:
+        emit_audit_event(
+            module_key=AuditModuleKey.IDENTITY,
+            action_type=action_type,
+            actor_user=actor,
+            entity_type="User",
+            entity_id=entity_id,
+            entity_label=entity_label,
+            status=status,
+            metadata=extra_meta,
+        )
+    except Exception as exc:
+        logger.critical('log_auth_event failed — audit trail may be incomplete: %s', exc, exc_info=True)
 
 
 def record_attempt(*, email_entered, user=None,
@@ -91,10 +98,7 @@ def record_attempt(*, email_entered, user=None,
             metadata=metadata or {},
         )
     except Exception as exc:
-        import logging
-        logging.getLogger('vs_user.audit').error(
-            f'record_attempt failed: {exc}'
-        )
+        logger.critical('record_attempt failed — auth attempt not recorded: %s', exc, exc_info=True)
 
 
 def blacklist_all_user_tokens(user):
