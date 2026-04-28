@@ -111,28 +111,27 @@ class LogoutView(APIView):
             token_user_id = token.get('user_id')
             if str(token_user_id) != str(request.user.id):
                 return error_response(message="Token does not belong to the current user.", status=status.HTTP_400_BAD_REQUEST)
-            blacklist_all_user_tokens(request.user)
             jti = token.get('jti', '')
         except TokenError:
-            jti = ''
+            return success_response(message="Logged out successfully.")
 
-        if jti:
-            sessions = LoginSession.objects.filter(
+        with transaction.atomic():
+            blacklist_all_user_tokens(request.user)
+            LoginSession.objects.filter(
                 user=request.user, is_active=True,
+            ).update(
+                is_active=False,
+                ended_at=timezone.now(),
+                end_reason='LOGOUT',
             )
-            if sessions.exists():
-                # Logout is session-based, not only token-based, so we end all active sessions for the user.
-                for session in sessions:
-                    session.end(reason='LOGOUT')
-                    session.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
 
-            log_auth_event(
-                actor=request.user,
-                subject=request.user,
-                school=getattr(request.user, 'school', None),
-                event=AuthEventLog.Event.TOKEN_REVOKED,
-                request=request,
-            )
+        log_auth_event(
+            actor=request.user,
+            subject=request.user,
+            school=getattr(request.user, 'school', None),
+            event=AuthEventLog.Event.TOKEN_REVOKED,
+            request=request,
+        )
 
         return success_response(message="Logged out successfully.")
 
