@@ -48,7 +48,7 @@ class LoginService:
 
         # 3. Check lockout before attempting the password
         if user:
-            lockout = AccountLockout.objects.filter(user=user).first()
+            lockout = AccountLockout.objects.select_for_update().filter(user=user).first()
             if lockout and lockout.is_locked_now():
                 record_attempt(
                     email_entered=email,
@@ -92,7 +92,7 @@ class LoginService:
             raise ValueError(status_error)
 
         # 7. Clear lockout on successful login
-        lockout = AccountLockout.objects.filter(user=authed).first()
+        lockout = AccountLockout.objects.select_for_update().filter(user=authed).first()
         if lockout:
             lockout.clear()
             lockout.save(update_fields=['failure_count', 'locked_until', 'locked_reason', 'updated_at'])
