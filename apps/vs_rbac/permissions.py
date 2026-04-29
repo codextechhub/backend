@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from django.core.exceptions import ImproperlyConfigured
 from django.db.models import Q
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission, SAFE_METHODS
 from .evaluator import _group_permission_keys, has_permission, has_all_permissions
 
@@ -64,10 +66,13 @@ class IsAuthenticatedAndActive(BasePermission):
         if not u or not u.is_authenticated:
             return False
 
-        # Optional (only if your user model has a 'status' field)
         status = getattr(u, "status", None)
-        if status in {"SUSPENDED", "LOCKED", "DELETED"}:
-            return False
+        if status == "SUSPENDED":
+            raise PermissionDenied("Your account is suspended. Contact your administrator.")
+        if status == "LOCKED":
+            raise PermissionDenied("Your account is locked due to too many failed login attempts. Contact your administrator.")
+        if status == "DELETED":
+            raise PermissionDenied("This account no longer exists.")
 
         return True
 
@@ -152,17 +157,24 @@ class HasRBACPermission(BasePermission):
         passed = True
         school = getattr(request, "school", None)
 
-        if rbac_perms and rbac_perms != "" and rbac_perms != []:
+        if rbac_perms is not None and rbac_perms != "":
+            if isinstance(rbac_perms, list) and not rbac_perms:
+                raise ImproperlyConfigured(
+                    f"{view.__class__.__name__}.rbac_permission cannot be an empty list."
+                )
             if isinstance(rbac_perms, str):
                 rbac_perms = [rbac_perms]
-
             if not any(
                 has_permission(u, perm_key, school=school)
                 for perm_key in rbac_perms
             ):
                 passed = False
 
-        if rbac_group_perms and rbac_group_perms != "" and rbac_group_perms != []:
+        if rbac_group_perms is not None and rbac_group_perms != "":
+            if isinstance(rbac_group_perms, list) and not rbac_group_perms:
+                raise ImproperlyConfigured(
+                    f"{view.__class__.__name__}.rbac_group_permission cannot be an empty list."
+                )
             if isinstance(rbac_group_perms, str):
                 rbac_group_perms = [rbac_group_perms]
             
