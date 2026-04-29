@@ -7,7 +7,7 @@ tenant boundary isolation at the ORM level.
 from __future__ import annotations
 
 from django.core.exceptions import PermissionDenied
-from django.http import HttpRequest
+from django.http import HttpRequest, JsonResponse
 from django.utils.functional import SimpleLazyObject
 
 from vs_schools.models import School
@@ -84,11 +84,18 @@ class TenantContextMiddleware:
             lambda: _get_school_from_request(request)
         )
         
-        # Force evaluation of the lazy object and set in thread-local for ORM access
-        # Accessing via bool() triggers SimpleLazyObject._setup()
-        if request.school:
-            set_current_school(request.school)
-        
+        # Force evaluation of the lazy object and set in thread-local for ORM access.
+        # Done eagerly here so a PermissionDenied returns JSON rather than Django's
+        # HTML 403 (which would bypass DRF's exception handler entirely).
+        try:
+            if request.school:
+                set_current_school(request.school)
+        except PermissionDenied as exc:
+            return JsonResponse(
+                {'success': False, 'message': str(exc)},
+                status=403,
+            )
+
         # Process request
         response = self.get_response(request)
         
@@ -129,8 +136,9 @@ class TenantBoundaryEnforcementMiddleware:
             # School user with no school context = security violation
             user_type = getattr(user, "user_type", None)
             if user_type in {"SCHOOL_ADMIN", "BRANCH_ADMIN", "STAFF", "STUDENT", "PARENT"}:
-                raise PermissionDenied(
-                    "School context required for school-scoped users."
+                return JsonResponse(
+                    {'success': False, 'message': 'School context required for school-scoped users.'},
+                    status=403,
                 )
         
         response = self.get_response(request)
