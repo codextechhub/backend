@@ -132,7 +132,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     # ──User type and status ───────────────────────────────────────────────────────
 
     user_type = models.CharField(max_length=32, choices=UserType.choices)
-    role      = models.CharField(max_length=50, blank=True, default='')  # Actual role assignment is done in RBAC.
+    role      = models.CharField(max_length=120, blank=True, default='')  # Denormalized display name; actual grants live in UserRoleAssignment.
     status    = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
 
     # ── Django auth flags ─────────────────────────────────────────────────────
@@ -185,6 +185,14 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
                     | Q(school__isnull=False)
                 ),
                 name='ck_school_bound_users',
+            ),
+            # Branch-level user types must have a branch.
+            models.CheckConstraint(
+                condition=(
+                    Q(user_type__in=['VISION_STAFF', 'SCHOOL_ADMIN'])
+                    | Q(branch__isnull=False)
+                ),
+                name='ck_branch_required_for_branch_level_users',
             ),
         ]
         indexes = [
@@ -354,7 +362,11 @@ class LoginSession(TimeStampedModel):
     )
     class Meta:
         ordering = ['-last_seen_at']
-        
+        indexes = [
+            models.Index(fields=['user', 'is_active']),
+            models.Index(fields=['is_active', 'last_seen_at']),
+        ]
+
     def end(self, reason: str = 'LOGOUT'):
         self.is_active  = False
         self.ended_at   = timezone.now()
@@ -398,6 +410,13 @@ class AuthAttempt(TimeStampedModel):
 
     def __str__(self) -> str:
         return f'AuthAttempt<{self.email_entered}:{self.result}>'
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['email_entered']),
+            models.Index(fields=['created_at']),
+            models.Index(fields=['user', 'result']),
+        ]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -490,6 +509,15 @@ class PasswordResetRequest(TimeStampedModel):
     def __str__(self) -> str:
         state = 'used' if self.used_at else 'active'
         return f'PasswordResetRequest<{self.user_id}:{state}>'
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['user'],
+                condition=Q(used_at__isnull=True),
+                name='one_active_reset_per_user',
+            ),
+        ]
 
 # =============================================================================
 # AuthEventLog
