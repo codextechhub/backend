@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from django.core.exceptions import PermissionDenied
 from django.http import HttpRequest, JsonResponse
-from django.utils.functional import SimpleLazyObject
 
 from vs_schools.models import School
 from core.thread_locals import set_current_school, clear_current_school
@@ -78,16 +77,17 @@ class TenantContextMiddleware:
     def __call__(self, request: HttpRequest):
         # Clear any previous school context from thread-local
         clear_current_school()
-        
-        # Lazy-load school to avoid unnecessary DB queries
-        request.school = SimpleLazyObject(
-            lambda: _get_school_from_request(request)
-        )
-        
-        # Force evaluation of the lazy object and set in thread-local for ORM access.
-        # Done eagerly here so a PermissionDenied returns JSON rather than Django's
-        # HTML 403 (which would bypass DRF's exception handler entirely).
+
+        # Short-circuit for anonymous requests — no school context needed
+        user = getattr(request, "user", None)
+        if not user or not user.is_authenticated:
+            request.school = None
+            return self.get_response(request)
+
+        # Resolve school eagerly so a PermissionDenied returns JSON rather than
+        # Django's HTML 403 (which bypasses DRF's exception handler entirely).
         try:
+            request.school = _get_school_from_request(request)
             if request.school:
                 set_current_school(request.school)
         except PermissionDenied as exc:
@@ -98,10 +98,10 @@ class TenantContextMiddleware:
 
         # Process request
         response = self.get_response(request)
-        
+
         # Clean up thread-local after request completes
         clear_current_school()
-        
+
         return response
 
 
