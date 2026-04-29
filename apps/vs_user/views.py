@@ -44,6 +44,19 @@ from .services.password   import PasswordService
 from .services.user       import UserCreationService, EmailChangeService, UserStatusService
 from .services.audit      import log_auth_event, blacklist_all_user_tokens, get_client_ip
 
+from django.utils.dateparse import parse_date as _parse_date
+
+
+def _get_date_param(params, key):
+    """Parse a YYYY-MM-DD query param; raise ValidationError with 400 if malformed."""
+    raw = params.get(key)
+    if not raw:
+        return None
+    parsed = _parse_date(raw)
+    if parsed is None:
+        raise ValidationError({key: f'"{raw}" is not a valid date. Use YYYY-MM-DD format.'})
+    return parsed
+
 
 # =============================================================================
 # # AUTH VIEWS
@@ -777,10 +790,10 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         if failure_code := params.get('failure_code'):
             qs = qs.filter(failure_code=failure_code)
 
-        if date_from := params.get('date_from'):
+        if date_from := _get_date_param(params, 'date_from'):
             qs = qs.filter(created_at__date__gte=date_from)
 
-        if date_to := params.get('date_to'):
+        if date_to := _get_date_param(params, 'date_to'):
             qs = qs.filter(created_at__date__lte=date_to)
 
         return qs
@@ -829,10 +842,10 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             else:
                 qs = qs.filter(Q(locked_until__isnull=True) | Q(locked_until__lte=now))
 
-        if date_from := params.get('date_from'):
+        if date_from := _get_date_param(params, 'date_from'):
             qs = qs.filter(created_at__date__gte=date_from)
 
-        if date_to := params.get('date_to'):
+        if date_to := _get_date_param(params, 'date_to'):
             qs = qs.filter(created_at__date__lte=date_to)
 
         return qs
@@ -912,10 +925,10 @@ class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         if ip_address := params.get('ip_address'):
             qs = qs.filter(metadata__ip_address=ip_address)
 
-        if date_from := params.get('date_from'):
+        if date_from := _get_date_param(params, 'date_from'):
             qs = qs.filter(event_at__date__gte=date_from)
 
-        if date_to := params.get('date_to'):
+        if date_to := _get_date_param(params, 'date_to'):
             qs = qs.filter(event_at__date__lte=date_to)
 
         return qs
