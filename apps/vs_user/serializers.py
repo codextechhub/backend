@@ -115,7 +115,7 @@ class UserCreateSerializer(serializers.Serializer):
     # school and branch passed as UUIDs; resolved to objects in validate()
     school      = serializers.UUIDField(required=False, allow_null=True)
     branch      = serializers.UUIDField(required=False, allow_null=True)
-    role        = serializers.CharField(max_length=50, required=False, allow_blank=True)
+    role        = serializers.CharField(max_length=120, required=False, allow_blank=True)
 
     def validate_email(self, value):
         # Enforce email uniqueness here to provide a clear error message, rather than relying on DB constraint which raises IntegrityError.

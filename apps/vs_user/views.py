@@ -486,6 +486,8 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             qs = qs.filter(branch_id=branch_id)
 
         if search := params.get('search'):
+            if len(search) > 64:
+                raise ValidationError({'search': 'Search query must be 64 characters or fewer.'})
             qs = qs.filter(
                 Q(first_name__icontains=search)
                 | Q(last_name__icontains=search)

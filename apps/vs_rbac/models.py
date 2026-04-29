@@ -324,8 +324,8 @@ class RoleTemplate(TimeStampedModel):
         related_name='created_roles',
     )
 
+    id = models.SlugField(max_length=120, primary_key=True, editable=False)
     name = models.CharField(max_length=80)
-    slug = models.SlugField(max_length=120, unique=True, blank=True)
     description = models.TextField(blank=True)
 
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
@@ -376,8 +376,8 @@ class RoleTemplate(TimeStampedModel):
         self.version = (self.version or 1) + 1
 
     def save(self, *args, **kwargs):
-        if not self.slug:
-            self.slug = _unique_slug(RoleTemplate, self.name, exclude_pk=self.pk)
+        if not self.id:
+            self.id = _unique_slug(RoleTemplate, self.name)
         super().save(*args, **kwargs)
 
 
@@ -723,7 +723,6 @@ class PlatformRoleTemplate(TimeStampedModel):
         ARCHIVED = "ARCHIVED", "Archived"
 
     id = models.SlugField(max_length=120, primary_key=True, editable=False)
-
     name = models.CharField(max_length=80)
     description = models.TextField(blank=True)
 
