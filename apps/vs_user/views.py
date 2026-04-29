@@ -692,7 +692,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_permissions(self):
         if self.action == 'force_logout':
-            # self.rbac_permission = 'system.session.force_logout'
+            self.rbac_permission = 'platform.users.suspend'  # closest match — no dedicated force-logout permission yet
             return [IsAuthenticatedAndActive(), HasRBACPermission()]
         return [IsAuthenticatedAndActive()]
 
@@ -818,7 +818,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_permissions(self):
         if self.action == 'unlock':
-            # self.rbac_permission = 'identity.user_account.unlock'
+            self.rbac_permission = 'platform.users.suspend'  # closest match — no dedicated unlock permission yet
             return [IsAuthenticatedAndActive(), HasRBACPermission()]
         return [IsAuthenticatedAndActive(), IsVisionStaff()]
 
