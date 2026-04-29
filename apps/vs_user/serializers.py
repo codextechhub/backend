@@ -5,6 +5,7 @@ from datetime import timedelta
 
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import RegexValidator
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 
@@ -107,7 +108,10 @@ class UserCreateSerializer(serializers.Serializer):
     email       = serializers.EmailField()
     gender      = serializers.ChoiceField(choices=User.Gender.choices, required=False, allow_blank=True)
     user_type   = serializers.ChoiceField(choices=User.UserType.choices, required=False)
-    phone       = serializers.CharField(max_length=32, required=False, allow_blank=True)
+    phone       = serializers.CharField(
+        max_length=32, required=False, allow_blank=True,
+        validators=[RegexValidator(r'^\+?[0-9 ()\-]{7,22}$', message='Enter a valid phone number.')],
+    )
     # school and branch passed as UUIDs; resolved to objects in validate()
     school      = serializers.UUIDField(required=False, allow_null=True)
     branch      = serializers.UUIDField(required=False, allow_null=True)
