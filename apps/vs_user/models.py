@@ -412,6 +412,7 @@ class AuthAttempt(TimeStampedModel):
         return f'AuthAttempt<{self.email_entered}:{self.result}>'
 
     class Meta:
+        ordering = ['-created_at']
         indexes = [
             models.Index(fields=['email_entered']),
             models.Index(fields=['created_at']),
@@ -564,6 +565,9 @@ class AuthEventLog(TimeStampedModel):
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     user_agent = models.TextField(blank=True, default='')
     metadata   = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
 
     def __str__(self) -> str:
         return f'AuthEvent<{self.event}>'
