@@ -491,8 +491,8 @@ class ImportBatchListSerializer(serializers.ModelSerializer):
     """
     error_count = serializers.IntegerField(read_only=True)
     warning_count = serializers.IntegerField(read_only=True)
-    template_name = serializers.CharField(source="template.name", read_only=True)
-    template_code = serializers.CharField(source="template.code", read_only=True)
+    template_name = serializers.CharField(source="template.name", read_only=True, default=None)
+    template_code = serializers.CharField(source="template.code", read_only=True, default=None)
 
     class Meta:
         model = ImportBatch
@@ -651,6 +651,8 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
         return value
 
     def create(self, validated_data):
+        from .services.file_parser import parse_import_file
+
         uploaded_file = validated_data.pop("file")
         validated_data.pop("template_id")
 
@@ -672,19 +674,37 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
             template.columns.order_by("column_order").values_list("column_name", flat=True)
         )
 
+        safe_name = os.path.basename(uploaded_file.name)
+        if not re.fullmatch(r"[A-Za-z0-9_.\- ]+", safe_name):
+            raise serializers.ValidationError({"file": "Filename contains invalid characters. Use only letters, numbers, spaces, hyphens, underscores, and dots."})
+
+        sheet_name = validated_data.get("sheet_name")
+        header_row_index = validated_data.get("header_row_index") or 1
+        try:
+            detected_headers, preview_rows = parse_import_file(
+                uploaded_file,
+                file_format=file_format,
+                sheet_name=sheet_name,
+                header_row_index=header_row_index,
+            )
+        except ValueError as exc:
+            raise serializers.ValidationError({"file": str(exc)})
+
         validated_data["school"] = self.context["school"]
         validated_data["uploaded_by"] = self.context["request"].user
         validated_data["template"] = template
         validated_data["template_version"] = template.version
         validated_data["dataset_type"] = template.dataset_type
         validated_data["file"] = uploaded_file
-        safe_name = os.path.basename(uploaded_file.name)
-        if not re.fullmatch(r"[A-Za-z0-9_.\- ]+", safe_name):
-            raise serializers.ValidationError({"file": "Filename contains invalid characters. Use only letters, numbers, spaces, hyphens, underscores, and dots."})
         validated_data["original_filename"] = safe_name
         validated_data["file_format"] = file_format
         validated_data["file_size_bytes"] = uploaded_file.size
         validated_data["template_headers_snapshot"] = template_headers_snapshot
+        validated_data["uploaded_headers"] = detected_headers
+        validated_data["detected_columns"] = detected_headers
+        validated_data["preview_rows"] = preview_rows
+        validated_data["total_rows"] = len(preview_rows)
+        validated_data["total_columns"] = len(detected_headers)
 
         return super().create(validated_data)
 

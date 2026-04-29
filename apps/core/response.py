@@ -11,9 +11,12 @@ def success_response(message, data=None, status=200):
     }, status=status)
 
 
-def error_response(message, error=None, status=400):
-    return Response({
+def error_response(message, error=None, status=400, code=None):
+    body = {
         "success": False,
         "message": message,
         "error": error or {}
-    }, status=status)
+    }
+    if code is not None:
+        body["code"] = code
+    return Response(body, status=status)

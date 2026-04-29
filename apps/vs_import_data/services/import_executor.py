@@ -39,6 +39,9 @@ def map_row_to_payload(import_batch, raw_row: dict) -> dict:
     """
     Convert uploaded row into internal payload using ImportTemplateColumn.
     """
+    if not import_batch.template:
+        raise ValueError("ImportBatch has no template selected.")
+
     payload = {}
 
     template_columns = import_batch.template.columns.order_by("column_order")
@@ -268,7 +271,6 @@ def update_job_progress(
 # =========================================================
 # Main executor
 # =========================================================
-@transaction.atomic
 def execute_import(import_batch, queued_by):
     if not import_batch.template:
         raise ValueError("This import batch has no selected template.")
@@ -279,6 +281,7 @@ def execute_import(import_batch, queued_by):
     rows = import_batch.preview_rows or []
     total_rows = len(rows)
 
+    # start_import_job is its own @transaction.atomic — committed immediately.
     job = start_import_job(import_batch=import_batch, queued_by=queued_by)
 
     processed_rows = 0
@@ -287,46 +290,50 @@ def execute_import(import_batch, queued_by):
     skipped_rows = 0
 
     for row_number, raw_row in enumerate(rows, start=1):
+        # Each row is committed in its own savepoint so a mid-run crash does
+        # not roll back results that were already saved for earlier rows.
+        normalized_payload = {}
         try:
-            normalized_payload = map_row_to_payload(import_batch, raw_row)
+            with transaction.atomic():
+                normalized_payload = map_row_to_payload(import_batch, raw_row)
 
-            result = execute_dataset_handler(
-                import_batch=import_batch,
-                payload=normalized_payload,
-                queued_by=queued_by,
-            )
+                result = execute_dataset_handler(
+                    import_batch=import_batch,
+                    payload=normalized_payload,
+                    queued_by=queued_by,
+                )
 
-            target_instance = result.instance
-            target_object_pk = str(target_instance.pk) if target_instance else ""
+                target_instance = result.instance
+                target_object_pk = str(target_instance.pk) if target_instance else ""
 
-            create_row_result(
-                job=job,
-                row_number=row_number,
-                action=result.action,
-                target_model=result.target_model,
-                target_object_pk=target_object_pk,
-                status_message=result.message,
-                row_payload=raw_row,
-                normalized_payload=normalized_payload,
-            )
+                create_row_result(
+                    job=job,
+                    row_number=row_number,
+                    action=result.action,
+                    target_model=result.target_model,
+                    target_object_pk=target_object_pk,
+                    status_message=result.message,
+                    row_payload=raw_row,
+                    normalized_payload=normalized_payload,
+                )
 
-            create_import_audit_log(
-                branch=import_batch.branch,
-                actor=queued_by,
-                import_batch=import_batch,
-                job=job,
-                action="import_row_success",
-                entity_type=result.target_model,
-                entity_id=target_object_pk,
-                before_data={},
-                after_data=normalized_payload,
-                message=f"Imported row {row_number} successfully.",
-                metadata={
-                    "row_number": row_number,
-                    "template_code": import_batch.template.code,
-                    "template_version": import_batch.template_version,
-                },
-            )
+                create_import_audit_log(
+                    branch=import_batch.branch,
+                    actor=queued_by,
+                    import_batch=import_batch,
+                    job=job,
+                    action="import_row_success",
+                    entity_type=result.target_model,
+                    entity_id=target_object_pk,
+                    before_data={},
+                    after_data=normalized_payload,
+                    message=f"Imported row {row_number} successfully.",
+                    metadata={
+                        "row_number": row_number,
+                        "template_code": import_batch.template.code,
+                        "template_version": import_batch.template_version,
+                    },
+                )
 
             if result.action == ImportRowActionChoices.SKIP:
                 skipped_rows += 1
@@ -343,7 +350,7 @@ def execute_import(import_batch, queued_by):
                 status_message="Serializer validation failed.",
                 error_details={"validation_errors": exc.detail},
                 row_payload=raw_row,
-                normalized_payload=normalized_payload if "normalized_payload" in locals() else {},
+                normalized_payload=normalized_payload,
             )
 
             failed_rows += 1
@@ -358,7 +365,7 @@ def execute_import(import_batch, queued_by):
                 status_message="Import failed.",
                 error_details={"error": str(exc)},
                 row_payload=raw_row,
-                normalized_payload=normalized_payload if "normalized_payload" in locals() else {},
+                normalized_payload=normalized_payload,
             )
 
             failed_rows += 1

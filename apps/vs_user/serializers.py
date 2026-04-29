@@ -106,16 +106,16 @@ class UserCreateSerializer(serializers.Serializer):
     first_name  = serializers.CharField(max_length=100)
     last_name   = serializers.CharField(max_length=100)
     email       = serializers.EmailField()
-    gender      = serializers.ChoiceField(choices=User.Gender.choices, required=False, allow_blank=True)
-    user_type   = serializers.ChoiceField(choices=User.UserType.choices, required=False)
+    gender      = serializers.ChoiceField(choices=User.Gender.choices, required=False, allow_blank=True, default='')
+    user_type   = serializers.ChoiceField(choices=User.UserType.choices, required=False, default=None, allow_null=True)
     phone       = serializers.CharField(
-        max_length=32, required=False, allow_blank=True,
+        max_length=32, required=False, allow_blank=True, default='',
         validators=[RegexValidator(r'^\+?[0-9 ()\-]{7,22}$', message='Enter a valid phone number.')],
     )
     # school and branch passed as UUIDs; resolved to objects in validate()
-    school      = serializers.UUIDField(required=False, allow_null=True)
-    branch      = serializers.UUIDField(required=False, allow_null=True)
-    role        = serializers.CharField(max_length=120, required=False, allow_blank=True)
+    school      = serializers.UUIDField(required=False, allow_null=True, default=None)
+    branch      = serializers.UUIDField(required=False, allow_null=True, default=None)
+    role        = serializers.CharField(max_length=120, required=False, allow_blank=True, default='')
 
     def validate_email(self, value):
         # Enforce email uniqueness here to provide a clear error message, rather than relying on DB constraint which raises IntegrityError.
@@ -364,8 +364,8 @@ class LoginSessionReadSerializer(serializers.ModelSerializer):
 
 
 class ForceLogoutSerializer(serializers.Serializer):
-    user_id    = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False)
-    session_id = serializers.PrimaryKeyRelatedField(queryset=LoginSession.objects.all(), required=False)
+    user_id    = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False, default=None)
+    session_id = serializers.PrimaryKeyRelatedField(queryset=LoginSession.objects.all(), required=False, default=None)
     reason     = serializers.CharField()
 
     def validate(self, attrs):
