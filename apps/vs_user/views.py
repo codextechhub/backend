@@ -19,7 +19,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.exceptions import TokenError, ExpiredTokenError
 from vs_rbac.permissions import IsAuthenticatedAndActive, IsVisionStaff, HasRBACPermission
 from core.mixins import XVSModelViewSetMixin
 from core.pagination import XVSPagination
@@ -824,7 +824,11 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_queryset(self):
         params = self.request.query_params
+        user = self.request.user
         qs = AccountLockout.objects.select_related('user').order_by('-updated_at')
+
+        if getattr(user, 'user_type', None) != User.UserType.VISION_STAFF:
+            qs = qs.filter(user__school=user.school)
 
         if user_id := params.get('user_id'):
             qs = qs.filter(user_id=user_id)
