@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 from django.utils import timezone
 from rest_framework import serializers
@@ -677,7 +678,10 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
         validated_data["template_version"] = template.version
         validated_data["dataset_type"] = template.dataset_type
         validated_data["file"] = uploaded_file
-        validated_data["original_filename"] = uploaded_file.name
+        safe_name = os.path.basename(uploaded_file.name)
+        if not re.fullmatch(r"[A-Za-z0-9_.\- ]+", safe_name):
+            raise serializers.ValidationError({"file": "Filename contains invalid characters. Use only letters, numbers, spaces, hyphens, underscores, and dots."})
+        validated_data["original_filename"] = safe_name
         validated_data["file_format"] = file_format
         validated_data["file_size_bytes"] = uploaded_file.size
         validated_data["template_headers_snapshot"] = template_headers_snapshot
