@@ -37,7 +37,7 @@ REST_FRAMEWORK = {
     ],
     "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
     "DEFAULT_PAGINATION_CLASS": "core.pagination.XVSPagination",
-    "PAGE_SIZE": 10,
+    "PAGE_SIZE": 25,
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.ScopedRateThrottle",
     ],

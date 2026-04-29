@@ -747,12 +747,11 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             ended = 1
 
         if target_user:
-            sessions = LoginSession.objects.filter(user=target_user, is_active=True)
-            ended    = sessions.count()
-            for s in sessions:
-                s.end(reason='FORCE_LOGOUT')
-                s.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
-            # Also blacklist all JWT tokens so the user cannot use existing access tokens.
+            ended = LoginSession.objects.filter(user=target_user, is_active=True).update(
+                is_active=False,
+                ended_at=timezone.now(),
+                end_reason='FORCE_LOGOUT',
+            )
             blacklist_all_user_tokens(target_user)
 
         log_auth_event(
@@ -783,7 +782,7 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_queryset(self):
         params = self.request.query_params
-        qs = AuthAttempt.objects.select_related('user', 'school').order_by('-created_at')
+        qs = AuthAttempt.objects.select_related('user', 'user__school', 'school').order_by('-created_at')
 
         if user_id := params.get('user_id'):
             qs = qs.filter(user_id=user_id)
