@@ -46,6 +46,8 @@ REST_FRAMEWORK = {
         "password_reset": "3/minute",
         "activation":     "10/minute",
     },
+    "DATETIME_FORMAT": "%Y-%m-%dT%H:%M:%S.%fZ",
+    "DATE_FORMAT":     "%Y-%m-%d",
 }
 
 SIMPLE_JWT = {
@@ -101,6 +103,9 @@ MIDDLEWARE = [
 ROOT_URLCONF = "apps.urls"
 CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
+
+SESSION_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_SAMESITE    = "Lax"
 
 TEMPLATES = [
     {

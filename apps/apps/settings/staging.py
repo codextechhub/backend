@@ -3,7 +3,8 @@ from decouple import config
 
 DEBUG = False
 
-ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="*").split(",")
+ALLOWED_HOSTS = config("ALLOWED_HOSTS").split(",")
+assert ALLOWED_HOSTS, "ALLOWED_HOSTS must be set in production."
 
 # Frontend URL
 FRONTEND_BASE_URL = 'https://api.codexng.com'  # Production
