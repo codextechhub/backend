@@ -171,9 +171,22 @@ class TokenRefreshView(APIView):
                 message="Token refreshed successfully.",
                 data={'access': str(refresh.access_token)},
             )
-        except TokenError:
+        except ExpiredTokenError:
             return error_response(
-                message="Invalid or expired token.",
+                message="Your session has expired. Please log in again.",
+                error={'error_code': 'TOKEN_EXPIRED'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        except TokenError as e:
+            if 'blacklisted' in str(e).lower():
+                return error_response(
+                    message="This session has been revoked. Please log in again.",
+                    error={'error_code': 'TOKEN_REVOKED'},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+            return error_response(
+                message="Invalid token. Please log in again.",
+                error={'error_code': 'TOKEN_INVALID'},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
 
