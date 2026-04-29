@@ -104,6 +104,10 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         LOCKED      = 'LOCKED',      'Locked (security)'
         DEACTIVATED = 'DEACTIVATED', 'Deactivated'
 
+    class Gender(models.TextChoices):
+        MALE    = 'MALE',   'Male'
+        FEMALE  = 'FEMALE', 'Female'
+
     # ── Tenant scoping ────────────────────────────────────────────────────────
 
     school = models.ForeignKey(
@@ -122,7 +126,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     email      = models.EmailField(max_length=254, unique=True)
     first_name = models.CharField(max_length=100)
     last_name  = models.CharField(max_length=100)
-    gender     = models.CharField(max_length=20, blank=True, default='')
+    gender     = models.CharField(max_length=20, choices=Gender.choices, blank=True, default='NA')
     phone      = models.CharField(max_length=32, blank=True, null=True, default='')
 
     # ──User type and status ───────────────────────────────────────────────────────
