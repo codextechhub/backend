@@ -622,9 +622,12 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
 
     def validate_file(self, value):
         """
-        Basic file extension check only.
+        Basic file extension and size check only.
         Deep content validation should happen in service layer.
         """
+        if value.size > 50 * 1024 * 1024:
+            raise serializers.ValidationError("File exceeds the 50 MB limit.")
+
         name = value.name.lower()
         ext = os.path.splitext(name)[1]
 
