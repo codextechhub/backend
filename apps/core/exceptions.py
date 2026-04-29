@@ -2,6 +2,7 @@
 
 import logging
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
 from rest_framework import status
 from rest_framework.response import Response
@@ -27,6 +28,15 @@ def custom_exception_handler(exc, context):
                           if hasattr(exc, "detail") else str(exc),
             }
         }, status=status.HTTP_401_UNAUTHORIZED)
+
+    # Intercept Django model/form validation errors (args[0] is a list, not a dict)
+    if isinstance(exc, DjangoValidationError):
+        messages = exc.messages if hasattr(exc, 'messages') else [str(exc)]
+        return Response({
+            "success": False,
+            "message": '; '.join(messages),
+            "error": {"code": "VALIDATION_ERROR", "detail": messages},
+        }, status=status.HTTP_400_BAD_REQUEST)
 
     # Intercept DB integrity violations (unique constraint, FK, not-null, etc.)
     if isinstance(exc, IntegrityError):
