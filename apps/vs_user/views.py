@@ -255,7 +255,7 @@ class InvitationResendView(APIView):
     RBAC: identity.user_email.invite
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "identity.user_email.invite"
+    rbac_permission    = "staff.profile.create"  # closest match — resend invite is part of user creation flow
 
     def post(self, request, user_id):
         try:
@@ -419,7 +419,7 @@ class AdminPasswordResetView(APIView):
     RBAC: identity.user_password.reset
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "identity.user_password.reset"
+    rbac_permission    = "staff.profile.update"  # closest match — no dedicated password-reset permission yet
 
     def post(self, request, user_id):
         from .models import User
@@ -512,14 +512,14 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     def get_permissions(self):
         action_permissions = {
-            'list':           'identity.user_account.view',
-            'retrieve':       'identity.user_account.view',
-            'create':         'identity.user_account.create',
-            'update':         'identity.user_account.update',
-            'partial_update': 'identity.user_account.update',
-            'destroy':        'identity.user_account.delete',
+            'list':           'platform.users.view',
+            'retrieve':       'platform.users.view',
+            'create':         'staff.profile.create',
+            'update':         'staff.profile.update',
+            'partial_update': 'staff.profile.update',
+            'destroy':        'platform.users.delete',
         }
-        # self.rbac_permission = action_permissions.get(self.action, 'identity.user_account.view')
+        self.rbac_permission = action_permissions.get(self.action, 'platform.users.view')
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def perform_create(self, serializer):
@@ -548,7 +548,7 @@ class UserEmailChangeView(APIView):
     RBAC: identity.email_address.verify
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "identity.email_address.verify"
+    rbac_permission    = "staff.profile.update"  # closest match — email change is a profile update
 
     def patch(self, request, user_id):
         try:
@@ -594,7 +594,7 @@ class UserSuspendView(APIView):
     RBAC: identity.user_account.lock
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "identity.user_account.lock"
+    rbac_permission    = "platform.users.suspend"
 
     def post(self, request, user_id):
         try:
@@ -623,7 +623,7 @@ class UserReactivateView(APIView):
     RBAC: identity.user_account.unlock
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "identity.user_account.unlock"
+    rbac_permission    = "platform.users.suspend"  # closest match — gates both suspend and reactivate
 
     def post(self, request, user_id):
         try:
@@ -652,7 +652,7 @@ class UserUnlockView(APIView):
     RBAC: identity.user_account.unlock
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "identity.user_account.unlock"
+    rbac_permission    = "platform.users.suspend"  # closest match — no dedicated unlock permission yet
 
     def post(self, request, user_id):
         try:
