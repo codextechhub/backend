@@ -526,6 +526,13 @@ class ImportTemplateColumn(TimeStampedModel):
             models.Index(fields=["template", "is_required"]),
         ]
 
+    def clean(self):
+        super().clean()
+        if not isinstance(self.allowed_values, list):
+            raise ValidationError({'allowed_values': 'allowed_values must be a JSON array.'})
+        if not all(isinstance(v, str) for v in self.allowed_values):
+            raise ValidationError({'allowed_values': 'Every item in allowed_values must be a string.'})
+
     def __str__(self) -> str:
         return f"{self.template.code} - {self.column_name}"
 
