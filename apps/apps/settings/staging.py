@@ -34,3 +34,8 @@ SECURE_HSTS_SECONDS = 31536000
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_HSTS_PRELOAD = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
+
+# No Celery worker on this tier — tasks execute synchronously in the web process.
+# Remove these two lines and add a worker service when upgrading.
+CELERY_TASK_ALWAYS_EAGER     = True
+CELERY_TASK_EAGER_PROPAGATES = True
