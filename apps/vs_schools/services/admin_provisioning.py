@@ -101,9 +101,7 @@ def provision_admin_user(
             # Invitation record — expiry gate for the activation link.
             InvitationService.create(user=user, invited_by=invited_by or user)
 
-            # Dispatch invite email (runs synchronously for now; swap for
-            # .delay() once Celery workers are live in production).
-            send_invitation_email_task(str(user.activation_key))
+            send_invitation_email_task.delay(str(user.activation_key))
 
             # Mark the admin link record so it is not re-processed.
             admin_link.invite_status = InviteStatus.SENT

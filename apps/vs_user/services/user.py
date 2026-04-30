@@ -71,15 +71,8 @@ class UserCreationService:
                     'message': 'Cannot assign a school role to a user with no school.',
                 })
 
-        # TODO: Dispatch invitation email — async, does not block the response.
-        # from ..tasks import send_invitation_email_task
-        # send_invitation_email_task.delay(user_id=str(user.id))
-
-        # TEMPORARY: Call synchronously instead of async
         from ..tasks import send_invitation_email_task
-        
-        # Call the task function directly (not via Celery)
-        send_invitation_email_task(str(user.activation_key))
+        send_invitation_email_task.delay(str(user.activation_key))
 
         log_auth_event(
             actor=requesting_user,
