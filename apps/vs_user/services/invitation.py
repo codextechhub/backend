@@ -179,9 +179,8 @@ class InvitationService:
                 invited_by=requested_by,
             )
 
-        from django.db import transaction as _txn
         from ..tasks import send_invitation_email_task
-        _txn.on_commit(lambda: send_invitation_email_task.delay(str(user.activation_key)))
+        send_invitation_email_task.delay(str(user.activation_key))
 
         log_auth_event(
             actor=requested_by,
