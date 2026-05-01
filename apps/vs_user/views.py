@@ -268,7 +268,7 @@ class InvitationResendView(APIView):
     RBAC: identity.user_email.invite
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    rbac_permission    = "staff.profile.create"  # closest match — resend invite is part of user creation flow
+    # rbac_permission    = "staff.profile.create"  # closest match — resend invite is part of user creation flow
 
     def post(self, request, user_id):
         try:
@@ -432,7 +432,7 @@ class AdminPasswordResetView(APIView):
     RBAC: identity.user_password.reset
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    rbac_permission    = "staff.profile.update"  # closest match — no dedicated password-reset permission yet
+    # rbac_permission    = "staff.profile.update"  # closest match — no dedicated password-reset permission yet
 
     def post(self, request, user_id):
         from .models import User
@@ -532,7 +532,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             'partial_update': 'staff.profile.update',
             'destroy':        'platform.users.delete',
         }
-        self.rbac_permission = action_permissions.get(self.action, 'platform.users.view')
+        # self.rbac_permission = action_permissions.get(self.action, 'platform.users.view')
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def perform_create(self, serializer):
@@ -561,7 +561,7 @@ class UserEmailChangeView(APIView):
     RBAC: identity.email_address.verify
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    rbac_permission    = "staff.profile.update"  # closest match — email change is a profile update
+    # rbac_permission    = "staff.profile.update"  # closest match — email change is a profile update
 
     def patch(self, request, user_id):
         try:
@@ -607,7 +607,7 @@ class UserSuspendView(APIView):
     RBAC: identity.user_account.lock
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    rbac_permission    = "platform.users.suspend"
+    # rbac_permission    = "platform.users.suspend"
 
     def post(self, request, user_id):
         try:
@@ -636,7 +636,7 @@ class UserReactivateView(APIView):
     RBAC: identity.user_account.unlock
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    rbac_permission    = "platform.users.suspend"  # closest match — gates both suspend and reactivate
+    # rbac_permission    = "platform.users.suspend"  # closest match — gates both suspend and reactivate
 
     def post(self, request, user_id):
         try:
@@ -665,7 +665,7 @@ class UserUnlockView(APIView):
     RBAC: identity.user_account.unlock
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    rbac_permission    = "platform.users.suspend"  # closest match — no dedicated unlock permission yet
+    # rbac_permission    = "platform.users.suspend"  # closest match — no dedicated unlock permission yet
 
     def post(self, request, user_id):
         try:
@@ -705,7 +705,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_permissions(self):
         if self.action == 'force_logout':
-            self.rbac_permission = 'platform.users.suspend'  # closest match — no dedicated force-logout permission yet
+            # self.rbac_permission = 'platform.users.suspend'  # closest match — no dedicated force-logout permission yet
             return [IsAuthenticatedAndActive(), HasRBACPermission()]
         return [IsAuthenticatedAndActive()]
 
@@ -830,7 +830,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_permissions(self):
         if self.action == 'unlock':
-            self.rbac_permission = 'platform.users.suspend'  # closest match — no dedicated unlock permission yet
+            # self.rbac_permission = 'platform.users.suspend'  # closest match — no dedicated unlock permission yet
             return [IsAuthenticatedAndActive(), HasRBACPermission()]
         return [IsAuthenticatedAndActive(), IsVisionStaff()]
 

@@ -115,7 +115,7 @@ class UserCreateSerializer(serializers.Serializer):
     # school and branch passed as UUIDs; resolved to objects in validate()
     school      = serializers.UUIDField(required=False, allow_null=True, default=None)
     branch      = serializers.UUIDField(required=False, allow_null=True, default=None)
-    role        = serializers.CharField(max_length=120, required=False, allow_blank=True, default='')
+    role        = serializers.CharField(max_length=120, required=True)
 
     def validate_email(self, value):
         # Enforce email uniqueness here to provide a clear error message, rather than relying on DB constraint which raises IntegrityError.
@@ -180,30 +180,29 @@ class UserCreateSerializer(serializers.Serializer):
                     {'branch': 'The selected branch does not belong to the selected school.'}
                 )
             
-        if attrs.get('role'):
-            role_id = attrs['role']
-            if user_type == User.UserType.VISION_STAFF:
-                try:
-                    role = PlatformRoleTemplate.objects.get(id=role_id)
-                except PlatformRoleTemplate.DoesNotExist:
-                    raise serializers.ValidationError(
-                        {'role': f'Platform role with id "{role_id}" not found.'}
-                    )
-            else:
-                school = attrs.get('school')
-                if not school:
-                    raise serializers.ValidationError(
-                        {'role': 'Role can only be assigned if a school is specified.'}
-                    )
-                try:
-                    role = RoleTemplate.objects.get(id=role_id, school=school)
-                except RoleTemplate.DoesNotExist:
-                    raise serializers.ValidationError(
-                        {'role': f'Role with id "{role_id}" not found in the specified school.'}
-                    )
+        role_id = attrs['role']
+        if user_type == User.UserType.VISION_STAFF:
+            try:
+                role = PlatformRoleTemplate.objects.get(id=role_id)
+            except PlatformRoleTemplate.DoesNotExist:
+                raise serializers.ValidationError(
+                    {'role': f'Platform role with id "{role_id}" not found.'}
+                )
+        else:
+            school = attrs.get('school')
+            if not school:
+                raise serializers.ValidationError(
+                    {'role': 'Role can only be assigned if a school is specified.'}
+                )
+            try:
+                role = RoleTemplate.objects.get(id=role_id, school=school)
+            except RoleTemplate.DoesNotExist:
+                raise serializers.ValidationError(
+                    {'role': f'Role with id "{role_id}" not found in the specified school.'}
+                )
 
-            attrs['role'] = role.name
-            attrs['role_instance'] = role
+        attrs['role'] = role.name
+        attrs['role_instance'] = role
 
         return attrs
 

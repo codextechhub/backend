@@ -50,26 +50,20 @@ class UserCreationService:
             invited_by=requesting_user,
         )
 
-        # Role Assignment
-        if role_instance:
-            if isinstance(role_instance, PlatformRoleTemplate):
-                PlatformUserRoleAssignment.objects.create(
-                    user=user,
-                    role=role_instance,
-                    assigned_by=requesting_user,
-                )
-            elif user.school:
-                UserRoleAssignment.objects.create(
-                    user=user,
-                    role=role_instance,
-                    school=user.school,
-                    assigned_by=requesting_user,
-                )
-            else:
-                raise ValueError({
-                    'error_code': 'ROLE_ASSIGNMENT_FAILED',
-                    'message': 'Cannot assign a school role to a user with no school.',
-                })
+        # Role assignment — always required; serializer guarantees role_instance is set.
+        if isinstance(role_instance, PlatformRoleTemplate):
+            PlatformUserRoleAssignment.objects.create(
+                user=user,
+                role=role_instance,
+                assigned_by=requesting_user,
+            )
+        else:
+            UserRoleAssignment.objects.create(
+                user=user,
+                role=role_instance,
+                school=user.school,
+                assigned_by=requesting_user,
+            )
 
         from ..tasks import send_invitation_email_task
         send_invitation_email_task.delay(str(user.activation_key))
