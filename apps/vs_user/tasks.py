@@ -33,6 +33,23 @@ logger = logging.getLogger('vs_user.tasks')
 # SECTION 1 — INVITATION EMAIL
 # =============================================================================
 
+def _record_invitation_email(activation_key: str, *, success: bool, error: str = '', sent_at=None):
+    """Update the UserInvitation email tracking fields. Never raises."""
+    try:
+        from .models import UserInvitation
+        inv = UserInvitation.objects.get(user__activation_key=activation_key)
+        inv.email_attempts += 1
+        if success:
+            inv.email_status    = UserInvitation.EmailStatus.SENT
+            inv.email_sent_at   = sent_at
+            inv.email_last_error = ''
+        else:
+            inv.email_last_error = error
+        inv.save(update_fields=['email_attempts', 'email_status', 'email_sent_at', 'email_last_error', 'updated_at'])
+    except Exception:
+        logger.exception('Failed to update invitation email status for activation_key=%s', activation_key)
+
+
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
 def send_invitation_email_task(self, activation_key: str):
     """
@@ -55,21 +72,23 @@ def send_invitation_email_task(self, activation_key: str):
         if not base_url:
             raise ImproperlyConfigured('FRONTEND_BASE_URL must be set in settings.')
 
-        # The invitation link uses the user's ID — no token needed.
         invitation_url = f'{base_url}/v1/user/auth/activate/{user.activation_key}/preview/'
 
         context = {
-            'user':             user,
-            'school_name': school_name,
-            'invitation_url':   invitation_url,
-            'expiry_days':      7,
+            'user':           user,
+            'school_name':    school_name,
+            'invitation_url': invitation_url,
+            'expiry_days':    7,
         }
 
-        # TODO: Replace send_mail with Notification Engine (Module 7) once available.
         html_message  = render_to_string('vs_user/emails/invitation.html', context)
         plain_message = render_to_string('vs_user/emails/invitation.txt', context)
 
-        subject = f'You have been invited to {school_name} on X Vision Systems' if user.school else 'You have been invited to X Vision Systems'
+        subject = (
+            f'You have been invited to {school_name} on X Vision Systems'
+            if user.school else
+            'You have been invited to X Vision Systems'
+        )
 
         send_mail(
             subject=subject,
@@ -80,18 +99,29 @@ def send_invitation_email_task(self, activation_key: str):
             fail_silently=False,
         )
 
-        logger.info(f'Invitation email sent to {user.email}')
-        
+        from django.utils import timezone as tz
+        _record_invitation_email(activation_key, success=True, sent_at=tz.now())
+        logger.info('Invitation email sent to %s', user.email)
+
     except User.DoesNotExist:
-        logger.error(f'send_invitation_email_task: no user with activation_key={activation_key}')
+        logger.error('send_invitation_email_task: no user with activation_key=%s', activation_key)
         return
-        
-    except SMTPException as smtp_exc:
-        logger.error(f'SMTP error sending invitation to user {user.email}: {smtp_exc}')
-        raise self.retry(exc=smtp_exc)
-    
+
     except Exception as exc:
-        logger.error(f'send_invitation_email_task failed for user_id={user.email}: {exc}')
+        error_str = str(exc)
+        is_final  = self.request.retries >= self.max_retries
+        _record_invitation_email(activation_key, success=False, error=error_str)
+        if is_final:
+            from .models import UserInvitation
+            try:
+                inv = UserInvitation.objects.get(user__activation_key=activation_key)
+                inv.email_status = UserInvitation.EmailStatus.FAILED
+                inv.save(update_fields=['email_status', 'updated_at'])
+            except Exception:
+                pass
+            logger.error('Invitation email permanently failed for %s: %s', activation_key, error_str)
+            return
+        logger.warning('Invitation email attempt %s failed for %s: %s', self.request.retries + 1, activation_key, error_str)
         raise self.retry(exc=exc)
 
 

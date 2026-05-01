@@ -266,6 +266,11 @@ class UserInvitation(TimeStampedModel):
     On resend, the existing record is reset rather than a new one created.
     """
 
+    class EmailStatus(models.TextChoices):
+        PENDING = 'PENDING', 'Pending'
+        SENT    = 'SENT',    'Sent'
+        FAILED  = 'FAILED',  'Failed'
+
     # OneToOne — a user can only have one invitation record at a time.
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
@@ -286,6 +291,16 @@ class UserInvitation(TimeStampedModel):
 
     # Flipped to True on successful activation. Once True the activation link is dead.
     is_used = models.BooleanField(default=False)
+
+    # ── Email delivery tracking ───────────────────────────────────────────────
+    email_status    = models.CharField(
+        max_length=10,
+        choices=EmailStatus.choices,
+        default=EmailStatus.PENDING,
+    )
+    email_sent_at   = models.DateTimeField(null=True, blank=True)
+    email_last_error = models.TextField(blank=True, default='')
+    email_attempts  = models.PositiveSmallIntegerField(default=0)
 
     # ── State helpers ─────────────────────────────────────────────────────────
 
@@ -314,11 +329,18 @@ class UserInvitation(TimeStampedModel):
         Reset for a resend. Gives the user a fresh 7-day window from now.
         Updates invited_by if a new admin triggered the resend.
         """
-        self.is_used    = False
-        self.expires_at = timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS)
+        self.is_used         = False
+        self.expires_at      = timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS)
+        self.email_status    = self.EmailStatus.PENDING
+        self.email_sent_at   = None
+        self.email_last_error = ''
+        self.email_attempts  = 0
         if invited_by:
             self.invited_by = invited_by
-        self.save(update_fields=['is_used', 'expires_at', 'invited_by_id'])
+        self.save(update_fields=[
+            'is_used', 'expires_at', 'invited_by_id',
+            'email_status', 'email_sent_at', 'email_last_error', 'email_attempts',
+        ])
 
     def __str__(self) -> str:
         return f'Invitation<user={self.user_id} used={self.is_used}>'
