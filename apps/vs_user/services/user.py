@@ -66,7 +66,7 @@ class UserCreationService:
             )
 
         from ..tasks import send_invitation_email_task
-        send_invitation_email_task.delay(str(user.activation_key))
+        transaction.on_commit(lambda: send_invitation_email_task.delay(str(user.activation_key)))
 
         log_auth_event(
             actor=requesting_user,
