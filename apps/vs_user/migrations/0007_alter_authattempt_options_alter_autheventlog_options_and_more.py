@@ -55,6 +55,22 @@ class Migration(migrations.Migration):
                 name="vs_user_log_is_acti_7f93cc_idx",
             ),
         ),
+        # Expire duplicate unused resets before adding the unique constraint.
+        # Keeps the most recent unused record per user; marks older ones as used now.
+        migrations.RunSQL(
+            sql="""
+                UPDATE vs_user_passwordresetrequest
+                SET used_at = NOW()
+                WHERE used_at IS NULL
+                  AND id NOT IN (
+                      SELECT DISTINCT ON (user_id) id
+                      FROM vs_user_passwordresetrequest
+                      WHERE used_at IS NULL
+                      ORDER BY user_id, created_at DESC
+                  );
+            """,
+            reverse_sql=migrations.RunSQL.noop,
+        ),
         migrations.AddConstraint(
             model_name="passwordresetrequest",
             constraint=models.UniqueConstraint(
