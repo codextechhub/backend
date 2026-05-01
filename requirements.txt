@@ -4,7 +4,7 @@ djangorestframework
 djangorestframework-simplejwt>=5.5.1
 django-cors-headers
 Pillow
-celery
+celery[redis]
 openpyxl
 psycopg2-binary
 gunicorn
