@@ -34,6 +34,10 @@ SECURE_HSTS_SECONDS = 31536000
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
 SECURE_HSTS_PRELOAD = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
+# Email settings — use Zoho SMTP for production, which works on port 465 + SSL where 587/TLS is blocked.
+EMAIL_PORT    = 465
+EMAIL_USE_SSL = True
+EMAIL_USE_TLS = False
 
 # No Celery worker on this tier — tasks execute synchronously in the web process.
 # Remove these two lines and add a worker service when upgrading.
