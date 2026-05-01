@@ -1,7 +1,7 @@
 PyMySQL~=1.1.0
 Django>=5.0
 djangorestframework
-djangorestframework-simplejwt
+djangorestframework-simplejwt>=5.5.1
 django-cors-headers
 Pillow
 celery

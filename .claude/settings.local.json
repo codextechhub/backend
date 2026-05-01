@@ -38,7 +38,8 @@
       "Bash(python manage.py makemigrations *)",
       "Bash(python manage.py migrate *)",
       "Bash(git *)",
-      "Bash(npx --no-install eslint src/pages/Dashboard.jsx)"
+      "Bash(npx --no-install eslint src/pages/Dashboard.jsx)",
+      "Bash(pip index *)"
     ]
   }
 }
