@@ -115,7 +115,15 @@ class UserCreateSerializer(serializers.Serializer):
     # school and branch passed as UUIDs; resolved to objects in validate()
     school      = serializers.UUIDField(required=False, allow_null=True, default=None)
     branch      = serializers.UUIDField(required=False, allow_null=True, default=None)
-    role        = serializers.CharField(max_length=120, required=True)
+    role        = serializers.CharField(
+        max_length=120,
+        required=True,
+        error_messages={
+            'required': 'A role must be assigned to the user.',
+            'blank':    'A role must be assigned to the user.',
+            'null':     'A role must be assigned to the user.',
+        },
+    )
 
     def validate_email(self, value):
         # Enforce email uniqueness here to provide a clear error message, rather than relying on DB constraint which raises IntegrityError.
@@ -188,6 +196,12 @@ class UserCreateSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {'role': f'Platform role with id "{role_id}" not found.'}
                 )
+            if role_id == 'vision-super-admin':
+                from vs_rbac.models import PlatformUserRoleAssignment
+                if PlatformUserRoleAssignment.objects.filter(role_id='vision-super-admin').exists():
+                    raise serializers.ValidationError(
+                        {'role': 'A Vision Super Admin already exists. Only one is allowed.'}
+                    )
         else:
             school = attrs.get('school')
             if not school:
