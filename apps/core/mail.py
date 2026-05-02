@@ -30,6 +30,7 @@ def send_email(
     html_message: str,
     recipient_list: list[str],
     from_email: str | None = None,
+    cc: list[str] | None = None,
 ) -> None:
     """
     Central email sender for the platform.
@@ -39,7 +40,7 @@ def send_email(
     testing). Clear EMAIL_CC in the environment to disable.
     """
     from_email = from_email or build_from_email()
-    cc = getattr(settings, 'EMAIL_CC', [])
+    cc = cc or getattr(settings, 'EMAIL_CC', [])
 
     msg = EmailMultiAlternatives(
         subject=subject,

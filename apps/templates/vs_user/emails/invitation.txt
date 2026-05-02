@@ -8,7 +8,7 @@ YOUR ACCOUNT DETAILS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Email:       {{ user.email }}
 Institution: {{ school_name }}
-Role:        {{ user.get_user_type_display }}
+Role:        {{ user.role }}
 
 ACTIVATE YOUR ACCOUNT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
