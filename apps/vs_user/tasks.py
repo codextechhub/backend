@@ -18,13 +18,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 import logging
-from smtplib import SMTPException
 
 from celery import shared_task
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
-from django.core.mail import send_mail
 from django.template.loader import render_to_string
+
+from core.mail import build_from_email, send_email
 
 logger = logging.getLogger('vs_user.tasks')
 
@@ -90,13 +90,12 @@ def send_invitation_email_task(self, activation_key: str):
             'You have been invited to X Vision Systems'
         )
 
-        send_mail(
+        send_email(
             subject=subject,
-            message=plain_message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
+            plain_message=plain_message,
             html_message=html_message,
-            fail_silently=False,
+            from_email=build_from_email(user.invited_by_name or None),
+            recipient_list=[user.email],
         )
 
         from django.utils import timezone as tz
@@ -130,7 +129,7 @@ def send_invitation_email_task(self, activation_key: str):
 # =============================================================================
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
-def send_password_reset_email_task(self, activation_key: str, origin: str):
+def send_password_reset_email_task(self, activation_key: str, origin: str, request=None):
     """
     Sends a password reset email.
 
@@ -167,14 +166,20 @@ def send_password_reset_email_task(self, activation_key: str, origin: str):
             if origin == 'SELF'
             else 'Your CodeX Vision password has been reset by an administrator'
         )
+        senders_name = (
+            'CodeX System' 
+            if origin == 'SELF' 
+            else request.user.full_name() 
+            if request and request.user.is_authenticated 
+            else 'CodeX System'
+        )
 
-        send_mail(
+        send_email(
             subject=subject,
-            message=plain_message,
-            from_email=settings.DEFAULT_FROM_EMAIL,
-            recipient_list=[user.email],
+            plain_message=plain_message,
             html_message=html_message,
-            fail_silently=False,
+            from_email=build_from_email(senders_name),
+            recipient_list=[user.email],
         )
 
         logger.info(f'Password reset email sent to {user.email} (origin={origin})')

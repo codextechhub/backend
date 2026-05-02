@@ -174,6 +174,12 @@ DEFAULT_FROM_EMAIL = config(
     "DEFAULT_FROM_EMAIL",
     default="CodeX Vision <chidera.ohanenye@codexng.com>",
 )
+# Comma-separated CC addresses added to every outgoing email. Clear to disable.
+EMAIL_CC = [
+    addr.strip()
+    for addr in config("EMAIL_CC", default="").split(",")
+    if addr.strip()
+]
 FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:3000")
 
 # Internationalization
