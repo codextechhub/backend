@@ -81,6 +81,7 @@ INSTALLED_APPS = [
     "vs_rbac",
     "vs_audit",
     "vs_import_data",
+    'vs_config',
 ]
 
 MIDDLEWARE = [

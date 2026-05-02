@@ -24,6 +24,7 @@ urlpatterns = [
     path("v1/user/", include("vs_user.urls")),
     path("v1/rbac/", include("vs_rbac.urls")),
     path("v1/audit/", include("vs_audit.urls")),
+    path('v1/config/', include('vs_config.urls')),
     # path("admin/", admin.site.urls),
     # Authentication
     path("v1/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
