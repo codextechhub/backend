@@ -8,11 +8,11 @@ from vs_user.models import UserAccount
 from vs_rbac.models import (
     Permission,
     PermissionDependency,
-    RoleTemplate,
-    RolePermission,
-    UserRoleAssignment,
-    RoleChangeRequest,
-    RoleChangeDeltaItem,
+    SchoolRoleTemplate,
+    SchoolRolePermission,
+    SchoolUserRoleAssignment,
+    SchoolRoleChangeRequest,
+    SchoolRoleChangeDeltaItem,
     PlatformRoleTemplate,
     PlatformRolePermission,
     PlatformUserRoleAssignment,
@@ -97,11 +97,11 @@ def make_dependency(permission_key, depends_on_key):
 def make_role(school, name="Test Role", **kwargs):
     defaults = {"status": "ACTIVE"}
     defaults.update(kwargs)
-    return RoleTemplate.objects.create(school=school, name=name, **defaults)
+    return SchoolRoleTemplate.objects.create(school=school, name=name, **defaults)
 
 
 def make_role_permission(role, permission, granted=True, **kwargs):
-    return RolePermission.objects.create(
+    return SchoolRolePermission.objects.create(
         role=role, permission=permission, granted=granted, **kwargs
     )
 
@@ -109,7 +109,7 @@ def make_role_permission(role, permission, granted=True, **kwargs):
 def make_assignment(school, user, role, **kwargs):
     defaults = {"assignment_status": "ACTIVE"}
     defaults.update(kwargs)
-    return UserRoleAssignment.objects.create(
+    return SchoolUserRoleAssignment.objects.create(
         school=school, user=user, role=role, **defaults
     )
 
@@ -117,7 +117,7 @@ def make_assignment(school, user, role, **kwargs):
 def make_role_change_request(school, user, role, justification="Test justification", **kwargs):
     defaults = {"status": "PENDING"}
     defaults.update(kwargs)
-    return RoleChangeRequest.objects.create(
+    return SchoolRoleChangeRequest.objects.create(
         school=school,
         requested_by=user,
         target_role=role,

@@ -11,9 +11,9 @@ Idempotently seeds:
   1. Permission registry               → Permission          (161 keys)
   2. Permission dependencies           → PermissionDependency
   3. Permission groups (reusable)      → PermissionGroup + GroupPermission
-  4. School role templates             → RoleTemplate        (school-scoped)
-  5. School role↔permission direct map → RolePermission      (residuals only)
-  6. School role↔group attachments     → RoleGroup
+  4. School role templates             → SchoolRoleTemplate        (school-scoped)
+  5. School role↔permission direct map → SchoolRolePermission      (residuals only)
+  6. School role↔group attachments     → SchoolRoleGroup
   7. Platform role templates           → PlatformRoleTemplate (Vision-owned)
   8. Platform role↔permission direct   → PlatformRolePermission (residuals)
   9. Platform role↔group attachments   → PlatformRoleGroup
@@ -35,7 +35,7 @@ Notes
 -----
 * Every write uses update_or_create so the command is safe to re-run.
 * --dry-run prints a summary without touching the database.
-* Direct RolePermission rows are only created for permissions NOT already
+* Direct SchoolRolePermission rows are only created for permissions NOT already
   covered by an attached group (residuals), so the effective permission set
   equals the explicitly declared ``permissions`` list for every role.
 * Platform roles are global; they are always seeded regardless of school.
@@ -1170,13 +1170,13 @@ PERMISSION_GROUPS: list[dict] = [
 #      * groups       : list of group names to attach
 #      * permissions  : canonical full permission set for this role
 #
-#    The seeder attaches the groups, then creates direct ``RolePermission``
+#    The seeder attaches the groups, then creates direct ``SchoolRolePermission``
 #    rows only for permissions in ``permissions`` that are not already
 #    covered by the attached groups. The resulting effective set is
 #    identical to ``permissions``.
 # ---------------------------------------------------------------------------
 
-# School roles are now created per-institution from SuggestedRoleTemplate.
+# School roles are now created per-institution from PrebuiltSchoolRoleTemplate.
 # This list is intentionally empty — the old seeder-created records are
 # removed at step 4 below.
 SCHOOL_ROLES: list[dict] = []
@@ -1672,7 +1672,7 @@ PLATFORM_ROLES: list[dict] = [
 class Command(BaseCommand):
     help = (
         "Idempotently seed Permissions, PermissionDependencies, PermissionGroups, "
-        "school RoleTemplates, and PlatformRoleTemplates."
+        "school SchoolRoleTemplates, and PlatformRoleTemplates."
     )
 
     def add_arguments(self, parser):
@@ -1708,9 +1708,9 @@ class Command(BaseCommand):
             PlatformRolePermission,
             PlatformRoleTemplate,
             PlatformUserRoleAssignment,
-            RoleGroup,
-            RolePermission,
-            RoleTemplate,
+            SchoolRoleGroup,
+            SchoolRolePermission,
+            SchoolRoleTemplate,
         )
         from vs_schools.models import School
 
@@ -1838,24 +1838,24 @@ class Command(BaseCommand):
             )
         )
 
-        # ── 4. Remove legacy school-less RoleTemplates ───────────────────
-        # School roles are now created per-institution from SuggestedRoleTemplate.
-        # Any RoleTemplate with school=None was seeded by the old approach and
+        # ── 4. Remove legacy school-less SchoolRoleTemplates ───────────────────
+        # School roles are now created per-institution from PrebuiltSchoolRoleTemplate.
+        # Any SchoolRoleTemplate with school=None was seeded by the old approach and
         # must be removed so the new structure is the single source of truth.
-        self.stdout.write("\n[4/5] Removing legacy school-less RoleTemplates …")
+        self.stdout.write("\n[4/5] Removing legacy school-less SchoolRoleTemplates …")
         removed_count = 0
 
         if not dry_run:
             with transaction.atomic():
-                legacy_qs = RoleTemplate.objects.filter(school__isnull=True)
+                legacy_qs = SchoolRoleTemplate.objects.filter(school__isnull=True)
                 removed_count = legacy_qs.count()
                 if removed_count:
                     legacy_qs.delete()
         else:
-            removed_count = RoleTemplate.objects.filter(school__isnull=True).count()
+            removed_count = SchoolRoleTemplate.objects.filter(school__isnull=True).count()
 
         self.stdout.write(
-            self.style.SUCCESS(f"  Removed {removed_count} legacy school-less RoleTemplate(s).")
+            self.style.SUCCESS(f"  Removed {removed_count} legacy school-less SchoolRoleTemplate(s).")
         )
 
         # ── 5. Platform Role Templates ────────────────────────────────────

@@ -217,7 +217,7 @@ class UserHasRBACPermissionTests(TestCase):
         )
 
     def test_school_user_denied_permission_not_granted(self):
-        """A RolePermission with granted=False should not count."""
+        """A SchoolRolePermission with granted=False should not count."""
         user = make_staff_user(self.branch)
         role = make_role(self.school, name="Accountant")
         make_role_permission(role, self.perm_view, granted=False)

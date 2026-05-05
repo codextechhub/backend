@@ -46,12 +46,12 @@ urlpatterns = [
     # -------------------------------------------------------------------------
     path(
         "schools/<slug:school_slug>/roles/",
-        views.RoleTemplateListCreateView.as_view(),
+        views.SchoolRoleTemplateListCreateView.as_view(),
         name="rbac-role-list-create",
     ),
     path(
         "schools/<slug:school_slug>/roles/<int:id>/",
-        views.RoleTemplateDetailView.as_view(),
+        views.SchoolRoleTemplateDetailView.as_view(),
         name="rbac-role-detail",
     ),
 
@@ -60,17 +60,17 @@ urlpatterns = [
     # -------------------------------------------------------------------------
     path(
         "schools/<slug:school_slug>/role-assignments/",
-        views.UserRoleAssignmentListCreateView.as_view(),
+        views.SchoolUserRoleAssignmentListCreateView.as_view(),
         name="rbac-assignment-list-create",
     ),
     path(
         "schools/<slug:school_slug>/role-assignments/<int:id>/",
-        views.UserRoleAssignmentDetailView.as_view(),
+        views.SchoolUserRoleAssignmentDetailView.as_view(),
         name="rbac-assignment-detail",
     ),
 
     # -------------------------------------------------------------------------
-    # School -> Vision Role Change Requests
+    # School Role Change Requests (school-internal approval)
     # -------------------------------------------------------------------------
     path(
         "schools/<slug:school_slug>/role-change-requests/",
@@ -78,21 +78,21 @@ urlpatterns = [
         name="rbac-role-change-request-list-create",
     ),
 
-    # Vision review queue
+    # School-admin approval queue and decision endpoints
     path(
-        "vision/role-change-requests/",
-        views.VisionRoleChangeRequestQueueView.as_view(),
-        name="rbac-vision-role-change-queue",
+        "schools/<slug:school_slug>/role-change-requests/approval/",
+        views.SchoolRoleChangeRequestApprovalQueueView.as_view(),
+        name="rbac-role-change-approval-queue",
     ),
     path(
-        "vision/role-change-requests/<int:id>/",
-        views.VisionRoleChangeRequestDetailView.as_view(),
-        name="rbac-vision-role-change-detail",
+        "schools/<slug:school_slug>/role-change-requests/<int:id>/",
+        views.SchoolRoleChangeRequestApprovalDetailView.as_view(),
+        name="rbac-role-change-approval-detail",
     ),
     path(
-        "vision/role-change-requests/<int:request_id>/decide/",
-        views.VisionRoleChangeRequestDecisionView.as_view(),
-        name="rbac-vision-role-change-decide",
+        "schools/<slug:school_slug>/role-change-requests/<int:request_id>/decide/",
+        views.SchoolRoleChangeRequestDecisionView.as_view(),
+        name="rbac-role-change-decide",
     ),
 
     # -------------------------------------------------------------------------

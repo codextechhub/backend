@@ -11,12 +11,12 @@ Usage:
 
 Resolution chain:
     User
-      └─ UserRoleAssignment (active)
-           └─ RoleTemplate
-                ├─ RolePermission        → direct grants / explicit denies
-                └─ RoleGroup → PermissionGroup → GroupPermission  → grants
+      └─ SchoolUserRoleAssignment (active)
+           └─ SchoolRoleTemplate
+                ├─ SchoolRolePermission        → direct grants / explicit denies
+                └─ SchoolRoleGroup → PermissionGroup → GroupPermission  → grants
 
-    Explicit denies from ``RolePermission`` override every grant source.
+    Explicit denies from ``SchoolRolePermission`` override every grant source.
 """
 from __future__ import annotations
 
@@ -27,9 +27,9 @@ from .models import (
     PlatformRoleGroup,
     PlatformRolePermission,
     PlatformUserRoleAssignment,
-    RoleGroup,
-    RolePermission,
-    UserRoleAssignment,
+    SchoolRoleGroup,
+    SchoolRolePermission,
+    SchoolUserRoleAssignment,
 )
 
 
@@ -49,13 +49,13 @@ def get_effective_permissions(user, school=None) -> Set[str]:
     Compute the full set of granted permission keys for a user.
 
     For school-scoped users: resolves permissions from school role assignments,
-    unioning direct ``RolePermission`` grants with permissions derived from any
+    unioning direct ``SchoolRolePermission`` grants with permissions derived from any
     ``PermissionGroup`` attached to the role.
 
     For Vision staff: also resolves permissions from platform role assignments
     the same way.
 
-    Explicit denies (``RolePermission.granted=False`` or
+    Explicit denies (``SchoolRolePermission.granted=False`` or
     ``PlatformRolePermission.granted=False``) override every grant source.
     """
     granted: Set[str] = set()
@@ -66,16 +66,16 @@ def get_effective_permissions(user, school=None) -> Set[str]:
     # School-level roles
     if school is not None:
         active_role_ids = list(
-            UserRoleAssignment.objects.filter(
+            SchoolUserRoleAssignment.objects.filter(
                 school=school,
                 user=user,
-                assignment_status=UserRoleAssignment.AssignmentStatus.ACTIVE,
+                assignment_status=SchoolUserRoleAssignment.AssignmentStatus.ACTIVE,
             ).values_list("role_id", flat=True)
         )
 
         if active_role_ids:
             # Direct role↔permission grants (and explicit denies)
-            for perm_key, is_granted in RolePermission.objects.filter(
+            for perm_key, is_granted in SchoolRolePermission.objects.filter(
                 role_id__in=active_role_ids,
             ).values_list("permission_id", "granted"):
                 if is_granted:
@@ -84,7 +84,7 @@ def get_effective_permissions(user, school=None) -> Set[str]:
                     denied.add(perm_key)
 
             # Permissions from attached groups
-            group_ids = RoleGroup.objects.filter(
+            group_ids = SchoolRoleGroup.objects.filter(
                 role_id__in=active_role_ids,
             ).values_list("group_id", flat=True)
             granted.update(_group_permission_keys(group_ids))

@@ -24,8 +24,8 @@ def user_has_rbac_permission(user, permission_key, school=None):
         return False
 
     from .models import (
-        RolePermission,
-        UserRoleAssignment,
+        SchoolRolePermission,
+        SchoolUserRoleAssignment,
         PlatformRolePermission,
         PlatformUserRoleAssignment,
     )
@@ -51,7 +51,7 @@ def user_has_rbac_permission(user, permission_key, school=None):
     if school is not None:
         filters &= Q(role__user_assignments__school=school)
 
-    return RolePermission.objects.filter(filters).exists()
+    return SchoolRolePermission.objects.filter(filters).exists()
 
 
 class IsAuthenticatedAndActive(BasePermission):

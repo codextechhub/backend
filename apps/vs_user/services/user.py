@@ -8,7 +8,7 @@ from django.utils import timezone
 
 from ..models import LoginSession, User, AuthEventLog
 from .audit import log_auth_event, blacklist_all_user_tokens
-from vs_rbac.models import RoleTemplate, UserRoleAssignment, PlatformRoleTemplate, PlatformUserRoleAssignment
+from vs_rbac.models import SchoolRoleTemplate, SchoolUserRoleAssignment, PlatformRoleTemplate, PlatformUserRoleAssignment
 
 
 class UserCreationService:
@@ -58,7 +58,7 @@ class UserCreationService:
                 assigned_by=requesting_user,
             )
         else:
-            UserRoleAssignment.objects.create(
+            SchoolUserRoleAssignment.objects.create(
                 user=user,
                 role=role_instance,
                 school=user.school,

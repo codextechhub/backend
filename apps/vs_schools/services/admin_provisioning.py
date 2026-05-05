@@ -53,7 +53,7 @@ def provision_admin_user(
     email = contact.email.lower().strip()
 
     try:
-        from vs_rbac.models import RoleTemplate, UserRoleAssignment
+        from vs_rbac.models import SchoolRoleTemplate, SchoolUserRoleAssignment
         with transaction.atomic():  # savepoint — rollback here if anything fails
             # Idempotent: if the user already exists just stamp the link as sent.
             existing = User.objects.filter(email=email).first()
@@ -70,7 +70,7 @@ def provision_admin_user(
 
             first_name, last_name = _split_name(contact.full_name)
             invited_by = actor if isinstance(actor, User) else None
-            role_obj = RoleTemplate.objects.filter(id=role, school=school).first() if role else None
+            role_obj = SchoolRoleTemplate.objects.filter(id=role, school=school).first() if role else None
 
             user = User.objects.create_user(
                 email=email,
@@ -91,7 +91,7 @@ def provision_admin_user(
 
             # Role Assignment
             if role_obj:
-                UserRoleAssignment.objects.create(
+                SchoolUserRoleAssignment.objects.create(
                     user=user,
                     role=role_obj,
                     school=user.school,

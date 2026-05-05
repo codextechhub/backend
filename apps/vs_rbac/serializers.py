@@ -15,12 +15,12 @@ from .models import (
     PlatformRolePermission,
     PlatformRoleTemplate,
     PlatformUserRoleAssignment,
-    RoleChangeDeltaItem,
-    RoleChangeRequest,
-    RoleGroup,
-    RolePermission,
-    RoleTemplate,
-    UserRoleAssignment,
+    SchoolRoleChangeDeltaItem,
+    SchoolRoleChangeRequest,
+    SchoolRoleGroup,
+    SchoolRolePermission,
+    SchoolRoleTemplate,
+    SchoolUserRoleAssignment,
 )
 
 
@@ -235,10 +235,10 @@ class PermissionGroupDetailSerializer(
             # Any role (school or platform) attached to this group now has a
             # changed effective permission set, so bump their versions to
             # invalidate caches downstream.
-            attached_role_ids = RoleGroup.objects.filter(
+            attached_role_ids = SchoolRoleGroup.objects.filter(
                 group=instance
             ).values_list("role_id", flat=True)
-            for role in RoleTemplate.objects.filter(id__in=list(attached_role_ids)):
+            for role in SchoolRoleTemplate.objects.filter(id__in=list(attached_role_ids)):
                 role.bump_version()
                 role.save(update_fields=["version", "updated_at"])
 
@@ -257,7 +257,7 @@ class PermissionGroupDetailSerializer(
 # -----------------------------------------------------------------------------
 # 2) School Role Templates + Role Permissions
 # -----------------------------------------------------------------------------
-class RolePermissionSerializer(serializers.ModelSerializer):
+class SchoolRolePermissionSerializer(serializers.ModelSerializer):
     """
     One permission row attached to a school role template.
     """
@@ -265,7 +265,7 @@ class RolePermissionSerializer(serializers.ModelSerializer):
     permission_key = serializers.CharField(source="permission.key", read_only=True)
 
     class Meta:
-        model = RolePermission
+        model = SchoolRolePermission
         fields = [
             "id",
             "permission",
@@ -286,7 +286,7 @@ class RolePermissionSerializer(serializers.ModelSerializer):
         ]
 
 
-class RolePermissionWriteSerializer(serializers.ModelSerializer):
+class SchoolRolePermissionWriteSerializer(serializers.ModelSerializer):
     """
     Beginner-friendly write serializer for a single role permission row.
     """
@@ -294,7 +294,7 @@ class RolePermissionWriteSerializer(serializers.ModelSerializer):
     permission_key = serializers.CharField(write_only=True)
 
     class Meta:
-        model = RolePermission
+        model = SchoolRolePermission
         fields = [
             "id",
             "permission_key",
@@ -313,7 +313,7 @@ class RolePermissionWriteSerializer(serializers.ModelSerializer):
         return value
 
 
-class RoleTemplateListSerializer(serializers.ModelSerializer):
+class SchoolRoleTemplateListSerializer(serializers.ModelSerializer):
     """
     Lightweight serializer for list screens.
     """
@@ -322,7 +322,7 @@ class RoleTemplateListSerializer(serializers.ModelSerializer):
     permissions_count = serializers.IntegerField(read_only=True)
 
     class Meta:
-        model = RoleTemplate
+        model = SchoolRoleTemplate
         fields = [
             "id",
             "school",
@@ -346,13 +346,13 @@ class RoleTemplateListSerializer(serializers.ModelSerializer):
         ]
 
 
-class RoleGroupAttachmentSerializer(serializers.ModelSerializer):
+class SchoolRoleGroupAttachmentSerializer(serializers.ModelSerializer):
     """Read-only view of a permission group attached to a school role."""
 
     group = PermissionGroupListSerializer(read_only=True)
 
     class Meta:
-        model = RoleGroup
+        model = SchoolRoleGroup
         fields = [
             "id",
             "group",
@@ -364,7 +364,7 @@ class RoleGroupAttachmentSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class RoleTemplateDetailSerializer(
+class SchoolRoleTemplateDetailSerializer(
     PermissionKeyListValidationMixin, serializers.ModelSerializer
 ):
     """
@@ -384,8 +384,8 @@ class RoleTemplateDetailSerializer(
       by dependencies can be satisfied via either source.
     """
 
-    role_permissions = RolePermissionSerializer(many=True, read_only=True)
-    role_groups = RoleGroupAttachmentSerializer(many=True, read_only=True)
+    role_permissions = SchoolRolePermissionSerializer(many=True, read_only=True)
+    role_groups = SchoolRoleGroupAttachmentSerializer(many=True, read_only=True)
 
     permission_keys = serializers.ListField(
         child=serializers.CharField(),
@@ -401,7 +401,7 @@ class RoleTemplateDetailSerializer(
     )
 
     class Meta:
-        model = RoleTemplate
+        model = SchoolRoleTemplate
         fields = [
             "id",
             "school",
@@ -434,7 +434,7 @@ class RoleTemplateDetailSerializer(
             raise serializers.ValidationError({"school": "school is required."})
         name = attrs.get("name") or getattr(self.instance, "name", None)
         if name and school:
-            qs = RoleTemplate.objects.filter(school=school, name__iexact=name)
+            qs = SchoolRoleTemplate.objects.filter(school=school, name__iexact=name)
             if self.instance:
                 qs = qs.exclude(pk=self.instance.pk)
             if qs.exists():
@@ -481,13 +481,13 @@ class RoleTemplateDetailSerializer(
         actor = request.user if request and request.user.is_authenticated else None
 
         validated_data["created_by"] = actor
-        role = RoleTemplate.objects.create(**validated_data)
+        role = SchoolRoleTemplate.objects.create(**validated_data)
 
         if permission_keys:
             perms = Permission.objects.filter(key__in=permission_keys)
-            RolePermission.objects.bulk_create(
+            SchoolRolePermission.objects.bulk_create(
                 [
-                    RolePermission(
+                    SchoolRolePermission(
                         role=role,
                         permission=perm,
                         granted=True,
@@ -499,9 +499,9 @@ class RoleTemplateDetailSerializer(
 
         if group_ids:
             groups = PermissionGroup.objects.filter(id__in=group_ids)
-            RoleGroup.objects.bulk_create(
+            SchoolRoleGroup.objects.bulk_create(
                 [
-                    RoleGroup(role=role, group=group, attached_by=actor)
+                    SchoolRoleGroup(role=role, group=group, attached_by=actor)
                     for group in groups
                 ]
             )
@@ -520,7 +520,7 @@ class RoleTemplateDetailSerializer(
                 permission_keys
                 if permission_keys is not None
                 else list(
-                    RolePermission.objects.filter(
+                    SchoolRolePermission.objects.filter(
                         role=instance, granted=True
                     ).values_list("permission_id", flat=True)
                 )
@@ -529,7 +529,7 @@ class RoleTemplateDetailSerializer(
                 group_ids
                 if group_ids is not None
                 else list(
-                    RoleGroup.objects.filter(role=instance).values_list(
+                    SchoolRoleGroup.objects.filter(role=instance).values_list(
                         "group_id", flat=True
                     )
                 )
@@ -554,11 +554,11 @@ class RoleTemplateDetailSerializer(
         actor = request.user if request and request.user.is_authenticated else None
 
         if permission_keys is not None:
-            RolePermission.objects.filter(role=instance).delete()
+            SchoolRolePermission.objects.filter(role=instance).delete()
             perms = Permission.objects.filter(key__in=permission_keys)
-            RolePermission.objects.bulk_create(
+            SchoolRolePermission.objects.bulk_create(
                 [
-                    RolePermission(
+                    SchoolRolePermission(
                         role=instance,
                         permission=perm,
                         granted=True,
@@ -569,11 +569,11 @@ class RoleTemplateDetailSerializer(
             )
 
         if group_ids is not None:
-            RoleGroup.objects.filter(role=instance).delete()
+            SchoolRoleGroup.objects.filter(role=instance).delete()
             groups = PermissionGroup.objects.filter(id__in=group_ids)
-            RoleGroup.objects.bulk_create(
+            SchoolRoleGroup.objects.bulk_create(
                 [
-                    RoleGroup(role=instance, group=group, attached_by=actor)
+                    SchoolRoleGroup(role=instance, group=group, attached_by=actor)
                     for group in groups
                 ]
             )
@@ -584,7 +584,7 @@ class RoleTemplateDetailSerializer(
 # -----------------------------------------------------------------------------
 # 3) School User Role Assignments
 # -----------------------------------------------------------------------------
-class UserRoleAssignmentSerializer(serializers.ModelSerializer):
+class SchoolUserRoleAssignmentSerializer(serializers.ModelSerializer):
     """
     Assign or revoke a school role for a user.
 
@@ -593,7 +593,7 @@ class UserRoleAssignmentSerializer(serializers.ModelSerializer):
     """
 
     class Meta:
-        model = UserRoleAssignment
+        model = SchoolUserRoleAssignment
         fields = [
             "id",
             "school",
@@ -624,7 +624,7 @@ class UserRoleAssignmentSerializer(serializers.ModelSerializer):
         user = attrs.get("user") or getattr(self.instance, "user", None)
         new_status = attrs.get(
             "assignment_status",
-            getattr(self.instance, "assignment_status", UserRoleAssignment.AssignmentStatus.ACTIVE),
+            getattr(self.instance, "assignment_status", SchoolUserRoleAssignment.AssignmentStatus.ACTIVE),
         )
 
         if school and role and role.school_id != school.pk:
@@ -632,12 +632,12 @@ class UserRoleAssignmentSerializer(serializers.ModelSerializer):
                 {"role": "Role must belong to the same school as the assignment."}
             )
 
-        if new_status == UserRoleAssignment.AssignmentStatus.ACTIVE and school and user and role:
-            qs = UserRoleAssignment.objects.filter(
+        if new_status == SchoolUserRoleAssignment.AssignmentStatus.ACTIVE and school and user and role:
+            qs = SchoolUserRoleAssignment.objects.filter(
                 school=school,
                 user=user,
                 role=role,
-                assignment_status=UserRoleAssignment.AssignmentStatus.ACTIVE,
+                assignment_status=SchoolUserRoleAssignment.AssignmentStatus.ACTIVE,
             )
             if self.instance:
                 qs = qs.exclude(pk=self.instance.pk)
@@ -648,8 +648,8 @@ class UserRoleAssignmentSerializer(serializers.ModelSerializer):
 
         if (
             self.instance
-            and self.instance.assignment_status == UserRoleAssignment.AssignmentStatus.REVOKED
-            and new_status == UserRoleAssignment.AssignmentStatus.ACTIVE
+            and self.instance.assignment_status == SchoolUserRoleAssignment.AssignmentStatus.REVOKED
+            and new_status == SchoolUserRoleAssignment.AssignmentStatus.ACTIVE
         ):
             raise serializers.ValidationError(
                 {"assignment_status": "A revoked assignment cannot be reactivated. Create a new assignment instead."}
@@ -672,8 +672,8 @@ class UserRoleAssignmentSerializer(serializers.ModelSerializer):
 
         # If changing to REVOKED and it wasn't revoked before, stamp revoke info
         if (
-            new_status == UserRoleAssignment.AssignmentStatus.REVOKED
-            and instance.assignment_status != UserRoleAssignment.AssignmentStatus.REVOKED
+            new_status == SchoolUserRoleAssignment.AssignmentStatus.REVOKED
+            and instance.assignment_status != SchoolUserRoleAssignment.AssignmentStatus.REVOKED
         ):
             instance.revoke(
                 by_user=actor,
@@ -690,7 +690,7 @@ class UserRoleAssignmentSerializer(serializers.ModelSerializer):
 # -----------------------------------------------------------------------------
 # 4) School Role Change Requests
 # -----------------------------------------------------------------------------
-class RoleChangeDeltaItemSerializer(serializers.ModelSerializer):
+class SchoolRoleChangeDeltaItemSerializer(serializers.ModelSerializer):
     """
     One requested change item:
     - ADD permission
@@ -701,7 +701,7 @@ class RoleChangeDeltaItemSerializer(serializers.ModelSerializer):
     permission = PermissionSerializer(read_only=True)
 
     class Meta:
-        model = RoleChangeDeltaItem
+        model = SchoolRoleChangeDeltaItem
         fields = [
             "id",
             "permission_key",
@@ -726,7 +726,7 @@ class RoleChangeDeltaItemSerializer(serializers.ModelSerializer):
         return value
 
 
-class RoleChangeRequestSerializer(serializers.ModelSerializer):
+class SchoolRoleChangeRequestSerializer(serializers.ModelSerializer):
     """
     Create a school-level role change request with delta items.
 
@@ -742,10 +742,10 @@ class RoleChangeRequestSerializer(serializers.ModelSerializer):
     }
     """
 
-    delta_items = RoleChangeDeltaItemSerializer(many=True)
+    delta_items = SchoolRoleChangeDeltaItemSerializer(many=True)
 
     class Meta:
-        model = RoleChangeRequest
+        model = SchoolRoleChangeRequest
         fields = [
             "id",
             "school",
@@ -798,12 +798,12 @@ class RoleChangeRequestSerializer(serializers.ModelSerializer):
         actor = request.user if request and request.user.is_authenticated else None
 
         validated_data["requested_by"] = actor
-        obj = RoleChangeRequest.objects.create(**validated_data)
+        obj = SchoolRoleChangeRequest.objects.create(**validated_data)
 
         for item in delta_items_data:
             permission_key = item.pop("permission_key")
             perm = Permission.objects.get(key=permission_key)
-            RoleChangeDeltaItem.objects.create(
+            SchoolRoleChangeDeltaItem.objects.create(
                 request=obj,
                 permission=perm,
                 **item,

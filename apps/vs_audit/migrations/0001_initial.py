@@ -109,7 +109,7 @@ class Migration(migrations.Migration):
                     "entity_type",
                     models.CharField(
                         db_index=True,
-                        help_text="Examples: UserAccount, School, ImportJob, Invoice, RoleTemplate",
+                        help_text="Examples: UserAccount, School, ImportJob, Invoice, SchoolRoleTemplate",
                         max_length=100,
                     ),
                 ),

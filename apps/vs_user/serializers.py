@@ -11,9 +11,9 @@ from django.utils import timezone
 
 from rest_framework import serializers
 
-from vs_rbac.models import RoleTemplate
+from vs_rbac.models import SchoolRoleTemplate
 from vs_schools.models import School, Branch
-from vs_rbac.models import RoleTemplate, PlatformRoleTemplate
+from vs_rbac.models import SchoolRoleTemplate, PlatformRoleTemplate
 from .models import (
     User,
     UserInvitation,
@@ -209,8 +209,8 @@ class UserCreateSerializer(serializers.Serializer):
                     {'role': 'Role can only be assigned if a school is specified.'}
                 )
             try:
-                role = RoleTemplate.objects.get(id=role_id, school=school)
-            except RoleTemplate.DoesNotExist:
+                role = SchoolRoleTemplate.objects.get(id=role_id, school=school)
+            except SchoolRoleTemplate.DoesNotExist:
                 raise serializers.ValidationError(
                     {'role': f'Role with id "{role_id}" not found in the specified school.'}
                 )

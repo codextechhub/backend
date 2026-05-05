@@ -21,11 +21,11 @@ from rest_framework.test import APIClient
 from vs_rbac.models import (
     Permission,
     PermissionDependency,
-    RoleTemplate,
-    RolePermission,
-    UserRoleAssignment,
-    RoleChangeRequest,
-    RoleChangeDeltaItem,
+    SchoolRoleTemplate,
+    SchoolRolePermission,
+    SchoolUserRoleAssignment,
+    SchoolRoleChangeRequest,
+    SchoolRoleChangeDeltaItem,
     PlatformRoleTemplate,
     PlatformRolePermission,
     PlatformUserRoleAssignment,
@@ -190,7 +190,7 @@ class PermissionDependencyViewTests(_AuthMixin, TestCase):
 # =============================================================================
 # School Role Templates
 # =============================================================================
-class RoleTemplateListCreateViewTests(_AuthMixin, TestCase):
+class SchoolRoleTemplateListCreateViewTests(_AuthMixin, TestCase):
     def setUp(self):
         self.vision_user = make_vision_user()
         self.school = make_school()
@@ -230,8 +230,8 @@ class RoleTemplateListCreateViewTests(_AuthMixin, TestCase):
         }
         resp = self._admin_client().post(self._url(), data, format="json")
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
-        self.assertTrue(RoleTemplate.objects.filter(name="Finance Manager").exists())
-        role = RoleTemplate.objects.get(name="Finance Manager")
+        self.assertTrue(SchoolRoleTemplate.objects.filter(name="Finance Manager").exists())
+        role = SchoolRoleTemplate.objects.get(name="Finance Manager")
         self.assertEqual(role.school, self.school)
         self.assertEqual(role.created_by, self.school_admin)
         self.assertEqual(role.role_permissions.count(), 1)
@@ -254,7 +254,7 @@ class RoleTemplateListCreateViewTests(_AuthMixin, TestCase):
         self.assertEqual(resp.status_code, status.HTTP_401_UNAUTHORIZED)
 
 
-class RoleTemplateDetailViewTests(_AuthMixin, TestCase):
+class SchoolRoleTemplateDetailViewTests(_AuthMixin, TestCase):
     def setUp(self):
         self.vision_user = make_vision_user()
         self.school = make_school()
@@ -304,7 +304,7 @@ class RoleTemplateDetailViewTests(_AuthMixin, TestCase):
     def test_delete(self):
         resp = self._admin_client().delete(self._url())
         self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
-        self.assertFalse(RoleTemplate.objects.filter(id=self.role.id).exists())
+        self.assertFalse(SchoolRoleTemplate.objects.filter(id=self.role.id).exists())
 
     def test_cross_school_isolation(self):
         """Roles from one school are not listed under another school's URL."""
@@ -327,7 +327,7 @@ class RoleTemplateDetailViewTests(_AuthMixin, TestCase):
 # =============================================================================
 # School User Role Assignments
 # =============================================================================
-class UserRoleAssignmentViewTests(_AuthMixin, TestCase):
+class SchoolUserRoleAssignmentViewTests(_AuthMixin, TestCase):
     def setUp(self):
         self.vision_user = make_vision_user()
         self.school = make_school()
@@ -358,11 +358,11 @@ class UserRoleAssignmentViewTests(_AuthMixin, TestCase):
         resp = self._admin_client().post(self._list_url(), data, format="json")
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
         self.assertTrue(
-            UserRoleAssignment.objects.filter(
+            SchoolUserRoleAssignment.objects.filter(
                 user=self.staff_user, role=self.role
             ).exists()
         )
-        assignment = UserRoleAssignment.objects.get(
+        assignment = SchoolUserRoleAssignment.objects.get(
             user=self.staff_user, role=self.role
         )
         self.assertEqual(assignment.assigned_by, self.school_admin)
@@ -453,7 +453,7 @@ class SchoolRoleChangeRequestViewTests(_AuthMixin, TestCase):
         }
         resp = self._admin_client().post(self._list_url(), data, format="json")
         self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
-        rcr = RoleChangeRequest.objects.first()
+        rcr = SchoolRoleChangeRequest.objects.first()
         self.assertEqual(rcr.status, "PENDING")
         self.assertEqual(rcr.requested_by, self.school_admin)
         self.assertEqual(rcr.delta_items.count(), 1)
@@ -477,7 +477,7 @@ class SchoolRoleChangeRequestViewTests(_AuthMixin, TestCase):
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
 
-class VisionRoleChangeRequestViewTests(_AuthMixin, TestCase):
+class SchoolRoleChangeRequestApprovalViewTests(_AuthMixin, TestCase):
     def setUp(self):
         self.vision_user = make_vision_user()
         self.school = make_school()
@@ -514,10 +514,10 @@ class VisionRoleChangeRequestViewTests(_AuthMixin, TestCase):
         rcr = make_role_change_request(self.school, self.school_admin, self.role)
         # Add a delta item so apply has something to do
         make_role_permission(self.role, self.perm_view)
-        RoleChangeDeltaItem.objects.create(
+        SchoolRoleChangeDeltaItem.objects.create(
             request=rcr,
             permission=self.perm_export,
-            operation=RoleChangeDeltaItem.Operation.ADD,
+            operation=SchoolRoleChangeDeltaItem.Operation.ADD,
         )
 
         url = reverse("rbac-vision-role-change-decide", kwargs={"request_id": rcr.id})

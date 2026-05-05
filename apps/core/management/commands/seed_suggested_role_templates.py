@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand
 
-from vs_rbac.models import Permission, SuggestedRolePermission, SuggestedRoleTemplate
+from vs_rbac.models import Permission, PrebuiltRolePermission, PrebuiltRoleTemplate
 
 
 SUGGESTIONS = [
@@ -34,11 +34,11 @@ SUGGESTIONS = [
 
 
 class Command(BaseCommand):
-    help = "Seed SuggestedRoleTemplate records with their default permissions."
+    help = "Seed PrebuiltRoleTemplate records with their default permissions."
 
     def add_arguments(self, parser):
         parser.add_argument("--dry-run", action="store_true", help="Print actions without writing.")
-        parser.add_argument("--reset", action="store_true", help="Delete all suggested roles and re-seed. Dev only.")
+        parser.add_argument("--reset", action="store_true", help="Delete all prebuilt roles and re-seed. Dev only.")
 
     def handle(self, *args, **options):
         dry_run = options["dry_run"]
@@ -48,8 +48,8 @@ class Command(BaseCommand):
             if dry_run:
                 self.stdout.write(self.style.WARNING("--reset ignored in --dry-run mode."))
             else:
-                deleted_perms, _ = SuggestedRolePermission.objects.all().delete()
-                deleted_roles, _ = SuggestedRoleTemplate.objects.all().delete()
+                deleted_perms, _ = PrebuiltRolePermission.objects.all().delete()
+                deleted_roles, _ = PrebuiltRoleTemplate.objects.all().delete()
                 self.stdout.write(self.style.WARNING(f"Reset: deleted {deleted_roles} suggestions, {deleted_perms} permissions."))
 
         created_roles = 0
@@ -61,9 +61,9 @@ class Command(BaseCommand):
             self.stdout.write(f"  Processing: {key}")
 
             if dry_run:
-                self.stdout.write(f"    [dry-run] Would upsert SuggestedRoleTemplate key={key}")
+                self.stdout.write(f"    [dry-run] Would upsert PrebuiltRoleTemplate key={key}")
             else:
-                obj, created = SuggestedRoleTemplate.objects.update_or_create(
+                obj, created = PrebuiltRoleTemplate.objects.update_or_create(
                     key=key,
                     defaults={
                         "name": data["name"],
@@ -83,16 +83,16 @@ class Command(BaseCommand):
 
             if not dry_run and perms:
                 existing = set(
-                    SuggestedRolePermission.objects.filter(suggested_role=obj)
+                    PrebuiltRolePermission.objects.filter(prebuilt_role=obj)
                     .values_list("permission_id", flat=True)
                 )
                 new_records = [
-                    SuggestedRolePermission(suggested_role=obj, permission=p)
+                    PrebuiltRolePermission(prebuilt_role=obj, permission=p)
                     for p in perms
                     if p.key not in existing
                 ]
                 if new_records:
-                    SuggestedRolePermission.objects.bulk_create(new_records, ignore_conflicts=True)
+                    PrebuiltRolePermission.objects.bulk_create(new_records, ignore_conflicts=True)
                     created_perms += len(new_records)
 
         self.stdout.write(self.style.SUCCESS(

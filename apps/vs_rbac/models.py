@@ -68,6 +68,7 @@ class Permission(TimeStampedModel):
 
     key = models.CharField(max_length=180, primary_key=True)
     module_key = models.CharField(max_length=64)     # e.g. "finance", "students"
+    resource = models.CharField(max_length=64, default="")         # e.g. "invoice", "profile"
     action = models.CharField(max_length=64)         # e.g. "view", "create", "approve", "export"
     description = models.TextField(blank=True)
 
@@ -77,7 +78,7 @@ class Permission(TimeStampedModel):
         default=Sensitivity.NORMAL,
     )
 
-    # If True, schooles cannot grant this directly; must go through approval workflow (RoleChangeRequest)
+    # If True, schooles cannot grant this directly; must go through approval workflow (SchoolRoleChangeRequest)
     is_restricted = models.BooleanField(default=False)
 
     # Optional: for more advanced policy/UX; safe to keep lightweight
@@ -204,14 +205,14 @@ class GroupPermission(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
-# Suggested Role Templates (platform-owned library)
+# Prebuilt Role Templates (platform-owned library)
 # -----------------------------------------------------------------------------
-class SuggestedRoleTemplate(models.Model):
+class PrebuiltRoleTemplate(models.Model):
     """Platform-owned library of pre-built role suggestions.
 
     These are read-only records seeded by CodeX Vision.
     No institution owns or modifies these directly.
-    When an institution selects one, a RoleTemplate is created
+    When an institution selects one, a SchoolRoleTemplate is created
     for their institution using this suggestion as the source.
     """
 
@@ -241,21 +242,21 @@ class SuggestedRoleTemplate(models.Model):
 
     class Meta:
         ordering = ['tier', 'name']
-        verbose_name = 'Suggested Role Template'
-        verbose_name_plural = 'Suggested Role Templates'
+        verbose_name = 'Prebuilt Role Template'
+        verbose_name_plural = 'Prebuilt Role Templates'
 
     def __str__(self):
         return f'{self.name} ({self.key})'
 
 
-class SuggestedRolePermission(models.Model):
-    """Default permissions attached to a SuggestedRoleTemplate.
+class PrebuiltRolePermission(models.Model):
+    """Default permissions attached to a PrebuiltRoleTemplate.
 
     When an institution selects this suggestion, these permissions
-    are copied into their RoleTemplate's RolePermission records.
+    are copied into their SchoolRoleTemplate's SchoolRolePermission records.
     """
-    suggested_role = models.ForeignKey(
-        SuggestedRoleTemplate,
+    prebuilt_role = models.ForeignKey(
+        PrebuiltRoleTemplate,
         on_delete=models.CASCADE,
         related_name='default_permissions'
     )
@@ -264,22 +265,22 @@ class SuggestedRolePermission(models.Model):
         to_field='key',
         db_column='permission_key',
         on_delete=models.CASCADE,
-        related_name='suggested_role_defaults'
+        related_name='prebuilt_role_defaults'
     )
 
     class Meta:
-        unique_together = [['suggested_role', 'permission']]
-        verbose_name = 'Suggested Role Permission'
-        verbose_name_plural = 'Suggested Role Permissions'
+        unique_together = [['prebuilt_role', 'permission']]
+        verbose_name = 'Prebuilt Role Permission'
+        verbose_name_plural = 'Prebuilt Role Permissions'
 
     def __str__(self):
-        return f'{self.suggested_role.key}:{self.permission_id}'
+        return f'{self.prebuilt_role.key}:{self.permission_id}'
 
 
 # -----------------------------------------------------------------------------
 # Role Templates (school-scoped)
 # -----------------------------------------------------------------------------
-class RoleTemplate(TimeStampedModel):
+class SchoolRoleTemplate(TimeStampedModel):
     """School-scoped role blueprint owned by a specific school school.
 
     Attributes:
@@ -291,7 +292,7 @@ class RoleTemplate(TimeStampedModel):
         is_locked: Prevents school edits while elevated workflows run.
         version: Incremented when permissions change for cache busting.
         created_by: User that created the template, if tracked.
-        permissions: Many-to-many relationship via ``RolePermission``.
+        permissions: Many-to-many relationship via ``SchoolRolePermission``.
     """
 
     class Status(models.TextChoices):
@@ -316,8 +317,8 @@ class RoleTemplate(TimeStampedModel):
         null=True,
     )
 
-    suggested_from = models.ForeignKey(
-        'SuggestedRoleTemplate',
+    prebuilt_from = models.ForeignKey(
+        'PrebuiltRoleTemplate',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
@@ -347,10 +348,10 @@ class RoleTemplate(TimeStampedModel):
         related_name="created_roles",
     )
 
-    # Many-to-many through RolePermission for extra metadata
+    # Many-to-many through SchoolRolePermission for extra metadata
     permissions = models.ManyToManyField(
         Permission,
-        through="RolePermission",
+        through="SchoolRolePermission",
         related_name="roles",
         blank=True,
     )
@@ -358,7 +359,7 @@ class RoleTemplate(TimeStampedModel):
     # Permission groups attached to this role (flattened at runtime)
     groups = models.ManyToManyField(
         "PermissionGroup",
-        through="RoleGroup",
+        through="SchoolRoleGroup",
         related_name="roles",
         blank=True,
     )
@@ -377,22 +378,22 @@ class RoleTemplate(TimeStampedModel):
 
     def save(self, *args, **kwargs):
         if not self.id:
-            self.id = _unique_slug(RoleTemplate, self.name)
+            self.id = _unique_slug(SchoolRoleTemplate, self.name)
         super().save(*args, **kwargs)
 
 
-class RolePermission(TimeStampedModel):
+class SchoolRolePermission(TimeStampedModel):
     """Join table capturing permission grants on school role templates.
 
     Attributes:
-        role: ``RoleTemplate`` receiving the grant or deny record.
+        role: ``SchoolRoleTemplate`` receiving the grant or deny record.
         permission: ``Permission`` key linked through ``permission_key`` column.
         granted: Boolean flag so future explicit denies can be represented.
         granted_by: (Optional) actor who made the last change.
         granted_at: Timestamp of the latest update for audit trails.
     """
 
-    role = models.ForeignKey(RoleTemplate, on_delete=models.CASCADE, related_name="role_permissions")
+    role = models.ForeignKey(SchoolRoleTemplate, on_delete=models.CASCADE, related_name="role_permissions")
     permission = models.ForeignKey(
         Permission,
         to_field="key",
@@ -425,16 +426,16 @@ class RolePermission(TimeStampedModel):
         return f"{self.role_id}:{self.permission_id} ({'grant' if self.granted else 'deny'})"
 
 
-class RoleGroup(TimeStampedModel):
-    """Attaches a ``PermissionGroup`` to a school ``RoleTemplate``.
+class SchoolRoleGroup(TimeStampedModel):
+    """Attaches a ``PermissionGroup`` to a school ``SchoolRoleTemplate``.
 
     Permissions from attached groups are unioned with any direct
-    ``RolePermission`` grants at runtime. Explicit denies on
-    ``RolePermission`` still win over grants derived from groups.
+    ``SchoolRolePermission`` grants at runtime. Explicit denies on
+    ``SchoolRolePermission`` still win over grants derived from groups.
     """
 
     role = models.ForeignKey(
-        RoleTemplate,
+        SchoolRoleTemplate,
         on_delete=models.CASCADE,
         related_name="role_groups",
     )
@@ -471,8 +472,8 @@ class RoleGroup(TimeStampedModel):
 # -----------------------------------------------------------------------------
 # Assign roles to users (school scoped)
 # -----------------------------------------------------------------------------
-class UserRoleAssignment(TimeStampedModel):
-    """School-scoped assignment of a ``RoleTemplate`` to a specific user.
+class SchoolUserRoleAssignment(TimeStampedModel):
+    """School-scoped assignment of a ``SchoolRoleTemplate`` to a specific user.
 
     Attributes:
         school: School boundary that owns the assignment record.
@@ -505,7 +506,7 @@ class UserRoleAssignment(TimeStampedModel):
     )
 
     role = models.ForeignKey(
-        RoleTemplate,
+        SchoolRoleTemplate,
         on_delete=models.PROTECT,
         related_name="user_assignments",
     )
@@ -558,20 +559,20 @@ class UserRoleAssignment(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
-# Approval workflow: School -> Vision (role changes)
+# Approval workflow: school-internal role changes
 # -----------------------------------------------------------------------------
-class RoleChangeRequest(TimeStampedModel):
-    """Workflow record for school-to-Vision approval of role edits.
+class SchoolRoleChangeRequest(TimeStampedModel):
+    """Workflow record for school-internal approval of role permission edits.
 
     Attributes:
-        school: Tenant requesting the change.
-        requested_by: School operator initiating request.
-        target_role: ``RoleTemplate`` being modified.
+        school: Tenant that owns the request.
+        requested_by: School user initiating the change.
+        target_role: ``SchoolRoleTemplate`` being modified.
         status: State machine captured via ``Status`` choices.
-        justification: Required explanation for Vision reviewers.
+        justification: Required explanation for the reviewing school admin.
         reviewer/reviewer_notes: Outcome metadata once decided.
         submitted_at/decided_at: Audit timestamps.
-        impact_summary: Cached diff to help reviewers.
+        impact_summary: Cached diff to help the reviewer.
 
     Helper methods:
         mark_denied/mark_approved/mark_apply_failed: Convenience status transitions.
@@ -596,7 +597,7 @@ class RoleChangeRequest(TimeStampedModel):
     )
 
     target_role = models.ForeignKey(
-        RoleTemplate,
+        SchoolRoleTemplate,
         on_delete=models.PROTECT,
         related_name="change_requests",
     )
@@ -655,11 +656,11 @@ class RoleChangeRequest(TimeStampedModel):
         self.decided_at = timezone.now()
 
 
-class RoleChangeDeltaItem(TimeStampedModel):
+class SchoolRoleChangeDeltaItem(TimeStampedModel):
     """Normalized list of atomic permission diffs attached to a request.
 
     Attributes:
-        request: Parent ``RoleChangeRequest``.
+        request: Parent ``SchoolRoleChangeRequest``.
         permission: Permission key being added or removed.
         operation: ``ADD`` or ``REMOVE`` to describe the action.
     """
@@ -670,7 +671,7 @@ class RoleChangeDeltaItem(TimeStampedModel):
 
 
     request = models.ForeignKey(
-        RoleChangeRequest,
+        SchoolRoleChangeRequest,
         on_delete=models.CASCADE,
         related_name="delta_items",
     )
@@ -701,7 +702,7 @@ class RoleChangeDeltaItem(TimeStampedModel):
 # Platform Role Template (Vision-owned / global)
 # -----------------------------------------------------------------------------
 class PlatformRoleTemplate(TimeStampedModel):
-    """Global counterpart of ``RoleTemplate`` for Vision internal teams.
+    """Global counterpart of ``SchoolRoleTemplate`` for Vision internal teams.
 
     Attributes:
         id: UUID primary key to avoid collisions across regions.
@@ -1052,7 +1053,7 @@ class PlatformRoleChangeRequest(TimeStampedModel):
 
 
 class PlatformRoleChangeDeltaItem(TimeStampedModel):
-    """Platform analogue of ``RoleChangeDeltaItem`` tracking requested diffs.
+    """Platform analogue of ``SchoolRoleChangeDeltaItem`` tracking requested diffs.
 
     Attributes:
         request: Parent ``PlatformRoleChangeRequest``.

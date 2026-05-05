@@ -22,18 +22,18 @@ from .models import (
     PlatformRolePermission,
     PlatformRoleTemplate,
     Permission,
-    RoleChangeDeltaItem,
-    RoleChangeRequest,
-    RoleGroup,
-    RolePermission,
-    RoleTemplate,
-    SuggestedRolePermission,
-    SuggestedRoleTemplate,
+    SchoolRoleChangeDeltaItem,
+    SchoolRoleChangeRequest,
+    SchoolRoleGroup,
+    SchoolRolePermission,
+    SchoolRoleTemplate,
+    PrebuiltRolePermission,
+    PrebuiltRoleTemplate,
 )
 from .validators import validate_role_permissions
 
 
-def apply_school_role_change_request(obj: RoleChangeRequest, reviewer, notes: str = ""):
+def apply_school_role_change_request(obj: SchoolRoleChangeRequest, reviewer, notes: str = ""):
     """
     Apply approved school role change request.
     
@@ -51,7 +51,7 @@ def apply_school_role_change_request(obj: RoleChangeRequest, reviewer, notes: st
         
         # Get current permission keys — snapshot before any changes are applied
         current_keys = set(
-            RolePermission.objects.filter(
+            SchoolRolePermission.objects.filter(
                 role=target_role,
                 granted=True
             ).values_list('permission_id', flat=True)
@@ -62,9 +62,9 @@ def apply_school_role_change_request(obj: RoleChangeRequest, reviewer, notes: st
         delta_items = obj.delta_items.select_related('permission').all()
 
         for item in delta_items:
-            if item.operation == RoleChangeDeltaItem.Operation.ADD:
+            if item.operation == SchoolRoleChangeDeltaItem.Operation.ADD:
                 current_keys.add(item.permission_id)
-            elif item.operation == RoleChangeDeltaItem.Operation.REMOVE:
+            elif item.operation == SchoolRoleChangeDeltaItem.Operation.REMOVE:
                 current_keys.discard(item.permission_id)
 
         # Validate final permission set — include permissions coming from any
@@ -72,7 +72,7 @@ def apply_school_role_change_request(obj: RoleChangeRequest, reviewer, notes: st
         # permissions provided via groups rather than direct grants.
         final_keys = sorted(current_keys)
         attached_group_ids = list(
-            RoleGroup.objects.filter(role=target_role).values_list("group_id", flat=True)
+            SchoolRoleGroup.objects.filter(role=target_role).values_list("group_id", flat=True)
         )
         validate_role_permissions(
             permission_keys=final_keys,
@@ -80,11 +80,11 @@ def apply_school_role_change_request(obj: RoleChangeRequest, reviewer, notes: st
         )  # Raises ValidationError if invalid
 
         # Apply changes
-        RolePermission.objects.filter(role=target_role).delete()
+        SchoolRolePermission.objects.filter(role=target_role).delete()
         
         perms = Permission.objects.filter(key__in=final_keys)
-        RolePermission.objects.bulk_create([
-            RolePermission(
+        SchoolRolePermission.objects.bulk_create([
+            SchoolRolePermission(
                 role=target_role,
                 permission=perm,
                 granted=True,
@@ -112,7 +112,7 @@ def apply_school_role_change_request(obj: RoleChangeRequest, reviewer, notes: st
             module_key=AuditModuleKey.RBAC,
             action_type=AuditActionType.PERMISSION_CHANGED,
             actor_user=reviewer,
-            entity_type="RoleTemplate",
+            entity_type="SchoolRoleTemplate",
             entity_id=str(target_role.pk),
             entity_label=getattr(target_role, "name", str(target_role.pk)),
             summary=f"School role '{getattr(target_role, 'name', target_role.pk)}' permissions updated via approved change request",
@@ -211,35 +211,35 @@ def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer,
 
 
 @transaction.atomic
-def create_role_from_suggestion(suggestion_key: str, school, created_by) -> RoleTemplate:
+def create_role_from_suggestion(suggestion_key: str, school, created_by) -> SchoolRoleTemplate:
     """
-    Creates a RoleTemplate for a school based on a SuggestedRoleTemplate.
+    Creates a SchoolRoleTemplate for a school based on a PrebuiltRoleTemplate.
 
-    Looks up the suggestion by key, creates a RoleTemplate scoped to the school
+    Looks up the suggestion by key, creates a SchoolRoleTemplate scoped to the school
     with the suggestion's name/scope, then bulk-copies the default permissions.
-    The SuggestedRoleTemplate is never modified.
+    The PrebuiltRoleTemplate is never modified.
 
-    Raises SuggestedRoleTemplate.DoesNotExist if the key is not found.
+    Raises PrebuiltRoleTemplate.DoesNotExist if the key is not found.
     Raises ValueError if the school already has a role with this name.
     """
-    suggestion = SuggestedRoleTemplate.objects.get(key=suggestion_key, is_active=True)
+    suggestion = PrebuiltRoleTemplate.objects.get(key=suggestion_key, is_active=True)
 
-    if RoleTemplate.objects.filter(school=school, name=suggestion.name).exists():
+    if SchoolRoleTemplate.objects.filter(school=school, name=suggestion.name).exists():
         raise ValueError(
             f'This school already has a role named "{suggestion.name}". '
             f'Rename the existing role before creating another with this name.'
         )
 
-    role = RoleTemplate.objects.create(
+    role = SchoolRoleTemplate.objects.create(
         name=suggestion.name,
         school=school,
-        suggested_from=suggestion,
+        prebuilt_from=suggestion,
         created_by=created_by,
     )
 
     default_permissions = suggestion.default_permissions.select_related('permission').all()
-    RolePermission.objects.bulk_create([
-        RolePermission(role=role, permission=dp.permission)
+    SchoolRolePermission.objects.bulk_create([
+        SchoolRolePermission(role=role, permission=dp.permission)
         for dp in default_permissions
     ], ignore_conflicts=True)
 

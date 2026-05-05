@@ -5,9 +5,9 @@ from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from vs_rbac.models import (
-    RolePermission,
-    RoleChangeRequest,
-    RoleChangeDeltaItem,
+    SchoolRolePermission,
+    SchoolRoleChangeRequest,
+    SchoolRoleChangeDeltaItem,
     PlatformRolePermission,
     PlatformRoleChangeRequest,
     PlatformRoleChangeDeltaItem,
@@ -50,36 +50,36 @@ class ApplySchoolRoleChangeRequestTests(TestCase):
 
     def test_add_permission(self):
         rcr = make_role_change_request(self.school, self.admin, self.role)
-        RoleChangeDeltaItem.objects.create(
+        SchoolRoleChangeDeltaItem.objects.create(
             request=rcr,
             permission=self.perm_export,
-            operation=RoleChangeDeltaItem.Operation.ADD,
+            operation=SchoolRoleChangeDeltaItem.Operation.ADD,
         )
 
         apply_school_role_change_request(rcr, self.reviewer, "Approved")
 
         rcr.refresh_from_db()
-        self.assertEqual(rcr.status, RoleChangeRequest.Status.APPROVED)
+        self.assertEqual(rcr.status, SchoolRoleChangeRequest.Status.APPROVED)
         self.assertEqual(rcr.reviewer, self.reviewer)
 
         perm_keys = set(
-            RolePermission.objects.filter(role=self.role, granted=True)
+            SchoolRolePermission.objects.filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
         self.assertEqual(perm_keys, {"finance.invoice.view", "finance.invoice.export"})
 
     def test_remove_permission(self):
         rcr = make_role_change_request(self.school, self.admin, self.role)
-        RoleChangeDeltaItem.objects.create(
+        SchoolRoleChangeDeltaItem.objects.create(
             request=rcr,
             permission=self.perm_view,
-            operation=RoleChangeDeltaItem.Operation.REMOVE,
+            operation=SchoolRoleChangeDeltaItem.Operation.REMOVE,
         )
 
         apply_school_role_change_request(rcr, self.reviewer)
 
         perm_keys = set(
-            RolePermission.objects.filter(role=self.role, granted=True)
+            SchoolRolePermission.objects.filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
         self.assertEqual(perm_keys, set())
@@ -87,10 +87,10 @@ class ApplySchoolRoleChangeRequestTests(TestCase):
     def test_version_bumped(self):
         old_version = self.role.version
         rcr = make_role_change_request(self.school, self.admin, self.role)
-        RoleChangeDeltaItem.objects.create(
+        SchoolRoleChangeDeltaItem.objects.create(
             request=rcr,
             permission=self.perm_export,
-            operation=RoleChangeDeltaItem.Operation.ADD,
+            operation=SchoolRoleChangeDeltaItem.Operation.ADD,
         )
 
         apply_school_role_change_request(rcr, self.reviewer)
@@ -103,15 +103,15 @@ class ApplySchoolRoleChangeRequestTests(TestCase):
 
         rcr = make_role_change_request(self.school, self.admin, self.role)
         # Remove view, which approve depends on, and add approve
-        RoleChangeDeltaItem.objects.create(
+        SchoolRoleChangeDeltaItem.objects.create(
             request=rcr,
             permission=self.perm_view,
-            operation=RoleChangeDeltaItem.Operation.REMOVE,
+            operation=SchoolRoleChangeDeltaItem.Operation.REMOVE,
         )
-        RoleChangeDeltaItem.objects.create(
+        SchoolRoleChangeDeltaItem.objects.create(
             request=rcr,
             permission=self.perm_approve,
-            operation=RoleChangeDeltaItem.Operation.ADD,
+            operation=SchoolRoleChangeDeltaItem.Operation.ADD,
         )
 
         with self.assertRaises(ValidationError):
@@ -121,21 +121,21 @@ class ApplySchoolRoleChangeRequestTests(TestCase):
         make_role_permission(self.role, self.perm_export)
 
         rcr = make_role_change_request(self.school, self.admin, self.role)
-        RoleChangeDeltaItem.objects.create(
+        SchoolRoleChangeDeltaItem.objects.create(
             request=rcr,
             permission=self.perm_export,
-            operation=RoleChangeDeltaItem.Operation.REMOVE,
+            operation=SchoolRoleChangeDeltaItem.Operation.REMOVE,
         )
-        RoleChangeDeltaItem.objects.create(
+        SchoolRoleChangeDeltaItem.objects.create(
             request=rcr,
             permission=self.perm_approve,
-            operation=RoleChangeDeltaItem.Operation.ADD,
+            operation=SchoolRoleChangeDeltaItem.Operation.ADD,
         )
 
         apply_school_role_change_request(rcr, self.reviewer)
 
         perm_keys = set(
-            RolePermission.objects.filter(role=self.role, granted=True)
+            SchoolRolePermission.objects.filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
         self.assertEqual(perm_keys, {"finance.invoice.view", "finance.invoice.approve"})

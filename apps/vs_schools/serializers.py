@@ -775,13 +775,13 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
 
         # Verify School and Branch role ID
         branch_role_id = primary_admin_data.get("branch_role", "")
-        if branch_role_id and not RoleTemplate.objects.filter(id=branch_role_id, school=school).exists():
+        if branch_role_id and not SchoolRoleTemplate.objects.filter(id=branch_role_id, school=school).exists():
             raise serializers.ValidationError(
                 {"branch_role": f'Role with id "{branch_role_id}" not found in the specified school.'}
             )
 
         school_role_id = primary_admin_data.get("school_role", "")
-        if school_role_id and not RoleTemplate.objects.filter(id=school_role_id, school=school).exists():
+        if school_role_id and not SchoolRoleTemplate.objects.filter(id=school_role_id, school=school).exists():
             raise serializers.ValidationError(
                 {"school_role": f'Role with id "{school_role_id}" not found in the specified school.'}
             )

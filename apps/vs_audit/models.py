@@ -216,7 +216,7 @@ class AuditEvent(models.Model):
     entity_type = models.CharField(
         max_length=100,
         db_index=True,
-        help_text="Examples: UserAccount, School, ImportJob, Invoice, RoleTemplate"
+        help_text="Examples: UserAccount, School, ImportJob, Invoice, SchoolRoleTemplate"
     )
     entity_id = models.CharField(
         max_length=100,

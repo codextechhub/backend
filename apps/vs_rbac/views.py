@@ -15,9 +15,9 @@ from .models import (
     PlatformRoleChangeRequest,
     PlatformRoleTemplate,
     PlatformUserRoleAssignment,
-    RoleChangeRequest,
-    RoleTemplate,
-    UserRoleAssignment,
+    SchoolRoleChangeRequest,
+    SchoolRoleTemplate,
+    SchoolUserRoleAssignment,
 )
 from .serializers import (
     PermissionDependencySerializer,
@@ -28,10 +28,10 @@ from .serializers import (
     PlatformRoleTemplateDetailSerializer,
     PlatformRoleTemplateListSerializer,
     PlatformUserRoleAssignmentSerializer,
-    RoleChangeRequestSerializer,
-    RoleTemplateDetailSerializer,
-    RoleTemplateListSerializer,
-    UserRoleAssignmentSerializer,
+    SchoolRoleChangeRequestSerializer,
+    SchoolRoleTemplateDetailSerializer,
+    SchoolRoleTemplateListSerializer,
+    SchoolUserRoleAssignmentSerializer,
 )
 from .permissions import (
     IsAuthenticatedAndActive,
@@ -216,7 +216,7 @@ class PermissionGroupDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMod
 # -----------------------------------------------------------------------------
 # School Role Templates
 # -----------------------------------------------------------------------------
-class RoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIView):
+class SchoolRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     School-facing:
     - GET: list role templates in a school
@@ -228,11 +228,11 @@ class RoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
         return (
-            RoleTemplate.objects.filter(school_id=school_slug)
+            SchoolRoleTemplate.objects.filter(school_id=school_slug)
             .annotate(
                 assigned_users_count=Count(
                     "user_assignments",
-                    filter=Q(user_assignments__assignment_status=UserRoleAssignment.AssignmentStatus.ACTIVE),
+                    filter=Q(user_assignments__assignment_status=SchoolUserRoleAssignment.AssignmentStatus.ACTIVE),
                     distinct=True,
                 ),
                 permissions_count=Count(
@@ -247,28 +247,28 @@ class RoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIView):
 
     def get_serializer_class(self):
         if self.request.method == "POST":
-            return RoleTemplateDetailSerializer
-        return RoleTemplateListSerializer
+            return SchoolRoleTemplateDetailSerializer
+        return SchoolRoleTemplateListSerializer
 
     def perform_create(self, serializer):
         serializer.save(school_id=self.kwargs["school_slug"])
 
 
-class RoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
+class SchoolRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
     """
     School-facing:
     - GET: role detail
     - PATCH/PUT: update role fields and optionally replace permission_keys
     - DELETE: blocked for system or locked roles
     """
-    serializer_class = RoleTemplateDetailSerializer
+    serializer_class = SchoolRoleTemplateDetailSerializer
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
     lookup_field = "id"
 
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
         return (
-            RoleTemplate.objects.filter(school_id=school_slug)
+            SchoolRoleTemplate.objects.filter(school_id=school_slug)
             .select_related("created_by", "school")
             .prefetch_related(
                 "role_permissions__permission",
@@ -308,13 +308,13 @@ class RoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelM
 # -----------------------------------------------------------------------------
 # School User Role Assignments
 # -----------------------------------------------------------------------------
-class UserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCreateAPIView):
+class SchoolUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     School-facing:
     - GET: list assignments in a school
     - POST: assign a role to a user inside a school
     """
-    serializer_class = UserRoleAssignmentSerializer
+    serializer_class = SchoolUserRoleAssignmentSerializer
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
     pagination_class = XVSPagination
 
@@ -322,7 +322,7 @@ class UserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCreateAPIV
         school_slug = self.kwargs["school_slug"]
 
         qs = (
-            UserRoleAssignment.objects.filter(school_id=school_slug)
+            SchoolUserRoleAssignment.objects.filter(school_id=school_slug)
             .select_related("user", "role", "assigned_by", "revoked_by", "school")
             .order_by("-created_at")
         )
@@ -344,26 +344,26 @@ class UserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCreateAPIV
         serializer.save(school_id=self.kwargs["school_slug"])
 
 
-class UserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin, generics.RetrieveUpdateAPIView):
+class SchoolUserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin, generics.RetrieveUpdateAPIView):
     """
     School-facing:
     - GET: one assignment
     - PATCH: often used for revoke flow
     """
-    serializer_class = UserRoleAssignmentSerializer
+    serializer_class = SchoolUserRoleAssignmentSerializer
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
     lookup_field = "id"
 
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
         return (
-            UserRoleAssignment.objects.filter(school_id=school_slug)
+            SchoolUserRoleAssignment.objects.filter(school_id=school_slug)
             .select_related("user", "role", "assigned_by", "revoked_by", "school")
         )
 
 
 # -----------------------------------------------------------------------------
-# School Role Change Requests (School -> Vision)
+# School Role Change Requests (school-internal approval)
 # -----------------------------------------------------------------------------
 class SchoolRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
@@ -371,14 +371,14 @@ class SchoolRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCreat
     - GET: list requests for a school
     - POST: create a change request for a role in that school
     """
-    serializer_class = RoleChangeRequestSerializer
+    serializer_class = SchoolRoleChangeRequestSerializer
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
     pagination_class = XVSPagination
 
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
         qs = (
-            RoleChangeRequest.objects.filter(school_id=school_slug)
+            SchoolRoleChangeRequest.objects.filter(school_id=school_slug)
             .select_related("requested_by", "reviewer", "target_role", "school")
             .prefetch_related("delta_items__permission")
             .order_by("-submitted_at")
@@ -398,57 +398,56 @@ class SchoolRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCreat
         serializer.save(school_id=self.kwargs["school_slug"])
 
 
-class VisionRoleChangeRequestQueueView(generics.ListAPIView):
+class SchoolRoleChangeRequestApprovalQueueView(generics.ListAPIView):
     """
-    Vision-facing:
-    - GET: queue of school role change requests across schools
+    School-admin-facing:
+    - GET: pending role change requests for a school
     """
-    serializer_class = RoleChangeRequestSerializer
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    serializer_class = SchoolRoleChangeRequestSerializer
+    permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
     pagination_class = XVSPagination
 
     def get_queryset(self):
+        school_slug = self.kwargs["school_slug"]
         qs = (
-            RoleChangeRequest.objects.all()
+            SchoolRoleChangeRequest.objects.filter(school_id=school_slug)
             .select_related("requested_by", "reviewer", "target_role", "school")
             .prefetch_related("delta_items__permission")
             .order_by("-submitted_at")
         )
 
         status_q = self.request.query_params.get("status")
-        school_slug = self.request.query_params.get("school_slug")
         target_role = self.request.query_params.get("target_role")
 
         if status_q:
             qs = qs.filter(status=status_q)
-        if school_slug:
-            qs = qs.filter(school_id=school_slug)
         if target_role:
             qs = qs.filter(target_role_id=target_role)
 
         return qs
 
 
-class VisionRoleChangeRequestDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
+class SchoolRoleChangeRequestApprovalDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     """
-    Vision-facing:
-    - GET: single school role change request
+    School-admin-facing:
+    - GET: single role change request within the school
     """
-    serializer_class = RoleChangeRequestSerializer
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    serializer_class = SchoolRoleChangeRequestSerializer
+    permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
     lookup_field = "id"
 
     def get_queryset(self):
+        school_slug = self.kwargs["school_slug"]
         return (
-            RoleChangeRequest.objects.all()
+            SchoolRoleChangeRequest.objects.filter(school_id=school_slug)
             .select_related("requested_by", "reviewer", "target_role", "school")
             .prefetch_related("delta_items__permission")
         )
 
 
-class VisionRoleChangeRequestDecisionView(APIView):
+class SchoolRoleChangeRequestDecisionView(APIView):
     """
-    Vision-facing decision endpoint for school role change requests.
+    School-admin decision endpoint for school role change requests.
 
     POST body:
     {
@@ -456,21 +455,21 @@ class VisionRoleChangeRequestDecisionView(APIView):
         "notes": "optional approval notes / required denial reason"
     }
     """
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
 
     def post(self, request, request_id: str):
         action = (request.data.get("action") or "").upper().strip()
         notes = (request.data.get("notes") or "").strip()
 
         try:
-            obj = RoleChangeRequest.objects.select_related("target_role", "school").get(id=request_id)
-        except RoleChangeRequest.DoesNotExist:
+            obj = SchoolRoleChangeRequest.objects.select_related("target_role", "school").get(id=request_id)
+        except SchoolRoleChangeRequest.DoesNotExist:
             return error_response(
                 message="Request not found.",
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        if obj.status != RoleChangeRequest.Status.PENDING:
+        if obj.status != SchoolRoleChangeRequest.Status.PENDING:
             return error_response(
                 message=f"Request already decided ({obj.status}).",
                 status=status.HTTP_409_CONFLICT,
@@ -495,7 +494,7 @@ class VisionRoleChangeRequestDecisionView(APIView):
             )
             return success_response(
                 message="Role change request denied.",
-                data=RoleChangeRequestSerializer(obj, context={"request": request}).data,
+                data=SchoolRoleChangeRequestSerializer(obj, context={"request": request}).data,
             )
 
         if action == "APPROVE":
@@ -528,7 +527,7 @@ class VisionRoleChangeRequestDecisionView(APIView):
 
             return success_response(
                 message="Role change request approved.",
-                data=RoleChangeRequestSerializer(obj, context={"request": request}).data,
+                data=SchoolRoleChangeRequestSerializer(obj, context={"request": request}).data,
             )
 
         return error_response(
