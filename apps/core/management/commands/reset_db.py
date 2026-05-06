@@ -68,7 +68,7 @@ class Command(BaseCommand):
             '--post-commands',
             nargs='+',
             type=str,
-            default=["seed_perms", "seed_role_perms", "create_superuser"],
+            default=["seed_perms", "seed_role_perms", "seed_prebuilt_role_templates", "create_superuser"],
             help='Commands to run after migration completes (e.g., seed_roles seed_schools)'
         )
 
