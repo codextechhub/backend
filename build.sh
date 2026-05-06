@@ -13,6 +13,6 @@ python manage.py migrate
 # Run seeding commands AFTER migrate succeeds
 python manage.py seed_perms
 python manage.py seed_role_perms
-python manage.py seed_suggested_role_templates
+python manage.py seed_prebuilt_role_templates
 python manage.py create_superuser
 # python manage.py create_superuser --assign-role --email admin@codexng.com
