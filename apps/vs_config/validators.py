@@ -7,7 +7,7 @@
 # structured error responses with consistent error_code fields.
 
 import re
-import pytz
+from zoneinfo import available_timezones
 
 from rest_framework.exceptions import ValidationError
 
@@ -328,7 +328,7 @@ def validate_override_value(key: str, value: str) -> None:
         )
 
     if key == "branch.timezone":
-        if value not in pytz.all_timezones:
+        if value not in available_timezones():
             raise ValidationError(
                 {
                     "error_code": "INVALID_TIMEZONE",
