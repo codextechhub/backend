@@ -125,6 +125,9 @@ class PasswordService:
         """
         expiry_hours = RESET_EXPIRY_SELF_HOURS if origin == "SELF" else RESET_EXPIRY_ADMIN_HOURS
 
+        # Expire any existing unused reset so the unique constraint doesn't block a new request
+        PasswordResetRequest.objects.filter(user=user, used_at__isnull=True).update(used_at=timezone.now())
+
         PasswordResetRequest.objects.create(
             user=user,
             expires_at=timezone.now() + timedelta(hours=expiry_hours),
