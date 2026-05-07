@@ -506,6 +506,9 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         if status_val := params.get('status'):
             qs = qs.filter(status=status_val)
 
+        if exclude_status := params.get('exclude_status'):
+            qs = qs.exclude(status=exclude_status)
+
         if user_type := params.get('user_type'):
             qs = qs.filter(user_type=user_type)
 
