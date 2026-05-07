@@ -224,11 +224,10 @@ class UserCreateSerializer(serializers.Serializer):
 class UserUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model  = User
-        fields = ('first_name', 'last_name', 'phone')
-        # Note: email changes go through a separate /email/ endpoint
-        # because they require ending all active sessions.
-    
-    pass
+        fields = ('first_name', 'last_name', 'phone', 'gender')
+        # role and user_type are intentionally excluded — changes go through
+        # SchoolRoleChangeRequest / PlatformRoleChangeRequest workflows only.
+        # Email changes go through the separate /email/change/ endpoint.
 
 
 class EmailChangeSerializer(serializers.Serializer):
