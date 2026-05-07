@@ -37,6 +37,7 @@ from .permissions import (
     IsAuthenticatedAndActive,
     IsVisionStaff,
     IsSchoolAdmin,
+    IsVisionSuperAdmin,
 )
 
 
@@ -824,4 +825,51 @@ class PlatformRoleChangeRequestDecisionView(APIView):
         return error_response(
             message="Invalid action. Must be APPROVE or DENY.",
             error={"action": ["Must be APPROVE or DENY."]},
+        )
+
+
+# -----------------------------------------------------------------------------
+# Super Admin Transfer
+# -----------------------------------------------------------------------------
+
+class TransferSuperAdminView(APIView):
+    """
+    POST platform/transfer-super-admin/
+
+    Allows the current Vision Super Admin to transfer their role to another
+    Vision Staff member. The caller is demoted to Vision Platform Admin.
+
+    Body: { "new_super_admin_id": "<uuid>" }
+    """
+    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin]
+
+    def post(self, request):
+        from django.conf import settings
+        from django.apps import apps
+        UserModel = apps.get_model(*settings.AUTH_USER_MODEL.split("."))
+        from .services import transfer_super_admin
+
+        new_id = request.data.get("new_super_admin_id")
+        if not new_id:
+            return error_response(
+                message="new_super_admin_id is required.",
+                error={"new_super_admin_id": ["This field is required."]},
+            )
+
+        try:
+            new_user = UserModel.objects.get(pk=new_id)
+        except (UserModel.DoesNotExist, Exception):
+            return error_response(
+                message="User not found.",
+                error={"new_super_admin_id": ["No user with this ID exists."]},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            transfer_super_admin(from_user=request.user, to_user=new_user)
+        except ValueError as exc:
+            return error_response(message=str(exc), error={})
+
+        return success_response(
+            message=f"Super admin role transferred to {new_user.email}. You are now a Platform Admin.",
         )

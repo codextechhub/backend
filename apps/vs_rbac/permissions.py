@@ -92,16 +92,20 @@ class IsVisionStaff(BasePermission):
 
 class IsVisionSuperAdmin(BasePermission):
     """
-    Vision super admin can do everything, including managing schools and roles.
-    This is a simplified check: we treat user_type == VISION_SUPER_ADMIN as super admin.
-    If you want "anyone with permission", wire it to your RBAC evaluator later.
+    Grants access only to the active Vision Super Admin —
+    the single user with an active vision-super-admin PlatformUserRoleAssignment.
     """
 
     def has_permission(self, request, view):
         u = request.user
         if not u or not u.is_authenticated:
             return False
-        return getattr(u, "is_superuser", False)
+        from .models import PlatformUserRoleAssignment
+        return PlatformUserRoleAssignment.objects.filter(
+            user=u,
+            role_id="vision-super-admin",
+            assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
+        ).exists()
 
 
 class IsSchoolAdmin(BasePermission):

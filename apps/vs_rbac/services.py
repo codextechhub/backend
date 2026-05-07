@@ -21,6 +21,7 @@ from .models import (
     PlatformRoleGroup,
     PlatformRolePermission,
     PlatformRoleTemplate,
+    PlatformUserRoleAssignment,
     Permission,
     SchoolRoleChangeDeltaItem,
     SchoolRoleChangeRequest,
@@ -208,6 +209,96 @@ def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer,
                 "reviewer_notes": notes,
             },
         )
+
+
+SUPER_ADMIN_ROLE_ID   = "vision-super-admin"
+PLATFORM_ADMIN_ROLE_ID = "vision-platform-admin"
+
+
+@transaction.atomic
+def transfer_super_admin(from_user, to_user):
+    """
+    Transfer the Vision Super Admin role from `from_user` to `to_user`.
+
+    - `from_user` must currently hold the vision-super-admin assignment.
+    - `to_user` must be VISION_STAFF and different from `from_user`.
+    - After transfer, `from_user` is demoted to vision-platform-admin.
+    - Any existing active platform role on `to_user` is revoked first.
+    - Both users' `is_superuser` flags are updated accordingly.
+
+    Raises ValueError on any validation failure.
+    """
+    from django.conf import settings
+    User = settings.AUTH_USER_MODEL
+    from django.apps import apps
+    UserModel = apps.get_model(*User.split("."))
+
+    if from_user.pk == to_user.pk:
+        raise ValueError("Cannot transfer super admin to yourself.")
+
+    if getattr(to_user, "user_type", None) != "VISION_STAFF":
+        raise ValueError("The new super admin must be a Vision Staff member.")
+
+    # Verify from_user actually holds the super admin role.
+    active_assignment = PlatformUserRoleAssignment.objects.filter(
+        user=from_user,
+        role_id=SUPER_ADMIN_ROLE_ID,
+        assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
+    ).first()
+    if not active_assignment:
+        raise ValueError("You do not hold the Vision Super Admin role.")
+
+    try:
+        super_admin_role   = PlatformRoleTemplate.objects.get(id=SUPER_ADMIN_ROLE_ID)
+        platform_admin_role = PlatformRoleTemplate.objects.get(id=PLATFORM_ADMIN_ROLE_ID)
+    except PlatformRoleTemplate.DoesNotExist as exc:
+        raise ValueError(f"Required platform role not found: {exc}") from exc
+
+    now = timezone.now()
+
+    # Revoke from_user's super admin.
+    active_assignment.revoke(by_user=from_user, reason="Super admin role transferred to another user.")
+    active_assignment.save(update_fields=["assignment_status", "revoked_at", "revoked_by", "reason_note", "updated_at"])
+
+    # Revoke any existing active platform role on to_user.
+    PlatformUserRoleAssignment.objects.filter(
+        user=to_user,
+        assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
+    ).update(
+        assignment_status=PlatformUserRoleAssignment.AssignmentStatus.REVOKED,
+        revoked_at=now,
+        revoked_by=from_user,
+        reason_note="Role revoked as part of super admin transfer.",
+    )
+
+    # Assign from_user to platform admin.
+    PlatformUserRoleAssignment.objects.create(
+        user=from_user,
+        role=platform_admin_role,
+        assigned_by=from_user,
+    )
+
+    # Assign to_user to super admin.
+    PlatformUserRoleAssignment.objects.create(
+        user=to_user,
+        role=super_admin_role,
+        assigned_by=from_user,
+    )
+
+    # Sync is_superuser flag.
+    UserModel.objects.filter(pk=from_user.pk).update(is_superuser=False)
+    UserModel.objects.filter(pk=to_user.pk).update(is_superuser=True)
+
+    emit_audit_event(
+        actor=from_user,
+        module=AuditModuleKey.RBAC,
+        action=AuditActionType.UPDATE,
+        entity_type="PlatformUserRoleAssignment",
+        entity_id=str(to_user.pk),
+        entity_label=getattr(to_user, "email", str(to_user.pk)),
+        summary=f"Super admin role transferred from {from_user.email} to {to_user.email}",
+        metadata={"from_user_id": str(from_user.pk), "to_user_id": str(to_user.pk)},
+    )
 
 
 @transaction.atomic

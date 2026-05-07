@@ -141,4 +141,13 @@ urlpatterns = [
         views.PlatformRoleChangeRequestDecisionView.as_view(),
         name="platform-rbac-role-change-decide",
     ),
+
+    # -------------------------------------------------------------------------
+    # Super Admin Transfer
+    # -------------------------------------------------------------------------
+    path(
+        "platform/transfer-super-admin/",
+        views.TransferSuperAdminView.as_view(),
+        name="platform-rbac-transfer-super-admin",
+    ),
 ]
