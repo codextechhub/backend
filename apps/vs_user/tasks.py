@@ -147,7 +147,7 @@ def send_password_reset_email_task(self, activation_key: str, origin: str, sende
         base_url = getattr(settings, 'FRONTEND_BASE_URL', None)
         if not base_url:
             raise ImproperlyConfigured('FRONTEND_BASE_URL must be set in settings.')
-        reset_url     = f'{base_url}v1/user/auth/reset-password/{activation_key}/preview/'
+        reset_url     = f'{base_url.rstrip("/")}/reset-password/{activation_key}'
         expiry_hours  = 1 if origin == 'SELF' else 24
 
         context = {

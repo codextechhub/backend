@@ -97,15 +97,17 @@ class PasswordService:
             user.set_password(new_password)
             user.password_changed_at = timezone.now()
             user.activation_key = uuid.uuid4()
+            user.is_active = True
 
-            if user.status == User.Status.LOCKED:
+            if user.status in (User.Status.LOCKED, User.Status.PENDING):
+                if user.status == User.Status.LOCKED:
+                    lockout = AccountLockout.objects.select_for_update().filter(user=user).first()
+                    if lockout:
+                        lockout.clear()
+                        lockout.save(update_fields=["failure_count", "locked_until", "locked_reason", "updated_at"])
                 user.status = User.Status.ACTIVE
-                lockout = AccountLockout.objects.select_for_update().filter(user=user).first()
-                if lockout:
-                    lockout.clear()
-                    lockout.save(update_fields=["failure_count", "locked_until", "locked_reason", "updated_at"])
 
-            user.save(update_fields=["password", "password_changed_at", "status", "updated_at", "activation_key"])
+            user.save(update_fields=["password", "password_changed_at", "status", "is_active", "updated_at", "activation_key"])
             pr.mark_used()
             pr.save(update_fields=["used_at", "updated_at"])
             blacklist_all_user_tokens(user)
