@@ -54,7 +54,7 @@ class PasswordService:
         if not user or user.status == User.Status.DEACTIVATED:
             return  # Do not reveal whether the account exists
 
-        PasswordService._create_and_send_reset(user, origin="SELF", request=request)
+        PasswordService._create_and_send_reset(user, origin="SELF", sender_name="CodeX System")
 
     @staticmethod
     @transaction.atomic
@@ -63,7 +63,8 @@ class PasswordService:
         Admin triggers a password reset for another user.
         Creates a 24-hour token and emails it to the user.
         """
-        PasswordService._create_and_send_reset(target_user, origin="ADMIN", request=request)
+        sender_name = requesting_user.full_name() if requesting_user else "CodeX System"
+        PasswordService._create_and_send_reset(target_user, origin="ADMIN", sender_name=sender_name)
 
         log_auth_event(
             actor=requesting_user, subject=target_user,
@@ -119,7 +120,7 @@ class PasswordService:
     # ── Private ───────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _create_and_send_reset(user, origin: str, request=None):
+    def _create_and_send_reset(user, origin: str, sender_name: str = "CodeX System", request=None):
         """
         Creates a PasswordResetRequest record and dispatches the reset email.
         """
@@ -136,4 +137,8 @@ class PasswordService:
             requested_user_agent=request.META.get("HTTP_USER_AGENT", "") if request else "",
         )
         from ..tasks import send_password_reset_email_task
-        send_password_reset_email_task.delay(activation_key=str(user.activation_key), origin=origin, request=request)
+        send_password_reset_email_task.delay(
+            activation_key=str(user.activation_key),
+            origin=origin,
+            sender_name=sender_name,
+        )

@@ -129,7 +129,7 @@ def send_invitation_email_task(self, activation_key: str):
 # =============================================================================
 
 @shared_task(bind=True, max_retries=3, default_retry_delay=60)
-def send_password_reset_email_task(self, activation_key: str, origin: str, request=None):
+def send_password_reset_email_task(self, activation_key: str, origin: str, sender_name: str = 'CodeX System'):
     """
     Sends a password reset email.
 
@@ -155,6 +155,7 @@ def send_password_reset_email_task(self, activation_key: str, origin: str, reque
             'reset_url':     reset_url,
             'expiry_hours':  expiry_hours,
             'origin':        origin,
+            'sender_name':   sender_name,
         }
 
         # TODO: Replace send_mail with Notification Engine (Module 7) once available.
@@ -166,19 +167,12 @@ def send_password_reset_email_task(self, activation_key: str, origin: str, reque
             if origin == 'SELF'
             else 'Your CodeX Vision password has been reset by an administrator'
         )
-        senders_name = (
-            'CodeX System' 
-            if origin == 'SELF' 
-            else request.user.full_name() 
-            if request and request.user.is_authenticated 
-            else 'CodeX System'
-        )
 
         send_email(
             subject=subject,
             plain_message=plain_message,
             html_message=html_message,
-            from_email=build_from_email(senders_name),
+            from_email=build_from_email(sender_name),
             recipient_list=[user.email],
         )
 
