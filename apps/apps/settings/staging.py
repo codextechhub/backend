@@ -6,8 +6,8 @@ DEBUG = False
 ALLOWED_HOSTS = config("ALLOWED_HOSTS").split(",")
 assert ALLOWED_HOSTS, "ALLOWED_HOSTS must be set in production."
 
-# Frontend URL
-FRONTEND_BASE_URL = 'https://api.codexng.com'  # Production
+# Frontend URL — read from environment, not hardcoded
+FRONTEND_BASE_URL = 'http://localhost:5173'  # Default for staging, but should be overridden in production
 
 DATABASES = {
     "default": {
@@ -38,4 +38,4 @@ SECURE_CONTENT_TYPE_NOSNIFF = True
 # No Celery worker on this tier — tasks execute synchronously in the web process.
 # Remove these two lines and add a worker service when upgrading.
 CELERY_TASK_ALWAYS_EAGER     = True
-CELERY_TASK_EAGER_PROPAGATES = False
+CELERY_TASK_EAGER_PROPAGATES = True

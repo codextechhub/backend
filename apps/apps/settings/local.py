@@ -11,7 +11,7 @@ EMAIL_USE_SSL = True
 EMAIL_USE_TLS = False
 
 CELERY_TASK_ALWAYS_EAGER     = True
-CELERY_TASK_EAGER_PROPAGATES = False
+CELERY_TASK_EAGER_PROPAGATES = True
 
 # Frontend URL — must point to the React dev server, not the Django backend
 FRONTEND_BASE_URL = 'http://localhost:5173'  # Vite default
