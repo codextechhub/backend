@@ -148,12 +148,12 @@ class Command(BaseCommand):
         # List of apps to process
         # You can modify this list or make it dynamic based on settings.INSTALLED_APPS
         installed_apps = [
-            'vs_admin_console',
-            'vs_user',
-            'vs_schools',
-            'vs_rbac',
-            'vs_audit',
-            'vs_import_data',
+            # 'vs_admin_console',
+            # 'vs_user',
+            # 'vs_schools',
+            # 'vs_rbac',
+            # 'vs_audit',
+            # 'vs_import_data',
             # Add more apps as needed
         ]
         
