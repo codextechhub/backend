@@ -63,7 +63,7 @@ class PasswordService:
         Admin triggers a password reset for another user.
         Creates a 24-hour token and emails it to the user.
         """
-        sender_name = requesting_user.full_name() if requesting_user else "CodeX System"
+        sender_name = requesting_user.full_name if requesting_user else "CodeX System"
         PasswordService._create_and_send_reset(target_user, origin="ADMIN", sender_name=sender_name)
 
         log_auth_event(
