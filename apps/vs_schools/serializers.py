@@ -589,6 +589,7 @@ class SchoolDetailSerializer(serializers.ModelSerializer):
     branding = SchoolBrandingSerializer(read_only=True)
     primary_admin = SchoolPrimaryAdminReadSerializer(read_only=True)
     package_setup = SchoolPackageSetupReadSerializer(read_only=True)
+    total_students = serializers.ReadOnlyField(default=0)
 
     class Meta:
         model = School
