@@ -91,7 +91,8 @@ class Permission(TimeStampedModel):
         ]
 
     def save(self, *args, **kwargs):
-        self.key = f"{self.module_key}.{self.resource}.{self.action}"
+        if not kwargs.get('update_fields'):
+            self.key = f"{self.module_key}.{self.resource}.{self.action}"
         super().save(*args, **kwargs)
 
     def __str__(self) -> str:
