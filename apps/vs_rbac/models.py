@@ -90,6 +90,10 @@ class Permission(TimeStampedModel):
             models.Index(fields=["is_restricted", "sensitivity_level"]),
         ]
 
+    def save(self, *args, **kwargs):
+        self.key = f"{self.module_key}.{self.resource}.{self.action}"
+        super().save(*args, **kwargs)
+
     def __str__(self) -> str:
         return self.key
 

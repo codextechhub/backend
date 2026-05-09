@@ -80,6 +80,7 @@ class PermissionSerializer(serializers.ModelSerializer):
         fields = [
             "key",
             "module_key",
+            "resource",
             "action",
             "description",
             "sensitivity_level",
@@ -88,7 +89,7 @@ class PermissionSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["created_at", "updated_at"]
+        read_only_fields = ["key", "created_at", "updated_at"]
 
 
 class PermissionDependencySerializer(serializers.ModelSerializer):
