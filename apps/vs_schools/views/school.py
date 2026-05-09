@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from django.db.models import Q
+from django.db.models import Prefetch
 from rest_framework import generics
 from rest_framework.permissions import IsAuthenticated
 
 from core.mixins import RetrieveModelMixin, CreateModelMixin
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
-from ..models import School, SchoolStatus
+from ..models import Branch, School, SchoolStatus
 from vs_rbac.permissions import IsVisionStaff, IsAuthenticatedAndActive
 from ..serializers import (
     SchoolCreateSerializer,
@@ -113,8 +114,21 @@ class SchoolDetailView(RetrieveModelMixin, ActorContextMixin, generics.RetrieveA
 
     queryset = (
         School.objects.all()
-        .select_related("branding")
-        .prefetch_related("branches")
+        .select_related(
+            "branding",
+            "primary_admin",
+            "primary_admin__contact",
+            "package_setup",
+            "package_setup__package_plan",
+        )
+        .prefetch_related(
+            Prefetch(
+                "branches",
+                queryset=Branch.objects.select_related(
+                    "primary_admin", "primary_admin__contact"
+                ),
+            )
+        )
     )
     lookup_field = "slug"
 
@@ -129,8 +143,21 @@ class SchoolUpdateView(ActorContextMixin, generics.UpdateAPIView):
 
     queryset = (
         School.objects.all()
-        .select_related("branding")
-        .prefetch_related("branches")
+        .select_related(
+            "branding",
+            "primary_admin",
+            "primary_admin__contact",
+            "package_setup",
+            "package_setup__package_plan",
+        )
+        .prefetch_related(
+            Prefetch(
+                "branches",
+                queryset=Branch.objects.select_related(
+                    "primary_admin", "primary_admin__contact"
+                ),
+            )
+        )
     )
     lookup_field = "slug"
 

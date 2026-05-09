@@ -149,16 +149,14 @@ class BranchDetailView(RetrieveModelMixin, ActorContextMixin, generics.RetrieveA
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = BranchDetailSerializer
 
-    queryset = Branch.objects.all().select_related("school")
+    queryset = Branch.objects.all().select_related(
+        "school", "primary_admin", "primary_admin__contact"
+    )
     lookup_field = "code"
 
     def get_queryset(self):
-        """
-        Optional extra safety:
-        If school slug is in the URL, scope branch lookup to that school.
-        """
         qs = super().get_queryset()
-        i_slug = self.kwargs.get("i_slug")   # "s" for "slug" to keep it short in URL
+        i_slug = self.kwargs.get("i_slug")
         if i_slug:
             qs = qs.filter(school__slug=i_slug)
         return qs
@@ -171,12 +169,14 @@ class BranchUpdateView(ActorContextMixin, generics.UpdateAPIView):
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = BranchUpdateSerializer
 
-    queryset = Branch.objects.all().select_related("school")
+    queryset = Branch.objects.all().select_related(
+        "school", "primary_admin", "primary_admin__contact"
+    )
     lookup_field = "code"
 
     def get_queryset(self):
         qs = super().get_queryset()
-        i_slug = self.kwargs.get("i_slug")  # "s" for "slug" to keep it short in URL
+        i_slug = self.kwargs.get("i_slug")
         if i_slug:
             qs = qs.filter(school__slug=i_slug)
         return qs
