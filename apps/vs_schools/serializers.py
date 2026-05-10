@@ -393,12 +393,20 @@ class BranchCreateSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
-        # Example: if is_main=True, ensure no other main branch exists (friendly error before DB constraint)
         school = self.context.get("school")
         is_main = attrs.get("is_main", False)
         if school and is_main:
             if Branch.objects.filter(school=school, is_main=True).exists():
                 raise serializers.ValidationError({"is_main": "This school already has a main branch."})
+
+        primary_admin_data = attrs.get("primary_admin_data")
+        if primary_admin_data:
+            from vs_user.models import User
+            email = (primary_admin_data.get("email") or "").lower().strip()
+            if email and User.objects.filter(email=email).exists():
+                raise serializers.ValidationError({
+                    "primary_admin_data": {"email": "A user with this email already exists."}
+                })
 
         return attrs
 
@@ -740,9 +748,42 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 })
             attrs["slug"] = base
 
-        # --- Branch-level validations ---
+        # --- Admin email existence checks (single DB query) ---
+        from vs_user.models import User
+
+        primary_admin_data = attrs.get("primary_admin_data", None)
         branches = attrs.get("branches", [])
 
+        _tagged_emails: Dict[str, str] = {}
+        if primary_admin_data:
+            sa_email = (primary_admin_data.get("email") or "").lower().strip()
+            if sa_email:
+                _tagged_emails["__school__"] = sa_email
+
+        for i, branch in enumerate(branches):
+            ba_data = branch.get("primary_admin_data") or {}
+            ba_email = (ba_data.get("email") or "").lower().strip()
+            if ba_email:
+                _tagged_emails[i] = ba_email
+
+        if _tagged_emails:
+            existing = set(
+                User.objects.filter(email__in=_tagged_emails.values()).values_list("email", flat=True)
+            )
+            email_errors: Dict[str, Any] = {}
+            if "__school__" in _tagged_emails and _tagged_emails["__school__"] in existing:
+                email_errors["primary_admin_data"] = {"email": "A user with this email already exists."}
+            branch_email_errors = {
+                i: {"primary_admin_data": {"email": "A user with this email already exists."}}
+                for i, email in _tagged_emails.items()
+                if i != "__school__" and email in existing
+            }
+            if branch_email_errors:
+                email_errors["branches"] = branch_email_errors
+            if email_errors:
+                raise serializers.ValidationError(email_errors)
+
+        # --- Branch-level validations ---
         if branches:
             # Rule 1: Branch names must be unique within the submission
             names = [b["name"].strip().lower() for b in branches]

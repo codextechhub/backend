@@ -40,7 +40,8 @@
       "Bash(git *)",
       "Bash(npx --no-install eslint src/pages/Dashboard.jsx)",
       "Bash(pip index *)",
-      "Bash(python manage.py delete_user --help)"
+      "Bash(python manage.py delete_user --help)",
+      "Bash(python *)"
     ]
   }
 }
