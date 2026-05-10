@@ -69,7 +69,7 @@ class SchoolListView(ActorContextMixin, generics.ListAPIView):
 
         ordering = (self.request.query_params.get("ordering") or "").strip()
         allowed = {"created_at", "-created_at", "updated_at", "-updated_at", "name", "-name"}
-        qs = qs.order_by(ordering) if ordering in allowed else qs.order_by("created_at")
+        qs = qs.order_by(ordering) if ordering in allowed else qs.order_by("-created_at")
         return qs
 
 
@@ -108,7 +108,7 @@ class SchoolCreateView(CreateModelMixin, ActorContextMixin, generics.CreateAPIVi
     serializer_class = SchoolCreateSerializer
 
 
-class SchoolDetailView(RetrieveModelMixin, ActorContextMixin, generics.RetrieveAPIView):
+class SchoolDetailView(ActorContextMixin, generics.RetrieveAPIView):
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = SchoolDetailSerializer
 
@@ -131,6 +131,21 @@ class SchoolDetailView(RetrieveModelMixin, ActorContextMixin, generics.RetrieveA
         )
     )
     lookup_field = "slug"
+
+    def retrieve(self, request, *args, **kwargs):
+        import traceback as tb
+        try:
+            instance = self.get_object()
+            serializer = self.get_serializer(instance)
+            return success_response(
+                message="Data retrieved successfully.",
+                data=serializer.data,
+            )
+        except Exception as exc:
+            return error_response(
+                message=f"DEBUG: {type(exc).__name__}: {exc}",
+                data={"trace": tb.format_exc()},
+            )
 
 
 class SchoolUpdateView(ActorContextMixin, generics.UpdateAPIView):

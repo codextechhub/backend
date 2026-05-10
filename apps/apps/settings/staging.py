@@ -6,8 +6,7 @@ DEBUG = False
 ALLOWED_HOSTS = config("ALLOWED_HOSTS").split(",")
 assert ALLOWED_HOSTS, "ALLOWED_HOSTS must be set in production."
 
-# Frontend URL — read from environment, not hardcoded
-FRONTEND_BASE_URL = 'http://localhost:5173'  # Default for staging, but should be overridden in production
+FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="https://intranet.codexng.com")
 
 DATABASES = {
     "default": {

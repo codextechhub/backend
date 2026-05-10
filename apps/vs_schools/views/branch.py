@@ -82,7 +82,7 @@ class BranchListView(ActorContextMixin, generics.ListAPIView):
 
         ordering = (self.request.query_params.get("ordering") or "").strip()
         allowed = {"created_at", "-created_at", "updated_at", "-updated_at", "name", "-name", "code", "-code"}
-        qs = qs.order_by(ordering) if ordering in allowed else qs.order_by("created_at")
+        qs = qs.order_by(ordering) if ordering in allowed else qs.order_by("-created_at")
         return qs
 
 
@@ -156,9 +156,9 @@ class BranchDetailView(RetrieveModelMixin, ActorContextMixin, generics.RetrieveA
 
     def get_queryset(self):
         qs = super().get_queryset()
-        i_slug = self.kwargs.get("i_slug")
-        if i_slug:
-            qs = qs.filter(school__slug=i_slug)
+        slug = self.kwargs.get("slug")
+        if slug:
+            qs = qs.filter(school__slug=slug)
         return qs
 
 
@@ -176,9 +176,9 @@ class BranchUpdateView(ActorContextMixin, generics.UpdateAPIView):
 
     def get_queryset(self):
         qs = super().get_queryset()
-        i_slug = self.kwargs.get("i_slug")
-        if i_slug:
-            qs = qs.filter(school__slug=i_slug)
+        slug = self.kwargs.get("slug")
+        if slug:
+            qs = qs.filter(school__slug=slug)
         return qs
 
     def update(self, request, *args, **kwargs):

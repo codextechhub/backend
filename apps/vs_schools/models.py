@@ -169,6 +169,7 @@ class School(TimeStampedModel):
         constraints = [
             models.CheckConstraint(condition=~Q(slug=""), name="slug_not_empty"),
         ]
+        ordering = ["-created_at"]
 
     def __str__(self) -> str:
         return self.slug
@@ -271,6 +272,7 @@ class Branch(TimeStampedModel):
             models.Index(fields=["school", "code"]),
         ]
         constraints = []
+        ordering = ["-created_at"]
 
     def __str__(self) -> str:
         return f"{self.school.slug}:{self.code}"
