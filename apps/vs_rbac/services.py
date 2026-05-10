@@ -34,6 +34,55 @@ from .models import (
 from .validators import validate_role_permissions
 
 
+def provision_role_from_prebuilt(*, school, branch=None, prebuilt_key: str, created_by=None):
+    """
+    Get or create a SchoolRoleTemplate from a PrebuiltRoleTemplate, copying
+    its default permissions into the new role if it is freshly created.
+
+    Returns the SchoolRoleTemplate, or None if the prebuilt key is not found.
+    """
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
+    if not isinstance(created_by, User):
+        created_by = None
+
+    prebuilt = PrebuiltRoleTemplate.objects.filter(key=prebuilt_key, is_active=True).first()
+    if not prebuilt:
+        return None
+
+    role, created = SchoolRoleTemplate.objects.get_or_create(
+        school=school,
+        branch=branch,
+        prebuilt_from=prebuilt,
+        defaults={
+            "name": prebuilt.name,
+            "description": prebuilt.description,
+            "is_system_role": True,
+            "is_locked": True,
+            "created_by": created_by,
+        },
+    )
+
+    if created:
+        prebuilt_perms = PrebuiltRolePermission.objects.filter(
+            prebuilt_role=prebuilt
+        ).select_related("permission")
+        SchoolRolePermission.objects.bulk_create(
+            [
+                SchoolRolePermission(
+                    role=role,
+                    permission=p.permission,
+                    granted=True,
+                    granted_by=created_by,
+                )
+                for p in prebuilt_perms
+            ],
+            ignore_conflicts=True,
+        )
+
+    return role
+
+
 def apply_school_role_change_request(obj: SchoolRoleChangeRequest, reviewer, notes: str = ""):
     """
     Apply approved school role change request.

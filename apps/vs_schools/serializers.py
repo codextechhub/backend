@@ -350,6 +350,7 @@ class BranchDetailSerializer(serializers.ModelSerializer):
 
             "status",
             "opened_at",
+            "activated_at",
 
             # Nested read
             "primary_admin",
@@ -426,6 +427,18 @@ class BranchCreateSerializer(serializers.ModelSerializer):
             reason="Branch created",
         )
 
+        from .models import BranchPrimaryAdmin
+        from .services.admin_provisioning import provision_admin_user
+        from vs_rbac.services import provision_role_from_prebuilt
+
+        # Provision branch_admin role template (branch-scoped) before any email is sent
+        branch_admin_role = provision_role_from_prebuilt(
+            school=school,
+            branch=branch,
+            prebuilt_key="branch_admin",
+            created_by=self.context.get("actor_id"),
+        )
+
         # Optional primary admin assignment (ContactInfo + link)
         if primary_admin_data:
             contact = ContactInfo.objects.create(
@@ -433,9 +446,6 @@ class BranchCreateSerializer(serializers.ModelSerializer):
                 email=primary_admin_data["email"],
                 phone=primary_admin_data.get("phone", ""),
             )
-            # Link model lives in models.py; import inside to avoid circular
-            from .models import BranchPrimaryAdmin
-
             admin_link = BranchPrimaryAdmin.objects.create(
                 branch=branch,
                 contact=contact,
@@ -445,15 +455,13 @@ class BranchCreateSerializer(serializers.ModelSerializer):
                 invite_queued_at=timezone.now(),
                 invite_sent_at=None,
             )
-
-            from .services.admin_provisioning import provision_admin_user
             provision_admin_user(
                 contact=contact,
                 admin_link=admin_link,
                 school=school,
                 branch=branch,
                 user_type="BRANCH_ADMIN",
-                role=primary_admin_data.get("branch_role", "Head Teacher"),
+                role=branch_admin_role.id if branch_admin_role else "",
                 actor=self.context.get("actor_id"),
             )
         else:
@@ -775,6 +783,19 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
             SchoolBranding.objects.create(school=school, **branding_data)
 
         from .services.admin_provisioning import provision_admin_user
+        from vs_rbac.services import provision_role_from_prebuilt
+
+        actor = self.context.get("actor_id")
+
+        # Provision school_admin role template for this school before any email is sent
+        school_admin_role = provision_role_from_prebuilt(
+            school=school,
+            branch=None,
+            prebuilt_key="school_admin",
+            created_by=actor,
+        )
+
+        school_admin_email = None
 
         # --- 3. Optional school-level primary admin ---
         if primary_admin_data:
@@ -792,14 +813,15 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 invite_queued_at=timezone.now(),
                 invite_sent_at=None,
             )
+            school_admin_email = primary_admin_data["email"].lower().strip()
             provision_admin_user(
                 contact=contact,
                 admin_link=school_admin_link,
                 school=school,
                 branch=None,
                 user_type="SCHOOL_ADMIN",
-                role=primary_admin_data.get("school_role", "IT Head"),
-                actor=self.context.get("actor_id"),
+                role=school_admin_role.id if school_admin_role else "",
+                actor=actor,
             )
 
         # --- 4. Create branches inline ---
@@ -813,6 +835,14 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 **branch_data,
             )
 
+            # Provision branch_admin role template (branch-scoped) before any email is sent
+            branch_admin_role = provision_role_from_prebuilt(
+                school=school,
+                branch=branch,
+                prebuilt_key="branch_admin",
+                created_by=actor,
+            )
+
             # Log initial lifecycle event
             BranchLifecycle.objects.create(
                 branch=branch,
@@ -824,6 +854,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
 
             # Create branch admin if provided
             if branch_admin_data:
+                branch_admin_email = branch_admin_data["email"].lower().strip()
                 contact = ContactInfo.objects.create(
                     full_name=branch_admin_data["full_name"],
                     email=branch_admin_data["email"],
@@ -838,15 +869,21 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                     invite_queued_at=timezone.now(),
                     invite_sent_at=None,
                 )
-                provision_admin_user(
-                    contact=contact,
-                    admin_link=branch_admin_link,
-                    school=school,
-                    branch=branch,
-                    user_type="BRANCH_ADMIN",
-                    role=branch_admin_data.get("branch_role", "Head Teacher"),
-                    actor=self.context.get("actor_id"),
-                )
+                if school_admin_email and branch_admin_email == school_admin_email:
+                    # Same person as school admin — link is recorded but no new user or email
+                    branch_admin_link.invite_status = InviteStatus.SENT
+                    branch_admin_link.invite_sent_at = timezone.now()
+                    branch_admin_link.save(update_fields=["invite_status", "invite_sent_at"])
+                else:
+                    provision_admin_user(
+                        contact=contact,
+                        admin_link=branch_admin_link,
+                        school=school,
+                        branch=branch,
+                        user_type="BRANCH_ADMIN",
+                        role=branch_admin_role.id if branch_admin_role else "",
+                        actor=actor,
+                    )
         
             # branch audit trail for creation
             _branch_snap = AuditDiffService.from_instances(
