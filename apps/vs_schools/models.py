@@ -272,6 +272,7 @@ class Branch(TimeStampedModel):
             models.Index(fields=["school", "code"]),
         ]
         constraints = []
+        ordering = ["-created_at"]
 
     def __str__(self) -> str:
         return f"{self.school.slug}:{self.code}"
