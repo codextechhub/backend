@@ -38,7 +38,12 @@ from .services.config import ConfigurationService
 from .services.flags import FlagService
 from .services.audit import write_audit_log, ConfigAuditActions
 
-from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+from vs_rbac.permissions import (
+    IsAuthenticatedAndActive,
+    HasRBACPermission,
+    IsVisionSuperAdmin,
+    IsSchoolAdmin,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +81,7 @@ class ConfigurationKeyListCreateView(APIView):
     POST /api/v1/config/keys/
          Create a new global config key. Super Admin only.
     """
-    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.SYSTEM_MANAGE
 
     def get(self, request):
@@ -113,7 +118,7 @@ class ConfigurationKeyDetailView(APIView):
     PATCH /api/v1/config/keys/{key}/   Update value and/or description.
     DELETE /api/v1/config/keys/{key}/  Soft-delete. Blocked if referenced by overrides.
     """
-    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.SYSTEM_MANAGE
 
     def _get_key(self, key_name):
@@ -149,7 +154,7 @@ class ConfigurationKeyRestoreView(APIView):
     POST /api/v1/config/keys/{key}/restore/
     Restore a soft-deleted configuration key.
     """
-    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.SYSTEM_MANAGE
 
     def post(self, request, key):
@@ -168,7 +173,7 @@ class BranchFlagListView(APIView):
     Returns all flags in FLAG_REGISTRY annotated with branch state.
     Never-set flags appear with is_enabled=False.
     """
-    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.FLAGS_MANAGE
 
     def get(self, request, branch_id):
@@ -184,7 +189,7 @@ class BranchFlagToggleView(APIView):
     PATCH /api/v1/config/branches/{branch_id}/flags/{flag_key}/
     Toggle a specific flag on or off for a branch.
     """
-    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.FLAGS_MANAGE
 
     def patch(self, request, branch_id, flag_key):
@@ -217,7 +222,7 @@ class BranchFlagHistoryView(APIView):
     Returns paginated flag change history for a branch.
     Optional ?flag_key= to filter by a specific flag.
     """
-    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.FLAGS_MANAGE
 
     def get(self, request, branch_id):
@@ -246,7 +251,7 @@ class BranchOverrideView(APIView):
           Update one or more permitted override keys.
           Only keys in PERMITTED_SELF_SERVICE_KEYS are accepted.
     """
-    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.SELF_MANAGE
 
     def get(self, request):
@@ -281,7 +286,7 @@ class BranchOverrideHistoryView(APIView):
     GET /api/v1/config/my-branch/overrides/history/
     Returns paginated change history for the authenticated Branch Admin's overrides.
     """
-    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.SELF_MANAGE
 
     def get(self, request):
@@ -304,7 +309,7 @@ class ConfigExportView(APIView):
     Export all active global config keys and all branch flag states.
     Super Admin only. Action is logged to platform audit trail.
     """
-    permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.SYSTEM_MANAGE
     
     def get(self, request):
