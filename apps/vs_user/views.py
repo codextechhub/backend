@@ -202,6 +202,7 @@ class ActivationPreviewView(APIView):
 
     Permission: AllowAny (public — user hasn't logged in yet).
     """
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def get(self, request, activation_key):
@@ -228,6 +229,7 @@ class ActivationView(APIView):
     Permission: AllowAny (public — user hasn't logged in yet).
     RBAC: identity.user_account.activate
     """
+    authentication_classes = []
     permission_classes = [AllowAny]
     throttle_scope = 'activation'
 
@@ -367,6 +369,7 @@ class PasswordResetPreviewView(APIView):
     Permission: AllowAny (public — user hasn't logged in yet).
     RBAC: identity.user_password.reset
     """
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def get(self, request, activation_key):
@@ -397,6 +400,7 @@ class PasswordResetConfirmView(APIView):
     Permission: AllowAny (public — token validity is the gate).
     RBAC: identity.user_password.reset
     """
+    authentication_classes = []
     permission_classes = [AllowAny]
 
     def post(self, request, activation_key):
@@ -417,7 +421,7 @@ class PasswordResetConfirmView(APIView):
             )
         except ValueError as e:
             payload = e.args[0] if e.args else {}
-            message = payload.get('detail', 'Password reset failed.') if isinstance(payload, dict) else str(payload)
+            message = payload.get('message', payload.get('detail', 'Password reset failed.')) if isinstance(payload, dict) else str(payload)
             return error_response(message=message, error=payload)
 
         return success_response(message="Password reset successful.")

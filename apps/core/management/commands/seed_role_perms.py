@@ -1721,10 +1721,12 @@ class Command(BaseCommand):
         if not dry_run:
             with transaction.atomic():
                 for key, module_key, action, description, sensitivity, is_restricted in PERMISSIONS:
+                    resource = key[len(module_key) + 1: -len(action) - 1]
                     _, created = Permission.objects.update_or_create(
                         key=key,
                         defaults=dict(
                             module_key=module_key,
+                            resource=resource,
                             action=action,
                             description=description,
                             sensitivity_level=sensitivity,

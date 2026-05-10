@@ -184,10 +184,15 @@ class School(TimeStampedModel):
     @property
     def main_branch(self):
         """
-        Returns the main branch.
-        Note: use select_related/prefetch_related in views for performance.
+        Returns the main branch with its primary_admin pre-loaded to avoid
+        DoesNotExist on the reverse OneToOne when serializing.
         """
-        return self.branches.filter(is_main=True).first()
+        return (
+            self.branches
+            .select_related("primary_admin", "primary_admin__contact")
+            .filter(is_main=True)
+            .first()
+        )
 
 
 class Branch(TimeStampedModel):

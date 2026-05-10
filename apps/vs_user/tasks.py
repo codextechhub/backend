@@ -72,7 +72,7 @@ def send_invitation_email_task(self, activation_key: str):
         if not base_url:
             raise ImproperlyConfigured('FRONTEND_BASE_URL must be set in settings.')
 
-        invitation_url = f'{base_url}/v1/user/auth/activate/{user.activation_key}/preview/'
+        invitation_url = f'{base_url.rstrip("/")}/activate/{user.activation_key}'
 
         context = {
             'user':           user,

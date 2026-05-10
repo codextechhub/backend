@@ -200,7 +200,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             models.Index(fields=['school', 'branch']),
             models.Index(fields=['email', 'status']),
         ]
-        ordering = ['-updated_at']
+        ordering = ['-created_at']
 
     # ── Validation ────────────────────────────────────────────────────────────
 
