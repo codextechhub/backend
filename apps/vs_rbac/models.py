@@ -13,16 +13,20 @@ from vs_schools.models import Branch, School
 User = settings.AUTH_USER_MODEL
 
 
-def _unique_slug(model_class, name, slug_field="slug", exclude_pk=None):
+def _unique_slug(model_class, name, slug_field="id", exclude_pk=None):
     base = slugify(name)
     slug = base
     n = 1
+
     while True:
         qs = model_class.objects.filter(**{slug_field: slug})
+
         if exclude_pk is not None:
             qs = qs.exclude(pk=exclude_pk)
+
         if not qs.exists():
             return slug
+        
         slug = f"{base}-{n}"
         n += 1
 

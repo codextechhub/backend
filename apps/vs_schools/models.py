@@ -169,6 +169,7 @@ class School(TimeStampedModel):
         constraints = [
             models.CheckConstraint(condition=~Q(slug=""), name="slug_not_empty"),
         ]
+        ordering = ["-created_at"]
 
     def __str__(self) -> str:
         return self.slug

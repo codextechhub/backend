@@ -785,7 +785,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         from .services.admin_provisioning import provision_admin_user
         from vs_rbac.services import provision_role_from_prebuilt
 
-        actor = self.context.get("actor_id")
+        actor = self.context["request"].user
 
         # Provision school_admin role template for this school before any email is sent
         school_admin_role = provision_role_from_prebuilt(
