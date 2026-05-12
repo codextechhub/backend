@@ -815,8 +815,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         # --- 1. Create the School ---
         school = School.objects.create(
             **validated_data,
-            status=SchoolStatus.ACTIVE,
-            activated_at=timezone.now(),
+            status=SchoolStatus.PENDING,
         )
 
         # --- 2. Optional branding ---
@@ -1002,7 +1001,6 @@ class SchoolUpdateSerializer(serializers.ModelSerializer):
             "term_structure",
             "currency",
             "registration_id",
-            "status",       # include only if you allow direct status updates here
 
             # optional nested
             "branding",
