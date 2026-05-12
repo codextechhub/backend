@@ -98,7 +98,7 @@ class LoginView(APIView):
                 if isinstance(payload, dict) and payload.get('error_code') in blocked_codes
                 else status.HTTP_401_UNAUTHORIZED
             )
-            message = payload.get('detail', 'Authentication failed.') if isinstance(payload, dict) else str(payload)
+            message = payload.get('message', payload.get('detail', 'Authentication failed.')) if isinstance(payload, dict) else str(payload)
             return error_response(message=message, error=payload, status=http_status)
 
         return success_response(message="Login successful.", data=result)
