@@ -5,7 +5,6 @@
 from __future__ import annotations
 import email
 
-from django.contrib.auth import authenticate
 from django.db import transaction
 from django.utils import timezone
 
@@ -75,10 +74,15 @@ class LoginService:
                 raise ValueError({'error_code': 'INVALID_CREDENTIALS', 'message': 'Invalid credentials.'})
 
         # 5. Authenticate credentials
-        authed = authenticate(request=request, username=email, password=password)
-        if not authed:
+        # Use check_password directly instead of django's authenticate(), which
+        # returns None for any user with is_active=False (suspended, deactivated,
+        # pending). That would mask the real reason with INVALID_CREDENTIALS before
+        # _check_status ever runs.
+        if not user or not user.check_password(password):
             LoginService._handle_failed_attempt(user, school, school.slug if school else '', request)
             raise ValueError({'error_code': 'INVALID_CREDENTIALS', 'message': 'Invalid credentials.'})
+
+        authed = user
 
         # 6. Check account status
         status_error = LoginService._check_status(authed)
