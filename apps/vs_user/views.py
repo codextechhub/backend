@@ -528,6 +528,18 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                 | Q(email__icontains=search)
             )
 
+        if role := params.get('role'):
+            qs = qs.filter(role__iexact=role)
+
+        if invited_by := params.get('invited_by'):
+            qs = qs.filter(invited_by_name__icontains=invited_by)
+
+        if date_from := _get_date_param(params, 'date_from'):
+            qs = qs.filter(created_at__date__gte=date_from)
+
+        if date_to := _get_date_param(params, 'date_to'):
+            qs = qs.filter(created_at__date__lte=date_to)
+
         return qs
 
     def get_permissions(self):
