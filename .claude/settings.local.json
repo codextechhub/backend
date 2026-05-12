@@ -41,7 +41,17 @@
       "Bash(npx --no-install eslint src/pages/Dashboard.jsx)",
       "Bash(pip index *)",
       "Bash(python manage.py delete_user --help)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/__init__.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/__init__.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/admin.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/admin.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/apps.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/apps.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/constants.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/constants.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/exceptions.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/exceptions.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/services/__init__.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/__init__.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/services/dispatch.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/dispatch.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/services/render.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/render.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/services/seed.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/seed.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/services/settings.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/settings.py)"
     ]
   }
 }
