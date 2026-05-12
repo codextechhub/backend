@@ -56,8 +56,8 @@ class LoginService:
                     request=request,
                 )
                 raise ValueError({
-                    'error_code': 'ACCOUNT_LOCKED',
-                    'message':    'Your account is locked. Please contact your administrator or reset your password.',
+                    'code':   'ACCOUNT_LOCKED',
+                    'detail': 'Your account is locked. Please contact your administrator or reset your password.',
                 })
 
         # 4. School context enforcement
@@ -71,7 +71,7 @@ class LoginService:
                     request=request,
                 )
                 # Generic message — do not reveal whether the email was found.
-                raise ValueError({'error_code': 'INVALID_CREDENTIALS', 'message': 'Invalid credentials.'})
+                raise ValueError({'code': 'INVALID_CREDENTIALS', 'detail': 'Invalid credentials.'})
 
         # 5. Authenticate credentials
         # Use check_password directly instead of django's authenticate(), which
@@ -80,7 +80,7 @@ class LoginService:
         # _check_status ever runs.
         if not user or not user.check_password(password):
             LoginService._handle_failed_attempt(user, school, school.slug if school else '', request)
-            raise ValueError({'error_code': 'INVALID_CREDENTIALS', 'message': 'Invalid credentials.'})
+            raise ValueError({'code': 'INVALID_CREDENTIALS', 'detail': 'Invalid credentials.'})
 
         authed = user
 
@@ -159,20 +159,20 @@ class LoginService:
         """Returns an error payload if the account cannot log in, else None."""
         errors = {
             User.Status.PENDING: {
-                'error_code': 'ACCOUNT_NOT_ACTIVATED',
-                'message':    'Your account is not yet activated. Please check your invitation email.',
+                'code':   'ACCOUNT_NOT_ACTIVATED',
+                'detail': 'Your account is not yet activated. Please check your invitation email.',
             },
             User.Status.LOCKED: {
-                'error_code': 'ACCOUNT_LOCKED',
-                'message':    'Your account is locked. Please contact your administrator or reset your password.',
+                'code':   'ACCOUNT_LOCKED',
+                'detail': 'Your account is locked. Please contact your administrator or reset your password.',
             },
             User.Status.SUSPENDED: {
-                'error_code': 'ACCOUNT_SUSPENDED',
-                'message':    'Your account has been suspended. Please contact your administrator.',
+                'code':   'ACCOUNT_SUSPENDED',
+                'detail': 'Your account has been suspended. Please contact your administrator.',
             },
             User.Status.DEACTIVATED: {
-                'error_code': 'ACCOUNT_DEACTIVATED',
-                'message':    'This account has been deactivated. Please contact your administrator.',
+                'code':   'ACCOUNT_DEACTIVATED',
+                'detail': 'This account has been deactivated. Please contact your administrator.',
             },
         }
         return errors.get(user.status)
