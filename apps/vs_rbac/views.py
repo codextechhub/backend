@@ -285,7 +285,9 @@ class SchoolRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIV
 
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
-        return (
+        qp = self.request.query_params
+
+        qs = (
             SchoolRoleTemplate.objects.filter(school_id=school_slug)
             .annotate(
                 assigned_users_count=Count(
@@ -299,9 +301,14 @@ class SchoolRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIV
                     distinct=True,
                 ),
             )
-            .select_related("created_by", "school")
+            .select_related("created_by", "school", "branch")
             .order_by("name")
         )
+
+        if branch_id := qp.get("branch"):
+            qs = qs.filter(branch_id=branch_id)
+
+        return qs
 
     def get_serializer_class(self):
         if self.request.method == "POST":

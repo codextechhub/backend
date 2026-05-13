@@ -375,7 +375,6 @@ class SchoolRoleTemplate(TimeStampedModel):
         INACTIVE = "INACTIVE", "Inactive"
         ARCHIVED = "ARCHIVED", "Archived"
 
-
     school = models.ForeignKey(
         School,
         on_delete=models.PROTECT,
