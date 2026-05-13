@@ -4,7 +4,7 @@ import uuid
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
-from django.db.models import Q
+
 from django.utils import timezone
 from django.utils.text import slugify
 
@@ -45,24 +45,74 @@ class TimeStampedModel(models.Model):
 
 
 # -----------------------------------------------------------------------------
+# Permission vocabulary (Vision-owned, admin-manageable)
+# -----------------------------------------------------------------------------
+
+class PermissionModule(TimeStampedModel):
+    """Top-level module bucket, e.g. 'finance', 'students'."""
+
+    name = models.SlugField(max_length=64, primary_key=True)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class PermissionResource(TimeStampedModel):
+    """Resource scoped to a module, e.g. 'invoice' under 'finance'."""
+
+    module = models.ForeignKey(
+        PermissionModule,
+        on_delete=models.CASCADE,
+        related_name="resources",
+    )
+    name = models.SlugField(max_length=64)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        unique_together = [["module", "name"]]
+        ordering = ["module", "name"]
+
+    def __str__(self) -> str:
+        return f"{self.module_id}.{self.name}"
+
+
+class PermissionAction(TimeStampedModel):
+    """Reusable action keyword, e.g. 'view', 'create', 'approve'."""
+
+    name = models.SlugField(max_length=64, primary_key=True)
+    description = models.TextField(blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+# -----------------------------------------------------------------------------
 # Permission Registry (global, Vision-owned)
 # -----------------------------------------------------------------------------
 class Permission(TimeStampedModel):
     """Vision-owned registry for reusable permissions.
 
-    Attributes:
-        key: Primary identifier written in dotted form (module.section.action).
-        module_key: Top-level module bucket so UIs can group permissions.
-        action: Operation keyword such as ``view`` or ``approve``.
-        description: Optional human summary rendered in management screens.
-        sensitivity_level: Flagged via ``Sensitivity`` for audit and review queues.
-        is_restricted: Marks permissions that must flow through approvals.
-        is_active: Lightweight flag for soft-deleting or hiding items.
+    The permission key is auto-built as ``module.resource.action`` from the
+    three FK references. Example: ``finance.invoice.view``.
 
-    Example keys:
-        ``finance.invoice.view``
-        ``finance.invoice.approve``
-        ``students.profile.update``
+    Attributes:
+        key: Primary identifier (auto-generated, do not set manually).
+        module: FK to PermissionModule (e.g. 'finance').
+        resource: FK to PermissionResource (e.g. 'invoice' under 'finance').
+        action: FK to PermissionAction (e.g. 'view').
+        sensitivity_level: Flagged via ``Sensitivity`` for audit queues.
+        is_restricted: Marks permissions that must flow through approvals.
+        is_active: Soft-delete / hide toggle.
     """
 
     class Sensitivity(models.TextChoices):
@@ -71,9 +121,28 @@ class Permission(TimeStampedModel):
         CRITICAL = "CRITICAL", "Critical"
 
     key = models.CharField(max_length=180, primary_key=True)
-    module_key = models.CharField(max_length=64)     # e.g. "finance", "students"
-    resource = models.CharField(max_length=64, default="")         # e.g. "invoice", "profile"
-    action = models.CharField(max_length=64)         # e.g. "view", "create", "approve", "export"
+
+    module = models.ForeignKey(
+        PermissionModule,
+        db_column="module_key",
+        db_constraint=False,
+        on_delete=models.PROTECT,
+        related_name="permissions",
+    )
+    resource = models.ForeignKey(
+        PermissionResource,
+        db_constraint=False,
+        on_delete=models.PROTECT,
+        related_name="permissions",
+    )
+    action = models.ForeignKey(
+        PermissionAction,
+        db_column="action_key",
+        db_constraint=False,
+        on_delete=models.PROTECT,
+        related_name="permissions",
+    )
+
     description = models.TextField(blank=True)
 
     sensitivity_level = models.CharField(
@@ -82,21 +151,18 @@ class Permission(TimeStampedModel):
         default=Sensitivity.NORMAL,
     )
 
-    # If True, schooles cannot grant this directly; must go through approval workflow (SchoolRoleChangeRequest)
     is_restricted = models.BooleanField(default=False)
-
-    # Optional: for more advanced policy/UX; safe to keep lightweight
     is_active = models.BooleanField(default=True)
 
     class Meta:
         indexes = [
-            models.Index(fields=["module_key", "action"]),
+            models.Index(fields=["module", "action"]),
             models.Index(fields=["is_restricted", "sensitivity_level"]),
         ]
 
     def save(self, *args, **kwargs):
         if not kwargs.get('update_fields'):
-            self.key = f"{self.module_key}.{self.resource}.{self.action}"
+            self.key = f"{self.module_id}.{self.resource.name}.{self.action_id}"
         super().save(*args, **kwargs)
 
     def __str__(self) -> str:

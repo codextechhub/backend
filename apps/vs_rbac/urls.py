@@ -4,6 +4,40 @@ from . import views
 
 urlpatterns = [
     # -------------------------------------------------------------------------
+    # Permission vocabulary — Module / Resource / Action
+    # -------------------------------------------------------------------------
+    path(
+        "vision/permission-modules/",
+        views.PermissionModuleListCreateView.as_view(),
+        name="rbac-permission-module-list-create",
+    ),
+    path(
+        "vision/permission-modules/<slug:name>/",
+        views.PermissionModuleDetailView.as_view(),
+        name="rbac-permission-module-detail",
+    ),
+    path(
+        "vision/permission-resources/",
+        views.PermissionResourceListCreateView.as_view(),
+        name="rbac-permission-resource-list-create",
+    ),
+    path(
+        "vision/permission-resources/<int:pk>/",
+        views.PermissionResourceDetailView.as_view(),
+        name="rbac-permission-resource-detail",
+    ),
+    path(
+        "vision/permission-actions/",
+        views.PermissionActionListCreateView.as_view(),
+        name="rbac-permission-action-list-create",
+    ),
+    path(
+        "vision/permission-actions/<slug:name>/",
+        views.PermissionActionDetailView.as_view(),
+        name="rbac-permission-action-detail",
+    ),
+
+    # -------------------------------------------------------------------------
     # Vision-owned Permission Registry
     # -------------------------------------------------------------------------
     path(

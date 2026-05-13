@@ -10,8 +10,11 @@ from core.pagination import XVSPagination
 from core.response import success_response, error_response
 from .models import (
     Permission,
+    PermissionAction,
     PermissionDependency,
     PermissionGroup,
+    PermissionModule,
+    PermissionResource,
     PlatformRoleChangeRequest,
     PlatformRoleTemplate,
     PlatformUserRoleAssignment,
@@ -20,9 +23,12 @@ from .models import (
     SchoolUserRoleAssignment,
 )
 from .serializers import (
+    PermissionActionSerializer,
     PermissionDependencySerializer,
     PermissionGroupDetailSerializer,
     PermissionGroupListSerializer,
+    PermissionModuleSerializer,
+    PermissionResourceSerializer,
     PermissionSerializer,
     PlatformRoleChangeRequestSerializer,
     PlatformRoleTemplateDetailSerializer,
@@ -42,10 +48,61 @@ from .permissions import (
 
 
 # -----------------------------------------------------------------------------
+# Permission vocabulary — Module / Resource / Action (Vision-owned)
+# -----------------------------------------------------------------------------
+
+class PermissionModuleListCreateView(CreateModelMixin, generics.ListCreateAPIView):
+    queryset = PermissionModule.objects.all()
+    serializer_class = PermissionModuleSerializer
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    pagination_class = XVSPagination
+
+
+class PermissionModuleDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
+    queryset = PermissionModule.objects.all()
+    serializer_class = PermissionModuleSerializer
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    lookup_field = "name"
+
+
+class PermissionResourceListCreateView(CreateModelMixin, generics.ListCreateAPIView):
+    queryset = PermissionResource.objects.select_related("module").all()
+    serializer_class = PermissionResourceSerializer
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    pagination_class = XVSPagination
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if module := self.request.query_params.get("module"):
+            qs = qs.filter(module_id=module)
+        return qs
+
+
+class PermissionResourceDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
+    queryset = PermissionResource.objects.select_related("module").all()
+    serializer_class = PermissionResourceSerializer
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+
+
+class PermissionActionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
+    queryset = PermissionAction.objects.all()
+    serializer_class = PermissionActionSerializer
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    pagination_class = XVSPagination
+
+
+class PermissionActionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
+    queryset = PermissionAction.objects.all()
+    serializer_class = PermissionActionSerializer
+    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    lookup_field = "name"
+
+
+# -----------------------------------------------------------------------------
 # Global Permission Registry (Vision-owned)
 # -----------------------------------------------------------------------------
 class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
-    queryset = Permission.objects.all().order_by("module_key", "action", "key")
+    queryset = Permission.objects.select_related("module", "resource", "action").order_by("module", "action", "key")
     serializer_class = PermissionSerializer
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     pagination_class = XVSPagination
@@ -55,9 +112,9 @@ class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
         qp = self.request.query_params
 
         if module_key := qp.get("module_key"):
-            qs = qs.filter(module_key=module_key)
-        if action := qp.get("action"):
-            qs = qs.filter(action=action)
+            qs = qs.filter(module_id=module_key)
+        if action_key := qp.get("action"):
+            qs = qs.filter(action_id=action_key)
         if is_restricted := qp.get("is_restricted"):
             lowered = is_restricted.lower()
             if lowered in {"true", "1"}:

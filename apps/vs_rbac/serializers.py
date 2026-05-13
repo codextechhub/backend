@@ -7,8 +7,11 @@ from django.utils import timezone
 from .models import (
     GroupPermission,
     Permission,
+    PermissionAction,
     PermissionDependency,
     PermissionGroup,
+    PermissionModule,
+    PermissionResource,
     PlatformRoleChangeDeltaItem,
     PlatformRoleChangeRequest,
     PlatformRoleGroup,
@@ -70,18 +73,86 @@ class PermissionKeyListValidationMixin:
 
 
 # -----------------------------------------------------------------------------
-# 1) Permission Registry
+# 1) Permission vocabulary — Module / Resource / Action
+# -----------------------------------------------------------------------------
+
+class PermissionModuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PermissionModule
+        fields = ["name", "description", "is_active", "created_at", "updated_at"]
+        read_only_fields = ["created_at", "updated_at"]
+
+
+class PermissionResourceSerializer(serializers.ModelSerializer):
+    module = serializers.SlugRelatedField(
+        slug_field="name",
+        queryset=PermissionModule.objects.filter(is_active=True),
+    )
+
+    class Meta:
+        model = PermissionResource
+        fields = ["id", "module", "name", "description", "is_active", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        module = attrs.get("module") or getattr(self.instance, "module", None)
+        name = attrs.get("name") or getattr(self.instance, "name", None)
+        qs = PermissionResource.objects.filter(module=module, name=name)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError({"name": "A resource with this name already exists in this module."})
+        return attrs
+
+
+class PermissionActionSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PermissionAction
+        fields = ["name", "description", "is_active", "created_at", "updated_at"]
+        read_only_fields = ["created_at", "updated_at"]
+
+
+# -----------------------------------------------------------------------------
+# 1b) Permission Registry
 # -----------------------------------------------------------------------------
 class PermissionSerializer(serializers.ModelSerializer):
     """Read/write serializer for the global permission registry."""
+
+    module = serializers.SlugRelatedField(
+        slug_field="name",
+        queryset=PermissionModule.objects.filter(is_active=True),
+    )
+    resource = serializers.PrimaryKeyRelatedField(
+        queryset=PermissionResource.objects.filter(is_active=True),
+    )
+    action = serializers.SlugRelatedField(
+        slug_field="name",
+        queryset=PermissionAction.objects.filter(is_active=True),
+    )
+
+    resource_key = serializers.SerializerMethodField(read_only=True)
+    module_key = serializers.SerializerMethodField(read_only=True)
+    action_key = serializers.SerializerMethodField(read_only=True)
+
+    def get_resource_key(self, obj):
+        return obj.resource.name if obj.resource_id else None
+
+    def get_module_key(self, obj):
+        return obj.module_id
+
+    def get_action_key(self, obj):
+        return obj.action_id
 
     class Meta:
         model = Permission
         fields = [
             "key",
+            "module",
             "module_key",
             "resource",
+            "resource_key",
             "action",
+            "action_key",
             "description",
             "sensitivity_level",
             "is_restricted",
@@ -89,7 +160,16 @@ class PermissionSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["key", "created_at", "updated_at"]
+        read_only_fields = ["key", "module_key", "resource_key", "action_key", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        module = attrs.get("module") or getattr(self.instance, "module", None)
+        resource = attrs.get("resource") or getattr(self.instance, "resource", None)
+        if module and resource and resource.module_id != module.pk:
+            raise serializers.ValidationError({
+                "resource": f"Resource '{resource.name}' does not belong to module '{module.name}'."
+            })
+        return attrs
 
 
 class PermissionDependencySerializer(serializers.ModelSerializer):
