@@ -1,7 +1,5 @@
 ## Undone
 
-1. Tell me how can I implement FLS to this system 
-2. I need to adjust middleware data scoping. I want it scope by school then scoped more by role assigned scope. First, tell me if this is a good move or what I had before was okay.
 
 ## Done
 
