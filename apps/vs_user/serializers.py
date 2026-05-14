@@ -89,17 +89,34 @@ class UserReadSerializer(serializers.ModelSerializer):
 class UserListSerializer(serializers.ModelSerializer):
     full_name    = serializers.SerializerMethodField()
     branch_name  = serializers.CharField(source='branch.name', read_only=True, default=None)
+    invited_by_name         = serializers.SerializerMethodField()
+    invitation_email_status = serializers.SerializerMethodField()
+    invitation_expires_at   = serializers.SerializerMethodField()
 
     class Meta:
         model  = User
         fields = (
             'id', 'email', 'full_name', 'gender', 'user_type', 'role',
-            'status', 'branch_id', 'branch_name', 'created_at',
+            'status', 'branch_id', 'branch_name', 'invited_by_name', 'created_at',
+            'invitation_email_status', 'invitation_expires_at',
         )
         read_only_fields = fields
 
     def get_full_name(self, obj) -> str:
         return obj.full_name
+
+    def get_invited_by_name(self, obj) -> str | None:
+        if obj.invited_by:
+            return obj.invited_by.full_name
+        return None
+
+    def get_invitation_email_status(self, obj) -> str | None:
+        inv = getattr(obj, 'invitation', None)
+        return inv.email_status if inv else None
+
+    def get_invitation_expires_at(self, obj) -> str | None:
+        inv = getattr(obj, 'invitation', None)
+        return inv.expires_at.isoformat() if inv and inv.expires_at else None
 
 
 class UserCreateSerializer(serializers.Serializer):

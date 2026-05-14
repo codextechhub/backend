@@ -160,7 +160,7 @@ class LoginService:
         errors = {
             User.Status.PENDING: {
                 'code':   'ACCOUNT_NOT_ACTIVATED',
-                'detail': 'Your account is not yet activated. Please check your invitation email.',
+                'detail': 'Your account is not yet activated. Please check your invitation email or contact your administrator.',
             },
             User.Status.LOCKED: {
                 'code':   'ACCOUNT_LOCKED',

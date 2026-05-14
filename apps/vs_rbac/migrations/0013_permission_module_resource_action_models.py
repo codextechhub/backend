@@ -87,7 +87,14 @@ class Migration(migrations.Migration):
                 to="vs_rbac.permissionmodule",
             ),
         ),
-        migrations.AlterField(
+        # Drop the old VARCHAR resource column and add a fresh nullable FK
+        # column instead of ALTER COLUMN TYPE (avoids bigint cast failure on
+        # PostgreSQL when the existing column has non-integer string values).
+        migrations.RemoveField(
+            model_name="permission",
+            name="resource",
+        ),
+        migrations.AddField(
             model_name="permission",
             name="resource",
             field=models.ForeignKey(

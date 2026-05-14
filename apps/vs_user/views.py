@@ -500,7 +500,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         user   = self.request.user
         params = self.request.query_params
 
-        qs = User.objects.select_related('school', 'branch', 'invited_by')
+        qs = User.objects.select_related('school', 'branch', 'invited_by', 'invitation')
 
         if getattr(user, 'user_type', None) == User.UserType.VISION_STAFF:
             pass  # no tenant boundary — sees all users
