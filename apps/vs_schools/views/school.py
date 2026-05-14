@@ -68,7 +68,7 @@ class SchoolListView(ActorContextMixin, generics.ListAPIView):
             ).distinct()
 
         ordering = (self.request.query_params.get("ordering") or "").strip()
-        allowed = {"created_at", "-created_at", "updated_at", "-updated_at", "name", "-name"}
+        allowed = {"created_at", "-created_at", "updated_at", "-updated_at", "name", "-name", "status", "-status"}
         qs = qs.order_by(ordering) if ordering in allowed else qs.order_by("-created_at")
         return qs
 

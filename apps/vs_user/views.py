@@ -540,6 +540,17 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         if date_to := _get_date_param(params, 'date_to'):
             qs = qs.filter(created_at__date__lte=date_to)
 
+        _allowed_orderings = {
+            'first_name', '-first_name',
+            'email', '-email',
+            'role', '-role',
+            'status', '-status',
+            'created_at', '-created_at',
+        }
+        ordering = params.get('ordering', '').strip()
+        if ordering in _allowed_orderings:
+            qs = qs.order_by(ordering)
+
         return qs
 
     def get_permissions(self):

@@ -81,7 +81,7 @@ class BranchListView(ActorContextMixin, generics.ListAPIView):
             )
 
         ordering = (self.request.query_params.get("ordering") or "").strip()
-        allowed = {"created_at", "-created_at", "updated_at", "-updated_at", "name", "-name", "code", "-code"}
+        allowed = {"created_at", "-created_at", "updated_at", "-updated_at", "name", "-name", "code", "-code", "status", "-status"}
         qs = qs.order_by(ordering) if ordering in allowed else qs.order_by("-created_at")
         return qs
 
