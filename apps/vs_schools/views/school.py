@@ -59,10 +59,9 @@ class SchoolListView(ActorContextMixin, generics.ListAPIView):
         if q:
             qs = qs.filter(
                 Q(name__icontains=q)
-                | Q(_type__iexact=q)
+                | Q(ownership_type__iexact=q)
                 | Q(status__iexact=q)
                 | Q(branches__state__icontains=q)
-                | Q(branches__city__icontains=q)
                 | Q(branches__country__icontains=q)
                 | Q(branches__name__icontains=q)
             ).distinct()
