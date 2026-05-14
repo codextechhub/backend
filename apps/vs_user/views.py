@@ -104,6 +104,64 @@ class LoginView(APIView):
         return success_response(message="Login successful.", data=result)
 
 
+class SpecialLoginPreviewView(APIView):
+    """
+    GET /user/auth/special_login/preview/?email=<email>
+
+    Barcode / ID-card login flow.  The frontend encodes the user's email in the
+    QR/barcode and navigates to  /<email>/login.  Before showing the password
+    field the page calls this endpoint to:
+
+      1. Confirm the email belongs to a known account.
+      2. Return the user's display name (shown in place of the email field).
+      3. Surface a clear, status-specific message for non-active accounts so the
+         page can inform the user without them having to attempt a full login.
+
+    Responses
+    ---------
+    200  Active user found → { data: { full_name } }
+    403  User exists but account is PENDING / LOCKED / SUSPENDED / DEACTIVATED
+    404  No user with that email
+    400  email query param missing
+
+    Permission: AllowAny — the barcode scanner carries no credentials.
+    """
+
+    permission_classes    = [AllowAny]
+    authentication_classes = []
+
+    _STATUS_MESSAGES = {
+        User.Status.PENDING:     'Account not yet activated. Please check your invitation email or contact your administrator.',
+        User.Status.LOCKED:      'Account is locked. Please contact your administrator or reset your password.',
+        User.Status.SUSPENDED:   'Account has been suspended. Please contact your administrator.',
+        User.Status.DEACTIVATED: 'This account has been deactivated. Please contact your administrator.',
+    }
+
+    def get(self, request):
+        email = (request.query_params.get('email') or '').strip().lower()
+        if not email:
+            return error_response(message='email query parameter is required.', status=status.HTTP_400_BAD_REQUEST)
+
+        user = User.objects.filter(email__iexact=email).first()
+        if not user:
+            return error_response(
+                message=f'User with {email} does not exist.',
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if user.status != User.Status.ACTIVE:
+            msg = self._STATUS_MESSAGES.get(
+                user.status,
+                'Account unavailable. Please contact your administrator.',
+            )
+            return error_response(message=msg, status=status.HTTP_403_FORBIDDEN)
+
+        return success_response(
+            message='User found.',
+            data={'full_name': user.full_name},
+        )
+
+
 class LogoutView(APIView):
     """
     POST /auth/logout/

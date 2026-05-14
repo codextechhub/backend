@@ -17,6 +17,7 @@ from .views import (
     # Auth
     LoginView,
     LogoutView,
+    SpecialLoginPreviewView,
     PasswordResetPreviewView,
     TokenRefreshView,
     # Activation — UUID-based, no token
@@ -52,9 +53,10 @@ router.register(r'auth-events',       AuthEventLogViewSet,        basename='auth
 urlpatterns = [
 
     # ── Authentication ────────────────────────────────────────────────────────
-    path('auth/login/',                  LoginView.as_view(),               name='auth-login'),
-    path('auth/logout/',                 LogoutView.as_view(),               name='auth-logout'),
-    path('auth/token/refresh/',          TokenRefreshView.as_view(),         name='auth-token-refresh'),
+    path('auth/login/',                         LoginView.as_view(),               name='auth-login'),
+    path('auth/logout/',                        LogoutView.as_view(),               name='auth-logout'),
+    path('auth/token/refresh/',                 TokenRefreshView.as_view(),         name='auth-token-refresh'),
+    path('auth/special_login/preview/',         SpecialLoginPreviewView.as_view(),  name='special-login-preview'),
 
     # ── Activation ────────────────────────────────────────────────────────────
     # GET  → ActivationPreviewView (pre-fill form)
