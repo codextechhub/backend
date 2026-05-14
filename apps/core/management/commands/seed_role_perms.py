@@ -1701,8 +1701,11 @@ class Command(BaseCommand):
         from vs_rbac.models import (
             GroupPermission,
             Permission,
+            PermissionAction,
             PermissionDependency,
             PermissionGroup,
+            PermissionModule,
+            PermissionResource,
             PlatformRoleChangeRequest,
             PlatformRoleGroup,
             PlatformRolePermission,
@@ -1720,14 +1723,40 @@ class Command(BaseCommand):
 
         if not dry_run:
             with transaction.atomic():
+                module_cache: dict = {}
+                action_cache: dict = {}
+
                 for key, module_key, action, description, sensitivity, is_restricted in PERMISSIONS:
-                    resource = key[len(module_key) + 1: -len(action) - 1]
+                    resource_name = key[len(module_key) + 1: -len(action) - 1]
+
+                    if module_key not in module_cache:
+                        module_obj, _ = PermissionModule.objects.get_or_create(
+                            name=module_key,
+                            defaults={"description": "", "is_active": True},
+                        )
+                        module_cache[module_key] = module_obj
+                    module_obj = module_cache[module_key]
+
+                    if action not in action_cache:
+                        action_obj, _ = PermissionAction.objects.get_or_create(
+                            name=action,
+                            defaults={"description": "", "is_active": True},
+                        )
+                        action_cache[action] = action_obj
+                    action_obj = action_cache[action]
+
+                    resource_obj, _ = PermissionResource.objects.get_or_create(
+                        module=module_obj,
+                        name=resource_name,
+                        defaults={"description": "", "is_active": True},
+                    )
+
                     _, created = Permission.objects.update_or_create(
                         key=key,
                         defaults=dict(
-                            module_key=module_key,
-                            resource=resource,
-                            action=action,
+                            module=module_obj,
+                            resource=resource_obj,
+                            action=action_obj,
                             description=description,
                             sensitivity_level=sensitivity,
                             is_restricted=is_restricted,
