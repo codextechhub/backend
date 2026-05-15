@@ -105,9 +105,14 @@ class FieldSecurityMixin:
         if user_perms is None:
             return data  # no request context — skip FLS
 
+        stripped: list[str] = []
         for field in list(data.keys()):
             if not self._can_read(field, user_perms):
                 data.pop(field)
+                stripped.append(field)
+
+        if stripped:
+            data["_stripped_fields"] = stripped
 
         return data
 
