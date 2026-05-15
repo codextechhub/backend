@@ -42,6 +42,11 @@ class Command(BaseCommand):
             action="store_true",
             help="Print row counts that would be deleted without touching the DB.",
         )
+        parser.add_argument(
+            "--yes",
+            action="store_true",
+            help="Skip confirmation prompt (for non-interactive/CI environments).",
+        )
 
     def handle(self, *args, **options):
         from vs_rbac.models import (
@@ -120,10 +125,11 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS("\nNothing to delete — tables already empty.\n"))
             return
 
-        confirm = input("\nDelete all rows listed above? [yes/N] ").strip().lower()
-        if confirm != "yes":
-            self.stdout.write(self.style.WARNING("Aborted.\n"))
-            return
+        if not options["yes"]:
+            confirm = input("\nDelete all rows listed above? [yes/N] ").strip().lower()
+            if confirm != "yes":
+                self.stdout.write(self.style.WARNING("Aborted.\n"))
+                return
 
         with transaction.atomic():
             for label, qs in steps:
