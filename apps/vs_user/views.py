@@ -47,6 +47,29 @@ from .services.audit      import log_auth_event, blacklist_all_user_tokens, get_
 from django.utils.dateparse import parse_date as _parse_date
 
 
+class CurrentUserView(APIView):
+    """
+    GET /user/auth/me/
+    Returns the currently authenticated user's profile and their effective
+    permissions. Called by the frontend after a token refresh to keep the
+    client-side permission cache in sync with the backend RBAC state.
+    """
+    permission_classes = [IsAuthenticatedAndActive]
+
+    def get(self, request):
+        from vs_rbac.evaluator import get_effective_permissions
+        permissions = sorted(
+            get_effective_permissions(request.user, school=getattr(request.user, "school", None))
+        )
+        return success_response(
+            message="Current user retrieved successfully.",
+            data={
+                "user": UserReadSerializer(request.user).data,
+                "permissions": permissions,
+            },
+        )
+
+
 def _get_date_param(params, key):
     """Parse a YYYY-MM-DD query param; raise ValidationError with 400 if malformed."""
     raw = params.get(key)
