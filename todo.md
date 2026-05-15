@@ -1,5 +1,6 @@
 ## Undone
 
+1. I want a uid for users, it's not unique, but unique per school and unique per codex staff. the uid starts from 10 for either type of user and it's auto increasing. It's uneditable too.
 
 ## Done
 

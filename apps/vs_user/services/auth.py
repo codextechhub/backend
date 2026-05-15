@@ -134,12 +134,15 @@ class LoginService:
             metadata={'session_id': session.id},
         )
 
+        from vs_rbac.evaluator import get_effective_permissions
+        permissions = sorted(get_effective_permissions(authed, school=authed.school))
+
         return {
-            'access':     tokens['access'],
-            'refresh':    tokens['refresh'],
-            'session_id': session.id,
-            'user':       UserReadSerializer(authed).data,
-            # 'cached_school': request._cached_school,
+            'access':      tokens['access'],
+            'refresh':     tokens['refresh'],
+            'session_id':  session.id,
+            'user':        UserReadSerializer(authed).data,
+            'permissions': permissions,
         }
 
     # ── Private helpers ───────────────────────────────────────────────────────

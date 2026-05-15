@@ -51,7 +51,9 @@
       "Bash(cp /Users/mac/Downloads/vs_notifications/services/dispatch.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/dispatch.py)",
       "Bash(cp /Users/mac/Downloads/vs_notifications/services/render.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/render.py)",
       "Bash(cp /Users/mac/Downloads/vs_notifications/services/seed.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/seed.py)",
-      "Bash(cp /Users/mac/Downloads/vs_notifications/services/settings.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/settings.py)"
+      "Bash(cp /Users/mac/Downloads/vs_notifications/services/settings.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/settings.py)",
+      "Read(//Users/mac/Documents/Dev-Projects/GitHub//**)",
+      "Read(//Users/mac/Documents/Dev-Projects//**)"
     ]
   }
 }

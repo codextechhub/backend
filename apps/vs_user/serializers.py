@@ -11,9 +11,9 @@ from django.utils import timezone
 
 from rest_framework import serializers
 
-from vs_rbac.models import SchoolRoleTemplate
-from vs_schools.models import School, Branch
 from vs_rbac.models import SchoolRoleTemplate, PlatformRoleTemplate
+from vs_rbac.fls import FieldSecurityMixin
+from vs_schools.models import School, Branch
 from .models import (
     User,
     UserInvitation,
@@ -45,11 +45,20 @@ def _raise_password_error(exc: DjangoValidationError):
 # User serializers
 # =============================================================================
 
-class UserReadSerializer(serializers.ModelSerializer):
+class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     full_name        = serializers.SerializerMethodField()
     school_name = serializers.CharField(source='school.name', read_only=True, default=None)
     branch_name      = serializers.CharField(source='branch.name', read_only=True, default=None)
     invited_by_name  = serializers.SerializerMethodField()
+
+    # Security-sensitive fields: only platform staff with user-management
+    # access should see account security metadata for other users.
+    read_permissions = {
+        'password_changed_at': 'platform.users.view',
+        'last_login_at':       'platform.users.view',
+        'invited_by_id':       'platform.users.view',
+        'invited_by_name':     'platform.users.view',
+    }
 
     class Meta:
         model  = User
@@ -86,12 +95,18 @@ class UserReadSerializer(serializers.ModelSerializer):
         return None
 
 
-class UserListSerializer(serializers.ModelSerializer):
+class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     full_name    = serializers.SerializerMethodField()
     branch_name  = serializers.CharField(source='branch.name', read_only=True, default=None)
     invited_by_name         = serializers.SerializerMethodField()
     invitation_email_status = serializers.SerializerMethodField()
     invitation_expires_at   = serializers.SerializerMethodField()
+
+    read_permissions = {
+        'invited_by_name':       'platform.users.view',
+        'invitation_email_status': 'platform.users.view',
+        'invitation_expires_at':   'platform.users.view',
+    }
 
     class Meta:
         model  = User
