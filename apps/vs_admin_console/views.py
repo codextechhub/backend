@@ -12,6 +12,7 @@ from .models import (
     ImpersonationSession,
 )
 from .permissions import IsVisionStaff
+from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 from .serializers import (
     DashboardFilterSerializer,
     ImpersonationEndSerializer,
@@ -108,13 +109,14 @@ class DashboardViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     GET /dashboard/
     A clean place to assemble data from multiple modules.
 
-    For now it's a stub that returns an empty list.
+    For now it’s a stub that returns an empty list.
     You’ll implement it by querying School (Module 1) and joining:
       - latest ProvisioningEvent
       - latest ImportJobLog
       - suspension state from School model
     """
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.dashboard.view"
     serializer_class = SchoolDashboardItemSerializer
     
     def list(self, request, *args, **kwargs):

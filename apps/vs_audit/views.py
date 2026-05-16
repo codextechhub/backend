@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from django.db.models import Q
-from rest_framework import generics, permissions
+from rest_framework import generics
 from rest_framework.views import APIView
 
 from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, DestroyModelMixin
 from core.response import success_response, error_response
+from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 
 from .models import (
     AuditEvent,
@@ -28,34 +29,6 @@ from .serializers import (
 
 
 # -----------------------------------------------------------------------------
-# Simple placeholder permissions
-# Replace these later with your real RBAC permissions
-# -----------------------------------------------------------------------------
-
-class IsVisionStaff(permissions.BasePermission):
-    """
-    Example permission:
-    only authenticated staff users can access.
-    Replace with your real permission logic later.
-    """
-
-    def has_permission(self, request, view):
-        user = request.user
-        return bool(user and user.is_authenticated and user.is_staff)
-
-
-class IsVisionSuperAdmin(permissions.BasePermission):
-    """
-    Example super admin permission.
-    Replace 'is_superuser' with your own platform super admin logic if needed.
-    """
-
-    def has_permission(self, request, view):
-        user = request.user
-        return bool(user and user.is_authenticated and user.is_superuser)
-
-
-# -----------------------------------------------------------------------------
 # Audit Event Views
 # -----------------------------------------------------------------------------
 
@@ -68,7 +41,8 @@ class AuditEventListView(generics.ListAPIView):
     """
 
     serializer_class = AuditEventListSerializer
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.audit.view"
 
     def get_queryset(self):
         queryset = AuditEvent.objects.select_related("actor_user").all()
@@ -143,7 +117,8 @@ class AuditEventDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
         "actor_user",
     ).all()
     serializer_class = AuditEventDetailSerializer
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.audit.view"
     lookup_field = "id"
 
 
@@ -156,7 +131,8 @@ class EntityAuditTrailDetailView(APIView):
     GET /audit/entity-trails/<str:entity_type>/<str:entity_id>/
     """
 
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.audit.view"
 
     def get(self, request, entity_type, entity_id):
         trail_qs = EntityAuditTrail.objects.filter(
@@ -205,7 +181,8 @@ class AuditExportJobListView(generics.ListAPIView):
     """
 
     serializer_class = AuditExportJobListSerializer
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.audit.export"
 
     def get_queryset(self):
         queryset = AuditExportJob.objects.select_related(
@@ -229,7 +206,8 @@ class AuditExportJobDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
         "requested_by",
     ).all()
     serializer_class = AuditExportJobDetailSerializer
-    permission_classes = [IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.audit.export"
     lookup_field = "id"
 
 
@@ -245,7 +223,8 @@ class ComplianceRuleListCreateView(CreateModelMixin, generics.ListCreateAPIView)
     List all rules or create a new one.
     """
 
-    permission_classes = [IsVisionSuperAdmin]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.audit.manage"
 
     def get_queryset(self):
         queryset = ComplianceRule.objects.select_related("school").all()
@@ -280,7 +259,8 @@ class ComplianceRuleDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMode
     """
 
     queryset = ComplianceRule.objects.select_related("school").all()
-    permission_classes = [IsVisionSuperAdmin]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.audit.manage"
     lookup_field = "id"
 
     def get_serializer_class(self):

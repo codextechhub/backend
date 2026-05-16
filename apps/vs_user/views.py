@@ -351,7 +351,7 @@ class InvitationResendView(APIView):
     RBAC: identity.user_email.invite
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "staff.profile.create"  # closest match — resend invite is part of user creation flow
+    rbac_permission = "platform.team.create"
 
     def post(self, request, user_id):
         try:
@@ -517,7 +517,7 @@ class AdminPasswordResetView(APIView):
     RBAC: identity.user_password.reset
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "staff.profile.update"  # closest match — no dedicated password-reset permission yet
+    rbac_permission = "platform.team.update"
 
     def post(self, request, user_id):
         from .models import User
@@ -636,14 +636,14 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     def get_permissions(self):
         action_permissions = {
-            'list':           'platform.users.view',
-            'retrieve':       'platform.users.view',
-            'create':         'staff.profile.create',
-            'update':         'staff.profile.update',
-            'partial_update': 'staff.profile.update',
-            'destroy':        'platform.users.delete',
+            'list':           'platform.team.view',
+            'retrieve':       'platform.team.view',
+            'create':         'platform.team.create',
+            'update':         'platform.team.update',
+            'partial_update': 'platform.team.update',
+            'destroy':        'platform.team.delete',
         }
-        # self.rbac_permission = action_permissions.get(self.action, 'platform.users.view')
+        self.rbac_permission = action_permissions.get(self.action, 'platform.team.view')
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def perform_create(self, serializer):
@@ -672,7 +672,7 @@ class UserEmailChangeView(APIView):
     RBAC: identity.email_address.verify
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "staff.profile.update"  # closest match — email change is a profile update
+    rbac_permission = "platform.team.update"
 
     def patch(self, request, user_id):
         try:
@@ -718,7 +718,7 @@ class UserSuspendView(APIView):
     RBAC: identity.user_account.lock
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "platform.users.suspend"
+    rbac_permission = "platform.team.suspend"
 
     def post(self, request, user_id):
         try:
@@ -747,7 +747,7 @@ class UserReactivateView(APIView):
     RBAC: identity.user_account.unlock
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "platform.users.suspend"  # closest match — gates both suspend and reactivate
+    rbac_permission = "platform.team.reactivate"
 
     def post(self, request, user_id):
         try:
@@ -776,7 +776,7 @@ class UserUnlockView(APIView):
     RBAC: identity.user_account.unlock
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "platform.users.suspend"  # closest match — no dedicated unlock permission yet
+    rbac_permission = "platform.team.reactivate"
 
     def post(self, request, user_id):
         try:
@@ -816,7 +816,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_permissions(self):
         if self.action == 'force_logout':
-            # self.rbac_permission = 'platform.users.suspend'  # closest match — no dedicated force-logout permission yet
+            self.rbac_permission = 'platform.team.suspend'
             return [IsAuthenticatedAndActive(), HasRBACPermission()]
         return [IsAuthenticatedAndActive()]
 
@@ -941,7 +941,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_permissions(self):
         if self.action == 'unlock':
-            # self.rbac_permission = 'platform.users.suspend'  # closest match — no dedicated unlock permission yet
+            self.rbac_permission = 'platform.team.reactivate'
             return [IsAuthenticatedAndActive(), HasRBACPermission()]
         return [IsAuthenticatedAndActive(), IsVisionStaff()]
 
