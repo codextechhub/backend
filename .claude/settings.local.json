@@ -54,7 +54,8 @@
       "Bash(cp /Users/mac/Downloads/vs_notifications/services/settings.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/settings.py)",
       "Read(//Users/mac/Documents/Dev-Projects/GitHub//**)",
       "Read(//Users/mac/Documents/Dev-Projects//**)",
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "WebFetch(domain:status.claude.com)"
     ]
   }
 }

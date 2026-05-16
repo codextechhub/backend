@@ -57,6 +57,19 @@ class PermissionModuleListCreateView(CreateModelMixin, generics.ListCreateAPIVie
     serializer_class = PermissionModuleSerializer
     pagination_class = XVSPagination
 
+    def get_queryset(self):
+        qs = super().get_queryset()
+        qp = self.request.query_params
+        if is_active := qp.get("is_active"):
+            lowered = is_active.lower()
+            if lowered in {"true", "1"}:
+                qs = qs.filter(is_active=True)
+            elif lowered in {"false", "0"}:
+                qs = qs.filter(is_active=False)
+        if search := qp.get("search"):
+            qs = qs.filter(Q(name__icontains=search))
+        return qs
+
     def get_permissions(self):
         if self.request.method == "POST":
             self.rbac_permission = "platform.permissions.create"
@@ -87,8 +100,17 @@ class PermissionResourceListCreateView(CreateModelMixin, generics.ListCreateAPIV
 
     def get_queryset(self):
         qs = super().get_queryset()
-        if module := self.request.query_params.get("module"):
+        qp = self.request.query_params
+        if module := qp.get("module"):
             qs = qs.filter(module_id=module)
+        if is_active := qp.get("is_active"):
+            lowered = is_active.lower()
+            if lowered in {"true", "1"}:
+                qs = qs.filter(is_active=True)
+            elif lowered in {"false", "0"}:
+                qs = qs.filter(is_active=False)
+        if search := qp.get("search"):
+            qs = qs.filter(Q(name__icontains=search))
         return qs
 
     def get_permissions(self):
@@ -117,6 +139,19 @@ class PermissionActionListCreateView(CreateModelMixin, generics.ListCreateAPIVie
     queryset = PermissionAction.objects.all()
     serializer_class = PermissionActionSerializer
     pagination_class = XVSPagination
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        qp = self.request.query_params
+        if is_active := qp.get("is_active"):
+            lowered = is_active.lower()
+            if lowered in {"true", "1"}:
+                qs = qs.filter(is_active=True)
+            elif lowered in {"false", "0"}:
+                qs = qs.filter(is_active=False)
+        if search := qp.get("search"):
+            qs = qs.filter(Q(name__icontains=search))
+        return qs
 
     def get_permissions(self):
         if self.request.method == "POST":
@@ -172,6 +207,10 @@ class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
                 qs = qs.filter(is_restricted=False)
         if sensitivity_level := qp.get("sensitivity_level"):
             qs = qs.filter(sensitivity_level=sensitivity_level)
+        if search := qp.get("search"):
+            qs = qs.filter(
+                Q(key__icontains=search)
+            )
 
         return qs
 
@@ -319,6 +358,8 @@ class PermissionGroupListCreateView(CreateModelMixin, generics.ListCreateAPIView
                 qs = qs.filter(is_system=True)
             elif lowered in {"false", "0"}:
                 qs = qs.filter(is_system=False)
+        if search := self.request.query_params.get("search"):
+            qs = qs.filter(Q(name__icontains=search))
 
         return qs
 
@@ -737,7 +778,8 @@ class PlatformRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAP
                 qs = qs.filter(is_locked=True)
             elif lowered in {"false", "0"}:
                 qs = qs.filter(is_locked=False)
-
+        if search := self.request.query_params.get("search"):
+            qs = qs.filter(Q(name__icontains=search))
         return qs
 
     def get_serializer_class(self):
