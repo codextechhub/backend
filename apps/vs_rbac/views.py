@@ -25,6 +25,7 @@ from .models import (
 from .serializers import (
     PermissionActionSerializer,
     PermissionDependencySerializer,
+    PermissionDetailSerializer,
     PermissionGroupDetailSerializer,
     PermissionGroupListSerializer,
     PermissionModuleSerializer,
@@ -176,9 +177,15 @@ class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
 
 
 class PermissionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
-    queryset = Permission.objects.all()
-    serializer_class = PermissionSerializer
+    queryset = Permission.objects.prefetch_related(
+        "groups", "dependencies__depends_on", "required_by__permission"
+    ).all()
     lookup_field = "key"
+
+    def get_serializer_class(self):
+        if self.request.method == "GET":
+            return PermissionDetailSerializer
+        return PermissionSerializer
 
     def get_permissions(self):
         if self.request.method == "DELETE":

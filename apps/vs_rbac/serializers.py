@@ -205,6 +205,39 @@ class PermissionDependencySerializer(serializers.ModelSerializer):
         )
 
 
+class PermissionDetailSerializer(PermissionSerializer):
+    """Extended serializer for the permission detail endpoint.
+
+    Adds groups this permission belongs to, permissions it depends on
+    (dependencies), and permissions that depend on it (dependents).
+    """
+
+    groups = serializers.SerializerMethodField()
+    dependencies = serializers.SerializerMethodField()
+    dependents = serializers.SerializerMethodField()
+
+    class Meta(PermissionSerializer.Meta):
+        fields = PermissionSerializer.Meta.fields + ["groups", "dependencies", "dependents"]
+
+    def get_groups(self, obj):
+        return [
+            {"id": str(g.id), "name": g.name, "is_system": g.is_system}
+            for g in obj.groups.all()
+        ]
+
+    def get_dependencies(self, obj):
+        return [
+            {"key": dep.depends_on.key, "description": dep.depends_on.description}
+            for dep in obj.dependencies.select_related("depends_on").all()
+        ]
+
+    def get_dependents(self, obj):
+        return [
+            {"key": dep.permission.key, "description": dep.permission.description}
+            for dep in obj.required_by.select_related("permission").all()
+        ]
+
+
 # -----------------------------------------------------------------------------
 # 1b) Permission Groups — reusable permission bundles shared across school and
 #     platform role templates.
