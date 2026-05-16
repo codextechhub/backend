@@ -19,7 +19,24 @@ from django.conf import settings
 from vs_user.models import User
 from vs_user.services.audit import log_auth_event
 from vs_user.models import AuthEventLog
-from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+from vs_rbac.models import (
+    PlatformRoleTemplate,
+    PlatformUserRoleAssignment,
+    PermissionModule,
+    PermissionResource,
+    Permission,
+    PlatformRolePermission,
+)
+
+
+# Permission keys for superuser to manage permissions on onset
+SUPERUSER_PERMISSION_KEYS = [
+    "platform.permissions.view",
+    "platform.permissions.create",
+    "platform.permissions.update",
+    "platform.permissions.manage",
+    "platform.permissions.delete",
+]
 
 
 class Command(BaseCommand):
@@ -100,6 +117,9 @@ class Command(BaseCommand):
             self._assign_role_to_existing(options)
             return
 
+        # ── Bootstrap permission management capability ─────────────────────────
+        self._bootstrap_permission_creation_capability()
+
         # ── Interactive Mode ──────────────────────────────────────────────────
 
         if options['interactive']:
@@ -176,9 +196,9 @@ class Command(BaseCommand):
             invited_by=None,    # Self-created (bootstrap account)
         )
         
-        # ── Assign Vision Super Admin role ────────────────────────────────────
+        # ── Assign XVS Super Admin role ───────────────────────────────────────
         try:
-            super_admin_role = PlatformRoleTemplate.objects.get(id='vision-super-admin')
+            super_admin_role = PlatformRoleTemplate.objects.get(id='xvs_super_admin')
             PlatformUserRoleAssignment.objects.get_or_create(
                 user=user,
                 role=super_admin_role,
@@ -189,8 +209,7 @@ class Command(BaseCommand):
             )
         except PlatformRoleTemplate.DoesNotExist:
             self.stdout.write(self.style.WARNING(
-                "  ⚠️  'vision-super-admin' platform role not found. "
-                "Run seed_role_perms first to create it."
+                "  ⚠️  'xvs_super_admin' platform role not found."
             ))
 
         # ── Audit Log ─────────────────────────────────────────────────────────
@@ -219,7 +238,7 @@ class Command(BaseCommand):
         self.stdout.write(f'  Name:       {user.full_name}')
         self.stdout.write(f'  User Type:  {user.user_type}')
         self.stdout.write(f'  Status:     {user.status}')
-        self.stdout.write(f'  Role:       Vision Super Admin')
+        self.stdout.write(f'  Role:       XVS Super Admin (can create permissions on onset)')
         self.stdout.write(f'  ID:         {user.id}')
         
         self.stdout.write('\n' + self.style.MIGRATE_LABEL('Login Information:'))
@@ -242,6 +261,82 @@ class Command(BaseCommand):
         )
     
     # ── Helper Methods ────────────────────────────────────────────────────────
+
+    def _bootstrap_permission_creation_capability(self):
+        """Bootstrap minimal permission system for superuser.
+        
+        Creates:
+        1. platform module (if not exists)
+        2. permissions resource (if not exists)
+        3. platform.permissions.* permission keys (if not exist)
+        4. xvs_super_admin role with these permissions (if not exists)
+        
+        This allows the superuser to immediately manage permissions after reset_db.
+        """
+        try:
+            # Create platform module
+            module, _ = PermissionModule.objects.get_or_create(
+                name='platform',
+                defaults={'description': 'Vision platform administration', 'is_active': True}
+            )
+            
+            # Create permissions resource
+            resource, _ = PermissionResource.objects.get_or_create(
+                module=module,
+                name='permissions',
+                defaults={'description': 'Global permission registry management', 'is_active': True}
+            )
+            
+            # Create permission keys
+            from vs_rbac.models import PermissionAction
+            
+            permission_specs = [
+                ('view', 'View global permission registry'),
+                ('create', 'Add new permissions'),
+                ('update', 'Edit permission metadata'),
+                ('manage', 'Manage groups and dependencies'),
+                ('delete', 'Delete permissions from registry'),
+            ]
+            
+            for action_name, desc in permission_specs:
+                action = PermissionAction.objects.get(name=action_name)
+                perm_key = f"platform.permissions.{action_name}"
+                Permission.objects.get_or_create(
+                    key=perm_key,
+                    defaults={
+                        'module': module,
+                        'resource': resource,
+                        'action': action,
+                        'description': desc,
+                        'sensitivity_level': Permission.Sensitivity.SENSITIVE if action_name == 'manage' else Permission.Sensitivity.NORMAL,
+                        'is_restricted': action_name in ['manage', 'delete'],
+                        'is_active': True,
+                    }
+                )
+            
+            # Create or get xvs_super_admin role
+            role, _ = PlatformRoleTemplate.objects.get_or_create(
+                id='xvs_super_admin',
+                defaults={
+                    'name': 'XVS Super Admin',
+                    'description': 'Full platform access',
+                    'is_system_role': True,
+                    'is_locked': True,
+                    'status': PlatformRoleTemplate.Status.ACTIVE,
+                }
+            )
+            
+            # Wire permissions to role
+            for perm_key in SUPERUSER_PERMISSION_KEYS:
+                perm = Permission.objects.get(key=perm_key)
+                PlatformRolePermission.objects.get_or_create(
+                    role=role,
+                    permission=perm,
+                    defaults={'granted': True}
+                )
+        
+        except Exception as e:
+            self.stdout.write(self.style.WARNING(f"⚠️  Permission bootstrap: {e}"))
 
     def _assign_role_to_existing(self, options):
         email = options['email'].strip().lower()
