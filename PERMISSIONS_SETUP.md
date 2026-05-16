@@ -20,7 +20,7 @@ The `reset_db --yes` build step should have already run these. Confirm before pr
 - [ ] `seed_prebuilt_role_templates` — 25 prebuilt role templates exist
 - [ ] `seed_package` — 4 subscription tiers exist (basic, standard, premium, enterprise)
 - [ ] `seed_xvs_modules` — 7 XVS modules exist (students, teachers, parents, attendance, finance, procurement, vendors)
-- [ ] `create_superuser` — Super admin user + `vision-super-admin` platform role exist
+- [x] `create_superuser` — Super admin user + `vision-super-admin` platform role exist
 
 ---
 
@@ -32,7 +32,7 @@ The `platform` module must be created manually:
 
 | Done | Name (slug) | Description |
 |------|-------------|-------------|
-| - [ ] | `platform` | Vision platform administration (schools, team, RBAC, audit) |
+| - [x] | `platform` | Vision platform administration (schools, team, RBAC, audit) |
 
 ---
 
@@ -46,8 +46,8 @@ Use `platform` in the `module` field for all of these.
 | - [ ] | `schools` | Platform-level school record management |
 | - [ ] | `branches` | Platform-level branch management |
 | - [ ] | `team` | Vision staff team member management |
-| - [ ] | `roles` | Platform role template management |
-| - [ ] | `permissions` | Global permission registry management |
+| - [x] | `roles` | Platform role template management |
+| - [x] | `permissions` | Global permission registry management |
 | - [ ] | `audit` | Audit log and compliance management |
 | - [ ] | `dashboard` | Admin dashboard and analytics |
 
@@ -94,22 +94,22 @@ All actions (`view`, `create`, `update`, `manage`, `delete`, `export`, `assign`,
 
 | Done | Key | Sensitivity | Restricted | Description |
 |------|-----|-------------|------------|-------------|
-| - [ ] | `platform.roles.view` | NORMAL | No | List and view platform roles and assignments |
-| - [ ] | `platform.roles.create` | SENSITIVE | No | Create a new platform role template |
-| - [ ] | `platform.roles.update` | SENSITIVE | No | Edit a platform role's permissions and metadata |
-| - [ ] | `platform.roles.assign` | SENSITIVE | No | Assign or revoke platform roles from users |
-| - [ ] | `platform.roles.delete` | CRITICAL | Yes | Delete a platform role template 🔴 |
-| - [ ] | `platform.roles.transfer` | CRITICAL | Yes | Transfer the Super Admin role to another user 🔴 |
+| - [x] | `platform.roles.view` | NORMAL | No | List and view platform roles and assignments |
+| - [x] | `platform.roles.create` | SENSITIVE | No | Create a new platform role template |
+| - [x] | `platform.roles.update` | SENSITIVE | No | Edit a platform role's permissions and metadata |
+| - [x] | `platform.roles.assign` | SENSITIVE | No | Assign or revoke platform roles from users |
+| - [x] | `platform.roles.delete` | CRITICAL | Yes | Delete a platform role template 🔴 |
+| - [x] | `platform.roles.transfer` | CRITICAL | Yes | Transfer the Super Admin role to another user 🔴 |
 
 ### 3e. Permission Registry Management (`platform.permissions.*`)
 
 | Done | Key | Sensitivity | Restricted | Description |
 |------|-----|-------------|------------|-------------|
-| - [ ] | `platform.permissions.view` | NORMAL | No | View global permission registry (keys, modules, resources, actions) |
-| - [ ] | `platform.permissions.create` | SENSITIVE | No | Add new permissions, modules, resources, or actions |
-| - [ ] | `platform.permissions.update` | SENSITIVE | No | Edit permission metadata |
-| - [ ] | `platform.permissions.manage` | CRITICAL | Yes | Manage groups, dependencies, and vocabulary — full registry control 🔴 |
-| - [ ] | `platform.permissions.delete` | CRITICAL | Yes | Delete permissions from the registry 🔴 |
+| - [x] | `platform.permissions.view` | NORMAL | No | View global permission registry (keys, modules, resources, actions) |
+| - [x] | `platform.permissions.create` | SENSITIVE | No | Add new permissions, modules, resources, or actions |
+| - [x] | `platform.permissions.update` | SENSITIVE | No | Edit permission metadata |
+| - [x] | `platform.permissions.manage` | CRITICAL | Yes | Manage groups, dependencies, and vocabulary — full registry control 🔴 |
+| - [x] | `platform.permissions.delete` | CRITICAL | Yes | Delete permissions from the registry 🔴 |
 
 ### 3f. Audit & Compliance (`platform.audit.*`)
 

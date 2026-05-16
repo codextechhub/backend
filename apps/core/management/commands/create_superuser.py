@@ -31,11 +31,20 @@ from vs_rbac.models import (
 
 # Permission keys for superuser to manage permissions on onset
 SUPERUSER_PERMISSION_KEYS = [
+    # Permissions management
     "platform.permissions.view",
     "platform.permissions.create",
     "platform.permissions.update",
     "platform.permissions.manage",
     "platform.permissions.delete",
+    # Roles management
+    "platform.roles.view",
+    "platform.roles.create",
+    "platform.roles.update",
+    "platform.roles.assign",
+    "platform.roles.manage",
+    "platform.roles.delete",
+    "platform.roles.transfer",
 ]
 
 
@@ -167,7 +176,7 @@ class Command(BaseCommand):
         # ── Create Superuser ──────────────────────────────────────────────────
         
         if existing_count is not None and existing_count > 0:
-            self.stdout.write(self.style.ERROR('A Vision Staff superuser already exists. Use --force to override.'))
+            self.stdout.write(self.style.ERROR('An XVS Staff superuser already exists. Use --force to override.'))
             return
         
         if user_exist:  
@@ -287,18 +296,18 @@ class Command(BaseCommand):
                 defaults={'description': 'Global permission registry management', 'is_active': True}
             )
             
-            # Create permission keys
+            # Create permissions resource keys
             from vs_rbac.models import PermissionAction
-            
-            permission_specs = [
-                ('view', 'View global permission registry'),
-                ('create', 'Add new permissions'),
-                ('update', 'Edit permission metadata'),
-                ('manage', 'Manage groups and dependencies'),
-                ('delete', 'Delete permissions from registry'),
+
+            permissions_resource_specs = [
+                ('view',   'View global permission registry',      False, Permission.Sensitivity.NORMAL),
+                ('create', 'Add new permissions',                  False, Permission.Sensitivity.NORMAL),
+                ('update', 'Edit permission metadata',             False, Permission.Sensitivity.NORMAL),
+                ('manage', 'Manage groups and dependencies',       True,  Permission.Sensitivity.SENSITIVE),
+                ('delete', 'Delete permissions from registry',     True,  Permission.Sensitivity.NORMAL),
             ]
-            
-            for action_name, desc in permission_specs:
+
+            for action_name, desc, restricted, sensitivity in permissions_resource_specs:
                 action = PermissionAction.objects.get(name=action_name)
                 perm_key = f"platform.permissions.{action_name}"
                 Permission.objects.get_or_create(
@@ -308,8 +317,41 @@ class Command(BaseCommand):
                         'resource': resource,
                         'action': action,
                         'description': desc,
-                        'sensitivity_level': Permission.Sensitivity.SENSITIVE if action_name == 'manage' else Permission.Sensitivity.NORMAL,
-                        'is_restricted': action_name in ['manage', 'delete'],
+                        'sensitivity_level': sensitivity,
+                        'is_restricted': restricted,
+                        'is_active': True,
+                    }
+                )
+
+            # Create roles resource
+            roles_resource, _ = PermissionResource.objects.get_or_create(
+                module=module,
+                name='roles',
+                defaults={'description': 'Platform role template management', 'is_active': True}
+            )
+
+            roles_resource_specs = [
+                ('view',   'View platform roles',                  False, Permission.Sensitivity.NORMAL),
+                ('create', 'Create new platform roles',            False, Permission.Sensitivity.NORMAL),
+                ('update', 'Edit platform role metadata',          False, Permission.Sensitivity.NORMAL),
+                ('assign',    'Assign roles to users',                True,  Permission.Sensitivity.SENSITIVE),
+                ('manage',    'Full control over platform roles',     True,  Permission.Sensitivity.SENSITIVE),
+                ('delete',    'Delete platform roles',                True,  Permission.Sensitivity.SENSITIVE),
+                ('transfer',  'Transfer Super Admin role to another user', True, Permission.Sensitivity.CRITICAL),
+            ]
+
+            for action_name, desc, restricted, sensitivity in roles_resource_specs:
+                action = PermissionAction.objects.get(name=action_name)
+                perm_key = f"platform.roles.{action_name}"
+                Permission.objects.get_or_create(
+                    key=perm_key,
+                    defaults={
+                        'module': module,
+                        'resource': roles_resource,
+                        'action': action,
+                        'description': desc,
+                        'sensitivity_level': sensitivity,
+                        'is_restricted': restricted,
                         'is_active': True,
                     }
                 )
