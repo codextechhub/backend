@@ -53,7 +53,8 @@
       "Bash(cp /Users/mac/Downloads/vs_notifications/services/seed.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/seed.py)",
       "Bash(cp /Users/mac/Downloads/vs_notifications/services/settings.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/settings.py)",
       "Read(//Users/mac/Documents/Dev-Projects/GitHub//**)",
-      "Read(//Users/mac/Documents/Dev-Projects//**)"
+      "Read(//Users/mac/Documents/Dev-Projects//**)",
+      "Bash(npx tsc *)"
     ]
   }
 }
