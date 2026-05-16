@@ -209,7 +209,11 @@ class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
             qs = qs.filter(sensitivity_level=sensitivity_level)
         if search := qp.get("search"):
             qs = qs.filter(
-                Q(key__icontains=search)
+                Q(key__icontains=search) |
+                Q(module_id__icontains=search) |
+                Q(resource__name__icontains=search) |
+                Q(action_id__icontains=search) |
+                Q(description__icontains=search)
             )
 
         return qs
@@ -253,10 +257,20 @@ class PermissionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMix
             )
 
         try:
-            new_key = serializer.validated_data.pop("key", None)
-            if new_key and new_key != instance.key:
+            validated = serializer.validated_data
+
+            # Auto-compute new key from whatever module/resource/action ended up in
+            # validated_data (new value if sent, existing instance value otherwise).
+            # key is read-only in the serializer so we handle the PK update here.
+            new_module = validated.get("module", instance.module)
+            new_resource = validated.get("resource", instance.resource)
+            new_action = validated.get("action", instance.action)
+            new_key = f"{new_module.pk}.{new_resource.name}.{new_action.pk}"
+
+            if new_key != instance.key:
                 Permission.objects.filter(key=instance.key).update(key=new_key)
                 instance.key = new_key
+
             self.perform_update(serializer)
         except Exception as exc:
             return error_response(

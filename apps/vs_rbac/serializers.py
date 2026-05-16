@@ -122,8 +122,12 @@ class PermissionSerializer(serializers.ModelSerializer):
         slug_field="name",
         queryset=PermissionModule.objects.filter(is_active=True),
     )
-    resource = serializers.PrimaryKeyRelatedField(
-        queryset=PermissionResource.objects.filter(is_active=True),
+    # Accepts the resource name slug on write (e.g. "invoice").
+    # Resolved to a PermissionResource instance in validate() using the module context.
+    # write_only because the read representation uses resource_key instead.
+    resource = serializers.CharField(
+        write_only=True,
+        help_text="Resource name slug. Must belong to the selected module.",
     )
     action = serializers.SlugRelatedField(
         slug_field="name",
@@ -164,11 +168,52 @@ class PermissionSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         module = attrs.get("module") or getattr(self.instance, "module", None)
+        resource_name = attrs.get("resource")
+
+        # Resolve resource name → PermissionResource instance using module context.
+        # resource.name is only unique per-module, so both values are required.
+        if resource_name:
+            if not module:
+                raise serializers.ValidationError(
+                    {"module": "Module is required to resolve the resource."}
+                )
+            try:
+                resource_obj = PermissionResource.objects.get(
+                    module_id=module.pk, name=resource_name, is_active=True
+                )
+                attrs["resource"] = resource_obj
+            except PermissionResource.DoesNotExist:
+                raise serializers.ValidationError({
+                    "resource": (
+                        f"No active resource '{resource_name}' found in module '{module.name}'. "
+                        "Create the resource first or choose a different module."
+                    )
+                })
+
         resource = attrs.get("resource") or getattr(self.instance, "resource", None)
-        if module and resource and resource.module_id != module.pk:
+        action = attrs.get("action") or getattr(self.instance, "action", None)
+
+        # Module–resource ownership check (guards against direct API misuse)
+        if (
+            module
+            and isinstance(resource, PermissionResource)
+            and resource.module_id != module.pk
+        ):
             raise serializers.ValidationError({
                 "resource": f"Resource '{resource.name}' does not belong to module '{module.name}'."
             })
+
+        # Duplicate key guard — checks the composed key before hitting the DB unique constraint
+        if module and isinstance(resource, PermissionResource) and action:
+            composed_key = f"{module.pk}.{resource.name}.{action.pk}"
+            qs = Permission.objects.filter(key=composed_key)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError({
+                    "key": f'Permission "{composed_key}" already exists.'
+                })
+
         return attrs
 
 
