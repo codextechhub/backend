@@ -20,6 +20,9 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError, ExpiredTokenError
+from rest_framework_simplejwt.settings import api_settings as jwt_settings
+from rest_framework_simplejwt.utils import datetime_from_epoch
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 from vs_rbac.permissions import IsAuthenticatedAndActive, IsVisionStaff, HasRBACPermission
 from core.mixins import XVSModelViewSetMixin
 from core.pagination import XVSPagination
@@ -244,14 +247,55 @@ class TokenRefreshView(APIView):
     def post(self, request):
         ser = TokenRefreshSerializer(data=request.data)
         if not ser.is_valid():
-            return error_response(message="Invalid request.", error=ser.errors)
+            flat = str(ser.errors).lower()
+            if 'blacklisted' in flat or 'revoked' in flat:
+                return error_response(
+                    message="This session has been revoked. Please log in again.",
+                    error={'error_code': 'TOKEN_REVOKED'},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+            if 'expired' in flat:
+                return error_response(
+                    message="Your session has expired. Please log in again.",
+                    error={'error_code': 'TOKEN_EXPIRED'},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+            return error_response(
+                message="Invalid token. Please log in again.",
+                error={'error_code': 'TOKEN_INVALID'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
 
         try:
-            refresh = RefreshToken(ser.validated_data['refresh'])
-            return success_response(
-                message="Token refreshed successfully.",
-                data={'access': str(refresh.access_token)},
-            )
+            new_refresh_str = ser.validated_data.get('refresh')  # present when ROTATE_REFRESH_TOKENS=True
+            response_data = {'access': ser.validated_data['access']}
+
+            if new_refresh_str:
+                # Rotation happened: register the new token in OutstandingToken so that
+                # blacklist_all_user_tokens() (called on logout/suspend) can reach it.
+                new_refresh = RefreshToken(new_refresh_str)
+                jti = new_refresh[jwt_settings.JTI_CLAIM]
+                exp = new_refresh['exp']
+                user_id = new_refresh[jwt_settings.USER_ID_CLAIM]
+                token_user = User.objects.get(pk=user_id)
+                OutstandingToken.objects.get_or_create(
+                    jti=jti,
+                    defaults={
+                        'user': token_user,
+                        'token': new_refresh_str,
+                        'created_at': new_refresh.current_time,
+                        'expires_at': datetime_from_epoch(exp),
+                    },
+                )
+                # Keep LoginSession in sync with the new JTI
+                LoginSession.objects.filter(user=token_user, is_active=True).update(
+                    refresh_jti=str(jti),
+                    last_seen_at=timezone.now(),
+                )
+                response_data['refresh'] = new_refresh_str
+
+            return success_response(message="Token refreshed successfully.", data=response_data)
+
         except ExpiredTokenError:
             return error_response(
                 message="Your session has expired. Please log in again.",
@@ -270,6 +314,7 @@ class TokenRefreshView(APIView):
                 error={'error_code': 'TOKEN_INVALID'},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
+
 
 # =============================================================================
 # # INVITATION AND ACTIVATION VIEWS
