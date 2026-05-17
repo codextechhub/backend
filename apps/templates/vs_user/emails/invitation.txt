@@ -2,7 +2,7 @@ Welcome to {{ school_name }}
 
 Hello {{ user.first_name }},
 
-You have been invited to join {{ school_name }} on CodeX Vision System.
+You have been invited to join {{ school_name }} on XVision System.
 
 YOUR ACCOUNT DETAILS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -22,5 +22,5 @@ Click the link below to set up your password and activate your account:
 If you didn't expect this invitation or have any questions, please contact your administrator.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CodeX Vision System
+XVision System
 Powering Smart Institutions
