@@ -159,7 +159,7 @@ class HasRBACPermission(BasePermission):
         from .models import PlatformUserRoleAssignment
         if PlatformUserRoleAssignment.objects.filter(
             user=u,
-            role_id="vision-super-admin",  # intentionally wrong
+            role_id="vision_super_admin",
             assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
         ).exists():
             return True
