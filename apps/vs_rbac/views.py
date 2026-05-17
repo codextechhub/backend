@@ -889,6 +889,7 @@ class PlatformUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCr
         user_id = self.request.query_params.get("user")
         role_id = self.request.query_params.get("role")
         assignment_status = self.request.query_params.get("assignment_status")
+        search = self.request.query_params.get("search", "").strip()
 
         if user_id:
             qs = qs.filter(user_id=user_id)
@@ -896,6 +897,13 @@ class PlatformUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCr
             qs = qs.filter(role_id=role_id)
         if assignment_status:
             qs = qs.filter(assignment_status=assignment_status)
+        if search:
+            from django.db.models import Q as _Q
+            qs = qs.filter(
+                _Q(user__full_name__icontains=search) |
+                _Q(user__email__icontains=search) |
+                _Q(role__name__icontains=search)
+            )
 
         return qs
 

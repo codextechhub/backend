@@ -155,6 +155,15 @@ class HasRBACPermission(BasePermission):
         if not u or not u.is_authenticated:
             return False
 
+        # Vision super admin bypasses all RBAC permission checks.
+        from .models import PlatformUserRoleAssignment
+        if PlatformUserRoleAssignment.objects.filter(
+            user=u,
+            role_id="vision-super-admin",
+            assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
+        ).exists():
+            return True
+
         rbac_perms = getattr(view, "rbac_permission", None)
         rbac_group_perms = getattr(view, "rbac_group_permission", None)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.contrib.auth import get_user_model
 from django.db import transaction
 from rest_framework import serializers
 from django.utils import timezone
@@ -1254,27 +1255,89 @@ class PlatformUserRoleAssignmentSerializer(serializers.ModelSerializer):
     Assign or revoke a platform role for a Vision/internal user.
     """
 
+    # Write-only FK fields used on create/update.
+    user = serializers.PrimaryKeyRelatedField(
+        queryset=get_user_model().objects.all(),
+        write_only=True,
+    )
+    role = serializers.PrimaryKeyRelatedField(
+        queryset=PlatformRoleTemplate.objects.all(),
+        write_only=True,
+    )
+
+    # Read-only expanded fields derived from select_related data.
+    user_id = serializers.SerializerMethodField()
+    user_name = serializers.SerializerMethodField()
+    user_email = serializers.SerializerMethodField()
+    role_id = serializers.SerializerMethodField()
+    role_name = serializers.SerializerMethodField()
+    assigned_by_id = serializers.SerializerMethodField()
+    assigned_by_name = serializers.SerializerMethodField()
+    revoked_by_id = serializers.SerializerMethodField()
+    revoked_by_name = serializers.SerializerMethodField()
+
+    def get_user_id(self, obj):
+        return str(obj.user_id) if obj.user_id else None
+
+    def get_user_name(self, obj):
+        return getattr(obj.user, "full_name", None) or getattr(obj.user, "email", None)
+
+    def get_user_email(self, obj):
+        return getattr(obj.user, "email", None)
+
+    def get_role_id(self, obj):
+        return str(obj.role_id) if obj.role_id else None
+
+    def get_role_name(self, obj):
+        return getattr(obj.role, "name", None)
+
+    def get_assigned_by_id(self, obj):
+        return str(obj.assigned_by_id) if obj.assigned_by_id else None
+
+    def get_assigned_by_name(self, obj):
+        return getattr(obj.assigned_by, "full_name", None) or getattr(obj.assigned_by, "email", None)
+
+    def get_revoked_by_id(self, obj):
+        return str(obj.revoked_by_id) if obj.revoked_by_id else None
+
+    def get_revoked_by_name(self, obj):
+        return getattr(obj.revoked_by, "full_name", None) or getattr(obj.revoked_by, "email", None)
+
     class Meta:
         model = PlatformUserRoleAssignment
         fields = [
             "id",
             "user",
             "role",
+            "user_id",
+            "user_name",
+            "user_email",
+            "role_id",
+            "role_name",
             "assignment_status",
-            "assigned_by",
+            "assigned_by_id",
+            "assigned_by_name",
             "assigned_at",
             "revoked_at",
-            "revoked_by",
+            "revoked_by_id",
+            "revoked_by_name",
             "reason_note",
             "created_at",
             "updated_at",
         ]
         read_only_fields = [
             "id",
-            "assigned_by",
+            "user_id",
+            "user_name",
+            "user_email",
+            "role_id",
+            "role_name",
+            "assigned_by_id",
+            "assigned_by_name",
             "assigned_at",
             "revoked_at",
-            "revoked_by",
+            "revoked_by_id",
+            "revoked_by_name",
             "created_at",
             "updated_at",
         ]
