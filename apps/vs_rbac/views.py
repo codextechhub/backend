@@ -45,6 +45,7 @@ from .permissions import (
     IsSchoolAdmin,
     IsVisionSuperAdmin,
     HasRBACPermission,
+    is_vision_super_admin,
 )
 
 
@@ -833,30 +834,32 @@ class PlatformRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, Destr
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.is_locked:
-            return error_response(
-                message="This platform role is locked and cannot be modified.",
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        if instance.is_system_role:
-            return error_response(
-                message="System platform roles cannot be modified.",
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        if not is_vision_super_admin(request.user):
+            if instance.is_locked:
+                return error_response(
+                    message="This platform role is locked and cannot be modified.",
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if instance.is_system_role:
+                return error_response(
+                    message="System platform roles cannot be modified.",
+                    status=status.HTTP_403_FORBIDDEN,
+                )
         return super().update(request, *args, **kwargs)
 
     def delete(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.is_system_role:
-            return error_response(
-                message="System platform roles cannot be deleted.",
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        if instance.is_locked:
-            return error_response(
-                message="This platform role is locked and cannot be deleted.",
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        if not is_vision_super_admin(request.user):
+            if instance.is_system_role:
+                return error_response(
+                    message="System platform roles cannot be deleted.",
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if instance.is_locked:
+                return error_response(
+                    message="This platform role is locked and cannot be deleted.",
+                    status=status.HTTP_403_FORBIDDEN,
+                )
         return super().delete(request, *args, **kwargs)
 
 

@@ -11,6 +11,18 @@ def _get_user(obj, request):
     return getattr(request, "user", None)
 
 
+def is_vision_super_admin(user):
+    """Return True if *user* currently holds an active vision-super-admin role."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    from .models import PlatformUserRoleAssignment
+    return PlatformUserRoleAssignment.objects.filter(
+        user=user,
+        role_id="vision-super-admin",
+        assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
+    ).exists()
+
+
 def user_has_rbac_permission(user, permission_key, school=None):
     """
     Check whether *user* holds *permission_key* through any active role.
@@ -97,15 +109,7 @@ class IsVisionSuperAdmin(BasePermission):
     """
 
     def has_permission(self, request, view):
-        u = request.user
-        if not u or not u.is_authenticated:
-            return False
-        from .models import PlatformUserRoleAssignment
-        return PlatformUserRoleAssignment.objects.filter(
-            user=u,
-            role_id="vision-super-admin",
-            assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
-        ).exists()
+        return is_vision_super_admin(request.user)
 
 
 class IsSchoolAdmin(BasePermission):
@@ -197,6 +201,7 @@ class HasRBACPermission(BasePermission):
                 passed = False
 
         return passed
+
 
 
 class ReadOnly(BasePermission):
