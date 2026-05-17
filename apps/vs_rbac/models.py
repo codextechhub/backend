@@ -159,6 +159,7 @@ class Permission(TimeStampedModel):
             models.Index(fields=["module", "action"]),
             models.Index(fields=["is_restricted", "sensitivity_level"]),
         ]
+        ordering = ["-updated_at", "module", "resource", "action"]
 
     def save(self, *args, **kwargs):
         if not kwargs.get('update_fields'):
@@ -242,7 +243,7 @@ class PermissionGroup(TimeStampedModel):
         indexes = [
             models.Index(fields=["is_active"]),
         ]
-
+        ordering = ["-updated_at", "name"]
     def __str__(self) -> str:
         return self.name
 
