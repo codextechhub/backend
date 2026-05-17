@@ -4,7 +4,10 @@ from django.dispatch import receiver
 from .models import (
     GroupPermission,
     Permission,
+    PermissionAction,
     PermissionDependency,
+    PermissionModule,
+    PermissionResource,
     PlatformRoleChangeRequest,
     PlatformRoleGroup,
     PlatformRoleTemplate,
@@ -620,3 +623,195 @@ def audit_platform_role_change_request(sender, instance, created, **kwargs):
             diff_data={"status": {"before": old_status, "after": instance.status}},
             metadata={"reviewer_notes": instance.reviewer_notes},
         )
+
+
+# ---------------------------------------------------------------------------
+# PermissionModule — created, updated (is_active), deleted
+# ---------------------------------------------------------------------------
+
+pre_save.connect(_capture_old_is_active, sender=PermissionModule)
+
+
+@receiver(post_save, sender=PermissionModule)
+def audit_permission_module(sender, instance, created, **kwargs):
+    """Emit an audit event on PermissionModule create or is_active change."""
+    from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
+    from vs_audit.services import emit_audit_event
+
+    if created:
+        emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.CREATE,
+            entity_type="PermissionModule",
+            entity_id=instance.name,
+            entity_label=instance.name,
+            severity=AuditSeverity.WARNING,
+            summary=f"Permission module '{instance.name}' created",
+            metadata={"name": instance.name},
+        )
+        return
+
+    old_active = getattr(instance, "_pre_save_is_active", None)
+    if old_active is None or old_active == instance.is_active:
+        return
+
+    severity = AuditSeverity.CRITICAL if not instance.is_active else AuditSeverity.WARNING
+    verb = "deactivated" if not instance.is_active else "reactivated"
+    emit_audit_event(
+        module_key=AuditModuleKey.RBAC,
+        action_type=AuditActionType.UPDATE,
+        entity_type="PermissionModule",
+        entity_id=instance.name,
+        entity_label=instance.name,
+        severity=severity,
+        summary=f"Permission module '{instance.name}' {verb} — all permissions under this module are affected",
+        diff_data={"is_active": {"before": old_active, "after": instance.is_active}},
+        metadata={"name": instance.name},
+    )
+
+
+@receiver(post_delete, sender=PermissionModule)
+def audit_permission_module_deleted(sender, instance, **kwargs):
+    """Emit an audit event when a PermissionModule is hard-deleted."""
+    from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
+    from vs_audit.services import emit_audit_event
+
+    emit_audit_event(
+        module_key=AuditModuleKey.RBAC,
+        action_type=AuditActionType.DELETE,
+        entity_type="PermissionModule",
+        entity_id=instance.name,
+        entity_label=instance.name,
+        severity=AuditSeverity.CRITICAL,
+        summary=f"Permission module '{instance.name}' deleted — all associated permissions and resources are cascade-removed",
+        metadata={"name": instance.name},
+    )
+
+
+# ---------------------------------------------------------------------------
+# PermissionResource — created, updated (is_active), deleted
+# ---------------------------------------------------------------------------
+
+pre_save.connect(_capture_old_is_active, sender=PermissionResource)
+
+
+@receiver(post_save, sender=PermissionResource)
+def audit_permission_resource(sender, instance, created, **kwargs):
+    """Emit an audit event on PermissionResource create or is_active change."""
+    from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
+    from vs_audit.services import emit_audit_event
+
+    label = str(instance)  # "module.resource"
+
+    if created:
+        emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.CREATE,
+            entity_type="PermissionResource",
+            entity_id=label,
+            entity_label=label,
+            severity=AuditSeverity.WARNING,
+            summary=f"Permission resource '{label}' created",
+            metadata={"module": instance.module_id, "resource": instance.name},
+        )
+        return
+
+    old_active = getattr(instance, "_pre_save_is_active", None)
+    if old_active is None or old_active == instance.is_active:
+        return
+
+    severity = AuditSeverity.CRITICAL if not instance.is_active else AuditSeverity.WARNING
+    verb = "deactivated" if not instance.is_active else "reactivated"
+    emit_audit_event(
+        module_key=AuditModuleKey.RBAC,
+        action_type=AuditActionType.UPDATE,
+        entity_type="PermissionResource",
+        entity_id=label,
+        entity_label=label,
+        severity=severity,
+        summary=f"Permission resource '{label}' {verb} — all permissions under this resource are affected",
+        diff_data={"is_active": {"before": old_active, "after": instance.is_active}},
+        metadata={"module": instance.module_id, "resource": instance.name},
+    )
+
+
+@receiver(post_delete, sender=PermissionResource)
+def audit_permission_resource_deleted(sender, instance, **kwargs):
+    """Emit an audit event when a PermissionResource is hard-deleted."""
+    from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
+    from vs_audit.services import emit_audit_event
+
+    label = str(instance)
+    emit_audit_event(
+        module_key=AuditModuleKey.RBAC,
+        action_type=AuditActionType.DELETE,
+        entity_type="PermissionResource",
+        entity_id=label,
+        entity_label=label,
+        severity=AuditSeverity.CRITICAL,
+        summary=f"Permission resource '{label}' deleted — all permissions under this resource are cascade-removed",
+        metadata={"module": instance.module_id, "resource": instance.name},
+    )
+
+
+# ---------------------------------------------------------------------------
+# PermissionAction — created, updated (is_active), deleted
+# ---------------------------------------------------------------------------
+
+pre_save.connect(_capture_old_is_active, sender=PermissionAction)
+
+
+@receiver(post_save, sender=PermissionAction)
+def audit_permission_action(sender, instance, created, **kwargs):
+    """Emit an audit event on PermissionAction create or is_active change."""
+    from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
+    from vs_audit.services import emit_audit_event
+
+    if created:
+        emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.CREATE,
+            entity_type="PermissionAction",
+            entity_id=instance.name,
+            entity_label=instance.name,
+            severity=AuditSeverity.WARNING,
+            summary=f"Permission action '{instance.name}' created",
+            metadata={"name": instance.name},
+        )
+        return
+
+    old_active = getattr(instance, "_pre_save_is_active", None)
+    if old_active is None or old_active == instance.is_active:
+        return
+
+    severity = AuditSeverity.CRITICAL if not instance.is_active else AuditSeverity.WARNING
+    verb = "deactivated" if not instance.is_active else "reactivated"
+    emit_audit_event(
+        module_key=AuditModuleKey.RBAC,
+        action_type=AuditActionType.UPDATE,
+        entity_type="PermissionAction",
+        entity_id=instance.name,
+        entity_label=instance.name,
+        severity=severity,
+        summary=f"Permission action '{instance.name}' {verb} — all permissions using this action verb are affected",
+        diff_data={"is_active": {"before": old_active, "after": instance.is_active}},
+        metadata={"name": instance.name},
+    )
+
+
+@receiver(post_delete, sender=PermissionAction)
+def audit_permission_action_deleted(sender, instance, **kwargs):
+    """Emit an audit event when a PermissionAction is hard-deleted."""
+    from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
+    from vs_audit.services import emit_audit_event
+
+    emit_audit_event(
+        module_key=AuditModuleKey.RBAC,
+        action_type=AuditActionType.DELETE,
+        entity_type="PermissionAction",
+        entity_id=instance.name,
+        entity_label=instance.name,
+        severity=AuditSeverity.CRITICAL,
+        summary=f"Permission action '{instance.name}' deleted — all permissions using this action verb are cascade-removed",
+        metadata={"name": instance.name},
+    )

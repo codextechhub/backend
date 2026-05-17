@@ -56,7 +56,7 @@ class PermissionModule(TimeStampedModel):
     is_active = models.BooleanField(default=True)
 
     class Meta:
-        ordering = ["name"]
+        ordering = ["-updated_at", "name"]
 
     def __str__(self) -> str:
         return self.name

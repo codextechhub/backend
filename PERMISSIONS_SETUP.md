@@ -43,9 +43,9 @@ Use `platform` in the `module` field for all of these.
 
 | Done | Resource Name | Description |
 |------|--------------|-------------|
-| - [ ] | `schools` | Platform-level school record management |
-| - [ ] | `branches` | Platform-level branch management |
-| - [ ] | `team` | Vision staff team member management |
+| - [x] | `schools` | Platform-level school record management |
+| - [x] | `branches` | Platform-level branch management |
+| - [x] | `team` | Vision staff team member management |
 | - [x] | `roles` | Platform role template management |
 | - [x] | `permissions` | Global permission registry management |
 | - [ ] | `audit` | Audit log and compliance management |
