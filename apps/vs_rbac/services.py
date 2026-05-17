@@ -339,9 +339,9 @@ def transfer_super_admin(from_user, to_user):
     UserModel.objects.filter(pk=to_user.pk).update(is_superuser=True)
 
     emit_audit_event(
-        actor=from_user,
-        module=AuditModuleKey.RBAC,
-        action=AuditActionType.UPDATE,
+        actor_user=from_user,
+        module_key=AuditModuleKey.RBAC,
+        action_type=AuditActionType.ROLE_CHANGED,
         entity_type="PlatformUserRoleAssignment",
         entity_id=str(to_user.pk),
         entity_label=getattr(to_user, "email", str(to_user.pk)),
