@@ -426,18 +426,47 @@ class Command(BaseCommand):
                 id='xvs_super_admin',
                 defaults={
                     'name': 'XVS Super Admin',
-                    'description': 'Full platform access',
+                    'description': 'Full platform access. There is exactly one Super Admin at any time; '
+                                   'use the Transfer Super Admin flow to reassign.',
                     'is_system_role': True,
                     'is_locked': True,
                     'status': PlatformRoleTemplate.Status.ACTIVE,
                 }
             )
-            
+
             # Wire permissions to role
             for perm_key in SUPERUSER_PERMISSION_KEYS:
                 perm = Permission.objects.get(key=perm_key)
                 PlatformRolePermission.objects.get_or_create(
                     role=role,
+                    permission=perm,
+                    defaults={'granted': True}
+                )
+
+            # Create or get xvs_platform_admin role. Required by
+            # transfer_super_admin: when the current super admin transfers the
+            # role away, they are demoted to xvs_platform_admin. Without this
+            # template the transfer endpoint raises ValueError.
+            platform_admin_role, _ = PlatformRoleTemplate.objects.get_or_create(
+                id='xvs_platform_admin',
+                defaults={
+                    'name': 'XVS Platform Admin',
+                    'description': 'Vision platform administrator. Receives the previous Super Admin '
+                                   'after a transfer; can manage roles, team, and platform settings but '
+                                   'cannot transfer the Super Admin role.',
+                    'is_system_role': True,
+                    'is_locked': True,
+                    'status': PlatformRoleTemplate.Status.ACTIVE,
+                }
+            )
+
+            # Wire the same permission set EXCEPT platform.roles.transfer.
+            for perm_key in SUPERUSER_PERMISSION_KEYS:
+                if perm_key == "platform.roles.transfer":
+                    continue
+                perm = Permission.objects.get(key=perm_key)
+                PlatformRolePermission.objects.get_or_create(
+                    role=platform_admin_role,
                     permission=perm,
                     defaults={'granted': True}
                 )
