@@ -390,10 +390,10 @@ class Command(BaseCommand):
             return
 
         try:
-            role = PlatformRoleTemplate.objects.get(id='vision-super-admin')
+            role = PlatformRoleTemplate.objects.get(id='xvs_super_admin')
         except PlatformRoleTemplate.DoesNotExist:
             self.stdout.write(self.style.ERROR(
-                "'vision-super-admin' platform role not found. Run seed_role_perms first."
+                "'xvs_super_admin' platform role not found. Run seed_role_perms first."
             ))
             return
 

@@ -12,13 +12,13 @@ def _get_user(obj, request):
 
 
 def is_vision_super_admin(user):
-    """Return True if *user* currently holds an active vision-super-admin role."""
+    """Return True if *user* currently holds an active xvs_super_admin role."""
     if not user or not getattr(user, "is_authenticated", False):
         return False
     from .models import PlatformUserRoleAssignment
     return PlatformUserRoleAssignment.objects.filter(
         user=user,
-        role_id="vision-super-admin",
+        role_id="xvs_super_admin",
         assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
     ).exists()
 
@@ -105,7 +105,7 @@ class IsVisionStaff(BasePermission):
 class IsVisionSuperAdmin(BasePermission):
     """
     Grants access only to the active Vision Super Admin —
-    the single user with an active vision-super-admin PlatformUserRoleAssignment.
+    the single user with an active xvs_super_admin PlatformUserRoleAssignment.
     """
 
     def has_permission(self, request, view):
@@ -160,12 +160,7 @@ class HasRBACPermission(BasePermission):
             return False
 
         # Vision super admin bypasses all RBAC permission checks.
-        from .models import PlatformUserRoleAssignment
-        if PlatformUserRoleAssignment.objects.filter(
-            user=u,
-            role_id="vision_super_admin",
-            assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
-        ).exists():
+        if is_vision_super_admin(u):
             return True
 
         rbac_perms = getattr(view, "rbac_permission", None)

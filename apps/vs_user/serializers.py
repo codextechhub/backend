@@ -231,9 +231,9 @@ class UserCreateSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {'role': f'Platform role with id "{role_id}" not found.'}
                 )
-            if role_id == 'vision-super-admin':
+            if role_id == 'xvs_super_admin':
                 from vs_rbac.models import PlatformUserRoleAssignment
-                if PlatformUserRoleAssignment.objects.filter(role_id='vision-super-admin').exists():
+                if PlatformUserRoleAssignment.objects.filter(role_id='xvs_super_admin').exists():
                     raise serializers.ValidationError(
                         {'role': 'A Vision Super Admin already exists. Only one is allowed.'}
                     )
