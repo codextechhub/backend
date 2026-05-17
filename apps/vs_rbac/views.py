@@ -180,7 +180,7 @@ class PermissionActionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMo
 # Global Permission Registry (Vision-owned)
 # -----------------------------------------------------------------------------
 class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
-    queryset = Permission.objects.select_related("module", "resource", "action").order_by("module", "action", "key")
+    queryset = Permission.objects.select_related("module", "resource", "action").order_by("-updated_at", "module", "action", "key")
     serializer_class = PermissionSerializer
     pagination_class = XVSPagination
 
