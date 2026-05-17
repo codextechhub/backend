@@ -138,7 +138,7 @@ urlpatterns = [
         name="platform-rbac-role-list-create",
     ),
     path(
-        "platform/roles/<uuid:id>/",
+        "platform/roles/<slug:id>/",
         views.PlatformRoleTemplateDetailView.as_view(),
         name="platform-rbac-role-detail",
     ),
@@ -155,6 +155,11 @@ urlpatterns = [
         "platform/role-assignments/<int:id>/",
         views.PlatformUserRoleAssignmentDetailView.as_view(),
         name="platform-rbac-assignment-detail",
+    ),
+    path(
+        "platform/role-assignments/<int:id>/revoke/",
+        views.PlatformUserRoleAssignmentRevokeView.as_view(),
+        name="platform-rbac-assignment-revoke",
     ),
 
     # -------------------------------------------------------------------------

@@ -926,6 +926,59 @@ class PlatformUserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin,
         )
 
 
+class PlatformUserRoleAssignmentRevokeView(APIView):
+    """
+    Vision-facing revoke endpoint for platform role assignments.
+
+    POST /rbac/platform/role-assignments/<id>/revoke/
+    Body: { "reason_note": "Required justification for the audit trail." }
+    """
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.roles.assign"
+
+    def post(self, request, id: int):
+        reason = (request.data.get("reason_note") or "").strip()
+
+        if not reason:
+            return error_response(
+                message="A reason is required to revoke an assignment.",
+                error={"reason_note": ["This field is required."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            assignment = (
+                PlatformUserRoleAssignment.objects
+                .select_related("user", "role", "assigned_by", "revoked_by")
+                .get(id=id)
+            )
+        except PlatformUserRoleAssignment.DoesNotExist:
+            return error_response(
+                message="Assignment not found.",
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if assignment.assignment_status == PlatformUserRoleAssignment.AssignmentStatus.REVOKED:
+            return error_response(
+                message="This assignment has already been revoked.",
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        assignment.revoke(by_user=request.user, reason=reason)
+        assignment.save(update_fields=[
+            "assignment_status",
+            "revoked_at",
+            "revoked_by",
+            "reason_note",
+            "updated_at",
+        ])
+
+        return success_response(
+            message="Assignment revoked successfully.",
+            data=PlatformUserRoleAssignmentSerializer(assignment, context={"request": request}).data,
+        )
+
+
 # -----------------------------------------------------------------------------
 # Platform Role Change Requests
 # -----------------------------------------------------------------------------
