@@ -54,13 +54,13 @@ class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     branch_name      = serializers.CharField(source='branch.name', read_only=True, default=None)
     invited_by_name  = serializers.SerializerMethodField()
 
-    # Security-sensitive fields: only platform staff with user-management
+    # Security-sensitive fields: only platform staff with team-management
     # access should see account security metadata for other users.
     read_permissions = {
-        'password_changed_at': 'platform.users.view',
-        'last_login_at':       'platform.users.view',
-        'invited_by_id':       'platform.users.view',
-        'invited_by_name':     'platform.users.view',
+        'password_changed_at': 'platform.team.view',
+        'last_login_at':       'platform.team.view',
+        'invited_by_id':       'platform.team.view',
+        'invited_by_name':     'platform.team.view',
     }
 
     class Meta:
@@ -106,9 +106,9 @@ class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     invitation_expires_at   = serializers.SerializerMethodField()
 
     read_permissions = {
-        'invited_by_name':       'platform.users.view',
-        'invitation_email_status': 'platform.users.view',
-        'invitation_expires_at':   'platform.users.view',
+        'invited_by_name':       'platform.team.view',
+        'invitation_email_status': 'platform.team.view',
+        'invitation_expires_at':   'platform.team.view',
     }
 
     class Meta:

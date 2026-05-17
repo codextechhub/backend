@@ -4,7 +4,7 @@ from vs_rbac.models import Permission, PrebuiltRolePermission, PrebuiltRoleTempl
 
 
 SUGGESTIONS = [
-    {"key": "institution_admin",     "name": "Institution Admin",              "scope": "institution", "tier": "A", "description": "Full institution-wide administration. Commonly held by the Proprietor or Director."},
+    {"key": "school_admin",          "name": "School Admin",                   "scope": "institution", "tier": "A", "description": "Primary administrator for a single school. Provisioned automatically when a school is onboarded; manages branches, staff, and school-wide settings."},
     {"key": "principal",             "name": "Principal",                      "scope": "branch",       "tier": "A", "description": "Academic and operational head of a branch."},
     {"key": "branch_admin",          "name": "Branch Admin",                   "scope": "branch",       "tier": "A", "description": "Administrative manager of a single branch."},
     {"key": "class_teacher",         "name": "Class Teacher",                  "scope": "class",        "tier": "A", "description": "Homeroom teacher responsible for a single class. Known as Form Teacher (NG/GH/KE), Homeroom Teacher (US)."},
@@ -117,7 +117,11 @@ class Command(BaseCommand):
     def _resolve_permissions(self, key):
         perms = []
 
-        if key == "institution_admin":
+        if key == "school_admin":
+            # School admin manages everything within their own school:
+            # branches, staff, academics, finance, and school-level config.
+            # Platform-level "platform.*" keys are intentionally excluded —
+            # those are Vision-staff capabilities, not customer-side ones.
             for prefix in [
                 "students", "staff", "academic_structure", "academic_calendar",
                 "attendance", "gradebook", "assessments", "billing", "payments",
