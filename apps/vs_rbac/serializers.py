@@ -88,11 +88,12 @@ class PermissionResourceSerializer(serializers.ModelSerializer):
         slug_field="name",
         queryset=PermissionModule.objects.filter(is_active=True),
     )
+    permissions_count = serializers.IntegerField(read_only=True, default=0)
 
     class Meta:
         model = PermissionResource
-        fields = ["id", "module", "name", "description", "is_active", "created_at", "updated_at"]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        fields = ["id", "module", "name", "description", "is_active", "permissions_count", "created_at", "updated_at"]
+        read_only_fields = ["id", "permissions_count", "created_at", "updated_at"]
 
     def validate(self, attrs):
         module = attrs.get("module") or getattr(self.instance, "module", None)
@@ -106,10 +107,12 @@ class PermissionResourceSerializer(serializers.ModelSerializer):
 
 
 class PermissionActionSerializer(serializers.ModelSerializer):
+    permissions_count = serializers.IntegerField(read_only=True, default=0)
+
     class Meta:
         model = PermissionAction
-        fields = ["name", "description", "is_active", "created_at", "updated_at"]
-        read_only_fields = ["created_at", "updated_at"]
+        fields = ["name", "description", "is_active", "permissions_count", "created_at", "updated_at"]
+        read_only_fields = ["permissions_count", "created_at", "updated_at"]
 
 
 # -----------------------------------------------------------------------------

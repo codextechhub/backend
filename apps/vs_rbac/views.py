@@ -99,7 +99,7 @@ class PermissionResourceListCreateView(CreateModelMixin, generics.ListCreateAPIV
     pagination_class = XVSPagination
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = super().get_queryset().annotate(permissions_count=Count("permissions", distinct=True))
         qp = self.request.query_params
         if module := qp.get("module"):
             qs = qs.filter(module_id=module)
@@ -122,7 +122,7 @@ class PermissionResourceListCreateView(CreateModelMixin, generics.ListCreateAPIV
 
 
 class PermissionResourceDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
-    queryset = PermissionResource.objects.select_related("module").all()
+    queryset = PermissionResource.objects.select_related("module").annotate(permissions_count=Count("permissions", distinct=True))
     serializer_class = PermissionResourceSerializer
 
     def get_permissions(self):
@@ -141,7 +141,7 @@ class PermissionActionListCreateView(CreateModelMixin, generics.ListCreateAPIVie
     pagination_class = XVSPagination
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        qs = super().get_queryset().annotate(permissions_count=Count("permissions", distinct=True))
         qp = self.request.query_params
         if is_active := qp.get("is_active"):
             lowered = is_active.lower()
@@ -162,7 +162,7 @@ class PermissionActionListCreateView(CreateModelMixin, generics.ListCreateAPIVie
 
 
 class PermissionActionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
-    queryset = PermissionAction.objects.all()
+    queryset = PermissionAction.objects.annotate(permissions_count=Count("permissions", distinct=True))
     serializer_class = PermissionActionSerializer
     lookup_field = "name"
 

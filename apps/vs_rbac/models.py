@@ -76,7 +76,7 @@ class PermissionResource(TimeStampedModel):
 
     class Meta:
         unique_together = [["module", "name"]]
-        ordering = ["module", "name"]
+        ordering = ["-updated_at", "module", "name"]
 
     def __str__(self) -> str:
         return f"{self.module_id}.{self.name}"
@@ -90,7 +90,7 @@ class PermissionAction(TimeStampedModel):
     is_active = models.BooleanField(default=True)
 
     class Meta:
-        ordering = ["name"]
+        ordering = ["-updated_at", "name"]
 
     def __str__(self) -> str:
         return self.name
