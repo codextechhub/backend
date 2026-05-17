@@ -29,15 +29,17 @@ from vs_rbac.models import (
 )
 
 
-# Permission keys for superuser to manage permissions on onset
+# Permission keys granted to the bootstrap xvs_super_admin role.
+# The RBAC layer also short-circuits via is_vision_super_admin(), but listing
+# the keys explicitly keeps the UI consistent and lets the role be cloned.
 SUPERUSER_PERMISSION_KEYS = [
-    # Permissions management
+    # Permissions registry
     "platform.permissions.view",
     "platform.permissions.create",
     "platform.permissions.update",
     "platform.permissions.manage",
     "platform.permissions.delete",
-    # Roles management
+    # Roles
     "platform.roles.view",
     "platform.roles.create",
     "platform.roles.update",
@@ -45,6 +47,30 @@ SUPERUSER_PERMISSION_KEYS = [
     "platform.roles.manage",
     "platform.roles.delete",
     "platform.roles.transfer",
+    # Team
+    "platform.team.view",
+    "platform.team.create",
+    "platform.team.update",
+    "platform.team.delete",
+    "platform.team.suspend",
+    "platform.team.reactivate",
+    # Schools
+    "platform.schools.view",
+    "platform.schools.create",
+    "platform.schools.update",
+    "platform.schools.delete",
+    "platform.schools.manage",
+    # Branches
+    "platform.branches.view",
+    "platform.branches.create",
+    "platform.branches.update",
+    "platform.branches.manage",
+    # Audit
+    "platform.audit.view",
+    "platform.audit.export",
+    "platform.audit.manage",
+    # Dashboard
+    "platform.dashboard.view",
 ]
 
 
@@ -273,88 +299,127 @@ class Command(BaseCommand):
 
     def _bootstrap_permission_creation_capability(self):
         """Bootstrap minimal permission system for superuser.
-        
-        Creates:
-        1. platform module (if not exists)
-        2. permissions resource (if not exists)
-        3. platform.permissions.* permission keys (if not exist)
-        4. xvs_super_admin role with these permissions (if not exists)
-        
-        This allows the superuser to immediately manage permissions after reset_db.
+
+        Creates the platform module, all of its resources, and the permission
+        rows referenced in view/serializer code (rbac_permission strings and
+        FLS read_permissions/write_permissions). Without these rows, FLS
+        always strips gated fields for non-super-admin Vision staff and the
+        platform roles UI has nothing to grant.
+
+        Also creates the xvs_super_admin role wired to a baseline set of
+        permissions (managing the registry itself).
+
+        Safe to re-run: every create uses get_or_create.
         """
+        from vs_rbac.models import PermissionAction
+
+        # Resource → action specs.
+        # Action spec tuple: (action_name, description, is_restricted, sensitivity)
+        # The full key becomes f"platform.{resource}.{action_name}".
+        S = Permission.Sensitivity
+        PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
+            (
+                'permissions',
+                'Global permission registry management',
+                [
+                    ('view',   'View global permission registry',  False, S.NORMAL),
+                    ('create', 'Add new permissions',              False, S.NORMAL),
+                    ('update', 'Edit permission metadata',         False, S.NORMAL),
+                    ('manage', 'Manage groups and dependencies',   True,  S.SENSITIVE),
+                    ('delete', 'Delete permissions from registry', True,  S.NORMAL),
+                ],
+            ),
+            (
+                'roles',
+                'Platform role template management',
+                [
+                    ('view',     'View platform roles',                       False, S.NORMAL),
+                    ('create',   'Create new platform roles',                 False, S.NORMAL),
+                    ('update',   'Edit platform role metadata',               False, S.NORMAL),
+                    ('assign',   'Assign roles to users',                     True,  S.SENSITIVE),
+                    ('manage',   'Full control over platform roles',          True,  S.SENSITIVE),
+                    ('delete',   'Delete platform roles',                     True,  S.SENSITIVE),
+                    ('transfer', 'Transfer Super Admin role to another user', True,  S.CRITICAL),
+                ],
+            ),
+            (
+                'team',
+                'Vision staff team management',
+                [
+                    ('view',       'View Vision team members',         False, S.NORMAL),
+                    ('create',     'Invite new Vision team members',   False, S.NORMAL),
+                    ('update',     'Edit a team member profile',       False, S.NORMAL),
+                    ('delete',     'Permanently remove a team member', True,  S.SENSITIVE),
+                    ('suspend',    'Suspend a team member account',    True,  S.SENSITIVE),
+                    ('reactivate', 'Reactivate a suspended account',   True,  S.SENSITIVE),
+                ],
+            ),
+            (
+                'schools',
+                'Customer school management',
+                [
+                    ('view',   'View school list and detail',           False, S.NORMAL),
+                    ('create', 'Onboard a new school',                  False, S.NORMAL),
+                    ('update', 'Edit school info and settings',         False, S.NORMAL),
+                    ('delete', 'Decommission a school record',          True,  S.SENSITIVE),
+                    ('manage', 'Full school lifecycle administration',  True,  S.SENSITIVE),
+                ],
+            ),
+            (
+                'branches',
+                'School branch management',
+                [
+                    ('view',   'View branches under a school',          False, S.NORMAL),
+                    ('create', 'Add a new branch to a school',          False, S.NORMAL),
+                    ('update', 'Edit branch details',                   False, S.NORMAL),
+                    ('manage', 'Transition branch lifecycle',           True,  S.SENSITIVE),
+                ],
+            ),
+            (
+                'audit',
+                'Audit and compliance',
+                [
+                    ('view',   'View audit events and entity trails',   False, S.NORMAL),
+                    ('export', 'Export audit data to file',             True,  S.SENSITIVE),
+                    ('manage', 'Create and manage compliance rules',    True,  S.SENSITIVE),
+                ],
+            ),
+            (
+                'dashboard',
+                'Platform overview dashboard',
+                [
+                    ('view', 'View the platform overview dashboard',    False, S.NORMAL),
+                ],
+            ),
+        ]
+
         try:
-            # Create platform module
             module, _ = PermissionModule.objects.get_or_create(
                 name='platform',
-                defaults={'description': 'Vision platform administration', 'is_active': True}
+                defaults={'description': 'Vision platform administration', 'is_active': True},
             )
-            
-            # Create permissions resource
-            resource, _ = PermissionResource.objects.get_or_create(
-                module=module,
-                name='permissions',
-                defaults={'description': 'Global permission registry management', 'is_active': True}
-            )
-            
-            # Create permissions resource keys
-            from vs_rbac.models import PermissionAction
 
-            permissions_resource_specs = [
-                ('view',   'View global permission registry',      False, Permission.Sensitivity.NORMAL),
-                ('create', 'Add new permissions',                  False, Permission.Sensitivity.NORMAL),
-                ('update', 'Edit permission metadata',             False, Permission.Sensitivity.NORMAL),
-                ('manage', 'Manage groups and dependencies',       True,  Permission.Sensitivity.SENSITIVE),
-                ('delete', 'Delete permissions from registry',     True,  Permission.Sensitivity.NORMAL),
-            ]
-
-            for action_name, desc, restricted, sensitivity in permissions_resource_specs:
-                action = PermissionAction.objects.get(name=action_name)
-                perm_key = f"platform.permissions.{action_name}"
-                Permission.objects.get_or_create(
-                    key=perm_key,
-                    defaults={
-                        'module': module,
-                        'resource': resource,
-                        'action': action,
-                        'description': desc,
-                        'sensitivity_level': sensitivity,
-                        'is_restricted': restricted,
-                        'is_active': True,
-                    }
+            for resource_name, resource_description, action_specs in PLATFORM_RESOURCES:
+                resource, _ = PermissionResource.objects.get_or_create(
+                    module=module,
+                    name=resource_name,
+                    defaults={'description': resource_description, 'is_active': True},
                 )
-
-            # Create roles resource
-            roles_resource, _ = PermissionResource.objects.get_or_create(
-                module=module,
-                name='roles',
-                defaults={'description': 'Platform role template management', 'is_active': True}
-            )
-
-            roles_resource_specs = [
-                ('view',   'View platform roles',                  False, Permission.Sensitivity.NORMAL),
-                ('create', 'Create new platform roles',            False, Permission.Sensitivity.NORMAL),
-                ('update', 'Edit platform role metadata',          False, Permission.Sensitivity.NORMAL),
-                ('assign',    'Assign roles to users',                True,  Permission.Sensitivity.SENSITIVE),
-                ('manage',    'Full control over platform roles',     True,  Permission.Sensitivity.SENSITIVE),
-                ('delete',    'Delete platform roles',                True,  Permission.Sensitivity.SENSITIVE),
-                ('transfer',  'Transfer Super Admin role to another user', True, Permission.Sensitivity.CRITICAL),
-            ]
-
-            for action_name, desc, restricted, sensitivity in roles_resource_specs:
-                action = PermissionAction.objects.get(name=action_name)
-                perm_key = f"platform.roles.{action_name}"
-                Permission.objects.get_or_create(
-                    key=perm_key,
-                    defaults={
-                        'module': module,
-                        'resource': roles_resource,
-                        'action': action,
-                        'description': desc,
-                        'sensitivity_level': sensitivity,
-                        'is_restricted': restricted,
-                        'is_active': True,
-                    }
-                )
+                for action_name, desc, restricted, sensitivity in action_specs:
+                    action = PermissionAction.objects.get(name=action_name)
+                    perm_key = f"platform.{resource_name}.{action_name}"
+                    Permission.objects.get_or_create(
+                        key=perm_key,
+                        defaults={
+                            'module': module,
+                            'resource': resource,
+                            'action': action,
+                            'description': desc,
+                            'sensitivity_level': sensitivity,
+                            'is_restricted': restricted,
+                            'is_active': True,
+                        },
+                    )
             
             # Create or get xvs_super_admin role
             role, _ = PlatformRoleTemplate.objects.get_or_create(
