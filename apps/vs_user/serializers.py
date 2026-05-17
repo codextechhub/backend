@@ -10,6 +10,9 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from rest_framework import serializers
+from rest_framework_simplejwt.serializers import (
+    TokenRefreshSerializer as JWTTokenRefreshSerializer,
+)
 
 from vs_rbac.models import SchoolRoleTemplate, PlatformRoleTemplate
 from vs_rbac.fls import FieldSecurityMixin
@@ -314,8 +317,17 @@ class LoginRequestSerializer(serializers.Serializer):
         return attrs
 
 
-class TokenRefreshSerializer(serializers.Serializer):
-    refresh = serializers.CharField(write_only=True)
+class TokenRefreshSerializer(JWTTokenRefreshSerializer):
+    """
+    Thin wrapper around SimpleJWT's TokenRefreshSerializer.
+
+    SimpleJWT's serializer is the one that actually validates the refresh
+    token, generates a new access token, and rotates the refresh token when
+    ROTATE_REFRESH_TOKENS=True. The previous custom no-op CharField version
+    caused TokenRefreshView to raise KeyError('access') and return HTTP 500
+    on every refresh request.
+    """
+    pass
 
 
 class TokenRevokeSerializer(serializers.Serializer):

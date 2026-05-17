@@ -19,7 +19,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.exceptions import TokenError, ExpiredTokenError
+from rest_framework_simplejwt.exceptions import TokenError, ExpiredTokenError, InvalidToken
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.utils import datetime_from_epoch
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
@@ -246,15 +246,28 @@ class TokenRefreshView(APIView):
 
     def post(self, request):
         ser = TokenRefreshSerializer(data=request.data)
-        if not ser.is_valid():
-            flat = str(ser.errors).lower()
-            if 'blacklisted' in flat or 'revoked' in flat:
+
+        # SimpleJWT's TokenRefreshSerializer.validate() raises TokenError /
+        # InvalidToken when the refresh token is bad — they are not DRF
+        # ValidationErrors. Catch them here so the response is a clean 401
+        # instead of bubbling up to a 500.
+        try:
+            ser.is_valid(raise_exception=True)
+        except ExpiredTokenError:
+            return error_response(
+                message="Your session has expired. Please log in again.",
+                error={'error_code': 'TOKEN_EXPIRED'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+        except (TokenError, InvalidToken) as e:
+            msg = str(e).lower()
+            if 'blacklisted' in msg or 'revoked' in msg:
                 return error_response(
                     message="This session has been revoked. Please log in again.",
                     error={'error_code': 'TOKEN_REVOKED'},
                     status=status.HTTP_401_UNAUTHORIZED,
                 )
-            if 'expired' in flat:
+            if 'expired' in msg:
                 return error_response(
                     message="Your session has expired. Please log in again.",
                     error={'error_code': 'TOKEN_EXPIRED'},
@@ -265,14 +278,21 @@ class TokenRefreshView(APIView):
                 error={'error_code': 'TOKEN_INVALID'},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
+        except ValidationError:
+            # Missing/empty 'refresh' field — treat as invalid.
+            return error_response(
+                message="Invalid token. Please log in again.",
+                error={'error_code': 'TOKEN_INVALID'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
 
-        try:
-            new_refresh_str = ser.validated_data.get('refresh')  # present when ROTATE_REFRESH_TOKENS=True
-            response_data = {'access': ser.validated_data['access']}
+        new_refresh_str = ser.validated_data.get('refresh')  # present when ROTATE_REFRESH_TOKENS=True
+        response_data = {'access': ser.validated_data['access']}
 
-            if new_refresh_str:
-                # Rotation happened: register the new token in OutstandingToken so that
-                # blacklist_all_user_tokens() (called on logout/suspend) can reach it.
+        if new_refresh_str:
+            # Rotation happened: register the new token in OutstandingToken so that
+            # blacklist_all_user_tokens() (called on logout/suspend) can reach it.
+            try:
                 new_refresh = RefreshToken(new_refresh_str)
                 jti = new_refresh[jwt_settings.JTI_CLAIM]
                 exp = new_refresh['exp']
@@ -292,28 +312,13 @@ class TokenRefreshView(APIView):
                     refresh_jti=str(jti),
                     last_seen_at=timezone.now(),
                 )
-                response_data['refresh'] = new_refresh_str
+            except (TokenError, User.DoesNotExist):
+                # Bookkeeping failed but the new tokens are valid — the client
+                # can still use them. Don't fail the whole request.
+                pass
+            response_data['refresh'] = new_refresh_str
 
-            return success_response(message="Token refreshed successfully.", data=response_data)
-
-        except ExpiredTokenError:
-            return error_response(
-                message="Your session has expired. Please log in again.",
-                error={'error_code': 'TOKEN_EXPIRED'},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
-        except TokenError as e:
-            if 'blacklisted' in str(e).lower():
-                return error_response(
-                    message="This session has been revoked. Please log in again.",
-                    error={'error_code': 'TOKEN_REVOKED'},
-                    status=status.HTTP_401_UNAUTHORIZED,
-                )
-            return error_response(
-                message="Invalid token. Please log in again.",
-                error={'error_code': 'TOKEN_INVALID'},
-                status=status.HTTP_401_UNAUTHORIZED,
-            )
+        return success_response(message="Token refreshed successfully.", data=response_data)
 
 
 # =============================================================================
