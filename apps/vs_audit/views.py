@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from django.db.models import Q
+import csv
+import io
+from datetime import timedelta
+
+from django.db.models import Count, Q
+from django.db.models.functions import TruncDate, TruncHour
+from django.utils import timezone
 from rest_framework import generics
 from rest_framework.views import APIView
 
@@ -13,6 +19,10 @@ from .models import (
     EntityAuditTrail,
     AuditExportJob,
     ComplianceRule,
+    AuditSeverity,
+    AuditStatus,
+    ExportJobStatus,
+    ExportFormat,
 )
 from .serializers import (
     AuditEventListSerializer,
@@ -126,6 +136,55 @@ class AuditEventDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
 # Entity Trail View
 # -----------------------------------------------------------------------------
 
+class EntityAuditTrailListView(generics.ListAPIView):
+    """
+    GET /audit/entity-trails/
+
+    Paginated catalogue of every audited entity.
+    """
+
+    serializer_class = EntityAuditTrailSerializer
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.audit.view"
+
+    def get_queryset(self):
+        qs = EntityAuditTrail.objects.all()
+        params = self.request.query_params
+        if entity_type := params.get("entity_type"):
+            qs = qs.filter(entity_type=entity_type)
+        if search := params.get("search"):
+            qs = qs.filter(
+                Q(entity_id__icontains=search) | Q(entity_label__icontains=search)
+            )
+        return qs.order_by("-last_event_at")
+
+
+class MyActivityView(generics.ListAPIView):
+    """
+    GET /audit/me/activity/
+
+    Audit events where the signed-in user is the actor — used by the
+    /me/security/activity self-service page.
+    """
+
+    serializer_class = AuditEventListSerializer
+    permission_classes = [IsAuthenticatedAndActive]
+
+    def get_queryset(self):
+        qs = AuditEvent.objects.select_related("actor_user").filter(actor_user=self.request.user)
+
+        params = self.request.query_params
+        if module_key := params.get("module_key"):
+            qs = qs.filter(module_key=module_key)
+        if severity := params.get("severity"):
+            qs = qs.filter(severity=severity)
+        if search := params.get("search"):
+            qs = qs.filter(
+                Q(summary__icontains=search) | Q(action_type__icontains=search)
+            )
+        return qs.order_by("-event_at")
+
+
 class EntityAuditTrailDetailView(APIView):
     """
     GET /audit/entity-trails/<str:entity_type>/<str:entity_id>/
@@ -173,14 +232,12 @@ class EntityAuditTrailDetailView(APIView):
 # Audit Export Job Views
 # -----------------------------------------------------------------------------
 
-class AuditExportJobListView(generics.ListAPIView):
+class AuditExportJobListView(generics.ListCreateAPIView):
     """
-    GET /audit/exports/
-
-    Returns export job history.
+    GET /audit/exports/   - paginated export history
+    POST /audit/exports/  - queue a new CSV export job
     """
 
-    serializer_class = AuditExportJobListSerializer
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.audit.export"
 
@@ -195,6 +252,204 @@ class AuditExportJobListView(generics.ListAPIView):
             queryset = queryset.filter(status=status_value)
 
         return queryset.order_by("-requested_at")
+
+    def get_serializer_class(self):
+        return AuditExportJobListSerializer
+
+    def create(self, request, *args, **kwargs):
+        """Synchronously generate a CSV export and persist its metadata."""
+        filter_payload = request.data.get("filter_payload") or {}
+        export_format = request.data.get("export_format") or ExportFormat.CSV
+
+        if export_format != ExportFormat.CSV:
+            return error_response(
+                message="Only CSV exports are supported at this time.",
+                status=400,
+            )
+
+        # Build the event queryset using the saved filter payload.
+        qs = AuditEvent.objects.select_related("actor_user").all()
+
+        def _get(key):
+            value = filter_payload.get(key)
+            return value if value not in (None, "", []) else None
+
+        if (module_key := _get("module_key")):
+            qs = qs.filter(module_key__in=module_key if isinstance(module_key, list) else [module_key])
+        if (action_type := _get("action_type")):
+            qs = qs.filter(action_type__in=action_type if isinstance(action_type, list) else [action_type])
+        if (severity := _get("severity")):
+            qs = qs.filter(severity__in=severity if isinstance(severity, list) else [severity])
+        if (status_val := _get("status")):
+            qs = qs.filter(status__in=status_val if isinstance(status_val, list) else [status_val])
+        if (actor_type := _get("actor_type")):
+            qs = qs.filter(actor_type=actor_type)
+        if (entity_type := _get("entity_type")):
+            qs = qs.filter(entity_type=entity_type)
+        if (entity_id := _get("entity_id")):
+            qs = qs.filter(entity_id=entity_id)
+        if (date_from := _get("date_from")):
+            qs = qs.filter(event_at__gte=date_from)
+        if (date_to := _get("date_to")):
+            qs = qs.filter(event_at__lte=date_to)
+
+        qs = qs.order_by("-event_at")
+
+        # Apply masking from active rules (mirror what the UI hides).
+        active_masking = list(
+            ComplianceRule.objects.filter(rule_type="MASKING", is_active=True)
+            .values_list("masking_fields", flat=True)
+        )
+        masked_fields = {field for rule in active_masking for field in (rule or [])}
+
+        job = AuditExportJob.objects.create(
+            requested_by=request.user,
+            export_format=ExportFormat.CSV,
+            filter_payload=filter_payload,
+            status=ExportJobStatus.RUNNING,
+            started_at=timezone.now(),
+        )
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow([
+            "event_id", "event_at", "module_key", "action_type",
+            "severity", "status", "actor_type", "actor_email", "actor_label",
+            "entity_type", "entity_id", "entity_label", "summary",
+        ])
+        rows = 0
+        for event in qs.iterator():
+            actor_email = getattr(event.actor_user, "email", "") if event.actor_user else ""
+            summary = event.summary or ""
+            if "summary" in masked_fields:
+                summary = "[REDACTED]"
+            writer.writerow([
+                str(event.id), event.event_at.isoformat(), event.module_key, event.action_type,
+                event.severity, event.status, event.actor_type, actor_email, event.actor_label or "",
+                event.entity_type, event.entity_id, event.entity_label or "", summary,
+            ])
+            rows += 1
+
+        file_name = f"audit_export_{job.id}.csv"
+        job.mark_completed(
+            row_count=rows,
+            file_name=file_name,
+            file_path=buffer.getvalue(),  # inline CSV body so the frontend can download it
+            expires_in_days=7,
+        )
+
+        return success_response(
+            message="Export job completed.",
+            data=AuditExportJobDetailSerializer(job).data,
+            status=201,
+        )
+
+
+class AuditDashboardSummaryView(APIView):
+    """
+    GET /audit/dashboard-summary/
+
+    Aggregated metrics that power the Security Dashboard:
+      - kpis: active sessions, events / critical / failed in the last 24h, locked accounts, active impersonations
+      - severity_series: daily INFO/WARNING/CRITICAL counts for the last 14 days
+      - module_breakdown: per-module event counts in the last 24h
+      - signin_series: SUCCESS vs FAIL login attempt counts per day for the last 30 days
+      - critical_heatmap: hour-of-day x day-of-week grid for the last 30 days
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.audit.view"
+
+    def get(self, request):
+        from vs_user.models import LoginSession, AuthAttempt, AccountLockout
+        from vs_admin_console.models import ImpersonationSession
+
+        now = timezone.now()
+        last_24h = now - timedelta(hours=24)
+        last_14d = now - timedelta(days=14)
+        last_30d = now - timedelta(days=30)
+
+        events_24h = AuditEvent.objects.filter(event_at__gte=last_24h)
+
+        kpis = {
+            "active_sessions": LoginSession.objects.filter(is_active=True).count(),
+            "events_24h": events_24h.count(),
+            "critical_24h": events_24h.filter(severity=AuditSeverity.CRITICAL).count(),
+            "failed_denied_24h": events_24h.filter(
+                status__in=[AuditStatus.FAILED, AuditStatus.DENIED]
+            ).count(),
+            "locked_accounts": AccountLockout.objects.filter(locked_until__gt=now).count(),
+            "active_impersonations": ImpersonationSession.objects.filter(status="ACTIVE").count(),
+        }
+
+        # Daily severity rollup for the last 14 days
+        severity_rows = (
+            AuditEvent.objects.filter(event_at__gte=last_14d)
+            .annotate(day=TruncDate("event_at"))
+            .values("day", "severity")
+            .annotate(count=Count("id"))
+        )
+        severity_map: dict[str, dict[str, int]] = {}
+        for row in severity_rows:
+            key = row["day"].isoformat()
+            severity_map.setdefault(key, {"INFO": 0, "WARNING": 0, "CRITICAL": 0})
+            severity_map[key][row["severity"]] = row["count"]
+        severity_series = [
+            {"date": day, **counts}
+            for day, counts in sorted(severity_map.items())
+        ]
+
+        # Module breakdown over the last 24h
+        module_rows = (
+            events_24h.values("module_key")
+            .annotate(count=Count("id"))
+            .order_by("-count")
+        )
+        module_breakdown = [
+            {"module_key": row["module_key"], "count": row["count"]}
+            for row in module_rows
+        ]
+
+        # Sign-in success vs failure for the last 30 days
+        signin_rows = (
+            AuthAttempt.objects.filter(created_at__gte=last_30d)
+            .annotate(day=TruncDate("created_at"))
+            .values("day", "result")
+            .annotate(count=Count("id"))
+        )
+        signin_map: dict[str, dict[str, int]] = {}
+        for row in signin_rows:
+            key = row["day"].isoformat()
+            signin_map.setdefault(key, {"SUCCESS": 0, "FAIL": 0})
+            bucket = "SUCCESS" if row["result"] == "SUCCESS" else "FAIL"
+            signin_map[key][bucket] += row["count"]
+        signin_series = [
+            {"date": day, **counts}
+            for day, counts in sorted(signin_map.items())
+        ]
+
+        # Critical event heatmap: hour x weekday for last 30 days
+        critical_qs = (
+            AuditEvent.objects.filter(
+                event_at__gte=last_30d, severity=AuditSeverity.CRITICAL
+            )
+        )
+        grid = [[0] * 24 for _ in range(7)]
+        for event in critical_qs.only("event_at"):
+            local = timezone.localtime(event.event_at)
+            grid[local.weekday()][local.hour] += 1
+
+        return success_response(
+            message="Dashboard summary retrieved.",
+            data={
+                "kpis": kpis,
+                "severity_series": severity_series,
+                "module_breakdown": module_breakdown,
+                "signin_series": signin_series,
+                "critical_heatmap": grid,
+                "generated_at": now.isoformat(),
+            },
+        )
 
 
 class AuditExportJobDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
