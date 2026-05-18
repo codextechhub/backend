@@ -45,7 +45,7 @@ from .services.auth       import LoginService
 from .services.invitation import InvitationService
 from .services.password   import PasswordService
 from .services.user       import UserCreationService, EmailChangeService, UserStatusService
-from .services.audit      import log_auth_event, blacklist_all_user_tokens, get_client_ip
+from .services.audit      import log_auth_event, blacklist_all_user_tokens, blacklist_token_by_jti, get_client_ip
 
 from django.utils.dateparse import parse_date as _parse_date
 
@@ -905,6 +905,10 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         if session:
             session.end(reason='FORCE_LOGOUT')
             session.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
+            # Without this the refresh token tied to this session keeps working
+            # and the user can transparently get a new access token after we say
+            # we revoked their device.
+            blacklist_token_by_jti(session.refresh_jti)
             ended = 1
 
         if target_user:

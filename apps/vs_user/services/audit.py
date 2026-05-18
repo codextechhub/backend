@@ -112,6 +112,23 @@ def blacklist_all_user_tokens(user):
         BlacklistedToken.objects.get_or_create(token=token)
 
 
+def blacklist_token_by_jti(jti: str) -> bool:
+    """
+    Blacklists a single outstanding SimpleJWT refresh token by its JTI.
+    Returns True when a matching token was found and blacklisted (or already was).
+    Used when a single LoginSession is force-ended so that just that device is
+    cryptographically signed out without touching the user's other sessions.
+    """
+    if not jti:
+        return False
+    try:
+        token = OutstandingToken.objects.get(jti=jti)
+    except OutstandingToken.DoesNotExist:
+        return False
+    BlacklistedToken.objects.get_or_create(token=token)
+    return True
+
+
 def get_client_ip(request) -> str | None:
     """
     Extracts the real client IP, handling reverse proxy X-Forwarded-For headers.
