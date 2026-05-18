@@ -62,7 +62,7 @@ class LoginService:
 
         # 4. School context enforcement
         # Non-Vision Staff must always provide a valid school slug.
-        if user and user.user_type != User.UserType.VISION_STAFF:
+        if user and user.user_type != User.UserType.CX_STAFF:
             if not school:
                 record_attempt(
                     email_entered=email,

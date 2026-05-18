@@ -633,7 +633,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
         qs = User.objects.select_related('school', 'branch', 'invited_by', 'invitation')
 
-        if getattr(user, 'user_type', None) == User.UserType.VISION_STAFF:
+        if getattr(user, 'user_type', None) == User.UserType.CX_STAFF:
             pass  # no tenant boundary — sees all users
         else:
             qs = qs.filter(school=user.school)
@@ -874,7 +874,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         user = self.request.user
         qs   = LoginSession.objects.select_related('user', 'school').order_by('-last_seen_at')
 
-        if getattr(user, 'user_type', None) == User.UserType.VISION_STAFF:
+        if getattr(user, 'user_type', None) == User.UserType.CX_STAFF:
             pass  # no tenant boundary — sees all sessions
         else:
             qs = qs.filter(user=user)
@@ -1000,7 +1000,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         user = self.request.user
         qs = AccountLockout.objects.select_related('user').order_by('-updated_at')
 
-        if getattr(user, 'user_type', None) != User.UserType.VISION_STAFF:
+        if getattr(user, 'user_type', None) != User.UserType.CX_STAFF:
             qs = qs.filter(user__school=user.school)
 
         if user_id := params.get('user_id'):

@@ -285,7 +285,7 @@ def transfer_super_admin(from_user, to_user):
     if from_user.pk == to_user.pk:
         raise ValueError("Cannot transfer super admin to yourself.")
 
-    if getattr(to_user, "user_type", None) != "VISION_STAFF":
+    if getattr(to_user, "user_type", None) != "CX_STAFF":
         raise ValueError("The new super admin must be a Vision Staff member.")
 
     # Verify from_user actually holds the super admin role.

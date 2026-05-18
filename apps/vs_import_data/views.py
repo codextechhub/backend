@@ -69,7 +69,7 @@ class IsAuthenticatedStaff(permissions.BasePermission):
         if getattr(u, 'status', None) in {'SUSPENDED', 'LOCKED', 'DELETED'}:
             return False
         return getattr(u, 'user_type', None) in {
-            User.UserType.VISION_STAFF,
+            User.UserType.CX_STAFF,
             User.UserType.SCHOOL_ADMIN,
         }
 
@@ -89,7 +89,7 @@ class SchoolContextMixin:
         school_id = self.kwargs[self.school_lookup_url_kwarg]
         school = get_object_or_404(School, id=school_id)
         user = self.request.user
-        if getattr(user, 'user_type', None) != User.UserType.VISION_STAFF:
+        if getattr(user, 'user_type', None) != User.UserType.CX_STAFF:
             if not user.school_id or str(user.school_id) != str(school_id):
                 raise PermissionDenied("You do not have access to this school.")
         return school

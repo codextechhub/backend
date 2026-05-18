@@ -172,8 +172,8 @@ class UserCreateSerializer(serializers.Serializer):
         user_type = attrs.get('user_type')
 
         if not user_type:
-            if self.context['request'].user.user_type == User.UserType.VISION_STAFF:
-                user_type = User.UserType.VISION_STAFF
+            if self.context['request'].user.user_type == User.UserType.CX_STAFF:
+                user_type = User.UserType.CX_STAFF
             else:                
                 user_type = User.UserType.SCHOOL_ADMIN
                 
@@ -200,7 +200,7 @@ class UserCreateSerializer(serializers.Serializer):
             attrs['branch'] = None
 
         # Vision Staff must not have school or branch
-        if user_type == User.UserType.VISION_STAFF:
+        if user_type == User.UserType.CX_STAFF:
             if attrs['school'] or attrs['branch']:
                 raise serializers.ValidationError(
                     {'user_type': 'Vision Staff accounts cannot be assigned to a school or branch.'}
@@ -225,7 +225,7 @@ class UserCreateSerializer(serializers.Serializer):
                 )
             
         role_id = attrs['role']
-        if user_type == User.UserType.VISION_STAFF:
+        if user_type == User.UserType.CX_STAFF:
             try:
                 role = PlatformRoleTemplate.objects.get(id=role_id)
             except PlatformRoleTemplate.DoesNotExist:

@@ -40,7 +40,7 @@ class UserCreationService:
             invited_by_name=getattr(requesting_user, 'full_name', '') or '',
             status=User.Status.PENDING,
             is_active=False,
-            is_staff=True if validated_data['user_type'] == "VISION_STAFF" else False,
+            is_staff=True if validated_data['user_type'] == "CX_STAFF" else False,
         )
 
         # Create the invitation record — this is the expiry/usage gate.

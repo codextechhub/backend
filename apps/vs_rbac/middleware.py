@@ -34,7 +34,7 @@ def _get_school_from_request(request: HttpRequest):
         return None
     
     # Vision staff bypass school scoping
-    if getattr(user, "user_type", None) == "VISION_STAFF":
+    if getattr(user, "user_type", None) == "CX_STAFF":
         request._cached_school = None
         return None
     
@@ -126,7 +126,7 @@ class TenantBoundaryEnforcementMiddleware:
             return self.get_response(request)
         
         # Skip enforcement for Vision staff (they can access all schools)
-        if getattr(user, "user_type", None) == "VISION_STAFF":
+        if getattr(user, "user_type", None) == "CX_STAFF":
             return self.get_response(request)
         
         # Enforce that school-scoped users have valid school context

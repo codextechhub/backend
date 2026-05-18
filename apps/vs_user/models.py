@@ -177,15 +177,15 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             # Vision Staff must not be bound to any school or branch.
             models.CheckConstraint(
                 condition=(
-                    Q(user_type='VISION_STAFF', school__isnull=True, branch__isnull=True)
-                    | ~Q(user_type='VISION_STAFF')
+                    Q(user_type='CX_STAFF', school__isnull=True, branch__isnull=True)
+                    | ~Q(user_type='CX_STAFF')
                 ),
                 name='ck_vision_staff_no_school',
             ),
             # All non-Vision Staff must have an school.
             models.CheckConstraint(
                 condition=(
-                    Q(user_type='VISION_STAFF')
+                    Q(user_type='CX_STAFF')
                     | Q(school__isnull=False)
                 ),
                 name='ck_school_bound_users',
@@ -193,7 +193,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             # Branch-level user types must have a branch.
             models.CheckConstraint(
                 condition=(
-                    Q(user_type__in=['VISION_STAFF', 'SCHOOL_ADMIN'])
+                    Q(user_type__in=['CX_STAFF', 'SCHOOL_ADMIN'])
                     | Q(branch__isnull=False)
                 ),
                 name='ck_branch_required_for_branch_level_users',
@@ -207,7 +207,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             # uid is unique across all Vision Staff.
             models.UniqueConstraint(
                 fields=['uid'],
-                condition=Q(user_type='VISION_STAFF'),
+                condition=Q(user_type='CX_STAFF'),
                 name='unique_uid_vision_staff',
             ),
         ]
@@ -222,22 +222,22 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     def clean(self):
         super().clean()
-        if self.user_type != self.UserType.VISION_STAFF:
+        if self.user_type != self.UserType.CX_STAFF:
             if not self.school_id:
                 raise ValidationError('Non-Vision Staff must be assigned to an school.')
             if self.user_type not in (self.UserType.SCHOOL_ADMIN,) and not self.branch_id:
                 raise ValidationError(f'{self.user_type} must be assigned to a branch.')
-        if self.user_type == self.UserType.VISION_STAFF:
+        if self.user_type == self.UserType.CX_STAFF:
             if self.school_id or self.branch_id:
                 raise ValidationError('Vision Staff must not be assigned to an school or branch.')
 
     def save(self, *args, **kwargs):
         if self.uid is None:
             with transaction.atomic():
-                if self.user_type == self.UserType.VISION_STAFF:
+                if self.user_type == self.UserType.CX_STAFF:
                     max_uid = (
                         User.objects.select_for_update()
-                        .filter(user_type=self.UserType.VISION_STAFF)
+                        .filter(user_type=self.UserType.CX_STAFF)
                         .aggregate(m=Max('uid'))['m']
                     )
                 else:
@@ -283,7 +283,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     @property
     def is_vision_staff(self) -> bool:
-        return self.user_type == self.UserType.VISION_STAFF
+        return self.user_type == self.UserType.CX_STAFF
 
     def mark_password_change(self):
         self.password_changed_at = timezone.now()
