@@ -38,6 +38,16 @@ class SchoolSlimSerializer(serializers.ModelSerializer):
         fields = ('id', 'name', 'slug')
 
 
+class UserInlineSerializer(serializers.ModelSerializer):
+    """Minimal nested user representation for related objects (sessions, lockouts, etc.)."""
+    full_name = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = User
+        fields = ('id', 'email', 'first_name', 'last_name', 'full_name')
+        read_only_fields = fields
+
+
 def _raise_password_error(exc: DjangoValidationError):
     if hasattr(exc, 'messages'):
         raise serializers.ValidationError({'password': exc.messages})
@@ -410,6 +420,9 @@ class UserInvitationReadSerializer(serializers.ModelSerializer):
 # =============================================================================
 
 class LoginSessionReadSerializer(serializers.ModelSerializer):
+    user   = UserInlineSerializer(read_only=True)
+    school = SchoolSlimSerializer(read_only=True)
+
     class Meta:
         model  = LoginSession
         fields = (
@@ -442,6 +455,7 @@ class AuthAttemptReadSerializer(serializers.ModelSerializer):
 
 
 class AccountLockoutReadSerializer(serializers.ModelSerializer):
+    user          = UserInlineSerializer(read_only=True)
     is_locked_now = serializers.SerializerMethodField()
 
     class Meta:
