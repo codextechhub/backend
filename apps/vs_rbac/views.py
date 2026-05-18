@@ -783,6 +783,7 @@ class PlatformRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAP
 
         status_q = self.request.query_params.get("status")
         is_locked = self.request.query_params.get("is_locked")
+        is_system_role = self.request.query_params.get("is_system_role")
 
         if status_q:
             qs = qs.filter(status=status_q)
@@ -793,6 +794,14 @@ class PlatformRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAP
                 qs = qs.filter(is_locked=True)
             elif lowered in {"false", "0"}:
                 qs = qs.filter(is_locked=False)
+
+        if is_system_role is not None:
+            lowered = is_system_role.lower()
+            if lowered in {"true", "1"}:
+                qs = qs.filter(is_system_role=True)
+            elif lowered in {"false", "0"}:
+                qs = qs.filter(is_system_role=False)
+
         if search := self.request.query_params.get("search"):
             qs = qs.filter(Q(name__icontains=search))
         return qs
