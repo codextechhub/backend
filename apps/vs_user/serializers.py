@@ -67,6 +67,7 @@ class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         model  = User
         fields = (
             'id',
+            'uid',
             'email',
             'first_name',
             'last_name',
@@ -114,7 +115,7 @@ class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     class Meta:
         model  = User
         fields = (
-            'id', 'email', 'full_name', 'gender', 'user_type', 'role',
+            'id', 'uid', 'email', 'full_name', 'gender', 'user_type', 'role',
             'status', 'branch_id', 'branch_name', 'invited_by_name', 'created_at',
             'invitation_email_status', 'invitation_expires_at',
         )
