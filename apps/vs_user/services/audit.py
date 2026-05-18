@@ -61,7 +61,7 @@ def log_auth_event(*, actor, subject, school, event: str, request=None, metadata
 
     entity = subject or actor
     entity_id = str(entity.pk) if entity else "unknown"
-    entity_label = getattr(entity, "email", "") or getattr(entity, "username", "") if entity else ""
+    entity_label = getattr(entity, "full_name", "") or getattr(entity, "email", "") or getattr(entity, "username", "") if entity else ""
 
     try:
         emit_audit_event(
