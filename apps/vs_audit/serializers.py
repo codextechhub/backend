@@ -42,10 +42,11 @@ class UserSlimSerializer(serializers.ModelSerializer):
     Small user serializer.
     Adjust fields if your User model uses different names.
     """
+    full_name = serializers.CharField(read_only=True)
 
     class Meta:
         model = User
-        fields = ("id", "email")
+        fields = ("id", "email", "full_name")
 
 
 # -----------------------------------------------------------------------------
