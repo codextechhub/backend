@@ -189,7 +189,7 @@ class Command(BaseCommand):
         existing_count, user_exist, len_pass = None, None, None
         # Check if Vision Staff already exists (unless --force is used)
         if not force:
-            existing_count = User.objects.filter(user_type=User.UserType.VISION_STAFF).count()
+            existing_count = User.objects.filter(user_type=User.UserType.CX_STAFF).count()
         
         # Check for duplicate email
         if User.objects.filter(email__iexact=email).exists():
@@ -221,7 +221,7 @@ class Command(BaseCommand):
             first_name=first_name,
             last_name=last_name,
             phone=phone,
-            user_type=User.UserType.VISION_STAFF,
+            user_type=User.UserType.CX_STAFF,
             status=User.Status.ACTIVE,
             is_active=True,
             is_staff=True,      # Django admin access
@@ -255,7 +255,7 @@ class Command(BaseCommand):
             event=AuthEventLog.Event.USER_CREATED,
             metadata={
                 'bootstrap': True,
-                'user_type': User.UserType.VISION_STAFF,
+                'user_type': User.UserType.CX_STAFF,
                 'is_superuser': True,
                 'created_via': 'management_command',
                 'used_defaults': not options['interactive'],
