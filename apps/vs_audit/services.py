@@ -10,6 +10,82 @@ from django.forms.models import model_to_dict
 
 logger = logging.getLogger("vs_audit")
 
+# ---------------------------------------------------------------------------
+# Summary templates — used when the caller doesn't supply a summary string.
+# Keys match AuditActionType values.
+# Placeholders: {actor} {entity} {entity_type}
+# ---------------------------------------------------------------------------
+_SUMMARY_TEMPLATES: dict[str, str] = {
+    # Generic CRUD
+    "CREATE":   "{actor} created {entity_type} {entity}",
+    "UPDATE":   "{actor} updated {entity_type} {entity}",
+    "DELETE":   "{actor} deleted {entity_type} {entity}",
+
+    # Identity / auth
+    "USER_CREATED":             "{actor} created user account for {entity}",
+    "USER_INVITED":             "{actor} sent an invitation to {entity}",
+    "ACCOUNT_ACTIVATED":        "{entity} activated their account",
+    "LOGIN_SUCCESS":            "{entity} logged in successfully",
+    "LOGIN_FAILED":             "Failed login attempt for {entity}",
+    "TOKEN_REVOKED":            "Session token revoked for {entity}",
+    "FORCE_LOGOUT":             "{entity} was forcefully logged out",
+    "ACCOUNT_LOCKED":           "{entity}'s account was locked",
+    "ACCOUNT_UNLOCKED":         "{entity}'s account was unlocked by {actor}",
+    "ACCOUNT_SUSPENDED":        "{entity}'s account was suspended by {actor}",
+    "ACCOUNT_REACTIVATED":      "{entity}'s account was reactivated by {actor}",
+    "ACCOUNT_DEACTIVATED":      "{entity}'s account was deactivated by {actor}",
+    "PASSWORD_RESET_REQUESTED": "{entity} requested a password reset",
+    "PASSWORD_RESET":           "Password reset completed for {entity}",
+    "PASSWORD_CHANGED":         "{entity} changed their password",
+    "EMAIL_CHANGED":            "{entity}'s email address was changed",
+
+    # Data import
+    "DATA_FILE_UPLOADED":        "{actor} uploaded a data file",
+    "DATA_IMPORT_STARTED":       "{actor} started a data import ({entity})",
+    "DATA_IMPORT_ROW_PROCESSED": "Import row processed: {entity}",
+    "DATA_IMPORT_COMPLETED":     "Data import completed: {entity}",
+    "DATA_IMPORT_FAILED":        "Data import failed: {entity}",
+    "DATA_IMPORT_ROLLED_BACK":   "Data import rolled back: {entity}",
+
+    # RBAC
+    "ROLE_ASSIGNED":       "{actor} assigned a role to {entity}",
+    "ROLE_CHANGED":        "{actor} changed role for {entity}",
+    "PERMISSION_CHANGED":  "{actor} changed permissions for {entity}",
+
+    # Other
+    "CONFIG_CHANGED":          "{actor} changed system configuration: {entity}",
+    "FINANCIAL_TRANSACTION":   "Financial transaction recorded for {entity}",
+    "PROCUREMENT_ACTION":      "Procurement action for {entity}",
+    "EXPORT_REQUESTED":        "{actor} requested an audit log export",
+    "EXPORT_COMPLETED":        "Audit log export completed",
+    "EXPORT_FAILED":           "Audit log export failed",
+    "CUSTOM":                  "{actor} performed an action on {entity}",
+}
+
+
+def _build_summary(action_type: str, actor_user, entity_label: str, entity_type: str) -> str:
+    """Generate a readable one-sentence summary from available context."""
+    template = _SUMMARY_TEMPLATES.get(action_type, "{actor} performed {action_type} on {entity}")
+
+    actor = "System"
+    if actor_user is not None:
+        actor = (
+            getattr(actor_user, "full_name", None)
+            or getattr(actor_user, "get_full_name", lambda: "")()
+            or getattr(actor_user, "email", None)
+            or "Unknown user"
+        )
+
+    entity = entity_label or entity_type or "unknown"
+    entity_type_label = entity_type or "record"
+
+    return template.format(
+        actor=actor,
+        entity=entity,
+        entity_type=entity_type_label,
+        action_type=action_type,
+    )
+
 
 def emit_audit_event(
     *,
@@ -30,6 +106,7 @@ def emit_audit_event(
     Central helper: creates an AuditEvent + upserts EntityAuditTrail.
 
     - actor_user: pass a User instance; if None the event is attributed to SYSTEM.
+    - summary: auto-generated from action_type + entity context when not provided.
     - Never raises — audit failures must never block business logic.
     - Returns the created AuditEvent, or None on failure.
     """
@@ -37,6 +114,8 @@ def emit_audit_event(
 
     try:
         actor_type = AuditActorType.USER if actor_user is not None else AuditActorType.SYSTEM
+
+        resolved_summary = summary or _build_summary(action_type, actor_user, entity_label, entity_type)
 
         event = AuditEvent.objects.create(
             module_key=module_key,
@@ -48,7 +127,7 @@ def emit_audit_event(
             entity_label=entity_label or "",
             severity=severity,
             status=status,
-            summary=summary,
+            summary=resolved_summary,
             before_data=before_data or {},
             diff_data=diff_data or {},
             metadata=metadata or {},
