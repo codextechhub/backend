@@ -11,7 +11,7 @@ from django.utils import timezone
 from ..models import User, LoginSession, AccountLockout, AuthAttempt, AuthEventLog
 from ..tokens import CodeXRefreshToken
 from ..serializers import UserReadSerializer
-from .audit import log_auth_event, record_attempt, blacklist_all_user_tokens, get_client_ip
+from .audit import log_auth_event, record_attempt, blacklist_all_user_tokens, get_client_ip, get_device_label
 
 # TODO: Default lockout threshold — overridable per school via System Config (Module 6).
 DEFAULT_LOCK_THRESHOLD = 5
@@ -106,12 +106,13 @@ class LoginService:
         tokens  = {'access': str(refresh.access_token), 'refresh': str(refresh)}
 
         # 9. Create session record
+        ua_string = request.META.get('HTTP_USER_AGENT', '') if request else ''
         session = LoginSession.objects.create(
             user=authed,
             school=authed.school,
             ip_address=get_client_ip(request),
-            user_agent=request.META.get('HTTP_USER_AGENT', '') if request else '',
-            device_label='',
+            user_agent=ua_string,
+            device_label=get_device_label(ua_string, request),
             refresh_jti=str(refresh['jti']),
             last_seen_at=timezone.now(),
             is_active=True,

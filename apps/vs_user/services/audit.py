@@ -137,3 +137,67 @@ def get_client_ip(request) -> str | None:
     if x_forwarded_for:
         return x_forwarded_for.split(',')[0].strip()
     return request.META.get('REMOTE_ADDR')
+
+
+def _get_ch_header(request, header: str) -> str:
+    """Return a cleaned Client Hints header value, or empty string if absent/unknown."""
+    if not request:
+        return ''
+    value = request.META.get(header, '').strip().strip('"')
+    return value if value and value.lower() not in ('', 'unknown') else ''
+
+
+def get_device_label(user_agent_string: str, request=None) -> str:
+    """
+    Build a human-readable device label from the UA string and optional Client Hints.
+
+    Modern Android Chrome sends 'K' as the device model (UA Reduction privacy change).
+    For those cases we fall back to Sec-CH-UA-Model if the client sent it, otherwise
+    we surface just the OS name so the label is never misleadingly wrong.
+    """
+    if not user_agent_string:
+        return 'Unknown Device'
+    try:
+        import user_agents
+        ua = user_agents.parse(user_agent_string)
+
+        # ── Browser ───────────────────────────────────────────────────────────
+        browser = ua.browser.family or 'Unknown Browser'
+        # "Mobile Safari" on its own means Safari; keep it when paired with Chrome.
+        if 'Chrome' not in browser:
+            browser = browser.replace('Mobile Safari', 'Safari')
+
+        # ── Device / OS ───────────────────────────────────────────────────────
+        if ua.is_pc:
+            os_name = ua.os.family or ''
+            if 'Mac' in os_name:
+                device = 'Mac'
+            elif 'Windows' in os_name:
+                device = 'Windows'
+            elif 'Chrome' in os_name:
+                device = 'Chromebook'
+            else:
+                device = os_name or 'Desktop'
+
+        elif ua.is_mobile or ua.is_tablet:
+            # Client Hints carry the real model on modern Android Chrome (where UA = "K").
+            ch_model = _get_ch_header(request, 'HTTP_SEC_CH_UA_MODEL')
+
+            if ch_model:
+                device = ch_model  # e.g. "SM-S918B"
+            elif ua.device.model and ua.device.model not in ('K', 'Other', ''):
+                brand = ua.device.brand or ''
+                model = ua.device.model
+                device = f"{brand} {model}".strip() if brand and brand != 'Other' else model
+            else:
+                # UA-reduced Android — best we can do is the OS name.
+                ch_platform = _get_ch_header(request, 'HTTP_SEC_CH_UA_PLATFORM')
+                device = ch_platform or ua.os.family or 'Mobile'
+
+        else:
+            device = ua.os.family or 'Unknown'
+
+        return f"{device} · {browser}"
+
+    except Exception:
+        return user_agent_string[:80] if user_agent_string else 'Unknown Device'
