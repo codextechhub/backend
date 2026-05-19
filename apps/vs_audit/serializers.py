@@ -64,9 +64,19 @@ class AuditEventListSerializer(serializers.ModelSerializer):
 
     actor_user = UserSlimSerializer(read_only=True)
     ip_address = serializers.SerializerMethodField()
+    entity_user = serializers.SerializerMethodField()
 
     def get_ip_address(self, obj):
         return (obj.metadata or {}).get("ip_address")
+
+    def get_entity_user(self, obj):
+        if obj.entity_type != "User" or not obj.entity_id:
+            return None
+        users_map = self.context.get("entity_users", {})
+        user = users_map.get(str(obj.entity_id))
+        if not user:
+            return None
+        return {"id": str(user.id), "full_name": user.full_name, "email": user.email}
 
     class Meta:
         model = AuditEvent
@@ -82,6 +92,7 @@ class AuditEventListSerializer(serializers.ModelSerializer):
             "entity_type",
             "entity_id",
             "entity_label",
+            "entity_user",
             "summary",
             "ip_address",
             "event_at",

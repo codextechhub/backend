@@ -54,6 +54,28 @@ class AuditEventListView(generics.ListAPIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.audit.view"
 
+    def list(self, request, *args, **kwargs):
+        from rest_framework.response import Response
+        from vs_user.models import User
+
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        events = page if page is not None else list(queryset)
+
+        # Single bulk query to resolve entity users — avoids N+1
+        entity_ids = list({e.entity_id for e in events if e.entity_type == "User" and e.entity_id})
+        entity_users = {
+            str(u.id): u
+            for u in User.objects.filter(id__in=entity_ids).only("id", "first_name", "last_name", "email")
+        } if entity_ids else {}
+
+        ctx = {**self.get_serializer_context(), "entity_users": entity_users}
+        serializer = self.get_serializer(events, many=True, context=ctx)
+
+        if page is not None:
+            return self.get_paginated_response(serializer.data)
+        return Response(serializer.data)
+
     def get_queryset(self):
         queryset = AuditEvent.objects.select_related("actor_user").all()
 
