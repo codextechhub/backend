@@ -63,6 +63,10 @@ class AuditEventListSerializer(serializers.ModelSerializer):
     """
 
     actor_user = UserSlimSerializer(read_only=True)
+    ip_address = serializers.SerializerMethodField()
+
+    def get_ip_address(self, obj):
+        return (obj.metadata or {}).get("ip_address")
 
     class Meta:
         model = AuditEvent
@@ -79,6 +83,7 @@ class AuditEventListSerializer(serializers.ModelSerializer):
             "entity_id",
             "entity_label",
             "summary",
+            "ip_address",
             "event_at",
         )
 

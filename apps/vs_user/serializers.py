@@ -490,3 +490,15 @@ class AuthEventLogReadSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class PasswordResetAdminSerializer(serializers.ModelSerializer):
+    user = UserInlineSerializer(read_only=True)
+
+    class Meta:
+        model  = PasswordResetRequest
+        fields = (
+            'id', 'user', 'requested_by', 'requested_ip',
+            'expires_at', 'used_at', 'created_at',
+        )
+        read_only_fields = fields
+
+

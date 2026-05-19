@@ -39,7 +39,7 @@ from .serializers import (
     PasswordChangeSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
     LoginSessionReadSerializer, ForceLogoutSerializer,
     AuthAttemptReadSerializer, AccountLockoutReadSerializer,
-    UnlockAccountSerializer,
+    UnlockAccountSerializer, PasswordResetAdminSerializer,
 )
 from .services.auth       import LoginService
 from .services.invitation import InvitationService
@@ -974,6 +974,42 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             qs = qs.filter(created_at__date__lte=date_to)
 
         return qs
+
+
+class PasswordResetListView(APIView):
+    """
+    GET /user/password-resets/
+    Vision Staff only. Lists active (unused, unexpired) reset tokens.
+    """
+    permission_classes = [IsAuthenticatedAndActive, IsVisionStaff]
+
+    def get(self, request):
+        resets = PasswordResetRequest.objects.filter(
+            used_at__isnull=True,
+            expires_at__gt=timezone.now(),
+        ).select_related('user').order_by('-created_at')
+        ser = PasswordResetAdminSerializer(resets, many=True)
+        return success_response(data=ser.data)
+
+
+class RevokePasswordResetView(APIView):
+    """
+    POST /user/password-resets/{pk}/revoke/
+    Vision Staff only. Marks the token as used, invalidating it immediately.
+    """
+    permission_classes = [IsAuthenticatedAndActive, IsVisionStaff]
+
+    def post(self, request, pk):
+        try:
+            reset = PasswordResetRequest.objects.get(pk=pk, used_at__isnull=True)
+        except PasswordResetRequest.DoesNotExist:
+            return error_response(
+                message="Reset token not found or already used.",
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        reset.used_at = timezone.now()
+        reset.save(update_fields=['used_at'])
+        return success_response(message="Reset token revoked.")
 
 
 class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):

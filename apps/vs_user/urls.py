@@ -30,6 +30,8 @@ from .views import (
     PasswordResetRequestView,
     PasswordResetConfirmView,
     AdminPasswordResetView,
+    PasswordResetListView,
+    RevokePasswordResetView,
     # User management
     UserAccountViewSet,
     UserEmailChangeView,
@@ -79,6 +81,8 @@ urlpatterns = [
     path('<str:user_id>/reactivate/',     UserReactivateView.as_view(),    name='user-reactivate'),
     path('<str:user_id>/unlock/',         UserUnlockView.as_view(),        name='user-unlock'),
     path('<str:user_id>/password-reset/', AdminPasswordResetView.as_view(),name='user-password-reset'),
+    path('password-resets/',              PasswordResetListView.as_view(),  name='password-reset-list'),
+    path('password-resets/<int:pk>/revoke/', RevokePasswordResetView.as_view(), name='password-reset-revoke'),
 
     # ── Router URLs ───────────────────────────────────────────────────────────
     path('', include(router.urls)),
