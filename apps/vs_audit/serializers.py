@@ -323,7 +323,7 @@ class AuditEventFilterSerializer(serializers.Serializer):
         choices=AuditActorType.choices,
         required=False,
     )
-    actor_user_id = serializers.UUIDField(required=False)
+    actor_user_id = serializers.IntegerField(required=False)
     entity_type = serializers.CharField(required=False)
     entity_id = serializers.CharField(required=False)
 
