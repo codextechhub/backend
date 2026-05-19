@@ -62,12 +62,21 @@ class AuditEventListView(generics.ListAPIView):
         page = self.paginate_queryset(queryset)
         events = page if page is not None else list(queryset)
 
-        # Single bulk query to resolve entity users — avoids N+1
-        entity_ids = list({e.entity_id for e in events if e.entity_type == "User" and e.entity_id})
+        # Single bulk query to resolve entity users — avoids N+1.
+        # User.id is a BigAutoField so we must coerce entity_id to int and
+        # discard any values that aren't numeric (e.g. UUID-format entity IDs
+        # stored by older audit code), otherwise filter() raises ValueError.
+        raw_entity_ids = {e.entity_id for e in events if e.entity_type == "User" and e.entity_id}
+        numeric_entity_ids = []
+        for eid in raw_entity_ids:
+            try:
+                numeric_entity_ids.append(int(eid))
+            except (ValueError, TypeError):
+                pass
         entity_users = {
             str(u.id): u
-            for u in User.objects.filter(id__in=entity_ids).only("id", "first_name", "last_name", "email")
-        } if entity_ids else {}
+            for u in User.objects.filter(id__in=numeric_entity_ids).only("id", "first_name", "last_name", "email")
+        } if numeric_entity_ids else {}
 
         ctx = {**self.get_serializer_context(), "entity_users": entity_users}
         serializer = self.get_serializer(events, many=True, context=ctx)
