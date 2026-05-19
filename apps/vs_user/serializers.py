@@ -445,11 +445,14 @@ class ForceLogoutSerializer(serializers.Serializer):
 
 
 class AuthAttemptReadSerializer(serializers.ModelSerializer):
+    user   = UserInlineSerializer(read_only=True)
+    school = SchoolSlimSerializer(read_only=True)
+
     class Meta:
         model  = AuthAttempt
         fields = (
             'id', 'email_entered', 'user', 'school',
-            'ip_address', 'result', 'failure_code', 'metadata', 'created_at',
+            'ip_address', 'user_agent', 'result', 'failure_code', 'metadata', 'created_at',
         )
         read_only_fields = fields
 
