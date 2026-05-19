@@ -959,7 +959,7 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             qs = qs.filter(email_entered__icontains=email)
 
         if ip_address := params.get('ip_address'):
-            qs = qs.filter(ip_address=ip_address)
+            qs = qs.filter(ip_address__icontains=ip_address)
 
         if result := params.get('result'):
             qs = qs.filter(result=result)
