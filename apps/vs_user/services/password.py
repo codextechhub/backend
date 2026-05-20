@@ -139,8 +139,18 @@ class PasswordService:
             requested_user_agent=request.META.get("HTTP_USER_AGENT", "") if request else "",
         )
         from ..tasks import send_password_reset_email_task
-        send_password_reset_email_task.delay(
-            activation_key=str(user.activation_key),
-            origin=origin,
-            sender_name=sender_name,
-        )
+        try:
+            send_password_reset_email_task.delay(
+                activation_key=str(user.activation_key),
+                origin=origin,
+                sender_name=sender_name,
+            )
+        except Exception:
+            # Broker unavailable — run synchronously so the email still goes out
+            send_password_reset_email_task.apply(
+                kwargs=dict(
+                    activation_key=str(user.activation_key),
+                    origin=origin,
+                    sender_name=sender_name,
+                )
+            )

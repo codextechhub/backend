@@ -500,9 +500,14 @@ class PasswordChangeView(APIView):
                 request=request,
             )
         except Exception as e:
-            payload = e.args[0] if e.args else {}
-            message = payload.get('detail', 'Password change failed.') if isinstance(payload, dict) else str(payload)
-            return error_response(message=message, error=payload)
+            raw = e.args[0] if e.args else {}
+            if isinstance(raw, dict):
+                message = raw.get('detail', 'Password change failed.')
+                error_detail = raw
+            else:
+                message = str(raw) or 'Password change failed.'
+                error_detail = {'detail': message}
+            return error_response(message=message, error=error_detail)
 
         return success_response(message="Password updated successfully.")
 
@@ -627,9 +632,14 @@ class AdminPasswordResetView(APIView):
                 request=request,
             )
         except Exception as e:
-            payload = e.args[0] if e.args else {}
-            message = payload.get('detail', 'Password reset failed.') if isinstance(payload, dict) else str(payload)
-            return error_response(message=message, error=payload, status=status.HTTP_403_FORBIDDEN)
+            raw = e.args[0] if e.args else {}
+            if isinstance(raw, dict):
+                message = raw.get('detail', 'Password reset failed.')
+                error_detail = raw
+            else:
+                message = str(raw) or 'Password reset failed.'
+                error_detail = {'detail': message}
+            return error_response(message=message, error=error_detail, status=status.HTTP_403_FORBIDDEN)
 
         return success_response(message="Password reset email sent.")
 
