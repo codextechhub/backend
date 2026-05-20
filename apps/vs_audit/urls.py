@@ -7,6 +7,7 @@ from .views import (
     EntityAuditTrailListView,
     EntityAuditTrailDetailView,
     MyActivityView,
+    MyActivitySubjectView,
     AuditExportJobListView,
     AuditExportJobDetailView,
     ComplianceRuleListCreateView,
@@ -39,6 +40,7 @@ urlpatterns = [
     # Self-service /me
     # -------------------------------------------------------------------------
     path("me/activity/", MyActivityView.as_view(), name="audit-me-activity"),
+    path("me/activity-on-me/", MyActivitySubjectView.as_view(), name="audit-me-activity-on-me"),
 
     # -------------------------------------------------------------------------
     # Export Jobs

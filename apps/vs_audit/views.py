@@ -216,6 +216,37 @@ class MyActivityView(generics.ListAPIView):
         return qs.order_by("-event_at")
 
 
+class MyActivitySubjectView(generics.ListAPIView):
+    """
+    GET /audit/me/activity-on-me/
+
+    Audit events where the signed-in user is the target entity
+    (entity_type="User", entity_id=<user.id>) and someone else performed the
+    action. Powers the "Things done to your account" tab.
+    """
+
+    serializer_class = AuditEventListSerializer
+    permission_classes = [IsAuthenticatedAndActive]
+
+    def get_queryset(self):
+        user = self.request.user
+        qs = AuditEvent.objects.select_related("actor_user").filter(
+            entity_type="User",
+            entity_id=str(user.id),
+        ).exclude(actor_user=user)
+
+        params = self.request.query_params
+        if module_key := params.get("module_key"):
+            qs = qs.filter(module_key=module_key)
+        if severity := params.get("severity"):
+            qs = qs.filter(severity=severity)
+        if search := params.get("search"):
+            qs = qs.filter(
+                Q(summary__icontains=search) | Q(action_type__icontains=search)
+            )
+        return qs.order_by("-event_at")
+
+
 class EntityAuditTrailDetailView(APIView):
     """
     GET /audit/entity-trails/<str:entity_type>/<str:entity_id>/
