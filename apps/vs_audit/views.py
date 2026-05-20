@@ -518,6 +518,10 @@ class ComplianceRuleListCreateView(CreateModelMixin, generics.ListCreateAPIView)
         i_slug = self.request.query_params.get("i_slug")
         rule_type = self.request.query_params.get("rule_type")
         is_active = self.request.query_params.get("is_active")
+        module_key = self.request.query_params.get("module_key")
+
+        if i_slug:
+            queryset = queryset.filter(school__slug=i_slug)
 
         if rule_type:
             queryset = queryset.filter(rule_type=rule_type)
@@ -527,6 +531,9 @@ class ComplianceRuleListCreateView(CreateModelMixin, generics.ListCreateAPIView)
                 queryset = queryset.filter(is_active=True)
             elif is_active.lower() == "false":
                 queryset = queryset.filter(is_active=False)
+
+        if module_key:
+            queryset = queryset.filter(module_key=module_key)
 
         return queryset.order_by("name")
 

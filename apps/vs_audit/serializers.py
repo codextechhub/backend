@@ -237,12 +237,14 @@ class ComplianceRuleListSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "name",
+            "description",
             "rule_type",
             "school",
             "module_key",
             "action_type",
             "is_active",
             "retention_days",
+            "updated_at",
         )
 
 
