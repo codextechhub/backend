@@ -73,6 +73,26 @@ class CurrentUserView(APIView):
         )
 
 
+class MySecurityStatsView(APIView):
+    """
+    GET /user/auth/me/stats/
+    Returns security stats scoped to the requesting user — accessible by any
+    authenticated user without staff permissions.
+    """
+    permission_classes = [IsAuthenticatedAndActive]
+
+    def get(self, request):
+        seven_days_ago = timezone.now() - timedelta(days=7)
+        failed_7d = AuthAttempt.objects.filter(
+            user=request.user,
+            created_at__gte=seven_days_ago,
+        ).exclude(result=AuthAttempt.Result.SUCCESS).count()
+        return success_response(
+            message="Security stats retrieved.",
+            data={"failed_attempts_7d": failed_7d},
+        )
+
+
 def _get_date_param(params, key):
     """Parse a YYYY-MM-DD query param; raise ValidationError with 400 if malformed."""
     raw = params.get(key)
