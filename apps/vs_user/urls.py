@@ -22,6 +22,7 @@ from .views import (
     TokenRefreshView,
     CurrentUserView,
     MySecurityStatsView,
+    MyPasswordResetsView,
     # Activation — UUID-based, no token
     ActivationPreviewView,
     ActivationView,
@@ -62,6 +63,7 @@ urlpatterns = [
     path('auth/token/refresh/',                 TokenRefreshView.as_view(),         name='auth-token-refresh'),
     path('auth/me/',                            CurrentUserView.as_view(),          name='auth-me'),
     path('auth/me/stats/',                      MySecurityStatsView.as_view(),      name='auth-me-stats'),
+    path('auth/me/password-resets/',            MyPasswordResetsView.as_view(),     name='auth-me-password-resets'),
     path('auth/special_login/preview/',         SpecialLoginPreviewView.as_view(),  name='special-login-preview'),
 
     # ── Activation ────────────────────────────────────────────────────────────

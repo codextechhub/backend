@@ -93,6 +93,30 @@ class MySecurityStatsView(APIView):
         )
 
 
+class MyPasswordResetsView(APIView):
+    """
+    GET /user/auth/me/password-resets/
+    Self-service. Returns the current user's full password reset request history,
+    newest first. Includes used, expired, and pending requests.
+
+    Permission: IsAuthenticatedAndActive (no RBAC required)
+    """
+    permission_classes = [IsAuthenticatedAndActive]
+
+    def get(self, request):
+        from .serializers import MyPasswordResetSerializer
+        resets = (
+            PasswordResetRequest.objects
+            .filter(user=request.user)
+            .order_by('-created_at')[:20]
+        )
+        ser = MyPasswordResetSerializer(resets, many=True)
+        return success_response(
+            message="Password reset history retrieved.",
+            data=ser.data,
+        )
+
+
 def _get_date_param(params, key):
     """Parse a YYYY-MM-DD query param; raise ValidationError with 400 if malformed."""
     raw = params.get(key)

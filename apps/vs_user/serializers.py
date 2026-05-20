@@ -502,3 +502,12 @@ class PasswordResetAdminSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class MyPasswordResetSerializer(serializers.ModelSerializer):
+    """Self-service view — omits the user field since it is always the requester."""
+
+    class Meta:
+        model  = PasswordResetRequest
+        fields = ('id', 'requested_by', 'requested_ip', 'expires_at', 'used_at', 'created_at')
+        read_only_fields = fields
+
+
