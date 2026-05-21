@@ -5,7 +5,7 @@ from io import BytesIO, StringIO
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
-from ..models import FileFormatChoices, ImportTemplate
+from ..models import FileFormatChoices, ImportBatch, ImportTemplate
 
 
 def generate_template_xlsx(template: ImportTemplate) -> bytes:
@@ -99,5 +99,41 @@ def generate_template_csv(template: ImportTemplate) -> str:
             )
             sample_row.append(value)
         writer.writerow(sample_row)
+
+    return output.getvalue()
+
+
+def generate_validation_issues_csv(import_batch: ImportBatch) -> str:
+    """
+    Generate a CSV of all validation issues for an import batch.
+    File-level issues (no row) appear first, then row issues sorted by row number.
+    """
+    output = StringIO()
+    writer = csv.writer(output)
+
+    writer.writerow([
+        "Row",
+        "Column",
+        "Severity",
+        "Error Code",
+        "Message",
+        "Raw Value",
+        "Help Text",
+        "Resolved",
+    ])
+
+    issues = import_batch.validation_issues.order_by("row_number", "column_name", "created_at")
+
+    for issue in issues:
+        writer.writerow([
+            issue.row_number if issue.row_number is not None else "File",
+            issue.column_name or "",
+            issue.severity.upper(),
+            issue.code,
+            issue.message,
+            issue.raw_value or "",
+            issue.help_text or "",
+            "Yes" if issue.is_resolved else "No",
+        ])
 
     return output.getvalue()

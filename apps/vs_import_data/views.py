@@ -55,8 +55,34 @@ from .services.rollback_service import rollback_import_job
 from .services.template_file import (
     generate_template_csv,
     generate_template_xlsx,
+    generate_validation_issues_csv,
 )
 from .services.validation_service import validate_import_batch
+
+
+# =========================================================
+# Helpers
+# =========================================================
+def _format_validation_issues(issues: list[dict]) -> list[dict]:
+    """
+    Return a flat, sorted list of validation issues ready for API responses.
+    File-level issues (no row) come first, then row issues sorted by row number.
+    """
+    return sorted(
+        [
+            {
+                "severity":  issue.get("severity", "error"),
+                "code":      issue.get("code", ""),
+                "row":       issue.get("row_number"),
+                "column":    issue.get("column_name") or None,
+                "message":   issue.get("message", ""),
+                "raw_value": issue.get("raw_value"),
+                "help_text": issue.get("help_text") or "",
+            }
+            for issue in issues
+        ],
+        key=lambda i: (i["row"] is not None, i["row"] or 0, i["column"] or ""),
+    )
 
 
 # =========================================================
@@ -410,7 +436,10 @@ class ValidateImportBatchView(ImportBatchContextMixin, APIView):
 
         return success_response(
             message="Validation completed successfully.",
-            data={"summary": result["summary"]},
+            data={
+                "summary": result["summary"],
+                "issues": _format_validation_issues(result["issues"]),
+            },
         )
 
 
@@ -486,6 +515,22 @@ class ResolveImportValidationIssueView(UpdateModelMixin, ImportBatchContextMixin
             after_data={"is_resolved": True},
             message=f"Validation issue '{issue.code}' marked as resolved.",
         )
+
+
+class ImportValidationIssueExportView(ImportBatchContextMixin, APIView):
+    """
+    GET -> download all validation issues for a batch as a CSV file.
+    """
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    rbac_permission = ImportPermission.VALIDATION_VIEW
+
+    def get(self, request, **_kwargs):
+        import_batch = self.get_import_batch()
+        content = generate_validation_issues_csv(import_batch)
+        filename = f"validation_issues_batch_{import_batch.id}.csv"
+        response = HttpResponse(content, content_type="text/csv")
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+        return response
 
 
 # =========================================================
@@ -569,7 +614,10 @@ class RevalidateAfterCorrectionView(ImportBatchContextMixin, APIView):
 
         return success_response(
             message="Revalidation completed successfully.",
-            data={"summary": result["summary"]},
+            data={
+                "summary": result["summary"],
+                "issues": _format_validation_issues(result["issues"]),
+            },
         )
 
 

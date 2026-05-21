@@ -51,6 +51,11 @@ urlpatterns = [
         name="import-validation-issue-list",
     ),
     path(
+        "batches/<int:batch_id>/issues/export/",
+        views.ImportValidationIssueExportView.as_view(),
+        name="import-validation-issue-export",
+    ),
+    path(
         "batches/<int:batch_id>/issues/<int:issue_id>/",
         views.ImportValidationIssueDetailView.as_view(),
         name="import-validation-issue-detail",
