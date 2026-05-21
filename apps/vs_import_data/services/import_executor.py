@@ -16,10 +16,6 @@ from ..models import (
 )
 from .audit_service import create_import_audit_log
 
-# Import your real app serializers here
-# from apps.students.serializers import StudentCreateSerializer
-# from apps.staff.serializers import StaffCreateSerializer
-
 
 # =========================================================
 # Result object returned by dataset handlers
@@ -82,86 +78,160 @@ def run_create_serializer(*, serializer_class, payload: dict, context: dict, tar
 def execute_dataset_handler(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
     dataset_type = import_batch.template.dataset_type
 
-    if dataset_type == "students":
-        return import_students_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
-
-    if dataset_type == "staff":
-        return import_staff_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
-
-    if dataset_type == "classes":
-        return import_classes_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
-
-    if dataset_type == "fees":
-        return import_fees_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
+    if dataset_type == "schools":
+        return import_schools_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
 
     raise ValueError(f"Unsupported dataset type: {dataset_type}")
 
 
 # =========================================================
-# Student import using create serializer
+# Schools handler
 # =========================================================
-def import_students_row(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
+def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
     """
-    Import one student row using the Student create serializer.
-    """
+    Import one school row using SchoolCreateSerializer.
 
-    serializer_payload = {
-        **payload,
-        "school": import_batch.school.pk,
+    The flat ImportTemplateColumn.target_field names this handler reads:
+
+    School identity
+        name                    required
+        slug                    optional – auto-generated from name if blank
+        code                    optional
+        ownership_type          optional – PUBLIC / PRIVATE / FAITH_BASED / NGO
+        address                 optional
+        website                 optional
+        motto                   optional
+        term_structure          optional – 3_TERMS / 2_SEMESTERS
+        currency                optional – NGN / USD
+        registration_id         optional
+
+    School-level admin
+        school_admin_full_name  required when school_admin_email is present
+        school_admin_email      optional – if absent no school admin is created
+        school_admin_phone      optional
+        school_admin_role       optional – defaults to "IT Head"
+
+    Main branch  (one branch per row, always marked is_main=True)
+        branch_name             optional – defaults to "<school name> — Main Campus"
+        branch_type             optional – defaults to "Combined"
+        branch_address          optional – falls back to school address
+        branch_email            optional
+        branch_country          optional – defaults to "Nigeria"
+        branch_state            optional
+
+    Branch admin  (required – SchoolCreateSerializer enforces this)
+        branch_admin_full_name  required
+        branch_admin_email      required
+        branch_admin_phone      optional
+        branch_admin_role       optional – defaults to "Head Teacher"
+
+    Package setup
+        package_plan            optional – PackagePlan code e.g. basic / standard / premium
+        student_capacity        optional – defaults to 50
+        teacher_capacity        optional – defaults to 10
+        admin_capacity          optional – defaults to 3
+        enabled_modules         optional – comma-separated module keys e.g. "students,attendance"
+        subscription_expires_at optional – YYYY-MM-DD
+    """
+    from types import SimpleNamespace
+    from vs_schools.serializers import SchoolCreateSerializer
+
+    def _s(key: str) -> str:
+        return (payload.get(key) or "").strip()
+
+    def _int(key: str, default: int) -> int:
+        try:
+            return int(payload.get(key) or default)
+        except (TypeError, ValueError):
+            return default
+
+    # --- School-level admin ---
+    school_admin_email = _s("school_admin_email")
+    primary_admin_data = None
+    if school_admin_email:
+        primary_admin_data = {
+            "full_name": _s("school_admin_full_name"),
+            "email": school_admin_email,
+            "phone": _s("school_admin_phone"),
+            "school_role": _s("school_admin_role") or "IT Head",
+            "role_label": "SCHOOL_ADMIN",
+        }
+
+    # --- Branch admin ---
+    branch_admin_data = {
+        "full_name": _s("branch_admin_full_name"),
+        "email": _s("branch_admin_email"),
+        "phone": _s("branch_admin_phone"),
+        "branch_role": _s("branch_admin_role") or "Head Teacher",
+        "role_label": "BRANCH_ADMIN",
     }
 
+    # --- Branch ---
+    branch_name = _s("branch_name") or f"{_s('name')} — Main Campus"
+    branch = {
+        "name": branch_name,
+        "_type": _s("branch_type") or "Combined",
+        "address": _s("branch_address") or _s("address"),
+        "email": _s("branch_email"),
+        "country": _s("branch_country") or "Nigeria",
+        "state": _s("branch_state"),
+        "is_main": True,
+        "primary_admin_data": branch_admin_data,
+    }
+
+    # --- Package setup ---
+    package_plan_code = _s("package_plan")
+    package_setup_data = None
+    if package_plan_code:
+        raw_modules = _s("enabled_modules")
+        enabled_modules = [m.strip() for m in raw_modules.split(",") if m.strip()] if raw_modules else []
+        package_setup_data = {
+            "package_plan": package_plan_code,
+            "enabled_modules": enabled_modules,
+            "student_capacity": _int("student_capacity", 50),
+            "teacher_capacity": _int("teacher_capacity", 10),
+            "admin_capacity": _int("admin_capacity", 3),
+        }
+        sub_expires = _s("subscription_expires_at")
+        if sub_expires:
+            package_setup_data["subscription_expires_at"] = sub_expires
+
+    # --- Assemble school payload ---
+    school_payload: dict = {
+        "name": _s("name"),
+        "branches": [branch],
+    }
+
+    for field in ("slug", "code", "address", "website", "motto", "registration_id"):
+        val = _s(field)
+        if val:
+            school_payload[field] = val
+
+    # Choice fields: only include if non-empty so model defaults apply when blank
+    for field in ("ownership_type", "term_structure", "currency"):
+        val = _s(field)
+        if val:
+            school_payload[field] = val
+
+    if primary_admin_data:
+        school_payload["primary_admin_data"] = primary_admin_data
+
+    if package_setup_data:
+        school_payload["package_setup_data"] = package_setup_data
+
+    # SchoolCreateSerializer accesses context["request"].user as the acting user.
+    # SimpleNamespace gives us a minimal stand-in without importing django.test.
     context = {
-        "request": None,
-        "actor": queued_by,
-        "school": import_batch.school,
-        "import_batch": import_batch,
+        "request": SimpleNamespace(user=queued_by),
+        "actor_id": queued_by,
     }
 
     return run_create_serializer(
-        # serializer_class=StudentCreateSerializer,
-        payload=serializer_payload,
+        serializer_class=SchoolCreateSerializer,
+        payload=school_payload,
         context=context,
-        target_model="Student",
+        target_model="School",
     )
-
-
-# =========================================================
-# Staff import using create serializer
-# =========================================================
-def import_staff_row(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
-    """
-    Import one staff row using the Staff create serializer.
-    """
-
-    serializer_payload = {
-        **payload,
-        "school": import_batch.school.pk,
-    }
-
-    context = {
-        "request": None,
-        "actor": queued_by,
-        "school": import_batch.school,
-        "import_batch": import_batch,
-    }
-
-    return run_create_serializer(
-        # serializer_class=StaffCreateSerializer,
-        payload=serializer_payload,
-        context=context,
-        target_model="Staff",
-    )
-
-
-# =========================================================
-# Placeholder handlers for datasets not yet connected
-# =========================================================
-def import_classes_row(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
-    raise NotImplementedError("Class import serializer is not connected yet.")
-
-
-def import_fees_row(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
-    raise NotImplementedError("Fee import serializer is not connected yet.")
 
 
 # =========================================================

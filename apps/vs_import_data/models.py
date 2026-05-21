@@ -46,14 +46,6 @@ class FileFormatChoices(models.TextChoices):
 
 class DatasetTypeChoices(models.TextChoices):
     SCHOOLS = "schools", "Schools"
-    BRANCHES = "branches", "Branches"
-    STUDENTS = "students", "Students"
-    STAFF = "staff", "Staff"
-    CLASSES = "classes", "Classes / Structure"
-    FEES = "fees", "Fees"
-    VENDORS = "vendors", "Vendors"
-    HISTORICAL = "historical", "Historical Data"
-    GENERIC = "generic", "Generic / Unknown"
 
 
 class ImportBatchStatusChoices(models.TextChoices):

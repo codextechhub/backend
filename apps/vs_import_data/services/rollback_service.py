@@ -13,13 +13,20 @@ from .audit_service import create_import_audit_log
 
 def reverse_target_record(row_result):
     """
-    Replace this with your real rollback logic.
-
-    Example:
-    - delete created student
-    - undo updated staff record
+    Reverse one imported row. For schools: delete the School record that was created.
+    The cascade takes care of branches, admins, and package setup.
     """
-    return True
+    from vs_schools.models import School
+
+    pk = row_result.target_object_pk
+    if not pk:
+        return True
+
+    try:
+        School.objects.filter(slug=pk).delete()
+        return True
+    except Exception:
+        return False
 
 
 @transaction.atomic

@@ -134,42 +134,10 @@ def _validate_template_uniqueness_rules(import_batch) -> list[dict]:
 
 def _validate_dataset_specific_rules(import_batch) -> list[dict]:
     """
-    Optional place for dataset-specific business rules that go beyond
-    simple column-level validation.
-
-    Examples:
-    - fees.amount must be > 0
-    - class session must exist
-    - staff role must be compatible with department
+    Dataset-specific business rules beyond column-level validation.
+    Schools: all validation is handled by SchoolCreateSerializer at execution time.
     """
-    issues = []
-
-    dataset_type = getattr(import_batch.template, "dataset_type", None)
-    rows = import_batch.preview_rows or []
-
-    if dataset_type == "fees":
-        for row_number, row_data in enumerate(rows, start=1):
-            amount = row_data.get("amount")
-
-            if amount not in [None, ""]:
-                try:
-                    numeric_amount = float(str(amount))
-                    if numeric_amount <= 0:
-                        issues.append(
-                            {
-                                "severity": "error",
-                                "code": "business_rule",
-                                "message": "'amount' must be greater than 0.",
-                                "row_number": row_number,
-                                "column_name": "amount",
-                                "raw_value": amount,
-                            }
-                        )
-                except (ValueError, TypeError):
-                    # Type-format problems should already be caught elsewhere.
-                    pass
-
-    return issues
+    return []
 
 
 def _validate_cross_references(import_batch) -> list[dict]:
