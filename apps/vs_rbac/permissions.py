@@ -199,6 +199,18 @@ class HasRBACPermission(BasePermission):
 
 
 
+class IsBranchAdmin(BasePermission):
+    """
+    Grants access only to users with user_type == BRANCH_ADMIN.
+    """
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u or not u.is_authenticated:
+            return False
+        return getattr(u, "user_type", "") == "BRANCH_ADMIN"
+
+
 class ReadOnly(BasePermission):
     def has_permission(self, request, view):
         return request.method in SAFE_METHODS
