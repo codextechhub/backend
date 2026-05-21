@@ -27,12 +27,12 @@ urlpatterns = [
     # Import Batches
     # =========================================================
     path(
-        "schools/<int:school_id>/imports/batches/",
+        "batches/",
         views.ImportBatchListCreateView.as_view(),
         name="import-batch-list-create",
     ),
     path(
-        "schools/<int:school_id>/imports/batches/<int:batch_id>/",
+        "batches/<int:batch_id>/",
         views.ImportBatchDetailView.as_view(),
         name="import-batch-detail",
     ),
@@ -41,22 +41,22 @@ urlpatterns = [
     # Validation
     # =========================================================
     path(
-        "schools/<int:school_id>/imports/batches/<int:batch_id>/validate/",
+        "batches/<int:batch_id>/validate/",
         views.ValidateImportBatchView.as_view(),
         name="import-batch-validate",
     ),
     path(
-        "schools/<int:school_id>/imports/batches/<int:batch_id>/issues/",
+        "batches/<int:batch_id>/issues/",
         views.ImportValidationIssueListView.as_view(),
         name="import-validation-issue-list",
     ),
     path(
-        "schools/<int:school_id>/imports/batches/<int:batch_id>/issues/<int:issue_id>/",
+        "batches/<int:batch_id>/issues/<int:issue_id>/",
         views.ImportValidationIssueDetailView.as_view(),
         name="import-validation-issue-detail",
     ),
     path(
-        "schools/<int:school_id>/imports/batches/<int:batch_id>/issues/<int:issue_id>/resolve/",
+        "batches/<int:batch_id>/issues/<int:issue_id>/resolve/",
         views.ResolveImportValidationIssueView.as_view(),
         name="import-validation-issue-resolve",
     ),
@@ -65,12 +65,12 @@ urlpatterns = [
     # Row Corrections
     # =========================================================
     path(
-        "schools/<int:school_id>/imports/batches/<int:batch_id>/corrections/",
+        "batches/<int:batch_id>/corrections/",
         views.ImportRowCorrectionListCreateView.as_view(),
         name="import-row-correction-list-create",
     ),
     path(
-        "schools/<int:school_id>/imports/batches/<int:batch_id>/revalidate/",
+        "batches/<int:batch_id>/revalidate/",
         views.RevalidateAfterCorrectionView.as_view(),
         name="import-batch-revalidate",
     ),
@@ -79,27 +79,27 @@ urlpatterns = [
     # Import Jobs
     # =========================================================
     path(
-        "schools/<int:school_id>/imports/batches/<int:batch_id>/start-import/",
+        "batches/<int:batch_id>/start-import/",
         views.StartImportBatchView.as_view(),
         name="import-batch-start",
     ),
     path(
-        "schools/<int:school_id>/imports/batches/<int:batch_id>/jobs/",
+        "batches/<int:batch_id>/jobs/",
         views.ImportJobListView.as_view(),
         name="import-job-list",
     ),
     path(
-        "schools/<int:school_id>/imports/batches/<int:batch_id>/jobs/<int:job_id>/",
+        "batches/<int:batch_id>/jobs/<int:job_id>/",
         views.ImportJobDetailView.as_view(),
         name="import-job-detail",
     ),
     path(
-        "schools/<int:school_id>/imports/batches/<int:batch_id>/jobs/<int:job_id>/rollback/",
+        "batches/<int:batch_id>/jobs/<int:job_id>/rollback/",
         views.RollbackImportJobView.as_view(),
         name="import-job-rollback",
     ),
     path(
-        "schools/<int:school_id>/imports/batches/<int:batch_id>/jobs/<int:job_id>/rollbacks/",
+        "batches/<int:batch_id>/jobs/<int:job_id>/rollbacks/",
         views.ImportRollbackRecordListView.as_view(),
         name="import-rollback-record-list",
     ),
@@ -108,12 +108,12 @@ urlpatterns = [
     # Audit / Notifications
     # =========================================================
     path(
-        "schools/<int:school_id>/imports/batches/<int:batch_id>/audit-logs/",
+        "batches/<int:batch_id>/audit-logs/",
         views.ImportAuditLogListView.as_view(),
         name="import-audit-log-list",
     ),
     path(
-        "schools/<int:school_id>/imports/batches/<int:batch_id>/notifications/",
+        "batches/<int:batch_id>/notifications/",
         views.ImportNotificationListView.as_view(),
         name="import-notification-list",
     ),

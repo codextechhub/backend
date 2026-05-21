@@ -61,7 +61,9 @@
       "Bash(python3 -c \"import sys; print\\(sys.executable\\)\")",
       "Bash(/Users/mac/Documents/Dev-Projects/GitHub/backend/cx/bin/python -c \"import docx; print\\('ok'\\)\")",
       "Bash(/Users/mac/anaconda3/bin/python -c \"import docx; print\\('ok'\\)\")",
-      "Bash(/Users/mac/anaconda3/bin/pip install *)"
+      "Bash(/Users/mac/anaconda3/bin/pip install *)",
+      "Bash(pip show *)",
+      "Bash(python3 *)"
     ]
   }
 }

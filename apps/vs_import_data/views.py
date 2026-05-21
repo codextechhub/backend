@@ -64,20 +64,20 @@ from .services.validation_service import validate_import_batch
 # =========================================================
 class SchoolContextMixin:
     """
-    Gets school from URL and exposes it to serializers/views.
-    URL must include: school_id
+    Resolves the school for the current request without requiring school_id in the URL.
+
+    - Non-CX_STAFF: school is always the user's own school.
+    - CX_STAFF: school is read from the optional ?school_id= query param (None = all schools).
     """
-    school_lookup_url_kwarg = "school_id"
 
     def get_school(self):
-        from rest_framework.exceptions import PermissionDenied
-        school_id = self.kwargs[self.school_lookup_url_kwarg]
-        school = get_object_or_404(School, id=school_id)
         user = self.request.user
-        if getattr(user, 'user_type', None) != User.UserType.CX_STAFF:
-            if not user.school_id or str(user.school_id) != str(school_id):
-                raise PermissionDenied("You do not have access to this school.")
-        return school
+        if getattr(user, "user_type", None) == User.UserType.CX_STAFF:
+            school_id = self.request.query_params.get("school_id")
+            if school_id:
+                return get_object_or_404(School, id=school_id)
+            return None
+        return get_object_or_404(School, id=user.school_id)
 
     def get_serializer_context(self):
         context = super().get_serializer_context()
@@ -93,6 +93,10 @@ class ImportBatchContextMixin(SchoolContextMixin):
     batch_lookup_url_kwarg = "batch_id"
 
     def get_import_batch(self):
+        filters = {"id": self.kwargs[self.batch_lookup_url_kwarg]}
+        school = self.get_school()
+        if school is not None:
+            filters["school"] = school
         return get_object_or_404(
             ImportBatch.objects.select_related(
                 "school",
@@ -101,8 +105,7 @@ class ImportBatchContextMixin(SchoolContextMixin):
             ).prefetch_related(
                 "template__columns",
             ),
-            id=self.kwargs[self.batch_lookup_url_kwarg],
-            school=self.get_school(),
+            **filters,
         )
 
     def get_serializer_context(self):
@@ -233,7 +236,7 @@ class SystemImportTemplateDownloadView(APIView):
         template = get_object_or_404(qs, id=template_id)
 
         requested_format = request.query_params.get("file_format", template.default_file_format)
-        filename_base = f"{template.dataset_type}_template"
+        filename_base = f"{template.code}_template"
 
         if requested_format == FileFormatChoices.CSV:
             content = generate_template_csv(template)
@@ -269,11 +272,10 @@ class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.L
         return super().get_permissions()
 
     def get_queryset(self):
-        queryset = (
-            ImportBatch.objects.filter(school=self.get_school())
-            .select_related("school", "uploaded_by", "template")
-            .order_by("-created_at")
-        )
+        school = self.get_school()
+        queryset = ImportBatch.objects.select_related("school", "uploaded_by", "template").order_by("-created_at")
+        if school is not None:
+            queryset = queryset.filter(school=school)
 
         status_param = self.request.query_params.get("status")
         if status_param:
@@ -324,16 +326,16 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
         return super().get_permissions()
 
     def get_queryset(self):
-        return (
-            ImportBatch.objects.filter(school=self.get_school())
-            .select_related("school", "uploaded_by", "template")
-            .prefetch_related(
-                "template__columns",
-                "validation_issues",
-                "row_corrections",
-                "notifications",
-            )
+        school = self.get_school()
+        qs = ImportBatch.objects.select_related("school", "uploaded_by", "template").prefetch_related(
+            "template__columns",
+            "validation_issues",
+            "row_corrections",
+            "notifications",
         )
+        if school is not None:
+            qs = qs.filter(school=school)
+        return qs
 
     def get_object(self):
         self._cached_import_batch = super().get_object()
