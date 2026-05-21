@@ -678,7 +678,7 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
     - template_version is copied automatically
     """
     file = serializers.FileField(write_only=True)
-    template_id = serializers.UUIDField(write_only=True)
+    template_id = serializers.IntegerField(write_only=True)
 
     class Meta:
         model = ImportBatch
