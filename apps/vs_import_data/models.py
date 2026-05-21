@@ -322,7 +322,7 @@ class ImportTemplate(TimeStampedModel):
                  column changes.
         status: Publication state (TemplateStatusChoices, default ACTIVE).
         default_file_format: Preferred format for generated download files
-                             (FileFormatChoices, default XLSX).
+                             (FileFormatChoices, default CSV).
         template_file: Optional pre-generated downloadable file stored at a
                        dataset-type/code-scoped path.
         instructions: Plain-language guidance displayed to admins before they
@@ -365,7 +365,7 @@ class ImportTemplate(TimeStampedModel):
     default_file_format = models.CharField(
         max_length=10,
         choices=FileFormatChoices.choices,
-        default=FileFormatChoices.XLSX,
+        default=FileFormatChoices.CSV,
     )
 
     instructions = models.TextField(
