@@ -10,9 +10,11 @@ from rest_framework.views import APIView
 from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, DestroyModelMixin
 from core.response import success_response, error_response
 
-from vs_rbac.permissions import IsAuthenticatedAndActive, IsBranchAdmin, IsSchoolAdmin, IsVisionStaff
+from vs_rbac.permissions import IsAuthenticatedAndActive, IsBranchAdmin, IsSchoolAdmin, IsVisionStaff, HasRBACPermission
 from vs_schools.models import School
 from vs_user.models import User
+
+from .constants import ImportPermission
 
 from .models import (
     ImportBatch,
@@ -140,7 +142,15 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
     GET  -> list available official system templates (all authenticated staff).
     POST -> create a new system template with columns (CX_STAFF only).
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+
+    def get_permissions(self):
+        self.rbac_permission = (
+            ImportPermission.TEMPLATE_CREATE
+            if self.request.method == "POST"
+            else ImportPermission.TEMPLATE_VIEW
+        )
+        return super().get_permissions()
 
     def get_serializer_class(self):
         if self.request.method == "POST":
@@ -150,7 +160,8 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
     def get_queryset(self):
         queryset = ImportTemplate.objects.prefetch_related("columns").order_by("dataset_type", "name")
 
-        if self.request.method == "GET":
+        is_cx_staff = getattr(self.request.user, "user_type", None) == User.UserType.CX_STAFF
+        if self.request.method == "GET" and not is_cx_staff:
             queryset = queryset.filter(
                 status=TemplateStatusChoices.ACTIVE,
                 is_download_enabled=True,
@@ -190,15 +201,17 @@ class SystemImportTemplateDetailView(RetrieveModelMixin, generics.RetrieveAPIVie
     """
     GET -> retrieve one official system template.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    rbac_permission = ImportPermission.TEMPLATE_VIEW
     serializer_class = ImportTemplateDetailSerializer
     lookup_url_kwarg = "template_id"
 
     def get_queryset(self):
-        return ImportTemplate.objects.filter(
-            status=TemplateStatusChoices.ACTIVE,
-            is_download_enabled=True,
-        ).prefetch_related("columns")
+        qs = ImportTemplate.objects.prefetch_related("columns")
+        is_cx_staff = getattr(self.request.user, "user_type", None) == User.UserType.CX_STAFF
+        if not is_cx_staff:
+            qs = qs.filter(status=TemplateStatusChoices.ACTIVE, is_download_enabled=True)
+        return qs
 
 
 class SystemImportTemplateDownloadView(APIView):
@@ -209,7 +222,8 @@ class SystemImportTemplateDownloadView(APIView):
         ?format=csv
         ?format=xlsx
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    rbac_permission = ImportPermission.TEMPLATE_VIEW
 
     def get(self, request, template_id):
         template = get_object_or_404(
@@ -245,7 +259,15 @@ class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.L
     GET  -> list import batches for an school
     POST -> upload a new import batch using a selected system template
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+
+    def get_permissions(self):
+        self.rbac_permission = (
+            ImportPermission.BATCH_CREATE
+            if self.request.method == "POST"
+            else ImportPermission.BATCH_VIEW
+        )
+        return super().get_permissions()
 
     def get_queryset(self):
         queryset = (
@@ -291,7 +313,16 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
     PATCH  -> update simple metadata only
     DELETE -> delete batch
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+
+    def get_permissions(self):
+        if self.request.method == "DELETE":
+            self.rbac_permission = ImportPermission.BATCH_DELETE
+        elif self.request.method in ("PATCH", "PUT"):
+            self.rbac_permission = ImportPermission.BATCH_UPDATE
+        else:
+            self.rbac_permission = ImportPermission.BATCH_VIEW
+        return super().get_permissions()
 
     def get_queryset(self):
         return (
@@ -353,7 +384,8 @@ class ValidateImportBatchView(ImportBatchContextMixin, APIView):
     """
     POST -> validate an import batch against its selected template.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    rbac_permission = ImportPermission.BATCH_VALIDATE
 
     def post(self, request, **_kwargs):
         import_batch = self.get_import_batch()
@@ -388,7 +420,8 @@ class ImportValidationIssueListView(ImportBatchContextMixin, generics.ListAPIVie
         ?severity=error
         ?is_resolved=true
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    rbac_permission = ImportPermission.VALIDATION_VIEW
     serializer_class = ImportValidationIssueListSerializer
 
     def get_queryset(self):
@@ -415,7 +448,8 @@ class ImportValidationIssueDetailView(RetrieveModelMixin, ImportBatchContextMixi
     """
     GET -> retrieve one validation issue.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    rbac_permission = ImportPermission.VALIDATION_VIEW
     serializer_class = ImportValidationIssueDetailSerializer
     lookup_url_kwarg = "issue_id"
 
@@ -427,7 +461,8 @@ class ResolveImportValidationIssueView(UpdateModelMixin, ImportBatchContextMixin
     """
     PATCH -> mark a validation issue as resolved.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    rbac_permission = ImportPermission.VALIDATION_RESOLVE
     serializer_class = ImportValidationIssueResolveSerializer
     lookup_url_kwarg = "issue_id"
 
@@ -460,7 +495,15 @@ class ImportRowCorrectionListCreateView(CreateModelMixin, ImportBatchContextMixi
     GET  -> list row corrections
     POST -> create a row correction
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+
+    def get_permissions(self):
+        self.rbac_permission = (
+            ImportPermission.CORRECTION_CREATE
+            if self.request.method == "POST"
+            else ImportPermission.CORRECTION_VIEW
+        )
+        return super().get_permissions()
 
     def get_queryset(self):
         return (
@@ -500,7 +543,8 @@ class RevalidateAfterCorrectionView(ImportBatchContextMixin, APIView):
     """
     POST -> re-run validation after corrections.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    rbac_permission = ImportPermission.BATCH_VALIDATE
 
     def post(self, request, **_kwargs):
         import_batch = self.get_import_batch()
@@ -535,7 +579,8 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
     """
     POST -> start actual import execution.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    rbac_permission = ImportPermission.BATCH_IMPORT
 
     def post(self, request, **_kwargs):
         import_batch = self.get_import_batch()
@@ -569,7 +614,8 @@ class ImportJobListView(ImportBatchContextMixin, generics.ListAPIView):
     """
     GET -> list jobs for one batch.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    rbac_permission = ImportPermission.JOB_VIEW
     serializer_class = ImportJobListSerializer
 
     def get_queryset(self):
@@ -584,7 +630,8 @@ class ImportJobDetailView(RetrieveModelMixin, ImportJobContextMixin, generics.Re
     """
     GET -> retrieve one import job with row results.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    rbac_permission = ImportPermission.JOB_VIEW
     serializer_class = ImportJobDetailSerializer
     lookup_url_kwarg = "job_id"
 
@@ -600,7 +647,8 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
     """
     POST -> rollback an import job.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    rbac_permission = ImportPermission.ROLLBACK_RUN
 
     def post(self, request, **_kwargs):
         job = self.get_job()
@@ -630,7 +678,8 @@ class ImportRollbackRecordListView(ImportJobContextMixin, generics.ListAPIView):
     """
     GET -> list rollback history for one job.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    rbac_permission = ImportPermission.ROLLBACK_VIEW
     serializer_class = ImportRollbackRecordSerializer
 
     def get_queryset(self):
@@ -646,7 +695,8 @@ class ImportAuditLogListView(ImportBatchContextMixin, generics.ListAPIView):
     """
     GET -> list AuditEvents for one import batch, scoped by batch pk in metadata.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    rbac_permission = ImportPermission.AUDIT_VIEW
 
     def get_serializer_class(self):
         from vs_audit.serializers import AuditEventListSerializer
@@ -669,7 +719,8 @@ class ImportNotificationListView(ImportBatchContextMixin, generics.ListAPIView):
     """
     GET -> list notifications for one import batch.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin)]
+    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    rbac_permission = ImportPermission.NOTIFICATION_VIEW
     serializer_class = ImportNotificationSerializer
 
     def get_queryset(self):

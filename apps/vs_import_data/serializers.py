@@ -5,6 +5,9 @@ import re
 
 from django.utils import timezone
 from rest_framework import serializers
+from vs_rbac.fls import FieldSecurityMixin
+
+from .constants import ImportPermission
 
 from .models import (
     FileFormatChoices,
@@ -121,11 +124,15 @@ class ImportTemplateListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class ImportTemplateDetailSerializer(serializers.ModelSerializer):
+class ImportTemplateDetailSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     """
     Full template detail serializer.
     Includes all column definitions.
     """
+    read_permissions = {
+        "validation_rules": ImportPermission.TEMPLATE_MANAGE,
+    }
+
     columns = ImportTemplateColumnDetailSerializer(many=True, read_only=True)
 
     class Meta:
@@ -374,10 +381,15 @@ class ImportRowCorrectionCreateSerializer(serializers.ModelSerializer):
 # =========================================================
 # Import Job Row Result Serializers
 # =========================================================
-class ImportJobRowResultSerializer(serializers.ModelSerializer):
+class ImportJobRowResultSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     """
     Shows one processed row result from an import job.
     """
+    read_permissions = {
+        "row_payload": ImportPermission.JOB_VIEW,
+        "normalized_payload": ImportPermission.JOB_VIEW,
+        "error_details": ImportPermission.JOB_VIEW,
+    }
 
     class Meta:
         model = ImportJobRowResult
@@ -426,10 +438,16 @@ class ImportJobListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class ImportJobDetailSerializer(serializers.ModelSerializer):
+class ImportJobDetailSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     """
     Full serializer for one import job.
     """
+    read_permissions = {
+        "execution_summary": ImportPermission.JOB_VIEW,
+        "last_error_code": ImportPermission.JOB_VIEW,
+        "last_error_message": ImportPermission.JOB_VIEW,
+    }
+
     queued_by = serializers.SerializerMethodField()
     row_results = ImportJobRowResultSerializer(many=True, read_only=True)
 
@@ -580,10 +598,15 @@ class ImportBatchListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class ImportBatchDetailSerializer(serializers.ModelSerializer):
+class ImportBatchDetailSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     """
     Full serializer for one import batch.
     """
+    read_permissions = {
+        "file": ImportPermission.BATCH_VIEW,
+        "preview_rows": ImportPermission.BATCH_VIEW,
+    }
+
     school = serializers.SerializerMethodField()
     branch = serializers.SerializerMethodField()
     uploaded_by = serializers.SerializerMethodField()
