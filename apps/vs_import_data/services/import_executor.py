@@ -241,7 +241,7 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
 def start_import_job(import_batch, queued_by):
     total_rows = import_batch.total_rows or len(import_batch.preview_rows or [])
 
-    job, _created = ImportJob.objects.get_or_create(
+    job, _ = ImportJob.objects.get_or_create(
         import_batch=import_batch,
         defaults={
             "queued_by": queued_by,
@@ -388,6 +388,7 @@ def execute_import(import_batch, queued_by):
                 )
 
                 create_import_audit_log(
+                    school=import_batch.school,
                     branch=import_batch.branch,
                     actor=queued_by,
                     import_batch=import_batch,

@@ -525,6 +525,7 @@ class ImportBatchDetailSerializer(serializers.ModelSerializer):
     Full serializer for one import batch.
     """
     school = serializers.SerializerMethodField()
+    branch = serializers.SerializerMethodField()
     uploaded_by = serializers.SerializerMethodField()
     template = ImportTemplateDetailSerializer(read_only=True)
 
@@ -540,6 +541,7 @@ class ImportBatchDetailSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "school",
+            "branch",
             "uploaded_by",
             "template",
             "template_version",
@@ -578,10 +580,22 @@ class ImportBatchDetailSerializer(serializers.ModelSerializer):
 
     def get_school(self, obj):
         school = obj.school
+        if not school:
+            return None
         return {
             "id": str(school.id),
             "name": getattr(school, "name", ""),
             "slug": getattr(school, "slug", ""),
+        }
+
+    def get_branch(self, obj):
+        branch = obj.branch
+        if not branch:
+            return None
+        return {
+            "id": str(branch.id),
+            "name": getattr(branch, "name", ""),
+            "slug": getattr(branch, "slug", ""),
         }
 
     def get_uploaded_by(self, obj):
@@ -690,7 +704,8 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
         except ValueError as exc:
             raise serializers.ValidationError({"file": str(exc)})
 
-        validated_data["school"] = self.context["school"]
+        validated_data["school"] = self.context.get("school")
+        validated_data["branch"] = self.context.get("branch")
         validated_data["uploaded_by"] = self.context["request"].user
         validated_data["template"] = template
         validated_data["template_version"] = template.version

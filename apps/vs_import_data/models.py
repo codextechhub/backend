@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import os
-import uuid
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from vs_schools.models import Branch
+from vs_schools.models import Branch, School
 
 
 # =========================================================
@@ -137,9 +136,14 @@ class TemplateColumnDataTypeChoices(models.TextChoices):
 # =========================================================
 def import_file_upload_to(instance: "ImportBatch", filename: str) -> str:
     ext = os.path.splitext(filename)[1].lower()
-    branch_code = getattr(instance.branch, "code", "branch")
+    if instance.school_id:
+        scope = getattr(instance.school, "slug", "school")
+    elif instance.branch_id:
+        scope = f"branch_{getattr(instance.branch, 'slug', instance.branch_id)}"
+    else:
+        scope = "internal"
     return (
-        f"imports/{branch_code}/{instance.dataset_type or 'unknown'}/"
+        f"imports/{scope}/{instance.dataset_type or 'unknown'}/"
         f"{instance.id}{ext}"
     )
 
@@ -158,12 +162,14 @@ class ImportBatch(TimeStampedModel):
     of that lifecycle is reflected on this record, making it the central tracking
     object for Module 9.
 
-    One batch belongs to exactly one branch and one uploader. It may optionally be
-    linked to a system ImportTemplate. The file is stored using a branch-scoped,
-    dataset-type-scoped path via `import_file_upload_to`.
+    A batch may be scoped to a School, a Branch, or neither (internal system use).
+    Exactly one of school/branch may be set, or both may be null. It may optionally be
+    linked to a system ImportTemplate. The file is stored using a scope-derived path
+    via `import_file_upload_to`.
 
     Fields:
-        branch: FK to Branch; scopes this batch to a specific school branch.
+        school: Optional FK to School; set when the import is school-scoped.
+        branch: Optional FK to Branch; set when the import is branch-scoped.
         uploaded_by: FK to the user who performed the upload (PROTECT on delete).
         template: Optional FK to ImportTemplate; the official system template selected
                   for this batch. Null when no template is explicitly chosen.
@@ -192,16 +198,24 @@ class ImportBatch(TimeStampedModel):
 
     Meta:
         - ordering newest-first by created_at.
-        - indexes on (branch, status), (branch, dataset_type), and created_at
+        - indexes on (school, status), (school, dataset_type), and created_at
           to serve dashboard and filter queries efficiently.
     """
 
-    id = models.AutoField(primary_key=True, editable=False)
+    school = models.ForeignKey(
+        School,
+        on_delete=models.CASCADE,
+        related_name="import_batches",
+        null=True,
+        blank=True,
+    )
 
     branch = models.ForeignKey(
         Branch,
         on_delete=models.CASCADE,
         related_name="import_batches",
+        null=True,
+        blank=True,
     )
 
     uploaded_by = models.ForeignKey(
@@ -264,13 +278,15 @@ class ImportBatch(TimeStampedModel):
     class Meta:
         ordering = ["-created_at"]
         indexes = [
+            models.Index(fields=["school", "status"]),
+            models.Index(fields=["school", "dataset_type"]),
             models.Index(fields=["branch", "status"]),
-            models.Index(fields=["branch", "dataset_type"]),
             models.Index(fields=["created_at"]),
         ]
 
     def __str__(self) -> str:
-        return f"{self.branch} - {self.dataset_type} - {self.original_filename}"
+        scope = self.school or self.branch or "internal"
+        return f"{scope} - {self.dataset_type} - {self.original_filename}"
 
     def clean(self):
         allowed = {FileFormatChoices.CSV, FileFormatChoices.XLSX, FileFormatChoices.XLS}
@@ -327,8 +343,6 @@ class ImportTemplate(TimeStampedModel):
         - indexes on (dataset_type, status) for active-template lookups and on code
           for direct programmatic access.
     """
-
-    id = models.AutoField(primary_key=True, editable=False)
 
     code = models.CharField(
         max_length=100,
@@ -443,8 +457,6 @@ class ImportTemplateColumn(TimeStampedModel):
         - indexes on (template, column_order) and (template, is_required) to
           support ordered rendering and required-column filtering.
     """
-
-    id = models.AutoField(primary_key=True, editable=False)
 
     template = models.ForeignKey(
         ImportTemplate,
@@ -567,8 +579,6 @@ class ImportValidationIssue(TimeStampedModel):
           (import_batch, row_number) for issue filtering and export queries.
     """
 
-    id = models.AutoField(primary_key=True, editable=False)
-
     import_batch = models.ForeignKey(
         ImportBatch,
         on_delete=models.CASCADE,
@@ -644,8 +654,6 @@ class ImportRowCorrection(TimeStampedModel):
         - index on (import_batch, row_number) for quick per-batch row lookup.
     """
 
-    id = models.AutoField(primary_key=True, editable=False)
-
     import_batch = models.ForeignKey(
         ImportBatch,
         on_delete=models.CASCADE,
@@ -717,14 +725,6 @@ class ImportJob(TimeStampedModel):
         - ordering newest-first by created_at.
         - indexes on status and started_at for dashboard and monitoring queries.
     """
-
-    id = models.AutoField(primary_key=True, editable=False)
-    
-    branch = models.ForeignKey(
-        Branch,
-        on_delete=models.CASCADE,
-        related_name="import_jobs",
-    )
 
     import_batch = models.OneToOneField(
         ImportBatch,
@@ -822,8 +822,6 @@ class ImportJobRowResult(TimeStampedModel):
           per-row lookup.
     """
 
-    id = models.AutoField(primary_key=True, editable=False)
-
     job = models.ForeignKey(
         ImportJob,
         on_delete=models.CASCADE,
@@ -881,8 +879,6 @@ class ImportRollbackRecord(TimeStampedModel):
     Meta:
         - ordering newest-first by started_at.
     """
-
-    id = models.AutoField(primary_key=True, editable=False)
 
     job = models.ForeignKey(
         ImportJob,
@@ -944,8 +940,6 @@ class ImportNotification(TimeStampedModel):
         - indexes on (recipient, status) for per-user inbox queries and on event_type
           for system-level delivery monitoring.
     """
-
-    id = models.AutoField(primary_key=True, editable=False)
 
     import_batch = models.ForeignKey(
         ImportBatch,

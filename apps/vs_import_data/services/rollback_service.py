@@ -76,6 +76,7 @@ def rollback_import_job(job, initiated_by=None, reason: str = ""):
     import_batch.save(update_fields=["status", "updated_at"])
 
     create_import_audit_log(
+        school=import_batch.school,
         branch=import_batch.branch,
         actor=initiated_by,
         import_batch=import_batch,
