@@ -219,21 +219,20 @@ class SystemImportTemplateDownloadView(APIView):
     GET -> download a template file as CSV or XLSX.
 
     Query param:
-        ?format=csv
-        ?format=xlsx
+        ?file_format=csv
+        ?file_format=xlsx
     """
     permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
     rbac_permission = ImportPermission.TEMPLATE_VIEW
 
     def get(self, request, template_id):
-        template = get_object_or_404(
-            ImportTemplate.objects.prefetch_related("columns"),
-            id=template_id,
-            status=TemplateStatusChoices.ACTIVE,
-            is_download_enabled=True,
-        )
+        qs = ImportTemplate.objects.prefetch_related("columns")
+        is_cx_staff = getattr(request.user, "user_type", None) == User.UserType.CX_STAFF
+        if not is_cx_staff:
+            qs = qs.filter(status=TemplateStatusChoices.ACTIVE, is_download_enabled=True)
+        template = get_object_or_404(qs, id=template_id)
 
-        requested_format = request.query_params.get("format", template.default_file_format)
+        requested_format = request.query_params.get("file_format", template.default_file_format)
         filename_base = f"{template.code}_v{template.version}"
 
         if requested_format == FileFormatChoices.CSV:
