@@ -16,7 +16,7 @@ def generate_template_xlsx(template: ImportTemplate) -> bytes:
 
     # Main data sheet
     ws = wb.active
-    ws.title = "Import Template"
+    ws.title = template.dataset_type[:31]  # Excel sheet name limit
 
     columns = list(template.columns.order_by("column_order"))
 

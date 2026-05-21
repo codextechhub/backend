@@ -233,7 +233,7 @@ class SystemImportTemplateDownloadView(APIView):
         template = get_object_or_404(qs, id=template_id)
 
         requested_format = request.query_params.get("file_format", template.default_file_format)
-        filename_base = f"{template.code}_v{template.version}"
+        filename_base = f"{template.code}_template"
 
         if requested_format == FileFormatChoices.CSV:
             content = generate_template_csv(template)
