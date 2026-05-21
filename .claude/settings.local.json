@@ -55,7 +55,13 @@
       "Read(//Users/mac/Documents/Dev-Projects/GitHub//**)",
       "Read(//Users/mac/Documents/Dev-Projects//**)",
       "Bash(npx tsc *)",
-      "WebFetch(domain:status.claude.com)"
+      "WebFetch(domain:status.claude.com)",
+      "Bash(python3 -c \"import docx; print\\('ok'\\)\")",
+      "Bash(pip3 install *)",
+      "Bash(python3 -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(/Users/mac/Documents/Dev-Projects/GitHub/backend/cx/bin/python -c \"import docx; print\\('ok'\\)\")",
+      "Bash(/Users/mac/anaconda3/bin/python -c \"import docx; print\\('ok'\\)\")",
+      "Bash(/Users/mac/anaconda3/bin/pip install *)"
     ]
   }
 }
