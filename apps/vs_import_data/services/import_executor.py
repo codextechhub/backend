@@ -515,3 +515,28 @@ def finalize_import_job(
             "updated_at",
         ]
     )
+
+    audit_action = "import_failed" if (failed_rows > 0 and succeeded_rows == 0) else "import_completed"
+    create_import_audit_log(
+        school=import_batch.school,
+        branch=import_batch.branch,
+        actor=job.queued_by,
+        import_batch=import_batch,
+        job=job,
+        action=audit_action,
+        entity_type="ImportJob",
+        entity_id=str(job.id),
+        before_data={"status": ImportJobStatusChoices.RUNNING},
+        after_data={"status": job.status},
+        message=(
+            f"Import job completed. {succeeded_rows}/{processed_rows} rows succeeded."
+            if audit_action == "import_completed"
+            else f"Import job failed. {failed_rows}/{processed_rows} rows failed."
+        ),
+        metadata={
+            "processed_rows": processed_rows,
+            "succeeded_rows": succeeded_rows,
+            "failed_rows": failed_rows,
+            "skipped_rows": skipped_rows,
+        },
+    )

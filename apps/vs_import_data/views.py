@@ -46,6 +46,7 @@ from .serializers import (
     StartImportSerializer,
     ValidateImportBatchSerializer,
 )
+from .services.audit_service import create_import_audit_log
 from .services.import_executor import execute_import
 from .services.rollback_service import rollback_import_job
 from .services.template_file import (
@@ -190,6 +191,14 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         template = serializer.save()
+        create_import_audit_log(
+            action="template_created",
+            actor=request.user,
+            entity_type="ImportTemplate",
+            entity_id=str(template.id),
+            after_data={"code": template.code, "name": template.name, "dataset_type": template.dataset_type},
+            message=f"Import template '{template.name}' created.",
+        )
         out = ImportTemplateDetailSerializer(template, context=self.get_serializer_context())
         return Response(
             {"status": "success", "message": "Template created.", "data": out.data},
@@ -280,6 +289,21 @@ class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.L
             return ImportBatchUploadSerializer
         return ImportBatchListSerializer
 
+    def perform_create(self, serializer):
+        serializer.save()
+        instance = serializer.instance
+        create_import_audit_log(
+            school=instance.school,
+            branch=instance.branch,
+            action="batch_uploaded",
+            actor=self.request.user,
+            import_batch=instance,
+            entity_type="ImportBatch",
+            entity_id=str(instance.id),
+            after_data={"original_filename": instance.original_filename, "dataset_type": instance.dataset_type},
+            message=f"Import batch '{instance.original_filename}' uploaded.",
+        )
+
 
 class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, ImportBatchContextMixin, generics.RetrieveUpdateDestroyAPIView):
     """
@@ -310,6 +334,37 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
             return ImportBatchUpdateSerializer
         return ImportBatchDetailSerializer
 
+    def perform_update(self, serializer):
+        before = {f: getattr(serializer.instance, f, None) for f in serializer.validated_data}
+        serializer.save()
+        instance = serializer.instance
+        create_import_audit_log(
+            school=instance.school,
+            branch=instance.branch,
+            action="batch_updated",
+            actor=self.request.user,
+            import_batch=instance,
+            entity_type="ImportBatch",
+            entity_id=str(instance.id),
+            before_data=before,
+            after_data=dict(serializer.validated_data),
+            message="Import batch metadata updated.",
+        )
+
+    def perform_destroy(self, instance):
+        create_import_audit_log(
+            school=instance.school,
+            branch=instance.branch,
+            action="batch_deleted",
+            actor=self.request.user,
+            import_batch=instance,
+            entity_type="ImportBatch",
+            entity_id=str(instance.id),
+            before_data={"original_filename": instance.original_filename, "status": instance.status},
+            message=f"Import batch '{instance.original_filename}' deleted.",
+        )
+        instance.delete()
+
 
 # =========================================================
 # Validation Views
@@ -320,13 +375,25 @@ class ValidateImportBatchView(ImportBatchContextMixin, APIView):
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, school_id, batch_id):
+    def post(self, request, **_kwargs):
         import_batch = self.get_import_batch()
 
         serializer = ValidateImportBatchSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         result = validate_import_batch(import_batch)
+
+        create_import_audit_log(
+            school=import_batch.school,
+            branch=import_batch.branch,
+            action="batch_validated",
+            actor=request.user,
+            import_batch=import_batch,
+            entity_type="ImportBatch",
+            entity_id=str(import_batch.id),
+            after_data=result["summary"],
+            message="Import batch validation completed.",
+        )
 
         return success_response(
             message="Validation completed successfully.",
@@ -387,6 +454,23 @@ class ResolveImportValidationIssueView(UpdateModelMixin, ImportBatchContextMixin
     def get_queryset(self):
         return ImportValidationIssue.objects.filter(import_batch=self.get_import_batch())
 
+    def perform_update(self, serializer):
+        serializer.save()
+        issue = serializer.instance
+        import_batch = issue.import_batch
+        create_import_audit_log(
+            school=import_batch.school,
+            branch=import_batch.branch,
+            action="issue_resolved",
+            actor=self.request.user,
+            import_batch=import_batch,
+            entity_type="ImportValidationIssue",
+            entity_id=str(issue.id),
+            before_data={"is_resolved": False},
+            after_data={"is_resolved": True},
+            message=f"Validation issue '{issue.code}' marked as resolved.",
+        )
+
 
 # =========================================================
 # Row Correction Views
@@ -410,6 +494,27 @@ class ImportRowCorrectionListCreateView(CreateModelMixin, ImportBatchContextMixi
             return ImportRowCorrectionCreateSerializer
         return ImportRowCorrectionSerializer
 
+    def perform_create(self, serializer):
+        serializer.save()
+        correction = serializer.instance
+        import_batch = correction.import_batch
+        create_import_audit_log(
+            school=import_batch.school,
+            branch=import_batch.branch,
+            action="row_correction_created",
+            actor=self.request.user,
+            import_batch=import_batch,
+            entity_type="ImportRowCorrection",
+            entity_id=str(correction.id),
+            after_data={
+                "row_number": correction.row_number,
+                "column_name": correction.column_name,
+                "old_value": correction.old_value,
+                "new_value": correction.new_value,
+            },
+            message=f"Row correction applied to row {correction.row_number}, column '{correction.column_name}'.",
+        )
+
 
 class RevalidateAfterCorrectionView(ImportBatchContextMixin, APIView):
     """
@@ -417,13 +522,25 @@ class RevalidateAfterCorrectionView(ImportBatchContextMixin, APIView):
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, school_id, batch_id):
+    def post(self, request, **_kwargs):
         import_batch = self.get_import_batch()
 
         serializer = RevalidateAfterCorrectionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
         result = validate_import_batch(import_batch)
+
+        create_import_audit_log(
+            school=import_batch.school,
+            branch=import_batch.branch,
+            action="batch_revalidated",
+            actor=request.user,
+            import_batch=import_batch,
+            entity_type="ImportBatch",
+            entity_id=str(import_batch.id),
+            after_data=result["summary"],
+            message="Import batch revalidated after corrections.",
+        )
 
         return success_response(
             message="Revalidation completed successfully.",
@@ -440,7 +557,7 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, school_id, batch_id):
+    def post(self, request, **_kwargs):
         import_batch = self.get_import_batch()
 
         serializer = StartImportSerializer(
@@ -448,6 +565,17 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
             context={"import_batch": import_batch},
         )
         serializer.is_valid(raise_exception=True)
+
+        create_import_audit_log(
+            school=import_batch.school,
+            branch=import_batch.branch,
+            action="import_triggered",
+            actor=request.user,
+            import_batch=import_batch,
+            entity_type="ImportBatch",
+            entity_id=str(import_batch.id),
+            message="Import execution triggered.",
+        )
 
         job = execute_import(import_batch=import_batch, queued_by=request.user)
 
@@ -494,7 +622,7 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
     """
     permission_classes = [IsAuthenticatedStaff]
 
-    def post(self, request, school_id, batch_id, job_id):
+    def post(self, request, **_kwargs):
         job = self.get_job()
 
         serializer = RollbackImportSerializer(

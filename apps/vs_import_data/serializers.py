@@ -291,7 +291,7 @@ class ImportValidationIssueResolveSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("This action only supports setting is_resolved to true.")
         return value
 
-    def update(self, instance, validated_data):
+    def update(self, instance, _validated_data):
         instance.is_resolved = True
         instance.resolved_at = timezone.now()
         instance.resolved_by = self.context["request"].user
