@@ -154,6 +154,66 @@ class ImportTemplateDetailSerializer(serializers.ModelSerializer):
 
 
 # =========================================================
+# Import Template Write Serializers (create / update)
+# =========================================================
+class ImportTemplateColumnWriteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ImportTemplateColumn
+        fields = (
+            "column_name",
+            "target_field",
+            "display_name",
+            "help_text",
+            "data_type",
+            "is_required",
+            "is_unique",
+            "max_length",
+            "allowed_values",
+            "sample_value",
+            "default_value",
+            "column_order",
+            "reference_model",
+            "reference_lookup_field",
+        )
+
+
+class ImportTemplateCreateSerializer(serializers.ModelSerializer):
+    columns = ImportTemplateColumnWriteSerializer(many=True, required=False, default=list)
+
+    class Meta:
+        model = ImportTemplate
+        fields = (
+            "code",
+            "name",
+            "dataset_type",
+            "description",
+            "version",
+            "status",
+            "default_file_format",
+            "instructions",
+            "allow_sample_row",
+            "sample_row_data",
+            "validation_rules",
+            "is_download_enabled",
+            "columns",
+        )
+
+    def create(self, validated_data):
+        columns_data = validated_data.pop("columns", [])
+        validated_data["created_by"] = self.context["request"].user
+
+        template = ImportTemplate.objects.create(**validated_data)
+
+        if columns_data:
+            ImportTemplateColumn.objects.bulk_create([
+                ImportTemplateColumn(template=template, **col)
+                for col in columns_data
+            ])
+
+        return template
+
+
+# =========================================================
 # Import Validation Issue Serializers
 # =========================================================
 class ImportValidationIssueListSerializer(serializers.ModelSerializer):

@@ -4,6 +4,7 @@ from django.http import HttpResponse
 from django.shortcuts import get_object_or_404
 
 from rest_framework import generics, permissions, status
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, DestroyModelMixin
@@ -34,6 +35,7 @@ from .serializers import (
     ImportRollbackRecordSerializer,
     ImportRowCorrectionCreateSerializer,
     ImportRowCorrectionSerializer,
+    ImportTemplateCreateSerializer,
     ImportTemplateDetailSerializer,
     ImportTemplateListSerializer,
     ImportValidationIssueDetailSerializer,
@@ -152,24 +154,47 @@ class ImportJobContextMixin(ImportBatchContextMixin):
 # =========================================================
 # System Import Template Views
 # =========================================================
-class SystemImportTemplateListView(generics.ListAPIView):
+class SystemImportTemplateListView(generics.ListCreateAPIView):
     """
-    GET -> list available official system templates.
+    GET  -> list available official system templates (all authenticated staff).
+    POST -> create a new system template with columns (CX_STAFF only).
     """
     permission_classes = [IsAuthenticatedStaff]
-    serializer_class = ImportTemplateListSerializer
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return ImportTemplateCreateSerializer
+        return ImportTemplateListSerializer
 
     def get_queryset(self):
-        queryset = ImportTemplate.objects.filter(
-            status=TemplateStatusChoices.ACTIVE,
-            is_download_enabled=True,
-        ).prefetch_related("columns").order_by("dataset_type", "name")
+        queryset = ImportTemplate.objects.prefetch_related("columns").order_by("dataset_type", "name")
+
+        if self.request.method == "GET":
+            queryset = queryset.filter(
+                status=TemplateStatusChoices.ACTIVE,
+                is_download_enabled=True,
+            )
 
         dataset_type = self.request.query_params.get("dataset_type")
         if dataset_type:
             queryset = queryset.filter(dataset_type=dataset_type)
 
         return queryset
+
+    def check_permissions(self, request):
+        super().check_permissions(request)
+        if request.method == "POST" and getattr(request.user, "user_type", None) != User.UserType.CX_STAFF:
+            self.permission_denied(request, message="Only CX staff can create import templates.")
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        template = serializer.save()
+        out = ImportTemplateDetailSerializer(template, context=self.get_serializer_context())
+        return Response(
+            {"status": "success", "message": "Template created.", "data": out.data},
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class SystemImportTemplateDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
