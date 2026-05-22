@@ -530,10 +530,6 @@ class ImportValidationIssueExportView(ImportBatchContextMixin, APIView):
 
 
 # =========================================================
-# Row Correction Views
-# =========================================================
-
-# =========================================================
 # Import Job Views
 # =========================================================
 class StartImportBatchView(ImportBatchContextMixin, APIView):
