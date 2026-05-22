@@ -66,19 +66,6 @@ urlpatterns = [
         name="import-validation-issue-resolve",
     ),
 
-    # =========================================================
-    # Row Corrections
-    # =========================================================
-    path(
-        "batches/<int:batch_id>/corrections/",
-        views.ImportRowCorrectionListCreateView.as_view(),
-        name="import-row-correction-list-create",
-    ),
-    path(
-        "batches/<int:batch_id>/revalidate/",
-        views.RevalidateAfterCorrectionView.as_view(),
-        name="import-batch-revalidate",
-    ),
 
     # =========================================================
     # Import Jobs

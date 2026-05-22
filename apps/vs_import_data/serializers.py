@@ -16,7 +16,6 @@ from .models import (
     ImportJobRowResult,
     ImportNotification,
     ImportRollbackRecord,
-    ImportRowCorrection,
     ImportTemplate,
     ImportTemplateColumn,
     ImportValidationIssue,
@@ -306,77 +305,6 @@ class ImportValidationIssueResolveSerializer(serializers.ModelSerializer):
         return instance
 
 
-# =========================================================
-# Import Row Correction Serializers
-# =========================================================
-class ImportRowCorrectionSerializer(serializers.ModelSerializer):
-    """
-    Full serializer for row correction records.
-    """
-    corrected_by = serializers.SerializerMethodField()
-
-    class Meta:
-        model = ImportRowCorrection
-        fields = (
-            "id",
-            "import_batch",
-            "row_number",
-            "column_name",
-            "old_value",
-            "new_value",
-            "reason",
-            "corrected_by",
-            "created_at",
-            "updated_at",
-        )
-        read_only_fields = (
-            "id",
-            "import_batch",
-            "corrected_by",
-            "created_at",
-            "updated_at",
-        )
-
-    def get_corrected_by(self, obj):
-        user = obj.corrected_by
-        return {
-            "id": str(user.id),
-            "email": getattr(user, "email", ""),
-            "full_name": getattr(user, "full_name", ""),
-        }
-
-
-class ImportRowCorrectionCreateSerializer(serializers.ModelSerializer):
-    """
-    Used to create a manual correction.
-    """
-
-    class Meta:
-        model = ImportRowCorrection
-        fields = (
-            "row_number",
-            "column_name",
-            "old_value",
-            "new_value",
-            "reason",
-        )
-
-    def validate_row_number(self, value):
-        if value <= 0:
-            raise serializers.ValidationError("row_number must be greater than 0.")
-        return value
-
-    def validate_column_name(self, value):
-        value = value.strip()
-        if not value:
-            raise serializers.ValidationError("column_name cannot be empty.")
-        return value
-
-    def create(self, validated_data):
-        validated_data["import_batch"] = self.context["import_batch"]
-        validated_data["corrected_by"] = self.context["request"].user
-        return super().create(validated_data)
-
 
 # =========================================================
 # Import Job Row Result Serializers
@@ -613,7 +541,6 @@ class ImportBatchDetailSerializer(FieldSecurityMixin, serializers.ModelSerialize
     template = ImportTemplateDetailSerializer(read_only=True)
 
     validation_issues = ImportValidationIssueListSerializer(many=True, read_only=True)
-    row_corrections = ImportRowCorrectionSerializer(many=True, read_only=True)
     notifications = ImportNotificationSerializer(many=True, read_only=True)
 
     error_count = serializers.IntegerField(read_only=True)
@@ -651,7 +578,6 @@ class ImportBatchDetailSerializer(FieldSecurityMixin, serializers.ModelSerialize
             "error_count",
             "warning_count",
             "validation_issues",
-            "row_corrections",
             "notifications",
             "created_at",
             "updated_at",
@@ -862,8 +788,3 @@ class RollbackImportSerializer(serializers.Serializer):
         return attrs
 
 
-class RevalidateAfterCorrectionSerializer(serializers.Serializer):
-    """
-    Input serializer for revalidation after correction.
-    """
-    clear_resolved_flags = serializers.BooleanField(default=False)

@@ -21,7 +21,6 @@ from .models import (
     ImportJob,
     ImportNotification,
     ImportRollbackRecord,
-    ImportRowCorrection,
     ImportTemplate,
     ImportValidationIssue,
     TemplateStatusChoices,
@@ -36,15 +35,12 @@ from .serializers import (
     ImportJobListSerializer,
     ImportNotificationSerializer,
     ImportRollbackRecordSerializer,
-    ImportRowCorrectionCreateSerializer,
-    ImportRowCorrectionSerializer,
     ImportTemplateCreateSerializer,
     ImportTemplateDetailSerializer,
     ImportTemplateListSerializer,
     ImportValidationIssueDetailSerializer,
     ImportValidationIssueListSerializer,
     ImportValidationIssueResolveSerializer,
-    RevalidateAfterCorrectionSerializer,
     RollbackImportSerializer,
     StartImportSerializer,
     ValidateImportBatchSerializer,
@@ -357,7 +353,6 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
         qs = ImportBatch.objects.select_related("school", "uploaded_by", "template").prefetch_related(
             "template__columns",
             "validation_issues",
-            "row_corrections",
             "notifications",
         )
         if school is not None:
@@ -537,90 +532,6 @@ class ImportValidationIssueExportView(ImportBatchContextMixin, APIView):
 # =========================================================
 # Row Correction Views
 # =========================================================
-class ImportRowCorrectionListCreateView(CreateModelMixin, ImportBatchContextMixin, generics.ListCreateAPIView):
-    """
-    GET  -> list row corrections
-    POST -> create a row correction
-    """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
-
-    def get_permissions(self):
-        self.rbac_permission = (
-            ImportPermission.CORRECTION_CREATE
-            if self.request.method == "POST"
-            else ImportPermission.CORRECTION_VIEW
-        )
-        return super().get_permissions()
-
-    def get_queryset(self):
-        return (
-            ImportRowCorrection.objects.filter(import_batch=self.get_import_batch())
-            .select_related("corrected_by")
-            .order_by("row_number", "created_at")
-        )
-
-    def get_serializer_class(self):
-        if self.request.method == "POST":
-            return ImportRowCorrectionCreateSerializer
-        return ImportRowCorrectionSerializer
-
-    def perform_create(self, serializer):
-        serializer.save()
-        correction = serializer.instance
-        import_batch = correction.import_batch
-        create_import_audit_log(
-            school=import_batch.school,
-            branch=import_batch.branch,
-            action="row_correction_created",
-            actor=self.request.user,
-            import_batch=import_batch,
-            entity_type="ImportRowCorrection",
-            entity_id=str(correction.id),
-            after_data={
-                "row_number": correction.row_number,
-                "column_name": correction.column_name,
-                "old_value": correction.old_value,
-                "new_value": correction.new_value,
-            },
-            message=f"Row correction applied to row {correction.row_number}, column '{correction.column_name}'.",
-        )
-
-
-class RevalidateAfterCorrectionView(ImportBatchContextMixin, APIView):
-    """
-    POST -> re-run validation after corrections.
-    """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
-    rbac_permission = ImportPermission.BATCH_VALIDATE
-
-    def post(self, request, **_kwargs):
-        import_batch = self.get_import_batch()
-
-        serializer = RevalidateAfterCorrectionSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        result = validate_import_batch(import_batch)
-
-        create_import_audit_log(
-            school=import_batch.school,
-            branch=import_batch.branch,
-            action="batch_revalidated",
-            actor=request.user,
-            import_batch=import_batch,
-            entity_type="ImportBatch",
-            entity_id=str(import_batch.id),
-            after_data=result["summary"],
-            message="Import batch revalidated after corrections.",
-        )
-
-        return success_response(
-            message="Revalidation completed successfully.",
-            data={
-                "summary": result["summary"],
-                "issues": _format_validation_issues(result["issues"]),
-            },
-        )
-
 
 # =========================================================
 # Import Job Views

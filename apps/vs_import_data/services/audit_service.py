@@ -14,9 +14,7 @@ _ACTION_MAP: dict[str, str] = {
     "batch_deleted": AuditActionType.DELETE,
     # Validation
     "batch_validated": AuditActionType.CUSTOM,
-    "batch_revalidated": AuditActionType.CUSTOM,
-    # Corrections / issues
-    "row_correction_created": AuditActionType.CREATE,
+    # Issues
     "issue_resolved": AuditActionType.UPDATE,
     # Import execution
     "import_triggered": AuditActionType.DATA_IMPORT_STARTED,

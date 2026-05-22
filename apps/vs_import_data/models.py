@@ -638,60 +638,6 @@ class ImportValidationIssue(TimeStampedModel):
 
 
 # =========================================================
-# Optional row corrections before import
-# =========================================================
-class ImportRowCorrection(TimeStampedModel):
-    """
-    A user-supplied override for a specific row/column value before an ImportBatch
-    proceeds to execution. Corrections allow analysts to fix individual cells between
-    validation passes without re-uploading the full file. Each record is fully auditable,
-    capturing the before/after values and the person who made the change.
-
-    Fields:
-        import_batch: FK to the batch the corrected row belongs to (CASCADE on delete).
-        row_number: Spreadsheet row index (1-based) of the cell being corrected.
-        column_name: Header name of the column whose value is being overridden.
-        old_value: The original cell value as it existed before the correction.
-        new_value: The replacement value the analyst has provided.
-        reason: Optional justification for the correction, supporting audit trails.
-        corrected_by: FK to the user who submitted the correction (PROTECT on delete).
-
-    Meta:
-        - ordering by row_number, column_name, created_at.
-        - index on (import_batch, row_number) for quick per-batch row lookup.
-    """
-
-    import_batch = models.ForeignKey(
-        ImportBatch,
-        on_delete=models.CASCADE,
-        related_name="row_corrections",
-    )
-
-    row_number = models.PositiveIntegerField()
-    column_name = models.CharField(max_length=255)
-
-    old_value = models.TextField(blank=True)
-    new_value = models.TextField(blank=True)
-
-    reason = models.TextField(blank=True)
-
-    corrected_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.PROTECT,
-        related_name="import_row_corrections",
-    )
-
-    class Meta:
-        ordering = ["row_number", "column_name", "created_at"]
-        indexes = [
-            models.Index(fields=["import_batch", "row_number"]),
-        ]
-
-    def __str__(self) -> str:
-        return f"Row {self.row_number} - {self.column_name}"
-
-
-# =========================================================
 # Background import execution
 # =========================================================
 class ImportJob(TimeStampedModel):
