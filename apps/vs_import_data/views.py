@@ -341,6 +341,7 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
     DELETE -> delete batch
     """
     permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    lookup_url_kwarg = "batch_id"
 
     def get_permissions(self):
         if self.request.method == "DELETE":
