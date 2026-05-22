@@ -28,7 +28,6 @@ from .serializers import (
     AuditEventListSerializer,
     AuditEventDetailSerializer,
     EntityAuditTrailSerializer,
-    EntityAuditTrailDetailSerializer,
     AuditExportJobListSerializer,
     AuditExportJobDetailSerializer,
     ComplianceRuleListSerializer,
@@ -283,10 +282,9 @@ class EntityAuditTrailDetailView(APIView):
             ).data,
         }
 
-        serializer = EntityAuditTrailDetailSerializer(data)
         return success_response(
             message="Audit trail retrieved successfully.",
-            data=serializer.data,
+            data=data,
         )
 
 
