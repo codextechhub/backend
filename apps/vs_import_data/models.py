@@ -264,7 +264,9 @@ class ImportBatch(TimeStampedModel):
     # Parsed metadata / snapshots
     uploaded_headers = models.JSONField(default=list, blank=True)  # List of column headers as they appear in the uploaded file
     template_headers_snapshot = models.JSONField(default=list, blank=True)  # List of expected column headers from the template at the time of upload
+    preview_rows = models.JSONField(default=list, blank=True)  # First N parsed rows, stored for validation service use
     structure_matches_template = models.BooleanField(default=False)  # Indicates if the uploaded file structure matches the template
+    validation_summary = models.JSONField(null=True, blank=True)  # Summary dict written after validation completes
 
     has_critical_errors = models.BooleanField(default=False)
     is_ready_for_import = models.BooleanField(default=False)

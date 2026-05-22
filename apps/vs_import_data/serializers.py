@@ -627,8 +627,6 @@ class ImportBatchDetailSerializer(FieldSecurityMixin, serializers.ModelSerialize
             "branch",
             "uploaded_by",
             "template",
-            "template_version",
-            "source",
             "original_filename",
             "file",
             "file_format",
@@ -641,7 +639,6 @@ class ImportBatchDetailSerializer(FieldSecurityMixin, serializers.ModelSerialize
             "sheet_name",
             "uploaded_headers",
             "template_headers_snapshot",
-            "detected_columns",
             "preview_rows",
             "validation_summary",
             "structure_matches_template",
@@ -791,7 +788,6 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
         validated_data["branch"] = self.context.get("branch")
         validated_data["uploaded_by"] = self.context["request"].user
         validated_data["template"] = template
-        validated_data["template_version"] = template.version
         validated_data["dataset_type"] = template.dataset_type
         validated_data["file"] = uploaded_file
         validated_data["original_filename"] = safe_name
@@ -799,7 +795,6 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
         validated_data["file_size_bytes"] = uploaded_file.size
         validated_data["template_headers_snapshot"] = template_headers_snapshot
         validated_data["uploaded_headers"] = detected_headers
-        validated_data["detected_columns"] = detected_headers
         validated_data["preview_rows"] = preview_rows
         validated_data["total_rows"] = len(preview_rows)
         validated_data["total_columns"] = len(detected_headers)
