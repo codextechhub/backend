@@ -194,20 +194,34 @@ def validate_required_fields_for_row(
 # Type / format validators
 # =========================================================
 def validate_email(value, row_number: int, column_name: str = "email") -> dict | None:
-    """
-    Simple email validator.
-    Keep it basic here; deeper email rules can be added later.
-    """
     value = normalize_string(value)
 
     if value == "":
         return None
 
-    if "@" not in value or "." not in value.split("@")[-1]:
+    # Must have exactly one @
+    parts = value.split("@")
+    if len(parts) != 2:
+        invalid = True
+    else:
+        local, domain = parts
+        # local part must not be empty
+        # domain must have at least one dot and no empty labels (e.g. "a..b")
+        invalid = (
+            not local
+            or not domain
+            or "." not in domain
+            or domain.startswith(".")
+            or domain.endswith(".")
+            or ".." in domain
+            or " " in value
+        )
+
+    if invalid:
         return {
             "severity": "error",
             "code": "invalid_format",
-            "message": f"'{column_name}' must be a valid email address.",
+            "message": f"'{column_name}' must be a valid email address (e.g. user@example.com).",
             "row_number": row_number,
             "column_name": column_name,
             "raw_value": value,

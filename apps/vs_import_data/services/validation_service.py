@@ -12,6 +12,7 @@ from ..validators import (
     find_duplicate_values,
     summarize_issues,
     validate_duplicate_headers,
+    validate_foreign_key_reference,
 )
 from .template import get_template_headers
 from .template_validation import (
@@ -76,7 +77,7 @@ def _validate_headers_against_template(import_batch) -> list[dict]:
     """
     issues = []
 
-    uploaded_headers = import_batch.uploaded_headers or import_batch.detected_columns or []
+    uploaded_headers = import_batch.uploaded_headers or []
 
     issues.extend(validate_duplicate_headers(uploaded_headers))
 
@@ -140,18 +141,24 @@ def _validate_dataset_specific_rules(import_batch) -> list[dict]:
     return []
 
 
+def _resolve_model(name: str):
+    """
+    Find a Django model class by name (case-insensitive) across all installed apps.
+    Returns None if no match is found.
+    """
+    from django.apps import apps
+    name_lower = name.lower()
+    for model in apps.get_models():
+        if model.__name__.lower() == name_lower:
+            return model
+    return None
+
+
 def _validate_cross_references(import_batch) -> list[dict]:
     """
-    Optional place for checking references against real system data.
-
-    Example uses:
-    - teacher exists in staff records
-    - class exists
-    - campus exists
-    - department exists
-
-    For now this is left as a structured placeholder because the exact
-    referenced models in your project may differ.
+    For each template column that declares a reference_model + reference_lookup_field,
+    fetch the set of valid values from that model (scoped to the batch's school/branch
+    where the model supports it) and flag any row value that doesn't match.
     """
     issues = []
 
@@ -159,21 +166,46 @@ def _validate_cross_references(import_batch) -> list[dict]:
         return issues
 
     rows = import_batch.preview_rows or []
-    template_columns = import_batch.template.columns.exclude(reference_model="").exclude(reference_lookup_field="")
+    if not rows:
+        return issues
 
-    # Example pattern:
-    # for col in template_columns:
-    #     valid_values = fetch_lookup_values(col.reference_model, col.reference_lookup_field, import_batch.school)
-    #     for row_number, row_data in enumerate(rows, start=1):
-    #         issue = validate_foreign_key_reference(
-    #             value=row_data.get(col.column_name),
-    #             valid_lookup_values=valid_values,
-    #             row_number=row_number,
-    #             column_name=col.column_name,
-    #             reference_name=col.reference_model,
-    #         )
-    #         if issue:
-    #             issues.append(issue)
+    ref_columns = list(
+        import_batch.template.columns
+        .exclude(reference_model="")
+        .exclude(reference_lookup_field="")
+    )
+    if not ref_columns:
+        return issues
+
+    for col in ref_columns:
+        model_class = _resolve_model(col.reference_model)
+        if model_class is None:
+            continue
+
+        qs = model_class.objects.all()
+
+        # Scope to school or branch when the referenced model supports it
+        field_names = {f.name for f in model_class._meta.get_fields()}
+        if "school" in field_names and import_batch.school_id:
+            qs = qs.filter(school_id=import_batch.school_id)
+        elif "branch" in field_names and import_batch.branch_id:
+            qs = qs.filter(branch_id=import_batch.branch_id)
+
+        try:
+            valid_values = set(qs.values_list(col.reference_lookup_field, flat=True))
+        except Exception:
+            continue
+
+        for row_number, row_data in enumerate(rows, start=1):
+            issue = validate_foreign_key_reference(
+                value=row_data.get(col.column_name),
+                valid_lookup_values=valid_values,
+                row_number=row_number,
+                column_name=col.column_name,
+                reference_name=col.reference_model,
+            )
+            if issue:
+                issues.append(issue)
 
     return issues
 
