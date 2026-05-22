@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -142,10 +143,14 @@ def import_file_upload_to(instance: "ImportBatch", filename: str) -> str:
         scope = f"branch_{getattr(instance.branch, 'slug', instance.branch_id)}"
     else:
         scope = "internal"
-    return (
-        f"imports/{scope}/{instance.dataset_type or 'unknown'}/"
-        f"{instance.id}{ext}"
-    )
+
+    if instance.original_filename:
+        base = os.path.splitext(instance.original_filename)[0]
+        stamp = timezone.now().strftime("%Y%m%d_%H%M")
+        stored_name = f"{base}_{stamp}{ext}"
+    else:
+        stored_name = f"{uuid.uuid4().hex}{ext}"
+    return f"imports/{scope}/{instance.dataset_type or 'unknown'}/{stored_name}"
 
 def import_template_file_upload_to(instance: "ImportTemplate", filename: str) -> str:
     ext = os.path.splitext(filename)[1].lower()
