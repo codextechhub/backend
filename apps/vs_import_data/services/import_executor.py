@@ -137,6 +137,7 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
         subscription_expires_at optional – YYYY-MM-DD
     """
     from types import SimpleNamespace
+    from vs_schools.models import School
     from vs_schools.serializers import SchoolCreateSerializer
 
     def _s(key: str) -> str:
@@ -147,6 +148,24 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
             return int(payload.get(key) or default)
         except (TypeError, ValueError):
             return default
+
+    # --- Duplicate check ---
+    slug = _s("slug")
+    name = _s("name")
+    if slug and School.objects.filter(slug=slug).exists():
+        return ImportExecutionResult(
+            action=ImportRowActionChoices.SKIP,
+            instance=None,
+            target_model="School",
+            message=f"School with slug '{slug}' already exists — skipped.",
+        )
+    elif not slug and name and School.objects.filter(name=name).exists():
+        return ImportExecutionResult(
+            action=ImportRowActionChoices.SKIP,
+            instance=None,
+            target_model="School",
+            message=f"School named '{name}' already exists — skipped.",
+        )
 
     # --- School-level admin ---
     school_admin_email = _s("school_admin_email")
@@ -272,7 +291,7 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
         branch_admin_role       optional – defaults to "Head Teacher"
     """
     from types import SimpleNamespace
-    from vs_schools.models import School
+    from vs_schools.models import Branch, School
     from vs_schools.serializers import BranchCreateSerializer
 
     def _s(key: str) -> str:
@@ -298,6 +317,16 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
                 "Cannot determine school: batch is not school-scoped and row has no school_slug or school_code."
             )
 
+    # --- Duplicate check ---
+    branch_name = _s("name")
+    if branch_name and Branch.objects.filter(school=school, name=branch_name).exists():
+        return ImportExecutionResult(
+            action=ImportRowActionChoices.SKIP,
+            instance=None,
+            target_model="Branch",
+            message=f"Branch named '{branch_name}' already exists in this school — skipped.",
+        )
+
     # --- Branch admin ---
     branch_admin_data = {
         "full_name": _s("branch_admin_full_name"),
@@ -310,7 +339,7 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
     # --- Branch payload ---
     is_main_raw = _s("is_main").lower()
     branch_payload = {
-        "name": _s("name"),
+        "name": branch_name,
         "_type": _s("branch_type") or "Combined",
         "is_main": is_main_raw in ("true", "1", "yes"),
         "primary_admin_data": branch_admin_data,
