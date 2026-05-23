@@ -565,10 +565,18 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
         )
 
         if run_async:
-            execute_import_batch_task.delay(
-                import_batch_id=str(import_batch.id),
-                queued_by_id=str(request.user.id),
-            )
+            try:
+                execute_import_batch_task.delay(
+                    import_batch_id=str(import_batch.id),
+                    queued_by_id=str(request.user.id),
+                )
+            except Exception:
+                return error_response(
+                    message="Import could not be queued — the background task service is unavailable. "
+                            "Try again in a moment or set run_async=false to run synchronously.",
+                    code="TASK_BROKER_UNAVAILABLE",
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
             return success_response(
                 message="Import queued. Poll GET /batches/{id}/jobs/ for progress.",
                 data={"batch_id": str(import_batch.id), "job_status": ImportJobStatusChoices.QUEUED},
