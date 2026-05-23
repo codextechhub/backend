@@ -221,7 +221,7 @@ def execute_import_batch_task(self, import_batch_id: str, queued_by_id: str | No
     except Exception as exc:
         error_text = _safe_error_text(exc)
 
-        job = getattr(import_batch, "import_job", None)
+        job = import_batch.import_jobs.filter(status=ImportJobStatusChoices.RUNNING).first()
         if job:
             job.status = ImportJobStatusChoices.FAILED
             job.completed_at = timezone.now()

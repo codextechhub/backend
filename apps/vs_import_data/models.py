@@ -680,10 +680,10 @@ class ImportJob(TimeStampedModel):
         - indexes on status and started_at for dashboard and monitoring queries.
     """
 
-    import_batch = models.OneToOneField(
+    import_batch = models.ForeignKey(
         ImportBatch,
         on_delete=models.CASCADE,
-        related_name="import_job",
+        related_name="import_jobs",
     )
 
     queued_by = models.ForeignKey(
