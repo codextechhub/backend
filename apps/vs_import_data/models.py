@@ -46,6 +46,7 @@ class FileFormatChoices(models.TextChoices):
 
 class DatasetTypeChoices(models.TextChoices):
     SCHOOLS = "schools", "Schools"
+    BRANCHES = "branches", "Branches"
 
 
 class ImportBatchStatusChoices(models.TextChoices):

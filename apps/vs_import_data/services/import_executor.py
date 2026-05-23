@@ -81,6 +81,9 @@ def execute_dataset_handler(import_batch, payload: dict, queued_by) -> ImportExe
     if dataset_type == "schools":
         return import_schools_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
 
+    if dataset_type == "branches":
+        return import_branches_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
+
     raise ValueError(f"Unsupported dataset type: {dataset_type}")
 
 
@@ -223,7 +226,7 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
     # SimpleNamespace gives us a minimal stand-in without importing django.test.
     context = {
         "request": SimpleNamespace(user=queued_by),
-        "actor_id": queued_by,
+        "actor_id": str(queued_by.id),
     }
 
     return run_create_serializer(
@@ -231,6 +234,106 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
         payload=school_payload,
         context=context,
         target_model="School",
+    )
+
+
+# =========================================================
+# Branches handler
+# =========================================================
+def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
+    """
+    Import one branch row using BranchCreateSerializer.
+
+    School resolution (in priority order):
+      1. batch is school-scoped  → use import_batch.school
+      2. row contains school_slug → look up School by slug
+      3. row contains school_code → look up School by code
+    If none resolve, the row fails.
+
+    Template columns this handler reads:
+
+    School identifier (only needed when batch is not school-scoped)
+        school_slug             conditional
+        school_code             conditional
+
+    Branch identity
+        name                    required
+        branch_type             optional – defaults to "Combined"
+        address                 optional
+        email                   optional
+        country                 optional – defaults to "Nigeria"
+        state                   optional
+        is_main                 optional – "true"/"false", defaults to False
+
+    Branch admin (required by BranchCreateSerializer)
+        branch_admin_full_name  required
+        branch_admin_email      required
+        branch_admin_phone      optional
+        branch_admin_role       optional – defaults to "Head Teacher"
+    """
+    from types import SimpleNamespace
+    from vs_schools.models import School
+    from vs_schools.serializers import BranchCreateSerializer
+
+    def _s(key: str) -> str:
+        return (payload.get(key) or "").strip()
+
+    # --- Resolve school ---
+    school = import_batch.school
+    if school is None:
+        slug = _s("school_slug")
+        code = _s("school_code")
+        if slug:
+            try:
+                school = School.objects.get(slug=slug)
+            except School.DoesNotExist:
+                raise ValueError(f"No school found with slug '{slug}'.")
+        elif code:
+            try:
+                school = School.objects.get(code=code)
+            except School.DoesNotExist:
+                raise ValueError(f"No school found with code '{code}'.")
+        else:
+            raise ValueError(
+                "Cannot determine school: batch is not school-scoped and row has no school_slug or school_code."
+            )
+
+    # --- Branch admin ---
+    branch_admin_data = {
+        "full_name": _s("branch_admin_full_name"),
+        "email": _s("branch_admin_email"),
+        "phone": _s("branch_admin_phone"),
+        "branch_role": _s("branch_admin_role") or "Head Teacher",
+        "role_label": "BRANCH_ADMIN",
+    }
+
+    # --- Branch payload ---
+    is_main_raw = _s("is_main").lower()
+    branch_payload = {
+        "name": _s("name"),
+        "_type": _s("branch_type") or "Combined",
+        "is_main": is_main_raw in ("true", "1", "yes"),
+        "primary_admin_data": branch_admin_data,
+    }
+
+    for field in ("address", "email", "state"):
+        val = _s(field)
+        if val:
+            branch_payload[field] = val
+
+    branch_payload["country"] = _s("country") or "Nigeria"
+
+    context = {
+        "request": SimpleNamespace(user=queued_by),
+        "school": school,
+        "actor_id": str(queued_by.id),
+    }
+
+    return run_create_serializer(
+        serializer_class=BranchCreateSerializer,
+        payload=branch_payload,
+        context=context,
+        target_model="Branch",
     )
 
 
