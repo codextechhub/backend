@@ -373,39 +373,19 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
 def start_import_job(import_batch, queued_by):
     total_rows = import_batch.total_rows or len(import_batch.preview_rows or [])
 
-    job, _ = ImportJob.objects.get_or_create(
+    job = ImportJob.objects.create(
         import_batch=import_batch,
-        defaults={
-            "queued_by": queued_by,
-            "status": ImportJobStatusChoices.QUEUED,
-            "total_rows": total_rows,
-        },
-    )
-
-    job.status = ImportJobStatusChoices.RUNNING
-    job.started_at = timezone.now()
-    job.completed_at = None
-    job.progress_percent = 0
-    job.processed_rows = 0
-    job.succeeded_rows = 0
-    job.failed_rows = 0
-    job.skipped_rows = 0
-    job.last_error_code = ""
-    job.last_error_message = ""
-    job.save(
-        update_fields=[
-            "status",
-            "started_at",
-            "completed_at",
-            "progress_percent",
-            "processed_rows",
-            "succeeded_rows",
-            "failed_rows",
-            "skipped_rows",
-            "last_error_code",
-            "last_error_message",
-            "updated_at",
-        ]
+        queued_by=queued_by,
+        status=ImportJobStatusChoices.RUNNING,
+        total_rows=total_rows,
+        started_at=timezone.now(),
+        progress_percent=0,
+        processed_rows=0,
+        succeeded_rows=0,
+        failed_rows=0,
+        skipped_rows=0,
+        last_error_code="",
+        last_error_message="",
     )
 
     import_batch.status = ImportBatchStatusChoices.IMPORT_RUNNING

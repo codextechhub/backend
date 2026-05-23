@@ -14,6 +14,7 @@ from .models import (
     ImportBatch,
     ImportJob,
     ImportJobRowResult,
+    ImportJobStatusChoices,
     ImportNotification,
     ImportRollbackRecord,
     ImportTemplate,
@@ -768,8 +769,26 @@ class StartImportSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         import_batch = self.context.get("import_batch")
-        if import_batch and not import_batch.is_ready_for_import:
+        if not import_batch:
+            return attrs
+
+        if not import_batch.is_ready_for_import:
             raise serializers.ValidationError("This import batch is not ready for import.")
+
+        if ImportJob.objects.filter(
+            import_batch=import_batch,
+            status__in=[ImportJobStatusChoices.RUNNING, ImportJobStatusChoices.QUEUED],
+        ).exists():
+            raise serializers.ValidationError("An import job is already running for this batch.")
+
+        if ImportJob.objects.filter(
+            import_batch=import_batch,
+            status=ImportJobStatusChoices.SUCCEEDED,
+        ).exists():
+            raise serializers.ValidationError(
+                "This batch has already been imported successfully. Re-importing is not allowed."
+            )
+
         return attrs
 
 
