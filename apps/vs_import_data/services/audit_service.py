@@ -19,6 +19,7 @@ _ACTION_MAP: dict[str, str] = {
     # Import execution
     "import_triggered": AuditActionType.DATA_IMPORT_STARTED,
     "import_row_success": AuditActionType.DATA_IMPORT_ROW_PROCESSED,
+    "import_row_skipped": AuditActionType.DATA_IMPORT_ROW_PROCESSED,
     "import_completed": AuditActionType.DATA_IMPORT_COMPLETED,
     "import_failed": AuditActionType.DATA_IMPORT_FAILED,
     "import_rollback": AuditActionType.DATA_IMPORT_ROLLED_BACK,

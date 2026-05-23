@@ -519,29 +519,30 @@ def execute_import(import_batch, queued_by):
                     normalized_payload=normalized_payload,
                 )
 
+                is_skip = result.action == ImportRowActionChoices.SKIP
+                if is_skip:
+                    skipped_rows += 1
+                else:
+                    succeeded_rows += 1
+
                 create_import_audit_log(
                     school=import_batch.school,
                     branch=import_batch.branch,
                     actor=queued_by,
                     import_batch=import_batch,
                     job=job,
-                    action="import_row_success",
+                    action="import_row_skipped" if is_skip else "import_row_success",
                     entity_type=result.target_model,
                     entity_id=target_object_pk,
                     before_data={},
                     after_data=normalized_payload,
-                    message=f"Imported row {row_number} successfully.",
+                    message=result.message if is_skip else f"Imported row {row_number} successfully.",
                     metadata={
                         "row_number": row_number,
                         "template_code": import_batch.template.code,
                         "template_version": import_batch.template.version if import_batch.template else "",
                     },
                 )
-
-            if result.action == ImportRowActionChoices.SKIP:
-                skipped_rows += 1
-            else:
-                succeeded_rows += 1
 
         except drf_serializers.ValidationError as exc:
             create_row_result(
