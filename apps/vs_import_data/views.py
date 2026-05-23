@@ -19,6 +19,7 @@ from .constants import ImportPermission
 from .models import (
     ImportBatch,
     ImportJob,
+    ImportJobStatusChoices,
     ImportNotification,
     ImportRollbackRecord,
     ImportTemplate,
@@ -540,6 +541,8 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
     rbac_permission = ImportPermission.BATCH_IMPORT
 
     def post(self, request, **_kwargs):
+        from .tasks import execute_import_batch_task
+
         import_batch = self.get_import_batch()
 
         serializer = StartImportSerializer(
@@ -547,6 +550,8 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
             context={"import_batch": import_batch},
         )
         serializer.is_valid(raise_exception=True)
+
+        run_async = serializer.validated_data.get("run_async", True)
 
         create_import_audit_log(
             school=import_batch.school,
@@ -559,10 +564,19 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
             message="Import execution triggered.",
         )
 
-        job = execute_import(import_batch=import_batch, queued_by=request.user)
+        if run_async:
+            execute_import_batch_task.delay(
+                import_batch_id=str(import_batch.id),
+                queued_by_id=str(request.user.id),
+            )
+            return success_response(
+                message="Import queued. Poll GET /batches/{id}/jobs/ for progress.",
+                data={"batch_id": str(import_batch.id), "job_status": ImportJobStatusChoices.QUEUED},
+            )
 
+        job = execute_import(import_batch=import_batch, queued_by=request.user)
         return success_response(
-            message="Import started successfully.",
+            message="Import completed.",
             data={"job_id": str(job.id), "job_status": job.status},
         )
 
