@@ -10,18 +10,13 @@ python manage.py collectstatic --no-input
 
 # Migration state guard.
 #
-# Three possible states:
-#   fresh      — no tables yet (brand-new DB); run normal migrate
-#   needs_fake — tables exist but migration records are missing or stale
-#                (migration consolidation, or a previous partially-failed deploy)
-#   normal     — everything is in sync; run normal migrate
+# Detects three states and acts accordingly:
+#   fresh      — django_migrations table is empty or missing (brand-new DB)
+#   needs_fake — tables exist but migration records are stale or incomplete
+#   normal     — everything is in sync
 #
-# "needs_fake" triggers when:
-#   (a) old migration names exist (count > 16), OR
-#   (b) tables exist but vs_user.0001_initial is not recorded
-#       (catches a partially-completed reset from a prior failed deploy)
-#
-# Safe to leave permanently — it is a no-op once the DB is in sync.
+# The grep at the end strips Django's auto-import noise from the captured output
+# so only our marker line reaches the bash variable.
 
 DB_STATE=$(python manage.py shell -c "
 from django.db import connection
@@ -31,35 +26,47 @@ CUSTOM_APPS = [
     'vs_notifications', 'vs_rbac', 'vs_schools', 'vs_user',
 ]
 
-with connection.cursor() as c:
-    # 1. Check whether our tables exist (fresh DB?)
-    c.execute(
-        \"SELECT 1 FROM information_schema.tables WHERE table_name = 'vs_user_user' LIMIT 1\"
-    )
-    has_tables = c.fetchone() is not None
+try:
+    with connection.cursor() as c:
 
-    if not has_tables:
-        print('fresh')
-    else:
-        # 2. Check for stale or missing migration records
-        c.execute(
-            'SELECT COUNT(*) FROM django_migrations WHERE app = ANY(%s)',
-            [CUSTOM_APPS]
-        )
-        total = c.fetchone()[0]
+        # How many rows are in django_migrations at all?
+        c.execute('SELECT COUNT(*) FROM django_migrations')
+        total_rows = c.fetchone()[0]
 
-        c.execute(
-            \"SELECT 1 FROM django_migrations WHERE app = 'vs_user' AND name = '0001_initial' LIMIT 1\"
-        )
-        has_vs_user = c.fetchone() is not None
-
-        if total > 16 or not has_vs_user:
-            print('needs_fake')
+        if total_rows == 0:
+            # Table exists but is empty — could be a fresh DB or a fully-cleared one.
+            # Check whether the vs_user_user table itself exists.
+            try:
+                c.execute('SELECT 1 FROM vs_user_user LIMIT 1')
+                # Table exists → records were cleared by a prior deploy; need fake.
+                print('needs_fake')
+            except Exception:
+                # Table does not exist → genuinely fresh DB.
+                print('fresh')
         else:
-            print('normal')
-" 2>/dev/null)
+            # Records exist. Check whether they are stale or inconsistent.
+            c.execute(
+                'SELECT COUNT(*) FROM django_migrations WHERE app = ANY(%s)',
+                [CUSTOM_APPS]
+            )
+            custom_total = c.fetchone()[0]
 
-echo "Migration state: $DB_STATE"
+            c.execute(
+                \"SELECT 1 FROM django_migrations WHERE app='vs_user' AND name='0001_initial' LIMIT 1\"
+            )
+            has_vs_user = c.fetchone() is not None
+
+            if custom_total > 16 or not has_vs_user:
+                print('needs_fake')
+            else:
+                print('normal')
+
+except Exception as e:
+    # django_migrations table does not exist yet — truly fresh DB.
+    print('fresh')
+" 2>/dev/null | grep -E "^(fresh|needs_fake|normal)$" | tail -1)
+
+echo "==> Migration state: ${DB_STATE:-unknown}"
 
 if [ "$DB_STATE" = "fresh" ]; then
     echo "Fresh database — running full migrate..."
@@ -95,7 +102,7 @@ with connection.cursor() as c:
                 'INSERT INTO django_migrations (app, name, applied) VALUES (%s, %s, %s)',
                 ['contenttypes', name, now]
             )
-    print('  contenttypes entries ensured.')
+    print('contenttypes entries ensured.')
 "
 
     python manage.py migrate auth --fake
@@ -103,6 +110,7 @@ with connection.cursor() as c:
     python manage.py migrate sessions --fake
     python manage.py migrate token_blacklist --fake
     python manage.py migrate --fake-initial
+    echo "Migration history reset complete."
 
 else
     echo "Normal deploy — running migrate..."
