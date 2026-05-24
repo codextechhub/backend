@@ -55,16 +55,31 @@ with connection.cursor() as c:
         print('Migration history cleared. Running fake-initial next.')
 "
 
-# After a reset the internal apps need faking; on normal deploys these are already applied (no-op).
-NEEDS_FAKE=$(python manage.py shell -c "
+# Determine migrate strategy:
+#  - After a migration reset: internal apps have no records → fake them, then fake-initial our apps
+#  - Fresh DB (no tables yet): run normal migrate to create everything
+#  - Normal deploy: run normal migrate (applies any new migrations)
+DB_STATE=$(python manage.py shell -c "
 from django.db import connection
-with connection.cursor() as c:
-    c.execute(\"SELECT COUNT(*) FROM django_migrations WHERE app = 'auth'\")
-    print('0' if c.fetchone()[0] > 0 else '1')
+try:
+    with connection.cursor() as c:
+        # Check if our tables exist at all (fresh DB vs existing DB after reset)
+        c.execute(\"SHOW TABLES LIKE 'vs_user_user'\")
+        has_tables = c.fetchone() is not None
+        if not has_tables:
+            print('fresh')
+        else:
+            c.execute(\"SELECT COUNT(*) FROM django_migrations WHERE app = 'auth'\")
+            print('no_auth' if c.fetchone()[0] == 0 else 'normal')
+except Exception:
+    print('fresh')
 " 2>/dev/null)
 
-if [ "$NEEDS_FAKE" = "1" ]; then
-    echo "Faking internal app migrations..."
+if [ "$DB_STATE" = "fresh" ]; then
+    echo "Fresh database — running full migrate..."
+    python manage.py migrate
+elif [ "$DB_STATE" = "no_auth" ]; then
+    echo "Post-reset state — faking internal migrations then fake-initial..."
     python manage.py migrate auth --fake
     python manage.py migrate admin --fake
     python manage.py migrate sessions --fake
