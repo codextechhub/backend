@@ -60,11 +60,17 @@ class NotificationErrorCode:
 
 
 # ---------------------------------------------------------------------------
-# Email retry config
+# Config flag keys (read via vs_config FlagService at runtime)
 # ---------------------------------------------------------------------------
 
-EMAIL_MAX_RETRIES       = 3
-EMAIL_RETRY_BACKOFF_SEC = 60
+class NotificationConfigKey:
+    EMAIL_MAX_RETRIES       = "notification_email_max_retries"
+    EMAIL_RETRY_BACKOFF_SEC = "notification_email_retry_backoff_seconds"
+
+    DEFAULTS = {
+        EMAIL_MAX_RETRIES:       3,
+        EMAIL_RETRY_BACKOFF_SEC: 60,
+    }
 
 
 # ---------------------------------------------------------------------------

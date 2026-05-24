@@ -23,8 +23,8 @@ from .constants import (
 # Config key name validation
 # ---------------------------------------------------------------------------
 
-# Only lowercase letters, digits, and dots. No spaces, no uppercase.
-_KEY_PATTERN = re.compile(r"^[a-z0-9]+(\.[a-z0-9]+)+$")
+# Only lowercase letters, digits, underscores, and dots. No spaces, no uppercase.
+_KEY_PATTERN = re.compile(r"^[a-z0-9_]+(\.[a-z0-9_]+)+$")
 
 
 def validate_config_key_format(key: str) -> None:
@@ -39,7 +39,7 @@ def validate_config_key_format(key: str) -> None:
             {
                 "error_code": "INVALID_KEY_FORMAT",
                 "message": (
-                    "Config key names must use lowercase letters, digits, and dots only. "
+                    "Config key names must use lowercase letters, digits, underscores, and dots only. "
                     "At least one dot is required. Example: auth.session_timeout_minutes"
                 ),
                 "field": "key",

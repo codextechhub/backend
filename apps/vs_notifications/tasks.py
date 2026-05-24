@@ -14,8 +14,6 @@ from django.core.mail import send_mail
 from django.db import transaction
 from django.utils import timezone
 
-from .constants import EMAIL_MAX_RETRIES, EMAIL_RETRY_BACKOFF_SEC
-
 logger = logging.getLogger("vs_notifications.tasks")
 
 
@@ -28,9 +26,10 @@ def deliver_email_notification(self, notification_id: str):
     transitions status to SENT or FAILED.
 
     Retry behaviour:
-        - Max retries and backoff seconds come from EMAIL_MAX_RETRIES and
-          EMAIL_RETRY_BACKOFF_SEC in constants.py.
-        - Retries use a fixed countdown. On final failure the record is marked FAILED.
+        - Max retries and backoff seconds are read from vs_config at
+          execution time so they can be adjusted without redeployment.
+        - Retries use a fixed countdown (not exponential) as defined in FRD.
+        - On final failure the record is marked FAILED and the task exits.
 
     Idempotency guard:
         - If the notification is already SENT when the task runs (e.g. after
@@ -61,6 +60,9 @@ def deliver_email_notification(self, notification_id: str):
             notification_id,
         )
         return
+
+    # ── Read retry config ─────────────────────────────────────────────────
+    max_retries, retry_backoff = _read_retry_config()
 
     # ── Resolve email address ─────────────────────────────────────────────
     email_addr = notif.effective_email
@@ -112,8 +114,9 @@ def deliver_email_notification(self, notification_id: str):
             exc,
         )
 
-        if self.request.retries < EMAIL_MAX_RETRIES:
-            raise self.retry(exc=exc, countdown=EMAIL_RETRY_BACKOFF_SEC)
+        if self.request.retries < max_retries:
+            # Retry with fixed countdown
+            raise self.retry(exc=exc, countdown=retry_backoff)
         else:
             # Final failure — mark and exit
             notif.status = NotificationStatus.FAILED
@@ -125,3 +128,27 @@ def deliver_email_notification(self, notification_id: str):
                 notif.retry_count,
                 exc,
             )
+
+
+def _read_retry_config() -> tuple[int, int]:
+    """
+    Read max retries and backoff seconds from vs_config.
+    Falls back to hardcoded defaults if vs_config is unavailable.
+    """
+    from .constants import NotificationConfigKey
+
+    try:
+        from vs_config.services import FlagService
+        max_retries = FlagService.get_int(
+            NotificationConfigKey.EMAIL_MAX_RETRIES,
+            default=NotificationConfigKey.DEFAULTS[NotificationConfigKey.EMAIL_MAX_RETRIES],
+        )
+        retry_backoff = FlagService.get_int(
+            NotificationConfigKey.EMAIL_RETRY_BACKOFF_SEC,
+            default=NotificationConfigKey.DEFAULTS[NotificationConfigKey.EMAIL_RETRY_BACKOFF_SEC],
+        )
+    except Exception:
+        max_retries = NotificationConfigKey.DEFAULTS[NotificationConfigKey.EMAIL_MAX_RETRIES]
+        retry_backoff = NotificationConfigKey.DEFAULTS[NotificationConfigKey.EMAIL_RETRY_BACKOFF_SEC]
+
+    return max_retries, retry_backoff
