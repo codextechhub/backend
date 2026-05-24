@@ -79,14 +79,17 @@ elif [ "$DB_STATE" = "needs_fake" ]; then
 from django.db import connection
 import datetime
 
-CUSTOM_APPS = [
+# Clear ALL apps — custom and Django internals — so no cross-app dependency
+# inconsistency can block the subsequent fake commands.
+ALL_APPS = [
     'vs_admin_console', 'vs_audit', 'vs_config', 'vs_import_data',
     'vs_notifications', 'vs_rbac', 'vs_schools', 'vs_user',
+    'auth', 'admin', 'sessions', 'token_blacklist',
 ]
 now = datetime.datetime.now()
 
 with connection.cursor() as c:
-    for app in CUSTOM_APPS:
+    for app in ALL_APPS:
         c.execute('DELETE FROM django_migrations WHERE app = %s', [app])
         print(f'  Cleared: {app}')
 
