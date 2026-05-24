@@ -16,7 +16,6 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 urlpatterns = [
     path("v1/i/", include("vs_schools.urls")),
@@ -28,7 +27,4 @@ urlpatterns = [
     path('v1/notify/', include('vs_notifications.urls')),
     path("v1/import/", include("vs_import_data.urls")),
     # path("admin/", admin.site.urls),
-    # Authentication
-    # path("v1/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
-    # path("v1/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
 ]
