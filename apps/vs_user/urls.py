@@ -17,8 +17,12 @@ from .views import (
     # Auth
     LoginView,
     LogoutView,
+    SpecialLoginPreviewView,
     PasswordResetPreviewView,
     TokenRefreshView,
+    CurrentUserView,
+    MySecurityStatsView,
+    MyPasswordResetsView,
     # Activation — UUID-based, no token
     ActivationPreviewView,
     ActivationView,
@@ -28,6 +32,8 @@ from .views import (
     PasswordResetRequestView,
     PasswordResetConfirmView,
     AdminPasswordResetView,
+    PasswordResetListView,
+    RevokePasswordResetView,
     # User management
     UserAccountViewSet,
     UserEmailChangeView,
@@ -52,9 +58,13 @@ router.register(r'auth-events',       AuthEventLogViewSet,        basename='auth
 urlpatterns = [
 
     # ── Authentication ────────────────────────────────────────────────────────
-    path('auth/login/',                  LoginView.as_view(),               name='auth-login'),
-    path('auth/logout/',                 LogoutView.as_view(),               name='auth-logout'),
-    path('auth/token/refresh/',          TokenRefreshView.as_view(),         name='auth-token-refresh'),
+    path('auth/login/',                         LoginView.as_view(),               name='auth-login'),
+    path('auth/logout/',                        LogoutView.as_view(),               name='auth-logout'),
+    path('auth/token/refresh/',                 TokenRefreshView.as_view(),         name='auth-token-refresh'),
+    path('auth/me/',                            CurrentUserView.as_view(),          name='auth-me'),
+    path('auth/me/stats/',                      MySecurityStatsView.as_view(),      name='auth-me-stats'),
+    path('auth/me/password-resets/',            MyPasswordResetsView.as_view(),     name='auth-me-password-resets'),
+    path('auth/special_login/preview/',         SpecialLoginPreviewView.as_view(),  name='special-login-preview'),
 
     # ── Activation ────────────────────────────────────────────────────────────
     # GET  → ActivationPreviewView (pre-fill form)
@@ -75,6 +85,8 @@ urlpatterns = [
     path('<str:user_id>/reactivate/',     UserReactivateView.as_view(),    name='user-reactivate'),
     path('<str:user_id>/unlock/',         UserUnlockView.as_view(),        name='user-unlock'),
     path('<str:user_id>/password-reset/', AdminPasswordResetView.as_view(),name='user-password-reset'),
+    path('password-resets/',              PasswordResetListView.as_view(),  name='password-reset-list'),
+    path('password-resets/<int:pk>/revoke/', RevokePasswordResetView.as_view(), name='password-reset-revoke'),
 
     # ── Router URLs ───────────────────────────────────────────────────────────
     path('', include(router.urls)),

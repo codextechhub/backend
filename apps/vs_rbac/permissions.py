@@ -11,6 +11,18 @@ def _get_user(obj, request):
     return getattr(request, "user", None)
 
 
+def is_vision_super_admin(user):
+    """Return True if *user* currently holds an active xvs_super_admin role."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    from .models import PlatformUserRoleAssignment
+    return PlatformUserRoleAssignment.objects.filter(
+        user=user,
+        role_id="xvs_super_admin",
+        assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
+    ).exists()
+
+
 def user_has_rbac_permission(user, permission_key, school=None):
     """
     Check whether *user* holds *permission_key* through any active role.
@@ -33,7 +45,7 @@ def user_has_rbac_permission(user, permission_key, school=None):
     user_type = getattr(user, "user_type", "")
 
     # Vision staff: check platform roles
-    if user_type == "VISION_STAFF":
+    if user_type == "CX_STAFF":
         return PlatformRolePermission.objects.filter(
             role__user_assignments__user=user,
             role__user_assignments__assignment_status="ACTIVE",
@@ -87,25 +99,17 @@ class IsVisionStaff(BasePermission):
         u = request.user
         if not u or not u.is_authenticated:
             return False
-        return getattr(u, "user_type", "") == "VISION_STAFF"
+        return getattr(u, "user_type", "") == "CX_STAFF"
 
 
 class IsVisionSuperAdmin(BasePermission):
     """
     Grants access only to the active Vision Super Admin —
-    the single user with an active vision-super-admin PlatformUserRoleAssignment.
+    the single user with an active xvs_super_admin PlatformUserRoleAssignment.
     """
 
     def has_permission(self, request, view):
-        u = request.user
-        if not u or not u.is_authenticated:
-            return False
-        from .models import PlatformUserRoleAssignment
-        return PlatformUserRoleAssignment.objects.filter(
-            user=u,
-            role_id="vision-super-admin",
-            assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
-        ).exists()
+        return is_vision_super_admin(request.user)
 
 
 class IsSchoolAdmin(BasePermission):
@@ -155,6 +159,10 @@ class HasRBACPermission(BasePermission):
         if not u or not u.is_authenticated:
             return False
 
+        # Vision super admin bypasses all RBAC permission checks.
+        if is_vision_super_admin(u):
+            return True
+
         rbac_perms = getattr(view, "rbac_permission", None)
         rbac_group_perms = getattr(view, "rbac_group_permission", None)
 
@@ -188,6 +196,19 @@ class HasRBACPermission(BasePermission):
                 passed = False
 
         return passed
+
+
+
+class IsBranchAdmin(BasePermission):
+    """
+    Grants access only to users with user_type == BRANCH_ADMIN.
+    """
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u or not u.is_authenticated:
+            return False
+        return getattr(u, "user_type", "") == "BRANCH_ADMIN"
 
 
 class ReadOnly(BasePermission):

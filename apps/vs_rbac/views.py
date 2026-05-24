@@ -10,8 +10,11 @@ from core.pagination import XVSPagination
 from core.response import success_response, error_response
 from .models import (
     Permission,
+    PermissionAction,
     PermissionDependency,
     PermissionGroup,
+    PermissionModule,
+    PermissionResource,
     PlatformRoleChangeRequest,
     PlatformRoleTemplate,
     PlatformUserRoleAssignment,
@@ -20,9 +23,13 @@ from .models import (
     SchoolUserRoleAssignment,
 )
 from .serializers import (
+    PermissionActionSerializer,
     PermissionDependencySerializer,
+    PermissionDetailSerializer,
     PermissionGroupDetailSerializer,
     PermissionGroupListSerializer,
+    PermissionModuleSerializer,
+    PermissionResourceSerializer,
     PermissionSerializer,
     PlatformRoleChangeRequestSerializer,
     PlatformRoleTemplateDetailSerializer,
@@ -35,29 +42,164 @@ from .serializers import (
 )
 from .permissions import (
     IsAuthenticatedAndActive,
-    IsVisionStaff,
     IsSchoolAdmin,
     IsVisionSuperAdmin,
+    HasRBACPermission,
+    is_vision_super_admin,
 )
+
+
+# -----------------------------------------------------------------------------
+# Permission vocabulary — Module / Resource / Action (Vision-owned)
+# -----------------------------------------------------------------------------
+
+class PermissionModuleListCreateView(CreateModelMixin, generics.ListCreateAPIView):
+    queryset = PermissionModule.objects.all()
+    serializer_class = PermissionModuleSerializer
+    pagination_class = XVSPagination
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        qp = self.request.query_params
+        if is_active := qp.get("is_active"):
+            lowered = is_active.lower()
+            if lowered in {"true", "1"}:
+                qs = qs.filter(is_active=True)
+            elif lowered in {"false", "0"}:
+                qs = qs.filter(is_active=False)
+        if search := qp.get("search"):
+            qs = qs.filter(Q(name__icontains=search))
+        return qs
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            self.rbac_permission = "platform.permissions.create"
+        else:
+            self.rbac_permission = "platform.permissions.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+
+class PermissionModuleDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
+    queryset = PermissionModule.objects.all()
+    serializer_class = PermissionModuleSerializer
+    lookup_field = "name"
+
+    def get_permissions(self):
+        if self.request.method == "DELETE":
+            self.rbac_permission = "platform.permissions.manage"
+        elif self.request.method in ("PUT", "PATCH"):
+            self.rbac_permission = "platform.permissions.update"
+        else:
+            self.rbac_permission = "platform.permissions.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+
+class PermissionResourceListCreateView(CreateModelMixin, generics.ListCreateAPIView):
+    queryset = PermissionResource.objects.select_related("module").all()
+    serializer_class = PermissionResourceSerializer
+    pagination_class = XVSPagination
+
+    def get_queryset(self):
+        qs = super().get_queryset().annotate(permissions_count=Count("permissions", distinct=True))
+        qp = self.request.query_params
+        if module := qp.get("module"):
+            qs = qs.filter(module_id=module)
+        if is_active := qp.get("is_active"):
+            lowered = is_active.lower()
+            if lowered in {"true", "1"}:
+                qs = qs.filter(is_active=True)
+            elif lowered in {"false", "0"}:
+                qs = qs.filter(is_active=False)
+        if search := qp.get("search"):
+            qs = qs.filter(Q(name__icontains=search))
+        return qs
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            self.rbac_permission = "platform.permissions.create"
+        else:
+            self.rbac_permission = "platform.permissions.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+
+class PermissionResourceDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
+    queryset = PermissionResource.objects.select_related("module").annotate(permissions_count=Count("permissions", distinct=True))
+    serializer_class = PermissionResourceSerializer
+
+    def get_permissions(self):
+        if self.request.method == "DELETE":
+            self.rbac_permission = "platform.permissions.manage"
+        elif self.request.method in ("PUT", "PATCH"):
+            self.rbac_permission = "platform.permissions.update"
+        else:
+            self.rbac_permission = "platform.permissions.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+
+class PermissionActionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
+    queryset = PermissionAction.objects.all()
+    serializer_class = PermissionActionSerializer
+    pagination_class = XVSPagination
+
+    def get_queryset(self):
+        qs = super().get_queryset().annotate(permissions_count=Count("permissions", distinct=True))
+        qp = self.request.query_params
+        if is_active := qp.get("is_active"):
+            lowered = is_active.lower()
+            if lowered in {"true", "1"}:
+                qs = qs.filter(is_active=True)
+            elif lowered in {"false", "0"}:
+                qs = qs.filter(is_active=False)
+        if search := qp.get("search"):
+            qs = qs.filter(Q(name__icontains=search))
+        return qs
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            self.rbac_permission = "platform.permissions.create"
+        else:
+            self.rbac_permission = "platform.permissions.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+
+class PermissionActionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
+    queryset = PermissionAction.objects.annotate(permissions_count=Count("permissions", distinct=True))
+    serializer_class = PermissionActionSerializer
+    lookup_field = "name"
+
+    def get_permissions(self):
+        if self.request.method == "DELETE":
+            self.rbac_permission = "platform.permissions.manage"
+        elif self.request.method in ("PUT", "PATCH"):
+            self.rbac_permission = "platform.permissions.update"
+        else:
+            self.rbac_permission = "platform.permissions.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
 
 # -----------------------------------------------------------------------------
 # Global Permission Registry (Vision-owned)
 # -----------------------------------------------------------------------------
 class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
-    queryset = Permission.objects.all().order_by("module_key", "action", "key")
+    queryset = Permission.objects.select_related("module", "resource", "action").order_by("-updated_at", "module", "action", "key")
     serializer_class = PermissionSerializer
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     pagination_class = XVSPagination
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            self.rbac_permission = "platform.permissions.create"
+        else:
+            self.rbac_permission = "platform.permissions.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
         qs = super().get_queryset()
         qp = self.request.query_params
 
         if module_key := qp.get("module_key"):
-            qs = qs.filter(module_key=module_key)
-        if action := qp.get("action"):
-            qs = qs.filter(action=action)
+            qs = qs.filter(module_id=module_key)
+        if action_key := qp.get("action"):
+            qs = qs.filter(action_id=action_key)
         if is_restricted := qp.get("is_restricted"):
             lowered = is_restricted.lower()
             if lowered in {"true", "1"}:
@@ -66,15 +208,37 @@ class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
                 qs = qs.filter(is_restricted=False)
         if sensitivity_level := qp.get("sensitivity_level"):
             qs = qs.filter(sensitivity_level=sensitivity_level)
+        if search := qp.get("search"):
+            qs = qs.filter(
+                Q(key__icontains=search) |
+                Q(module_id__icontains=search) |
+                Q(resource__name__icontains=search) |
+                Q(action_id__icontains=search) |
+                Q(description__icontains=search)
+            )
 
         return qs
 
 
 class PermissionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
-    queryset = Permission.objects.all()
-    serializer_class = PermissionSerializer
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    queryset = Permission.objects.prefetch_related(
+        "groups", "dependencies__depends_on", "required_by__permission"
+    ).all()
     lookup_field = "key"
+
+    def get_serializer_class(self):
+        if self.request.method == "GET":
+            return PermissionDetailSerializer
+        return PermissionSerializer
+
+    def get_permissions(self):
+        if self.request.method == "DELETE":
+            self.rbac_permission = "platform.permissions.delete"
+        elif self.request.method in ("PUT", "PATCH"):
+            self.rbac_permission = "platform.permissions.update"
+        else:
+            self.rbac_permission = "platform.permissions.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def update(self, request, *args, **kwargs):
         partial = kwargs.pop("partial", False)
@@ -94,10 +258,20 @@ class PermissionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMix
             )
 
         try:
-            new_key = serializer.validated_data.pop("key", None)
-            if new_key and new_key != instance.key:
+            validated = serializer.validated_data
+
+            # Auto-compute new key from whatever module/resource/action ended up in
+            # validated_data (new value if sent, existing instance value otherwise).
+            # key is read-only in the serializer so we handle the PK update here.
+            new_module = validated.get("module", instance.module)
+            new_resource = validated.get("resource", instance.resource)
+            new_action = validated.get("action", instance.action)
+            new_key = f"{new_module.pk}.{new_resource.name}.{new_action.pk}"
+
+            if new_key != instance.key:
                 Permission.objects.filter(key=instance.key).update(key=new_key)
                 instance.key = new_key
+
             self.perform_update(serializer)
         except Exception as exc:
             return error_response(
@@ -135,15 +309,27 @@ class PermissionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMix
 class PermissionDependencyListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     queryset = PermissionDependency.objects.select_related("permission", "depends_on").all()
     serializer_class = PermissionDependencySerializer
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     pagination_class = XVSPagination
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            self.rbac_permission = "platform.permissions.manage"
+        else:
+            self.rbac_permission = "platform.permissions.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
 
 class PermissionDependencyDetailView(RetrieveModelMixin, DestroyModelMixin, generics.RetrieveDestroyAPIView):
     queryset = PermissionDependency.objects.select_related("permission", "depends_on").all()
     serializer_class = PermissionDependencySerializer
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     lookup_field = "id"
+
+    def get_permissions(self):
+        if self.request.method == "DELETE":
+            self.rbac_permission = "platform.permissions.manage"
+        else:
+            self.rbac_permission = "platform.permissions.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
 
 # -----------------------------------------------------------------------------
@@ -155,8 +341,14 @@ class PermissionGroupListCreateView(CreateModelMixin, generics.ListCreateAPIView
     - GET: list all permission groups
     - POST: create a new permission group with optional permission_keys
     """
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     pagination_class = XVSPagination
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            self.rbac_permission = "platform.permissions.manage"
+        else:
+            self.rbac_permission = "platform.permissions.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
         qs = (
@@ -181,6 +373,8 @@ class PermissionGroupListCreateView(CreateModelMixin, generics.ListCreateAPIView
                 qs = qs.filter(is_system=True)
             elif lowered in {"false", "0"}:
                 qs = qs.filter(is_system=False)
+        if search := self.request.query_params.get("search"):
+            qs = qs.filter(Q(name__icontains=search))
 
         return qs
 
@@ -198,8 +392,14 @@ class PermissionGroupDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMod
     - DELETE: blocked for system groups
     """
     serializer_class = PermissionGroupDetailSerializer
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     lookup_field = "id"
+
+    def get_permissions(self):
+        if self.request.method in ("PUT", "PATCH", "DELETE"):
+            self.rbac_permission = "platform.permissions.manage"
+        else:
+            self.rbac_permission = "platform.permissions.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
         return PermissionGroup.objects.all().prefetch_related("permissions")
@@ -228,7 +428,9 @@ class SchoolRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIV
 
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
-        return (
+        qp = self.request.query_params
+
+        qs = (
             SchoolRoleTemplate.objects.filter(school_id=school_slug)
             .annotate(
                 assigned_users_count=Count(
@@ -242,9 +444,14 @@ class SchoolRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIV
                     distinct=True,
                 ),
             )
-            .select_related("created_by", "school")
+            .select_related("created_by", "school", "branch")
             .order_by("name")
         )
+
+        if branch_id := qp.get("branch"):
+            qs = qs.filter(branch_id=branch_id)
+
+        return qs
 
     def get_serializer_class(self):
         if self.request.method == "POST":
@@ -546,8 +753,14 @@ class PlatformRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAP
     - GET: list platform roles
     - POST: create platform role
     """
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     pagination_class = XVSPagination
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            self.rbac_permission = "platform.roles.create"
+        else:
+            self.rbac_permission = "platform.roles.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
         qs = (
@@ -570,6 +783,7 @@ class PlatformRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAP
 
         status_q = self.request.query_params.get("status")
         is_locked = self.request.query_params.get("is_locked")
+        is_system_role = self.request.query_params.get("is_system_role")
 
         if status_q:
             qs = qs.filter(status=status_q)
@@ -581,6 +795,15 @@ class PlatformRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAP
             elif lowered in {"false", "0"}:
                 qs = qs.filter(is_locked=False)
 
+        if is_system_role is not None:
+            lowered = is_system_role.lower()
+            if lowered in {"true", "1"}:
+                qs = qs.filter(is_system_role=True)
+            elif lowered in {"false", "0"}:
+                qs = qs.filter(is_system_role=False)
+
+        if search := self.request.query_params.get("search"):
+            qs = qs.filter(Q(name__icontains=search))
         return qs
 
     def get_serializer_class(self):
@@ -597,8 +820,16 @@ class PlatformRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, Destr
     - DELETE: blocked for system or locked roles
     """
     serializer_class = PlatformRoleTemplateDetailSerializer
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     lookup_field = "id"
+
+    def get_permissions(self):
+        if self.request.method == "DELETE":
+            self.rbac_permission = "platform.roles.delete"
+        elif self.request.method in ("PUT", "PATCH"):
+            self.rbac_permission = "platform.roles.update"
+        else:
+            self.rbac_permission = "platform.roles.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
         return (
@@ -612,30 +843,32 @@ class PlatformRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, Destr
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.is_locked:
-            return error_response(
-                message="This platform role is locked and cannot be modified.",
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        if instance.is_system_role:
-            return error_response(
-                message="System platform roles cannot be modified.",
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        if not is_vision_super_admin(request.user):
+            if instance.is_locked:
+                return error_response(
+                    message="This platform role is locked and cannot be modified.",
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if instance.is_system_role:
+                return error_response(
+                    message="System platform roles cannot be modified.",
+                    status=status.HTTP_403_FORBIDDEN,
+                )
         return super().update(request, *args, **kwargs)
 
     def delete(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.is_system_role:
-            return error_response(
-                message="System platform roles cannot be deleted.",
-                status=status.HTTP_403_FORBIDDEN,
-            )
-        if instance.is_locked:
-            return error_response(
-                message="This platform role is locked and cannot be deleted.",
-                status=status.HTTP_403_FORBIDDEN,
-            )
+        if not is_vision_super_admin(request.user):
+            if instance.is_system_role:
+                return error_response(
+                    message="System platform roles cannot be deleted.",
+                    status=status.HTTP_403_FORBIDDEN,
+                )
+            if instance.is_locked:
+                return error_response(
+                    message="This platform role is locked and cannot be deleted.",
+                    status=status.HTTP_403_FORBIDDEN,
+                )
         return super().delete(request, *args, **kwargs)
 
 
@@ -649,8 +882,14 @@ class PlatformUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCr
     - POST: assign platform role to internal user
     """
     serializer_class = PlatformUserRoleAssignmentSerializer
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     pagination_class = XVSPagination
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            self.rbac_permission = "platform.roles.assign"
+        else:
+            self.rbac_permission = "platform.roles.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
         qs = (
@@ -662,6 +901,7 @@ class PlatformUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCr
         user_id = self.request.query_params.get("user")
         role_id = self.request.query_params.get("role")
         assignment_status = self.request.query_params.get("assignment_status")
+        search = self.request.query_params.get("search", "").strip()
 
         if user_id:
             qs = qs.filter(user_id=user_id)
@@ -669,6 +909,13 @@ class PlatformUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCr
             qs = qs.filter(role_id=role_id)
         if assignment_status:
             qs = qs.filter(assignment_status=assignment_status)
+        if search:
+            from django.db.models import Q as _Q
+            qs = qs.filter(
+                _Q(user__full_name__icontains=search) |
+                _Q(user__email__icontains=search) |
+                _Q(role__name__icontains=search)
+            )
 
         return qs
 
@@ -683,13 +930,72 @@ class PlatformUserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin,
     - PATCH: often used to revoke
     """
     serializer_class = PlatformUserRoleAssignmentSerializer
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     lookup_field = "id"
+
+    def get_permissions(self):
+        if self.request.method in ("PUT", "PATCH"):
+            self.rbac_permission = "platform.roles.assign"
+        else:
+            self.rbac_permission = "platform.roles.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
         return (
             PlatformUserRoleAssignment.objects.all()
             .select_related("user", "role", "assigned_by", "revoked_by")
+        )
+
+
+class PlatformUserRoleAssignmentRevokeView(APIView):
+    """
+    Vision-facing revoke endpoint for platform role assignments.
+
+    POST /rbac/platform/role-assignments/<id>/revoke/
+    Body: { "reason_note": "Required justification for the audit trail." }
+    """
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.roles.assign"
+
+    def post(self, request, id: int):
+        reason = (request.data.get("reason_note") or "").strip()
+
+        if not reason:
+            return error_response(
+                message="A reason is required to revoke an assignment.",
+                error={"reason_note": ["This field is required."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            assignment = (
+                PlatformUserRoleAssignment.objects
+                .select_related("user", "role", "assigned_by", "revoked_by")
+                .get(id=id)
+            )
+        except PlatformUserRoleAssignment.DoesNotExist:
+            return error_response(
+                message="Assignment not found.",
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if assignment.assignment_status == PlatformUserRoleAssignment.AssignmentStatus.REVOKED:
+            return error_response(
+                message="This assignment has already been revoked.",
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        assignment.revoke(by_user=request.user, reason=reason)
+        assignment.save(update_fields=[
+            "assignment_status",
+            "revoked_at",
+            "revoked_by",
+            "reason_note",
+            "updated_at",
+        ])
+
+        return success_response(
+            message="Assignment revoked successfully.",
+            data=PlatformUserRoleAssignmentSerializer(assignment, context={"request": request}).data,
         )
 
 
@@ -703,8 +1009,14 @@ class PlatformRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCre
     - POST: create platform role change request
     """
     serializer_class = PlatformRoleChangeRequestSerializer
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     pagination_class = XVSPagination
+
+    def get_permissions(self):
+        if self.request.method == "POST":
+            self.rbac_permission = "platform.roles.update"
+        else:
+            self.rbac_permission = "platform.roles.view"
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
         qs = (
@@ -727,7 +1039,8 @@ class PlatformRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCre
 
 class PlatformRoleChangeRequestDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     serializer_class = PlatformRoleChangeRequestSerializer
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.roles.view"
     lookup_field = "id"
 
     def get_queryset(self):
@@ -748,7 +1061,8 @@ class PlatformRoleChangeRequestDecisionView(APIView):
         "notes": "optional approval notes / required denial reason"
     }
     """
-    permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.roles.update"
 
     def post(self, request, request_id: str):
         action = (request.data.get("action") or "").upper().strip()
@@ -841,7 +1155,8 @@ class TransferSuperAdminView(APIView):
 
     Body: { "new_super_admin_id": "<uuid>" }
     """
-    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin]
+    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin, HasRBACPermission]
+    rbac_permission = "platform.roles.transfer"
 
     def post(self, request):
         from django.conf import settings

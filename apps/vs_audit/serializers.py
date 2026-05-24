@@ -42,10 +42,11 @@ class UserSlimSerializer(serializers.ModelSerializer):
     Small user serializer.
     Adjust fields if your User model uses different names.
     """
+    full_name = serializers.CharField(read_only=True)
 
     class Meta:
         model = User
-        fields = ("id", "email")
+        fields = ("id", "email", "full_name")
 
 
 # -----------------------------------------------------------------------------
@@ -62,6 +63,20 @@ class AuditEventListSerializer(serializers.ModelSerializer):
     """
 
     actor_user = UserSlimSerializer(read_only=True)
+    ip_address = serializers.SerializerMethodField()
+    entity_user = serializers.SerializerMethodField()
+
+    def get_ip_address(self, obj):
+        return (obj.metadata or {}).get("ip_address")
+
+    def get_entity_user(self, obj):
+        if obj.entity_type != "User" or not obj.entity_id:
+            return None
+        users_map = self.context.get("entity_users", {})
+        user = users_map.get(str(obj.entity_id))
+        if not user:
+            return None
+        return {"id": str(user.id), "full_name": user.full_name, "email": user.email}
 
     class Meta:
         model = AuditEvent
@@ -77,7 +92,9 @@ class AuditEventListSerializer(serializers.ModelSerializer):
             "entity_type",
             "entity_id",
             "entity_label",
+            "entity_user",
             "summary",
+            "ip_address",
             "event_at",
         )
 
@@ -220,12 +237,14 @@ class ComplianceRuleListSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "name",
+            "description",
             "rule_type",
             "school",
             "module_key",
             "action_type",
             "is_active",
             "retention_days",
+            "updated_at",
         )
 
 
@@ -322,7 +341,7 @@ class AuditEventFilterSerializer(serializers.Serializer):
         choices=AuditActorType.choices,
         required=False,
     )
-    actor_user_id = serializers.UUIDField(required=False)
+    actor_user_id = serializers.IntegerField(required=False)
     entity_type = serializers.CharField(required=False)
     entity_id = serializers.CharField(required=False)
 

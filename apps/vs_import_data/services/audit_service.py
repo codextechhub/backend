@@ -6,19 +6,30 @@ from vs_audit.services import emit_audit_event
 # Maps the string action labels used internally in the import pipeline to
 # the canonical AuditActionType choices stored in AuditEvent.
 _ACTION_MAP: dict[str, str] = {
+    # Template lifecycle
+    "template_created": AuditActionType.CREATE,
+    # Batch lifecycle
     "batch_uploaded": AuditActionType.DATA_FILE_UPLOADED,
+    "batch_updated": AuditActionType.UPDATE,
+    "batch_deleted": AuditActionType.DELETE,
+    # Validation
+    "batch_validated": AuditActionType.CUSTOM,
+    # Issues
+    "issue_resolved": AuditActionType.UPDATE,
+    # Import execution
     "import_triggered": AuditActionType.DATA_IMPORT_STARTED,
     "import_row_success": AuditActionType.DATA_IMPORT_ROW_PROCESSED,
+    "import_row_skipped": AuditActionType.DATA_IMPORT_ROW_PROCESSED,
     "import_completed": AuditActionType.DATA_IMPORT_COMPLETED,
     "import_failed": AuditActionType.DATA_IMPORT_FAILED,
     "import_rollback": AuditActionType.DATA_IMPORT_ROLLED_BACK,
-    "validation_completed": AuditActionType.DATA_IMPORT_COMPLETED,
 }
 
 
 def create_import_audit_log(
     *,
-    school,
+    school=None,
+    branch=None,
     action: str,
     actor=None,
     import_batch=None,
@@ -50,6 +61,7 @@ def create_import_audit_log(
     extra_meta = {
         "import_action": action,
         "school_id": str(school.pk) if school else None,
+        "branch_id": str(branch.pk) if branch else None,
         "import_batch_id": str(import_batch.pk) if import_batch else None,
         "job_id": str(job.pk) if job else None,
         "message": message,

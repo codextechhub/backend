@@ -10,10 +10,13 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from rest_framework import serializers
+from rest_framework_simplejwt.serializers import (
+    TokenRefreshSerializer as JWTTokenRefreshSerializer,
+)
 
-from vs_rbac.models import SchoolRoleTemplate
-from vs_schools.models import School, Branch
 from vs_rbac.models import SchoolRoleTemplate, PlatformRoleTemplate
+from vs_rbac.fls import FieldSecurityMixin
+from vs_schools.models import School, Branch
 from .models import (
     User,
     UserInvitation,
@@ -35,6 +38,16 @@ class SchoolSlimSerializer(serializers.ModelSerializer):
         fields = ('id', 'name', 'slug')
 
 
+class UserInlineSerializer(serializers.ModelSerializer):
+    """Minimal nested user representation for related objects (sessions, lockouts, etc.)."""
+    full_name = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = User
+        fields = ('id', 'email', 'first_name', 'last_name', 'full_name')
+        read_only_fields = fields
+
+
 def _raise_password_error(exc: DjangoValidationError):
     if hasattr(exc, 'messages'):
         raise serializers.ValidationError({'password': exc.messages})
@@ -45,16 +58,26 @@ def _raise_password_error(exc: DjangoValidationError):
 # User serializers
 # =============================================================================
 
-class UserReadSerializer(serializers.ModelSerializer):
+class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     full_name        = serializers.SerializerMethodField()
     school_name = serializers.CharField(source='school.name', read_only=True, default=None)
     branch_name      = serializers.CharField(source='branch.name', read_only=True, default=None)
     invited_by_name  = serializers.SerializerMethodField()
 
+    # Security-sensitive fields: only platform staff with team-management
+    # access should see account security metadata for other users.
+    read_permissions = {
+        'password_changed_at': 'platform.team.view',
+        'last_login_at':       'platform.team.view',
+        'invited_by_id':       'platform.team.view',
+        'invited_by_name':     'platform.team.view',
+    }
+
     class Meta:
         model  = User
         fields = (
             'id',
+            'uid',
             'email',
             'first_name',
             'last_name',
@@ -86,20 +109,43 @@ class UserReadSerializer(serializers.ModelSerializer):
         return None
 
 
-class UserListSerializer(serializers.ModelSerializer):
+class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     full_name    = serializers.SerializerMethodField()
     branch_name  = serializers.CharField(source='branch.name', read_only=True, default=None)
+    invited_by_name         = serializers.SerializerMethodField()
+    invitation_email_status = serializers.SerializerMethodField()
+    invitation_expires_at   = serializers.SerializerMethodField()
+
+    read_permissions = {
+        'invited_by_name':       'platform.team.view',
+        'invitation_email_status': 'platform.team.view',
+        'invitation_expires_at':   'platform.team.view',
+    }
 
     class Meta:
         model  = User
         fields = (
-            'id', 'email', 'full_name', 'gender', 'user_type', 'role',
-            'status', 'branch_id', 'branch_name', 'created_at',
+            'id', 'uid', 'email', 'full_name', 'gender', 'user_type', 'role',
+            'status', 'branch_id', 'branch_name', 'invited_by_name', 'created_at',
+            'invitation_email_status', 'invitation_expires_at',
         )
         read_only_fields = fields
 
     def get_full_name(self, obj) -> str:
         return obj.full_name
+
+    def get_invited_by_name(self, obj) -> str | None:
+        if obj.invited_by:
+            return obj.invited_by.full_name
+        return None
+
+    def get_invitation_email_status(self, obj) -> str | None:
+        inv = getattr(obj, 'invitation', None)
+        return inv.email_status if inv else None
+
+    def get_invitation_expires_at(self, obj) -> str | None:
+        inv = getattr(obj, 'invitation', None)
+        return inv.expires_at.isoformat() if inv and inv.expires_at else None
 
 
 class UserCreateSerializer(serializers.Serializer):
@@ -136,8 +182,8 @@ class UserCreateSerializer(serializers.Serializer):
         user_type = attrs.get('user_type')
 
         if not user_type:
-            if self.context['request'].user.user_type == User.UserType.VISION_STAFF:
-                user_type = User.UserType.VISION_STAFF
+            if self.context['request'].user.user_type == User.UserType.CX_STAFF:
+                user_type = User.UserType.CX_STAFF
             else:                
                 user_type = User.UserType.SCHOOL_ADMIN
                 
@@ -164,7 +210,7 @@ class UserCreateSerializer(serializers.Serializer):
             attrs['branch'] = None
 
         # Vision Staff must not have school or branch
-        if user_type == User.UserType.VISION_STAFF:
+        if user_type == User.UserType.CX_STAFF:
             if attrs['school'] or attrs['branch']:
                 raise serializers.ValidationError(
                     {'user_type': 'Vision Staff accounts cannot be assigned to a school or branch.'}
@@ -189,16 +235,16 @@ class UserCreateSerializer(serializers.Serializer):
                 )
             
         role_id = attrs['role']
-        if user_type == User.UserType.VISION_STAFF:
+        if user_type == User.UserType.CX_STAFF:
             try:
                 role = PlatformRoleTemplate.objects.get(id=role_id)
             except PlatformRoleTemplate.DoesNotExist:
                 raise serializers.ValidationError(
                     {'role': f'Platform role with id "{role_id}" not found.'}
                 )
-            if role_id == 'vision-super-admin':
+            if role_id == 'xvs_super_admin':
                 from vs_rbac.models import PlatformUserRoleAssignment
-                if PlatformUserRoleAssignment.objects.filter(role_id='vision-super-admin').exists():
+                if PlatformUserRoleAssignment.objects.filter(role_id='xvs_super_admin').exists():
                     raise serializers.ValidationError(
                         {'role': 'A Vision Super Admin already exists. Only one is allowed.'}
                     )
@@ -282,8 +328,17 @@ class LoginRequestSerializer(serializers.Serializer):
         return attrs
 
 
-class TokenRefreshSerializer(serializers.Serializer):
-    refresh = serializers.CharField(write_only=True)
+class TokenRefreshSerializer(JWTTokenRefreshSerializer):
+    """
+    Thin wrapper around SimpleJWT's TokenRefreshSerializer.
+
+    SimpleJWT's serializer is the one that actually validates the refresh
+    token, generates a new access token, and rotates the refresh token when
+    ROTATE_REFRESH_TOKENS=True. The previous custom no-op CharField version
+    caused TokenRefreshView to raise KeyError('access') and return HTTP 500
+    on every refresh request.
+    """
+    pass
 
 
 class TokenRevokeSerializer(serializers.Serializer):
@@ -365,6 +420,9 @@ class UserInvitationReadSerializer(serializers.ModelSerializer):
 # =============================================================================
 
 class LoginSessionReadSerializer(serializers.ModelSerializer):
+    user   = UserInlineSerializer(read_only=True)
+    school = SchoolSlimSerializer(read_only=True)
+
     class Meta:
         model  = LoginSession
         fields = (
@@ -387,16 +445,20 @@ class ForceLogoutSerializer(serializers.Serializer):
 
 
 class AuthAttemptReadSerializer(serializers.ModelSerializer):
+    user   = UserInlineSerializer(read_only=True)
+    school = SchoolSlimSerializer(read_only=True)
+
     class Meta:
         model  = AuthAttempt
         fields = (
             'id', 'email_entered', 'user', 'school',
-            'ip_address', 'result', 'failure_code', 'metadata', 'created_at',
+            'ip_address', 'user_agent', 'result', 'failure_code', 'metadata', 'created_at',
         )
         read_only_fields = fields
 
 
 class AccountLockoutReadSerializer(serializers.ModelSerializer):
+    user          = UserInlineSerializer(read_only=True)
     is_locked_now = serializers.SerializerMethodField()
 
     class Meta:
@@ -425,6 +487,27 @@ class AuthEventLogReadSerializer(serializers.ModelSerializer):
             'id', 'actor', 'subject', 'school', 'event',
             'ip_address', 'user_agent', 'metadata', 'created_at',
         )
+        read_only_fields = fields
+
+
+class PasswordResetAdminSerializer(serializers.ModelSerializer):
+    user = UserInlineSerializer(read_only=True)
+
+    class Meta:
+        model  = PasswordResetRequest
+        fields = (
+            'id', 'user', 'requested_by', 'requested_ip',
+            'expires_at', 'used_at', 'created_at',
+        )
+        read_only_fields = fields
+
+
+class MyPasswordResetSerializer(serializers.ModelSerializer):
+    """Self-service view — omits the user field since it is always the requester."""
+
+    class Meta:
+        model  = PasswordResetRequest
+        fields = ('id', 'requested_by', 'requested_ip', 'expires_at', 'used_at', 'created_at')
         read_only_fields = fields
 
 

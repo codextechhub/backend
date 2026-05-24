@@ -11,7 +11,7 @@ Others/
 .qodo/
 frontend_2/
 staticfiles/
-# frontend-test/
+.claude/
 
 # -- secrets / env --
 .env

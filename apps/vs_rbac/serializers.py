@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from django.contrib.auth import get_user_model
 from django.db import transaction
 from rest_framework import serializers
 from django.utils import timezone
@@ -7,8 +8,11 @@ from django.utils import timezone
 from .models import (
     GroupPermission,
     Permission,
+    PermissionAction,
     PermissionDependency,
     PermissionGroup,
+    PermissionModule,
+    PermissionResource,
     PlatformRoleChangeDeltaItem,
     PlatformRoleChangeRequest,
     PlatformRoleGroup,
@@ -70,18 +74,93 @@ class PermissionKeyListValidationMixin:
 
 
 # -----------------------------------------------------------------------------
-# 1) Permission Registry
+# 1) Permission vocabulary — Module / Resource / Action
+# -----------------------------------------------------------------------------
+
+class PermissionModuleSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PermissionModule
+        fields = ["name", "description", "is_active", "created_at", "updated_at"]
+        read_only_fields = ["created_at", "updated_at"]
+
+
+class PermissionResourceSerializer(serializers.ModelSerializer):
+    module = serializers.SlugRelatedField(
+        slug_field="name",
+        queryset=PermissionModule.objects.filter(is_active=True),
+    )
+    permissions_count = serializers.IntegerField(read_only=True, default=0)
+
+    class Meta:
+        model = PermissionResource
+        fields = ["id", "module", "name", "description", "is_active", "permissions_count", "created_at", "updated_at"]
+        read_only_fields = ["id", "permissions_count", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        module = attrs.get("module") or getattr(self.instance, "module", None)
+        name = attrs.get("name") or getattr(self.instance, "name", None)
+        qs = PermissionResource.objects.filter(module=module, name=name)
+        if self.instance:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError({"name": "A resource with this name already exists in this module."})
+        return attrs
+
+
+class PermissionActionSerializer(serializers.ModelSerializer):
+    permissions_count = serializers.IntegerField(read_only=True, default=0)
+
+    class Meta:
+        model = PermissionAction
+        fields = ["name", "description", "is_active", "permissions_count", "created_at", "updated_at"]
+        read_only_fields = ["permissions_count", "created_at", "updated_at"]
+
+
+# -----------------------------------------------------------------------------
+# 1b) Permission Registry
 # -----------------------------------------------------------------------------
 class PermissionSerializer(serializers.ModelSerializer):
     """Read/write serializer for the global permission registry."""
+
+    module = serializers.SlugRelatedField(
+        slug_field="name",
+        queryset=PermissionModule.objects.filter(is_active=True),
+    )
+    # Accepts the resource name slug on write (e.g. "invoice").
+    # Resolved to a PermissionResource instance in validate() using the module context.
+    # write_only because the read representation uses resource_key instead.
+    resource = serializers.CharField(
+        write_only=True,
+        help_text="Resource name slug. Must belong to the selected module.",
+    )
+    action = serializers.SlugRelatedField(
+        slug_field="name",
+        queryset=PermissionAction.objects.filter(is_active=True),
+    )
+
+    resource_key = serializers.SerializerMethodField(read_only=True)
+    module_key = serializers.SerializerMethodField(read_only=True)
+    action_key = serializers.SerializerMethodField(read_only=True)
+
+    def get_resource_key(self, obj):
+        return obj.resource.name if obj.resource_id else None
+
+    def get_module_key(self, obj):
+        return obj.module_id
+
+    def get_action_key(self, obj):
+        return obj.action_id
 
     class Meta:
         model = Permission
         fields = [
             "key",
+            "module",
             "module_key",
             "resource",
+            "resource_key",
             "action",
+            "action_key",
             "description",
             "sensitivity_level",
             "is_restricted",
@@ -89,7 +168,57 @@ class PermissionSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["key", "created_at", "updated_at"]
+        read_only_fields = ["key", "module_key", "resource_key", "action_key", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        module = attrs.get("module") or getattr(self.instance, "module", None)
+        resource_name = attrs.get("resource")
+
+        # Resolve resource name → PermissionResource instance using module context.
+        # resource.name is only unique per-module, so both values are required.
+        if resource_name:
+            if not module:
+                raise serializers.ValidationError(
+                    {"module": "Module is required to resolve the resource."}
+                )
+            try:
+                resource_obj = PermissionResource.objects.get(
+                    module_id=module.pk, name=resource_name, is_active=True
+                )
+                attrs["resource"] = resource_obj
+            except PermissionResource.DoesNotExist:
+                raise serializers.ValidationError({
+                    "resource": (
+                        f"No active resource '{resource_name}' found in module '{module.name}'. "
+                        "Create the resource first or choose a different module."
+                    )
+                })
+
+        resource = attrs.get("resource") or getattr(self.instance, "resource", None)
+        action = attrs.get("action") or getattr(self.instance, "action", None)
+
+        # Module–resource ownership check (guards against direct API misuse)
+        if (
+            module
+            and isinstance(resource, PermissionResource)
+            and resource.module_id != module.pk
+        ):
+            raise serializers.ValidationError({
+                "resource": f"Resource '{resource.name}' does not belong to module '{module.name}'."
+            })
+
+        # Duplicate key guard — checks the composed key before hitting the DB unique constraint
+        if module and isinstance(resource, PermissionResource) and action:
+            composed_key = f"{module.pk}.{resource.name}.{action.pk}"
+            qs = Permission.objects.filter(key=composed_key)
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError({
+                    "key": f'Permission "{composed_key}" already exists.'
+                })
+
+        return attrs
 
 
 class PermissionDependencySerializer(serializers.ModelSerializer):
@@ -123,6 +252,39 @@ class PermissionDependencySerializer(serializers.ModelSerializer):
             depends_on=depends_on,
             **validated_data,
         )
+
+
+class PermissionDetailSerializer(PermissionSerializer):
+    """Extended serializer for the permission detail endpoint.
+
+    Adds groups this permission belongs to, permissions it depends on
+    (dependencies), and permissions that depend on it (dependents).
+    """
+
+    groups = serializers.SerializerMethodField()
+    dependencies = serializers.SerializerMethodField()
+    dependents = serializers.SerializerMethodField()
+
+    class Meta(PermissionSerializer.Meta):
+        fields = PermissionSerializer.Meta.fields + ["groups", "dependencies", "dependents"]
+
+    def get_groups(self, obj):
+        return [
+            {"id": str(g.id), "name": g.name, "is_system": g.is_system}
+            for g in obj.groups.all()
+        ]
+
+    def get_dependencies(self, obj):
+        return [
+            {"key": dep.depends_on.key, "description": dep.depends_on.description}
+            for dep in obj.dependencies.select_related("depends_on").all()
+        ]
+
+    def get_dependents(self, obj):
+        return [
+            {"key": dep.permission.key, "description": dep.permission.description}
+            for dep in obj.required_by.select_related("permission").all()
+        ]
 
 
 # -----------------------------------------------------------------------------
@@ -1093,27 +1255,89 @@ class PlatformUserRoleAssignmentSerializer(serializers.ModelSerializer):
     Assign or revoke a platform role for a Vision/internal user.
     """
 
+    # Write-only FK fields used on create/update.
+    user = serializers.PrimaryKeyRelatedField(
+        queryset=get_user_model().objects.all(),
+        write_only=True,
+    )
+    role = serializers.PrimaryKeyRelatedField(
+        queryset=PlatformRoleTemplate.objects.all(),
+        write_only=True,
+    )
+
+    # Read-only expanded fields derived from select_related data.
+    user_id = serializers.SerializerMethodField()
+    user_name = serializers.SerializerMethodField()
+    user_email = serializers.SerializerMethodField()
+    role_id = serializers.SerializerMethodField()
+    role_name = serializers.SerializerMethodField()
+    assigned_by_id = serializers.SerializerMethodField()
+    assigned_by_name = serializers.SerializerMethodField()
+    revoked_by_id = serializers.SerializerMethodField()
+    revoked_by_name = serializers.SerializerMethodField()
+
+    def get_user_id(self, obj):
+        return str(obj.user_id) if obj.user_id else None
+
+    def get_user_name(self, obj):
+        return getattr(obj.user, "full_name", None) or getattr(obj.user, "email", None)
+
+    def get_user_email(self, obj):
+        return getattr(obj.user, "email", None)
+
+    def get_role_id(self, obj):
+        return str(obj.role_id) if obj.role_id else None
+
+    def get_role_name(self, obj):
+        return getattr(obj.role, "name", None)
+
+    def get_assigned_by_id(self, obj):
+        return str(obj.assigned_by_id) if obj.assigned_by_id else None
+
+    def get_assigned_by_name(self, obj):
+        return getattr(obj.assigned_by, "full_name", None) or getattr(obj.assigned_by, "email", None)
+
+    def get_revoked_by_id(self, obj):
+        return str(obj.revoked_by_id) if obj.revoked_by_id else None
+
+    def get_revoked_by_name(self, obj):
+        return getattr(obj.revoked_by, "full_name", None) or getattr(obj.revoked_by, "email", None)
+
     class Meta:
         model = PlatformUserRoleAssignment
         fields = [
             "id",
             "user",
             "role",
+            "user_id",
+            "user_name",
+            "user_email",
+            "role_id",
+            "role_name",
             "assignment_status",
-            "assigned_by",
+            "assigned_by_id",
+            "assigned_by_name",
             "assigned_at",
             "revoked_at",
-            "revoked_by",
+            "revoked_by_id",
+            "revoked_by_name",
             "reason_note",
             "created_at",
             "updated_at",
         ]
         read_only_fields = [
             "id",
-            "assigned_by",
+            "user_id",
+            "user_name",
+            "user_email",
+            "role_id",
+            "role_name",
+            "assigned_by_id",
+            "assigned_by_name",
             "assigned_at",
             "revoked_at",
-            "revoked_by",
+            "revoked_by_id",
+            "revoked_by_name",
             "created_at",
             "updated_at",
         ]

@@ -7,7 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from vs_schools.models import Branch
+from vs_schools.models import Branch, School
 
 
 # =========================================================
@@ -47,13 +47,6 @@ class FileFormatChoices(models.TextChoices):
 class DatasetTypeChoices(models.TextChoices):
     SCHOOLS = "schools", "Schools"
     BRANCHES = "branches", "Branches"
-    STUDENTS = "students", "Students"
-    STAFF = "staff", "Staff"
-    CLASSES = "classes", "Classes / Structure"
-    FEES = "fees", "Fees"
-    VENDORS = "vendors", "Vendors"
-    HISTORICAL = "historical", "Historical Data"
-    GENERIC = "generic", "Generic / Unknown"
 
 
 class ImportBatchStatusChoices(models.TextChoices):
@@ -145,11 +138,20 @@ class TemplateColumnDataTypeChoices(models.TextChoices):
 # =========================================================
 def import_file_upload_to(instance: "ImportBatch", filename: str) -> str:
     ext = os.path.splitext(filename)[1].lower()
-    branch_code = getattr(instance.branch, "code", "branch")
-    return (
-        f"imports/{branch_code}/{instance.dataset_type or 'unknown'}/"
-        f"{instance.id}{ext}"
-    )
+    if instance.school_id:
+        scope = getattr(instance.school, "slug", "school")
+    elif instance.branch_id:
+        scope = f"branch_{getattr(instance.branch, 'slug', instance.branch_id)}"
+    else:
+        scope = "internal"
+
+    if instance.original_filename:
+        base = os.path.splitext(instance.original_filename)[0]
+        stamp = timezone.now().strftime("%Y%m%d_%H%M")
+        stored_name = f"{base}_{stamp}{ext}"
+    else:
+        stored_name = f"{uuid.uuid4().hex}{ext}"
+    return f"imports/{scope}/{instance.dataset_type or 'unknown'}/{stored_name}"
 
 def import_template_file_upload_to(instance: "ImportTemplate", filename: str) -> str:
     ext = os.path.splitext(filename)[1].lower()
@@ -166,12 +168,14 @@ class ImportBatch(TimeStampedModel):
     of that lifecycle is reflected on this record, making it the central tracking
     object for Module 9.
 
-    One batch belongs to exactly one branch and one uploader. It may optionally be
-    linked to a system ImportTemplate. The file is stored using a branch-scoped,
-    dataset-type-scoped path via `import_file_upload_to`.
+    A batch may be scoped to a School, a Branch, or neither (internal system use).
+    Exactly one of school/branch may be set, or both may be null. It may optionally be
+    linked to a system ImportTemplate. The file is stored using a scope-derived path
+    via `import_file_upload_to`.
 
     Fields:
-        branch: FK to Branch; scopes this batch to a specific school branch.
+        school: Optional FK to School; set when the import is school-scoped.
+        branch: Optional FK to Branch; set when the import is branch-scoped.
         uploaded_by: FK to the user who performed the upload (PROTECT on delete).
         template: Optional FK to ImportTemplate; the official system template selected
                   for this batch. Null when no template is explicitly chosen.
@@ -200,16 +204,24 @@ class ImportBatch(TimeStampedModel):
 
     Meta:
         - ordering newest-first by created_at.
-        - indexes on (branch, status), (branch, dataset_type), and created_at
+        - indexes on (school, status), (school, dataset_type), and created_at
           to serve dashboard and filter queries efficiently.
     """
 
-    id = models.AutoField(primary_key=True, editable=False)
+    school = models.ForeignKey(
+        School,
+        on_delete=models.CASCADE,
+        related_name="import_batches",
+        null=True,
+        blank=True,
+    )
 
     branch = models.ForeignKey(
         Branch,
         on_delete=models.CASCADE,
         related_name="import_batches",
+        null=True,
+        blank=True,
     )
 
     uploaded_by = models.ForeignKey(
@@ -258,7 +270,9 @@ class ImportBatch(TimeStampedModel):
     # Parsed metadata / snapshots
     uploaded_headers = models.JSONField(default=list, blank=True)  # List of column headers as they appear in the uploaded file
     template_headers_snapshot = models.JSONField(default=list, blank=True)  # List of expected column headers from the template at the time of upload
+    preview_rows = models.JSONField(default=list, blank=True)  # First N parsed rows, stored for validation service use
     structure_matches_template = models.BooleanField(default=False)  # Indicates if the uploaded file structure matches the template
+    validation_summary = models.JSONField(null=True, blank=True)  # Summary dict written after validation completes
 
     has_critical_errors = models.BooleanField(default=False)
     is_ready_for_import = models.BooleanField(default=False)
@@ -272,13 +286,15 @@ class ImportBatch(TimeStampedModel):
     class Meta:
         ordering = ["-created_at"]
         indexes = [
+            models.Index(fields=["school", "status"]),
+            models.Index(fields=["school", "dataset_type"]),
             models.Index(fields=["branch", "status"]),
-            models.Index(fields=["branch", "dataset_type"]),
             models.Index(fields=["created_at"]),
         ]
 
     def __str__(self) -> str:
-        return f"{self.branch} - {self.dataset_type} - {self.original_filename}"
+        scope = self.school or self.branch or "internal"
+        return f"{scope} - {self.dataset_type} - {self.original_filename}"
 
     def clean(self):
         allowed = {FileFormatChoices.CSV, FileFormatChoices.XLSX, FileFormatChoices.XLS}
@@ -314,7 +330,7 @@ class ImportTemplate(TimeStampedModel):
                  column changes.
         status: Publication state (TemplateStatusChoices, default ACTIVE).
         default_file_format: Preferred format for generated download files
-                             (FileFormatChoices, default XLSX).
+                             (FileFormatChoices, default CSV).
         template_file: Optional pre-generated downloadable file stored at a
                        dataset-type/code-scoped path.
         instructions: Plain-language guidance displayed to admins before they
@@ -335,8 +351,6 @@ class ImportTemplate(TimeStampedModel):
         - indexes on (dataset_type, status) for active-template lookups and on code
           for direct programmatic access.
     """
-
-    id = models.AutoField(primary_key=True, editable=False)
 
     code = models.CharField(
         max_length=100,
@@ -359,7 +373,7 @@ class ImportTemplate(TimeStampedModel):
     default_file_format = models.CharField(
         max_length=10,
         choices=FileFormatChoices.choices,
-        default=FileFormatChoices.XLSX,
+        default=FileFormatChoices.CSV,
     )
 
     instructions = models.TextField(
@@ -451,8 +465,6 @@ class ImportTemplateColumn(TimeStampedModel):
         - indexes on (template, column_order) and (template, is_required) to
           support ordered rendering and required-column filtering.
     """
-
-    id = models.AutoField(primary_key=True, editable=False)
 
     template = models.ForeignKey(
         ImportTemplate,
@@ -575,8 +587,6 @@ class ImportValidationIssue(TimeStampedModel):
           (import_batch, row_number) for issue filtering and export queries.
     """
 
-    id = models.AutoField(primary_key=True, editable=False)
-
     import_batch = models.ForeignKey(
         ImportBatch,
         on_delete=models.CASCADE,
@@ -629,62 +639,6 @@ class ImportValidationIssue(TimeStampedModel):
 
 
 # =========================================================
-# Optional row corrections before import
-# =========================================================
-class ImportRowCorrection(TimeStampedModel):
-    """
-    A user-supplied override for a specific row/column value before an ImportBatch
-    proceeds to execution. Corrections allow analysts to fix individual cells between
-    validation passes without re-uploading the full file. Each record is fully auditable,
-    capturing the before/after values and the person who made the change.
-
-    Fields:
-        import_batch: FK to the batch the corrected row belongs to (CASCADE on delete).
-        row_number: Spreadsheet row index (1-based) of the cell being corrected.
-        column_name: Header name of the column whose value is being overridden.
-        old_value: The original cell value as it existed before the correction.
-        new_value: The replacement value the analyst has provided.
-        reason: Optional justification for the correction, supporting audit trails.
-        corrected_by: FK to the user who submitted the correction (PROTECT on delete).
-
-    Meta:
-        - ordering by row_number, column_name, created_at.
-        - index on (import_batch, row_number) for quick per-batch row lookup.
-    """
-
-    id = models.AutoField(primary_key=True, editable=False)
-
-    import_batch = models.ForeignKey(
-        ImportBatch,
-        on_delete=models.CASCADE,
-        related_name="row_corrections",
-    )
-
-    row_number = models.PositiveIntegerField()
-    column_name = models.CharField(max_length=255)
-
-    old_value = models.TextField(blank=True)
-    new_value = models.TextField(blank=True)
-
-    reason = models.TextField(blank=True)
-
-    corrected_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.PROTECT,
-        related_name="import_row_corrections",
-    )
-
-    class Meta:
-        ordering = ["row_number", "column_name", "created_at"]
-        indexes = [
-            models.Index(fields=["import_batch", "row_number"]),
-        ]
-
-    def __str__(self) -> str:
-        return f"Row {self.row_number} - {self.column_name}"
-
-
-# =========================================================
 # Background import execution
 # =========================================================
 class ImportJob(TimeStampedModel):
@@ -726,18 +680,10 @@ class ImportJob(TimeStampedModel):
         - indexes on status and started_at for dashboard and monitoring queries.
     """
 
-    id = models.AutoField(primary_key=True, editable=False)
-    
-    branch = models.ForeignKey(
-        Branch,
-        on_delete=models.CASCADE,
-        related_name="import_jobs",
-    )
-
-    import_batch = models.OneToOneField(
+    import_batch = models.ForeignKey(
         ImportBatch,
         on_delete=models.CASCADE,
-        related_name="import_job",
+        related_name="import_jobs",
     )
 
     queued_by = models.ForeignKey(
@@ -830,8 +776,6 @@ class ImportJobRowResult(TimeStampedModel):
           per-row lookup.
     """
 
-    id = models.AutoField(primary_key=True, editable=False)
-
     job = models.ForeignKey(
         ImportJob,
         on_delete=models.CASCADE,
@@ -889,8 +833,6 @@ class ImportRollbackRecord(TimeStampedModel):
     Meta:
         - ordering newest-first by started_at.
     """
-
-    id = models.AutoField(primary_key=True, editable=False)
 
     job = models.ForeignKey(
         ImportJob,
@@ -952,8 +894,6 @@ class ImportNotification(TimeStampedModel):
         - indexes on (recipient, status) for per-user inbox queries and on event_type
           for system-level delivery monitoring.
     """
-
-    id = models.AutoField(primary_key=True, editable=False)
 
     import_batch = models.ForeignKey(
         ImportBatch,

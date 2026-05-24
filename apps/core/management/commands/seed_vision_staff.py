@@ -62,7 +62,7 @@ class Command(BaseCommand):
                 defaults={
                     "first_name": data["first_name"],
                     "last_name": data["last_name"],
-                    "user_type": User.UserType.VISION_STAFF,
+                    "user_type": User.UserType.CX_STAFF,
                     "status": User.Status.ACTIVE,
                     "is_active": True,
                     "is_staff": True,

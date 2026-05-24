@@ -12,6 +12,7 @@ from ..validators import (
     find_duplicate_values,
     summarize_issues,
     validate_duplicate_headers,
+    validate_foreign_key_reference,
 )
 from .template import get_template_headers
 from .template_validation import (
@@ -76,7 +77,7 @@ def _validate_headers_against_template(import_batch) -> list[dict]:
     """
     issues = []
 
-    uploaded_headers = import_batch.uploaded_headers or import_batch.detected_columns or []
+    uploaded_headers = import_batch.uploaded_headers or []
 
     issues.extend(validate_duplicate_headers(uploaded_headers))
 
@@ -134,56 +135,215 @@ def _validate_template_uniqueness_rules(import_batch) -> list[dict]:
 
 def _validate_dataset_specific_rules(import_batch) -> list[dict]:
     """
-    Optional place for dataset-specific business rules that go beyond
-    simple column-level validation.
-
-    Examples:
-    - fees.amount must be > 0
-    - class session must exist
-    - staff role must be compatible with department
+    Dataset-specific business rules that catch runtime errors before execution.
+    Routed by template.dataset_type.
     """
-    issues = []
+    if not import_batch.template:
+        return []
+    dataset_type = import_batch.template.dataset_type
+    if dataset_type == "schools":
+        return _validate_schools_rules(import_batch)
+    if dataset_type == "branches":
+        return _validate_branches_rules(import_batch)
+    return []
 
-    dataset_type = getattr(import_batch.template, "dataset_type", None)
+
+def _validate_schools_rules(import_batch) -> list[dict]:
+    from datetime import date as date_type
+    from vs_schools.models import PackagePlan, XVSModules
+    from vs_user.models import User
+
+    issues = []
     rows = import_batch.preview_rows or []
 
-    if dataset_type == "fees":
-        for row_number, row_data in enumerate(rows, start=1):
-            amount = row_data.get("amount")
+    # Prefetch valid keys once to avoid per-row DB hits
+    valid_plan_codes = set(PackagePlan.objects.filter(is_active=True).values_list("code", flat=True))
+    valid_module_keys = set(XVSModules.objects.filter(is_active=True).values_list("key", flat=True))
+    today = timezone.now().date()
 
-            if amount not in [None, ""]:
-                try:
-                    numeric_amount = float(str(amount))
-                    if numeric_amount <= 0:
-                        issues.append(
-                            {
-                                "severity": "error",
-                                "code": "business_rule",
-                                "message": "'amount' must be greater than 0.",
-                                "row_number": row_number,
-                                "column_name": "amount",
-                                "raw_value": amount,
-                            }
-                        )
-                except (ValueError, TypeError):
-                    # Type-format problems should already be caught elsewhere.
-                    pass
+    # Track admin emails seen across rows to catch within-file duplicates
+    seen_admin_emails: dict[str, int] = {}
+
+    for row_number, row in enumerate(rows, start=1):
+        def _s(key: str) -> str:
+            return (row.get(key) or "").strip()
+
+        # --- package_plan: must exist and be active ---
+        plan_code = _s("package_plan")
+        if plan_code and plan_code not in valid_plan_codes:
+            issues.append({
+                "severity": "error",
+                "code": "invalid_choice",
+                "message": f"Package plan '{plan_code}' does not exist or is not active.",
+                "row_number": row_number,
+                "column_name": "package_plan",
+                "raw_value": plan_code,
+            })
+
+        # --- enabled_modules: each key must exist and be active ---
+        raw_modules = _s("enabled_modules")
+        if raw_modules:
+            for key in [m.strip() for m in raw_modules.split(",") if m.strip()]:
+                if key not in valid_module_keys:
+                    issues.append({
+                        "severity": "error",
+                        "code": "invalid_choice",
+                        "message": f"Module key '{key}' does not exist or is not active.",
+                        "row_number": row_number,
+                        "column_name": "enabled_modules",
+                        "raw_value": raw_modules,
+                    })
+
+        # --- subscription_expires_at: YYYY-MM-DD and must be future ---
+        expires_raw = _s("subscription_expires_at")
+        if expires_raw:
+            try:
+                expires_date = date_type.fromisoformat(expires_raw)
+                if expires_date <= today:
+                    issues.append({
+                        "severity": "error",
+                        "code": "business_rule",
+                        "message": f"subscription_expires_at must be a future date (got '{expires_raw}').",
+                        "row_number": row_number,
+                        "column_name": "subscription_expires_at",
+                        "raw_value": expires_raw,
+                    })
+            except ValueError:
+                issues.append({
+                    "severity": "error",
+                    "code": "invalid_format",
+                    "message": f"subscription_expires_at must be in YYYY-MM-DD format (got '{expires_raw}').",
+                    "row_number": row_number,
+                    "column_name": "subscription_expires_at",
+                    "raw_value": expires_raw,
+                })
+
+        # --- admin emails: must not already exist as users, must not repeat across rows ---
+        for col in ("school_admin_email", "branch_admin_email"):
+            email = _s(col).lower()
+            if not email:
+                continue
+            if User.objects.filter(email=email).exists():
+                issues.append({
+                    "severity": "error",
+                    "code": "duplicate_record",
+                    "message": f"A user with email '{email}' already exists.",
+                    "row_number": row_number,
+                    "column_name": col,
+                    "raw_value": email,
+                })
+            elif email in seen_admin_emails:
+                issues.append({
+                    "severity": "error",
+                    "code": "duplicate_record",
+                    "message": (
+                        f"Email '{email}' is already used in row {seen_admin_emails[email]}. "
+                        "Each admin email must be unique across rows."
+                    ),
+                    "row_number": row_number,
+                    "column_name": col,
+                    "raw_value": email,
+                })
+            else:
+                seen_admin_emails[email] = row_number
 
     return issues
 
 
+def _validate_branches_rules(import_batch) -> list[dict]:
+    from vs_schools.models import School
+    from vs_user.models import User
+
+    issues = []
+    rows = import_batch.preview_rows or []
+    seen_admin_emails: dict[str, int] = {}
+
+    for row_number, row in enumerate(rows, start=1):
+        def _s(key: str) -> str:
+            return (row.get(key) or "").strip()
+
+        # --- school resolution: required when batch is not school-scoped ---
+        if import_batch.school is None:
+            school_slug = _s("school_slug")
+            school_code = _s("school_code")
+            if school_slug:
+                if not School.objects.filter(slug=school_slug).exists():
+                    issues.append({
+                        "severity": "error",
+                        "code": "cross_reference_missing",
+                        "message": f"No school found with slug '{school_slug}'.",
+                        "row_number": row_number,
+                        "column_name": "school_slug",
+                        "raw_value": school_slug,
+                    })
+            elif school_code:
+                if not School.objects.filter(code=school_code).exists():
+                    issues.append({
+                        "severity": "error",
+                        "code": "cross_reference_missing",
+                        "message": f"No school found with code '{school_code}'.",
+                        "row_number": row_number,
+                        "column_name": "school_code",
+                        "raw_value": school_code,
+                    })
+            else:
+                issues.append({
+                    "severity": "error",
+                    "code": "required_value_missing",
+                    "message": "Either school_slug or school_code is required when the batch is not school-scoped.",
+                    "row_number": row_number,
+                    "column_name": "school_slug",
+                    "raw_value": "",
+                })
+
+        # --- branch_admin_email: must not already exist, must be unique across rows ---
+        email = _s("branch_admin_email").lower()
+        if email:
+            if User.objects.filter(email=email).exists():
+                issues.append({
+                    "severity": "error",
+                    "code": "duplicate_record",
+                    "message": f"A user with email '{email}' already exists.",
+                    "row_number": row_number,
+                    "column_name": "branch_admin_email",
+                    "raw_value": email,
+                })
+            elif email in seen_admin_emails:
+                issues.append({
+                    "severity": "error",
+                    "code": "duplicate_record",
+                    "message": (
+                        f"Email '{email}' is already used in row {seen_admin_emails[email]}. "
+                        "Each branch admin email must be unique across rows."
+                    ),
+                    "row_number": row_number,
+                    "column_name": "branch_admin_email",
+                    "raw_value": email,
+                })
+            else:
+                seen_admin_emails[email] = row_number
+
+    return issues
+
+
+def _resolve_model(name: str):
+    """
+    Find a Django model class by name (case-insensitive) across all installed apps.
+    Returns None if no match is found.
+    """
+    from django.apps import apps
+    name_lower = name.lower()
+    for model in apps.get_models():
+        if model.__name__.lower() == name_lower:
+            return model
+    return None
+
+
 def _validate_cross_references(import_batch) -> list[dict]:
     """
-    Optional place for checking references against real system data.
-
-    Example uses:
-    - teacher exists in staff records
-    - class exists
-    - campus exists
-    - department exists
-
-    For now this is left as a structured placeholder because the exact
-    referenced models in your project may differ.
+    For each template column that declares a reference_model + reference_lookup_field,
+    fetch the set of valid values from that model (scoped to the batch's school/branch
+    where the model supports it) and flag any row value that doesn't match.
     """
     issues = []
 
@@ -191,21 +351,46 @@ def _validate_cross_references(import_batch) -> list[dict]:
         return issues
 
     rows = import_batch.preview_rows or []
-    template_columns = import_batch.template.columns.exclude(reference_model="").exclude(reference_lookup_field="")
+    if not rows:
+        return issues
 
-    # Example pattern:
-    # for col in template_columns:
-    #     valid_values = fetch_lookup_values(col.reference_model, col.reference_lookup_field, import_batch.school)
-    #     for row_number, row_data in enumerate(rows, start=1):
-    #         issue = validate_foreign_key_reference(
-    #             value=row_data.get(col.column_name),
-    #             valid_lookup_values=valid_values,
-    #             row_number=row_number,
-    #             column_name=col.column_name,
-    #             reference_name=col.reference_model,
-    #         )
-    #         if issue:
-    #             issues.append(issue)
+    ref_columns = list(
+        import_batch.template.columns
+        .exclude(reference_model="")
+        .exclude(reference_lookup_field="")
+    )
+    if not ref_columns:
+        return issues
+
+    for col in ref_columns:
+        model_class = _resolve_model(col.reference_model)
+        if model_class is None:
+            continue
+
+        qs = model_class.objects.all()
+
+        # Scope to school or branch when the referenced model supports it
+        field_names = {f.name for f in model_class._meta.get_fields()}
+        if "school" in field_names and import_batch.school_id:
+            qs = qs.filter(school_id=import_batch.school_id)
+        elif "branch" in field_names and import_batch.branch_id:
+            qs = qs.filter(branch_id=import_batch.branch_id)
+
+        try:
+            valid_values = set(qs.values_list(col.reference_lookup_field, flat=True))
+        except Exception:
+            continue
+
+        for row_number, row_data in enumerate(rows, start=1):
+            issue = validate_foreign_key_reference(
+                value=row_data.get(col.column_name),
+                valid_lookup_values=valid_values,
+                row_number=row_number,
+                column_name=col.column_name,
+                reference_name=col.reference_model,
+            )
+            if issue:
+                issues.append(issue)
 
     return issues
 

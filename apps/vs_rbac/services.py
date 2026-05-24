@@ -260,8 +260,8 @@ def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer,
         )
 
 
-SUPER_ADMIN_ROLE_ID   = "vision-super-admin"
-PLATFORM_ADMIN_ROLE_ID = "vision-platform-admin"
+SUPER_ADMIN_ROLE_ID   = "xvs_super_admin"
+PLATFORM_ADMIN_ROLE_ID = "xvs_platform_admin"
 
 
 @transaction.atomic
@@ -269,7 +269,7 @@ def transfer_super_admin(from_user, to_user):
     """
     Transfer the Vision Super Admin role from `from_user` to `to_user`.
 
-    - `from_user` must currently hold the vision-super-admin assignment.
+    - `from_user` must currently hold the xvs_super_admin assignment.
     - `to_user` must be VISION_STAFF and different from `from_user`.
     - After transfer, `from_user` is demoted to vision-platform-admin.
     - Any existing active platform role on `to_user` is revoked first.
@@ -285,7 +285,7 @@ def transfer_super_admin(from_user, to_user):
     if from_user.pk == to_user.pk:
         raise ValueError("Cannot transfer super admin to yourself.")
 
-    if getattr(to_user, "user_type", None) != "VISION_STAFF":
+    if getattr(to_user, "user_type", None) != "CX_STAFF":
         raise ValueError("The new super admin must be a Vision Staff member.")
 
     # Verify from_user actually holds the super admin role.
@@ -339,9 +339,9 @@ def transfer_super_admin(from_user, to_user):
     UserModel.objects.filter(pk=to_user.pk).update(is_superuser=True)
 
     emit_audit_event(
-        actor=from_user,
-        module=AuditModuleKey.RBAC,
-        action=AuditActionType.UPDATE,
+        actor_user=from_user,
+        module_key=AuditModuleKey.RBAC,
+        action_type=AuditActionType.ROLE_CHANGED,
         entity_type="PlatformUserRoleAssignment",
         entity_id=str(to_user.pk),
         entity_label=getattr(to_user, "email", str(to_user.pk)),

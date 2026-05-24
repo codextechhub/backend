@@ -3,7 +3,11 @@ from django.urls import path
 from .views import (
     AuditEventListView,
     AuditEventDetailView,
+    AuditDashboardSummaryView,
+    EntityAuditTrailListView,
     EntityAuditTrailDetailView,
+    MyActivityView,
+    MyActivitySubjectView,
     AuditExportJobListView,
     AuditExportJobDetailView,
     ComplianceRuleListCreateView,
@@ -12,19 +16,31 @@ from .views import (
 
 urlpatterns = [
     # -------------------------------------------------------------------------
+    # Security Dashboard summary
+    # -------------------------------------------------------------------------
+    path("dashboard-summary/", AuditDashboardSummaryView.as_view(), name="audit-dashboard-summary"),
+
+    # -------------------------------------------------------------------------
     # Audit Events
     # -------------------------------------------------------------------------
     path("events/", AuditEventListView.as_view(), name="audit-event-list"),
     path("events/<uuid:id>/", AuditEventDetailView.as_view(), name="audit-event-detail"),
 
     # -------------------------------------------------------------------------
-    # Entity Trail
+    # Entity Trails
     # -------------------------------------------------------------------------
+    path("entity-trails/", EntityAuditTrailListView.as_view(), name="entity-audit-trail-list"),
     path(
         "entity-trails/<str:entity_type>/<str:entity_id>/",
         EntityAuditTrailDetailView.as_view(),
         name="entity-audit-trail-detail",
     ),
+
+    # -------------------------------------------------------------------------
+    # Self-service /me
+    # -------------------------------------------------------------------------
+    path("me/activity/", MyActivityView.as_view(), name="audit-me-activity"),
+    path("me/activity-on-me/", MyActivitySubjectView.as_view(), name="audit-me-activity-on-me"),
 
     # -------------------------------------------------------------------------
     # Export Jobs

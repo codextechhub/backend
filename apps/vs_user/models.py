@@ -21,8 +21,8 @@ from django.conf import settings
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
 from django.core.exceptions import ValidationError
-from django.db import models
-from django.db.models import Q
+from django.db import models, transaction
+from django.db.models import Q, Max
 from django.utils import timezone
 
 from vs_schools.models import School, Branch
@@ -90,12 +90,12 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     # ── Choices ──────────────────────────────────────────────────────────────
 
     class UserType(models.TextChoices):
-        VISION_STAFF      = 'VISION_STAFF',      'Vision Staff'
-        SCHOOL_ADMIN      = 'SCHOOL_ADMIN',      'School Admin'
-        BRANCH_ADMIN      = 'BRANCH_ADMIN',      'Branch Admin'
-        STAFF             = 'STAFF',             'Staff'
-        STUDENT           = 'STUDENT',           'Student'
-        PARENT            = 'PARENT',            'Parent/Guardian'
+        CX_STAFF          = 'CX_STAFF',      'CX Staff'
+        SCHOOL_ADMIN      = 'SCHOOL_ADMIN',  'School Admin'
+        BRANCH_ADMIN      = 'BRANCH_ADMIN',  'Branch Admin'
+        STAFF             = 'STAFF',         'Staff'
+        STUDENT           = 'STUDENT',       'Student'
+        PARENT            = 'PARENT',        'Parent/Guardian'
 
     class Status(models.TextChoices):
         PENDING     = 'PENDING',     'Pending Activation'
@@ -128,6 +128,10 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     last_name  = models.CharField(max_length=100)
     gender     = models.CharField(max_length=20, choices=Gender.choices, blank=True, default='')
     phone      = models.CharField(max_length=32, blank=True, null=True, default='')
+
+    # Auto-assigned on create; unique within school for school users,
+    # unique across all Vision Staff for VISION_STAFF. Starts at 10.
+    uid = models.PositiveIntegerField(null=True, blank=True, editable=False)
 
     # ──User type and status ───────────────────────────────────────────────────────
 
@@ -173,15 +177,15 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             # Vision Staff must not be bound to any school or branch.
             models.CheckConstraint(
                 condition=(
-                    Q(user_type='VISION_STAFF', school__isnull=True, branch__isnull=True)
-                    | ~Q(user_type='VISION_STAFF')
+                    Q(user_type='CX_STAFF', school__isnull=True, branch__isnull=True)
+                    | ~Q(user_type='CX_STAFF')
                 ),
                 name='ck_vision_staff_no_school',
             ),
             # All non-Vision Staff must have an school.
             models.CheckConstraint(
                 condition=(
-                    Q(user_type='VISION_STAFF')
+                    Q(user_type='CX_STAFF')
                     | Q(school__isnull=False)
                 ),
                 name='ck_school_bound_users',
@@ -189,10 +193,22 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             # Branch-level user types must have a branch.
             models.CheckConstraint(
                 condition=(
-                    Q(user_type__in=['VISION_STAFF', 'SCHOOL_ADMIN'])
+                    Q(user_type__in=['CX_STAFF', 'SCHOOL_ADMIN'])
                     | Q(branch__isnull=False)
                 ),
                 name='ck_branch_required_for_branch_level_users',
+            ),
+            # uid is unique within each school for school-scoped users.
+            models.UniqueConstraint(
+                fields=['school', 'uid'],
+                condition=Q(school__isnull=False),
+                name='unique_uid_per_school',
+            ),
+            # uid is unique across all Vision Staff.
+            models.UniqueConstraint(
+                fields=['uid'],
+                condition=Q(user_type='CX_STAFF'),
+                name='unique_uid_vision_staff',
             ),
         ]
         indexes = [
@@ -206,25 +222,50 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     def clean(self):
         super().clean()
-        if self.user_type != self.UserType.VISION_STAFF:
+        if self.user_type != self.UserType.CX_STAFF:
             if not self.school_id:
                 raise ValidationError('Non-Vision Staff must be assigned to an school.')
             if self.user_type not in (self.UserType.SCHOOL_ADMIN,) and not self.branch_id:
                 raise ValidationError(f'{self.user_type} must be assigned to a branch.')
-        if self.user_type == self.UserType.VISION_STAFF:
+        if self.user_type == self.UserType.CX_STAFF:
             if self.school_id or self.branch_id:
                 raise ValidationError('Vision Staff must not be assigned to an school or branch.')
 
     def save(self, *args, **kwargs):
+        if self.uid is None:
+            with transaction.atomic():
+                if self.user_type == self.UserType.CX_STAFF:
+                    max_uid = (
+                        User.objects.select_for_update()
+                        .filter(user_type=self.UserType.CX_STAFF)
+                        .aggregate(m=Max('uid'))['m']
+                    )
+                else:
+                    max_uid = (
+                        User.objects.select_for_update()
+                        .filter(school_id=self.school_id)
+                        .aggregate(m=Max('uid'))['m']
+                    )
+                self.uid = (max_uid or 9) + 1
+                self._sync_is_active()
+                update_fields = kwargs.get('update_fields')
+                if update_fields is not None and 'status' in update_fields and 'is_active' not in update_fields:
+                    kwargs['update_fields'] = list(update_fields) + ['is_active']
+                super().save(*args, **kwargs)
+                return
+
+        self._sync_is_active()
+        update_fields = kwargs.get('update_fields')
+        if update_fields is not None and 'status' in update_fields and 'is_active' not in update_fields:
+            kwargs['update_fields'] = list(update_fields) + ['is_active']
+        super().save(*args, **kwargs)
+
+    def _sync_is_active(self):
         if self.status in (self.Status.SUSPENDED, self.Status.DEACTIVATED, self.Status.PENDING):
             self.is_active = False
         elif self.status == self.Status.ACTIVE:
             self.is_active = True
         # LOCKED: is_active left unchanged — blocked at RBAC layer, not Django auth
-        update_fields = kwargs.get('update_fields')
-        if update_fields is not None and 'status' in update_fields and 'is_active' not in update_fields:
-            kwargs['update_fields'] = list(update_fields) + ['is_active']
-        super().save(*args, **kwargs)
 
     # ── Properties ────────────────────────────────────────────────────────────
 
@@ -242,7 +283,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     @property
     def is_vision_staff(self) -> bool:
-        return self.user_type == self.UserType.VISION_STAFF
+        return self.user_type == self.UserType.CX_STAFF
 
     def mark_password_change(self):
         self.password_changed_at = timezone.now()

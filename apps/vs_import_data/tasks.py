@@ -85,7 +85,7 @@ def validate_import_batch_task(self, import_batch_id: str) -> dict:
                 "is_ready_for_import": import_batch.is_ready_for_import,
                 "validation_summary": import_batch.validation_summary,
                 "template_code": getattr(import_batch.template, "code", ""),
-                "template_version": import_batch.template_version,
+                "template_version": import_batch.template.version if import_batch.template else "",
             },
             message="Background validation completed.",
             metadata={"summary": result["summary"]},
@@ -133,7 +133,7 @@ def validate_import_batch_task(self, import_batch_id: str) -> dict:
             after_data={
                 "status": import_batch.status,
                 "template_code": getattr(import_batch.template, "code", ""),
-                "template_version": import_batch.template_version,
+                "template_version": import_batch.template.version if import_batch.template else "",
             },
             message="Background validation failed.",
             metadata={"error": error_text},
@@ -204,7 +204,7 @@ def execute_import_batch_task(self, import_batch_id: str, queued_by_id: str | No
                 "batch_status": import_batch.status,
                 "execution_summary": job.execution_summary,
                 "template_code": getattr(import_batch.template, "code", ""),
-                "template_version": import_batch.template_version,
+                "template_version": import_batch.template.version if import_batch.template else "",
             },
             message="Background import execution completed.",
             metadata={"task_id": job.task_id},
@@ -221,7 +221,7 @@ def execute_import_batch_task(self, import_batch_id: str, queued_by_id: str | No
     except Exception as exc:
         error_text = _safe_error_text(exc)
 
-        job = getattr(import_batch, "import_job", None)
+        job = import_batch.import_jobs.filter(status=ImportJobStatusChoices.RUNNING).first()
         if job:
             job.status = ImportJobStatusChoices.FAILED
             job.completed_at = timezone.now()
@@ -256,7 +256,7 @@ def execute_import_batch_task(self, import_batch_id: str, queued_by_id: str | No
             after_data={
                 "status": import_batch.status,
                 "template_code": getattr(import_batch.template, "code", ""),
-                "template_version": import_batch.template_version,
+                "template_version": import_batch.template.version if import_batch.template else "",
             },
             message="Background import execution failed.",
             metadata={"error": error_text},
@@ -322,7 +322,7 @@ def rollback_import_job_task(
                 "job_status": job.status,
                 "batch_status": job.import_batch.status,
                 "template_code": getattr(job.import_batch.template, "code", ""),
-                "template_version": job.import_batch.template_version,
+                "template_version": job.import_batch.template.version if job.import_batch.template else "",
             },
             message="Background rollback completed.",
             metadata={"reason": reason},
@@ -510,7 +510,7 @@ def mark_stuck_import_jobs_task(minutes: int = 120) -> dict:
                 after_data={
                     "status": "failed",
                     "template_code": getattr(job.import_batch.template, "code", ""),
-                    "template_version": job.import_batch.template_version,
+                    "template_version": job.import_batch.template.version if job.import_batch.template else "",
                 },
                 message="Job automatically marked as failed because it was stuck.",
                 metadata={"runtime_limit_minutes": minutes},

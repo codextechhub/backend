@@ -25,9 +25,10 @@ urlpatterns = [
     path("v1/rbac/", include("vs_rbac.urls")),
     path("v1/audit/", include("vs_audit.urls")),
     path('v1/config/', include('vs_config.urls')),
-    path("v1/notifications/", include("vs_notifications.urls")),
+    path('v1/notify/', include('vs_notifications.urls')),
+    path("v1/import/", include("vs_import_data.urls")),
     # path("admin/", admin.site.urls),
     # Authentication
-    path("v1/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
-    path("v1/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
+    # path("v1/token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
+    # path("v1/token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
 ]

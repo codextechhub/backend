@@ -154,7 +154,7 @@ class School(TimeStampedModel):
     status = models.CharField(
         max_length=16,
         choices=SchoolStatus.choices,
-        default=SchoolStatus.ACTIVE,
+        default=SchoolStatus.PENDING,
         db_index=True,
     )
 

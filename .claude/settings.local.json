@@ -40,7 +40,30 @@
       "Bash(git *)",
       "Bash(npx --no-install eslint src/pages/Dashboard.jsx)",
       "Bash(pip index *)",
-      "Bash(python manage.py delete_user --help)"
+      "Bash(python manage.py delete_user --help)",
+      "Bash(python *)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/__init__.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/__init__.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/admin.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/admin.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/apps.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/apps.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/constants.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/constants.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/exceptions.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/exceptions.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/services/__init__.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/__init__.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/services/dispatch.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/dispatch.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/services/render.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/render.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/services/seed.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/seed.py)",
+      "Bash(cp /Users/mac/Downloads/vs_notifications/services/settings.py /Users/mac/Documents/Dev-Projects/GitHub/backend/apps/vs_notifications/services/settings.py)",
+      "Read(//Users/mac/Documents/Dev-Projects/GitHub//**)",
+      "Read(//Users/mac/Documents/Dev-Projects//**)",
+      "Bash(npx tsc *)",
+      "WebFetch(domain:status.claude.com)",
+      "Bash(python3 -c \"import docx; print\\('ok'\\)\")",
+      "Bash(pip3 install *)",
+      "Bash(python3 -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(/Users/mac/Documents/Dev-Projects/GitHub/backend/cx/bin/python -c \"import docx; print\\('ok'\\)\")",
+      "Bash(/Users/mac/anaconda3/bin/python -c \"import docx; print\\('ok'\\)\")",
+      "Bash(/Users/mac/anaconda3/bin/pip install *)",
+      "Bash(pip show *)",
+      "Bash(python3 *)"
     ]
   }
 }

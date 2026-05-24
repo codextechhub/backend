@@ -5,15 +5,18 @@ import re
 
 from django.utils import timezone
 from rest_framework import serializers
+from vs_rbac.fls import FieldSecurityMixin
+
+from .constants import ImportPermission
 
 from .models import (
     FileFormatChoices,
     ImportBatch,
     ImportJob,
     ImportJobRowResult,
+    ImportJobStatusChoices,
     ImportNotification,
     ImportRollbackRecord,
-    ImportRowCorrection,
     ImportTemplate,
     ImportTemplateColumn,
     ImportValidationIssue,
@@ -121,11 +124,15 @@ class ImportTemplateListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class ImportTemplateDetailSerializer(serializers.ModelSerializer):
+class ImportTemplateDetailSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     """
     Full template detail serializer.
     Includes all column definitions.
     """
+    read_permissions = {
+        "validation_rules": ImportPermission.TEMPLATE_MANAGE,
+    }
+
     columns = ImportTemplateColumnDetailSerializer(many=True, read_only=True)
 
     class Meta:
@@ -151,6 +158,66 @@ class ImportTemplateDetailSerializer(serializers.ModelSerializer):
             "updated_at",
         )
         read_only_fields = fields
+
+
+# =========================================================
+# Import Template Write Serializers (create / update)
+# =========================================================
+class ImportTemplateColumnWriteSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = ImportTemplateColumn
+        fields = (
+            "column_name",
+            "target_field",
+            "display_name",
+            "help_text",
+            "data_type",
+            "is_required",
+            "is_unique",
+            "max_length",
+            "allowed_values",
+            "sample_value",
+            "default_value",
+            "column_order",
+            "reference_model",
+            "reference_lookup_field",
+        )
+
+
+class ImportTemplateCreateSerializer(serializers.ModelSerializer):
+    columns = ImportTemplateColumnWriteSerializer(many=True, required=False, default=list)
+
+    class Meta:
+        model = ImportTemplate
+        fields = (
+            "code",
+            "name",
+            "dataset_type",
+            "description",
+            "version",
+            "status",
+            "default_file_format",
+            "instructions",
+            "allow_sample_row",
+            "sample_row_data",
+            "validation_rules",
+            "is_download_enabled",
+            "columns",
+        )
+
+    def create(self, validated_data):
+        columns_data = validated_data.pop("columns", [])
+        validated_data["created_by"] = self.context["request"].user
+
+        template = ImportTemplate.objects.create(**validated_data)
+
+        if columns_data:
+            ImportTemplateColumn.objects.bulk_create([
+                ImportTemplateColumn(template=template, **col)
+                for col in columns_data
+            ])
+
+        return template
 
 
 # =========================================================
@@ -231,7 +298,7 @@ class ImportValidationIssueResolveSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("This action only supports setting is_resolved to true.")
         return value
 
-    def update(self, instance, validated_data):
+    def update(self, instance, _validated_data):
         instance.is_resolved = True
         instance.resolved_at = timezone.now()
         instance.resolved_by = self.context["request"].user
@@ -239,85 +306,19 @@ class ImportValidationIssueResolveSerializer(serializers.ModelSerializer):
         return instance
 
 
-# =========================================================
-# Import Row Correction Serializers
-# =========================================================
-class ImportRowCorrectionSerializer(serializers.ModelSerializer):
-    """
-    Full serializer for row correction records.
-    """
-    corrected_by = serializers.SerializerMethodField()
-
-    class Meta:
-        model = ImportRowCorrection
-        fields = (
-            "id",
-            "import_batch",
-            "row_number",
-            "column_name",
-            "old_value",
-            "new_value",
-            "reason",
-            "corrected_by",
-            "created_at",
-            "updated_at",
-        )
-        read_only_fields = (
-            "id",
-            "import_batch",
-            "corrected_by",
-            "created_at",
-            "updated_at",
-        )
-
-    def get_corrected_by(self, obj):
-        user = obj.corrected_by
-        return {
-            "id": str(user.id),
-            "email": getattr(user, "email", ""),
-            "full_name": getattr(user, "full_name", ""),
-        }
-
-
-class ImportRowCorrectionCreateSerializer(serializers.ModelSerializer):
-    """
-    Used to create a manual correction.
-    """
-
-    class Meta:
-        model = ImportRowCorrection
-        fields = (
-            "row_number",
-            "column_name",
-            "old_value",
-            "new_value",
-            "reason",
-        )
-
-    def validate_row_number(self, value):
-        if value <= 0:
-            raise serializers.ValidationError("row_number must be greater than 0.")
-        return value
-
-    def validate_column_name(self, value):
-        value = value.strip()
-        if not value:
-            raise serializers.ValidationError("column_name cannot be empty.")
-        return value
-
-    def create(self, validated_data):
-        validated_data["import_batch"] = self.context["import_batch"]
-        validated_data["corrected_by"] = self.context["request"].user
-        return super().create(validated_data)
-
 
 # =========================================================
 # Import Job Row Result Serializers
 # =========================================================
-class ImportJobRowResultSerializer(serializers.ModelSerializer):
+class ImportJobRowResultSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     """
     Shows one processed row result from an import job.
     """
+    read_permissions = {
+        "row_payload": ImportPermission.JOB_VIEW,
+        "normalized_payload": ImportPermission.JOB_VIEW,
+        "error_details": ImportPermission.JOB_VIEW,
+    }
 
     class Meta:
         model = ImportJobRowResult
@@ -366,10 +367,16 @@ class ImportJobListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class ImportJobDetailSerializer(serializers.ModelSerializer):
+class ImportJobDetailSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     """
     Full serializer for one import job.
     """
+    read_permissions = {
+        "execution_summary": ImportPermission.JOB_VIEW,
+        "last_error_code": ImportPermission.JOB_VIEW,
+        "last_error_message": ImportPermission.JOB_VIEW,
+    }
+
     queued_by = serializers.SerializerMethodField()
     row_results = ImportJobRowResultSerializer(many=True, read_only=True)
 
@@ -520,16 +527,21 @@ class ImportBatchListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class ImportBatchDetailSerializer(serializers.ModelSerializer):
+class ImportBatchDetailSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     """
     Full serializer for one import batch.
     """
+    read_permissions = {
+        "file": ImportPermission.BATCH_VIEW,
+        "preview_rows": ImportPermission.BATCH_VIEW,
+    }
+
     school = serializers.SerializerMethodField()
+    branch = serializers.SerializerMethodField()
     uploaded_by = serializers.SerializerMethodField()
     template = ImportTemplateDetailSerializer(read_only=True)
 
     validation_issues = ImportValidationIssueListSerializer(many=True, read_only=True)
-    row_corrections = ImportRowCorrectionSerializer(many=True, read_only=True)
     notifications = ImportNotificationSerializer(many=True, read_only=True)
 
     error_count = serializers.IntegerField(read_only=True)
@@ -540,10 +552,9 @@ class ImportBatchDetailSerializer(serializers.ModelSerializer):
         fields = (
             "id",
             "school",
+            "branch",
             "uploaded_by",
             "template",
-            "template_version",
-            "source",
             "original_filename",
             "file",
             "file_format",
@@ -556,7 +567,6 @@ class ImportBatchDetailSerializer(serializers.ModelSerializer):
             "sheet_name",
             "uploaded_headers",
             "template_headers_snapshot",
-            "detected_columns",
             "preview_rows",
             "validation_summary",
             "structure_matches_template",
@@ -569,7 +579,6 @@ class ImportBatchDetailSerializer(serializers.ModelSerializer):
             "error_count",
             "warning_count",
             "validation_issues",
-            "row_corrections",
             "notifications",
             "created_at",
             "updated_at",
@@ -578,10 +587,22 @@ class ImportBatchDetailSerializer(serializers.ModelSerializer):
 
     def get_school(self, obj):
         school = obj.school
+        if not school:
+            return None
         return {
             "id": str(school.id),
             "name": getattr(school, "name", ""),
             "slug": getattr(school, "slug", ""),
+        }
+
+    def get_branch(self, obj):
+        branch = obj.branch
+        if not branch:
+            return None
+        return {
+            "id": str(branch.id),
+            "name": getattr(branch, "name", ""),
+            "slug": getattr(branch, "slug", ""),
         }
 
     def get_uploaded_by(self, obj):
@@ -604,7 +625,7 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
     - template_version is copied automatically
     """
     file = serializers.FileField(write_only=True)
-    template_id = serializers.UUIDField(write_only=True)
+    template_id = serializers.IntegerField(write_only=True)
 
     class Meta:
         model = ImportBatch
@@ -690,10 +711,10 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
         except ValueError as exc:
             raise serializers.ValidationError({"file": str(exc)})
 
-        validated_data["school"] = self.context["school"]
+        validated_data["school"] = self.context.get("school")
+        validated_data["branch"] = self.context.get("branch")
         validated_data["uploaded_by"] = self.context["request"].user
         validated_data["template"] = template
-        validated_data["template_version"] = template.version
         validated_data["dataset_type"] = template.dataset_type
         validated_data["file"] = uploaded_file
         validated_data["original_filename"] = safe_name
@@ -701,7 +722,6 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
         validated_data["file_size_bytes"] = uploaded_file.size
         validated_data["template_headers_snapshot"] = template_headers_snapshot
         validated_data["uploaded_headers"] = detected_headers
-        validated_data["detected_columns"] = detected_headers
         validated_data["preview_rows"] = preview_rows
         validated_data["total_rows"] = len(preview_rows)
         validated_data["total_columns"] = len(detected_headers)
@@ -749,8 +769,26 @@ class StartImportSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         import_batch = self.context.get("import_batch")
-        if import_batch and not import_batch.is_ready_for_import:
+        if not import_batch:
+            return attrs
+
+        if not import_batch.is_ready_for_import:
             raise serializers.ValidationError("This import batch is not ready for import.")
+
+        if ImportJob.objects.filter(
+            import_batch=import_batch,
+            status__in=[ImportJobStatusChoices.RUNNING, ImportJobStatusChoices.QUEUED],
+        ).exists():
+            raise serializers.ValidationError("An import job is already running for this batch.")
+
+        if ImportJob.objects.filter(
+            import_batch=import_batch,
+            status=ImportJobStatusChoices.SUCCEEDED,
+        ).exists():
+            raise serializers.ValidationError(
+                "This batch has already been imported successfully. Re-importing is not allowed."
+            )
+
         return attrs
 
 
@@ -769,8 +807,3 @@ class RollbackImportSerializer(serializers.Serializer):
         return attrs
 
 
-class RevalidateAfterCorrectionSerializer(serializers.Serializer):
-    """
-    Input serializer for revalidation after correction.
-    """
-    clear_resolved_flags = serializers.BooleanField(default=False)

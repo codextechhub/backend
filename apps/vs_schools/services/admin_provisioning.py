@@ -72,6 +72,19 @@ def provision_admin_user(
             invited_by = actor if isinstance(actor, User) else None
             role_obj = SchoolRoleTemplate.objects.filter(id=role, school=school).first() if role else None
 
+            # A school admin or branch admin without a role is a half-broken
+            # account: they receive the invitation email, activate it, and
+            # then can do nothing. Fail loud here instead of silently creating
+            # the user and dispatching the email — the outer savepoint will
+            # roll back, and the admin link stays in QUEUED so the operator
+            # can investigate (typically: the prebuilt role template wasn't
+            # seeded, or the school's per-school SchoolRoleTemplate is missing).
+            if not role_obj:
+                raise ValueError(
+                    f"Refusing to provision {email} ({user_type}) without a role assignment. "
+                    f"Expected SchoolRoleTemplate id={role!r} on school {school.id}."
+                )
+
             user = User.objects.create_user(
                 email=email,
                 password=None,
@@ -80,7 +93,7 @@ def provision_admin_user(
                 gender="",
                 phone=getattr(contact, "phone", "") or "",
                 user_type=user_type,
-                role=role_obj.name if role_obj else "",
+                role=role_obj.name,
                 school=school,
                 branch=branch,
                 invited_by=invited_by,
@@ -89,14 +102,12 @@ def provision_admin_user(
                 is_staff=False,
             )
 
-            # Role Assignment
-            if role_obj:
-                SchoolUserRoleAssignment.objects.create(
-                    user=user,
-                    role=role_obj,
-                    school=user.school,
-                    assigned_by=invited_by,
-                )
+            SchoolUserRoleAssignment.objects.create(
+                user=user,
+                role=role_obj,
+                school=user.school,
+                assigned_by=invited_by,
+            )
 
             # Invitation record — expiry gate for the activation link.
             InvitationService.create(user=user, invited_by=invited_by or user)

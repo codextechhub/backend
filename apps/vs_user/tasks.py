@@ -85,9 +85,9 @@ def send_invitation_email_task(self, activation_key: str):
         plain_message = render_to_string('vs_user/emails/invitation.txt', context)
 
         subject = (
-            f'You have been invited to {school_name} on X Vision Systems'
+            f'You have been invited to {school_name} on XVision System'
             if user.school else
-            'You have been invited to X Vision Systems'
+            'You have been invited to XVision System'
         )
 
         send_email(

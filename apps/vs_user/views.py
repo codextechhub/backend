@@ -19,7 +19,10 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
-from rest_framework_simplejwt.exceptions import TokenError, ExpiredTokenError
+from rest_framework_simplejwt.exceptions import TokenError, ExpiredTokenError, InvalidToken
+from rest_framework_simplejwt.settings import api_settings as jwt_settings
+from rest_framework_simplejwt.utils import datetime_from_epoch
+from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 from vs_rbac.permissions import IsAuthenticatedAndActive, IsVisionStaff, HasRBACPermission
 from core.mixins import XVSModelViewSetMixin
 from core.pagination import XVSPagination
@@ -36,15 +39,82 @@ from .serializers import (
     PasswordChangeSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
     LoginSessionReadSerializer, ForceLogoutSerializer,
     AuthAttemptReadSerializer, AccountLockoutReadSerializer,
-    UnlockAccountSerializer,
+    UnlockAccountSerializer, PasswordResetAdminSerializer,
 )
 from .services.auth       import LoginService
 from .services.invitation import InvitationService
 from .services.password   import PasswordService
 from .services.user       import UserCreationService, EmailChangeService, UserStatusService
-from .services.audit      import log_auth_event, blacklist_all_user_tokens, get_client_ip
+from .services.audit      import log_auth_event, blacklist_all_user_tokens, blacklist_token_by_jti, get_client_ip
 
 from django.utils.dateparse import parse_date as _parse_date
+
+
+class CurrentUserView(APIView):
+    """
+    GET /user/auth/me/
+    Returns the currently authenticated user's profile and their effective
+    permissions. Called by the frontend after a token refresh to keep the
+    client-side permission cache in sync with the backend RBAC state.
+    """
+    permission_classes = [IsAuthenticatedAndActive]
+
+    def get(self, request):
+        from vs_rbac.evaluator import get_effective_permissions
+        permissions = sorted(
+            get_effective_permissions(request.user, school=getattr(request.user, "school", None))
+        )
+        return success_response(
+            message="Current user retrieved successfully.",
+            data={
+                "user": UserReadSerializer(request.user).data,
+                "permissions": permissions,
+            },
+        )
+
+
+class MySecurityStatsView(APIView):
+    """
+    GET /user/auth/me/stats/
+    Returns security stats scoped to the requesting user — accessible by any
+    authenticated user without staff permissions.
+    """
+    permission_classes = [IsAuthenticatedAndActive]
+
+    def get(self, request):
+        seven_days_ago = timezone.now() - timedelta(days=7)
+        failed_7d = AuthAttempt.objects.filter(
+            user=request.user,
+            created_at__gte=seven_days_ago,
+        ).exclude(result=AuthAttempt.Result.SUCCESS).count()
+        return success_response(
+            message="Security stats retrieved.",
+            data={"failed_attempts_7d": failed_7d},
+        )
+
+
+class MyPasswordResetsView(APIView):
+    """
+    GET /user/auth/me/password-resets/
+    Self-service. Returns the current user's full password reset request history,
+    newest first. Includes used, expired, and pending requests.
+
+    Permission: IsAuthenticatedAndActive (no RBAC required)
+    """
+    permission_classes = [IsAuthenticatedAndActive]
+
+    def get(self, request):
+        from .serializers import MyPasswordResetSerializer
+        resets = (
+            PasswordResetRequest.objects
+            .filter(user=request.user)
+            .order_by('-created_at')[:20]
+        )
+        ser = MyPasswordResetSerializer(resets, many=True)
+        return success_response(
+            message="Password reset history retrieved.",
+            data=ser.data,
+        )
 
 
 def _get_date_param(params, key):
@@ -95,13 +165,71 @@ class LoginView(APIView):
             }
             http_status = (
                 status.HTTP_403_FORBIDDEN
-                if isinstance(payload, dict) and payload.get('error_code') in blocked_codes
+                if isinstance(payload, dict) and payload.get('code') in blocked_codes
                 else status.HTTP_401_UNAUTHORIZED
             )
             message = payload.get('detail', 'Authentication failed.') if isinstance(payload, dict) else str(payload)
             return error_response(message=message, error=payload, status=http_status)
 
         return success_response(message="Login successful.", data=result)
+
+
+class SpecialLoginPreviewView(APIView):
+    """
+    GET /user/auth/special_login/preview/?email=<email>
+
+    Barcode / ID-card login flow.  The frontend encodes the user's email in the
+    QR/barcode and navigates to  /<email>/login.  Before showing the password
+    field the page calls this endpoint to:
+
+      1. Confirm the email belongs to a known account.
+      2. Return the user's display name (shown in place of the email field).
+      3. Surface a clear, status-specific message for non-active accounts so the
+         page can inform the user without them having to attempt a full login.
+
+    Responses
+    ---------
+    200  Active user found → { data: { full_name } }
+    403  User exists but account is PENDING / LOCKED / SUSPENDED / DEACTIVATED
+    404  No user with that email
+    400  email query param missing
+
+    Permission: AllowAny — the barcode scanner carries no credentials.
+    """
+
+    permission_classes    = [AllowAny]
+    authentication_classes = []
+
+    _STATUS_MESSAGES = {
+        User.Status.PENDING:     'Account not yet activated. Please check your invitation email or contact your administrator.',
+        User.Status.LOCKED:      'Account is locked. Please contact your administrator or reset your password.',
+        User.Status.SUSPENDED:   'Account has been suspended. Please contact your administrator.',
+        User.Status.DEACTIVATED: 'This account has been deactivated. Please contact your administrator.',
+    }
+
+    def get(self, request):
+        email = (request.query_params.get('email') or '').strip().lower()
+        if not email:
+            return error_response(message='email query parameter is required.', status=status.HTTP_400_BAD_REQUEST)
+
+        user = User.objects.filter(email__iexact=email).first()
+        if not user:
+            return error_response(
+                message=f'User with {email} does not exist.',
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if user.status != User.Status.ACTIVE:
+            msg = self._STATUS_MESSAGES.get(
+                user.status,
+                'Account unavailable. Please contact your administrator.',
+            )
+            return error_response(message=msg, status=status.HTTP_403_FORBIDDEN)
+
+        return success_response(
+            message='User found.',
+            data={'full_name': user.full_name},
+        )
 
 
 class LogoutView(APIView):
@@ -162,26 +290,31 @@ class TokenRefreshView(APIView):
 
     def post(self, request):
         ser = TokenRefreshSerializer(data=request.data)
-        if not ser.is_valid():
-            return error_response(message="Invalid request.", error=ser.errors)
 
+        # SimpleJWT's TokenRefreshSerializer.validate() raises TokenError /
+        # InvalidToken when the refresh token is bad — they are not DRF
+        # ValidationErrors. Catch them here so the response is a clean 401
+        # instead of bubbling up to a 500.
         try:
-            refresh = RefreshToken(ser.validated_data['refresh'])
-            return success_response(
-                message="Token refreshed successfully.",
-                data={'access': str(refresh.access_token)},
-            )
+            ser.is_valid(raise_exception=True)
         except ExpiredTokenError:
             return error_response(
                 message="Your session has expired. Please log in again.",
                 error={'error_code': 'TOKEN_EXPIRED'},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
-        except TokenError as e:
-            if 'blacklisted' in str(e).lower():
+        except (TokenError, InvalidToken) as e:
+            msg = str(e).lower()
+            if 'blacklisted' in msg or 'revoked' in msg:
                 return error_response(
                     message="This session has been revoked. Please log in again.",
                     error={'error_code': 'TOKEN_REVOKED'},
+                    status=status.HTTP_401_UNAUTHORIZED,
+                )
+            if 'expired' in msg:
+                return error_response(
+                    message="Your session has expired. Please log in again.",
+                    error={'error_code': 'TOKEN_EXPIRED'},
                     status=status.HTTP_401_UNAUTHORIZED,
                 )
             return error_response(
@@ -189,6 +322,48 @@ class TokenRefreshView(APIView):
                 error={'error_code': 'TOKEN_INVALID'},
                 status=status.HTTP_401_UNAUTHORIZED,
             )
+        except ValidationError:
+            # Missing/empty 'refresh' field — treat as invalid.
+            return error_response(
+                message="Invalid token. Please log in again.",
+                error={'error_code': 'TOKEN_INVALID'},
+                status=status.HTTP_401_UNAUTHORIZED,
+            )
+
+        new_refresh_str = ser.validated_data.get('refresh')  # present when ROTATE_REFRESH_TOKENS=True
+        response_data = {'access': ser.validated_data['access']}
+
+        if new_refresh_str:
+            # Rotation happened: register the new token in OutstandingToken so that
+            # blacklist_all_user_tokens() (called on logout/suspend) can reach it.
+            try:
+                new_refresh = RefreshToken(new_refresh_str)
+                jti = new_refresh[jwt_settings.JTI_CLAIM]
+                exp = new_refresh['exp']
+                user_id = new_refresh[jwt_settings.USER_ID_CLAIM]
+                token_user = User.objects.get(pk=user_id)
+                OutstandingToken.objects.get_or_create(
+                    jti=jti,
+                    defaults={
+                        'user': token_user,
+                        'token': new_refresh_str,
+                        'created_at': new_refresh.current_time,
+                        'expires_at': datetime_from_epoch(exp),
+                    },
+                )
+                # Keep LoginSession in sync with the new JTI
+                LoginSession.objects.filter(user=token_user, is_active=True).update(
+                    refresh_jti=str(jti),
+                    last_seen_at=timezone.now(),
+                )
+            except (TokenError, User.DoesNotExist):
+                # Bookkeeping failed but the new tokens are valid — the client
+                # can still use them. Don't fail the whole request.
+                pass
+            response_data['refresh'] = new_refresh_str
+
+        return success_response(message="Token refreshed successfully.", data=response_data)
+
 
 # =============================================================================
 # # INVITATION AND ACTIVATION VIEWS
@@ -270,7 +445,7 @@ class InvitationResendView(APIView):
     RBAC: identity.user_email.invite
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "staff.profile.create"  # closest match — resend invite is part of user creation flow
+    rbac_permission = "platform.team.create"
 
     def post(self, request, user_id):
         try:
@@ -325,9 +500,14 @@ class PasswordChangeView(APIView):
                 request=request,
             )
         except Exception as e:
-            payload = e.args[0] if e.args else {}
-            message = payload.get('detail', 'Password change failed.') if isinstance(payload, dict) else str(payload)
-            return error_response(message=message, error=payload)
+            raw = e.args[0] if e.args else {}
+            if isinstance(raw, dict):
+                message = raw.get('detail', 'Password change failed.')
+                error_detail = raw
+            else:
+                message = str(raw) or 'Password change failed.'
+                error_detail = {'detail': message}
+            return error_response(message=message, error=error_detail)
 
         return success_response(message="Password updated successfully.")
 
@@ -436,7 +616,7 @@ class AdminPasswordResetView(APIView):
     RBAC: identity.user_password.reset
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "staff.profile.update"  # closest match — no dedicated password-reset permission yet
+    rbac_permission = "platform.team.update"
 
     def post(self, request, user_id):
         from .models import User
@@ -452,9 +632,14 @@ class AdminPasswordResetView(APIView):
                 request=request,
             )
         except Exception as e:
-            payload = e.args[0] if e.args else {}
-            message = payload.get('detail', 'Password reset failed.') if isinstance(payload, dict) else str(payload)
-            return error_response(message=message, error=payload, status=status.HTTP_403_FORBIDDEN)
+            raw = e.args[0] if e.args else {}
+            if isinstance(raw, dict):
+                message = raw.get('detail', 'Password reset failed.')
+                error_detail = raw
+            else:
+                message = str(raw) or 'Password reset failed.'
+                error_detail = {'detail': message}
+            return error_response(message=message, error=error_detail, status=status.HTTP_403_FORBIDDEN)
 
         return success_response(message="Password reset email sent.")
 
@@ -500,9 +685,9 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         user   = self.request.user
         params = self.request.query_params
 
-        qs = User.objects.select_related('school', 'branch', 'invited_by')
+        qs = User.objects.select_related('school', 'branch', 'invited_by', 'invitation')
 
-        if getattr(user, 'user_type', None) == User.UserType.VISION_STAFF:
+        if getattr(user, 'user_type', None) == User.UserType.CX_STAFF:
             pass  # no tenant boundary — sees all users
         else:
             qs = qs.filter(school=user.school)
@@ -528,18 +713,41 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                 | Q(email__icontains=search)
             )
 
+        if role := params.get('role'):
+            qs = qs.filter(role__iexact=role)
+
+        if invited_by := params.get('invited_by'):
+            qs = qs.filter(invited_by_name__icontains=invited_by)
+
+        if date_from := _get_date_param(params, 'date_from'):
+            qs = qs.filter(created_at__date__gte=date_from)
+
+        if date_to := _get_date_param(params, 'date_to'):
+            qs = qs.filter(created_at__date__lte=date_to)
+
+        _allowed_orderings = {
+            'first_name', '-first_name',
+            'email', '-email',
+            'role', '-role',
+            'status', '-status',
+            'created_at', '-created_at',
+        }
+        ordering = params.get('ordering', '').strip()
+        if ordering in _allowed_orderings:
+            qs = qs.order_by(ordering)
+
         return qs
 
     def get_permissions(self):
         action_permissions = {
-            'list':           'platform.users.view',
-            'retrieve':       'platform.users.view',
-            'create':         'staff.profile.create',
-            'update':         'staff.profile.update',
-            'partial_update': 'staff.profile.update',
-            'destroy':        'platform.users.delete',
+            'list':           'platform.team.view',
+            'retrieve':       'platform.team.view',
+            'create':         'platform.team.create',
+            'update':         'platform.team.update',
+            'partial_update': 'platform.team.update',
+            'destroy':        'platform.team.delete',
         }
-        # self.rbac_permission = action_permissions.get(self.action, 'platform.users.view')
+        self.rbac_permission = action_permissions.get(self.action, 'platform.team.view')
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def perform_create(self, serializer):
@@ -568,7 +776,7 @@ class UserEmailChangeView(APIView):
     RBAC: identity.email_address.verify
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "staff.profile.update"  # closest match — email change is a profile update
+    rbac_permission = "platform.team.update"
 
     def patch(self, request, user_id):
         try:
@@ -614,7 +822,7 @@ class UserSuspendView(APIView):
     RBAC: identity.user_account.lock
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "platform.users.suspend"
+    rbac_permission = "platform.team.suspend"
 
     def post(self, request, user_id):
         try:
@@ -643,7 +851,7 @@ class UserReactivateView(APIView):
     RBAC: identity.user_account.unlock
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "platform.users.suspend"  # closest match — gates both suspend and reactivate
+    rbac_permission = "platform.team.reactivate"
 
     def post(self, request, user_id):
         try:
@@ -672,7 +880,7 @@ class UserUnlockView(APIView):
     RBAC: identity.user_account.unlock
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
-    # rbac_permission    = "platform.users.suspend"  # closest match — no dedicated unlock permission yet
+    rbac_permission = "platform.team.reactivate"
 
     def post(self, request, user_id):
         try:
@@ -712,7 +920,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_permissions(self):
         if self.action == 'force_logout':
-            # self.rbac_permission = 'platform.users.suspend'  # closest match — no dedicated force-logout permission yet
+            self.rbac_permission = 'platform.team.suspend'
             return [IsAuthenticatedAndActive(), HasRBACPermission()]
         return [IsAuthenticatedAndActive()]
 
@@ -720,7 +928,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         user = self.request.user
         qs   = LoginSession.objects.select_related('user', 'school').order_by('-last_seen_at')
 
-        if getattr(user, 'user_type', None) == User.UserType.VISION_STAFF:
+        if getattr(user, 'user_type', None) == User.UserType.CX_STAFF:
             pass  # no tenant boundary — sees all sessions
         else:
             qs = qs.filter(user=user)
@@ -751,6 +959,10 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         if session:
             session.end(reason='FORCE_LOGOUT')
             session.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
+            # Without this the refresh token tied to this session keeps working
+            # and the user can transparently get a new access token after we say
+            # we revoked their device.
+            blacklist_token_by_jti(session.refresh_jti)
             ended = 1
 
         if target_user:
@@ -801,7 +1013,7 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             qs = qs.filter(email_entered__icontains=email)
 
         if ip_address := params.get('ip_address'):
-            qs = qs.filter(ip_address=ip_address)
+            qs = qs.filter(ip_address__icontains=ip_address)
 
         if result := params.get('result'):
             qs = qs.filter(result=result)
@@ -816,6 +1028,42 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             qs = qs.filter(created_at__date__lte=date_to)
 
         return qs
+
+
+class PasswordResetListView(APIView):
+    """
+    GET /user/password-resets/
+    Vision Staff only. Lists active (unused, unexpired) reset tokens.
+    """
+    permission_classes = [IsAuthenticatedAndActive, IsVisionStaff]
+
+    def get(self, request):
+        resets = PasswordResetRequest.objects.filter(
+            used_at__isnull=True,
+            expires_at__gt=timezone.now(),
+        ).select_related('user').order_by('-created_at')
+        ser = PasswordResetAdminSerializer(resets, many=True)
+        return success_response(data=ser.data)
+
+
+class RevokePasswordResetView(APIView):
+    """
+    POST /user/password-resets/{pk}/revoke/
+    Vision Staff only. Marks the token as used, invalidating it immediately.
+    """
+    permission_classes = [IsAuthenticatedAndActive, IsVisionStaff]
+
+    def post(self, request, pk):
+        try:
+            reset = PasswordResetRequest.objects.get(pk=pk, used_at__isnull=True)
+        except PasswordResetRequest.DoesNotExist:
+            return error_response(
+                message="Reset token not found or already used.",
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        reset.used_at = timezone.now()
+        reset.save(update_fields=['used_at'])
+        return success_response(message="Reset token revoked.")
 
 
 class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
@@ -837,7 +1085,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_permissions(self):
         if self.action == 'unlock':
-            # self.rbac_permission = 'platform.users.suspend'  # closest match — no dedicated unlock permission yet
+            self.rbac_permission = 'platform.team.reactivate'
             return [IsAuthenticatedAndActive(), HasRBACPermission()]
         return [IsAuthenticatedAndActive(), IsVisionStaff()]
 
@@ -846,7 +1094,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         user = self.request.user
         qs = AccountLockout.objects.select_related('user').order_by('-updated_at')
 
-        if getattr(user, 'user_type', None) != User.UserType.VISION_STAFF:
+        if getattr(user, 'user_type', None) != User.UserType.CX_STAFF:
             qs = qs.filter(user__school=user.school)
 
         if user_id := params.get('user_id'):

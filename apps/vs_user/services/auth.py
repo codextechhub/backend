@@ -5,14 +5,13 @@
 from __future__ import annotations
 import email
 
-from django.contrib.auth import authenticate
 from django.db import transaction
 from django.utils import timezone
 
 from ..models import User, LoginSession, AccountLockout, AuthAttempt, AuthEventLog
 from ..tokens import CodeXRefreshToken
 from ..serializers import UserReadSerializer
-from .audit import log_auth_event, record_attempt, blacklist_all_user_tokens, get_client_ip
+from .audit import log_auth_event, record_attempt, blacklist_all_user_tokens, get_client_ip, get_device_label
 
 # TODO: Default lockout threshold — overridable per school via System Config (Module 6).
 DEFAULT_LOCK_THRESHOLD = 5
@@ -57,13 +56,13 @@ class LoginService:
                     request=request,
                 )
                 raise ValueError({
-                    'error_code': 'ACCOUNT_LOCKED',
-                    'message':    'Your account is locked. Please contact your administrator or reset your password.',
+                    'code':   'ACCOUNT_LOCKED',
+                    'detail': 'Your account is locked. Please contact your administrator or reset your password.',
                 })
 
         # 4. School context enforcement
         # Non-Vision Staff must always provide a valid school slug.
-        if user and user.user_type != User.UserType.VISION_STAFF:
+        if user and user.user_type != User.UserType.CX_STAFF:
             if not school:
                 record_attempt(
                     email_entered=email,
@@ -72,13 +71,18 @@ class LoginService:
                     request=request,
                 )
                 # Generic message — do not reveal whether the email was found.
-                raise ValueError({'error_code': 'INVALID_CREDENTIALS', 'message': 'Invalid credentials.'})
+                raise ValueError({'code': 'INVALID_CREDENTIALS', 'detail': 'Invalid credentials.'})
 
         # 5. Authenticate credentials
-        authed = authenticate(request=request, username=email, password=password)
-        if not authed:
+        # Use check_password directly instead of django's authenticate(), which
+        # returns None for any user with is_active=False (suspended, deactivated,
+        # pending). That would mask the real reason with INVALID_CREDENTIALS before
+        # _check_status ever runs.
+        if not user or not user.check_password(password):
             LoginService._handle_failed_attempt(user, school, school.slug if school else '', request)
-            raise ValueError({'error_code': 'INVALID_CREDENTIALS', 'message': 'Invalid credentials.'})
+            raise ValueError({'code': 'INVALID_CREDENTIALS', 'detail': 'Invalid credentials.'})
+
+        authed = user
 
         # 6. Check account status
         status_error = LoginService._check_status(authed)
@@ -102,12 +106,13 @@ class LoginService:
         tokens  = {'access': str(refresh.access_token), 'refresh': str(refresh)}
 
         # 9. Create session record
+        ua_string = request.META.get('HTTP_USER_AGENT', '') if request else ''
         session = LoginSession.objects.create(
             user=authed,
             school=authed.school,
             ip_address=get_client_ip(request),
-            user_agent=request.META.get('HTTP_USER_AGENT', '') if request else '',
-            device_label='',
+            user_agent=ua_string,
+            device_label=get_device_label(ua_string, request),
             refresh_jti=str(refresh['jti']),
             last_seen_at=timezone.now(),
             is_active=True,
@@ -130,12 +135,15 @@ class LoginService:
             metadata={'session_id': session.id},
         )
 
+        from vs_rbac.evaluator import get_effective_permissions
+        permissions = sorted(get_effective_permissions(authed, school=authed.school))
+
         return {
-            'access':     tokens['access'],
-            'refresh':    tokens['refresh'],
-            'session_id': session.id,
-            'user':       UserReadSerializer(authed).data,
-            # 'cached_school': request._cached_school,
+            'access':      tokens['access'],
+            'refresh':     tokens['refresh'],
+            'session_id':  session.id,
+            'user':        UserReadSerializer(authed).data,
+            'permissions': permissions,
         }
 
     # ── Private helpers ───────────────────────────────────────────────────────
@@ -155,20 +163,20 @@ class LoginService:
         """Returns an error payload if the account cannot log in, else None."""
         errors = {
             User.Status.PENDING: {
-                'error_code': 'ACCOUNT_NOT_ACTIVATED',
-                'message':    'Your account is not yet activated. Please check your invitation email.',
+                'code':   'ACCOUNT_NOT_ACTIVATED',
+                'detail': 'Your account is not yet activated. Please check your invitation email or contact your administrator.',
             },
             User.Status.LOCKED: {
-                'error_code': 'ACCOUNT_LOCKED',
-                'message':    'Your account is locked. Please contact your administrator or reset your password.',
+                'code':   'ACCOUNT_LOCKED',
+                'detail': 'Your account is locked. Please contact your administrator or reset your password.',
             },
             User.Status.SUSPENDED: {
-                'error_code': 'ACCOUNT_SUSPENDED',
-                'message':    'Your account has been suspended. Please contact your administrator.',
+                'code':   'ACCOUNT_SUSPENDED',
+                'detail': 'Your account has been suspended. Please contact your administrator.',
             },
             User.Status.DEACTIVATED: {
-                'error_code': 'ACCOUNT_DEACTIVATED',
-                'message':    'This account has been deactivated. Please contact your administrator.',
+                'code':   'ACCOUNT_DEACTIVATED',
+                'detail': 'This account has been deactivated. Please contact your administrator.',
             },
         }
         return errors.get(user.status)
