@@ -20,6 +20,7 @@ from .models import (
     ImportTemplate,
     ImportTemplateColumn,
     ImportValidationIssue,
+    TemplateStatusChoices,
 )
 
 
@@ -112,7 +113,6 @@ class ImportTemplateListSerializer(serializers.ModelSerializer):
             "name",
             "dataset_type",
             "description",
-            "version",
             "status",
             "default_file_format",
             "is_download_enabled",
@@ -143,7 +143,6 @@ class ImportTemplateDetailSerializer(FieldSecurityMixin, serializers.ModelSerial
             "name",
             "dataset_type",
             "description",
-            "version",
             "status",
             "default_file_format",
             "instructions",
@@ -194,7 +193,6 @@ class ImportTemplateCreateSerializer(serializers.ModelSerializer):
             "name",
             "dataset_type",
             "description",
-            "version",
             "status",
             "default_file_format",
             "instructions",
@@ -218,6 +216,52 @@ class ImportTemplateCreateSerializer(serializers.ModelSerializer):
             ])
 
         return template
+
+
+class ImportTemplateUpdateSerializer(serializers.ModelSerializer):
+    """
+    Used when a CX staff member PATCHes an existing system template.
+    Columns are optional; when provided they fully replace all existing columns.
+    dataset_type and code are intentionally excluded — change them via migration.
+    """
+    columns = ImportTemplateColumnWriteSerializer(many=True, required=False)
+
+    class Meta:
+        model = ImportTemplate
+        fields = (
+            "name",
+            "description",
+            "status",
+            "default_file_format",
+            "instructions",
+            "allow_sample_row",
+            "sample_row_data",
+            "validation_rules",
+            "is_download_enabled",
+            "columns",
+        )
+
+    def update(self, instance, validated_data):
+        columns_data = validated_data.pop("columns", None)
+
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+
+        if validated_data.get("status") == TemplateStatusChoices.ACTIVE and not instance.published_at:
+            instance.published_at = timezone.now()
+        if validated_data.get("status") == TemplateStatusChoices.RETIRED and not instance.retired_at:
+            instance.retired_at = timezone.now()
+
+        instance.save()
+
+        if columns_data is not None:
+            instance.columns.all().delete()
+            ImportTemplateColumn.objects.bulk_create([
+                ImportTemplateColumn(template=instance, **col)
+                for col in columns_data
+            ])
+
+        return instance
 
 
 # =========================================================
@@ -508,7 +552,6 @@ class ImportBatchListSerializer(serializers.ModelSerializer):
             "template",
             "template_name",
             "template_code",
-            "template_version",
             "original_filename",
             "file_format",
             "status",
@@ -622,7 +665,6 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
     - template is required
     - file is required
     - school and uploaded_by come from context
-    - template_version is copied automatically
     """
     file = serializers.FileField(write_only=True)
     template_id = serializers.IntegerField(write_only=True)

@@ -46,7 +46,6 @@ def generate_template_xlsx(template: ImportTemplate) -> bytes:
     info = wb.create_sheet(title="Instructions")
     info.append(["Template Name", template.name])
     info.append(["Dataset Type", template.dataset_type])
-    info.append(["Version", template.version])
     info.append(["Description", template.description or ""])
     info.append(["Instructions", template.instructions or ""])
 

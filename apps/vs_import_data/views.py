@@ -39,6 +39,7 @@ from .serializers import (
     ImportTemplateCreateSerializer,
     ImportTemplateDetailSerializer,
     ImportTemplateListSerializer,
+    ImportTemplateUpdateSerializer,
     ImportValidationIssueDetailSerializer,
     ImportValidationIssueListSerializer,
     ImportValidationIssueResolveSerializer,
@@ -223,14 +224,31 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
         )
 
 
-class SystemImportTemplateDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
+class SystemImportTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, generics.RetrieveUpdateAPIView):
     """
-    GET -> retrieve one official system template.
+    GET   -> retrieve one official system template.
+    PATCH -> update template metadata and/or columns (CX_STAFF + TEMPLATE_MANAGE only).
     """
     permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
-    rbac_permission = ImportPermission.TEMPLATE_VIEW
-    serializer_class = ImportTemplateDetailSerializer
     lookup_url_kwarg = "template_id"
+
+    def get_permissions(self):
+        self.rbac_permission = (
+            ImportPermission.TEMPLATE_MANAGE
+            if self.request.method in ("PATCH", "PUT")
+            else ImportPermission.TEMPLATE_VIEW
+        )
+        return super().get_permissions()
+
+    def check_permissions(self, request):
+        super().check_permissions(request)
+        if request.method in ("PATCH", "PUT") and getattr(request.user, "user_type", None) != User.UserType.CX_STAFF:
+            self.permission_denied(request, message="Only CX staff can update import templates.")
+
+    def get_serializer_class(self):
+        if self.request.method in ("PATCH", "PUT"):
+            return ImportTemplateUpdateSerializer
+        return ImportTemplateDetailSerializer
 
     def get_queryset(self):
         qs = ImportTemplate.objects.prefetch_related("columns")
@@ -238,6 +256,23 @@ class SystemImportTemplateDetailView(RetrieveModelMixin, generics.RetrieveAPIVie
         if not is_cx_staff:
             qs = qs.filter(status=TemplateStatusChoices.ACTIVE, is_download_enabled=True)
         return qs
+
+    def perform_update(self, serializer):
+        before = {
+            "name": serializer.instance.name,
+            "status": serializer.instance.status,
+            "description": serializer.instance.description,
+        }
+        template = serializer.save()
+        create_import_audit_log(
+            action="template_updated",
+            actor=self.request.user,
+            entity_type="ImportTemplate",
+            entity_id=str(template.id),
+            before_data=before,
+            after_data={"name": template.name, "status": template.status},
+            message=f"Import template '{template.name}' updated.",
+        )
 
 
 class SystemImportTemplateDownloadView(APIView):

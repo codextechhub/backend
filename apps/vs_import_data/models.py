@@ -316,18 +316,16 @@ class ImportTemplate(TimeStampedModel):
     type. Templates are the source of truth that admins download before filling data
     and that the import pipeline uses to validate uploaded files.
 
-    Templates are versioned and follow a lifecycle (draft → active → retired). Only
+    Templates follow a lifecycle (draft → active → retired). Only
     one template per dataset type is expected to be active at a time. Column
     specifications are stored on related ImportTemplateColumn records.
 
     Fields:
         code: Stable internal identifier, unique across all templates.
-              Example: "students_master_v1". Used for programmatic lookups.
+              Example: "students_master". Used for programmatic lookups.
         name: Human-readable display label for the template.
         dataset_type: The kind of data this template governs (DatasetTypeChoices).
         description: Optional narrative summary shown to admins in the UI.
-        version: Semantic version string (default "1.0"); incremented on structural
-                 column changes.
         status: Publication state (TemplateStatusChoices, default ACTIVE).
         default_file_format: Preferred format for generated download files
                              (FileFormatChoices, default CSV).
@@ -347,7 +345,7 @@ class ImportTemplate(TimeStampedModel):
         retired_at: Timestamp when the template was retired and superseded.
 
     Meta:
-        - ordering by dataset_type, name, then descending version.
+        - ordering by dataset_type, name.
         - indexes on (dataset_type, status) for active-template lookups and on code
           for direct programmatic access.
     """
@@ -363,7 +361,6 @@ class ImportTemplate(TimeStampedModel):
 
     description = models.TextField(blank=True)
 
-    version = models.CharField(max_length=20, default="1.0")
     status = models.CharField(
         max_length=20,
         choices=TemplateStatusChoices.choices,
@@ -408,14 +405,14 @@ class ImportTemplate(TimeStampedModel):
     retired_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        ordering = ["dataset_type", "name", "-version"]
+        ordering = ["dataset_type", "name"]
         indexes = [
             models.Index(fields=["dataset_type", "status"]),
             models.Index(fields=["code"]),
         ]
 
     def __str__(self) -> str:
-        return f"{self.name} ({self.version})"
+        return self.name
 
     def clean(self):
         if self.status == TemplateStatusChoices.ACTIVE and not self.columns.exists():

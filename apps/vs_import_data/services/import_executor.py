@@ -520,7 +520,6 @@ def execute_import(import_batch, queued_by):
                     metadata={
                         "row_number": row_number,
                         "template_code": import_batch.template.code,
-                        "template_version": import_batch.template.version if import_batch.template else "",
                     },
                 )
 
@@ -596,7 +595,6 @@ def finalize_import_job(
         "failed_rows": failed_rows,
         "skipped_rows": skipped_rows,
         "template_code": import_batch.template.code if import_batch.template else "",
-        "template_version": import_batch.template.version if import_batch.template else "",
     }
 
     if failed_rows > 0 and succeeded_rows > 0:
