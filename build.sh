@@ -48,7 +48,7 @@ with connection.cursor() as c:
         # Insert both records directly to avoid Django trying to run it.
         for name in ['0001_initial', '0002_remove_content_type_name']:
             c.execute(
-                'INSERT IGNORE INTO django_migrations (app, name, applied) VALUES (%s, %s, %s)',
+                'INSERT INTO django_migrations (app, name, applied) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING',
                 ['contenttypes', name, now]
             )
 
@@ -64,7 +64,7 @@ from django.db import connection
 try:
     with connection.cursor() as c:
         # Check if our tables exist at all (fresh DB vs existing DB after reset)
-        c.execute(\"SHOW TABLES LIKE 'vs_user_user'\")
+        c.execute(\"SELECT 1 FROM information_schema.tables WHERE table_name = 'vs_user_user' LIMIT 1\")
         has_tables = c.fetchone() is not None
         if not has_tables:
             print('fresh')
