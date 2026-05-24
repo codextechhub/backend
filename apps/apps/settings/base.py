@@ -82,6 +82,7 @@ INSTALLED_APPS = [
     "vs_audit",
     "vs_import_data",
     'vs_config',
+    'vs_notifications',
 ]
 
 MIDDLEWARE = [
