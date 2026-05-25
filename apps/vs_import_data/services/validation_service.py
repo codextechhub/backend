@@ -95,6 +95,7 @@ def _validate_headers_against_template(import_batch) -> list[dict]:
 def _validate_rows_against_template(import_batch) -> list[dict]:
     """
     Validate each preview row using ImportTemplateColumn definitions.
+    Columns are fetched once and passed to each row validator to avoid N+1 queries.
     """
     issues = []
 
@@ -102,13 +103,14 @@ def _validate_rows_against_template(import_batch) -> list[dict]:
         return issues
 
     rows = import_batch.preview_rows or []
+    columns = list(import_batch.template.columns.order_by("column_order"))
 
     for row_number, row_data in enumerate(rows, start=1):
         issues.extend(
             validate_row_against_template(
                 row_data=row_data,
                 row_number=row_number,
-                template=import_batch.template,
+                columns=columns,
             )
         )
 
@@ -131,6 +133,71 @@ def _validate_template_uniqueness_rules(import_batch) -> list[dict]:
         issues.extend(find_duplicate_values(rows, template_column.column_name))
 
     return issues
+
+
+def _validate_template_rules(import_batch) -> list[dict]:
+    """
+    Apply dataset-level rules from template.validation_rules JSON.
+
+    Supported keys:
+      min_rows (int)  — file must contain at least this many data rows.
+      max_rows (int)  — file must contain no more than this many data rows.
+    """
+    issues = []
+
+    if not import_batch.template:
+        return issues
+
+    rules = import_batch.template.validation_rules or {}
+    if not rules:
+        return issues
+
+    rows = import_batch.preview_rows or []
+    row_count = len(rows)
+
+    min_rows = rules.get("min_rows")
+    if min_rows is not None:
+        try:
+            min_rows = int(min_rows)
+            if row_count < min_rows:
+                issues.append({
+                    "severity": "error",
+                    "code": "business_rule",
+                    "message": (
+                        f"File must contain at least {min_rows} data "
+                        f"{'row' if min_rows == 1 else 'rows'} (found {row_count})."
+                    ),
+                })
+        except (TypeError, ValueError):
+            pass
+
+    max_rows = rules.get("max_rows")
+    if max_rows is not None:
+        try:
+            max_rows = int(max_rows)
+            if row_count > max_rows:
+                issues.append({
+                    "severity": "error",
+                    "code": "business_rule",
+                    "message": (
+                        f"File cannot contain more than {max_rows} data "
+                        f"{'row' if max_rows == 1 else 'rows'} (found {row_count})."
+                    ),
+                })
+        except (TypeError, ValueError):
+            pass
+
+    return issues
+
+
+def _build_col_resolver(template):
+    """
+    Returns a callable that maps a target_field name to the CSV column_name
+    defined on the template, falling back to the target_field itself.
+    Keeps dataset validators decoupled from hard-coded column header strings.
+    """
+    mapping = {c.target_field: c.column_name for c in template.columns.all()}
+    return lambda target_field: mapping.get(target_field, target_field)
 
 
 def _validate_dataset_specific_rules(import_batch) -> list[dict]:
@@ -157,6 +224,8 @@ def _validate_schools_rules(import_batch) -> list[dict]:
     issues = []
     rows = import_batch.preview_rows or []
 
+    _col = _build_col_resolver(import_batch.template)
+
     # Prefetch valid plans (with limits) and module keys once to avoid per-row DB hits
     active_plans = {p.code: p for p in PackagePlan.objects.filter(is_active=True)}
     valid_plan_codes = set(active_plans.keys())
@@ -169,12 +238,12 @@ def _validate_schools_rules(import_batch) -> list[dict]:
     seen_slugs: dict[str, int] = {}  # resolved_slug -> first row_number that claims it
 
     for row_number, row in enumerate(rows, start=1):
-        def _s(key: str) -> str:
-            return (row.get(key) or "").strip()
+        def _s(target_field: str) -> str:
+            return (row.get(_col(target_field)) or "").strip()
 
-        def _int(key: str):
+        def _int(target_field: str):
             try:
-                v = row.get(key)
+                v = row.get(_col(target_field))
                 return int(v) if v not in (None, "") else None
             except (TypeError, ValueError):
                 return None
@@ -183,7 +252,7 @@ def _validate_schools_rules(import_batch) -> list[dict]:
         raw_slug = _s("slug")
         raw_name = _s("name")
         resolved_slug = slugify(raw_slug) if raw_slug else slugify(raw_name)
-        slug_col = "slug" if raw_slug else "name"
+        slug_col = _col("slug") if raw_slug else _col("name")
 
         if resolved_slug:
             # Mirror serializer: auto-generated reserved slug gets "-school" appended
@@ -199,7 +268,7 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                     "code": "business_rule",
                     "message": f"Slug '{effective_slug}' is reserved and cannot be used.",
                     "row_number": row_number,
-                    "column_name": "slug",
+                    "column_name": _col("slug"),
                     "raw_value": raw_slug,
                 })
             elif effective_slug in existing_slugs:
@@ -240,7 +309,7 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                 "code": "invalid_choice",
                 "message": f"Package plan '{plan_code}' does not exist or is not active.",
                 "row_number": row_number,
-                "column_name": "package_plan",
+                "column_name": _col("package_plan"),
                 "raw_value": plan_code,
             })
 
@@ -252,7 +321,7 @@ def _validate_schools_rules(import_batch) -> list[dict]:
             admin_cap = _int("admin_capacity")
 
             # min_value=1 (mirrors serializer IntegerField(min_value=1))
-            for cap_val, col_name in (
+            for cap_val, target_field in (
                 (student_cap, "student_capacity"),
                 (teacher_cap, "teacher_capacity"),
                 (admin_cap, "admin_capacity"),
@@ -261,9 +330,9 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                     issues.append({
                         "severity": "error",
                         "code": "business_rule",
-                        "message": f"{col_name} must be at least 1.",
+                        "message": f"{_col(target_field)} must be at least 1.",
                         "row_number": row_number,
-                        "column_name": col_name,
+                        "column_name": _col(target_field),
                         "raw_value": str(cap_val),
                     })
 
@@ -274,7 +343,7 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                     "code": "business_rule",
                     "message": f"Exceeds plan limit of {plan.max_students} students.",
                     "row_number": row_number,
-                    "column_name": "student_capacity",
+                    "column_name": _col("student_capacity"),
                     "raw_value": str(student_cap),
                 })
             if teacher_cap is not None and teacher_cap >= 1 and plan.max_teachers is not None and teacher_cap > plan.max_teachers:
@@ -283,7 +352,7 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                     "code": "business_rule",
                     "message": f"Exceeds plan limit of {plan.max_teachers} teachers.",
                     "row_number": row_number,
-                    "column_name": "teacher_capacity",
+                    "column_name": _col("teacher_capacity"),
                     "raw_value": str(teacher_cap),
                 })
             if admin_cap is not None and admin_cap >= 1 and plan.max_admins is not None and admin_cap > plan.max_admins:
@@ -292,7 +361,7 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                     "code": "business_rule",
                     "message": f"Exceeds plan limit of {plan.max_admins} admins.",
                     "row_number": row_number,
-                    "column_name": "admin_capacity",
+                    "column_name": _col("admin_capacity"),
                     "raw_value": str(admin_cap),
                 })
 
@@ -306,7 +375,7 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                         "code": "invalid_choice",
                         "message": f"Module key '{key}' does not exist or is not active.",
                         "row_number": row_number,
-                        "column_name": "enabled_modules",
+                        "column_name": _col("enabled_modules"),
                         "raw_value": raw_modules,
                     })
 
@@ -321,7 +390,7 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                         "code": "business_rule",
                         "message": f"subscription_expires_at must be a future date (got '{expires_raw}').",
                         "row_number": row_number,
-                        "column_name": "subscription_expires_at",
+                        "column_name": _col("subscription_expires_at"),
                         "raw_value": expires_raw,
                     })
             except ValueError:
@@ -330,29 +399,29 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                     "code": "invalid_format",
                     "message": f"subscription_expires_at must be in YYYY-MM-DD format (got '{expires_raw}').",
                     "row_number": row_number,
-                    "column_name": "subscription_expires_at",
+                    "column_name": _col("subscription_expires_at"),
                     "raw_value": expires_raw,
                 })
 
         # --- admin full_name: must not be empty/whitespace-only ---
-        for name_col, email_col in (
+        for name_target, email_target in (
             ("school_admin_full_name", "school_admin_email"),
             ("branch_admin_full_name", "branch_admin_email"),
         ):
             # Only enforce when the corresponding email is present (admin is being created)
-            if _s(email_col) and not _s(name_col):
+            if _s(email_target) and not _s(name_target):
                 issues.append({
                     "severity": "error",
                     "code": "required_value_missing",
-                    "message": f"{name_col} is required when {email_col} is provided.",
+                    "message": f"{_col(name_target)} is required when {_col(email_target)} is provided.",
                     "row_number": row_number,
-                    "column_name": name_col,
+                    "column_name": _col(name_target),
                     "raw_value": "",
                 })
 
         # --- admin emails: must not already exist as users, must not repeat across rows ---
-        for col in ("school_admin_email", "branch_admin_email"):
-            email = _s(col).lower()
+        for email_target in ("school_admin_email", "branch_admin_email"):
+            email = _s(email_target).lower()
             if not email:
                 continue
             if User.objects.filter(email=email).exists():
@@ -361,7 +430,7 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                     "code": "duplicate_record",
                     "message": f"A user with email '{email}' already exists.",
                     "row_number": row_number,
-                    "column_name": col,
+                    "column_name": _col(email_target),
                     "raw_value": email,
                 })
             elif email in seen_admin_emails:
@@ -373,7 +442,7 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                         "Each admin email must be unique across rows."
                     ),
                     "row_number": row_number,
-                    "column_name": col,
+                    "column_name": _col(email_target),
                     "raw_value": email,
                 })
             else:
@@ -390,9 +459,11 @@ def _validate_branches_rules(import_batch) -> list[dict]:
     rows = import_batch.preview_rows or []
     seen_admin_emails: dict[str, int] = {}
 
+    _col = _build_col_resolver(import_batch.template)
+
     for row_number, row in enumerate(rows, start=1):
-        def _s(key: str) -> str:
-            return (row.get(key) or "").strip()
+        def _s(target_field: str) -> str:
+            return (row.get(_col(target_field)) or "").strip()
 
         # --- school resolution: required when batch is not school-scoped ---
         if import_batch.school is None:
@@ -405,7 +476,7 @@ def _validate_branches_rules(import_batch) -> list[dict]:
                         "code": "cross_reference_missing",
                         "message": f"No school found with slug '{school_slug}'.",
                         "row_number": row_number,
-                        "column_name": "school_slug",
+                        "column_name": _col("school_slug"),
                         "raw_value": school_slug,
                     })
             elif school_code:
@@ -415,16 +486,16 @@ def _validate_branches_rules(import_batch) -> list[dict]:
                         "code": "cross_reference_missing",
                         "message": f"No school found with code '{school_code}'.",
                         "row_number": row_number,
-                        "column_name": "school_code",
+                        "column_name": _col("school_code"),
                         "raw_value": school_code,
                     })
             else:
                 issues.append({
                     "severity": "error",
                     "code": "required_value_missing",
-                    "message": "Either school_slug or school_code is required when the batch is not school-scoped.",
+                    "message": f"Either {_col('school_slug')} or {_col('school_code')} is required when the batch is not school-scoped.",
                     "row_number": row_number,
-                    "column_name": "school_slug",
+                    "column_name": _col("school_slug"),
                     "raw_value": "",
                 })
 
@@ -437,7 +508,7 @@ def _validate_branches_rules(import_batch) -> list[dict]:
                     "code": "duplicate_record",
                     "message": f"A user with email '{email}' already exists.",
                     "row_number": row_number,
-                    "column_name": "branch_admin_email",
+                    "column_name": _col("branch_admin_email"),
                     "raw_value": email,
                 })
             elif email in seen_admin_emails:
@@ -449,7 +520,7 @@ def _validate_branches_rules(import_batch) -> list[dict]:
                         "Each branch admin email must be unique across rows."
                     ),
                     "row_number": row_number,
-                    "column_name": "branch_admin_email",
+                    "column_name": _col("branch_admin_email"),
                     "raw_value": email,
                 })
             else:
@@ -591,6 +662,7 @@ def validate_import_batch(import_batch) -> dict:
     issues = []
 
     issues.extend(_validate_template_presence(import_batch))
+    issues.extend(_validate_template_rules(import_batch))
     issues.extend(_validate_headers_against_template(import_batch))
     issues.extend(_validate_rows_against_template(import_batch))
     issues.extend(_validate_template_uniqueness_rules(import_batch))
