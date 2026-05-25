@@ -75,7 +75,6 @@ TEMPLATES: list[dict] = [
             "code": "schools_master_v1",
             "name": "Schools Master Import",
             "dataset_type": DatasetTypeChoices.SCHOOLS,
-            "version": "1.0",
             "status": TemplateStatusChoices.ACTIVE,
             "default_file_format": FileFormatChoices.XLSX,
             "description": (
@@ -321,7 +320,6 @@ TEMPLATES: list[dict] = [
             "code": "branches_master_v1",
             "name": "Branches Master Import",
             "dataset_type": DatasetTypeChoices.BRANCHES,
-            "version": "1.0",
             "status": TemplateStatusChoices.ACTIVE,
             "default_file_format": FileFormatChoices.XLSX,
             "description": (
