@@ -501,7 +501,7 @@ def _validate_branches_rules(import_batch) -> list[dict]:
                     "raw_value": "",
                 })
 
-        # --- is_main: only one TRUE per school allowed across rows ---
+        # --- is_main: only one TRUE per school allowed (within-file + DB) ---
         school_key = _s("school_slug") or _s("school_code") or "__batch_scoped__"
         is_main_raw = _s("is_main").lower()
         if is_main_raw in ("true", "1", "yes"):
@@ -519,6 +519,27 @@ def _validate_branches_rules(import_batch) -> list[dict]:
                 })
             else:
                 seen_main_branch[school_key] = row_number
+                # Also check the DB — school may already have a main branch
+                if import_batch.school is not None:
+                    check_school = import_batch.school
+                else:
+                    slug_val = _s("school_slug")
+                    code_val = _s("school_code")
+                    check_school = (
+                        School.objects.filter(slug=slug_val).first() if slug_val
+                        else School.objects.filter(code=code_val).first() if code_val
+                        else None
+                    )
+                from vs_schools.models import Branch as BranchModel
+                if check_school and BranchModel.objects.filter(school=check_school, is_main=True).exists():
+                    issues.append({
+                        "severity": "error",
+                        "code": "business_rule",
+                        "message": f"School '{school_key}' already has a main branch in the database.",
+                        "row_number": row_number,
+                        "column_name": _col("is_main"),
+                        "raw_value": _s("is_main"),
+                    })
 
         # --- branch_admin_full_name: required when email is present ---
         if _s("branch_admin_email") and not _s("branch_admin_full_name"):
