@@ -36,6 +36,11 @@ urlpatterns = [
         views.ImportBatchDetailView.as_view(),
         name="import-batch-detail",
     ),
+    path(
+        "batches/<int:batch_id>/download/",
+        views.ImportBatchFileDownloadView.as_view(),
+        name="import-batch-file-download",
+    ),
 
     # =========================================================
     # Validation

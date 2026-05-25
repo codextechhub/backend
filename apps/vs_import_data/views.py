@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from django.http import HttpResponse
+import mimetypes
+import os
+
+from django.http import FileResponse, HttpResponse, Http404
 from django.shortcuts import get_object_or_404
 
 from rest_framework import generics, permissions, status
@@ -169,7 +172,7 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
     GET  -> list available official system templates (all authenticated staff).
     POST -> create a new system template with columns (CX_STAFF only).
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
     def get_permissions(self):
         self.rbac_permission = (
@@ -229,7 +232,7 @@ class SystemImportTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, gener
     GET   -> retrieve one official system template.
     PATCH -> update template metadata and/or columns (CX_STAFF + TEMPLATE_MANAGE only).
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     lookup_url_kwarg = "template_id"
 
     def get_permissions(self):
@@ -283,7 +286,7 @@ class SystemImportTemplateDownloadView(APIView):
         ?file_format=csv
         ?file_format=xlsx
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.TEMPLATE_VIEW
 
     def get(self, request, template_id):
@@ -319,7 +322,7 @@ class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.L
     GET  -> list import batches for an school
     POST -> upload a new import batch using a selected system template
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
     def get_permissions(self):
         self.rbac_permission = (
@@ -372,7 +375,7 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
     PATCH  -> update simple metadata only
     DELETE -> delete batch
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     lookup_url_kwarg = "batch_id"
 
     def get_permissions(self):
@@ -437,13 +440,53 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
 
 
 # =========================================================
+# Batch File Download
+# =========================================================
+class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
+    """
+    GET -> stream the uploaded batch file as an attachment.
+
+    Works in both DEBUG and non-DEBUG environments because it reads
+    the file from MEDIA_ROOT and serves it directly rather than
+    redirecting to a media URL.
+    """
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = ImportPermission.BATCH_VIEW
+
+    def get(self, request, **_kwargs):
+        school = self.get_school()
+        qs = ImportBatch.objects.only("id", "school", "file", "original_filename")
+        if school is not None:
+            qs = qs.filter(school=school)
+        batch = get_object_or_404(qs, id=_kwargs["batch_id"])
+
+        if not batch.file:
+            raise Http404("No file attached to this batch.")
+
+        file_path = batch.file.path
+        if not os.path.exists(file_path):
+            raise Http404("File not found on server.")
+
+        content_type, _ = mimetypes.guess_type(file_path)
+        content_type = content_type or "application/octet-stream"
+
+        response = FileResponse(
+            open(file_path, "rb"),
+            content_type=content_type,
+            as_attachment=True,
+            filename=batch.original_filename,
+        )
+        return response
+
+
+# =========================================================
 # Validation Views
 # =========================================================
 class ValidateImportBatchView(ImportBatchContextMixin, APIView):
     """
     POST -> validate an import batch against its selected template.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.BATCH_VALIDATE
 
     def post(self, request, **_kwargs):
@@ -482,7 +525,7 @@ class ImportValidationIssueListView(ImportBatchContextMixin, generics.ListAPIVie
         ?severity=error
         ?is_resolved=true
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_VIEW
     serializer_class = ImportValidationIssueListSerializer
 
@@ -510,7 +553,7 @@ class ImportValidationIssueDetailView(RetrieveModelMixin, ImportBatchContextMixi
     """
     GET -> retrieve one validation issue.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_VIEW
     serializer_class = ImportValidationIssueDetailSerializer
     lookup_url_kwarg = "issue_id"
@@ -523,7 +566,7 @@ class ResolveImportValidationIssueView(UpdateModelMixin, ImportBatchContextMixin
     """
     PATCH -> mark a validation issue as resolved.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_RESOLVE
     serializer_class = ImportValidationIssueResolveSerializer
     lookup_url_kwarg = "issue_id"
@@ -553,7 +596,7 @@ class ImportValidationIssueExportView(ImportBatchContextMixin, APIView):
     """
     GET -> download all validation issues for a batch as a CSV file.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_VIEW
 
     def get(self, request, **_kwargs):
@@ -572,7 +615,7 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
     """
     POST -> start actual import execution.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.BATCH_IMPORT
 
     def post(self, request, **_kwargs):
@@ -628,7 +671,7 @@ class ImportJobListView(ImportBatchContextMixin, generics.ListAPIView):
     """
     GET -> list jobs for one batch.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.JOB_VIEW
     serializer_class = ImportJobListSerializer
 
@@ -644,7 +687,7 @@ class ImportJobDetailView(RetrieveModelMixin, ImportJobContextMixin, generics.Re
     """
     GET -> retrieve one import job with row results.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.JOB_VIEW
     serializer_class = ImportJobDetailSerializer
     lookup_url_kwarg = "job_id"
@@ -661,7 +704,7 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
     """
     POST -> rollback an import job.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.ROLLBACK_RUN
 
     def post(self, request, **_kwargs):
@@ -692,7 +735,7 @@ class ImportRollbackRecordListView(ImportJobContextMixin, generics.ListAPIView):
     """
     GET -> list rollback history for one job.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.ROLLBACK_VIEW
     serializer_class = ImportRollbackRecordSerializer
 
@@ -709,7 +752,7 @@ class ImportAuditLogListView(ImportBatchContextMixin, generics.ListAPIView):
     """
     GET -> list AuditEvents for one import batch, scoped by batch pk in metadata.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.AUDIT_VIEW
 
     def get_serializer_class(self):
@@ -733,7 +776,7 @@ class ImportNotificationListView(ImportBatchContextMixin, generics.ListAPIView):
     """
     GET -> list notifications for one import batch.
     """
-    permission_classes = [IsAuthenticatedAndActive & (IsVisionStaff | IsSchoolAdmin | IsBranchAdmin) & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.NOTIFICATION_VIEW
     serializer_class = ImportNotificationSerializer
 
