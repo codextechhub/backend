@@ -262,7 +262,7 @@ TEMPLATES: list[dict] = [
                 "is_unique":     False,
                 "max_length":    120,
                 "sample_value":  "Mrs. Funke Adeyemi",
-                "column_order":  11,
+                "column_order":  10,
             },
             {
                 "column_name":   "Admin Email",
@@ -273,7 +273,7 @@ TEMPLATES: list[dict] = [
                 "is_required":   True,
                 "is_unique":     True,
                 "sample_value":  "admin@greenfieldacademy.edu.ng",
-                "column_order":  12,
+                "column_order":  11,
             },
             {
                 "column_name":   "Admin Phone",
@@ -285,7 +285,7 @@ TEMPLATES: list[dict] = [
                 "is_unique":     False,
                 "max_length":    32,
                 "sample_value":  "08051234567",
-                "column_order":  13,
+                "column_order":  12,
             },
             {
                 "column_name":   "Admin Role",
@@ -346,7 +346,6 @@ TEMPLATES: list[dict] = [
                 "Email":                "lekki@greenfieldacademy.edu.ng",
                 "Country":              "Nigeria",
                 "State":                "Lagos",
-                "Status":               "Active",
                 "Opened Date":          "2009-09-01",
                 "Admin Full Name":      "Mr. Emeka Obi",
                 "Admin Email":          "head.lekki@greenfieldacademy.edu.ng",
@@ -476,19 +475,8 @@ TEMPLATES: list[dict] = [
             },
     
             # --- Lifecycle ---
-            {
-                "column_name":   "Status",
-                "target_field":  "status",
-                "display_name":  "Branch Status",
-                "help_text":     "Initial lifecycle status for this branch.",
-                "data_type":     TemplateColumnDataTypeChoices.CHOICE,
-                "is_required":   True,
-                "is_unique":     False,
-                "allowed_values": ["Active", "Pending", "Suspended", "Inactive", "Closed"],
-                "sample_value":  "Active",
-                "default_value": "Pending",
-                "column_order":  9,
-            },
+            # Status is intentionally excluded: BranchCreateSerializer always
+            # creates branches as PENDING and transitions via lifecycle methods.
             {
                 "column_name":   "Opened Date",
                 "target_field":  "opened_at",
@@ -498,7 +486,7 @@ TEMPLATES: list[dict] = [
                 "is_required":   False,
                 "is_unique":     False,
                 "sample_value":  "2009-09-01",
-                "column_order":  10,
+                "column_order":  9,
             },
     
             # --- Branch primary admin contact ---
@@ -514,7 +502,7 @@ TEMPLATES: list[dict] = [
                 "is_unique":     False,
                 "max_length":    120,
                 "sample_value":  "Mr. Emeka Obi",
-                "column_order":  11,
+                "column_order":  10,
             },
             {
                 "column_name":   "Admin Email",
@@ -525,7 +513,7 @@ TEMPLATES: list[dict] = [
                 "is_required":   True,
                 "is_unique":     True,
                 "sample_value":  "head.lekki@greenfieldacademy.edu.ng",
-                "column_order":  12,
+                "column_order":  11,
             },
             {
                 "column_name":   "Admin Phone",
@@ -537,7 +525,7 @@ TEMPLATES: list[dict] = [
                 "is_unique":     False,
                 "max_length":    32,
                 "sample_value":  "08061234567",
-                "column_order":  13,
+                "column_order":  12,
             },
             {
                 "column_name":   "Admin Role",
@@ -553,7 +541,7 @@ TEMPLATES: list[dict] = [
                 "max_length":    80,
                 "sample_value":  "Head Teacher",
                 "default_value": "Head Teacher",
-                "column_order":  14,
+                "column_order":  13,
             },
         ],
     }

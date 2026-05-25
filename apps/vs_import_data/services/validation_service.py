@@ -458,6 +458,8 @@ def _validate_branches_rules(import_batch) -> list[dict]:
     issues = []
     rows = import_batch.preview_rows or []
     seen_admin_emails: dict[str, int] = {}
+    # school_slug (or "batch-scoped") -> row_number of first is_main=TRUE row
+    seen_main_branch: dict[str, int] = {}
 
     _col = _build_col_resolver(import_batch.template)
 
@@ -498,6 +500,36 @@ def _validate_branches_rules(import_batch) -> list[dict]:
                     "column_name": _col("school_slug"),
                     "raw_value": "",
                 })
+
+        # --- is_main: only one TRUE per school allowed across rows ---
+        school_key = _s("school_slug") or _s("school_code") or "__batch_scoped__"
+        is_main_raw = _s("is_main").lower()
+        if is_main_raw in ("true", "1", "yes"):
+            if school_key in seen_main_branch:
+                issues.append({
+                    "severity": "error",
+                    "code": "business_rule",
+                    "message": (
+                        f"Row {seen_main_branch[school_key]} already marks a main branch for "
+                        f"school '{school_key}'. Only one branch per school can be Is Main Branch = TRUE."
+                    ),
+                    "row_number": row_number,
+                    "column_name": _col("is_main"),
+                    "raw_value": _s("is_main"),
+                })
+            else:
+                seen_main_branch[school_key] = row_number
+
+        # --- branch_admin_full_name: required when email is present ---
+        if _s("branch_admin_email") and not _s("branch_admin_full_name"):
+            issues.append({
+                "severity": "error",
+                "code": "required_value_missing",
+                "message": f"{_col('branch_admin_full_name')} is required when {_col('branch_admin_email')} is provided.",
+                "row_number": row_number,
+                "column_name": _col("branch_admin_full_name"),
+                "raw_value": "",
+            })
 
         # --- branch_admin_email: must not already exist, must be unique across rows ---
         email = _s("branch_admin_email").lower()

@@ -136,7 +136,7 @@ class BranchCreateView(CreateModelMixin, ActorContextMixin, generics.CreateAPIVi
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
-        i_slug = self.kwargs["i_slug"]
+        i_slug = self.kwargs["slug"]
 
         school = School.objects.filter(slug=i_slug).first()
         if not school:
