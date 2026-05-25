@@ -655,15 +655,19 @@ def _update_batch_validation_state(import_batch, summary: dict) -> None:
     """
     Update validation result fields on the batch.
     """
+    error_count = summary["error_count"]
+    error_rows = summary.get("error_rows", error_count)
+    valid_rows = import_batch.total_rows - error_rows
+
     import_batch.validation_summary = summary
     import_batch.validation_completed_at = timezone.now()
-    import_batch.has_critical_errors = summary["error_count"] > 0
-    import_batch.is_ready_for_import = summary["error_count"] == 0
-    import_batch.structure_matches_template = summary["error_count"] == 0
+    import_batch.has_critical_errors = error_count > 0
+    import_batch.is_ready_for_import = valid_rows > 0
+    import_batch.structure_matches_template = error_count == 0
 
     import_batch.status = (
         ImportBatchStatusChoices.READY_TO_IMPORT
-        if summary["error_count"] == 0
+        if valid_rows > 0
         else ImportBatchStatusChoices.VALIDATION_FAILED
     )
 

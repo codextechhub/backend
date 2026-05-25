@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from django.db.models import Q
-from django.forms import ValidationError
 from rest_framework import generics
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from core.mixins import RetrieveModelMixin, CreateModelMixin

@@ -662,9 +662,17 @@ def summarize_issues(issues: list[dict]) -> dict:
     warning_count = sum(1 for issue in issues if issue.get("severity") == "warning")
     info_count = sum(1 for issue in issues if issue.get("severity") == "info")
 
+    # Distinct rows that carry at least one error (file-level issues have row_number=None).
+    error_row_numbers = {
+        issue["row_number"]
+        for issue in issues
+        if issue.get("severity") == "error" and issue.get("row_number") is not None
+    }
+
     return {
         "total_issues": len(issues),
         "error_count": error_count,
+        "error_rows": len(error_row_numbers),
         "warning_count": warning_count,
         "info_count": info_count,
         "has_critical_errors": error_count > 0,
