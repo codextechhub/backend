@@ -1,0 +1,4 @@
+School Slug,Branch Name,Branch Type,Is Main Branch,Address,Email,Country,State,Opened Date,Admin Full Name,Admin Email,Admin Phone,Admin Role
+faith-hope-school,Faith Hope Ibadan Campus,Secondary,FALSE,8 Ring Road Ibadan Oyo,ibadan@faithhopeschool.edu.ng,Nigeria,Oyo,2017-04-20,Mr. Samuel Adeyinka,head.ibadan@faithhopeschool.edu.ng,08091234567,Head Teacher
+blue-valley-school,Blue Valley School — Main Campus,Combined,TRUE,45 Valley Road Abuja,main@bluevalleyschool.edu.ng,Nigeria,FCT,2012-01-01,Mrs. Ngozi Okonkwo,head.main.bvs@bluevalleyschool.edu.ng,08092345678,Head Teacher
+sunrise-academy,Sunrise Ikeja Campus,Primary,FALSE,33 Awolowo Road Ikeja Lagos,ikeja@sunriseacademy.edu.ng,Nigeria,Lagos,2019-07-01,Mr. Adebayo Ogunleye,head.ikeja@sunriseacademy.edu.ng,08093456789,Head Teacher
