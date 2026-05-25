@@ -150,23 +150,87 @@ def _validate_dataset_specific_rules(import_batch) -> list[dict]:
 
 def _validate_schools_rules(import_batch) -> list[dict]:
     from datetime import date as date_type
-    from vs_schools.models import PackagePlan, XVSModules
+    from django.utils.text import slugify
+    from vs_schools.models import RESERVED_TENANT_SLUGS, PackagePlan, School, XVSModules
     from vs_user.models import User
 
     issues = []
     rows = import_batch.preview_rows or []
 
-    # Prefetch valid keys once to avoid per-row DB hits
-    valid_plan_codes = set(PackagePlan.objects.filter(is_active=True).values_list("code", flat=True))
+    # Prefetch valid plans (with limits) and module keys once to avoid per-row DB hits
+    active_plans = {p.code: p for p in PackagePlan.objects.filter(is_active=True)}
+    valid_plan_codes = set(active_plans.keys())
     valid_module_keys = set(XVSModules.objects.filter(is_active=True).values_list("key", flat=True))
+    existing_slugs = set(School.objects.values_list("slug", flat=True))
     today = timezone.now().date()
 
-    # Track admin emails seen across rows to catch within-file duplicates
+    # Track within-file duplicates
     seen_admin_emails: dict[str, int] = {}
+    seen_slugs: dict[str, int] = {}  # resolved_slug -> first row_number that claims it
 
     for row_number, row in enumerate(rows, start=1):
         def _s(key: str) -> str:
             return (row.get(key) or "").strip()
+
+        def _int(key: str):
+            try:
+                v = row.get(key)
+                return int(v) if v not in (None, "") else None
+            except (TypeError, ValueError):
+                return None
+
+        # --- Slug: resolve the same way SchoolCreateSerializer does ---
+        raw_slug = _s("slug")
+        raw_name = _s("name")
+        resolved_slug = slugify(raw_slug) if raw_slug else slugify(raw_name)
+        slug_col = "slug" if raw_slug else "name"
+
+        if resolved_slug:
+            # Mirror serializer: auto-generated reserved slug gets "-school" appended
+            effective_slug = (
+                f"{resolved_slug}-school"
+                if not raw_slug and resolved_slug in RESERVED_TENANT_SLUGS
+                else resolved_slug
+            )
+
+            if raw_slug and effective_slug in RESERVED_TENANT_SLUGS:
+                issues.append({
+                    "severity": "error",
+                    "code": "business_rule",
+                    "message": f"Slug '{effective_slug}' is reserved and cannot be used.",
+                    "row_number": row_number,
+                    "column_name": "slug",
+                    "raw_value": raw_slug,
+                })
+            elif effective_slug in existing_slugs:
+                suggestions = [
+                    f"{effective_slug}-{i}" for i in range(2, 8)
+                    if f"{effective_slug}-{i}" not in existing_slugs
+                    and f"{effective_slug}-{i}" not in seen_slugs
+                ][:5]
+                issues.append({
+                    "severity": "error",
+                    "code": "duplicate_record",
+                    "message": f"School with slug '{effective_slug}' already exists in the database.",
+                    "row_number": row_number,
+                    "column_name": slug_col,
+                    "raw_value": raw_slug or raw_name,
+                    "metadata": {"suggestions": suggestions},
+                })
+            elif effective_slug in seen_slugs:
+                issues.append({
+                    "severity": "error",
+                    "code": "duplicate_record",
+                    "message": (
+                        f"Slug '{effective_slug}' conflicts with row {seen_slugs[effective_slug]}. "
+                        "Each school must resolve to a unique slug."
+                    ),
+                    "row_number": row_number,
+                    "column_name": slug_col,
+                    "raw_value": raw_slug or raw_name,
+                })
+            else:
+                seen_slugs[effective_slug] = row_number
 
         # --- package_plan: must exist and be active ---
         plan_code = _s("package_plan")
@@ -179,6 +243,58 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                 "column_name": "package_plan",
                 "raw_value": plan_code,
             })
+
+        # --- capacity checks (plan present and valid) ---
+        elif plan_code and plan_code in active_plans:
+            plan = active_plans[plan_code]
+            student_cap = _int("student_capacity")
+            teacher_cap = _int("teacher_capacity")
+            admin_cap = _int("admin_capacity")
+
+            # min_value=1 (mirrors serializer IntegerField(min_value=1))
+            for cap_val, col_name in (
+                (student_cap, "student_capacity"),
+                (teacher_cap, "teacher_capacity"),
+                (admin_cap, "admin_capacity"),
+            ):
+                if cap_val is not None and cap_val < 1:
+                    issues.append({
+                        "severity": "error",
+                        "code": "business_rule",
+                        "message": f"{col_name} must be at least 1.",
+                        "row_number": row_number,
+                        "column_name": col_name,
+                        "raw_value": str(cap_val),
+                    })
+
+            # plan limits
+            if student_cap is not None and student_cap >= 1 and plan.max_students is not None and student_cap > plan.max_students:
+                issues.append({
+                    "severity": "error",
+                    "code": "business_rule",
+                    "message": f"Exceeds plan limit of {plan.max_students} students.",
+                    "row_number": row_number,
+                    "column_name": "student_capacity",
+                    "raw_value": str(student_cap),
+                })
+            if teacher_cap is not None and teacher_cap >= 1 and plan.max_teachers is not None and teacher_cap > plan.max_teachers:
+                issues.append({
+                    "severity": "error",
+                    "code": "business_rule",
+                    "message": f"Exceeds plan limit of {plan.max_teachers} teachers.",
+                    "row_number": row_number,
+                    "column_name": "teacher_capacity",
+                    "raw_value": str(teacher_cap),
+                })
+            if admin_cap is not None and admin_cap >= 1 and plan.max_admins is not None and admin_cap > plan.max_admins:
+                issues.append({
+                    "severity": "error",
+                    "code": "business_rule",
+                    "message": f"Exceeds plan limit of {plan.max_admins} admins.",
+                    "row_number": row_number,
+                    "column_name": "admin_capacity",
+                    "raw_value": str(admin_cap),
+                })
 
         # --- enabled_modules: each key must exist and be active ---
         raw_modules = _s("enabled_modules")
@@ -216,6 +332,22 @@ def _validate_schools_rules(import_batch) -> list[dict]:
                     "row_number": row_number,
                     "column_name": "subscription_expires_at",
                     "raw_value": expires_raw,
+                })
+
+        # --- admin full_name: must not be empty/whitespace-only ---
+        for name_col, email_col in (
+            ("school_admin_full_name", "school_admin_email"),
+            ("branch_admin_full_name", "branch_admin_email"),
+        ):
+            # Only enforce when the corresponding email is present (admin is being created)
+            if _s(email_col) and not _s(name_col):
+                issues.append({
+                    "severity": "error",
+                    "code": "required_value_missing",
+                    "message": f"{name_col} is required when {email_col} is provided.",
+                    "row_number": row_number,
+                    "column_name": name_col,
+                    "raw_value": "",
                 })
 
         # --- admin emails: must not already exist as users, must not repeat across rows ---
