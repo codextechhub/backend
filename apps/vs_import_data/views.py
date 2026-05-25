@@ -353,6 +353,17 @@ class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.L
             return ImportBatchUploadSerializer
         return ImportBatchListSerializer
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        response_serializer = ImportBatchListSerializer(serializer.instance)
+        return success_response(
+            message="Import batch uploaded successfully.",
+            data=response_serializer.data,
+            status=status.HTTP_201_CREATED,
+        )
+
     def perform_create(self, serializer):
         serializer.save()
         instance = serializer.instance
