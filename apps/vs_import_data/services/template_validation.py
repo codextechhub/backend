@@ -7,6 +7,8 @@ from ..validators import (
     validate_decimal,
     validate_boolean,
     validate_choice,
+    validate_date,
+    validate_datetime,
     validate_max_length,
 )
 
@@ -49,13 +51,12 @@ def compare_uploaded_headers_to_template(uploaded_headers: list[str], template) 
     return issues
 
 
-def validate_row_against_template(row_data: dict, row_number: int, template) -> list[dict]:
+def validate_row_against_template(row_data: dict, row_number: int, columns: list) -> list[dict]:
     """
-    Validate one uploaded row using ImportTemplateColumn definitions.
+    Validate one uploaded row using a pre-fetched list of ImportTemplateColumn objects.
+    Callers must fetch columns once and pass them in to avoid per-row DB queries.
     """
     issues = []
-
-    columns = list(template.columns.order_by("column_order"))
 
     for col in columns:
         value = row_data.get(col.column_name)
@@ -91,6 +92,16 @@ def validate_row_against_template(row_data: dict, row_number: int, template) -> 
 
         elif col.data_type == "choice":
             issue = validate_choice(value, col.allowed_values or [], row_number, col.column_name)
+            if issue:
+                issues.append(issue)
+
+        elif col.data_type == "date":
+            issue = validate_date(value, row_number, col.column_name)
+            if issue:
+                issues.append(issue)
+
+        elif col.data_type == "datetime":
+            issue = validate_datetime(value, row_number, col.column_name)
             if issue:
                 issues.append(issue)
 

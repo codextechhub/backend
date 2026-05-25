@@ -297,6 +297,54 @@ def validate_boolean(value, row_number: int, column_name: str) -> dict | None:
     return None
 
 
+def validate_date(value, row_number: int, column_name: str) -> dict | None:
+    """
+    Validate that a value is a date in YYYY-MM-DD format.
+    """
+    from datetime import date
+
+    value = normalize_string(value)
+    if value == "":
+        return None
+
+    try:
+        date.fromisoformat(value)
+        return None
+    except ValueError:
+        return {
+            "severity": "error",
+            "code": "invalid_format",
+            "message": f"'{column_name}' must be a valid date in YYYY-MM-DD format.",
+            "row_number": row_number,
+            "column_name": column_name,
+            "raw_value": value,
+        }
+
+
+def validate_datetime(value, row_number: int, column_name: str) -> dict | None:
+    """
+    Validate that a value is a datetime in ISO format (YYYY-MM-DDTHH:MM:SS).
+    """
+    from datetime import datetime
+
+    value = normalize_string(value)
+    if value == "":
+        return None
+
+    try:
+        datetime.fromisoformat(value)
+        return None
+    except ValueError:
+        return {
+            "severity": "error",
+            "code": "invalid_format",
+            "message": f"'{column_name}' must be a valid datetime in ISO format (e.g. 2024-01-15T09:00:00).",
+            "row_number": row_number,
+            "column_name": column_name,
+            "raw_value": value,
+        }
+
+
 def validate_choice(value, allowed_values: list[str], row_number: int, column_name: str) -> dict | None:
     """
     Validate that a value belongs to a list of allowed choices.
