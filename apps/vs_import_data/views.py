@@ -659,19 +659,36 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
                     import_batch_id=str(import_batch.id),
                     queued_by_id=str(request.user.id),
                 )
-            except Exception:
+            except Exception as exc:
+                # With CELERY_TASK_ALWAYS_EAGER + CELERY_TASK_EAGER_PROPAGATES,
+                # task failures propagate here. Return the real error so the
+                # frontend can display it rather than a misleading broker message.
+                import logging
+                logging.getLogger(__name__).exception(
+                    "Import task failed synchronously for batch %s", import_batch.id
+                )
                 return error_response(
-                    message="Import could not be queued — the background task service is unavailable. "
-                            "Try again in a moment or set run_async=false to run synchronously.",
-                    code="TASK_BROKER_UNAVAILABLE",
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    message=f"Import failed: {exc}",
+                    code="IMPORT_TASK_FAILED",
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
             return success_response(
                 message="Import queued. Poll GET /batches/{id}/jobs/ for progress.",
                 data={"batch_id": str(import_batch.id), "job_status": ImportJobStatusChoices.QUEUED},
             )
 
-        job = execute_import(import_batch=import_batch, queued_by=request.user)
+        try:
+            job = execute_import(import_batch=import_batch, queued_by=request.user)
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception(
+                "Synchronous import failed for batch %s", import_batch.id
+            )
+            return error_response(
+                message=f"Import failed: {exc}",
+                code="IMPORT_TASK_FAILED",
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         return success_response(
             message="Import completed.",
             data={"job_id": str(job.id), "job_status": job.status},
