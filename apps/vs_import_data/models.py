@@ -357,6 +357,7 @@ class ImportTemplate(TimeStampedModel):
     )
 
     name = models.CharField(max_length=150)
+    version = models.CharField(max_length=20, default="1.0")
     dataset_type = models.CharField(max_length=30, choices=DatasetTypeChoices.choices)
 
     description = models.TextField(blank=True)
