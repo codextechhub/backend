@@ -8,6 +8,9 @@ class Migration(migrations.Migration):
     production DB because it was provisioned from a pre-squash migration
     set that did not include them. All statements use IF NOT EXISTS so
     this migration is safe on environments that already have the columns.
+
+    School uses slug (VARCHAR 80) as primary key, so school_id is VARCHAR.
+    Branch uses the default BigAutoField id, so branch_id is BIGINT.
     """
 
     dependencies = [
@@ -19,8 +22,8 @@ class Migration(migrations.Migration):
         migrations.RunSQL(
             sql="""
                 ALTER TABLE vs_import_data_importbatch
-                    ADD COLUMN IF NOT EXISTS school_id BIGINT
-                        REFERENCES vs_schools_school(id) ON DELETE CASCADE;
+                    ADD COLUMN IF NOT EXISTS school_id VARCHAR(80)
+                        REFERENCES vs_schools_school(slug) ON DELETE CASCADE;
 
                 ALTER TABLE vs_import_data_importbatch
                     ADD COLUMN IF NOT EXISTS branch_id BIGINT
