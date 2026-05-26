@@ -50,14 +50,6 @@ IMPORT_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
         ],
     ),
     (
-        "corrections",
-        "Manual row-level data corrections before import",
-        [
-            ("view",   "List row corrections for a batch",                  False, S_NORMAL),
-            ("create", "Create a manual row correction",                    False, S_NORMAL),
-        ],
-    ),
-    (
         "jobs",
         "Background import job execution records",
         [

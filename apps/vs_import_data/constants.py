@@ -24,10 +24,6 @@ class ImportPermission:
     VALIDATION_VIEW   = "import.validations.view"
     VALIDATION_RESOLVE = "import.validations.update"
 
-    # ── Row corrections ───────────────────────────────────────────────────────
-    CORRECTION_VIEW   = "import.corrections.view"
-    CORRECTION_CREATE = "import.corrections.create"
-
     # ── Jobs ──────────────────────────────────────────────────────────────────
     JOB_VIEW          = "import.jobs.view"
 
