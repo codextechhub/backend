@@ -842,25 +842,39 @@ class Command(BaseCommand):
                     templates_updated += 1
                     self.stdout.write(f"  [UPDATED] ImportTemplate → {code}")
 
-                # Upsert each column
+                # Delete stale columns whose target_field is no longer in the definition.
+                # This handles renames: the old column is removed before upserting the new one.
+                defined_target_fields = {c["target_field"] for c in columns_data}
+                stale_qs = template.columns.exclude(target_field__in=defined_target_fields)
+                stale_count = stale_qs.count()
+                if stale_count:
+                    stale_names = list(stale_qs.values_list("column_name", flat=True))
+                    stale_qs.delete()
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"  [DELETED] {stale_count} stale column(s): {stale_names}"
+                        )
+                    )
+
+                # Upsert each column keyed on target_field (stable) not column_name (can rename)
                 for col_data in columns_data:
-                    column_name = col_data["column_name"]
+                    target_field = col_data["target_field"]
                     col, col_created = ImportTemplateColumn.objects.update_or_create(
                         template=template,
-                        column_name=column_name,
+                        target_field=target_field,
                         defaults={
-                            k: v for k, v in col_data.items() if k != "column_name"
+                            k: v for k, v in col_data.items() if k != "target_field"
                         },
                     )
 
                     if col_created:
                         columns_created += 1
                         self.stdout.write(
-                            self.style.SUCCESS(f"    [CREATED] Column → {column_name}")
+                            self.style.SUCCESS(f"    [CREATED] Column → {col_data['column_name']}")
                         )
                     else:
                         columns_updated += 1
-                        self.stdout.write(f"    [UPDATED] Column → {column_name}")
+                        self.stdout.write(f"    [UPDATED] Column → {col_data['column_name']}")
 
         # ------------------------------------------------------------------
         # Summary
