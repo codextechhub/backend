@@ -114,6 +114,11 @@ def _validate_rows_against_template(import_batch) -> list[dict]:
             )
         )
 
+    # Persist any date normalizations back to the DB so the executor sees
+    # clean YYYY-MM-DD values when it reads preview_rows later.
+    import_batch.preview_rows = rows
+    import_batch.save(update_fields=["preview_rows", "updated_at"])
+
     return issues
 
 

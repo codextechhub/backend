@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ..validators import (
+    normalize_date_value,
     validate_required_value,
     validate_email,
     validate_integer,
@@ -55,11 +56,24 @@ def validate_row_against_template(row_data: dict, row_number: int, columns: list
     """
     Validate one uploaded row using a pre-fetched list of ImportTemplateColumn objects.
     Callers must fetch columns once and pass them in to avoid per-row DB queries.
+
+    Date normalization: for any column with data_type=date, the raw value is
+    normalized to YYYY-MM-DD in place on row_data before validation runs.
+    This means any common date format typed by the user (DD/MM/YYYY, Month DD YYYY,
+    etc.) is silently corrected rather than rejected. Callers that persist
+    row_data should save it back to the DB after calling this function.
     """
     issues = []
 
     for col in columns:
         value = row_data.get(col.column_name)
+
+        # --- Date normalization (mutates row_data in place) ---
+        if col.data_type == "date" and value not in (None, ""):
+            normalized = normalize_date_value(str(value).strip())
+            if normalized and normalized != str(value).strip():
+                row_data[col.column_name] = normalized
+                value = normalized
 
         if col.is_required:
             issue = validate_required_value(value, row_number, col.column_name)

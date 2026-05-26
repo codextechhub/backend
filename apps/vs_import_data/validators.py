@@ -297,28 +297,70 @@ def validate_boolean(value, row_number: int, column_name: str) -> dict | None:
     return None
 
 
+_DATE_FORMATS = [
+    "%Y-%m-%d",      # 2015-09-01  — already correct, fast-path
+    "%Y/%m/%d",      # 2015/09/01
+    "%d/%m/%Y",      # 01/09/2015  — DD/MM/YYYY (preferred for NG)
+    "%d-%m-%Y",      # 01-09-2015
+    "%d.%m.%Y",      # 01.09.2015
+    "%d %b %Y",      # 01 Sep 2015
+    "%d %B %Y",      # 01 September 2015
+    "%b %d, %Y",     # Sep 01, 2015
+    "%B %d, %Y",     # September 01, 2015
+    "%b %d %Y",      # Sep 01 2015
+    "%B %d %Y",      # September 01 2015
+    "%Y%m%d",        # 20150901
+    "%d/%m/%y",      # 01/09/15  — 2-digit year
+    "%m/%d/%Y",      # 09/01/2015 — US format, lowest priority
+]
+
+
+def normalize_date_value(value: str) -> str | None:
+    """
+    Try to parse *value* using common date formats and return it as YYYY-MM-DD.
+    Returns None when no format matches (caller should then raise a validation error).
+    DD/MM/YYYY is tried before MM/DD/YYYY to match the Nigerian convention.
+    """
+    from datetime import datetime
+
+    value = normalize_string(value)
+    if not value:
+        return None
+
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(value, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+
+    return None
+
+
 def validate_date(value, row_number: int, column_name: str) -> dict | None:
     """
-    Validate that a value is a date in YYYY-MM-DD format.
+    Validate that a value is a recognisable date.
+    Accepts any format listed in _DATE_FORMATS; the caller is expected to have
+    already normalised the raw value to YYYY-MM-DD via normalize_date_value()
+    before calling this, but the function handles both cases safely.
     """
-    from datetime import date
-
     value = normalize_string(value)
     if value == "":
         return None
 
-    try:
-        date.fromisoformat(value)
+    if normalize_date_value(value) is not None:
         return None
-    except ValueError:
-        return {
-            "severity": "error",
-            "code": "invalid_format",
-            "message": f"'{column_name}' must be a valid date in YYYY-MM-DD format.",
-            "row_number": row_number,
-            "column_name": column_name,
-            "raw_value": value,
-        }
+
+    return {
+        "severity": "error",
+        "code": "invalid_format",
+        "message": (
+            f"'{column_name}' must be a valid date. "
+            "Accepted formats: YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, DD Month YYYY, etc."
+        ),
+        "row_number": row_number,
+        "column_name": column_name,
+        "raw_value": value,
+    }
 
 
 def validate_datetime(value, row_number: int, column_name: str) -> dict | None:
