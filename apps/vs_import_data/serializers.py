@@ -713,6 +713,21 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
         self._validated_template = template
         return value
 
+    def validate(self, attrs):
+        template = getattr(self, "_validated_template", None)
+        uploaded_file = attrs.get("file")
+        if template and uploaded_file:
+            ext = os.path.splitext(uploaded_file.name.lower())[1].lstrip(".")
+            expected = template.default_file_format.lower()
+            if ext != expected:
+                raise serializers.ValidationError({
+                    "file": (
+                        f"This template only accepts {expected.upper()} files. "
+                        f"You uploaded a {ext.upper()} file. Please convert your file to {expected.upper()} and try again."
+                    )
+                })
+        return attrs
+
     def create(self, validated_data):
         from .services.file_parser import parse_import_file
 
