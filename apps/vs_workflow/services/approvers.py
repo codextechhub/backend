@@ -28,7 +28,7 @@ def _users_with_permission(school, branch, permission_key: str, scope: ApproverS
     Expected: resolve_users_with_permission(school, branch, permission_key) -> QuerySet
     """
     try:
-        from vs_rbac.services.permissions import resolve_users_with_permission
+        from vs_rbac.evaluator import resolve_users_with_permission
     except ImportError:
         import logging
         logging.getLogger(__name__).warning(
