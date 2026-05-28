@@ -26,5 +26,6 @@ urlpatterns = [
     path('v1/config/', include('vs_config.urls')),
     path('v1/notify/', include('vs_notifications.urls')),
     path("v1/import/", include("vs_import_data.urls")),
+    path("v1/workflow/", include("vs_workflow.urls")),
     # path("admin/", admin.site.urls),
 ]

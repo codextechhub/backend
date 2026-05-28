@@ -1,0 +1,19 @@
+"""BaseWorkflowHandler — subclass this in workflow_handlers.py of your app."""
+from typing import Any, Dict, Optional, Type
+
+class BaseWorkflowHandler:
+    document_type: str = ""
+    document_model: Optional[Type] = None
+
+    def resolve_default_template_code(self, document: Any) -> str:
+        raise NotImplementedError("Subclasses must implement resolve_default_template_code().")
+
+    def validate_document(self, document: Any, requested_by) -> None:
+        return None
+
+    def on_submitted(self, instance, context: Dict) -> None: ...
+    def on_approved(self, instance, context: Dict) -> None: ...
+    def on_rejected(self, instance, context: Dict) -> None: ...
+    def on_returned(self, instance, context: Dict) -> None: ...
+    def on_withdrawn(self, instance, context: Dict) -> None: ...
+    def on_cancelled(self, instance, context: Dict) -> None: ...

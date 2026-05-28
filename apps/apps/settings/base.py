@@ -83,6 +83,7 @@ INSTALLED_APPS = [
     "vs_import_data",
     'vs_config',
     'vs_notifications',
+    'vs_workflow',
 ]
 
 MIDDLEWARE = [

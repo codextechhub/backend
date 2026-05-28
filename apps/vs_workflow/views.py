@@ -1,0 +1,299 @@
+"""REST views for vs_workflow. See urls.py for the full routing table."""
+
+from collections import defaultdict
+
+from django.contrib.contenttypes.models import ContentType
+from django.db.models import Q
+from django.utils import timezone
+from rest_framework import status, mixins
+from rest_framework.decorators import action
+from rest_framework.exceptions import NotFound
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework.viewsets import GenericViewSet, ModelViewSet
+
+from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+from vs_rbac.permissions import user_has_rbac_permission
+
+from vs_workflow.constants import (
+    PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW,
+    PERM_INSTANCE_SUBMIT, PERM_INSTANCE_VIEW, PERM_INSTANCE_CANCEL,
+    PERM_ACTION_REVERSE,
+)
+from vs_workflow.models import (
+    ApprovalDelegation, WorkflowInstance, WorkflowStageAction,
+    WorkflowStageApprover, WorkflowStageInstance, WorkflowTemplate,
+)
+from vs_workflow.serializers import (
+    ApprovalDelegationSerializer, CancelInstanceSerializer, ReverseActionSerializer,
+    StageActionWriteSerializer, SubmitForApprovalSerializer,
+    WorkflowInstanceDetailSerializer, WorkflowInstanceListSerializer,
+    WorkflowTemplatePublishSerializer, WorkflowTemplateReadSerializer,
+)
+from vs_workflow.services import actions as actions_svc
+from vs_workflow.services import submission as submission_svc
+from vs_workflow.services import templates as templates_svc
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _filter_by_school(qs, school):
+    if school is not None:
+        return qs.filter(school=school)
+    return qs
+
+
+def _filter_by_branch(qs, branch):
+    if branch is not None:
+        return qs.filter(branch=branch)
+    return qs
+
+
+class SchoolScopedMixin:
+    def get_school(self):
+        return getattr(self.request, "_cached_school", None)
+
+    def get_branch(self):
+        return getattr(self.request.user, "branch", None)
+
+
+# ── Templates ────────────────────────────────────────────────────────────────
+
+class WorkflowTemplateViewSet(
+    SchoolScopedMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, GenericViewSet,
+):
+    serializer_class = WorkflowTemplateReadSerializer
+
+    def get_permissions(self):
+        self.rbac_permission = PERM_TEMPLATE_MANAGE if self.action == "publish" else PERM_TEMPLATE_VIEW
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_queryset(self):
+        qs = _filter_by_school(WorkflowTemplate.objects.all(), self.get_school())
+        qs = _filter_by_branch(qs, self.get_branch())
+        return qs.prefetch_related("stages", "routes")
+
+    @action(detail=False, methods=["post"], url_path="publish")
+    def publish(self, request):
+        p = WorkflowTemplatePublishSerializer(data=request.data)
+        p.is_valid(raise_exception=True)
+        d = p.validated_data
+        t = templates_svc.publish_template(
+            school=self.get_school(),
+            branch=self.get_branch(),
+            document_type=d["document_type"], code=d["code"], name=d["name"],
+            description=d.get("description", ""),
+            notification_events=d.get("notification_events", {}),
+            created_by=request.user,
+            stages_payload=d["stages"], routes_payload=d.get("routes", []),
+        )
+        return Response(WorkflowTemplateReadSerializer(t).data, status=status.HTTP_201_CREATED)
+
+
+# ── Instances ────────────────────────────────────────────────────────────────
+
+class WorkflowInstanceViewSet(
+    SchoolScopedMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, GenericViewSet,
+):
+    def get_permissions(self):
+        if self.action == "create":
+            self.rbac_permission = PERM_INSTANCE_SUBMIT
+        elif self.action == "cancel":
+            self.rbac_permission = PERM_INSTANCE_CANCEL
+        elif self.action in ("list", "retrieve"):
+            self.rbac_permission = PERM_INSTANCE_VIEW
+        else:
+            # withdraw, resubmit, record_action — actor-level, no extra RBAC key
+            return [IsAuthenticatedAndActive()]
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_serializer_class(self):
+        return WorkflowInstanceDetailSerializer if self.action == "retrieve" else WorkflowInstanceListSerializer
+
+    def get_queryset(self):
+        qs = (_filter_by_school(WorkflowInstance.objects.all(), self.get_school())
+              .select_related("template", "current_stage")
+              .prefetch_related("stage_instances__stage", "stage_instances__actions",
+                                "stage_instances__eligible_approvers", "audit_logs")
+              .order_by("-submitted_at"))
+        p = self.request.query_params
+        if p.get("document_type"): qs = qs.filter(document_type=p["document_type"])
+        if p.get("status"):        qs = qs.filter(status=p["status"])
+        if p.get("requested_by"):  qs = qs.filter(requested_by_id=p["requested_by"])
+        if p.get("template_code"): qs = qs.filter(template__code=p["template_code"])
+        return qs
+
+    def create(self, request):
+        p = SubmitForApprovalSerializer(data=request.data)
+        p.is_valid(raise_exception=True)
+        d = p.validated_data
+        try:
+            ct = ContentType.objects.get(pk=d["content_type_id"])
+            document = ct.model_class().objects.get(pk=d["object_id"])
+        except Exception:
+            return Response({
+                "success": False,
+                "message": "The referenced document was not found.",
+                "error": {"code": "DOCUMENT_NOT_FOUND", "detail": {}},
+            }, status=status.HTTP_404_NOT_FOUND)
+        instance = submission_svc.submit_for_approval(
+            document=document, requested_by=request.user,
+            template_code=d.get("template_code") or None,
+        )
+        return Response(WorkflowInstanceDetailSerializer(instance).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"])
+    def withdraw(self, request, pk=None):
+        instance = actions_svc.withdraw(self.get_object().id, request.user)
+        return Response(WorkflowInstanceDetailSerializer(instance).data)
+
+    @action(detail=True, methods=["post"])
+    def resubmit(self, request, pk=None):
+        instance = actions_svc.resubmit(self.get_object().id, request.user)
+        return Response(WorkflowInstanceDetailSerializer(instance).data)
+
+    @action(detail=True, methods=["post"])
+    def cancel(self, request, pk=None):
+        p = CancelInstanceSerializer(data=request.data)
+        p.is_valid(raise_exception=True)
+        instance = actions_svc.cancel(
+            self.get_object().id, request.user, p.validated_data["reason"])
+        return Response(WorkflowInstanceDetailSerializer(instance).data)
+
+    @action(detail=True, methods=["post"], url_path="actions")
+    def record_action(self, request, pk=None):
+        p = StageActionWriteSerializer(data=request.data)
+        p.is_valid(raise_exception=True)
+        instance = actions_svc.record_action(
+            self.get_object().id, request.user,
+            action=p.validated_data["action"],
+            comment=p.validated_data.get("comment", ""),
+        )
+        return Response(WorkflowInstanceDetailSerializer(instance).data)
+
+
+class ReverseActionView(SchoolScopedMixin, APIView):
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = PERM_ACTION_REVERSE
+
+    def post(self, request, action_id):
+        p = ReverseActionSerializer(data=request.data)
+        p.is_valid(raise_exception=True)
+        try:
+            row = WorkflowStageAction.objects.select_related(
+                "stage_instance__instance").get(pk=action_id)
+        except WorkflowStageAction.DoesNotExist:
+            raise NotFound("Action not found.")
+        school = self.get_school()
+        if school is not None and row.stage_instance.instance.school_id != school.pk:
+            raise NotFound("Action not found.")
+        reversal = actions_svc.reverse_action(action_id, request.user, p.validated_data["reason"])
+        return Response({"reversal_action_id": str(reversal.id)})
+
+
+# ── Dashboards ────────────────────────────────────────────────────────────────
+
+class PendingApprovalsView(SchoolScopedMixin, APIView):
+    """GET /workflow/dashboard/pending/ — instances where the user is eligible to act."""
+    permission_classes = [IsAuthenticatedAndActive]
+
+    def get(self, request):
+        school = self.get_school()
+        user = request.user
+        snaps_qs = WorkflowStageApprover.objects.filter(
+            user=user,
+            stage_instance__status="ACTIVE",
+            stage_instance__instance__status="IN_PROGRESS",
+        )
+        if school is not None:
+            snaps_qs = snaps_qs.filter(stage_instance__instance__school=school)
+        snaps = snaps_qs.select_related("stage_instance__instance__template",
+                                        "stage_instance__stage")
+        already_acted = set(
+            WorkflowStageAction.objects.filter(
+                actor=user, reversed_at__isnull=True, is_reversal_of__isnull=True,
+            ).values_list("stage_instance_id", "attempt"))
+        results = []
+        for snap in snaps:
+            if (snap.stage_instance_id, snap.stage_instance.attempt) in already_acted:
+                continue
+            if snap.attempt != snap.stage_instance.attempt:
+                continue
+            inst = snap.stage_instance.instance
+            results.append(WorkflowInstanceListSerializer(inst).data | {
+                "awaiting_on_stage": snap.stage_instance.stage.label,
+                "on_behalf_of": str(snap.on_behalf_of_id) if snap.on_behalf_of_id else None,
+            })
+        return Response({"results": results, "count": len(results)})
+
+
+class MySubmissionsView(SchoolScopedMixin, APIView):
+    """GET /workflow/dashboard/submitted/ — instances the user has submitted."""
+    permission_classes = [IsAuthenticatedAndActive]
+
+    def get(self, request):
+        qs = (_filter_by_school(WorkflowInstance.objects.all(), self.get_school())
+              .filter(requested_by=request.user)
+              .select_related("template", "current_stage")
+              .order_by("-submitted_at"))
+        if request.query_params.get("status"):
+            qs = qs.filter(status=request.query_params["status"])
+        return Response(WorkflowInstanceListSerializer(qs, many=True).data)
+
+
+class TeamLoadView(SchoolScopedMixin, APIView):
+    """GET /workflow/dashboard/team-load/ — active instance counts by stage."""
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = PERM_INSTANCE_VIEW
+
+    def get(self, request):
+        school = self.get_school()
+        base = WorkflowStageInstance.objects.filter(status="ACTIVE")
+        if school is not None:
+            base = base.filter(instance__school=school)
+        qs = (base
+              .values("instance__document_type", "stage__code", "stage__label")
+              .order_by("instance__document_type", "stage__code"))
+        buckets = defaultdict(lambda: {"count": 0, "stage_label": None})
+        for row in qs:
+            key = (row["instance__document_type"], row["stage__code"])
+            buckets[key]["count"] += 1
+            buckets[key]["stage_label"] = row["stage__label"]
+        return Response([
+            {"document_type": dt, "stage_code": code,
+             "stage_label": info["stage_label"], "active_count": info["count"]}
+            for (dt, code), info in sorted(buckets.items())
+        ])
+
+
+# ── Delegations ───────────────────────────────────────────────────────────────
+
+class ApprovalDelegationViewSet(SchoolScopedMixin, ModelViewSet):
+    serializer_class = ApprovalDelegationSerializer
+    permission_classes = [IsAuthenticatedAndActive]
+
+    def get_queryset(self):
+        user = self.request.user
+        school = self.get_school()
+        qs = _filter_by_school(ApprovalDelegation.objects.all(), school)
+        if not user_has_rbac_permission(user, PERM_TEMPLATE_MANAGE, school=school):
+            qs = qs.filter(Q(delegator=user) | Q(delegate=user))
+        return qs.order_by("-starts_at")
+
+    def perform_create(self, serializer):
+        serializer.save(school=self.get_school(), delegator=self.request.user)
+
+    @action(detail=True, methods=["post"])
+    def revoke(self, request, pk=None):
+        delegation = self.get_object()
+        school = self.get_school()
+        if (delegation.delegator_id != request.user.pk and
+                not user_has_rbac_permission(request.user, PERM_TEMPLATE_MANAGE, school=school)):
+            return Response({
+                "success": False,
+                "message": "You do not have permission to revoke this delegation.",
+                "error": {"code": "PERMISSION_DENIED", "detail": {}},
+            }, status=status.HTTP_403_FORBIDDEN)
+        delegation.revoked_at = timezone.now()
+        delegation.save(update_fields=["revoked_at"])
+        return Response(ApprovalDelegationSerializer(delegation).data)
