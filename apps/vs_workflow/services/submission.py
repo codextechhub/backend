@@ -16,8 +16,6 @@ from vs_workflow.services import routing as routing_service
 
 def submit_for_approval(document, requested_by, *,
                          template_code: Optional[str] = None) -> WorkflowInstance:
-    school = getattr(document, "school", None)
-
     document_type = getattr(document, "workflow_document_type", None)
     if not document_type:
         raise InvalidInstanceStateError(
@@ -27,13 +25,15 @@ def submit_for_approval(document, requested_by, *,
     handler.validate_document(document, requested_by)
 
     code = template_code or handler.resolve_default_template_code(document)
+    school = getattr(document, "school", None)
     branch = getattr(document, "branch", None)
 
     # Cascade: branch-specific → school-wide → platform-wide.
     scopes = [{"school": school, "branch": branch}]
     if branch is not None:
         scopes.append({"school": school, "branch": None})
-    scopes.append({"school": None, "branch": None})
+    if school is not None or branch is not None:
+        scopes.append({"school": None, "branch": None})
 
     template = None
     for scope in scopes:
