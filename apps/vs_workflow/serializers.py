@@ -30,8 +30,12 @@ class WorkflowRoutePathReadSerializer(serializers.ModelSerializer):
 
 
 class WorkflowTemplateReadSerializer(serializers.ModelSerializer):
-    stages = WorkflowStageReadSerializer(many=True, read_only=True)
+    stages = serializers.SerializerMethodField()
     routes = WorkflowRoutePathReadSerializer(many=True, read_only=True)
+
+    def get_stages(self, obj):
+        active = obj.stages.filter(retired_at__isnull=True).order_by("order")
+        return WorkflowStageReadSerializer(active, many=True).data
 
     class Meta:
         model = WorkflowTemplate
@@ -51,6 +55,32 @@ class WorkflowTemplatePublishSerializer(serializers.Serializer):
                                                 required=False, default=dict)
     stages  = serializers.ListField(child=serializers.DictField())
     routes  = serializers.ListField(child=serializers.DictField(), required=False, default=list)
+
+    def validate_stages(self, value):
+        """Reject unknown enum values (e.g. on_rejection='STOP') up front, rather
+        than silently mis-routing at vote time."""
+        from vs_workflow.constants import (
+            ApproverScope, StageAdvanceRule, StageKind, StageOnRejection,
+        )
+        allowed = {
+            "kind": {c.value for c in StageKind},
+            "approver_scope": {c.value for c in ApproverScope},
+            "advance_rule": {c.value for c in StageAdvanceRule},
+            "on_rejection": {c.value for c in StageOnRejection},
+        }
+        if not value:
+            raise serializers.ValidationError("At least one stage is required.")
+        for i, s in enumerate(value):
+            label = s.get("code") or f"#{i + 1}"
+            if not s.get("code") or not s.get("label"):
+                raise serializers.ValidationError(f"Stage {label}: 'code' and 'label' are required.")
+            for field, choices in allowed.items():
+                if field in s and s[field] not in choices:
+                    raise serializers.ValidationError(
+                        f"Stage '{label}': invalid {field} '{s[field]}'. "
+                        f"Allowed: {', '.join(sorted(choices))}."
+                    )
+        return value
 
 
 class WorkflowStageActionReadSerializer(serializers.ModelSerializer):
@@ -72,6 +102,9 @@ class WorkflowStageInstanceReadSerializer(serializers.ModelSerializer):
     stage_code  = serializers.CharField(source="stage.code",  read_only=True)
     stage_label = serializers.CharField(source="stage.label", read_only=True)
     stage_kind  = serializers.CharField(source="stage.kind",  read_only=True)
+    on_rejection = serializers.CharField(source="stage.on_rejection", read_only=True)
+    advance_rule = serializers.CharField(source="stage.advance_rule", read_only=True)
+    quorum_count = serializers.IntegerField(source="stage.quorum_count", read_only=True)
     eligible_approvers = WorkflowStageApproverReadSerializer(many=True, read_only=True)
     actions = WorkflowStageActionReadSerializer(many=True, read_only=True)
 
@@ -79,6 +112,7 @@ class WorkflowStageInstanceReadSerializer(serializers.ModelSerializer):
         model = WorkflowStageInstance
         fields = [
             "id", "stage_code", "stage_label", "stage_kind", "status",
+            "on_rejection", "advance_rule", "quorum_count",
             "activated_at", "resolved_at", "skip_reason", "attempt",
             "eligible_approvers", "actions",
         ]
@@ -102,16 +136,23 @@ class WorkflowInstanceListSerializer(serializers.ModelSerializer):
             "id", "document_type", "document_object_id",
             "template_code",
             "status", "current_stage_code", "current_stage_label",
-            "requested_by", "submitted_at", "completed_at",
+            "requested_by", "submitted_at", "completed_at", "updated_at",
         ]
 
 
 class WorkflowInstanceDetailSerializer(WorkflowInstanceListSerializer):
     stage_instances = WorkflowStageInstanceReadSerializer(many=True, read_only=True)
     audit_logs      = WorkflowAuditLogReadSerializer(many=True, read_only=True)
+    next_stage      = serializers.SerializerMethodField()
 
     class Meta(WorkflowInstanceListSerializer.Meta):
-        fields = WorkflowInstanceListSerializer.Meta.fields + ["stage_instances", "audit_logs"]
+        fields = WorkflowInstanceListSerializer.Meta.fields + [
+            "document_summary", "next_stage", "stage_instances", "audit_logs",
+        ]
+
+    def get_next_stage(self, obj):
+        from vs_workflow.services.routing import preview_next_approval_stage
+        return preview_next_approval_stage(obj)
 
 
 class SubmitForApprovalSerializer(serializers.Serializer):

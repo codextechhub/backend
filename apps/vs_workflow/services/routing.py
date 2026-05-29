@@ -72,6 +72,76 @@ def _pick_next_stage(instance: WorkflowInstance,
                                stage=from_stage.code, template=str(template.id))
 
 
+def _readonly_next_stage(template, document, from_stage, stages, has_routes):
+    """Pure (no-write) sibling of _pick_next_stage for previews.
+
+    Raises TemplateInvalidError when routing is genuinely undecidable, so the
+    caller can fall back to "moves forward" rather than guessing.
+    """
+    if has_routes:
+        routes = list(
+            WorkflowRoutePath.objects.filter(template=template, from_stage=from_stage).order_by("order")
+        )
+        if routes:
+            for route in routes:
+                matches, _ = evaluate_condition(route.condition, document)
+                if matches:
+                    return route.to_stage
+            raise TemplateInvalidError("preview: no route matched")
+        # No routes from this stage — fall through to linear order.
+    if not stages:
+        return None
+    if from_stage is None:
+        return stages[0]
+    for idx, s in enumerate(stages):
+        if s.pk == from_stage.pk:
+            return stages[idx + 1] if idx + 1 < len(stages) else None
+    return None
+
+
+def preview_next_approval_stage(instance: WorkflowInstance):
+    """Read-only, best-effort preview of the next APPROVAL stage that would run
+    once the current stage completes.
+
+    Returns ``{"label": str | None, "is_final": bool}`` or ``None`` when the
+    instance isn't currently awaiting a decision. ``is_final=True`` means the
+    workflow would be fully approved. A ``None`` label means the next step
+    can't be determined without running (e.g. a conditional branch); callers
+    should fall back to a generic "moves forward" message. Never writes.
+    """
+    if instance.status != WorkflowInstanceStatus.IN_PROGRESS:
+        return None
+    from_stage = instance.current_stage
+    if from_stage is None:
+        return None
+
+    template = instance.template
+    document = instance.document
+    try:
+        stages = list(template.stages.order_by("order"))
+        has_routes = WorkflowRoutePath.objects.filter(template=template).exists()
+        cursor = from_stage
+        for _ in range(50):  # mirror advance_instance's MAX_HOPS cycle guard
+            nxt = _readonly_next_stage(template, document, cursor, stages, has_routes)
+            if nxt is None:
+                return {"label": None, "is_final": True}
+            if nxt.retired_at is not None:
+                cursor = nxt
+                continue
+            if nxt.kind == StageKind.BRANCH:
+                cursor = nxt
+                continue
+            if nxt.kind == StageKind.APPROVAL and nxt.inclusion_condition:
+                matches, _ = evaluate_condition(nxt.inclusion_condition, document)
+                if not matches:
+                    cursor = nxt
+                    continue
+            return {"label": nxt.label, "is_final": False}
+        return {"label": None, "is_final": False}
+    except Exception:
+        return {"label": None, "is_final": False}
+
+
 def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
                     attempt: int) -> WorkflowStageInstance:
     stage_instance, _ = WorkflowStageInstance.objects.get_or_create(
@@ -134,6 +204,14 @@ def advance_instance(instance: WorkflowInstance, *, current_attempt: int = 1) ->
         next_stage = _pick_next_stage(instance, from_stage)
         if next_stage is None:
             return _terminate_approved(instance)
+
+        # Skip stages retired from the template (works for both linear order and
+        # route targets). Live instances thus advance past a removed stage.
+        if next_stage.retired_at is not None:
+            _skip_stage(instance, next_stage, current_attempt,
+                        AuditEventType.STAGE_SKIPPED_CONDITION, "stage_retired")
+            from_stage = next_stage
+            continue
 
         # Evaluate inclusion condition for APPROVAL stages.
         if next_stage.kind == StageKind.APPROVAL and next_stage.inclusion_condition:

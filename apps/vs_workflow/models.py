@@ -129,8 +129,13 @@ class WorkflowStage(models.Model):
     # Declarative inclusion condition — stage only runs when this evaluates True.
     # {"op": "gte", "field": "amount", "value": 100000} or {"fn": "module.fn_name"}
     inclusion_condition = models.JSONField(null=True, blank=True)
+    retired_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    @property
+    def is_retired(self) -> bool:
+        return self.retired_at is not None
 
     class Meta:
         constraints = [
@@ -231,6 +236,7 @@ class WorkflowInstance(models.Model):
     document = GenericForeignKey("document_content_type", "document_object_id")
     # Denormalised for fast filtering — avoids a join through contenttypes.
     document_type = models.CharField(max_length=100, db_index=True)
+    document_summary = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=30, choices=WorkflowInstanceStatus.choices,
                               default=WorkflowInstanceStatus.DRAFT)
     requested_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT,

@@ -21,6 +21,7 @@ class WorkflowStageStatus(models.TextChoices):
     ACTIVE   = "ACTIVE",   "Active"
     APPROVED = "APPROVED", "Approved"
     REJECTED = "REJECTED", "Rejected"
+    RETURNED = "RETURNED", "Returned to Requester"
     SKIPPED  = "SKIPPED",  "Skipped"
 
 class WorkflowStageAction(models.TextChoices):

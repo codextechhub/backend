@@ -51,6 +51,13 @@ def submit_for_approval(document, requested_by, *,
             code=code, document_type=document_type,
         )
 
+    try:
+        document_summary = handler.get_document_summary(document) or {}
+        if not isinstance(document_summary, dict):
+            document_summary = {}
+    except Exception:
+        document_summary = {}
+
     with transaction.atomic():
         ct = ContentType.objects.get_for_model(type(document))
         instance = WorkflowInstance.objects.create(
@@ -58,6 +65,7 @@ def submit_for_approval(document, requested_by, *,
             document_content_type=ct, document_object_id=str(document.pk),
             document_type=document_type, status=WorkflowInstanceStatus.SUBMITTED,
             requested_by=requested_by, submitted_at=timezone.now(),
+            document_summary=document_summary,
         )
         audit_service.write(instance, AuditEventType.INSTANCE_SUBMITTED, actor=requested_by,
                             context={"template": template.code})

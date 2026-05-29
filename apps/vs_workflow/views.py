@@ -115,7 +115,7 @@ class WorkflowInstanceViewSet(
               .select_related("template", "current_stage")
               .prefetch_related("stage_instances__stage", "stage_instances__actions",
                                 "stage_instances__eligible_approvers", "audit_logs")
-              .order_by("-submitted_at"))
+              .order_by("-updated_at", "-created_at"))
         p = self.request.query_params
         if p.get("document_type"): qs = qs.filter(document_type=p["document_type"])
         if p.get("status"):        qs = qs.filter(status=p["status"])
@@ -207,8 +207,9 @@ class PendingApprovalsView(SchoolScopedMixin, APIView):
         )
         if school is not None:
             snaps_qs = snaps_qs.filter(stage_instance__instance__school=school)
-        snaps = snaps_qs.select_related("stage_instance__instance__template",
-                                        "stage_instance__stage")
+        snaps = snaps_qs.select_related(
+            "stage_instance__instance__template", "stage_instance__stage",
+        ).order_by("-stage_instance__activated_at")
         already_acted = set(
             WorkflowStageAction.objects.filter(
                 actor=user, reversed_at__isnull=True, is_reversal_of__isnull=True,
@@ -222,6 +223,7 @@ class PendingApprovalsView(SchoolScopedMixin, APIView):
             inst = snap.stage_instance.instance
             results.append(WorkflowInstanceListSerializer(inst).data | {
                 "awaiting_on_stage": snap.stage_instance.stage.label,
+                "awaiting_since": snap.stage_instance.activated_at,
                 "on_behalf_of": str(snap.on_behalf_of_id) if snap.on_behalf_of_id else None,
             })
         return Response({"results": results, "count": len(results)})
@@ -235,7 +237,7 @@ class MySubmissionsView(SchoolScopedMixin, APIView):
         qs = (_filter_by_school(WorkflowInstance.objects.all(), self.get_school())
               .filter(requested_by=request.user)
               .select_related("template", "current_stage")
-              .order_by("-submitted_at"))
+              .order_by("-updated_at", "-created_at"))
         if request.query_params.get("status"):
             qs = qs.filter(status=request.query_params["status"])
         return Response(WorkflowInstanceListSerializer(qs, many=True).data)

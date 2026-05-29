@@ -3,6 +3,7 @@
 from typing import Optional
 
 from django.db import transaction
+from django.utils import timezone
 
 from vs_workflow.models import WorkflowInstance, WorkflowTemplate
 
@@ -35,9 +36,15 @@ def publish_template(*, school, branch=None, document_type: str, code: str, name
         template.notification_events = notification_events or {}
         template.save(update_fields=["name", "description", "notification_events", "updated_at"])
 
-    # Upsert stages by code — never delete (may be referenced by running instances).
+    # Upsert stages by code. The payload is the desired ACTIVE set: stages in it
+    # are created/updated (and un-retired if previously removed); existing stages
+    # absent from it are soft-retired — never hard-deleted, since running
+    # instances reference them (FK is PROTECT). The engine skips retired stages
+    # in all future routing, so live instances are unaffected.
     stage_by_code = {}
+    payload_codes = []
     for s in (stages_payload or []):
+        payload_codes.append(s["code"])
         stage, _ = WorkflowStage.objects.update_or_create(
             template=template, code=s["code"],
             defaults={
@@ -51,9 +58,16 @@ def publish_template(*, school, branch=None, document_type: str, code: str, name
                 "on_rejection": s.get("on_rejection", "TERMINAL"),
                 "skip_if_no_approvers": s.get("skip_if_no_approvers", True),
                 "inclusion_condition": s.get("inclusion_condition"),
+                "retired_at": None,  # (re)including a code reactivates it
             },
         )
         stage_by_code[s["code"]] = stage
+
+    # Soft-retire stages the new payload no longer includes.
+    (template.stages
+     .exclude(code__in=payload_codes)
+     .filter(retired_at__isnull=True)
+     .update(retired_at=timezone.now()))
 
     # Replace routes entirely — they carry no instance-level FK references.
     WorkflowRoutePath.objects.filter(template=template).delete()

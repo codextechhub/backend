@@ -100,6 +100,9 @@ def record_action(instance_id, actor, action: str, comment: str = "") -> Workflo
                                      "attempt": si.attempt, "action_id": str(action_row.id)})
 
         if action == StageActionEnum.RETURNED:
+            si.status = WorkflowStageStatus.RETURNED
+            si.resolved_at = timezone.now()
+            si.save(update_fields=["status", "resolved_at"])
             return routing_service._return_to_requester(instance, actor, comment, si.stage_id)
 
         if action == StageActionEnum.REJECTED:
@@ -233,6 +236,14 @@ def resubmit(instance_id, requester) -> WorkflowInstance:
         audit_service.write(instance, AuditEventType.INSTANCE_RESUBMITTED, actor=requester,
                             context={"resuming_stage": returning_stage.code,
                                      "attempt": next_attempt})
+
+        # If the stage was retired from the template while this instance was
+        # sitting in RETURNED, don't re-activate it — advance past it instead.
+        if returning_stage.retired_at is not None:
+            instance.status = WorkflowInstanceStatus.IN_PROGRESS
+            instance.state_version += 1
+            instance.save(update_fields=["status", "state_version", "updated_at"])
+            return routing_service.advance_instance(instance, current_attempt=next_attempt)
 
         # Re-activate stage with fresh approver snapshot.
         routing_service._activate_stage(instance, returning_stage, next_attempt)
