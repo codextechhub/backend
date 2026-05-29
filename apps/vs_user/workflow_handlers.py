@@ -14,6 +14,25 @@ class UserCreationWorkflowHandler(BaseWorkflowHandler):
     def resolve_default_template_code(self, document) -> str:
         return "user-creation-default"
 
+    def get_document_summary(self, document) -> dict:
+        def display(field):
+            getter = getattr(document, f"get_{field}_display", None)
+            return getter() if callable(getter) else (getattr(document, field, "") or "")
+
+        full_name = (getattr(document, "full_name", "") or "").strip()
+        email = getattr(document, "email", "") or ""
+        return {
+            "title": full_name or email or "New platform user",
+            "subtitle": "Platform user creation",
+            "fields": [
+                {"label": "Email", "value": email or "—"},
+                {"label": "User type", "value": display("user_type") or "—"},
+                {"label": "Role", "value": getattr(document, "role", "") or "—"},
+                {"label": "Status", "value": display("status") or "—"},
+                {"label": "Phone", "value": getattr(document, "phone", "") or "—"},
+            ],
+        }
+
     def validate_document(self, document, requested_by) -> None:
         from vs_user.models import User
         from vs_workflow.exceptions import WorkflowError
@@ -45,7 +64,7 @@ class UserCreationWorkflowHandler(BaseWorkflowHandler):
             user = User.objects.get(pk=instance.document_object_id)
         except User.DoesNotExist:
             return
-        user.status = User.Status.DEACTIVATED
+        user.status = User.Status.REJECTED
         user.is_active = False
         user.save(update_fields=["status", "is_active", "updated_at"])
 

@@ -695,6 +695,8 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         else:
             qs = qs.filter(school=user.school)
 
+        qs = qs.exclude(status__in=[User.Status.PENDING_APPROVAL, User.Status.REJECTED])
+
         if status_val := params.get('status'):
             qs = qs.filter(status=status_val)
 

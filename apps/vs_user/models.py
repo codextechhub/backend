@@ -106,6 +106,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         SUSPENDED        = 'SUSPENDED',        'Suspended'
         LOCKED           = 'LOCKED',           'Locked (security)'
         DEACTIVATED      = 'DEACTIVATED',      'Deactivated'
+        REJECTED         = 'REJECTED',         'Creation Rejected'
 
     class Gender(models.TextChoices):
         MALE    = 'MALE',   'Male'
@@ -265,7 +266,8 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     def _sync_is_active(self):
         if self.status in (self.Status.SUSPENDED, self.Status.DEACTIVATED,
-                           self.Status.PENDING, self.Status.PENDING_APPROVAL):
+                           self.Status.PENDING, self.Status.PENDING_APPROVAL,
+                           self.Status.REJECTED):
             self.is_active = False
         elif self.status == self.Status.ACTIVE:
             self.is_active = True
