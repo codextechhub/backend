@@ -104,5 +104,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RunPython(seed_permissions, reverse_code=reverse_permissions),
+        # Permissions are seeded explicitly via:
+        #   python manage.py seed_workflow_permissions
+        migrations.RunPython(migrations.RunPython.noop, migrations.RunPython.noop),
     ]
