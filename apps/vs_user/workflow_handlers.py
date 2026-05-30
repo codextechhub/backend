@@ -1,4 +1,4 @@
-"""Workflow handler for USER_CREATION document type.
+"""Workflow handler for PLATFORM_USER_CREATION document type.
 
 Registered automatically via VsUserConfig.ready() so the workflow engine
 knows what to do when a user-creation instance is approved or rejected.
@@ -7,9 +7,9 @@ from vs_workflow.handlers.base import BaseWorkflowHandler
 from vs_workflow.handlers.registry import register_handler
 
 
-@register_handler("USER_CREATION")
+@register_handler("PLATFORM_USER_CREATION")
 class UserCreationWorkflowHandler(BaseWorkflowHandler):
-    document_type = "USER_CREATION"
+    document_type = "PLATFORM_USER_CREATION"
 
     def resolve_default_template_code(self, document) -> str:
         return "user-creation-default"

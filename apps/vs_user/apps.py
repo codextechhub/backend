@@ -6,4 +6,4 @@ class VsUserConfig(AppConfig):
     name = "vs_user"
 
     def ready(self):
-        import vs_user.workflow_handlers  # noqa: F401 — registers USER_CREATION handler
+        import vs_user.workflow_handlers  # noqa: F401 — registers PLATFORM_USER_CREATION handler

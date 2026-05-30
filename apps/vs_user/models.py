@@ -87,7 +87,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     school admins, teachers, students, parents — is a record here.
     """
 
-    workflow_document_type = "USER_CREATION"
+    workflow_document_type = "PLATFORM_USER_CREATION"
 
     # ── Choices ──────────────────────────────────────────────────────────────
 
