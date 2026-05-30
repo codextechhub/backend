@@ -1,6 +1,9 @@
 """
-Approver resolution — resolves who can act on a stage right now.
-Honoring: C1 (scope), C2 (delegation), C4 (requester blocked).
+Approver resolution — builds the eligible approver list for a stage at activation time.
+
+The list is frozen into WorkflowStageApprover rows the moment a stage activates.
+All subsequent eligibility checks read that snapshot rather than re-querying RBAC
+live, so mid-workflow permission changes don't retroactively affect who can vote.
 """
 
 from __future__ import annotations
@@ -20,15 +23,24 @@ if TYPE_CHECKING:
 
 @dataclass
 class EligibleApprover:
-    """A single eligible approver, optionally acting on behalf of a delegator."""
+    """Carries one resolved approver and, when delegation is active, who they act for.
+
+    on_behalf_of is set when the approver was added via an ApprovalDelegation row
+    rather than holding the permission themselves. It is stored in the
+    WorkflowStageApprover snapshot so the audit trail shows both names.
+    """
     user: AbstractBaseUser
     on_behalf_of: Optional[AbstractBaseUser] = None
 
 
 def _users_with_permission(school, branch, permission_key: str, scope: ApproverScope):
-    """
-    vs_rbac integration boundary. Edit this import to match your RBAC API.
-    Expected: resolve_users_with_permission(school, branch, permission_key) -> QuerySet
+    """Resolve the set of users holding permission_key in the given scope via vs_rbac.
+
+    This is the single integration boundary between the workflow engine and the
+    RBAC system. If vs_rbac is unavailable (e.g. a standalone install) it falls
+    back to all active users in the school, so the engine degrades gracefully
+    rather than breaking. Scope controls which school/branch args are forwarded:
+    PLATFORM passes both as None, SCHOOL passes school only, BRANCH passes both.
     """
     try:
         from vs_rbac.evaluator import resolve_users_with_permission
@@ -55,14 +67,15 @@ def _users_with_permission(school, branch, permission_key: str, scope: ApproverS
 
 
 def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[EligibleApprover]:
-    """
-    Return the eligible approver list for stage on instance at this moment.
+    """Build the full eligible approver list for a stage at the moment it activates.
 
-    Steps:
-      1. Fetch base users holding the permission in the configured scope.
-      2. Exclude the requester (C4).
-      3. Expand active delegations (C2).
-      4. De-duplicate.
+    Base approvers are users who hold stage.approver_permission_key in the
+    configured scope. The requester is always excluded — they cannot approve
+    their own submission. Active delegations then expand the list: if an
+    eligible approver has delegated their authority, the delegate is added
+    on their behalf (and the delegator removed when the delegation is exclusive).
+    De-duplication via a seen-set ensures the same user never appears twice
+    even if they qualify through multiple delegation chains.
     """
     if not stage.approver_permission_key:
         return []
