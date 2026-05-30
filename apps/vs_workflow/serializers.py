@@ -181,4 +181,6 @@ class ApprovalDelegationSerializer(serializers.ModelSerializer):
             "id", "delegator", "delegate", "starts_at", "ends_at",
             "document_type", "exclusive", "reason", "created_at", "revoked_at",
         ]
-        read_only_fields = ["id", "created_at", "revoked_at"]
+        # delegator is set from request.user in the view's perform_create — it
+        # must be read-only so DRF validation doesn't require the client to send it.
+        read_only_fields = ["id", "delegator", "created_at", "revoked_at"]

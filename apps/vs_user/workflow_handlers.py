@@ -1,4 +1,4 @@
-"""Workflow handler for PLATFORM_USER_CREATION document type.
+"""Workflow handler for *_USER_CREATION document type.
 
 Registered automatically via VsUserConfig.ready() so the workflow engine
 knows what to do when a user-creation instance is approved or rejected.
@@ -12,7 +12,7 @@ class UserCreationWorkflowHandler(BaseWorkflowHandler):
     document_type = "PLATFORM_USER_CREATION"
 
     def resolve_default_template_code(self, document) -> str:
-        return "user-creation-default"
+        return "p-user-creation"
 
     def get_document_summary(self, document) -> dict:
         def display(field):
