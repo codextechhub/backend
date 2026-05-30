@@ -16,6 +16,15 @@ from vs_workflow.services import routing as routing_service
 
 def submit_for_approval(document, requested_by, *,
                          template_code: Optional[str] = None) -> WorkflowInstance:
+    """Create a WorkflowInstance for document and activate its first stage.
+
+    Template resolution uses a three-level cascade — branch-specific →
+    school-wide → platform-wide — so a platform template acts as a fallback
+    without forcing admins to duplicate it at every school and branch.
+    Calling code must ensure the document declares workflow_document_type and
+    that a matching handler is registered, otherwise InvalidInstanceStateError
+    / UnknownDocumentTypeError are raised before anything is written.
+    """
     document_type = getattr(document, "workflow_document_type", None)
     if not document_type:
         raise InvalidInstanceStateError(

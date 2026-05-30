@@ -86,4 +86,11 @@ def publish_template(*, school, branch=None, document_type: str, code: str, name
 
 
 def active_instances_for_template(template: WorkflowTemplate) -> "QuerySet[WorkflowInstance]":
+    """Return all non-terminal instances currently running against this template.
+
+    Used before retiring or replacing a template to surface live work that
+    would be affected. Callers should warn the admin rather than blocking —
+    in-flight instances continue using their snapshotted stage definitions
+    even after a new publish.
+    """
     return WorkflowInstance.objects.active().filter(template=template)

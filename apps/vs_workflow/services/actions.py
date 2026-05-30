@@ -48,11 +48,24 @@ def _run_handler_callback(instance, method: str, context: dict) -> None:
 
 
 def _lock_instance(instance_id) -> WorkflowInstance:
+    """Fetch the instance under a row-level write lock (SELECT FOR UPDATE).
+
+    Every mutating operation acquires this lock first so concurrent requests
+    (two approvers voting at the same millisecond, a withdraw racing a cancel)
+    serialize safely instead of producing duplicate state transitions or split
+    advance_rule counts.
+    """
     return (WorkflowInstance.objects.select_for_update()
             .select_related("template", "current_stage").get(pk=instance_id))
 
 
 def _active_stage_instance(instance: WorkflowInstance) -> WorkflowStageInstance:
+    """Return the single ACTIVE WorkflowStageInstance for the current stage.
+
+    Ordering by attempt descending and taking .first() guards against the edge
+    case where a resubmit creates a new attempt before the previous one is fully
+    resolved — callers always operate on the latest attempt in progress.
+    """
     if instance.current_stage is None:
         raise StageNotActiveError("No active stage on this instance.")
     si = (WorkflowStageInstance.objects
@@ -65,6 +78,13 @@ def _active_stage_instance(instance: WorkflowInstance) -> WorkflowStageInstance:
 
 
 def _check_eligibility(stage_instance, actor) -> WorkflowStageApprover:
+    """Verify the actor is in the frozen approver snapshot for this stage attempt.
+
+    Eligibility is determined at stage activation time and stored in
+    WorkflowStageApprover. Checking the snapshot (not re-resolving live RBAC)
+    means a permission change mid-workflow doesn't retroactively invalidate
+    an approver who was already notified and is mid-review.
+    """
     snap = WorkflowStageApprover.objects.filter(
         stage_instance=stage_instance, attempt=stage_instance.attempt, user=actor).first()
     if snap is None:
@@ -73,6 +93,12 @@ def _check_eligibility(stage_instance, actor) -> WorkflowStageApprover:
 
 
 def _stage_fully_approved(stage_instance: WorkflowStageInstance) -> bool:
+    """Check whether the stage's advance_rule threshold has been met.
+
+    Counts only non-reversed, non-reversal APPROVED actions on the current
+    attempt. Reversed votes are excluded so an admin reversal correctly
+    re-opens a stage that had already crossed the threshold.
+    """
     stage = stage_instance.stage
     approved_count = WorkflowStageAction.objects.filter(
         stage_instance=stage_instance, attempt=stage_instance.attempt,

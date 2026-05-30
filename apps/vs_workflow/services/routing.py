@@ -144,6 +144,13 @@ def preview_next_approval_stage(instance: WorkflowInstance):
 
 def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
                     attempt: int) -> WorkflowStageInstance:
+    """Activate a stage and snapshot the current eligible approver list.
+
+    The approver snapshot is written once at activation. Re-running this on
+    resubmit (new attempt) produces a fresh snapshot, so approver list changes
+    between attempts take effect without touching the previous attempt's history.
+    get_or_create is used so double-calling on the same attempt is idempotent.
+    """
     stage_instance, _ = WorkflowStageInstance.objects.get_or_create(
         instance=instance, stage=stage, attempt=attempt,
         defaults={"status": WorkflowStageStatus.ACTIVE, "activated_at": timezone.now()},
@@ -172,6 +179,13 @@ def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
 
 def _skip_stage(instance: WorkflowInstance, stage: WorkflowStage, attempt: int,
                 reason_event: AuditEventType, reason_detail: str = "") -> WorkflowStageInstance:
+    """Mark a stage as SKIPPED and write an audit entry explaining why.
+
+    Called for retired stages, branch nodes, failed inclusion conditions, and
+    stages with no eligible approvers when skip_if_no_approvers=True. Each
+    caller passes a distinct reason_event so the audit log is queryable by
+    skip cause without parsing free-text strings.
+    """
     si, _ = WorkflowStageInstance.objects.get_or_create(
         instance=instance, stage=stage, attempt=attempt,
         defaults={"status": WorkflowStageStatus.SKIPPED, "activated_at": timezone.now(),
@@ -250,6 +264,13 @@ def advance_instance(instance: WorkflowInstance, *, current_attempt: int = 1) ->
 
 
 def _terminate_approved(instance: WorkflowInstance) -> WorkflowInstance:
+    """Finalise the instance as fully APPROVED and fire the handler callback.
+
+    Called by advance_instance when _pick_next_stage returns None (no more
+    stages). Fires on_approved so the document handler (e.g. sending an
+    invitation, activating a user) runs inside the same atomic block as the
+    status write — if the handler raises, the whole transition rolls back.
+    """
     instance.status = WorkflowInstanceStatus.APPROVED
     instance.current_stage = None
     instance.completed_at = timezone.now()
@@ -263,6 +284,12 @@ def _terminate_approved(instance: WorkflowInstance) -> WorkflowInstance:
 
 
 def _terminate_rejected(instance: WorkflowInstance, actor, comment: str) -> WorkflowInstance:
+    """Finalise the instance as terminally REJECTED and fire the handler callback.
+
+    Only reached when on_rejection=STOP on the rejecting stage. The
+    on_rejected callback gives the document handler a chance to react (e.g.
+    marking a pending user as DEACTIVATED) before the transaction commits.
+    """
     instance.status = WorkflowInstanceStatus.REJECTED
     instance.current_stage = None
     instance.completed_at = timezone.now()
@@ -277,6 +304,12 @@ def _terminate_rejected(instance: WorkflowInstance, actor, comment: str) -> Work
 
 def _return_to_requester(instance: WorkflowInstance, actor, comment: str,
                           returning_stage_id) -> WorkflowInstance:
+    """Move the instance to RETURNED so the requester can revise and resubmit.
+
+    Triggered by a RETURNED vote or on_rejection=RETURN_TO_SUBMITTER. The
+    instance stays linked to the returning stage so resubmit knows which stage
+    to re-activate on the next attempt rather than restarting from scratch.
+    """
     instance.status = WorkflowInstanceStatus.RETURNED
     instance.state_version += 1
     instance.save(update_fields=["status", "state_version", "updated_at"])
