@@ -37,8 +37,9 @@ def _users_with_permission(school, branch, permission_key: str, scope: ApproverS
         logging.getLogger(__name__).warning(
             "vs_rbac not available; returning unscoped user set. Connect vs_rbac.")
         from django.contrib.auth import get_user_model
-        qs = get_user_model().objects.filter(is_active=True)
-        if school is not None and hasattr(User, "school"):
+        UserModel = get_user_model()
+        qs = UserModel.objects.filter(is_active=True)
+        if school is not None and hasattr(UserModel, "school"):
             qs = qs.filter(school=school)
         return qs
 
