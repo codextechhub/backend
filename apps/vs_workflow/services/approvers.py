@@ -74,8 +74,10 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     their own submission. Active delegations then expand the list: if an
     eligible approver has delegated their authority, the delegate is added
     on their behalf (and the delegator removed when the delegation is exclusive).
-    De-duplication via a seen-set ensures the same user never appears twice
-    even if they qualify through multiple delegation chains.
+    De-duplication via a seen-set on (user_id, on_behalf_of_id) pairs prevents
+    the same row appearing twice if the queryset returns duplicates. A delegate
+    acting for two different delegators intentionally appears twice — once per
+    delegator — because the on_behalf_of field differs.
     """
     if not stage.approver_permission_key:
         return []
