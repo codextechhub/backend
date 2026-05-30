@@ -3,6 +3,8 @@ Action recording — record_action, withdraw, cancel, reverse_action, resubmit.
 Every function acquires select_for_update on the instance (F2 — pessimistic locking).
 """
 
+import logging
+
 from django.db import transaction
 from django.utils import timezone
 
@@ -15,13 +17,34 @@ from vs_workflow.exceptions import (
     CancellationNotAllowedError, DuplicateApproverActionError,
     InstanceTerminalError, InvalidInstanceStateError,
     NotAnEligibleApproverError, RequesterCannotApproveError,
-    ReversalNotAllowedError, StageNotActiveError,
+    ReversalNotAllowedError, StageNotActiveError, UnknownDocumentTypeError,
 )
 from vs_workflow.handlers import get_handler
 from vs_workflow.models import WorkflowInstance, WorkflowStageAction, WorkflowStageApprover, WorkflowStageInstance
 from vs_workflow.services import approvers as approvers_service
 from vs_workflow.services import audit as audit_service
 from vs_workflow.services import routing as routing_service
+
+logger = logging.getLogger(__name__)
+
+
+def _run_handler_callback(instance, method: str, context: dict) -> None:
+    """Invoke a document handler lifecycle callback (on_cancelled, on_withdrawn,
+    …) without letting a missing handler block the engine's own state change.
+
+    A document_type with no registered handler (e.g. an in-flight instance left
+    over after the type was renamed) must not stop an admin from cancelling or a
+    requester from withdrawing. Genuine handler bugs still propagate.
+    """
+    try:
+        handler = get_handler(instance.document_type)
+    except UnknownDocumentTypeError:
+        logger.warning(
+            "No workflow handler for document_type '%s'; skipping %s on instance %s.",
+            instance.document_type, method, instance.id,
+        )
+        return
+    getattr(handler, method)(instance, context)
 
 
 def _lock_instance(instance_id) -> WorkflowInstance:
@@ -140,8 +163,7 @@ def withdraw(instance_id, requester) -> WorkflowInstance:
         instance.save(update_fields=["status", "current_stage", "completed_at",
                                       "state_version", "updated_at"])
         audit_service.write(instance, AuditEventType.INSTANCE_WITHDRAWN, actor=requester)
-        get_handler(instance.document_type).on_withdrawn(
-            instance, {"actor_id": str(requester.pk)})
+        _run_handler_callback(instance, "on_withdrawn", {"actor_id": str(requester.pk)})
         return instance
 
 
@@ -161,8 +183,8 @@ def cancel(instance_id, admin, reason: str) -> WorkflowInstance:
                                       "state_version", "updated_at"])
         audit_service.write(instance, AuditEventType.INSTANCE_CANCELLED,
                             actor=admin, context={"reason": reason})
-        get_handler(instance.document_type).on_cancelled(
-            instance, {"actor_id": str(admin.pk), "reason": reason})
+        _run_handler_callback(instance, "on_cancelled",
+                              {"actor_id": str(admin.pk), "reason": reason})
         return instance
 
 
