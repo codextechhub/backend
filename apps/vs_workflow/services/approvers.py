@@ -3,23 +3,26 @@ Approver resolution — resolves who can act on a stage right now.
 Honoring: C1 (scope), C2 (delegation), C4 (requester blocked).
 """
 
-from dataclasses import dataclass
-from typing import List, Optional
+from __future__ import annotations
 
-from django.contrib.auth import get_user_model
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, List, Optional
+
 from django.db.models import Q
 from django.utils import timezone
 
 from vs_workflow.constants import ApproverScope
 from vs_workflow.models import ApprovalDelegation, WorkflowInstance, WorkflowStage
 
-User = get_user_model()
+if TYPE_CHECKING:
+    from django.contrib.auth.base_user import AbstractBaseUser
 
 
 @dataclass
 class EligibleApprover:
-    user: User
-    on_behalf_of: Optional[User] = None
+    """A single eligible approver, optionally acting on behalf of a delegator."""
+    user: AbstractBaseUser
+    on_behalf_of: Optional[AbstractBaseUser] = None
 
 
 def _users_with_permission(school, branch, permission_key: str, scope: ApproverScope):
@@ -33,7 +36,8 @@ def _users_with_permission(school, branch, permission_key: str, scope: ApproverS
         import logging
         logging.getLogger(__name__).warning(
             "vs_rbac not available; returning unscoped user set. Connect vs_rbac.")
-        qs = User.objects.filter(is_active=True)
+        from django.contrib.auth import get_user_model
+        qs = get_user_model().objects.filter(is_active=True)
         if school is not None and hasattr(User, "school"):
             qs = qs.filter(school=school)
         return qs
