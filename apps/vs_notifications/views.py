@@ -1,38 +1,38 @@
 # =============================================================================
 # vs_notifications / views.py
 #
-# ViewSets:
-#   NotificationViewSet             — user feed (list, retrieve, mark-read, unread-count)
-#   NotificationHistoryViewSet      — admin history log (list, retrieve)
-#   SchoolNotificationSettingViewSet— school settings (list, bulk partial_update)
-#   NotificationTemplateViewSet     — template management (list, create, retrieve, partial_update, preview)
-#   NotificationEventTypeViewSet    — event type registry (list, retrieve)
+# ViewSets and views for vs_notifications.
+#
+# Endpoint groups:
+#   NotificationViewSet          — user feed, mark-read, unread count
+#   NotificationHistoryViewSet   — admin history log
+#   SchoolNotificationSettingViewSet — school-level settings
+#   NotificationTemplateViewSet  — Vision Staff template management
+#   NotificationEventTypeViewSet — event type catalogue (read-only, all users)
 # =============================================================================
 
-from __future__ import annotations
+import logging
 
 from django.db import transaction
 from django.utils import timezone
-
-from rest_framework import mixins, status, viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .constants import ChannelChoices, NotificationPermission
+from core.pagination import XVSPagination
+from core.response import error_response, success_response
+
+from .constants import ChannelChoices, NotificationErrorCode, NotificationPermission, NotificationStatus
+from .exceptions import FilterRequiredError
 from .models import (
     Notification,
     NotificationEventType,
     NotificationTemplate,
     SchoolNotificationSetting,
 )
-from .permissions import (
-    HasAuditPermission,
-    HasEnforcePermissionsKey,
-    HasTemplateConfigurePermission,
-    IsNotificationRecipient,
-    IsVisionStaff,
-)
+from vs_rbac.permissions import HasRBACPermission
+
 from .serializers import (
     MarkReadSerializer,
     NotificationDetailSerializer,
@@ -47,41 +47,35 @@ from .serializers import (
 )
 
 
+logger = logging.getLogger("vs_notifications.views")
+
+
 # ---------------------------------------------------------------------------
-# Helper
+# 1.  Notification feed (user-facing)
 # ---------------------------------------------------------------------------
 
-def _school_for_user(user):
+class NotificationViewSet(viewsets.GenericViewSet):
     """
-    Returns the school FK value for the requesting user, or None for Vision Staff.
-    Used to scope querysets to a single school for non-staff users.
-    """
-    if getattr(user, "is_vision_staff", False):
-        return None
-    return getattr(user, "school_id", None)
+    Handles the authenticated user's in-app notification feed.
 
+    All querysets are scoped to the requesting user — no cross-user access.
 
-# ---------------------------------------------------------------------------
-# 1. NotificationViewSet — user feed
-# ---------------------------------------------------------------------------
-
-class NotificationViewSet(viewsets.GenericViewSet,
-                          mixins.ListModelMixin,
-                          mixins.RetrieveModelMixin):
-    """
-    Endpoints for the authenticated user's in-app notification feed.
-
-    list          — GET  /notifications/
-    retrieve      — GET  /notifications/{id}/
-    unread_count  — GET  /notifications/unread-count/
-    mark_read     — POST /notifications/mark-read/
-    mark_all_read — POST /notifications/mark-all-read/
+    Routes:
+        GET  /notifications/              — paginated feed (in-app only)
+        GET  /notifications/unread-count/ — bell badge count
+        POST /notifications/mark-read/    — mark list of IDs as read
+        POST /notifications/mark-all-read/— mark all unread as read
+        GET  /notifications/{id}/         — single record detail
     """
     permission_classes = [IsAuthenticated]
-    serializer_class   = NotificationListSerializer
+    pagination_class   = XVSPagination
 
     def get_queryset(self):
-        qs = (
+        """
+        Scope to the requesting user's in-app notifications only.
+        Prefetch event_type to avoid N+1 on serialization.
+        """
+        return (
             Notification.objects
             .filter(
                 recipient=self.request.user,
@@ -91,223 +85,476 @@ class NotificationViewSet(viewsets.GenericViewSet,
             .order_by("-created_at")
         )
 
-        is_read = self.request.query_params.get("is_read")
+    def list(self, request):
+        """GET /notifications/ — paginated in-app feed with optional filters."""
+        qs = self.get_queryset()
+
+        # Optional filters
+        is_read = request.query_params.get("is_read")
         if is_read is not None:
-            qs = qs.filter(is_read=(is_read.lower() in {"true", "1"}))
+            qs = qs.filter(is_read=is_read.lower() == "true")
 
-        return qs
+        event_type_key = request.query_params.get("event_type_key")
+        if event_type_key:
+            qs = qs.filter(event_type__key=event_type_key)
 
-    def get_serializer_class(self):
-        if self.action == "retrieve":
-            return NotificationDetailSerializer
-        return NotificationListSerializer
+        created_after = request.query_params.get("created_after")
+        if created_after:
+            qs = qs.filter(created_at__gte=created_after)
 
-    def get_permissions(self):
-        if self.action == "retrieve":
-            return [IsAuthenticated(), IsNotificationRecipient()]
-        return [IsAuthenticated()]
+        created_before = request.query_params.get("created_before")
+        if created_before:
+            qs = qs.filter(created_at__lte=created_before)
+
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = NotificationListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = NotificationListSerializer(qs, many=True)
+        return success_response(data=serializer.data)
+
+    def retrieve(self, request, pk=None):
+        """GET /notifications/{id}/ — single notification detail."""
+        try:
+            notif = Notification.objects.select_related("event_type").get(pk=pk)
+        except Notification.DoesNotExist:
+            return error_response(
+                message="Notification not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+
+        is_vision_staff = getattr(request.user, "user_type", "") == "CX_STAFF"
+        if not is_vision_staff and notif.recipient_id != request.user.id:
+            return error_response(
+                error_code=NotificationErrorCode.ACCESS_DENIED,
+                message="You do not have permission to access this notification.",
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        serializer = NotificationDetailSerializer(notif)
+        return success_response(data=serializer.data)
 
     @action(detail=False, methods=["get"], url_path="unread-count")
     def unread_count(self, request):
+        """
+        GET /notifications/unread-count/
+        Returns the count of unread in-app notifications.
+        Lightweight — used to drive the bell badge.
+        """
         count = Notification.objects.filter(
             recipient=request.user,
             channel=ChannelChoices.IN_APP,
             is_read=False,
         ).count()
-        return Response({"unread_count": count})
+        return success_response(data={"unread_count": count})
 
     @action(detail=False, methods=["post"], url_path="mark-read")
     def mark_read(self, request):
+        """
+        POST /notifications/mark-read/
+        Mark a list of notification IDs as read.
+        Only the requesting user's IN_APP notifications are updated —
+        IDs belonging to other users or EMAIL notifications are silently skipped.
+        """
         serializer = MarkReadSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            return error_response(
+                message="Invalid request.",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
 
         ids = serializer.validated_data["ids"]
         now = timezone.now()
 
-        updated = Notification.objects.filter(
-            id__in=ids,
-            recipient=request.user,
-            channel=ChannelChoices.IN_APP,
-            is_read=False,
-        ).update(is_read=True, read_at=now)
+        with transaction.atomic():
+            updated = Notification.objects.filter(
+                id__in=ids,
+                recipient=request.user,
+                channel=ChannelChoices.IN_APP,
+                is_read=False,
+            ).update(is_read=True, read_at=now)
 
-        return Response({"marked_read": updated})
+        return success_response(
+            message=f"{updated} notification(s) marked as read.",
+            data={"updated_count": updated},
+        )
 
     @action(detail=False, methods=["post"], url_path="mark-all-read")
     def mark_all_read(self, request):
+        """
+        POST /notifications/mark-all-read/
+        Mark all unread in-app notifications for the requesting user as read.
+        """
         now = timezone.now()
-        updated = Notification.objects.filter(
-            recipient=request.user,
-            channel=ChannelChoices.IN_APP,
-            is_read=False,
-        ).update(is_read=True, read_at=now)
-        return Response({"marked_read": updated})
-
-
-# ---------------------------------------------------------------------------
-# 2. NotificationHistoryViewSet — admin log
-# ---------------------------------------------------------------------------
-
-class NotificationHistoryViewSet(viewsets.GenericViewSet,
-                                 mixins.ListModelMixin,
-                                 mixins.RetrieveModelMixin):
-    """
-    Full notification dispatch history for admins.
-
-    list    — GET /notifications/history/
-    retrieve— GET /notifications/history/{id}/
-
-    Vision Staff see all schools; School Admins see their own school only.
-    Requires HasAuditPermission.
-    """
-    permission_classes = [IsAuthenticated, HasAuditPermission]
-    serializer_class   = NotificationHistorySerializer
-
-    def get_serializer_class(self):
-        if self.action == "retrieve":
-            return NotificationHistoryDetailSerializer
-        return NotificationHistorySerializer
-
-    def get_queryset(self):
-        qs = Notification.objects.select_related("event_type", "recipient").order_by("-created_at")
-
-        school_id = _school_for_user(self.request.user)
-        if school_id is not None:
-            qs = qs.filter(school_id=school_id)
-
-        # Optional filters
-        qp = self.request.query_params
-        if qp.get("channel"):
-            qs = qs.filter(channel=qp["channel"])
-        if qp.get("status"):
-            qs = qs.filter(status=qp["status"])
-        if qp.get("event_type_key"):
-            qs = qs.filter(event_type__key=qp["event_type_key"])
-
-        return qs
-
-
-# ---------------------------------------------------------------------------
-# 3. SchoolNotificationSettingViewSet — school settings
-# ---------------------------------------------------------------------------
-
-class SchoolNotificationSettingViewSet(viewsets.GenericViewSet,
-                                       mixins.ListModelMixin):
-    """
-    Per-school notification settings.
-
-    list          — GET   /notifications/settings/
-    partial_update— PATCH /notifications/settings/update/
-                   (bulk update — accepts {"updates": [{id, is_enabled}]})
-
-    School Admins see and edit their own school's settings only.
-    Requires HasEnforcePermissionsKey.
-    """
-    permission_classes = [IsAuthenticated, HasEnforcePermissionsKey]
-    serializer_class   = SchoolNotificationSettingSerializer
-
-    def get_queryset(self):
-        qs = SchoolNotificationSetting.objects.select_related(
-            "event_type"
-        ).order_by("event_type__source_module", "event_type__key", "channel")
-
-        school_id = _school_for_user(self.request.user)
-        if school_id is not None:
-            qs = qs.filter(school_id=school_id)
-
-        if self.request.query_params.get("channel"):
-            qs = qs.filter(channel=self.request.query_params["channel"])
-
-        return qs
-
-    def partial_update(self, request):
-        serializer = SettingsBulkUpdateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        updates = serializer.validated_data["updates"]
-        school_id = _school_for_user(request.user)
 
         with transaction.atomic():
-            for item in updates:
-                qs = SchoolNotificationSetting.objects.filter(id=item["id"])
-                if school_id is not None:
-                    qs = qs.filter(school_id=school_id)
-                qs.update(is_enabled=item["is_enabled"], updated_by=request.user)
+            updated = Notification.objects.filter(
+                recipient=request.user,
+                channel=ChannelChoices.IN_APP,
+                is_read=False,
+            ).update(is_read=True, read_at=now)
 
-        return Response({"updated": len(updates)})
+        return success_response(
+            message=f"All {updated} unread notification(s) marked as read.",
+            data={"updated_count": updated},
+        )
 
 
 # ---------------------------------------------------------------------------
-# 4. NotificationTemplateViewSet — Vision Staff template management
+# 2.  Notification history (admin)
 # ---------------------------------------------------------------------------
 
-class NotificationTemplateViewSet(viewsets.GenericViewSet,
-                                   mixins.ListModelMixin,
-                                   mixins.CreateModelMixin,
-                                   mixins.RetrieveModelMixin,
-                                   mixins.UpdateModelMixin):
+class NotificationHistoryViewSet(viewsets.GenericViewSet):
     """
-    Notification template CRUD for Vision Staff.
+    Admin notification history log.
 
-    list          — GET   /notifications/templates/
-    create        — POST  /notifications/templates/
-    retrieve      — GET   /notifications/templates/{id}/
-    partial_update— PATCH /notifications/templates/{id}/
-    preview       — POST  /notifications/templates/{id}/preview/
+    School Admins: see their school's notifications only.
+    Vision Staff:  see all schools (requires at least one filter).
+
+    Routes:
+        GET /notifications/history/      — paginated log
+        GET /notifications/history/{id}/ — full detail record
     """
-    permission_classes = [IsAuthenticated, IsVisionStaff, HasTemplateConfigurePermission]
-    serializer_class   = NotificationTemplateSerializer
-    http_method_names  = ["get", "post", "patch", "head", "options"]
+    permission_classes = [IsAuthenticated, HasRBACPermission]
+    rbac_permission = NotificationPermission.AUDIT_ACTIVITY
+    pagination_class   = XVSPagination
 
     def get_queryset(self):
-        qs = NotificationTemplate.objects.select_related(
-            "event_type", "created_by", "updated_by"
-        ).order_by("event_type__source_module", "event_type__key", "channel")
+        user = self.request.user
+        qs = (
+            Notification.objects
+            .select_related("recipient", "event_type")
+            .order_by("-created_at")
+        )
+        if not getattr(user, "is_vision_staff", False):
+            qs = qs.filter(school=user.school)
+        return qs
 
-        qp = self.request.query_params
-        if qp.get("event_type_key"):
-            qs = qs.filter(event_type__key=qp["event_type_key"])
-        if qp.get("channel"):
-            qs = qs.filter(channel=qp["channel"])
-        if qp.get("is_active") is not None:
-            qs = qs.filter(is_active=qp["is_active"].lower() in {"true", "1"})
+    def _apply_filters(self, qs, params, is_vision_staff: bool):
+        """Apply query param filters to the history queryset."""
+        school_id       = params.get("school_id")
+        recipient_email = params.get("recipient_email")
+        event_type_key  = params.get("event_type_key")
+        channel         = params.get("channel")
+        status_param    = params.get("status")
+        created_after   = params.get("created_after")
+        created_before  = params.get("created_before")
+
+        # Vision Staff must supply at least one filter
+        if is_vision_staff and not any([
+            school_id, recipient_email, event_type_key,
+            channel, status_param, created_after, created_before,
+        ]):
+            raise FilterRequiredError()
+
+        if school_id:
+            qs = qs.filter(school_id=school_id)
+        if recipient_email:
+            qs = qs.filter(recipient__email__icontains=recipient_email)
+        if event_type_key:
+            qs = qs.filter(event_type__key=event_type_key)
+        if channel:
+            qs = qs.filter(channel=channel)
+        if status_param:
+            qs = qs.filter(status=status_param)
+        if created_after:
+            qs = qs.filter(created_at__gte=created_after)
+        if created_before:
+            qs = qs.filter(created_at__lte=created_before)
 
         return qs
+
+    def list(self, request):
+        """GET /notifications/history/"""
+        is_vision_staff = getattr(request.user, "is_vision_staff", False)
+        qs = self.get_queryset()
+
+        try:
+            qs = self._apply_filters(qs, request.query_params, is_vision_staff)
+        except FilterRequiredError as exc:
+            return error_response(
+                error_code=NotificationErrorCode.FILTER_REQUIRED,
+                message=exc.message,
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = NotificationHistorySerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = NotificationHistorySerializer(qs, many=True)
+        return success_response(data=serializer.data)
+
+    def retrieve(self, request, pk=None):
+        """GET /notifications/history/{id}/"""
+        qs = self.get_queryset()
+        try:
+            notif = qs.get(pk=pk)
+        except Notification.DoesNotExist:
+            return error_response(
+                message="Notification not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        serializer = NotificationHistoryDetailSerializer(notif)
+        return success_response(data=serializer.data)
+
+
+# ---------------------------------------------------------------------------
+# 3.  School notification settings
+# ---------------------------------------------------------------------------
+
+class SchoolNotificationSettingViewSet(viewsets.GenericViewSet):
+    """
+    School-level notification settings.
+
+    GET  /notifications/settings/  — list all settings for the school,
+                                     grouped by source module.
+    PATCH /notifications/settings/ — bulk update is_enabled values.
+
+    Permission: communication.communication_permissions.enforce (RBAC).
+    Queryset: strictly scoped to the requesting user's school.
+    """
+    permission_classes = [IsAuthenticated, HasRBACPermission]
+    rbac_permission    = NotificationPermission.ENFORCE_PERMISSIONS
+
+    def get_queryset(self):
+        return (
+            SchoolNotificationSetting.objects
+            .filter(school=self.request.user.school)
+            .select_related("event_type")
+            .order_by("event_type__source_module", "event_type__key", "channel")
+        )
+
+    def list(self, request):
+        """GET /notifications/settings/"""
+        qs = self.get_queryset()
+        serializer = SchoolNotificationSettingSerializer(qs, many=True)
+        return success_response(data=serializer.data)
+
+    def partial_update(self, request):
+        """
+        PATCH /notifications/settings/
+        Bulk update is_enabled values. All changes commit atomically.
+        """
+        serializer = SettingsBulkUpdateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return error_response(
+                message="Invalid request.",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        updates = serializer.validated_data["updates"]
+        setting_ids = [item["id"] for item in updates]
+
+        # Build map of existing settings (scoped to this school for safety)
+        settings_map = {
+            s.id: s
+            for s in SchoolNotificationSetting.objects.filter(
+                id__in=setting_ids,
+                school=request.user.school,
+            )
+        }
+
+        updated_settings = []
+        with transaction.atomic():
+            for item in updates:
+                setting = settings_map.get(item["id"])
+                if setting is None:
+                    # ID not found or belongs to another school — skip silently
+                    continue
+                setting.is_enabled = item["is_enabled"]
+                setting.updated_by = request.user
+                updated_settings.append(setting)
+
+            SchoolNotificationSetting.objects.bulk_update(
+                updated_settings, ["is_enabled", "updated_by", "updated_at"]
+            )
+
+        result_serializer = SchoolNotificationSettingSerializer(
+            updated_settings, many=True
+        )
+        return success_response(
+            message=f"{len(updated_settings)} setting(s) updated.",
+            data=result_serializer.data,
+        )
+
+
+# ---------------------------------------------------------------------------
+# 4.  Notification template management (Vision Staff only)
+# ---------------------------------------------------------------------------
+
+class NotificationTemplateViewSet(viewsets.GenericViewSet):
+    """
+    Notification template management.
+
+    GET   /notifications/templates/             — list all templates
+    POST  /notifications/templates/             — create template
+    GET   /notifications/templates/{id}/        — retrieve single
+    PATCH /notifications/templates/{id}/        — update
+    POST  /notifications/templates/{id}/preview/— render preview
+
+    Permission: communication.notification_templates.configure (RBAC).
+    """
+    permission_classes = [IsAuthenticated, HasRBACPermission]
+    rbac_permission    = NotificationPermission.TEMPLATE_CONFIGURE
+
+    def get_queryset(self):
+        return (
+            NotificationTemplate.objects
+            .select_related("event_type", "created_by", "updated_by")
+            .order_by("event_type__source_module", "event_type__key", "channel")
+        )
+
+    def list(self, request):
+        """GET /notifications/templates/"""
+        qs = self.get_queryset()
+
+        event_type_key = request.query_params.get("event_type_key")
+        if event_type_key:
+            qs = qs.filter(event_type__key=event_type_key)
+
+        channel = request.query_params.get("channel")
+        if channel:
+            qs = qs.filter(channel=channel)
+
+        serializer = NotificationTemplateSerializer(qs, many=True)
+        return success_response(data=serializer.data)
+
+    def create(self, request):
+        """POST /notifications/templates/"""
+        serializer = NotificationTemplateSerializer(
+            data=request.data,
+            context={"request": request},
+        )
+        if not serializer.is_valid():
+            return error_response(
+                message="Invalid template data.",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            template = serializer.save()
+        except Exception as exc:
+            # Catch unique_together violation on (event_type, channel)
+            if "unique" in str(exc).lower():
+                return error_response(
+                    error_code=NotificationErrorCode.DUPLICATE_TEMPLATE,
+                    message=(
+                        "A template for this event type and channel already exists. "
+                        "Update the existing template instead."
+                    ),
+                    status_code=status.HTTP_409_CONFLICT,
+                )
+            raise
+
+        return success_response(
+            data=NotificationTemplateSerializer(template).data,
+            status_code=status.HTTP_201_CREATED,
+        )
+
+    def retrieve(self, request, pk=None):
+        """GET /notifications/templates/{id}/"""
+        try:
+            template = self.get_queryset().get(pk=pk)
+        except NotificationTemplate.DoesNotExist:
+            return error_response(
+                message="Template not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        serializer = NotificationTemplateSerializer(template)
+        return success_response(data=serializer.data)
+
+    def partial_update(self, request, pk=None):
+        """PATCH /notifications/templates/{id}/"""
+        try:
+            template = self.get_queryset().get(pk=pk)
+        except NotificationTemplate.DoesNotExist:
+            return error_response(
+                message="Template not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = NotificationTemplateSerializer(
+            template,
+            data=request.data,
+            partial=True,
+            context={"request": request},
+        )
+        if not serializer.is_valid():
+            return error_response(
+                message="Invalid template data.",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
+        updated = serializer.save()
+        return success_response(data=NotificationTemplateSerializer(updated).data)
 
     @action(detail=True, methods=["post"], url_path="preview")
     def preview(self, request, pk=None):
-        template = self.get_object()
+        """
+        POST /notifications/templates/{id}/preview/
+        Render the template with sample context. Does not send anything.
+        """
+        try:
+            template = self.get_queryset().get(pk=pk)
+        except NotificationTemplate.DoesNotExist:
+            return error_response(
+                message="Template not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+
         serializer = NotificationTemplatePreviewSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            return error_response(
+                message="Invalid preview request.",
+                errors=serializer.errors,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
         rendered = serializer.render(template)
-        return Response(rendered, status=status.HTTP_200_OK)
+        return success_response(data=rendered)
 
 
 # ---------------------------------------------------------------------------
-# 5. NotificationEventTypeViewSet — read-only registry
+# 5.  Notification event type catalogue (read-only, all authenticated users)
 # ---------------------------------------------------------------------------
 
-class NotificationEventTypeViewSet(viewsets.GenericViewSet,
-                                    mixins.ListModelMixin,
-                                    mixins.RetrieveModelMixin):
+class NotificationEventTypeViewSet(viewsets.GenericViewSet):
     """
-    Read-only view of the platform event type registry.
+    Read-only event type catalogue.
+    Accessible to all authenticated users.
+    Used by the School Admin settings UI and the Vision Staff template editor.
 
-    list    — GET /notifications/event-types/
-    retrieve— GET /notifications/event-types/{id}/
-
-    Available to all authenticated users (used by settings UI and template editor).
+    GET /notifications/event-types/      — list all active event types
+    GET /notifications/event-types/{id}/ — retrieve single event type
     """
     permission_classes = [IsAuthenticated]
-    serializer_class   = NotificationEventTypeSerializer
 
     def get_queryset(self):
-        qs = NotificationEventType.objects.order_by("source_module", "key")
+        return NotificationEventType.objects.filter(is_active=True).order_by(
+            "source_module", "key"
+        )
 
-        qp = self.request.query_params
-        if qp.get("source_module"):
-            qs = qs.filter(source_module=qp["source_module"])
-        if qp.get("is_active") is not None:
-            qs = qs.filter(is_active=qp["is_active"].lower() in {"true", "1"})
+    def list(self, request):
+        """GET /notifications/event-types/"""
+        qs = self.get_queryset()
+        serializer = NotificationEventTypeSerializer(qs, many=True)
+        return success_response(data=serializer.data)
 
-        return qs
+    def retrieve(self, request, pk=None):
+        """GET /notifications/event-types/{id}/"""
+        try:
+            event_type = self.get_queryset().get(pk=pk)
+        except NotificationEventType.DoesNotExist:
+            return error_response(
+                message="Event type not found.",
+                status_code=status.HTTP_404_NOT_FOUND,
+            )
+        serializer = NotificationEventTypeSerializer(event_type)
+        return success_response(data=serializer.data)
