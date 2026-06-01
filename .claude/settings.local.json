@@ -63,7 +63,9 @@
       "Bash(/Users/mac/anaconda3/bin/python -c \"import docx; print\\('ok'\\)\")",
       "Bash(/Users/mac/anaconda3/bin/pip install *)",
       "Bash(pip show *)",
-      "Bash(python3 *)"
+      "Bash(python3 *)",
+      "Read(//Users/mac/Downloads/vs_workflow_package/vs_workflow/**)",
+      "Read(//Users/mac/Downloads/vs_workflow_package/**)"
     ]
   }
 }

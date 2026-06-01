@@ -131,3 +131,72 @@ def has_all_permissions(user, permission_keys: list[str], school=None) -> bool:
     """Check whether a user holds all of the given permissions."""
     effective = get_effective_permissions(user, school=school)
     return set(permission_keys).issubset(effective)
+
+
+def resolve_users_with_permission(school, branch, permission_key: str):
+    """Return a QuerySet of active users holding permission_key in the given scope.
+
+    Used by the workflow engine's approver resolver. Performs a reverse lookup
+    through the RBAC role tables rather than evaluating per-user.
+
+    School scope  → users with an active school role assignment at that school
+                    whose role carries the permission.
+    Platform scope (school=None, branch=None) → CX_STAFF users with an active
+                    platform role assignment whose role carries the permission.
+    """
+    from django.contrib.auth import get_user_model
+    User = get_user_model()
+
+    # Permission keys that grant via a group
+    group_ids_with_perm = GroupPermission.objects.filter(
+        permission_id=permission_key,
+    ).values_list("group_id", flat=True)
+
+    if school is None:
+        # Platform scope — look at PlatformUserRoleAssignment
+        role_ids_direct = PlatformRolePermission.objects.filter(
+            permission_id=permission_key, granted=True,
+        ).values_list("role_id", flat=True)
+
+        role_ids_via_groups = PlatformRoleGroup.objects.filter(
+            group_id__in=group_ids_with_perm,
+        ).values_list("role_id", flat=True)
+
+        denied_role_ids = PlatformRolePermission.objects.filter(
+            permission_id=permission_key, granted=False,
+        ).values_list("role_id", flat=True)
+
+        all_role_ids = (set(role_ids_direct) | set(role_ids_via_groups)) - set(denied_role_ids)
+
+        user_ids = PlatformUserRoleAssignment.objects.filter(
+            role_id__in=all_role_ids,
+            assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
+        ).values_list("user_id", flat=True)
+
+        return User.objects.filter(pk__in=user_ids, is_active=True, user_type="CX_STAFF")
+
+    # School / branch scope — look at SchoolUserRoleAssignment
+    role_ids_direct = SchoolRolePermission.objects.filter(
+        permission_id=permission_key, granted=True,
+    ).values_list("role_id", flat=True)
+
+    role_ids_via_groups = SchoolRoleGroup.objects.filter(
+        group_id__in=group_ids_with_perm,
+    ).values_list("role_id", flat=True)
+
+    denied_role_ids = SchoolRolePermission.objects.filter(
+        permission_id=permission_key, granted=False,
+    ).values_list("role_id", flat=True)
+
+    all_role_ids = (set(role_ids_direct) | set(role_ids_via_groups)) - set(denied_role_ids)
+
+    assignment_qs = SchoolUserRoleAssignment.objects.filter(
+        school=school,
+        role_id__in=all_role_ids,
+        assignment_status=SchoolUserRoleAssignment.AssignmentStatus.ACTIVE,
+    )
+    if branch is not None:
+        assignment_qs = assignment_qs.filter(user__branch=branch)
+
+    user_ids = assignment_qs.values_list("user_id", flat=True)
+    return User.objects.filter(pk__in=user_ids, is_active=True)

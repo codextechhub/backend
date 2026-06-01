@@ -35,6 +35,8 @@ ACTIONS: list[tuple[str, str]] = [
     # ── Approval & lifecycle ──────────────────────────────────────────────────
     ("approve",    "Ratify or authorise a submitted record (scores, invoices, leave requests, etc.)."),
     ("reject",     "Decline or push back a submitted record with a reason."),
+    ("submit",     "Submit a record for review or approval by another party."),
+    ("cancel",     "Terminate an in-progress record or workflow instance (admin override)."),
     ("publish",    "Make a record visible to its intended audience (results, timetables, notices)."),
     ("archive",    "Move a record to an archived / read-only state without hard deletion."),
     ("suspend",    "Temporarily deactivate an account or entity."),

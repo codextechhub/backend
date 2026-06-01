@@ -12,6 +12,7 @@ Others/
 frontend_2/
 staticfiles/
 .claude/
+apps/static/images/imports/
 
 # -- secrets / env --
 .env

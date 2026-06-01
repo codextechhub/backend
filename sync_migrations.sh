@@ -39,10 +39,12 @@ with connection.cursor() as c:
     # contenttypes.0002 is a data migration that reads a column already dropped.
     # Insert its record directly instead of letting Django run it.
     for name in ['0001_initial', '0002_remove_content_type_name']:
-        c.execute(
-            'INSERT IGNORE INTO django_migrations (app, name, applied) VALUES (%s, %s, %s)',
-            ['contenttypes', name, now]
-        )
+        c.execute('SELECT 1 FROM django_migrations WHERE app = %s AND name = %s', ['contenttypes', name])
+        if not c.fetchone():
+            c.execute(
+                'INSERT INTO django_migrations (app, name, applied) VALUES (%s, %s, %s)',
+                ['contenttypes', name, now]
+            )
     print('  contenttypes entries ensured.')
 "
 

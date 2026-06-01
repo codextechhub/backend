@@ -15,13 +15,11 @@ class UserCreationService:
 
     @staticmethod
     @transaction.atomic
-    def create(validated_data: dict, requesting_user, request=None) -> User:
-        """
-        Creates a User record with no password, then creates a UserInvitation
-        and dispatches the invitation email asynchronously.
+    def create_pending(validated_data: dict, requesting_user, request=None) -> User:
+        """Creates the User record in PENDING_APPROVAL status and assigns the role.
 
-        The user's UUID becomes the identifier in the invitation URL:
-        vision.codexng.com/invite/{user.id}/
+        No invitation is created and no email is sent — the workflow engine
+        drives the next step. Call finalize_invitation() on approval.
         """
         role_instance = validated_data.pop('role_instance', None)
 
@@ -38,45 +36,43 @@ class UserCreationService:
             branch=validated_data.get('branch') if validated_data.get('branch') else None,
             invited_by=requesting_user,
             invited_by_name=getattr(requesting_user, 'full_name', '') or '',
-            status=User.Status.PENDING,
+            status=User.Status.PENDING_APPROVAL,
             is_active=False,
             is_staff=True if validated_data['user_type'] == "CX_STAFF" else False,
         )
 
-        # Create the invitation record — this is the expiry/usage gate.
-        from .invitation import InvitationService
-        InvitationService.create(
-            user=user,
-            invited_by=requesting_user,
-        )
-
-        # Role assignment — always required; serializer guarantees role_instance is set.
         if isinstance(role_instance, PlatformRoleTemplate):
             PlatformUserRoleAssignment.objects.create(
-                user=user,
-                role=role_instance,
-                assigned_by=requesting_user,
+                user=user, role=role_instance, assigned_by=requesting_user,
             )
         else:
             SchoolUserRoleAssignment.objects.create(
-                user=user,
-                role=role_instance,
-                school=user.school,
-                assigned_by=requesting_user,
+                user=user, role=role_instance, school=user.school, assigned_by=requesting_user,
             )
 
-        from ..tasks import send_invitation_email_task
-        send_invitation_email_task.delay(str(user.activation_key))
-
         log_auth_event(
-            actor=requesting_user,
-            subject=user,
-            school=user.school,
-            event=AuthEventLog.Event.USER_CREATED,
-            request=request,
+            actor=requesting_user, subject=user, school=user.school,
+            event=AuthEventLog.Event.USER_CREATED, request=request,
         )
 
         return user
+
+    @staticmethod
+    @transaction.atomic
+    def finalize_invitation(user: User, requested_by) -> None:
+        """Sends the invitation after workflow approval.
+
+        Transitions status from PENDING_APPROVAL → PENDING and dispatches
+        the invitation email. Safe to call only once per user.
+        """
+        from .invitation import InvitationService
+        from ..tasks import send_invitation_email_task
+
+        user.status = User.Status.PENDING
+        user.save(update_fields=["status", "updated_at"])
+
+        InvitationService.create(user=user, invited_by=requested_by)
+        send_invitation_email_task.delay(str(user.activation_key))
 
 
 class EmailChangeService:

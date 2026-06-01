@@ -21,47 +21,48 @@ DEFAULT_LOCK_MINUTES   = 15
 class LoginService:
 
     @staticmethod
-    @transaction.atomic
     def login(email: str, password: str, request=None) -> dict:
         """
         Authenticates a user and returns tokens + user data.
 
+        NOT wrapped in @transaction.atomic at the top level — audit writes
+        (record_attempt, log_auth_event) must persist even when login fails.
+        A top-level atomic block would roll them back together with the raised
+        ValueError. Only the success path (session + token + user update) is
+        wrapped in its own atomic block.
+
         Steps:
-          1. Resolve school from slug (if provided)
-          2. Find user by email
-          3. Check account lockout
-          4. Enforce school context (non-Vision Staff must provide slug)
-          5. Authenticate credentials
-          6. Check account status
-          7. Clear lockout on success
-          8. Create session record
-          9. Issue JWT tokens
-         10. Write audit logs
+          1. Find user by email
+          2. Check account lockout
+          3. Enforce school context (non-Vision Staff must provide slug)
+          4. Authenticate credentials
+          5. Check account status
+          6. [atomic] Clear lockout, create session, issue tokens, update user
+          7. Write audit logs
         """
-        # Normalize email
         email = email.lower().strip()
 
-        # 2. Find user
+        # 1. Find user
         user = User.objects.filter(email__iexact=email).first()
         school = user.school if user else None
 
-        # 3. Check lockout before attempting the password
+        # 2. Check lockout before attempting the password
         if user:
-            lockout = AccountLockout.objects.select_for_update().filter(user=user).first()
-            if lockout and lockout.is_locked_now():
-                record_attempt(
-                    email_entered=email,
-                    user=user, school=school,
-                    result=AuthAttempt.Result.BLOCKED, failure_code='LOCKED',
-                    request=request,
-                )
-                raise ValueError({
-                    'code':   'ACCOUNT_LOCKED',
-                    'detail': 'Your account is locked. Please contact your administrator or reset your password.',
-                })
+            with transaction.atomic():
+                lockout = AccountLockout.objects.select_for_update().filter(user=user).first()
+                if lockout and lockout.is_locked_now():
+                    record_attempt(
+                        email_entered=email,
+                        user=user, school=school,
+                        result=AuthAttempt.Result.BLOCKED, failure_code='LOCKED',
+                        request=request,
+                    )
+                    raise ValueError({
+                        'code':   'ACCOUNT_LOCKED',
+                        'detail': 'Your account is locked. Please contact your administrator or reset your password.',
+                    })
 
-        # 4. School context enforcement
-        # Non-Vision Staff must always provide a valid school slug.
+        # 3. School context enforcement — non-Vision Staff must have a school.
         if user and user.user_type != User.UserType.CX_STAFF:
             if not school:
                 record_attempt(
@@ -70,21 +71,18 @@ class LoginService:
                     result=AuthAttempt.Result.FAIL, failure_code='SCHOOL_CONTEXT_REQUIRED',
                     request=request,
                 )
-                # Generic message — do not reveal whether the email was found.
                 raise ValueError({'code': 'INVALID_CREDENTIALS', 'detail': 'Invalid credentials.'})
 
-        # 5. Authenticate credentials
-        # Use check_password directly instead of django's authenticate(), which
-        # returns None for any user with is_active=False (suspended, deactivated,
-        # pending). That would mask the real reason with INVALID_CREDENTIALS before
-        # _check_status ever runs.
+        # 4. Authenticate credentials.
+        # check_password directly instead of django's authenticate() — authenticate()
+        # returns None for is_active=False users, masking the real reason.
         if not user or not user.check_password(password):
             LoginService._handle_failed_attempt(user, school, school.slug if school else '', request)
             raise ValueError({'code': 'INVALID_CREDENTIALS', 'detail': 'Invalid credentials.'})
 
         authed = user
 
-        # 6. Check account status
+        # 5. Check account status
         status_error = LoginService._check_status(authed)
         if status_error:
             record_attempt(
@@ -95,33 +93,32 @@ class LoginService:
             )
             raise ValueError(status_error)
 
-        # 7. Clear lockout on successful login
-        lockout = AccountLockout.objects.select_for_update().filter(user=authed).first()
-        if lockout:
-            lockout.clear()
-            lockout.save(update_fields=['failure_count', 'locked_until', 'locked_reason', 'updated_at'])
+        # 6. Success path — atomic: session + token + user update must all commit or all roll back.
+        with transaction.atomic():
+            lockout = AccountLockout.objects.select_for_update().filter(user=authed).first()
+            if lockout:
+                lockout.clear()
+                lockout.save(update_fields=['failure_count', 'locked_until', 'locked_reason', 'updated_at'])
 
-        # 8. Issue JWT tokens
-        refresh = CodeXRefreshToken.for_user(authed)
-        tokens  = {'access': str(refresh.access_token), 'refresh': str(refresh)}
+            refresh = CodeXRefreshToken.for_user(authed)
+            tokens  = {'access': str(refresh.access_token), 'refresh': str(refresh)}
 
-        # 9. Create session record
-        ua_string = request.META.get('HTTP_USER_AGENT', '') if request else ''
-        session = LoginSession.objects.create(
-            user=authed,
-            school=authed.school,
-            ip_address=get_client_ip(request),
-            user_agent=ua_string,
-            device_label=get_device_label(ua_string, request),
-            refresh_jti=str(refresh['jti']),
-            last_seen_at=timezone.now(),
-            is_active=True,
-        )
+            ua_string = request.META.get('HTTP_USER_AGENT', '') if request else ''
+            session = LoginSession.objects.create(
+                user=authed,
+                school=authed.school,
+                ip_address=get_client_ip(request),
+                user_agent=ua_string,
+                device_label=get_device_label(ua_string, request),
+                refresh_jti=str(refresh['jti']),
+                last_seen_at=timezone.now(),
+                is_active=True,
+            )
 
-        # 10. Update last login and write audit logs
-        authed.last_login_at = timezone.now()
-        authed.save(update_fields=['last_login_at', 'updated_at'])
+            authed.last_login_at = timezone.now()
+            authed.save(update_fields=['last_login_at', 'updated_at'])
 
+        # 7. Audit writes — outside any transaction so they always persist.
         record_attempt(
             email_entered=email,
             user=authed, school=authed.school,
@@ -183,21 +180,32 @@ class LoginService:
 
     @staticmethod
     def _handle_failed_attempt(user, school, school_slug, request):
-        """Increments the failure counter and locks the account if threshold is reached."""
+        """Increment the failure counter, lock the account if threshold is reached, and record the attempt.
+
+        The lockout update is wrapped in its own atomic block so the counter
+        persists regardless of what the caller does after. record_attempt is
+        called outside that block for the same reason — it must never be rolled
+        back by a caller's exception handler.
+        """
+        just_locked = False
         if user:
-            lockout, _ = AccountLockout.objects.get_or_create(user=user)
-            lockout.register_failure(
-                ip=get_client_ip(request),
-                lock_threshold=DEFAULT_LOCK_THRESHOLD,
-                lock_minutes=DEFAULT_LOCK_MINUTES,
-            )
-            lockout.save(update_fields=[
-                'failure_count', 'locked_until', 'locked_reason',
-                'last_failure_at', 'last_failure_ip', 'updated_at',
-            ])
-            if lockout.is_locked_now():
-                user.status = User.Status.LOCKED
-                user.save(update_fields=['status', 'updated_at'])
+            with transaction.atomic():
+                lockout, _ = AccountLockout.objects.select_for_update().get_or_create(user=user)
+                lockout.register_failure(
+                    ip=get_client_ip(request),
+                    lock_threshold=DEFAULT_LOCK_THRESHOLD,
+                    lock_minutes=DEFAULT_LOCK_MINUTES,
+                )
+                lockout.save(update_fields=[
+                    'failure_count', 'locked_until', 'locked_reason',
+                    'last_failure_at', 'last_failure_ip', 'updated_at',
+                ])
+                if lockout.is_locked_now():
+                    user.status = User.Status.LOCKED
+                    user.save(update_fields=['status', 'updated_at'])
+                    just_locked = True
+
+            if just_locked:
                 log_auth_event(
                     actor=None, subject=user, school=user.school,
                     event=AuthEventLog.Event.ACCOUNT_LOCKED, request=request,

@@ -87,6 +87,8 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     school admins, teachers, students, parents — is a record here.
     """
 
+    workflow_document_type = "PLATFORM_USER_CREATION"
+
     # ── Choices ──────────────────────────────────────────────────────────────
 
     class UserType(models.TextChoices):
@@ -98,11 +100,13 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         PARENT            = 'PARENT',        'Parent/Guardian'
 
     class Status(models.TextChoices):
-        PENDING     = 'PENDING',     'Pending Activation'
-        ACTIVE      = 'ACTIVE',      'Active'
-        SUSPENDED   = 'SUSPENDED',   'Suspended'
-        LOCKED      = 'LOCKED',      'Locked (security)'
-        DEACTIVATED = 'DEACTIVATED', 'Deactivated'
+        PENDING_APPROVAL = 'PENDING_APPROVAL', 'Pending Approval'
+        PENDING          = 'PENDING',          'Pending Activation'
+        ACTIVE           = 'ACTIVE',           'Active'
+        SUSPENDED        = 'SUSPENDED',        'Suspended'
+        LOCKED           = 'LOCKED',           'Locked (security)'
+        DEACTIVATED      = 'DEACTIVATED',      'Deactivated'
+        REJECTED         = 'REJECTED',         'Creation Rejected'
 
     class Gender(models.TextChoices):
         MALE    = 'MALE',   'Male'
@@ -261,7 +265,9 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         super().save(*args, **kwargs)
 
     def _sync_is_active(self):
-        if self.status in (self.Status.SUSPENDED, self.Status.DEACTIVATED, self.Status.PENDING):
+        if self.status in (self.Status.SUSPENDED, self.Status.DEACTIVATED,
+                           self.Status.PENDING, self.Status.PENDING_APPROVAL,
+                           self.Status.REJECTED):
             self.is_active = False
         elif self.status == self.Status.ACTIVE:
             self.is_active = True

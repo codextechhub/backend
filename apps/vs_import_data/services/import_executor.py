@@ -340,7 +340,7 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
     is_main_raw = _s("is_main").lower()
     branch_payload = {
         "name": branch_name,
-        "_type": _s("branch_type") or "Combined",
+        "_type": _s("_type") or "Combined",
         "is_main": is_main_raw in ("true", "1", "yes"),
         "primary_admin_data": branch_admin_data,
     }
@@ -351,6 +351,10 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
             branch_payload[field] = val
 
     branch_payload["country"] = _s("country") or "Nigeria"
+
+    opened_at_raw = _s("opened_at")
+    if opened_at_raw:
+        branch_payload["opened_at"] = opened_at_raw
 
     context = {
         "request": SimpleNamespace(user=queued_by),

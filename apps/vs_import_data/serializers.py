@@ -713,6 +713,21 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
         self._validated_template = template
         return value
 
+    def validate(self, attrs):
+        template = getattr(self, "_validated_template", None)
+        uploaded_file = attrs.get("file")
+        if template and uploaded_file:
+            ext = os.path.splitext(uploaded_file.name.lower())[1].lstrip(".")
+            expected = template.default_file_format.lower()
+            if ext != expected:
+                raise serializers.ValidationError({
+                    "file": (
+                        f"This template only accepts {expected.upper()} files. "
+                        f"You uploaded a {ext.upper()} file. Please convert your file to {expected.upper()} and try again."
+                    )
+                })
+        return attrs
+
     def create(self, validated_data):
         from .services.file_parser import parse_import_file
 
@@ -752,6 +767,10 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
             )
         except ValueError as exc:
             raise serializers.ValidationError({"file": str(exc)})
+        except Exception as exc:
+            raise serializers.ValidationError({
+                "file": f"Could not read file: {exc}. Ensure the file is not corrupted and matches the selected format.",
+            })
 
         validated_data["school"] = self.context.get("school")
         validated_data["branch"] = self.context.get("branch")
@@ -768,7 +787,18 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
         validated_data["total_rows"] = len(preview_rows)
         validated_data["total_columns"] = len(detected_headers)
 
-        return super().create(validated_data)
+        try:
+            return super().create(validated_data)
+        except OSError as exc:
+            raise serializers.ValidationError({
+                "file": f"File could not be saved on the server: {exc}. Contact support if this persists.",
+            })
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("ImportBatch create failed")
+            raise serializers.ValidationError({
+                "non_field_errors": [f"Upload failed: {exc}"],
+            })
 
 
 class ImportBatchUpdateSerializer(serializers.ModelSerializer):

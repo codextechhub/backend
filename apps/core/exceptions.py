@@ -46,6 +46,14 @@ def custom_exception_handler(exc, context):
             "error": {"code": "DUPLICATE"},
         }, status=status.HTTP_400_BAD_REQUEST)
 
+    # Handle typed domain exceptions from any app (duck-typed: error_code + message attributes)
+    if hasattr(exc, 'error_code') and hasattr(exc, 'message'):
+        return Response({
+            "success": False,
+            "message": exc.message,
+            "error": {"code": exc.error_code, "detail": getattr(exc, 'extra', {}) or {}},
+        }, status=getattr(exc, 'http_status', status.HTTP_422_UNPROCESSABLE_ENTITY))
+
     # Handle all other DRF exceptions
     if response is not None:
         return Response({

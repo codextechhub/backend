@@ -15,6 +15,7 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status, viewsets, mixins
 from rest_framework.exceptions import ValidationError
+from rest_framework.response import Response
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
@@ -46,6 +47,8 @@ from .services.invitation import InvitationService
 from .services.password   import PasswordService
 from .services.user       import UserCreationService, EmailChangeService, UserStatusService
 from .services.audit      import log_auth_event, blacklist_all_user_tokens, blacklist_token_by_jti, get_client_ip
+from vs_workflow.services.submission import submit_for_approval as _wf_submit
+from vs_workflow.serializers import WorkflowInstanceListSerializer as _WFInstanceSerializer
 
 from django.utils.dateparse import parse_date as _parse_date
 
@@ -692,6 +695,8 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         else:
             qs = qs.filter(school=user.school)
 
+        qs = qs.exclude(status__in=[User.Status.PENDING_APPROVAL, User.Status.REJECTED])
+
         if status_val := params.get('status'):
             qs = qs.filter(status=status_val)
 
@@ -750,12 +755,31 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         self.rbac_permission = action_permissions.get(self.action, 'platform.team.view')
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
-    def perform_create(self, serializer):
-        UserCreationService.create(
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # Workflow gate only applies to platform (CX_STAFF) user creation.
+        if serializer.validated_data.get("user_type") == User.UserType.CX_STAFF:
+            user = UserCreationService.create_pending(
+                validated_data=serializer.validated_data,
+                requesting_user=request.user,
+                request=request,
+            )
+            wf_instance = _wf_submit(document=user, requested_by=request.user)
+            return Response({
+                "user": UserReadSerializer(user).data,
+                "workflow_instance": _WFInstanceSerializer(wf_instance).data,
+            }, status=status.HTTP_201_CREATED)
+
+        # All other user types: create and invite immediately.
+        user = UserCreationService.create_pending(
             validated_data=serializer.validated_data,
-            requesting_user=self.request.user,
-            request=self.request,
+            requesting_user=request.user,
+            request=request,
         )
+        UserCreationService.finalize_invitation(user=user, requested_by=request.user)
+        return Response(UserReadSerializer(user).data, status=status.HTTP_201_CREATED)
 
     def perform_destroy(self, instance):
         # Never hard-delete. Records and audit history are always preserved.

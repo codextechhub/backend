@@ -50,14 +50,6 @@ IMPORT_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
         ],
     ),
     (
-        "corrections",
-        "Manual row-level data corrections before import",
-        [
-            ("view",   "List row corrections for a batch",                  False, S_NORMAL),
-            ("create", "Create a manual row correction",                    False, S_NORMAL),
-        ],
-    ),
-    (
         "jobs",
         "Background import job execution records",
         [
@@ -170,6 +162,62 @@ class Command(BaseCommand):
                 "\n  ⚠  'xvs_super_admin' role not found — run create_superuser first."
             ))
 
+        # -- Permission Groups -------------------------------------------------
+        self._seed_permission_groups(all_keys)
+
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_count} new permission(s) created, {len(all_keys)} total import keys registered.\n"
         ))
+
+    def _seed_permission_groups(self, all_keys: list[str]) -> None:
+        from vs_rbac.models import GroupPermission, Permission, PermissionGroup
+
+        TEMPLATE_KEYS = [k for k in all_keys if k.startswith("import.templates.")]
+        BATCH_KEYS    = [k for k in all_keys if k.startswith("import.batches.")]
+
+        groups = [
+            (
+                "Data Import - all",
+                "Full access to the entire data import pipeline — templates, batches, jobs, and related resources.",
+                all_keys,
+            ),
+            (
+                "Import Batch - all",
+                "Full access to import batch operations: upload, validate, execute, and delete batches.",
+                BATCH_KEYS,
+            ),
+            (
+                "Import Template - all",
+                "Full access to import template management: view, create, and manage system templates.",
+                TEMPLATE_KEYS,
+            ),
+        ]
+
+        self.stdout.write(self.style.MIGRATE_HEADING("\n  Seeding import permission groups...\n"))
+
+        for name, description, keys in groups:
+            group, created = PermissionGroup.objects.get_or_create(
+                name=name,
+                defaults={
+                    "description": description,
+                    "is_system": True,
+                    "is_active": True,
+                },
+            )
+            action = "Created" if created else "Found  "
+            self.stdout.write(f"  {action} group: {name!r}")
+
+            added = 0
+            for key in keys:
+                perm = Permission.objects.filter(key=key).first()
+                if not perm:
+                    continue
+                _, link_created = GroupPermission.objects.get_or_create(
+                    group=group,
+                    permission=perm,
+                )
+                if link_created:
+                    added += 1
+
+            if added:
+                self.stdout.write(f"           + linked {added} permission(s)")

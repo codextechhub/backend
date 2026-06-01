@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 from django.db.models import Q
-from django.forms import ValidationError
 from rest_framework import generics
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import IsAuthenticated, AllowAny
 
 from core.mixins import RetrieveModelMixin, CreateModelMixin
@@ -136,7 +135,7 @@ class BranchCreateView(CreateModelMixin, ActorContextMixin, generics.CreateAPIVi
 
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
-        i_slug = self.kwargs["i_slug"]
+        i_slug = self.kwargs["slug"]
 
         school = School.objects.filter(slug=i_slug).first()
         if not school:
