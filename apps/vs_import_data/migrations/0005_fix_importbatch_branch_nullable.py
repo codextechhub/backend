@@ -1,34 +1,45 @@
-import django.db.models.deletion
-from django.db import migrations, models
+from django.db import migrations
+
+
+def make_branch_nullable(apps, schema_editor):
+    db = schema_editor.connection.vendor
+    if db == "mysql":
+        # MariaDB/MySQL: MODIFY COLUMN changes nullability in-place without
+        # touching the FK constraint index — ALTER COLUMN syntax is not supported.
+        schema_editor.execute(
+            "ALTER TABLE vs_import_data_importbatch MODIFY COLUMN branch_id BIGINT NULL;"
+        )
+    else:
+        # PostgreSQL and others support the standard ALTER COLUMN syntax.
+        schema_editor.execute(
+            "ALTER TABLE vs_import_data_importbatch ALTER COLUMN branch_id DROP NOT NULL;"
+        )
+
+
+def reverse_branch_nullable(apps, schema_editor):
+    db = schema_editor.connection.vendor
+    if db == "mysql":
+        schema_editor.execute(
+            "ALTER TABLE vs_import_data_importbatch MODIFY COLUMN branch_id BIGINT NOT NULL;"
+        )
+    else:
+        schema_editor.execute(
+            "ALTER TABLE vs_import_data_importbatch ALTER COLUMN branch_id SET NOT NULL;"
+        )
 
 
 class Migration(migrations.Migration):
     """Drop NOT NULL constraint on branch_id in ImportBatch.
 
-    On the cloud DB, branch_id was provisioned as NOT NULL before the
-    0004 migration ran. That migration used ADD COLUMN IF NOT EXISTS, so
-    the column already existing meant the NOT NULL constraint was never
-    dropped. This migration fixes it explicitly.
-
-    Uses AlterField (not RunSQL) so Django generates the correct DDL for
-    both MariaDB (local) and PostgreSQL (cloud).
+    Uses RunPython with vendor detection so MariaDB/MySQL gets MODIFY COLUMN
+    (which leaves the FK constraint index intact) while PostgreSQL gets the
+    standard ALTER COLUMN ... DROP NOT NULL syntax.
     """
 
     dependencies = [
         ("vs_import_data", "0004_importbatch_school_branch"),
-        ("vs_schools", "0001_initial"),
     ]
 
     operations = [
-        migrations.AlterField(
-            model_name="importbatch",
-            name="branch",
-            field=models.ForeignKey(
-                blank=True,
-                null=True,
-                on_delete=django.db.models.deletion.CASCADE,
-                related_name="import_batches",
-                to="vs_schools.branch",
-            ),
-        ),
+        migrations.RunPython(make_branch_nullable, reverse_code=reverse_branch_nullable),
     ]
