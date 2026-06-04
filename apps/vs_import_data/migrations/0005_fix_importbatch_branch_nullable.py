@@ -5,7 +5,6 @@ def make_branch_nullable(apps, schema_editor):
     conn = schema_editor.connection
 
     if conn.vendor != "mysql":
-        # PostgreSQL and others support the standard syntax directly.
         schema_editor.execute(
             "ALTER TABLE vs_import_data_importbatch "
             "ALTER COLUMN branch_id DROP NOT NULL;"
@@ -13,7 +12,7 @@ def make_branch_nullable(apps, schema_editor):
         return
 
     with conn.cursor() as cursor:
-        # Idempotency guard — skip if already nullable.
+        # Idempotency guard — nothing to do if already nullable.
         cursor.execute("""
             SELECT IS_NULLABLE
             FROM INFORMATION_SCHEMA.COLUMNS
@@ -25,43 +24,35 @@ def make_branch_nullable(apps, schema_editor):
         if row and row[0] == "YES":
             return
 
-        # MariaDB/MySQL will not let MODIFY COLUMN touch a column whose index
-        # is backing a FK constraint. We must drop the FK first, change the
-        # column, then put the FK back.
-        cursor.execute("""
-            SELECT CONSTRAINT_NAME
-            FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
-            WHERE TABLE_SCHEMA        = DATABASE()
-              AND TABLE_NAME          = 'vs_import_data_importbatch'
-              AND COLUMN_NAME         = 'branch_id'
-              AND REFERENCED_TABLE_NAME IS NOT NULL
-        """)
-        fk_names = [r[0] for r in cursor.fetchall()]
-
-        for fk in fk_names:
+        # Two FK constraints can share the same backing index on branch_id
+        # (one from Django's initial ORM migration, one from our RunSQL in 0004).
+        # Dropping just one FK still leaves the index locked by the other, so
+        # MODIFY COLUMN fails with error 1553. The simplest solution that works
+        # across all MariaDB/MySQL versions: disable FK checks for the duration
+        # of the column change. The constraints themselves are not touched —
+        # they remain fully intact after re-enabling.
+        cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
+        try:
             cursor.execute(
-                f"ALTER TABLE vs_import_data_importbatch DROP FOREIGN KEY `{fk}`"
+                "ALTER TABLE vs_import_data_importbatch "
+                "MODIFY COLUMN branch_id BIGINT NULL"
             )
-
-        cursor.execute(
-            "ALTER TABLE vs_import_data_importbatch "
-            "MODIFY COLUMN branch_id BIGINT NULL"
-        )
-
-        cursor.execute(
-            "ALTER TABLE vs_import_data_importbatch "
-            "ADD CONSTRAINT FOREIGN KEY (branch_id) "
-            "REFERENCES vs_schools_branch(id) ON DELETE CASCADE"
-        )
+        finally:
+            cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
 
 
 def reverse_branch_nullable(apps, schema_editor):
     conn = schema_editor.connection
     if conn.vendor == "mysql":
-        schema_editor.execute(
-            "ALTER TABLE vs_import_data_importbatch "
-            "MODIFY COLUMN branch_id BIGINT NOT NULL;"
-        )
+        with conn.cursor() as cursor:
+            cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
+            try:
+                cursor.execute(
+                    "ALTER TABLE vs_import_data_importbatch "
+                    "MODIFY COLUMN branch_id BIGINT NOT NULL"
+                )
+            finally:
+                cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
     else:
         schema_editor.execute(
             "ALTER TABLE vs_import_data_importbatch "
@@ -72,16 +63,17 @@ def reverse_branch_nullable(apps, schema_editor):
 class Migration(migrations.Migration):
     """Drop NOT NULL constraint on branch_id in ImportBatch.
 
-    MariaDB/MySQL will not allow MODIFY COLUMN on a column whose index backs
-    a FK constraint unless the FK is dropped first. This migration:
-      1. Queries INFORMATION_SCHEMA to find the FK constraint name dynamically
-         (the name is auto-generated and differs per environment)
-      2. Drops the FK constraint
-      3. Makes the column nullable via MODIFY COLUMN
-      4. Re-adds the FK constraint
+    The table has two FK constraints sharing the same backing index on branch_id
+    (one from Django's ORM initial migration, one from the RunSQL in 0004).
+    Dropping FKs one at a time still leaves the index locked by the survivor,
+    causing MODIFY COLUMN to fail with error 1553 on any MariaDB/MySQL version.
 
-    PostgreSQL gets the standard ALTER COLUMN ... DROP NOT NULL.
-    Fully idempotent — skips silently if the column is already nullable.
+    Fix: SET FOREIGN_KEY_CHECKS = 0 for the duration of MODIFY COLUMN. This
+    lets MySQL change the column definition without touching the FK index. The
+    constraints remain fully intact and are re-enforced when checks are re-enabled.
+
+    Fully idempotent — skips silently if branch_id is already nullable.
+    PostgreSQL uses the standard ALTER COLUMN ... DROP NOT NULL syntax.
     """
 
     dependencies = [
