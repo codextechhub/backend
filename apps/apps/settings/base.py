@@ -84,6 +84,8 @@ INSTALLED_APPS = [
     'vs_config',
     'vs_notifications',
     'vs_workflow',
+    'vs_finance',
+    'vs_procurement',
 ]
 
 MIDDLEWARE = [
