@@ -10,22 +10,30 @@ def add_uid_if_missing(apps, schema_editor):
     the column already exists).
     """
     conn = schema_editor.connection
-    with conn.cursor() as cursor:
-        cursor.execute("""
-            SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME   = 'vs_users_user'
-              AND COLUMN_NAME  = 'uid'
-        """)
-        if cursor.fetchone()[0] > 0:
-            return  # already exists — nothing to do
-
-        if conn.vendor == "mysql":
+    if conn.vendor == "mysql":
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE()
+                  AND TABLE_NAME   = 'vs_users_user'
+                  AND COLUMN_NAME  = 'uid'
+            """)
+            if cursor.fetchone()[0] > 0:
+                return
             cursor.execute(
                 "ALTER TABLE vs_users_user ADD COLUMN uid INT UNSIGNED NULL"
             )
-        else:
-            schema_editor.execute(
+    else:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                SELECT COUNT(*) FROM information_schema.columns
+                WHERE table_catalog = current_database()
+                  AND table_name    = 'vs_users_user'
+                  AND column_name   = 'uid'
+            """)
+            if cursor.fetchone()[0] > 0:
+                return
+            cursor.execute(
                 "ALTER TABLE vs_users_user ADD COLUMN uid INTEGER NULL"
             )
 
