@@ -270,3 +270,140 @@ def reconcile_ar(entity, *, as_of=None) -> ARReconciliation:
         control_total=control_total,
         difference=subledger_total - control_total,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Budget vs actual                                                            #
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class BudgetVarianceRow:
+    """Budget vs actual for one account (kobo), signed to the account's normal balance.
+
+    ``variance = actual - budget``. Reading it depends on the account: for an expense
+    a positive variance is *over* budget (unfavourable); for income it is *over* plan
+    (favourable). The report stays neutral and just reports the signed numbers.
+    """
+
+    account_id: int
+    code: str
+    name: str
+    account_type: str
+    budget: int
+    actual: int
+
+    @property
+    def variance(self) -> int:
+        return self.actual - self.budget
+
+    @property
+    def variance_pct(self) -> float | None:
+        """Variance as a percentage of budget, or ``None`` when nothing was budgeted."""
+        if self.budget == 0:
+            return None
+        return round(self.variance * 100 / self.budget, 2)
+
+
+@dataclass
+class BudgetVarianceReport:
+    budget_id: int
+    fiscal_year_id: int
+    period_no: int | None
+    rows: list = field(default_factory=list)
+    total_budget: int = 0
+    total_actual: int = 0
+
+    @property
+    def total_variance(self) -> int:
+        return self.total_actual - self.total_budget
+
+
+def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
+    """Compare a budget's planned figures to ledger actuals, per account.
+
+    Budgeted amounts come from the (frozen) :class:`~vs_finance.models.BudgetLine`
+    cells; actuals come from the denormalised :class:`AccountBalance` *movement* in
+    the matching fiscal periods (period movement only — opening balances are
+    excluded), signed to each account's normal balance so an expense budget of
+    ``100`` lines up with ``100`` of actual expense. Pass ``period_no`` (1–12) to
+    scope both sides to a single period; otherwise the whole fiscal year is summed.
+    """
+    from .constants import AccountType, NormalBalance
+    from .models import AccountBalance, BudgetLine
+
+    # Budgets are plans of income/expense; the balance-sheet contra side of a posting
+    # (cash, AR, payables) is noise in a variance report, so unbudgeted accounts only
+    # appear when they are P&L accounts (i.e. genuinely unbudgeted income/spend).
+    _PL_TYPES = {AccountType.INCOME, AccountType.EXPENSE}
+
+    fiscal_year = budget.fiscal_year
+
+    # Budgeted amounts per account (summed across cost centres / periods).
+    budget_lines = BudgetLine.objects.filter(budget=budget).select_related("account")
+    if period_no is not None:
+        budget_lines = budget_lines.filter(period_no=int(period_no))
+
+    slots: dict[int, dict] = {}
+
+    def slot_for(account):
+        s = slots.get(account.id)
+        if s is None:
+            s = {
+                "code": account.code, "name": account.name,
+                "account_type": account.account_type,
+                "normal_balance": account.normal_balance,
+                "budget": 0, "actual": 0,
+            }
+            slots[account.id] = s
+        return s
+
+    for line in budget_lines:
+        slot_for(line.account)["budget"] += line.amount
+
+    # Actual movement per account from the period balances of this fiscal year.
+    balances = (
+        AccountBalance.objects
+        .filter(period__fiscal_year=fiscal_year)
+        .select_related("account", "period")
+    )
+    if period_no is not None:
+        balances = balances.filter(period__period_no=int(period_no))
+
+    for bal in balances:
+        acc = bal.account
+        # An unbudgeted, non-P&L account (e.g. the cash contra side) is not part of a
+        # budget variance — only surface budgeted accounts and unbudgeted P&L activity.
+        if acc.id not in slots and acc.account_type not in _PL_TYPES:
+            continue
+        movement = bal.debit_total - bal.credit_total
+        if acc.normal_balance != NormalBalance.DEBIT:
+            movement = -movement
+        if movement == 0 and acc.id not in slots:
+            continue  # untouched, unbudgeted account — skip the noise
+        slot_for(acc)["actual"] += movement
+
+    rows: list[BudgetVarianceRow] = []
+    total_budget = 0
+    total_actual = 0
+    for account_id, slot in sorted(slots.items(), key=lambda kv: kv[1]["code"]):
+        if slot["budget"] == 0 and slot["actual"] == 0:
+            continue
+        total_budget += slot["budget"]
+        total_actual += slot["actual"]
+        rows.append(
+            BudgetVarianceRow(
+                account_id=account_id, code=slot["code"], name=slot["name"],
+                account_type=slot["account_type"],
+                budget=slot["budget"], actual=slot["actual"],
+            )
+        )
+
+    return BudgetVarianceReport(
+        budget_id=budget.id,
+        fiscal_year_id=fiscal_year.id,
+        period_no=int(period_no) if period_no is not None else None,
+        rows=rows,
+        total_budget=total_budget,
+        total_actual=total_actual,
+    )

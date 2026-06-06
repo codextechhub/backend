@@ -68,6 +68,8 @@ class DocType(models.TextChoices):
     VENDOR_INVOICE = "VIN", "Vendor Invoice"
     VENDOR_PAYMENT = "VPY", "Vendor Payment"
     EXPENSE_CLAIM = "EXP", "Expense Claim"
+    PAYROLL_RUN = "PYR", "Payroll Run"
+    FIXED_ASSET = "FA", "Fixed Asset"
 
 class AccountType(models.TextChoices):
     """The five roots of double-entry accounting.
@@ -160,6 +162,50 @@ class PaymentMethod(models.TextChoices):
     OTHER = "OTHER", "Other"
 
 
+# --------------------------------------------------------------------------- #
+# Phase 4 — banking, expenses, payroll, budget, fixed assets, period close     #
+# --------------------------------------------------------------------------- #
+
+class BankLineStatus(models.TextChoices):
+    """Reconciliation state of an imported bank-statement line.
+
+    UNMATCHED -> not yet paired with a ledger movement.
+    MATCHED   -> reconciled to a GL bank-account journal line.
+    IGNORED   -> intentionally excluded (duplicate, opening line, etc.).
+    """
+    UNMATCHED = "UNMATCHED", "Unmatched"
+    MATCHED = "MATCHED", "Matched"
+    IGNORED = "IGNORED", "Ignored"
+
+
+class PayrollRunStatus(models.TextChoices):
+    """Lifecycle of a payroll run (a batch of employee pay lines)."""
+    DRAFT = "DRAFT", "Draft"
+    POSTED = "POSTED", "Posted (accrued)"
+    PAID = "PAID", "Paid (disbursed)"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class BudgetStatus(models.TextChoices):
+    """Lifecycle of a budget; locked on approval so actuals can't be re-planned."""
+    DRAFT = "DRAFT", "Draft"
+    APPROVED = "APPROVED", "Approved"
+    LOCKED = "LOCKED", "Locked"
+
+
+class DepreciationMethod(models.TextChoices):
+    """Depreciation method for a fixed asset. Straight-line only for now."""
+    STRAIGHT_LINE = "STRAIGHT_LINE", "Straight line"
+
+
+class AssetStatus(models.TextChoices):
+    """Lifecycle of a fixed asset in the register."""
+    DRAFT = "DRAFT", "Draft"
+    ACTIVE = "ACTIVE", "Active"
+    FULLY_DEPRECIATED = "FULLY_DEPRECIATED", "Fully depreciated"
+    DISPOSED = "DISPOSED", "Disposed"
+
+
 class FinanceAuditAction(models.TextChoices):
     """Auditable finance actions recorded in the in-app, append-only audit log.
 
@@ -179,7 +225,7 @@ class FinanceAuditAction(models.TextChoices):
     PERIOD_REOPENED = "PERIOD_REOPENED", "Period re-opened"
     ACCOUNT_CREATED = "ACCOUNT_CREATED", "Account created"
     ACCOUNT_UPDATED = "ACCOUNT_UPDATED", "Account updated"
-    # Procure-to-Pay (Phase 3). The vendor/PO/GRN documents live in vs_procurement,
+    # Procure-to-Pay. The vendor/PO/GRN documents live in vs_procurement,
     # but their audit vocabulary belongs to finance's authoritative log (finance does
     # not import procurement — these are just string constants).
     REQUISITION_APPROVED = "REQUISITION_APPROVED", "Requisition approved"
@@ -192,6 +238,19 @@ class FinanceAuditAction(models.TextChoices):
     VENDOR_PAYMENT_POSTED = "VENDOR_PAYMENT_POSTED", "Vendor payment posted"
     VENDOR_PAYMENT_POST_REJECTED = "VENDOR_PAYMENT_POST_REJECTED", "Vendor payment posting rejected"
     VENDOR_PAYMENT_ALLOCATED = "VENDOR_PAYMENT_ALLOCATED", "Vendor payment allocated"
+    # Phase 4 — banking, expenses, payroll, budget, fixed assets, period close.
+    BANK_RECONCILED = "BANK_RECONCILED", "Bank statement reconciled"
+    BANK_CHARGE_POSTED = "BANK_CHARGE_POSTED", "Bank charge posted"
+    EXPENSE_CLAIM_POSTED = "EXPENSE_CLAIM_POSTED", "Expense claim posted"
+    EXPENSE_CLAIM_POST_REJECTED = "EXPENSE_CLAIM_POST_REJECTED", "Expense claim posting rejected"
+    EXPENSE_CLAIM_SETTLED = "EXPENSE_CLAIM_SETTLED", "Expense claim settled"
+    PAYROLL_POSTED = "PAYROLL_POSTED", "Payroll run posted"
+    PAYROLL_POST_REJECTED = "PAYROLL_POST_REJECTED", "Payroll run posting rejected"
+    PAYROLL_PAID = "PAYROLL_PAID", "Payroll run disbursed"
+    BUDGET_APPROVED = "BUDGET_APPROVED", "Budget approved"
+    ASSET_ACQUIRED = "ASSET_ACQUIRED", "Fixed asset acquired"
+    DEPRECIATION_POSTED = "DEPRECIATION_POSTED", "Depreciation posted"
+    PERIOD_LOCKED = "PERIOD_LOCKED", "Period locked"
 
 
 class FinanceAuditStatus(models.TextChoices):
@@ -199,6 +258,19 @@ class FinanceAuditStatus(models.TextChoices):
     SUCCESS = "SUCCESS", "Success"
     FAILED = "FAILED", "Failed"
 
+
+#: Well-known Chart-of-Accounts codes the Phase-4 services resolve by code. Kept here
+#: (not hard-coded in services) so an entity with a customised chart can be remapped in
+#: one place. All are seeded by :mod:`vs_finance.seed`.
+PPE_ACCOUNT_CODE = "1500"                 # Property, Plant & Equipment (asset)
+ACCUM_DEPRECIATION_CODE = "1900"          # Accumulated depreciation (contra-asset)
+ACCRUED_REIMBURSEMENT_CODE = "2400"       # Staff expense-claim liability
+PAYE_PAYABLE_CODE = "2310"                # PAYE (employee income tax) payable
+PENSION_PAYABLE_CODE = "2320"             # Pension payable
+NET_WAGES_PAYABLE_CODE = "2330"           # Net wages payable (cleared on disbursement)
+SALARIES_EXPENSE_CODE = "5200"            # Salaries & wages expense
+DEPRECIATION_EXPENSE_CODE = "5400"        # Depreciation expense
+BANK_CHARGES_CODE = "5500"               # Bank charges expense
 
 #: Document-number prefix for the whole platform's finance documents (Code X Finance).
 DOC_NUMBER_PREFIX = "CFX"

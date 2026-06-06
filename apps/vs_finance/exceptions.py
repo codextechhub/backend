@@ -65,3 +65,58 @@ class InactiveAccountError(PostingError):
 class DocumentNumberingError(FinanceError):
     error_code = "DOCUMENT_NUMBERING_FAILED"
     default_message = "Could not allocate a document number."
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4 — banking, expenses, payroll, budget, fixed assets, period close      #
+# --------------------------------------------------------------------------- #
+
+class MissingAccountError(PostingError):
+    """A well-known control account (by CoA code) is absent or not postable."""
+
+    error_code = "ACCOUNT_NOT_FOUND"
+    default_message = "A required control account is missing from the chart."
+
+    def __init__(self, code, label="", **kwargs):
+        self.code = code
+        self.label = label
+        super().__init__(
+            f"Required account '{code}'{f' ({label})' if label else ''} is missing, "
+            f"inactive or not postable for this entity.",
+            code=code, label=label, **kwargs,
+        )
+
+
+class BankReconciliationError(FinanceError):
+    error_code = "BANK_RECONCILIATION_ERROR"
+    default_message = "The bank statement line could not be reconciled."
+
+
+class ExpenseClaimError(PostingError):
+    error_code = "EXPENSE_CLAIM_ERROR"
+    default_message = "The expense claim could not be processed."
+
+
+class PayrollError(PostingError):
+    error_code = "PAYROLL_ERROR"
+    default_message = "The payroll run could not be processed."
+
+
+class BudgetError(FinanceError):
+    error_code = "BUDGET_ERROR"
+    default_message = "The budget could not be processed."
+
+
+class DepreciationError(PostingError):
+    error_code = "DEPRECIATION_ERROR"
+    default_message = "Depreciation could not be processed."
+
+
+class PeriodCloseError(FinanceError):
+    error_code = "PERIOD_CLOSE_ERROR"
+    default_message = "The period could not be closed."
+    http_status = 409
+
+    def __init__(self, message=None, *, failures=None, **kwargs):
+        self.failures = failures or []
+        super().__init__(message, failures=self.failures, **kwargs)
