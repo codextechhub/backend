@@ -179,6 +179,19 @@ class FinanceAuditAction(models.TextChoices):
     PERIOD_REOPENED = "PERIOD_REOPENED", "Period re-opened"
     ACCOUNT_CREATED = "ACCOUNT_CREATED", "Account created"
     ACCOUNT_UPDATED = "ACCOUNT_UPDATED", "Account updated"
+    # Procure-to-Pay (Phase 3). The vendor/PO/GRN documents live in vs_procurement,
+    # but their audit vocabulary belongs to finance's authoritative log (finance does
+    # not import procurement — these are just string constants).
+    REQUISITION_APPROVED = "REQUISITION_APPROVED", "Requisition approved"
+    PURCHASE_ORDER_APPROVED = "PURCHASE_ORDER_APPROVED", "Purchase order approved"
+    GRN_POSTED = "GRN_POSTED", "Goods receipt posted"
+    GRN_POST_REJECTED = "GRN_POST_REJECTED", "Goods receipt posting rejected"
+    VENDOR_INVOICE_MATCHED = "VENDOR_INVOICE_MATCHED", "Vendor invoice matched"
+    VENDOR_INVOICE_POSTED = "VENDOR_INVOICE_POSTED", "Vendor invoice posted"
+    VENDOR_INVOICE_POST_REJECTED = "VENDOR_INVOICE_POST_REJECTED", "Vendor invoice posting rejected"
+    VENDOR_PAYMENT_POSTED = "VENDOR_PAYMENT_POSTED", "Vendor payment posted"
+    VENDOR_PAYMENT_POST_REJECTED = "VENDOR_PAYMENT_POST_REJECTED", "Vendor payment posting rejected"
+    VENDOR_PAYMENT_ALLOCATED = "VENDOR_PAYMENT_ALLOCATED", "Vendor payment allocated"
 
 
 class FinanceAuditStatus(models.TextChoices):

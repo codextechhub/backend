@@ -30,6 +30,7 @@ DEFAULT_CHART = [
     # Liabilities
     ("2000", "Liabilities", AccountType.LIABILITY, False, False),
     ("2100", "Accounts Payable", AccountType.LIABILITY, True, False),
+    ("2150", "GR/IR Clearing", AccountType.LIABILITY, True, False),
     ("2200", "Output VAT (Payable)", AccountType.LIABILITY, True, False),
     ("2300", "WHT Payable", AccountType.LIABILITY, True, False),
     # Equity
@@ -50,7 +51,7 @@ DEFAULT_CHART = [
 #: parent_code by child_code — wires the tree after the flat create.
 _PARENTS = {
     "1100": "1000", "1200": "1000", "1300": "1000", "1900": "1000",
-    "2100": "2000", "2200": "2000", "2300": "2000",
+    "2100": "2000", "2150": "2000", "2200": "2000", "2300": "2000",
     "3100": "3000", "3200": "3000",
     "4100": "4000", "4900": "4000",
     "5100": "5000", "5200": "5000", "5300": "5000",

@@ -1,16 +1,672 @@
-"""Procurement models (vs_procurement).
+"""Procurement models (vs_procurement) — Phase 3, Procure-to-Pay.
 
-Phase 0 establishes the app and its dependency direction only: **procurement
-depends on finance, never the reverse.** Concrete models — Vendor, CatalogItem,
-PurchaseRequisition, RFQ/Quotation, PurchaseOrder, GoodsReceivedNote, VendorInvoice,
-VendorPayment, Contract — land in Phase 3 and will build on the shared foundations
-imported below (the abstract numbered-document base, the money field, the document
-sequence). Importing them here both documents the intended dependency and guarantees
-finance is import-safe from procurement.
+The purchasing side of the ledger and the Accounts-Payable sub-ledger. **Procurement
+depends on finance, never the reverse:** every document is scoped to a
+:class:`vs_finance.models.LedgerEntity` (the tenant — never a School), money is integer
+kobo via :class:`vs_finance.money.MoneyField`, and the posting documents (GRN, vendor
+invoice, vendor payment) raise journals through the finance posting service so the same
+period-lock and balance guards apply.
+
+The chain modelled here:
+
+    PurchaseRequisition → PurchaseOrder → GoodsReceivedNote → VendorInvoice → VendorPayment
+
+and the AP sub-ledger (:class:`Vendor` + :class:`VendorInvoice` + :class:`VendorPayment`)
+that mirrors the AR sub-ledger in :mod:`vs_finance.models`. The classic three-document
+control — **GR/IR clearing** — sits between receipt and invoice: receiving debits the
+expense and credits GR/IR; the matched invoice debits GR/IR (clearing it) and credits
+AP. When goods are both received and billed, GR/IR nets to zero.
+
+Sourcing sugar (RFQ/Quotation, CatalogItem, Contract) is intentionally **deferred** —
+it sits off the journal-posting acceptance path and adds no GL behaviour. The full
+double-entry P2P chain is here.
 """
 from __future__ import annotations
 
-from vs_finance.models import FinanceDocument  # noqa: F401  (Phase-3 base)
-from vs_finance.money import MoneyField  # noqa: F401  (Phase-3 monetary columns)
+from decimal import Decimal
 
-# No concrete procurement models yet — see Phase 3 of the build plan.
+from django.conf import settings
+from django.db import models
+
+from vs_finance.constants import DocType, InvoicePaymentStatus, PaymentMethod
+from vs_finance.models import FinanceDocument, TimeStampedModel
+from vs_finance.money import MoneyField
+
+from .constants import (
+    MatchStatus,
+    PaymentTerms,
+    VendorKycStatus,
+    VendorRisk,
+)
+
+
+def _pct(part, whole) -> Decimal:
+    """Percentage ``part/whole`` as a 2dp Decimal; 0 when ``whole`` is 0."""
+    whole = Decimal(whole or 0)
+    if whole == 0:
+        return Decimal("0.00")
+    return (Decimal(part or 0) / whole * 100).quantize(Decimal("0.01"))
+
+
+# --------------------------------------------------------------------------- #
+# Master data — vendors                                                       #
+# --------------------------------------------------------------------------- #
+
+class VendorCategory(TimeStampedModel):
+    """A grouping of vendors with a default expense account (e.g. 'Utilities').
+
+    The ``default_expense_account`` seeds new purchase lines so buyers don't pick a GL
+    account by hand each time; it's only a default and can be overridden per line.
+    """
+
+    entity = models.ForeignKey(
+        "vs_finance.LedgerEntity", on_delete=models.PROTECT,
+        related_name="vendor_categories",
+    )
+    code = models.CharField(max_length=32, help_text="Unique within the entity.")
+    name = models.CharField(max_length=160)
+    default_expense_account = models.ForeignKey(
+        "vs_finance.Account", on_delete=models.PROTECT,
+        related_name="vendor_categories", null=True, blank=True,
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "code"], name="uniq_proc_vendorcat_entity_code",
+            ),
+        ]
+        ordering = ["entity", "code"]
+        verbose_name_plural = "vendor categories"
+
+    def __str__(self) -> str:
+        return f"{self.code} · {self.name}"
+
+
+class Vendor(TimeStampedModel):
+    """A payable party — the AP sub-ledger account — for one entity.
+
+    The mirror image of :class:`vs_finance.models.Customer`: ``payable_account`` is the
+    AP control account this vendor's balance rolls into, and the optional
+    ``source_type``/``source_id`` pair is a *loose* string reference to an originating
+    domain record (never an FK), keeping the ledger decoupled from product apps.
+
+    ``kyc_status``/``on_hold`` are payment gates the payables service checks before
+    cutting a cheque; ``default_wht_tax_code`` drives withholding-tax on payment.
+    """
+
+    entity = models.ForeignKey(
+        "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="vendors",
+    )
+    branch = models.ForeignKey(
+        "vs_schools.Branch", on_delete=models.PROTECT,
+        related_name="vendors", null=True, blank=True,
+    )
+    code = models.CharField(max_length=32, help_text="Vendor code, unique within the entity.")
+    name = models.CharField(max_length=200)
+    category = models.ForeignKey(
+        VendorCategory, on_delete=models.PROTECT, related_name="vendors",
+        null=True, blank=True,
+    )
+
+    email = models.EmailField(blank=True, default="")
+    phone = models.CharField(max_length=32, blank=True, default="")
+    address = models.TextField(blank=True, default="")
+
+    tax_id = models.CharField(max_length=32, blank=True, default="", help_text="TIN / tax identifier.")
+    bank_name = models.CharField(max_length=120, blank=True, default="")
+    bank_account_number = models.CharField(max_length=32, blank=True, default="")
+    bank_account_name = models.CharField(max_length=160, blank=True, default="")
+
+    payable_account = models.ForeignKey(
+        "vs_finance.Account", on_delete=models.PROTECT, related_name="ap_vendors",
+        null=True, blank=True,
+        help_text="AP control account this vendor's balance rolls into.",
+    )
+    default_expense_account = models.ForeignKey(
+        "vs_finance.Account", on_delete=models.PROTECT, related_name="default_vendors",
+        null=True, blank=True,
+    )
+    default_wht_tax_code = models.ForeignKey(
+        "vs_finance.TaxCode", on_delete=models.PROTECT, related_name="wht_vendors",
+        null=True, blank=True,
+        help_text="Withholding-tax code applied to this vendor's payments.",
+    )
+
+    payment_terms = models.CharField(
+        max_length=8, choices=PaymentTerms.choices, default=PaymentTerms.NET_30,
+    )
+    kyc_status = models.CharField(
+        max_length=8, choices=VendorKycStatus.choices, default=VendorKycStatus.PENDING,
+    )
+    risk = models.CharField(max_length=6, choices=VendorRisk.choices, default=VendorRisk.LOW)
+    on_hold = models.BooleanField(default=False, help_text="Block new POs/payments while True.")
+
+    opening_balance = MoneyField(help_text="Opening AP balance in kobo (informational).")
+    source_type = models.CharField(max_length=64, blank=True, default="")
+    source_id = models.CharField(max_length=64, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "code"], name="uniq_proc_vendor_entity_code",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "is_active"]),
+            models.Index(fields=["entity", "on_hold"]),
+            models.Index(fields=["source_type", "source_id"]),
+        ]
+        ordering = ["entity", "code"]
+
+    def __str__(self) -> str:
+        return f"{self.code} · {self.name}"
+
+
+# --------------------------------------------------------------------------- #
+# Purchase requisition (intent to buy — no GL effect)                         #
+# --------------------------------------------------------------------------- #
+
+class PurchaseRequisition(FinanceDocument):
+    """An internal request to buy — the start of the procurement chain.
+
+    No GL effect: a requisition is intent, approved (via ``vs_workflow``) and then
+    converted into one or more :class:`PurchaseOrder` s. ``status`` uses the shared
+    document lifecycle (DRAFT → PENDING_APPROVAL → APPROVED → CANCELLED).
+    """
+
+    DOC_TYPE = DocType.PURCHASE_REQUISITION
+
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="purchase_requisitions", null=True, blank=True,
+    )
+    request_date = models.DateField()
+    needed_by = models.DateField(null=True, blank=True)
+    cost_center = models.ForeignKey(
+        "vs_finance.CostCenter", on_delete=models.PROTECT,
+        related_name="purchase_requisitions", null=True, blank=True,
+    )
+    justification = models.CharField(max_length=255, blank=True, default="")
+    estimated_total = MoneyField(help_text="Rolled-up estimate from the lines, in kobo.")
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["entity", "request_date"]),
+        ]
+
+    def recompute_total(self, *, save: bool = True) -> None:
+        total = sum((ln.estimated_line_total for ln in self.lines.all()), 0)
+        self.estimated_total = total
+        if save:
+            self.save(update_fields=["estimated_total", "updated_at"])
+
+
+class PurchaseRequisitionLine(TimeStampedModel):
+    """One requested item on a :class:`PurchaseRequisition` (estimate only)."""
+
+    requisition = models.ForeignKey(
+        PurchaseRequisition, on_delete=models.CASCADE, related_name="lines",
+    )
+    description = models.CharField(max_length=255)
+    quantity = models.DecimalField(max_digits=14, decimal_places=4, default=1)
+    estimated_unit_price = MoneyField(help_text="Estimated price per unit, in kobo.")
+    expense_account = models.ForeignKey(
+        "vs_finance.Account", on_delete=models.PROTECT,
+        related_name="requisition_lines", null=True, blank=True,
+    )
+    tax_code = models.ForeignKey(
+        "vs_finance.TaxCode", on_delete=models.PROTECT,
+        related_name="requisition_lines", null=True, blank=True,
+    )
+    line_no = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["requisition", "line_no", "id"]
+        indexes = [models.Index(fields=["requisition"])]
+
+    @property
+    def estimated_line_total(self) -> int:
+        return int((Decimal(self.quantity) * Decimal(self.estimated_unit_price)).to_integral_value())
+
+    def __str__(self) -> str:
+        return f"{self.description}: {self.quantity}"
+
+
+# --------------------------------------------------------------------------- #
+# Purchase order (commitment — no GL effect until receipt)                    #
+# --------------------------------------------------------------------------- #
+
+class PurchaseOrder(FinanceDocument):
+    """A commitment to buy from a :class:`Vendor` at agreed prices.
+
+    Still no GL posting (a commitment, not an expense); the cost hits the ledger when
+    goods are received. Lines track ``received_qty``/``invoiced_qty`` so the PO knows
+    how far through fulfilment and billing it is (``received_pct``/``invoiced_pct``).
+    """
+
+    DOC_TYPE = DocType.PURCHASE_ORDER
+
+    vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="purchase_orders")
+    requisition = models.ForeignKey(
+        PurchaseRequisition, on_delete=models.PROTECT, related_name="purchase_orders",
+        null=True, blank=True,
+    )
+    order_date = models.DateField()
+    expected_date = models.DateField(null=True, blank=True)
+    currency = models.ForeignKey(
+        "vs_finance.Currency", on_delete=models.PROTECT, related_name="purchase_orders",
+        null=True, blank=True,
+    )
+    reference = models.CharField(max_length=64, blank=True, default="")
+    narration = models.CharField(max_length=255, blank=True, default="")
+
+    subtotal = MoneyField(help_text="Net of tax, in kobo.")
+    tax_total = MoneyField(help_text="Total tax, in kobo.")
+    total = MoneyField(help_text="subtotal + tax_total, in kobo.")
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["vendor"]),
+            models.Index(fields=["entity", "order_date"]),
+        ]
+
+    def recompute_totals(self, *, save: bool = True) -> None:
+        agg = self.lines.aggregate(
+            net=models.Sum("net_amount"), tax=models.Sum("tax_amount"),
+        )
+        self.subtotal = agg["net"] or 0
+        self.tax_total = agg["tax"] or 0
+        self.total = self.subtotal + self.tax_total
+        if save:
+            self.save(update_fields=["subtotal", "tax_total", "total", "updated_at"])
+
+    @property
+    def received_pct(self) -> Decimal:
+        ordered = sum((Decimal(l.quantity) for l in self.lines.all()), Decimal(0))
+        received = sum((Decimal(l.received_qty) for l in self.lines.all()), Decimal(0))
+        return _pct(received, ordered)
+
+    @property
+    def invoiced_pct(self) -> Decimal:
+        ordered = sum((Decimal(l.quantity) for l in self.lines.all()), Decimal(0))
+        invoiced = sum((Decimal(l.invoiced_qty) for l in self.lines.all()), Decimal(0))
+        return _pct(invoiced, ordered)
+
+    @property
+    def is_fully_received(self) -> bool:
+        return all(Decimal(l.received_qty) >= Decimal(l.quantity) for l in self.lines.all())
+
+
+class PurchaseOrderLine(TimeStampedModel):
+    """One ordered item on a :class:`PurchaseOrder`, mapped to a GL expense account.
+
+    ``received_qty`` and ``invoiced_qty`` are advanced by goods receipts and vendor
+    invoices respectively; the three-way match compares them against ``quantity``.
+    """
+
+    purchase_order = models.ForeignKey(
+        PurchaseOrder, on_delete=models.CASCADE, related_name="lines",
+    )
+    requisition_line = models.ForeignKey(
+        PurchaseRequisitionLine, on_delete=models.PROTECT,
+        related_name="po_lines", null=True, blank=True,
+    )
+    description = models.CharField(max_length=255)
+    expense_account = models.ForeignKey(
+        "vs_finance.Account", on_delete=models.PROTECT, related_name="po_lines",
+        help_text="GL account the cost lands in when goods are received.",
+    )
+    quantity = models.DecimalField(max_digits=14, decimal_places=4, default=1)
+    unit_price = MoneyField(help_text="Agreed price per unit, in kobo.")
+    tax_code = models.ForeignKey(
+        "vs_finance.TaxCode", on_delete=models.PROTECT, related_name="po_lines",
+        null=True, blank=True,
+    )
+    net_amount = MoneyField(help_text="quantity × unit_price, in kobo.")
+    tax_amount = MoneyField(help_text="Tax on the net, in kobo.")
+    received_qty = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    invoiced_qty = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    cost_center = models.ForeignKey(
+        "vs_finance.CostCenter", on_delete=models.PROTECT, related_name="po_lines",
+        null=True, blank=True,
+    )
+    line_no = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["purchase_order", "line_no", "id"]
+        indexes = [
+            models.Index(fields=["purchase_order"]),
+            models.Index(fields=["expense_account"]),
+        ]
+
+    @property
+    def outstanding_qty(self) -> Decimal:
+        return Decimal(self.quantity) - Decimal(self.received_qty)
+
+    @property
+    def received_pct(self) -> Decimal:
+        return _pct(self.received_qty, self.quantity)
+
+    @property
+    def invoiced_pct(self) -> Decimal:
+        return _pct(self.invoiced_qty, self.quantity)
+
+    def __str__(self) -> str:
+        return f"{self.description}: {self.quantity} @ {self.unit_price}"
+
+
+# --------------------------------------------------------------------------- #
+# Goods received note (posts Dr expense, Cr GR/IR)                            #
+# --------------------------------------------------------------------------- #
+
+class GoodsReceivedNote(FinanceDocument):
+    """A record that goods/services arrived — the first GL event in the chain.
+
+    Posting (:func:`vs_procurement.purchasing.post_grn`) debits the expense/inventory
+    account and credits **GR/IR clearing** for the accepted value (ex-tax): the cost is
+    recognised on receipt, while the matching liability waits in GR/IR for the vendor's
+    invoice. ``journal`` links the entry raised; ``status`` goes DRAFT → POSTED.
+    """
+
+    DOC_TYPE = DocType.GOODS_RECEIVED
+
+    vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="goods_receipts")
+    purchase_order = models.ForeignKey(
+        PurchaseOrder, on_delete=models.PROTECT, related_name="goods_receipts",
+        null=True, blank=True,
+    )
+    received_date = models.DateField()
+    received_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="goods_receipts", null=True, blank=True,
+    )
+    reference = models.CharField(max_length=64, blank=True, default="")
+    narration = models.CharField(max_length=255, blank=True, default="")
+    total_value = MoneyField(help_text="Accepted value (ex-tax), in kobo.")
+    journal = models.ForeignKey(
+        "vs_finance.JournalEntry", on_delete=models.PROTECT, related_name="grns",
+        null=True, blank=True,
+    )
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["vendor"]),
+            models.Index(fields=["entity", "received_date"]),
+        ]
+
+    def recompute_total(self, *, save: bool = True) -> None:
+        agg = self.lines.aggregate(v=models.Sum("value_amount"))
+        self.total_value = agg["v"] or 0
+        if save:
+            self.save(update_fields=["total_value", "updated_at"])
+
+
+class GoodsReceivedNoteLine(TimeStampedModel):
+    """One received item: accepted/rejected quantities and the value booked.
+
+    ``value_amount`` (kobo) = ``accepted_qty × unit_price`` is what posts to the
+    expense (Dr) and GR/IR clearing (Cr). Rejected quantity is recorded for the
+    returns/quality trail but does not post.
+    """
+
+    grn = models.ForeignKey(
+        GoodsReceivedNote, on_delete=models.CASCADE, related_name="lines",
+    )
+    po_line = models.ForeignKey(
+        PurchaseOrderLine, on_delete=models.PROTECT, related_name="grn_lines",
+        null=True, blank=True,
+    )
+    description = models.CharField(max_length=255, blank=True, default="")
+    expense_account = models.ForeignKey(
+        "vs_finance.Account", on_delete=models.PROTECT, related_name="grn_lines",
+        help_text="GL account debited for the accepted value.",
+    )
+    accepted_qty = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    rejected_qty = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    unit_price = MoneyField(help_text="Price per unit, in kobo (from the PO).")
+    value_amount = MoneyField(help_text="accepted_qty × unit_price, in kobo.")
+    cost_center = models.ForeignKey(
+        "vs_finance.CostCenter", on_delete=models.PROTECT, related_name="grn_lines",
+        null=True, blank=True,
+    )
+    line_no = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["grn", "line_no", "id"]
+        indexes = [models.Index(fields=["grn"]), models.Index(fields=["po_line"])]
+
+    def __str__(self) -> str:
+        return f"{self.description or self.expense_account_id}: {self.accepted_qty}"
+
+
+# --------------------------------------------------------------------------- #
+# Vendor invoice (posts Dr GR/IR + input VAT, Cr AP)                          #
+# --------------------------------------------------------------------------- #
+
+class VendorInvoice(FinanceDocument):
+    """A bill from a :class:`Vendor` — the AP-side mirror of a sales invoice.
+
+    Posting (:func:`vs_procurement.payables.post_vendor_invoice`) runs the three-way
+    match, then raises the AP journal: **Dr GR/IR clearing** (clearing what receipt
+    parked there) **+ Dr input VAT** (recoverable), **Cr AP control** (the gross owed).
+    A non-PO bill debits the expense account directly instead of GR/IR. ``match_status``
+    captures the match outcome; ``payment_status`` tracks cash settled, like AR.
+    """
+
+    DOC_TYPE = DocType.VENDOR_INVOICE
+
+    vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="invoices")
+    purchase_order = models.ForeignKey(
+        PurchaseOrder, on_delete=models.PROTECT, related_name="vendor_invoices",
+        null=True, blank=True,
+    )
+    invoice_date = models.DateField()
+    due_date = models.DateField(null=True, blank=True)
+    currency = models.ForeignKey(
+        "vs_finance.Currency", on_delete=models.PROTECT, related_name="vendor_invoices",
+        null=True, blank=True,
+    )
+    vendor_reference = models.CharField(
+        max_length=64, blank=True, default="", help_text="The vendor's own invoice number.",
+    )
+    narration = models.CharField(max_length=255, blank=True, default="")
+
+    subtotal = MoneyField(help_text="Net of tax, in kobo.")
+    tax_total = MoneyField(help_text="Total tax, in kobo.")
+    total = MoneyField(help_text="subtotal + tax_total, in kobo.")
+    amount_paid = MoneyField(help_text="Cash allocated to this bill, in kobo.")
+    payment_status = models.CharField(
+        max_length=8, choices=InvoicePaymentStatus.choices,
+        default=InvoicePaymentStatus.UNPAID,
+    )
+    match_status = models.CharField(
+        max_length=16, choices=MatchStatus.choices, default=MatchStatus.NOT_MATCHED,
+    )
+    journal = models.ForeignKey(
+        "vs_finance.JournalEntry", on_delete=models.PROTECT, related_name="ap_invoices",
+        null=True, blank=True,
+    )
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["entity", "payment_status"]),
+            models.Index(fields=["vendor"]),
+            models.Index(fields=["entity", "invoice_date"]),
+        ]
+
+    @property
+    def balance_due(self) -> int:
+        return self.total - self.amount_paid
+
+    def recompute_totals(self, *, save: bool = True) -> None:
+        agg = self.lines.aggregate(
+            net=models.Sum("net_amount"), tax=models.Sum("tax_amount"),
+        )
+        self.subtotal = agg["net"] or 0
+        self.tax_total = agg["tax"] or 0
+        self.total = self.subtotal + self.tax_total
+        if save:
+            self.save(update_fields=["subtotal", "tax_total", "total", "updated_at"])
+
+    def refresh_payment_status(self, *, save: bool = True) -> None:
+        if self.amount_paid <= 0:
+            status = InvoicePaymentStatus.UNPAID
+        elif self.amount_paid >= self.total:
+            status = InvoicePaymentStatus.PAID
+        else:
+            status = InvoicePaymentStatus.PARTIAL
+        self.payment_status = status
+        if save:
+            self.save(update_fields=["payment_status", "updated_at"])
+
+
+class VendorInvoiceLine(TimeStampedModel):
+    """One billed line of a :class:`VendorInvoice` → a GL expense account (+ tax).
+
+    Optional ``po_line``/``grn_line`` links let the three-way match line up the bill
+    against what was ordered and received.
+    """
+
+    vendor_invoice = models.ForeignKey(
+        VendorInvoice, on_delete=models.CASCADE, related_name="lines",
+    )
+    po_line = models.ForeignKey(
+        PurchaseOrderLine, on_delete=models.PROTECT, related_name="vendor_invoice_lines",
+        null=True, blank=True,
+    )
+    grn_line = models.ForeignKey(
+        GoodsReceivedNoteLine, on_delete=models.PROTECT, related_name="vendor_invoice_lines",
+        null=True, blank=True,
+    )
+    description = models.CharField(max_length=255, blank=True, default="")
+    expense_account = models.ForeignKey(
+        "vs_finance.Account", on_delete=models.PROTECT, related_name="vendor_invoice_lines",
+        help_text="GL expense account (used directly for non-PO bills).",
+    )
+    quantity = models.DecimalField(max_digits=14, decimal_places=4, default=1)
+    unit_price = MoneyField(help_text="Price per unit billed, in kobo.")
+    tax_code = models.ForeignKey(
+        "vs_finance.TaxCode", on_delete=models.PROTECT, related_name="vendor_invoice_lines",
+        null=True, blank=True,
+    )
+    net_amount = MoneyField(help_text="quantity × unit_price, in kobo.")
+    tax_amount = MoneyField(help_text="Tax on the net, in kobo.")
+    cost_center = models.ForeignKey(
+        "vs_finance.CostCenter", on_delete=models.PROTECT, related_name="vendor_invoice_lines",
+        null=True, blank=True,
+    )
+    line_no = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["vendor_invoice", "line_no", "id"]
+        indexes = [
+            models.Index(fields=["vendor_invoice"]),
+            models.Index(fields=["expense_account"]),
+        ]
+
+    @property
+    def line_total(self) -> int:
+        return self.net_amount + self.tax_amount
+
+    def __str__(self) -> str:
+        return f"{self.description or self.expense_account_id}: {self.line_total}"
+
+
+# --------------------------------------------------------------------------- #
+# Vendor payment (posts Dr AP, Cr Bank net, Cr WHT)                           #
+# --------------------------------------------------------------------------- #
+
+class VendorPayment(FinanceDocument):
+    """Money out to a :class:`Vendor`, settling one or more bills — with WHT.
+
+    Posting (:func:`vs_procurement.payables.post_vendor_payment`) debits AP for the
+    **gross** settled, credits the bank/cash for the **net** actually paid, and credits
+    **WHT payable** for the tax withheld (``gross = net + wht``). The gross is then
+    allocated across vendor invoices (the AP-side mirror of receipt allocation).
+    """
+
+    DOC_TYPE = DocType.VENDOR_PAYMENT
+
+    vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="payments")
+    payment_date = models.DateField()
+    currency = models.ForeignKey(
+        "vs_finance.Currency", on_delete=models.PROTECT, related_name="vendor_payments",
+        null=True, blank=True,
+    )
+    method = models.CharField(
+        max_length=16, choices=PaymentMethod.choices, default=PaymentMethod.BANK_TRANSFER,
+    )
+    gross_amount = MoneyField(help_text="Total liability settled (Dr AP), in kobo.")
+    wht_amount = MoneyField(help_text="Withholding tax retained (Cr WHT payable), in kobo.")
+    net_amount = MoneyField(help_text="Cash actually paid out (Cr bank) = gross − WHT, in kobo.")
+    allocated_amount = MoneyField(help_text="Gross applied to bills, in kobo.")
+    payment_account = models.ForeignKey(
+        "vs_finance.Account", on_delete=models.PROTECT, related_name="vendor_payments",
+        null=True, blank=True,
+        help_text="Bank/cash account credited (where the money left).",
+    )
+    wht_tax_code = models.ForeignKey(
+        "vs_finance.TaxCode", on_delete=models.PROTECT, related_name="vendor_payments_wht",
+        null=True, blank=True,
+    )
+    reference = models.CharField(max_length=64, blank=True, default="")
+    narration = models.CharField(max_length=255, blank=True, default="")
+    journal = models.ForeignKey(
+        "vs_finance.JournalEntry", on_delete=models.PROTECT, related_name="ap_payments",
+        null=True, blank=True,
+    )
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["vendor"]),
+            models.Index(fields=["entity", "payment_date"]),
+        ]
+
+    @property
+    def unallocated_amount(self) -> int:
+        """Gross not yet applied to any bill — an open debit on the vendor."""
+        return self.gross_amount - self.allocated_amount
+
+
+class VendorPaymentAllocation(TimeStampedModel):
+    """Links a slice of a :class:`VendorPayment` (gross) to a :class:`VendorInvoice`.
+
+    Mirrors :class:`vs_finance.models.PaymentAllocation`: the GL already moved when the
+    payment posted (Dr AP, Cr bank/WHT); allocation is the sub-ledger act of saying
+    which bills that AP debit settles.
+    """
+
+    payment = models.ForeignKey(
+        VendorPayment, on_delete=models.CASCADE, related_name="allocations",
+    )
+    vendor_invoice = models.ForeignKey(
+        VendorInvoice, on_delete=models.PROTECT, related_name="allocations",
+    )
+    amount = MoneyField(help_text="Gross applied to this bill, in kobo.")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["payment", "vendor_invoice"],
+                name="uniq_proc_alloc_payment_invoice",
+            ),
+            models.CheckConstraint(
+                check=models.Q(amount__gte=0), name="ck_proc_alloc_non_negative",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["vendor_invoice"]),
+            models.Index(fields=["payment"]),
+        ]
+        ordering = ["payment", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.payment_id}→{self.vendor_invoice_id}: {self.amount}"
