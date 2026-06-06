@@ -69,6 +69,85 @@ class DocType(models.TextChoices):
     VENDOR_PAYMENT = "VPY", "Vendor Payment"
     EXPENSE_CLAIM = "EXP", "Expense Claim"
 
+class AccountType(models.TextChoices):
+    """The five roots of double-entry accounting.
+
+    Every account hangs under exactly one of these. The type fixes where the
+    account lands on the financial statements and (together with ``is_contra``) its
+    natural :class:`NormalBalance`:
+
+    ASSET / EXPENSE      -> normally **debit** balances.
+    LIABILITY / EQUITY / INCOME -> normally **credit** balances.
+
+    A *contra* account (e.g. accumulated depreciation under ASSET, or sales returns
+    under INCOME) keeps its parent's type but carries the opposite normal balance;
+    that is modelled with the ``is_contra`` flag rather than a sixth pseudo-type, so
+    it still rolls up cleanly into its statement section.
+    """
+    ASSET = "ASSET", "Asset"
+    LIABILITY = "LIABILITY", "Liability"
+    EQUITY = "EQUITY", "Equity"
+    INCOME = "INCOME", "Income"
+    EXPENSE = "EXPENSE", "Expense"
+
+
+class NormalBalance(models.TextChoices):
+    """The side on which an account normally carries its balance."""
+    DEBIT = "DEBIT", "Debit"
+    CREDIT = "CREDIT", "Credit"
+
+
+#: Default natural balance for each account root (before any contra flip).
+NORMAL_BALANCE_BY_TYPE = {
+    AccountType.ASSET: NormalBalance.DEBIT,
+    AccountType.EXPENSE: NormalBalance.DEBIT,
+    AccountType.LIABILITY: NormalBalance.CREDIT,
+    AccountType.EQUITY: NormalBalance.CREDIT,
+    AccountType.INCOME: NormalBalance.CREDIT,
+}
+
+
+class JournalSource(models.TextChoices):
+    """Where a journal entry originated — for filtering and audit, not for posting logic.
+
+    MANUAL entries are typed by a person; the rest are raised by sub-ledgers and
+    automated processes (AR/AP postings, bank reconciliation, period-close accruals
+    and depreciation, opening balances, FX revaluation).
+    """
+    MANUAL = "MANUAL", "Manual"
+    SALES = "SALES", "Sales / AR"
+    PURCHASE = "PURCHASE", "Purchase / AP"
+    BANK = "BANK", "Bank / Cash"
+    PAYROLL = "PAYROLL", "Payroll"
+    CLOSING = "CLOSING", "Period Close"
+    OPENING = "OPENING", "Opening Balance"
+    FX = "FX", "FX Revaluation"
+    SYSTEM = "SYSTEM", "System"
+
+
+class FinanceAuditAction(models.TextChoices):
+    """Auditable finance actions recorded in the in-app, append-only audit log.
+
+    The ledger itself (immutable posted/reversed journals + period locks) is the
+    primary financial audit trail; this enum names the *actions around* it that the
+    journals can't capture on their own — who pressed post, rejected attempts, period
+    state changes and master-data edits.
+    """
+    JOURNAL_POSTED = "JOURNAL_POSTED", "Journal posted"
+    JOURNAL_REVERSED = "JOURNAL_REVERSED", "Journal reversed"
+    JOURNAL_POST_REJECTED = "JOURNAL_POST_REJECTED", "Journal posting rejected"
+    PERIOD_CLOSED = "PERIOD_CLOSED", "Period closed"
+    PERIOD_REOPENED = "PERIOD_REOPENED", "Period re-opened"
+    ACCOUNT_CREATED = "ACCOUNT_CREATED", "Account created"
+    ACCOUNT_UPDATED = "ACCOUNT_UPDATED", "Account updated"
+
+
+class FinanceAuditStatus(models.TextChoices):
+    """Outcome of an audited action."""
+    SUCCESS = "SUCCESS", "Success"
+    FAILED = "FAILED", "Failed"
+
+
 #: Document-number prefix for the whole platform's finance documents (Code X Finance).
 DOC_NUMBER_PREFIX = "CFX"
 

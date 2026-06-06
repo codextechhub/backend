@@ -14,8 +14,24 @@ from __future__ import annotations
 
 from typing import Iterable, Protocol
 
-from .constants import PERIOD_POSTING_BLOCKED, PERIOD_POSTING_RESTRICTED, PeriodStatus
-from .exceptions import PeriodClosedError, UnbalancedJournalError
+from django.db import transaction
+from django.utils import timezone
+
+from .constants import (
+    DocumentStatus,
+    FinanceAuditAction,
+    JournalSource,
+    PERIOD_POSTING_BLOCKED,
+    PERIOD_POSTING_RESTRICTED,
+    PeriodStatus,
+)
+from .exceptions import (
+    FinanceError,
+    InactiveAccountError,
+    PeriodClosedError,
+    PostingError,
+    UnbalancedJournalError,
+)
 
 
 class _PeriodLike(Protocol):
@@ -78,3 +94,179 @@ def sum_sides(lines: Iterable) -> tuple[int, int]:
         total_debit += getattr(line, "debit", 0) or 0
         total_credit += getattr(line, "credit", 0) or 0
     return total_debit, total_credit
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 — posting services
+# ---------------------------------------------------------------------------
+#
+# These are the ONLY supported way to make a journal affect balances. They run the
+# Phase-0 guards (period open, balanced), update the denormalised per-period balances
+# atomically, stamp the document POSTED, and write an authoritative finance audit row
+# (see vs_finance.audit) in the SAME transaction. Posting is never done by flipping
+# ``status`` by hand.
+
+
+def _apply_to_balances(entry, *, sign: int) -> None:
+    """Add (sign=+1) or remove (sign=-1) an entry's line amounts to per-period balances.
+
+    Maintains one :class:`AccountBalance` row per ``(account, period)``, the fast
+    aggregate behind trial balances. Truth still lives in the immutable lines; this is
+    a denormalised read model kept in step inside the same transaction as the post.
+    """
+    from .models import AccountBalance
+
+    period = entry.period
+    for line in entry.lines.select_related("account").all():
+        balance, _ = AccountBalance.objects.select_for_update().get_or_create(
+            account=line.account, period=period,
+        )
+        balance.debit_total += sign * (line.debit or 0)
+        balance.credit_total += sign * (line.credit or 0)
+        balance.save(update_fields=["debit_total", "credit_total", "updated_at"])
+
+
+def post_journal(entry, *, actor_user=None, allow_restricted: bool = False):
+    """Post a draft :class:`~vs_finance.models.JournalEntry`, making it affect balances.
+
+    Thin wrapper around the atomic core (:func:`_post_journal_atomic`) that turns any
+    :class:`~vs_finance.exceptions.FinanceError` into a **durable** rejection audit row
+    before re-raising. The rejection must be logged *outside* the rolled-back posting
+    transaction, which is why this layer sits above the ``@transaction.atomic`` core.
+
+    Idempotent guard: re-posting an already-POSTED entry raises rather than
+    double-counting. Returns the entry.
+    """
+    from .audit import record_rejection
+
+    try:
+        return _post_journal_atomic(
+            entry, actor_user=actor_user, allow_restricted=allow_restricted,
+        )
+    except FinanceError as exc:
+        record_rejection(
+            entity=entry.entity,
+            action=FinanceAuditAction.JOURNAL_POST_REJECTED,
+            exc=exc, actor_user=actor_user, target=entry,
+        )
+        raise
+
+
+@transaction.atomic
+def _post_journal_atomic(entry, *, actor_user=None, allow_restricted: bool = False):
+    """The posting work proper, all in one transaction.
+
+    Steps:
+      1. Guard the period is open (SOFT_CLOSED only when ``allow_restricted``).
+      2. Guard the lines balance (Σdebits == Σcredits, exact kobo).
+      3. Guard every line's account is active and postable.
+      4. Apply the line amounts to the per-period :class:`AccountBalance` aggregates.
+      5. Stamp the entry POSTED with ``posted_at``/``posted_by``.
+      6. Write the authoritative ``JOURNAL_POSTED`` audit row — same commit as 4–5.
+    """
+    from .audit import record
+
+    if entry.status == DocumentStatus.POSTED:
+        raise PostingError(
+            f"Journal {entry.document_number or entry.pk} is already posted.",
+        )
+    if entry.status in (DocumentStatus.REVERSED, DocumentStatus.CANCELLED):
+        raise PostingError(
+            f"Journal {entry.document_number or entry.pk} is '{entry.status}' and cannot be posted.",
+        )
+
+    ensure_period_open(entry.period, allow_restricted=allow_restricted)
+
+    lines = list(entry.lines.select_related("account").all())
+    if not lines:
+        raise PostingError("A journal must have at least one line to post.")
+
+    total_debit, total_credit = sum_sides(lines)
+    ensure_balanced(total_debit, total_credit)
+
+    for line in lines:
+        account = line.account
+        if not (account.is_active and account.is_postable):
+            raise InactiveAccountError(account_code=account.code)
+
+    _apply_to_balances(entry, sign=+1)
+
+    entry.status = DocumentStatus.POSTED
+    entry.posted_at = timezone.now()
+    entry.posted_by = actor_user
+    entry.save(update_fields=["status", "posted_at", "posted_by", "updated_at"])
+
+    record(
+        entity=entry.entity,
+        action=FinanceAuditAction.JOURNAL_POSTED,
+        actor_user=actor_user, target=entry,
+        message=f"Posted into {entry.period}.",
+        after={"status": DocumentStatus.POSTED, "posted_at": entry.posted_at.isoformat()},
+        debit=total_debit, credit=total_credit,
+    )
+    return entry
+
+
+@transaction.atomic
+def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool = False):
+    """Reverse a posted journal by raising a mirror-image entry that nets it to zero.
+
+    The original is left untouched on the record (marked REVERSED) and a new journal —
+    debits and credits swapped — is created and posted, linked back via ``reverses``.
+    This is the audit-correct way to undo: history is appended to, never edited.
+
+    The reversing entry posts into ``date``'s period (defaults to the original's
+    period). Returns the new reversing entry.
+    """
+    from .models import JournalEntry, JournalLine
+
+    if entry.status != DocumentStatus.POSTED:
+        raise PostingError(
+            f"Only a posted journal can be reversed; {entry.document_number or entry.pk} "
+            f"is '{entry.status}'.",
+        )
+    if hasattr(entry, "reversed_by") and entry.reversed_by is not None:
+        raise PostingError(
+            f"Journal {entry.document_number or entry.pk} has already been reversed.",
+        )
+
+    reversal = JournalEntry.objects.create(
+        entity=entry.entity,
+        branch=entry.branch,
+        date=date or entry.date,
+        period=entry.period,
+        source=JournalSource.SYSTEM,
+        currency=entry.currency,
+        fx_rate=entry.fx_rate,
+        narration=f"Reversal of {entry.document_number or entry.pk}",
+        reference=entry.reference,
+        created_by=actor_user,
+        reverses=entry,
+    )
+    for line in entry.lines.all():
+        JournalLine.objects.create(
+            entry=reversal,
+            account=line.account,
+            debit=line.credit,   # swap sides
+            credit=line.debit,
+            description=f"Reversal: {line.description}".strip(": "),
+            cost_center=line.cost_center,
+            dimensions=line.dimensions,
+            line_no=line.line_no,
+        )
+
+    post_journal(reversal, actor_user=actor_user, allow_restricted=allow_restricted)
+
+    entry.status = DocumentStatus.REVERSED
+    entry.save(update_fields=["status", "updated_at"])
+
+    from .audit import record
+    record(
+        entity=entry.entity,
+        action=FinanceAuditAction.JOURNAL_REVERSED,
+        actor_user=actor_user, target=entry,
+        message=f"Reversed by {reversal.document_number or reversal.pk}.",
+        after={"status": DocumentStatus.REVERSED},
+        reversal_id=reversal.pk, reversal_number=reversal.document_number,
+    )
+    return reversal
