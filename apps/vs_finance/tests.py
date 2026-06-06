@@ -21,21 +21,31 @@ from vs_finance.exceptions import (
     PostingError,
     UnbalancedJournalError,
 )
-from vs_finance.constants import FinanceAuditAction, FinanceAuditStatus
+from vs_finance.constants import (
+    FinanceAuditAction,
+    FinanceAuditStatus,
+    InvoicePaymentStatus,
+)
 from vs_finance.models import (
     Account,
     AccountBalance,
+    Customer,
     FinanceAuditLog,
     FiscalPeriod,
     FiscalYear,
+    Invoice,
+    InvoiceLine,
     JournalEntry,
     JournalLine,
     LedgerEntity,
+    Payment,
+    TaxCode,
 )
 from vs_finance.money import format_naira, to_kobo, to_naira
 from vs_finance.numbering import next_document_number
 from vs_finance.posting import ensure_balanced, ensure_period_open, post_journal, reverse_journal
-from vs_finance.reports import trial_balance
+from vs_finance.receivables import post_invoice, post_payment
+from vs_finance.reports import ar_aging, reconcile_ar, trial_balance
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies
 from vs_schools.models import Branch, School
 
@@ -385,3 +395,156 @@ class FinanceAuditTests(_GLFixtureMixin, TestCase):
             log.save()
         with self.assertRaises(ValueError):
             log.delete()
+
+
+class _ARFixtureMixin(_GLFixtureMixin):
+    """A ledger plus a customer wired to the AR control account and a VAT tax code."""
+
+    def build_ar(self, *, period_status=PeriodStatus.OPEN):
+        entity, period = self.build_ledger(period_status=period_status)
+        ar_control = Account.objects.get(entity=entity, code="1200")   # Accounts Receivable
+        vat_output = Account.objects.get(entity=entity, code="2200")   # Output VAT
+        customer = Customer.objects.create(
+            entity=entity, code="CUST1", name="Acme Ltd",
+            receivable_account=ar_control,
+        )
+        vat = TaxCode.objects.create(
+            entity=entity, code="VAT", name="VAT 7.5%", rate_bps=750,
+            collected_account=vat_output,
+        )
+        return entity, period, customer, vat
+
+    def make_invoice(self, entity, customer, *, lines, date=datetime.date(2026, 1, 10),
+                     due=datetime.date(2026, 1, 25)):
+        """lines: list of (revenue_code, quantity, unit_price_kobo, tax_code_or_None)."""
+        inv = Invoice.objects.create(
+            entity=entity, customer=customer, invoice_date=date, due_date=due,
+        )
+        for i, (code, qty, price, tax) in enumerate(lines, start=1):
+            InvoiceLine.objects.create(
+                invoice=inv, revenue_account=Account.objects.get(entity=entity, code=code),
+                quantity=qty, unit_price=price, tax_code=tax, line_no=i,
+            )
+        return inv
+
+
+class InvoicePostingTests(_ARFixtureMixin, TestCase):
+    def test_invoice_posts_balanced_ar_journal_with_tax(self):
+        entity, period, customer, vat = self.build_ar()
+        inv = self.make_invoice(
+            entity, customer, lines=[("4100", 1, 100000, vat)],  # ₦1,000 + 7.5% VAT
+        )
+        post_invoice(inv)
+        inv.refresh_from_db()
+
+        self.assertEqual(inv.status, "POSTED")
+        self.assertEqual(inv.subtotal, 100000)
+        self.assertEqual(inv.tax_total, 7500)
+        self.assertEqual(inv.total, 107500)
+        self.assertEqual(inv.payment_status, InvoicePaymentStatus.UNPAID)
+        self.assertTrue(inv.document_number.startswith("CFX-TBOOK-INV-"))
+
+        # Journal: Dr AR 107,500 ; Cr Revenue 100,000 ; Cr VAT 7,500.
+        debit, credit = inv.journal.totals()
+        self.assertEqual(debit, credit)
+        self.assertEqual(debit, 107500)
+        ar_bal = AccountBalance.objects.get(account__code="1200", period=period)
+        self.assertEqual(ar_bal.debit_total, 107500)
+
+    def test_invoice_in_closed_period_is_rejected(self):
+        entity, period, customer, vat = self.build_ar(period_status=PeriodStatus.CLOSED)
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
+        with self.assertRaises(PeriodClosedError):
+            post_invoice(inv)
+        inv.refresh_from_db()
+        self.assertEqual(inv.status, "DRAFT")
+        # Rejection durably audited.
+        self.assertTrue(
+            FinanceAuditLog.objects.filter(
+                action=FinanceAuditAction.INVOICE_POSTED,
+                status=FinanceAuditStatus.FAILED, target_id=str(inv.pk),
+            ).exists()
+        )
+
+
+class PaymentAllocationTests(_ARFixtureMixin, TestCase):
+    def test_partial_then_full_payment_moves_status_and_aging(self):
+        entity, period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
+        post_invoice(inv)  # total ₦1,000 = 100,000 kobo
+
+        bank = Account.objects.get(entity=entity, code="1100")
+        pay1 = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 12),
+            amount=40000, deposit_account=bank,
+        )
+        post_payment(pay1)  # auto-allocates oldest-first
+        inv.refresh_from_db()
+        self.assertEqual(inv.amount_paid, 40000)
+        self.assertEqual(inv.payment_status, InvoicePaymentStatus.PARTIAL)
+        self.assertEqual(inv.balance_due, 60000)
+
+        pay2 = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 20),
+            amount=60000, deposit_account=bank,
+        )
+        post_payment(pay2)
+        inv.refresh_from_db()
+        self.assertEqual(inv.payment_status, InvoicePaymentStatus.PAID)
+        self.assertEqual(inv.balance_due, 0)
+
+        # Bank debited twice; AR credited twice → AR control nets to zero here.
+        bank_bal = AccountBalance.objects.get(account__code="1100", period=period)
+        self.assertEqual(bank_bal.debit_total, 100000)
+
+    def test_overpayment_leaves_unallocated_credit(self):
+        entity, period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)])
+        post_invoice(inv)  # 50,000
+
+        bank = Account.objects.get(entity=entity, code="1100")
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 15),
+            amount=70000, deposit_account=bank,
+        )
+        post_payment(pay)
+        pay.refresh_from_db()
+        inv.refresh_from_db()
+        self.assertEqual(inv.payment_status, InvoicePaymentStatus.PAID)
+        self.assertEqual(pay.allocated_amount, 50000)
+        self.assertEqual(pay.unallocated_amount, 20000)
+
+
+class ARReconciliationTests(_ARFixtureMixin, TestCase):
+    def test_aging_buckets_and_control_reconciles(self):
+        entity, period, customer, vat = self.build_ar()
+        # One invoice due 2026-01-25, viewed as of 2026-03-01 → ~35 days overdue.
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
+        post_invoice(inv)
+
+        report = ar_aging(entity, as_of=datetime.date(2026, 3, 1))
+        row = report.rows[0]
+        self.assertEqual(row.outstanding, 100000)
+        self.assertEqual(row.buckets["31-60"], 100000)
+        self.assertEqual(report.total_net, 100000)
+
+        # Sub-ledger (customer balances) must equal the AR control GL balance.
+        rec = reconcile_ar(entity, as_of=datetime.date(2026, 3, 1))
+        self.assertTrue(rec.is_reconciled)
+        self.assertEqual(rec.control_total, 100000)
+
+    def test_reconciles_after_partial_payment(self):
+        entity, period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
+        post_invoice(inv)
+        bank = Account.objects.get(entity=entity, code="1100")
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 18),
+            amount=30000, deposit_account=bank,
+        )
+        post_payment(pay)
+
+        rec = reconcile_ar(entity)
+        self.assertTrue(rec.is_reconciled)
+        self.assertEqual(rec.subledger_total, 70000)
+        self.assertEqual(rec.control_total, 70000)

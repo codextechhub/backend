@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from django.db.models import Sum
+from django.utils import timezone
 
 from .money import format_naira
 
@@ -110,4 +110,163 @@ def trial_balance(entity, *, period=None) -> TrialBalance:
         rows=rows,
         total_debit=total_debit,
         total_credit=total_credit,
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Accounts-Receivable aging + control reconciliation                          #
+# --------------------------------------------------------------------------- #
+
+#: Aging bucket labels, in order. "current" = not yet overdue.
+AGING_BUCKETS = ("current", "1-30", "31-60", "61-90", "90+")
+
+
+def _bucket_for(days_overdue: int) -> str:
+    if days_overdue <= 0:
+        return "current"
+    if days_overdue <= 30:
+        return "1-30"
+    if days_overdue <= 60:
+        return "31-60"
+    if days_overdue <= 90:
+        return "61-90"
+    return "90+"
+
+
+@dataclass
+class AgingRow:
+    """One customer's outstanding AR, split into aging buckets (kobo)."""
+
+    customer_id: int
+    code: str
+    name: str
+    buckets: dict = field(default_factory=lambda: {b: 0 for b in AGING_BUCKETS})
+    outstanding: int = 0          # gross of unapplied credit
+    unallocated_credit: int = 0   # open payment credit not yet applied
+    net: int = 0                  # outstanding - unallocated_credit
+
+
+@dataclass
+class AgingReport:
+    entity_id: int
+    as_of: object
+    rows: list = field(default_factory=list)
+    bucket_totals: dict = field(default_factory=lambda: {b: 0 for b in AGING_BUCKETS})
+    total_outstanding: int = 0
+    total_unallocated_credit: int = 0
+    total_net: int = 0
+
+
+def ar_aging(entity, *, as_of=None) -> AgingReport:
+    """Age each customer's open invoices into current/1-30/31-60/61-90/90+ buckets.
+
+    An invoice ages off its ``due_date`` (falling back to ``invoice_date``). Only
+    POSTED, not-fully-paid invoices contribute, by their ``balance_due``. Each
+    customer's unallocated payment credit is reported and netted, so ``total_net``
+    equals the AR control account's GL balance (see :func:`reconcile_ar`).
+    """
+    from .models import Invoice, Payment
+
+    as_of = as_of or timezone.now().date()
+    report = AgingReport(entity_id=entity.id, as_of=as_of)
+    rows: dict[int, AgingRow] = {}
+
+    def row_for(customer):
+        r = rows.get(customer.id)
+        if r is None:
+            r = AgingRow(
+                customer_id=customer.id, code=customer.code, name=customer.name,
+                buckets={b: 0 for b in AGING_BUCKETS},
+            )
+            rows[customer.id] = r
+        return r
+
+    posted_invoices = (
+        Invoice.objects
+        .filter(entity=entity, status="POSTED")
+        .exclude(payment_status="PAID")
+        .select_related("customer")
+    )
+    for inv in posted_invoices:
+        due = inv.balance_due
+        if due <= 0:
+            continue
+        ref_date = inv.due_date or inv.invoice_date
+        days_overdue = (as_of - ref_date).days
+        bucket = _bucket_for(days_overdue)
+        r = row_for(inv.customer)
+        r.buckets[bucket] += due
+        r.outstanding += due
+
+    # Unallocated payment credit reduces a customer's net balance.
+    posted_payments = (
+        Payment.objects.filter(entity=entity, status="POSTED").select_related("customer")
+    )
+    for pay in posted_payments:
+        credit = pay.unallocated_amount
+        if credit <= 0:
+            continue
+        r = row_for(pay.customer)
+        r.unallocated_credit += credit
+
+    for r in rows.values():
+        r.net = r.outstanding - r.unallocated_credit
+        for b in AGING_BUCKETS:
+            report.bucket_totals[b] += r.buckets[b]
+        report.total_outstanding += r.outstanding
+        report.total_unallocated_credit += r.unallocated_credit
+        report.total_net += r.net
+
+    report.rows = sorted(rows.values(), key=lambda x: x.code)
+    return report
+
+
+def _account_gl_net(account) -> int:
+    """Net GL movement for an account across all its periods, signed to normal balance."""
+    from .constants import NormalBalance
+
+    total = 0
+    for bal in account.balances.all():
+        dr = bal.opening_debit + bal.debit_total
+        cr = bal.opening_credit + bal.credit_total
+        total += (dr - cr) if account.normal_balance == NormalBalance.DEBIT else (cr - dr)
+    return total
+
+
+@dataclass
+class ARReconciliation:
+    entity_id: int
+    subledger_total: int     # from the AR aging (customer balances)
+    control_total: int       # from the AR control account(s) in the GL
+    difference: int
+
+    @property
+    def is_reconciled(self) -> bool:
+        return self.difference == 0
+
+
+def reconcile_ar(entity, *, as_of=None) -> ARReconciliation:
+    """Assert the AR **sub-ledger** (customer balances) equals the AR **control** GL.
+
+    The cardinal AR control: the sum of what every customer owes must equal the
+    balance of the receivable control account(s) in the ledger. Any drift means a
+    posting bypassed the sub-ledger (or vice-versa) and must be investigated.
+    """
+    from .models import Customer
+
+    aging = ar_aging(entity, as_of=as_of)
+    subledger_total = aging.total_net
+
+    control_accounts = {
+        c.receivable_account
+        for c in Customer.objects.filter(entity=entity).select_related("receivable_account")
+        if c.receivable_account_id is not None
+    }
+    control_total = sum(_account_gl_net(acc) for acc in control_accounts)
+
+    return ARReconciliation(
+        entity_id=entity.id,
+        subledger_total=subledger_total,
+        control_total=control_total,
+        difference=subledger_total - control_total,
     )

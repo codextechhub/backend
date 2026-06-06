@@ -107,6 +107,23 @@ def sum_sides(lines: Iterable) -> tuple[int, int]:
 # ``status`` by hand.
 
 
+def resolve_period(entity, date):
+    """Return the :class:`FiscalPeriod` for ``entity`` covering ``date``, or ``None``.
+
+    Used by sub-ledger services (AR/AP) to attach a journal to the right period from a
+    document date. ``None`` is returned when no period covers the date; the posting
+    guard then fails closed, refusing to post a dateless/period-less entry.
+    """
+    from .models import FiscalPeriod
+
+    return (
+        FiscalPeriod.objects
+        .filter(entity=entity, start_date__lte=date, end_date__gte=date)
+        .order_by("period_no")
+        .first()
+    )
+
+
 def _apply_to_balances(entry, *, sign: int) -> None:
     """Add (sign=+1) or remove (sign=-1) an entry's line amounts to per-period balances.
 

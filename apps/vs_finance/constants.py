@@ -125,6 +125,41 @@ class JournalSource(models.TextChoices):
     SYSTEM = "SYSTEM", "System"
 
 
+class InvoiceSource(models.TextChoices):
+    """What generated an invoice — keeps the AR core domain-neutral.
+
+    The invoice model is generic; ``source`` records the originating mechanism so a
+    school-fee run, a subscription engine or an API caller can all emit the *same*
+    generic :class:`~vs_finance.models.Invoice` without the ledger knowing about any
+    of them. Student/fee concepts live only in the adapter that sets ``FEE_BILLING``.
+    """
+    MANUAL = "MANUAL", "Manual"
+    FEE_BILLING = "FEE_BILLING", "Fee Billing"
+    SUBSCRIPTION = "SUBSCRIPTION", "Subscription"
+    API = "API", "API"
+
+
+class InvoicePaymentStatus(models.TextChoices):
+    """How much of an invoice has been settled — distinct from its document status.
+
+    Document ``status`` (DRAFT→POSTED→…) tracks the *ledger* lifecycle; this tracks
+    *cash* against the invoice and is derived from amount paid vs total.
+    """
+    UNPAID = "UNPAID", "Unpaid"
+    PARTIAL = "PARTIAL", "Partially Paid"
+    PAID = "PAID", "Paid"
+
+
+class PaymentMethod(models.TextChoices):
+    """How a customer receipt was tendered (operational detail, not posting logic)."""
+    CASH = "CASH", "Cash"
+    BANK_TRANSFER = "BANK_TRANSFER", "Bank Transfer"
+    CARD = "CARD", "Card"
+    CHEQUE = "CHEQUE", "Cheque"
+    ONLINE = "ONLINE", "Online / Gateway"
+    OTHER = "OTHER", "Other"
+
+
 class FinanceAuditAction(models.TextChoices):
     """Auditable finance actions recorded in the in-app, append-only audit log.
 
@@ -136,6 +171,10 @@ class FinanceAuditAction(models.TextChoices):
     JOURNAL_POSTED = "JOURNAL_POSTED", "Journal posted"
     JOURNAL_REVERSED = "JOURNAL_REVERSED", "Journal reversed"
     JOURNAL_POST_REJECTED = "JOURNAL_POST_REJECTED", "Journal posting rejected"
+    INVOICE_POSTED = "INVOICE_POSTED", "Invoice posted"
+    INVOICE_CANCELLED = "INVOICE_CANCELLED", "Invoice cancelled"
+    PAYMENT_POSTED = "PAYMENT_POSTED", "Payment posted"
+    PAYMENT_ALLOCATED = "PAYMENT_ALLOCATED", "Payment allocated"
     PERIOD_CLOSED = "PERIOD_CLOSED", "Period closed"
     PERIOD_REOPENED = "PERIOD_REOPENED", "Period re-opened"
     ACCOUNT_CREATED = "ACCOUNT_CREATED", "Account created"
