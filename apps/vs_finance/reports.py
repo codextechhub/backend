@@ -407,3 +407,340 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
         total_budget=total_budget,
         total_actual=total_actual,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Financial statements — Income Statement, Balance Sheet, Cash Flow            #
+# --------------------------------------------------------------------------- #
+#
+# The three primary statements, all read from the same denormalised
+# ``AccountBalance`` aggregates (the cash-flow statement additionally scans posted
+# journal lines to classify cash movements). The cardinal links they demonstrate:
+#
+#   * Income Statement net income, for the open year, is *unclosed* — it has not yet
+#     been journalled into Retained Earnings. The Balance Sheet therefore folds that
+#     same net income into equity, which is exactly why ``assets == liabilities +
+#     equity`` holds before the year is closed.
+#   * The Cash Flow statement reconciles ``opening cash + net change == closing cash``;
+#     because every journal balances, the non-cash legs of every cash-touching entry
+#     sum to the cash movement, so the classified buckets always foot to net change.
+
+
+@dataclass
+class StatementLine:
+    """One account's contribution to a statement (kobo), signed to its normal balance."""
+
+    account_id: int
+    code: str
+    name: str
+    account_type: str
+    amount: int
+
+    @property
+    def amount_naira(self) -> str:
+        return format_naira(self.amount)
+
+
+def _net_by_account(balances, *, account_types=None) -> dict:
+    """Aggregate ``AccountBalance`` rows into ``{account_id: (account, net_kobo)}``.
+
+    ``net`` is the closing position (opening + movement) signed to each account's
+    normal balance — positive means the account grew in its natural direction. Pass
+    ``account_types`` (a set of :class:`AccountType`) to restrict which accounts count.
+    """
+    from .constants import NormalBalance
+
+    out: dict[int, list] = {}
+    for bal in balances:
+        acc = bal.account
+        if account_types is not None and acc.account_type not in account_types:
+            continue
+        dr = bal.opening_debit + bal.debit_total
+        cr = bal.opening_credit + bal.credit_total
+        net = (dr - cr) if acc.normal_balance == NormalBalance.DEBIT else (cr - dr)
+        slot = out.get(acc.id)
+        if slot is None:
+            out[acc.id] = [acc, net]
+        else:
+            slot[1] += net
+    return out
+
+
+def _statement_rows(net_map) -> tuple[list, int]:
+    """Turn a ``{account_id: (account, net)}`` map into sorted rows + their total."""
+    rows: list[StatementLine] = []
+    total = 0
+    for _aid, (acc, net) in sorted(net_map.items(), key=lambda kv: kv[1][0].code):
+        if net == 0:
+            continue
+        total += net
+        rows.append(StatementLine(
+            account_id=acc.id, code=acc.code, name=acc.name,
+            account_type=acc.account_type, amount=net,
+        ))
+    return rows, total
+
+
+@dataclass
+class IncomeStatement:
+    """Revenue less expenses for a window → net income (kobo).
+
+    ``net_income = total_income - total_expense``. Both totals are signed to their
+    accounts' normal balance (income credit-natural, expense debit-natural), so both
+    are reported as positive magnitudes and the subtraction reads naturally.
+    """
+
+    entity_id: int
+    period_id: int | None
+    income_rows: list = field(default_factory=list)
+    expense_rows: list = field(default_factory=list)
+    total_income: int = 0
+    total_expense: int = 0
+
+    @property
+    def net_income(self) -> int:
+        return self.total_income - self.total_expense
+
+
+def income_statement(entity, *, period=None) -> IncomeStatement:
+    """Build the income statement (P&L) for ``entity``, optionally one ``period``.
+
+    Sums INCOME and EXPENSE accounts from :class:`AccountBalance`. When ``period`` is
+    given only that period's balances count; otherwise every period is aggregated
+    (year/life-to-date). The result's ``net_income`` is what the Balance Sheet folds
+    into equity until the year is closed to Retained Earnings.
+    """
+    from .constants import AccountType
+    from .models import AccountBalance
+
+    qs = AccountBalance.objects.filter(account__entity=entity).select_related("account")
+    if period is not None:
+        qs = qs.filter(period=period)
+
+    income = _net_by_account(qs, account_types={AccountType.INCOME})
+    expense = _net_by_account(qs, account_types={AccountType.EXPENSE})
+    income_rows, total_income = _statement_rows(income)
+    expense_rows, total_expense = _statement_rows(expense)
+
+    return IncomeStatement(
+        entity_id=entity.id,
+        period_id=getattr(period, "id", None),
+        income_rows=income_rows,
+        expense_rows=expense_rows,
+        total_income=total_income,
+        total_expense=total_expense,
+    )
+
+
+@dataclass
+class BalanceSheet:
+    """Assets, liabilities and equity at a point in time (kobo).
+
+    ``retained_earnings`` is the *current* (unclosed) net income folded into equity so
+    the accounting equation balances before the year is closed. ``is_balanced`` is the
+    headline check: ``total_assets == total_liabilities + total_equity``.
+    """
+
+    entity_id: int
+    as_of: object
+    asset_rows: list = field(default_factory=list)
+    liability_rows: list = field(default_factory=list)
+    equity_rows: list = field(default_factory=list)
+    total_assets: int = 0
+    total_liabilities: int = 0
+    total_equity_accounts: int = 0
+    retained_earnings: int = 0
+
+    @property
+    def total_equity(self) -> int:
+        """Booked equity accounts plus the unclosed net income for the window."""
+        return self.total_equity_accounts + self.retained_earnings
+
+    @property
+    def is_balanced(self) -> bool:
+        return self.total_assets == self.total_liabilities + self.total_equity
+
+    @property
+    def difference(self) -> int:
+        return self.total_assets - (self.total_liabilities + self.total_equity)
+
+
+def balance_sheet(entity, *, as_of=None) -> BalanceSheet:
+    """Build the balance sheet for ``entity`` as at ``as_of`` (default: today).
+
+    Aggregates ASSET / LIABILITY / EQUITY balances across every period that has begun
+    on or before ``as_of`` (period granularity — partial-period cut-offs are not
+    interpolated). The same window's net income (income − expense) is reported as
+    ``retained_earnings`` and folded into equity, which is what makes ``assets ==
+    liabilities + equity`` hold while the year is still open.
+    """
+    from .constants import AccountType
+    from .models import AccountBalance
+
+    as_of = as_of or timezone.now().date()
+
+    qs = (
+        AccountBalance.objects
+        .filter(account__entity=entity, period__start_date__lte=as_of)
+        .select_related("account")
+    )
+
+    assets = _net_by_account(qs, account_types={AccountType.ASSET})
+    liabilities = _net_by_account(qs, account_types={AccountType.LIABILITY})
+    equity = _net_by_account(qs, account_types={AccountType.EQUITY})
+
+    asset_rows, total_assets = _statement_rows(assets)
+    liability_rows, total_liabilities = _statement_rows(liabilities)
+    equity_rows, total_equity_accounts = _statement_rows(equity)
+
+    # Unclosed P&L for the same window → folded into equity as retained earnings.
+    income = _net_by_account(qs, account_types={AccountType.INCOME})
+    expense = _net_by_account(qs, account_types={AccountType.EXPENSE})
+    _, total_income = _statement_rows(income)
+    _, total_expense = _statement_rows(expense)
+    retained = total_income - total_expense
+
+    return BalanceSheet(
+        entity_id=entity.id,
+        as_of=as_of,
+        asset_rows=asset_rows,
+        liability_rows=liability_rows,
+        equity_rows=equity_rows,
+        total_assets=total_assets,
+        total_liabilities=total_liabilities,
+        total_equity_accounts=total_equity_accounts,
+        retained_earnings=retained,
+    )
+
+
+#: Cash-flow activity buckets, in presentation order.
+CASH_FLOW_ACTIVITIES = ("operating", "investing", "financing")
+
+
+def _classify_cash_flow(account) -> str:
+    """Bucket a non-cash journal leg into operating / investing / financing.
+
+    A pragmatic, double-entry-safe classification: because every journal balances, the
+    non-cash legs of a cash-touching entry always sum to the cash movement, so whatever
+    bucket each leg lands in, the three buckets *always* foot to net change in cash.
+
+    * INCOME / EXPENSE and working-capital accounts (current AR / AP) → **operating**
+    * non-current ASSET — property, plant & equipment and its accumulated
+      depreciation contra → **investing**
+    * EQUITY (capital, drawings) → **financing**
+    * other LIABILITY (assumed borrowings) → **financing**
+    """
+    from .constants import (
+        ACCUM_DEPRECIATION_CODE,
+        AccountType,
+        PPE_ACCOUNT_CODE,
+    )
+
+    atype = account.account_type
+    if atype == AccountType.EQUITY:
+        return "financing"
+    if atype == AccountType.ASSET:
+        # Non-current assets (PP&E + accumulated depreciation) are investing flows;
+        # everything else (receivables, prepayments) is working-capital → operating.
+        if account.code in (PPE_ACCOUNT_CODE, ACCUM_DEPRECIATION_CODE):
+            return "investing"
+        return "operating"
+    if atype == AccountType.LIABILITY:
+        # Trade payables and accruals are operating working capital; we keep them
+        # operating and treat only explicit equity as financing for the default chart.
+        return "operating"
+    # INCOME / EXPENSE
+    return "operating"
+
+
+@dataclass
+class CashFlowStatement:
+    """Cash movement for a window, classified by activity (kobo).
+
+    ``opening_cash + net_change == closing_cash`` is the reconciliation the statement
+    exists to prove. ``by_activity`` holds the operating / investing / financing
+    subtotals, which sum to ``net_change``.
+    """
+
+    entity_id: int
+    period_id: int | None
+    opening_cash: int = 0
+    closing_cash: int = 0
+    by_activity: dict = field(default_factory=lambda: {a: 0 for a in CASH_FLOW_ACTIVITIES})
+
+    @property
+    def net_change(self) -> int:
+        return sum(self.by_activity.values())
+
+    @property
+    def is_reconciled(self) -> bool:
+        return self.opening_cash + self.net_change == self.closing_cash
+
+
+def cash_flow_statement(entity, *, period=None) -> CashFlowStatement:
+    """Build the cash-flow statement for ``entity``, optionally one ``period``.
+
+    Cash accounts are the entity's ``1100 Cash & Bank`` plus any GL account a
+    :class:`~vs_finance.models.BankAccount` maps to. The statement classifies the
+    non-cash leg of every POSTED journal that touches cash into operating / investing /
+    financing (see :func:`_classify_cash_flow`), and reconciles opening + net change to
+    closing cash. Scoped to ``period`` when given, else the whole ledger to date.
+    """
+    from .constants import CASH_BANK_CODE, DocumentStatus, NormalBalance
+    from .models import Account, AccountBalance, BankAccount, JournalLine
+
+    # 1. Identify the entity's cash accounts (1100 + any mapped bank GL account).
+    cash_ids = set(
+        Account.objects
+        .filter(entity=entity, code=CASH_BANK_CODE)
+        .values_list("id", flat=True)
+    )
+    cash_ids |= set(
+        BankAccount.objects.filter(entity=entity).values_list("gl_account_id", flat=True)
+    )
+
+    stmt = CashFlowStatement(entity_id=entity.id, period_id=getattr(period, "id", None))
+    if not cash_ids:
+        return stmt
+
+    # 2. Opening / closing cash from the denormalised balances.
+    bal_qs = AccountBalance.objects.filter(account_id__in=cash_ids).select_related("account")
+    if period is not None:
+        bal_qs = bal_qs.filter(period=period)
+
+    opening = closing = 0
+    for bal in bal_qs:
+        sign = 1 if bal.account.normal_balance == NormalBalance.DEBIT else -1
+        open_net = (bal.opening_debit - bal.opening_credit) * sign
+        move = (bal.debit_total - bal.credit_total) * sign
+        opening += open_net
+        closing += open_net + move
+    stmt.opening_cash = opening
+    stmt.closing_cash = closing
+
+    # 3. Classify the non-cash legs of every posted journal that touches cash.
+    cash_entry_ids = set(
+        JournalLine.objects
+        .filter(account_id__in=cash_ids, entry__entity=entity,
+                entry__status=DocumentStatus.POSTED)
+        .values_list("entry_id", flat=True)
+    )
+    if period is not None:
+        cash_entry_ids &= set(
+            JournalLine.objects
+            .filter(entry__period=period, entry_id__in=cash_entry_ids)
+            .values_list("entry_id", flat=True)
+        )
+
+    legs = (
+        JournalLine.objects
+        .filter(entry_id__in=cash_entry_ids)
+        .exclude(account_id__in=cash_ids)
+        .select_related("account")
+    )
+    for leg in legs:
+        # A credit to a non-cash account is a source of cash (+), a debit a use (−).
+        contribution = leg.credit - leg.debit
+        stmt.by_activity[_classify_cash_flow(leg.account)] += contribution
+
+    return stmt

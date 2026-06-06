@@ -271,6 +271,8 @@ NET_WAGES_PAYABLE_CODE = "2330"           # Net wages payable (cleared on disbur
 SALARIES_EXPENSE_CODE = "5200"            # Salaries & wages expense
 DEPRECIATION_EXPENSE_CODE = "5400"        # Depreciation expense
 BANK_CHARGES_CODE = "5500"               # Bank charges expense
+RETAINED_EARNINGS_CODE = "3200"          # Retained earnings (equity) — net income closes here
+CASH_BANK_CODE = "1100"                  # Cash & bank (the cash-flow statement's cash line)
 
 #: Document-number prefix for the whole platform's finance documents (Code X Finance).
 DOC_NUMBER_PREFIX = "CFX"

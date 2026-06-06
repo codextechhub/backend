@@ -68,7 +68,15 @@ from vs_finance.money import format_naira, to_kobo, to_naira
 from vs_finance.numbering import next_document_number
 from vs_finance.posting import ensure_balanced, ensure_period_open, post_journal, reverse_journal
 from vs_finance.receivables import post_invoice, post_payment
-from vs_finance.reports import ar_aging, budget_vs_actual, reconcile_ar, trial_balance
+from vs_finance.reports import (
+    ar_aging,
+    balance_sheet,
+    budget_vs_actual,
+    cash_flow_statement,
+    income_statement,
+    reconcile_ar,
+    trial_balance,
+)
 from vs_finance.banking import (
     auto_reconcile,
     import_statement_lines,
@@ -1016,3 +1024,264 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
         with self.assertRaises(PeriodCloseError):
             close_period(entity, periods[0], extra_checks=[failing_check])
         self.assertTrue(calls)  # the injected check actually ran
+
+
+class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
+    """The three primary statements over one coherent set of transactions.
+
+    A tiny but complete first month:
+      * owner injects 1,000,000 capital (financing inflow)
+      * buys 400,000 of equipment for cash (investing outflow)
+      * earns 300,000 cash revenue (operating inflow)
+      * pays 120,000 cash salaries (operating outflow)
+    """
+
+    def _seed_activity(self, entity, period):
+        post_journal(self.make_entry(
+            entity, period, [("1100", 1000000, 0), ("3100", 0, 1000000)],
+        ))  # capital
+        post_journal(self.make_entry(
+            entity, period, [("1500", 400000, 0), ("1100", 0, 400000)],
+        ))  # buy equipment
+        post_journal(self.make_entry(
+            entity, period, [("1100", 300000, 0), ("4100", 0, 300000)],
+        ))  # cash revenue
+        post_journal(self.make_entry(
+            entity, period, [("5200", 120000, 0), ("1100", 0, 120000)],
+        ))  # salaries
+
+    def test_income_statement_nets_revenue_less_expense(self):
+        entity, _, periods = self.build_books()
+        self._seed_activity(entity, periods[0])
+
+        pnl = income_statement(entity, period=periods[0])
+        self.assertEqual(pnl.total_income, 300000)
+        self.assertEqual(pnl.total_expense, 120000)
+        self.assertEqual(pnl.net_income, 180000)
+        # Income rows carry positive (credit-natural) magnitudes.
+        rev = next(r for r in pnl.income_rows if r.code == "4100")
+        self.assertEqual(rev.amount, 300000)
+
+    def test_income_statement_aggregates_all_periods_when_unscoped(self):
+        entity, _, periods = self.build_books()
+        # Revenue split across two months.
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 100000, 0), ("4100", 0, 100000)],
+            date=datetime.date(2026, 1, 10),
+        ))
+        post_journal(self.make_entry(
+            entity, periods[1], [("1100", 250000, 0), ("4100", 0, 250000)],
+            date=datetime.date(2026, 2, 10),
+        ))
+        self.assertEqual(income_statement(entity).total_income, 350000)
+        self.assertEqual(income_statement(entity, period=periods[0]).total_income, 100000)
+
+    def test_balance_sheet_balances_with_unclosed_net_income(self):
+        entity, _, periods = self.build_books()
+        self._seed_activity(entity, periods[0])
+
+        bs = balance_sheet(entity)
+        self.assertEqual(bs.total_assets, 1180000)        # 780k cash + 400k PP&E
+        self.assertEqual(bs.total_liabilities, 0)
+        self.assertEqual(bs.total_equity_accounts, 1000000)  # share capital
+        self.assertEqual(bs.retained_earnings, 180000)       # unclosed net income
+        self.assertEqual(bs.total_equity, 1180000)
+        self.assertTrue(bs.is_balanced)
+        self.assertEqual(bs.difference, 0)
+
+    def test_cash_flow_reconciles_and_classifies(self):
+        entity, _, periods = self.build_books()
+        self.make_bank(entity)  # 1100 is also a mapped bank account
+        self._seed_activity(entity, periods[0])
+
+        cf = cash_flow_statement(entity)
+        self.assertEqual(cf.opening_cash, 0)
+        self.assertEqual(cf.closing_cash, 780000)
+        self.assertEqual(cf.by_activity["operating"], 180000)   # 300k rev - 120k pay
+        self.assertEqual(cf.by_activity["investing"], -400000)  # equipment
+        self.assertEqual(cf.by_activity["financing"], 1000000)  # capital
+        self.assertEqual(cf.net_change, 780000)
+        self.assertTrue(cf.is_reconciled)
+
+    def test_cash_flow_ignores_non_cash_journals(self):
+        entity, _, periods = self.build_books()
+        # An accrual that never touches cash (Dr expense, Cr payable) must not move cash.
+        post_journal(self.make_entry(
+            entity, periods[0], [("5300", 50000, 0), ("2100", 0, 50000)],
+        ))
+        cf = cash_flow_statement(entity)
+        self.assertEqual(cf.closing_cash, 0)
+        self.assertEqual(cf.net_change, 0)
+        self.assertTrue(cf.is_reconciled)
+
+
+class FinanceAPITests(_Phase4FixtureMixin, TestCase):
+    """The /v1/finance/ REST surface: entity scoping, reports, documents, actions.
+
+    Authenticated as a Vision super admin, which bypasses the per-endpoint RBAC gate
+    (so these tests exercise routing/serialisation, not the RBAC matrix itself).
+    """
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIClient
+        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            email="fin-admin@test.com", password="testpass123",
+            user_type="CX_STAFF", status="ACTIVE",
+            first_name="Finance", last_name="Admin",
+        )
+        role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
+        PlatformUserRoleAssignment.objects.create(
+            user=self.user, role=role, assignment_status="ACTIVE",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _seed(self):
+        entity, _, periods = self.build_books()
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 1000000, 0), ("3100", 0, 1000000)],
+        ))
+        post_journal(self.make_entry(
+            entity, periods[0], [("1500", 400000, 0), ("1100", 0, 400000)],
+        ))
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 300000, 0), ("4100", 0, 300000)],
+        ))
+        post_journal(self.make_entry(
+            entity, periods[0], [("5200", 120000, 0), ("1100", 0, 120000)],
+        ))
+        return entity, periods
+
+    def test_entity_param_is_required_and_validated(self):
+        entity, _ = self._seed()
+        # Missing entity → 400.
+        resp = self.client.get("/v1/finance/reports/trial-balance/")
+        self.assertEqual(resp.status_code, 400)
+        # Unknown entity → 404.
+        resp = self.client.get("/v1/finance/reports/trial-balance/?entity=NOPE")
+        self.assertEqual(resp.status_code, 404)
+        # Known entity (by code) → 200.
+        resp = self.client.get(f"/v1/finance/reports/trial-balance/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.json()["data"]["is_balanced"])
+
+    def test_entities_and_accounts_endpoints(self):
+        entity, _ = self._seed()
+        resp = self.client.get("/v1/finance/entities/")
+        self.assertEqual(resp.status_code, 200)
+        codes = {e["code"] for e in resp.json()["data"]}
+        self.assertIn(entity.code, codes)
+
+        resp = self.client.get(f"/v1/finance/accounts/?entity={entity.code}&account_type=ASSET")
+        self.assertEqual(resp.status_code, 200)
+        types = {a["account_type"] for a in resp.json()["data"]}
+        self.assertEqual(types, {"ASSET"})
+
+    def test_statement_endpoints_match_service_output(self):
+        entity, _ = self._seed()
+        ec = entity.code
+
+        pnl = self.client.get(f"/v1/finance/reports/income-statement/?entity={ec}").json()["data"]
+        self.assertEqual(pnl["net_income"]["kobo"], 180000)
+
+        bs = self.client.get(f"/v1/finance/reports/balance-sheet/?entity={ec}").json()["data"]
+        self.assertTrue(bs["is_balanced"])
+        self.assertEqual(bs["total_assets"]["kobo"], 1180000)
+        self.assertEqual(bs["retained_earnings"]["kobo"], 180000)
+
+        cf = self.client.get(f"/v1/finance/reports/cash-flow/?entity={ec}").json()["data"]
+        self.assertTrue(cf["is_reconciled"])
+        self.assertEqual(cf["closing_cash"]["kobo"], 780000)
+        self.assertEqual(cf["by_activity"]["financing"]["kobo"], 1000000)
+
+    def test_journal_list_detail_and_post_action(self):
+        entity, periods = self._seed()
+        ec = entity.code
+
+        # A fresh DRAFT journal posted through the API.
+        draft = self.make_entry(entity, periods[0], [("1100", 5000, 0), ("4100", 0, 5000)])
+        self.assertEqual(draft.status, DocumentStatus.DRAFT)
+        resp = self.client.post(f"/v1/finance/journals/{draft.id}/post/?entity={ec}")
+        self.assertEqual(resp.status_code, 200)
+        draft.refresh_from_db()
+        self.assertEqual(draft.status, DocumentStatus.POSTED)
+
+        # Detail view returns the lines and balanced totals.
+        resp = self.client.get(f"/v1/finance/journals/{draft.id}/?entity={ec}")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()["data"]
+        self.assertEqual(data["total_debit"], data["total_credit"])
+        self.assertEqual(len(data["lines"]), 2)
+
+        # List is scoped to the entity.
+        resp = self.client.get(f"/v1/finance/journals/?entity={ec}&status=POSTED")
+        self.assertEqual(resp.status_code, 200)
+        self.assertGreaterEqual(resp.json()["pagination"]["totalItems"], 5)
+
+    def test_unbalanced_post_returns_typed_error_envelope(self):
+        entity, periods = self._seed()
+        ec = entity.code
+        bad = JournalEntry.objects.create(
+            entity=entity, date=datetime.date(2026, 1, 15), period=periods[0],
+        )
+        JournalLine.objects.create(entry=bad, account=Account.objects.get(entity=entity, code="1100"),
+                                    debit=5000, credit=0, line_no=1)
+        JournalLine.objects.create(entry=bad, account=Account.objects.get(entity=entity, code="4100"),
+                                    debit=0, credit=4000, line_no=2)
+        resp = self.client.post(f"/v1/finance/journals/{bad.id}/post/?entity={ec}")
+        self.assertEqual(resp.status_code, 422)
+        body = resp.json()
+        self.assertFalse(body["success"])
+        self.assertEqual(body["error"]["code"], "JOURNAL_UNBALANCED")
+
+    def test_period_close_action_runs_checklist(self):
+        entity, periods = self._seed()
+        ec = entity.code
+        resp = self.client.post(
+            f"/v1/finance/periods/{periods[0].id}/close/?entity={ec}",
+            data={"soft": False}, format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()["data"]
+        self.assertEqual(data["period"]["status"], PeriodStatus.CLOSED)
+        self.assertTrue(data["checklist"]["passed"])
+
+    def test_trial_balance_exports_in_each_format(self):
+        entity, _ = self._seed()
+        ec = entity.code
+        cases = {
+            "csv": "text/csv",
+            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "pdf": "application/pdf",
+        }
+        for fmt, ctype in cases.items():
+            resp = self.client.get(f"/v1/finance/reports/trial-balance/?entity={ec}&export={fmt}")
+            self.assertEqual(resp.status_code, 200, fmt)
+            self.assertEqual(resp["Content-Type"], ctype)
+            self.assertIn(f"trial_balance_{ec}.{fmt}", resp["Content-Disposition"])
+            self.assertTrue(resp.content)
+        # CSV body actually contains the data.
+        csv_resp = self.client.get(f"/v1/finance/reports/trial-balance/?entity={ec}&export=csv")
+        text = csv_resp.content.decode("utf-8")
+        self.assertIn("Trial Balance", text)
+        self.assertIn("TOTAL", text)
+
+    def test_statement_exports_available(self):
+        entity, _ = self._seed()
+        ec = entity.code
+        for path in ("income-statement", "balance-sheet", "ar-aging"):
+            resp = self.client.get(f"/v1/finance/reports/{path}/?entity={ec}&export=xlsx")
+            self.assertEqual(resp.status_code, 200, path)
+            self.assertTrue(resp.content)
+
+    def test_unknown_export_format_is_rejected(self):
+        entity, _ = self._seed()
+        resp = self.client.get(
+            f"/v1/finance/reports/trial-balance/?entity={entity.code}&export=docx"
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(resp.json()["success"])
