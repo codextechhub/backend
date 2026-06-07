@@ -74,8 +74,10 @@ class DocType(models.TextChoices):
     VENDOR_INVOICE = "VIN", "Vendor Invoice"
     VENDOR_PAYMENT = "VPY", "Vendor Payment"
     EXPENSE_CLAIM = "EXP", "Expense Claim"
+    PETTY_CASH_VOUCHER = "PCV", "Petty Cash Voucher"
     PAYROLL_RUN = "PYR", "Payroll Run"
     FIXED_ASSET = "FA", "Fixed Asset"
+    TAX_FILING = "TXF", "Tax Filing / Remittance"
 
 class AccountType(models.TextChoices):
     """The five roots of double-entry accounting.
@@ -361,6 +363,10 @@ class FinanceAuditAction(models.TextChoices):
     EXPENSE_CLAIM_POSTED = "EXPENSE_CLAIM_POSTED", "Expense claim posted"
     EXPENSE_CLAIM_POST_REJECTED = "EXPENSE_CLAIM_POST_REJECTED", "Expense claim posting rejected"
     EXPENSE_CLAIM_SETTLED = "EXPENSE_CLAIM_SETTLED", "Expense claim settled"
+    PETTY_CASH_ESTABLISHED = "PETTY_CASH_ESTABLISHED", "Petty cash fund established / topped up"
+    PETTY_CASH_VOUCHER_POSTED = "PETTY_CASH_VOUCHER_POSTED", "Petty cash voucher posted"
+    PETTY_CASH_VOUCHER_REJECTED = "PETTY_CASH_VOUCHER_REJECTED", "Petty cash voucher rejected"
+    PETTY_CASH_REPLENISHED = "PETTY_CASH_REPLENISHED", "Petty cash fund replenished"
     PAYROLL_POSTED = "PAYROLL_POSTED", "Payroll run posted"
     PAYROLL_POST_REJECTED = "PAYROLL_POST_REJECTED", "Payroll run posting rejected"
     PAYROLL_PAID = "PAYROLL_PAID", "Payroll run disbursed"
@@ -368,6 +374,10 @@ class FinanceAuditAction(models.TextChoices):
     ASSET_ACQUIRED = "ASSET_ACQUIRED", "Fixed asset acquired"
     DEPRECIATION_POSTED = "DEPRECIATION_POSTED", "Depreciation posted"
     PERIOD_LOCKED = "PERIOD_LOCKED", "Period locked"
+    TAX_FILING_PREPARED = "TAX_FILING_PREPARED", "Tax filing prepared"
+    TAX_FILING_FILED = "TAX_FILING_FILED", "Tax filing submitted to authority"
+    TAX_FILING_PAID = "TAX_FILING_PAID", "Tax filing paid / remitted"
+    TAX_FILING_REJECTED = "TAX_FILING_REJECTED", "Tax filing action rejected"
 
 
 class FinanceAuditStatus(models.TextChoices):
@@ -376,12 +386,40 @@ class FinanceAuditStatus(models.TextChoices):
     FAILED = "FAILED", "Failed"
 
 
+class TaxObligationType(models.TextChoices):
+    """The statutory tax a remittance obligation covers."""
+    VAT = "VAT", "Value Added Tax"
+    WHT = "WHT", "Withholding Tax"
+    PAYE = "PAYE", "Pay-As-You-Earn (employee income tax)"
+    PENSION = "PENSION", "Pension contribution"
+    OTHER = "OTHER", "Other statutory levy"
+
+
+class TaxFilingFrequency(models.TextChoices):
+    """How often a return falls due for an obligation."""
+    MONTHLY = "MONTHLY", "Monthly"
+    QUARTERLY = "QUARTERLY", "Quarterly"
+    ANNUAL = "ANNUAL", "Annual"
+
+
+class TaxFilingStatus(models.TextChoices):
+    """Lifecycle of a single tax return: prepared, filed with the authority, paid."""
+    DRAFT = "DRAFT", "Draft / prepared"
+    FILED = "FILED", "Filed with authority"
+    PAID = "PAID", "Paid / remitted"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
 #: Well-known Chart-of-Accounts codes the Phase-4 services resolve by code. Kept here
 #: (not hard-coded in services) so an entity with a customised chart can be remapped in
 #: one place. All are seeded by :mod:`vs_finance.seed`.
 PPE_ACCOUNT_CODE = "1500"                 # Property, Plant & Equipment (asset)
 ACCUM_DEPRECIATION_CODE = "1900"          # Accumulated depreciation (contra-asset)
 ACCRUED_REIMBURSEMENT_CODE = "2400"       # Staff expense-claim liability
+PETTY_CASH_CODE = "1110"                  # Petty cash float (asset, child of 1100)
+OUTPUT_VAT_CODE = "2200"                  # Output VAT payable (liability) — sales collect here
+INPUT_VAT_CODE = "1300"                   # Input VAT recoverable (asset) — purchases offset here
+WHT_PAYABLE_CODE = "2300"                 # Withholding-tax payable (liability)
 PAYE_PAYABLE_CODE = "2310"                # PAYE (employee income tax) payable
 PENSION_PAYABLE_CODE = "2320"             # Pension payable
 NET_WAGES_PAYABLE_CODE = "2330"           # Net wages payable (cleared on disbursement)

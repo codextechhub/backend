@@ -79,7 +79,22 @@ from .views_ops import (
     PayrollRunListCreateView,
     PayrollRunPayView,
     PayrollRunPostView,
+    PettyCashFundDetailView,
+    PettyCashFundEstablishView,
+    PettyCashFundListCreateView,
+    PettyCashFundReplenishView,
+    PettyCashStatusView,
+    PettyCashVoucherDetailView,
+    PettyCashVoucherListCreateView,
+    PettyCashVoucherPostView,
     TaxCodeListCreateView,
+    TaxFilingDetailView,
+    TaxFilingFileView,
+    TaxFilingListCreateView,
+    TaxFilingPayView,
+    TaxObligationDetailView,
+    TaxObligationListCreateView,
+    TaxObligationOutstandingView,
 )
 
 urlpatterns = [
@@ -168,6 +183,33 @@ urlpatterns = [
     path("expense-claims/<int:pk>/", ExpenseClaimDetailView.as_view(), name="finance-expense-detail"),
     path("expense-claims/<int:pk>/post/", ExpenseClaimPostView.as_view(), name="finance-expense-post"),
     path("expense-claims/<int:pk>/settle/", ExpenseClaimSettleView.as_view(), name="finance-expense-settle"),
+
+    # Petty cash — funds, vouchers, replenishment
+    path("petty-cash-funds/", PettyCashFundListCreateView.as_view(), name="finance-pettycash-fund-list"),
+    path("petty-cash-funds/<int:pk>/", PettyCashFundDetailView.as_view(),
+         name="finance-pettycash-fund-detail"),
+    path("petty-cash-funds/<int:pk>/establish/", PettyCashFundEstablishView.as_view(),
+         name="finance-pettycash-fund-establish"),
+    path("petty-cash-funds/<int:pk>/replenish/", PettyCashFundReplenishView.as_view(),
+         name="finance-pettycash-fund-replenish"),
+    path("petty-cash-status/", PettyCashStatusView.as_view(), name="finance-pettycash-status"),
+    path("petty-cash-vouchers/", PettyCashVoucherListCreateView.as_view(),
+         name="finance-pettycash-voucher-list"),
+    path("petty-cash-vouchers/<int:pk>/", PettyCashVoucherDetailView.as_view(),
+         name="finance-pettycash-voucher-detail"),
+    path("petty-cash-vouchers/<int:pk>/post/", PettyCashVoucherPostView.as_view(),
+         name="finance-pettycash-voucher-post"),
+
+    # Tax remittance / filing
+    path("tax-obligations/", TaxObligationListCreateView.as_view(), name="finance-tax-obligation-list"),
+    path("tax-obligations/<int:pk>/", TaxObligationDetailView.as_view(),
+         name="finance-tax-obligation-detail"),
+    path("tax-obligations/outstanding/", TaxObligationOutstandingView.as_view(),
+         name="finance-tax-outstanding"),
+    path("tax-filings/", TaxFilingListCreateView.as_view(), name="finance-tax-filing-list"),
+    path("tax-filings/<int:pk>/", TaxFilingDetailView.as_view(), name="finance-tax-filing-detail"),
+    path("tax-filings/<int:pk>/file/", TaxFilingFileView.as_view(), name="finance-tax-filing-file"),
+    path("tax-filings/<int:pk>/pay/", TaxFilingPayView.as_view(), name="finance-tax-filing-pay"),
 
     # Payroll
     path("payroll-runs/", PayrollRunListCreateView.as_view(), name="finance-payroll-list"),

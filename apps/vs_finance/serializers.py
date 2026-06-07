@@ -42,8 +42,13 @@ from .models import (
     PaymentPlanInstallment,
     PayrollLine,
     PayrollRun,
+    PettyCashFund,
+    PettyCashVoucher,
+    PettyCashVoucherLine,
     Refund,
     TaxCode,
+    TaxFiling,
+    TaxObligation,
 )
 from .money import format_naira
 
@@ -412,6 +417,117 @@ class ExpenseClaimSerializer(serializers.ModelSerializer):
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
+
+
+# --------------------------------------------------------------------------- #
+# Petty cash                                                                  #
+# --------------------------------------------------------------------------- #
+
+class PettyCashFundSerializer(serializers.ModelSerializer):
+    gl_account = serializers.CharField(source="gl_account.code", read_only=True)
+    custodian_label = serializers.SerializerMethodField()
+    float_amount_naira = serializers.SerializerMethodField()
+    current_balance_naira = serializers.SerializerMethodField()
+    shortfall = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = PettyCashFund
+        fields = [
+            "id", "name", "gl_account", "gl_account_id",
+            "custodian_id", "custodian_name", "custodian_label",
+            "float_amount", "float_amount_naira",
+            "current_balance", "current_balance_naira", "shortfall",
+            "currency", "last_replenished_at", "is_active",
+        ]
+
+    def get_custodian_label(self, obj) -> str:
+        if obj.custodian_id:
+            full = obj.custodian.get_full_name() if hasattr(obj.custodian, "get_full_name") else ""
+            return full or getattr(obj.custodian, "email", "") or str(obj.custodian_id)
+        return obj.custodian_name
+
+    def get_float_amount_naira(self, obj) -> str:
+        return format_naira(obj.float_amount)
+
+    def get_current_balance_naira(self, obj) -> str:
+        return format_naira(obj.current_balance)
+
+
+class PettyCashVoucherLineSerializer(serializers.ModelSerializer):
+    expense_account = serializers.CharField(source="expense_account.code", read_only=True)
+    tax_code = serializers.CharField(source="tax_code.code", read_only=True, default=None)
+    cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
+    line_total = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = PettyCashVoucherLine
+        fields = [
+            "id", "line_no", "description", "expense_account", "quantity",
+            "unit_price", "tax_code", "net_amount", "tax_amount", "line_total",
+            "cost_center",
+        ]
+
+
+class PettyCashVoucherSerializer(serializers.ModelSerializer):
+    lines = PettyCashVoucherLineSerializer(many=True, read_only=True)
+    total_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PettyCashVoucher
+        fields = [
+            "id", "document_number", "fund_id", "voucher_date", "payee",
+            "spent_by_id", "narration", "reference", "status",
+            "subtotal", "tax_total", "total", "total_naira",
+            "journal_id", "lines",
+        ]
+
+    def get_total_naira(self, obj) -> str:
+        return format_naira(obj.total)
+
+
+# --------------------------------------------------------------------------- #
+# Tax remittance / filing                                                     #
+# --------------------------------------------------------------------------- #
+
+class TaxObligationSerializer(serializers.ModelSerializer):
+    liability_account = serializers.CharField(source="liability_account.code", read_only=True)
+    recoverable_account = serializers.CharField(
+        source="recoverable_account.code", read_only=True, default=None,
+    )
+
+    class Meta:
+        model = TaxObligation
+        fields = [
+            "id", "code", "name", "obligation_type",
+            "liability_account", "liability_account_id",
+            "recoverable_account", "recoverable_account_id",
+            "authority_name", "frequency", "filing_day", "is_active",
+        ]
+
+
+class TaxFilingSerializer(serializers.ModelSerializer):
+    obligation_code = serializers.CharField(source="obligation.code", read_only=True)
+    obligation_type = serializers.CharField(source="obligation.obligation_type", read_only=True)
+    authority_name = serializers.CharField(source="obligation.authority_name", read_only=True)
+    balance_due = serializers.IntegerField(read_only=True)
+    amount_due_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = TaxFiling
+        fields = [
+            "id", "document_number", "obligation_id", "obligation_code",
+            "obligation_type", "authority_name",
+            "period_start", "period_end", "due_date",
+            "filing_status", "status",
+            "gross_liability", "recoverable_amount", "adjustment_amount",
+            "amount_due", "amount_due_naira", "amount_paid", "balance_due",
+            "payment_status", "adjustment_account_id",
+            "filing_reference", "filed_at", "narration",
+            "currency", "filing_journal_id",
+        ]
+
+    def get_amount_due_naira(self, obj) -> str:
+        return format_naira(obj.amount_due)
 
 
 # --------------------------------------------------------------------------- #

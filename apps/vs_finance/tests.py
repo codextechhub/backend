@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 from decimal import Decimal
 
+from django.db.models import Sum
 from django.test import TestCase
 
 from vs_finance.constants import (
@@ -40,6 +41,9 @@ from vs_finance.exceptions import (
     ExpenseClaimError,
     PayrollError,
     PeriodCloseError,
+    PettyCashError,
+    PettyCashOverdrawError,
+    TaxFilingError,
 )
 from vs_finance.models import (
     Account,
@@ -71,8 +75,13 @@ from vs_finance.models import (
     PaymentPlanInstallment,
     PayrollLine,
     PayrollRun,
+    PettyCashFund,
+    PettyCashVoucher,
+    PettyCashVoucherLine,
     Refund,
     TaxCode,
+    TaxFiling,
+    TaxObligation,
 )
 from vs_finance.money import format_naira, to_kobo, to_naira
 from vs_finance.numbering import next_document_number
@@ -115,6 +124,19 @@ from vs_finance.banking import (
     post_bank_adjustment,
 )
 from vs_finance.expenses import post_expense_claim, settle_expense_claim
+from vs_finance.petty_cash import (
+    establish_fund,
+    fund_status,
+    post_voucher,
+    replenish_fund,
+)
+from vs_finance.tax_filing import (
+    file_filing,
+    outstanding_obligations,
+    pay_filing,
+    prepare_filing,
+)
+from vs_finance.constants import TaxFilingStatus, TaxObligationType
 from vs_finance.payroll import pay_payroll, post_payroll
 from vs_finance.budgets import add_budget_line, approve_budget
 from vs_finance.assets import acquire_asset, build_depreciation_schedule, post_depreciation
@@ -124,7 +146,7 @@ from vs_finance.close import (
     lock_period,
     reopen_period,
 )
-from vs_finance.seed import seed_chart_of_accounts, seed_currencies
+from vs_finance.seed import seed_chart_of_accounts, seed_currencies, seed_tax_obligations
 from vs_schools.models import Branch, School
 
 
@@ -1209,6 +1231,351 @@ class ExpenseClaimTests(_Phase4FixtureMixin, TestCase):
         )
         with self.assertRaises(ExpenseClaimError):
             post_expense_claim(claim)
+
+
+class PettyCashTests(_Phase4FixtureMixin, TestCase):
+    def _make_fund(self, entity, *, name="Front Desk", float_amount=5000000, gl_code="1110"):
+        return PettyCashFund.objects.create(
+            entity=entity, name=name, custodian_name="Tunde Custodian",
+            gl_account=Account.objects.get(entity=entity, code=gl_code),
+            float_amount=float_amount,
+        )
+
+    def _make_voucher(self, fund, *, lines, voucher_date=datetime.date(2026, 1, 12)):
+        voucher = PettyCashVoucher.objects.create(
+            entity=fund.entity, fund=fund, voucher_date=voucher_date,
+            payee="Corner Shop",
+        )
+        for i, (code, qty, price, tax) in enumerate(lines, start=1):
+            PettyCashVoucherLine.objects.create(
+                voucher=voucher,
+                expense_account=Account.objects.get(entity=fund.entity, code=code),
+                quantity=qty, unit_price=price, tax_code=tax, line_no=i,
+            )
+        return voucher
+
+    def test_establish_moves_cash_from_bank_to_tin(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        fund = self._make_fund(entity, float_amount=5000000)
+        entry = establish_fund(
+            fund, bank_account=bank, amount=5000000, date=datetime.date(2026, 1, 1),
+        )
+        fund.refresh_from_db()
+        self.assertEqual(fund.current_balance, 5000000)
+        # Dr 1110 petty cash 5,000,000 ; Cr 1100 bank 5,000,000.
+        debit, credit = entry.totals()
+        self.assertEqual(debit, credit)
+        self.assertEqual(entry.lines.get(account__code="1110").debit, 5000000)
+        self.assertEqual(entry.lines.get(account__code="1100").credit, 5000000)
+
+    def test_establish_rejects_non_positive(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        fund = self._make_fund(entity)
+        with self.assertRaises(PettyCashError):
+            establish_fund(fund, bank_account=bank, amount=0, date=datetime.date(2026, 1, 1))
+
+    def test_voucher_posts_expense_and_lowers_balance(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        fund = self._make_fund(entity, float_amount=5000000)
+        establish_fund(fund, bank_account=bank, amount=5000000, date=datetime.date(2026, 1, 1))
+        vat = TaxCode.objects.create(
+            entity=entity, code="VAT", name="VAT 7.5%", rate_bps=750,
+            paid_account=Account.objects.get(entity=entity, code="1300"),
+        )
+        voucher = self._make_voucher(fund, lines=[("5500", 1, 100000, vat)])
+        post_voucher(voucher)
+        voucher.refresh_from_db()
+        fund.refresh_from_db()
+        self.assertEqual(voucher.status, DocumentStatus.POSTED)
+        self.assertEqual(voucher.subtotal, 100000)
+        self.assertEqual(voucher.tax_total, 7500)
+        self.assertEqual(voucher.total, 107500)
+        # Dr expense 100,000 + Dr input VAT 7,500 ; Cr petty cash 107,500.
+        debit, credit = voucher.journal.totals()
+        self.assertEqual(debit, credit)
+        self.assertEqual(voucher.journal.lines.get(account__code="1110").credit, 107500)
+        self.assertEqual(fund.current_balance, 5000000 - 107500)
+
+    def test_voucher_overdraw_is_blocked_and_audited(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        fund = self._make_fund(entity, float_amount=50000)
+        establish_fund(fund, bank_account=bank, amount=50000, date=datetime.date(2026, 1, 1))
+        voucher = self._make_voucher(fund, lines=[("5500", 1, 80000, None)])
+        with self.assertRaises(PettyCashOverdrawError):
+            post_voucher(voucher)
+        voucher.refresh_from_db()
+        fund.refresh_from_db()
+        self.assertEqual(voucher.status, DocumentStatus.DRAFT)
+        self.assertEqual(fund.current_balance, 50000)
+        self.assertTrue(
+            FinanceAuditLog.objects.filter(
+                entity=entity,
+                action=FinanceAuditAction.PETTY_CASH_VOUCHER_REJECTED,
+                status=FinanceAuditStatus.FAILED,
+            ).exists()
+        )
+
+    def test_replenish_restores_float_by_default(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        fund = self._make_fund(entity, float_amount=5000000)
+        establish_fund(fund, bank_account=bank, amount=5000000, date=datetime.date(2026, 1, 1))
+        voucher = self._make_voucher(fund, lines=[("5500", 1, 1200000, None)])
+        post_voucher(voucher)
+        fund.refresh_from_db()
+        self.assertEqual(fund.current_balance, 5000000 - 1200000)
+
+        entry = replenish_fund(fund, bank_account=bank, date=datetime.date(2026, 1, 31))
+        fund.refresh_from_db()
+        self.assertEqual(fund.current_balance, 5000000)  # restored to float
+        self.assertEqual(fund.last_replenished_at, datetime.date(2026, 1, 31))
+        self.assertEqual(entry.lines.get(account__code="1110").debit, 1200000)
+        self.assertEqual(entry.lines.get(account__code="1100").credit, 1200000)
+
+    def test_replenish_with_nothing_to_top_up_is_rejected(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        fund = self._make_fund(entity, float_amount=5000000)
+        establish_fund(fund, bank_account=bank, amount=5000000, date=datetime.date(2026, 1, 1))
+        with self.assertRaises(PettyCashError):
+            replenish_fund(fund, bank_account=bank, date=datetime.date(2026, 1, 31))
+
+    def test_fund_status_flags_low_balance(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        fund = self._make_fund(entity, float_amount=1000000)
+        establish_fund(fund, bank_account=bank, amount=1000000, date=datetime.date(2026, 1, 1))
+        # Spend down to 20% of float — below the default 25% threshold.
+        voucher = self._make_voucher(fund, lines=[("5500", 1, 800000, None)])
+        post_voucher(voucher)
+        rows = fund_status(entity)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["current_balance"], 200000)
+        self.assertEqual(rows[0]["shortfall"], 800000)
+        self.assertTrue(rows[0]["needs_replenish"])
+
+
+class TaxFilingTests(_Phase4FixtureMixin, TestCase):
+    def _vat_obligation(self, entity):
+        # The fixture seeds a VAT obligation already; reuse it idempotently.
+        ob, _ = TaxObligation.objects.update_or_create(
+            entity=entity, code="VAT",
+            defaults={
+                "name": "Value Added Tax",
+                "obligation_type": TaxObligationType.VAT,
+                "liability_account": Account.objects.get(entity=entity, code="2200"),
+                "recoverable_account": Account.objects.get(entity=entity, code="1300"),
+                "authority_name": "FIRS",
+            },
+        )
+        return ob
+
+    def _wht_obligation(self, entity):
+        ob, _ = TaxObligation.objects.update_or_create(
+            entity=entity, code="WHT",
+            defaults={
+                "name": "Withholding Tax",
+                "obligation_type": TaxObligationType.WHT,
+                "liability_account": Account.objects.get(entity=entity, code="2300"),
+                "recoverable_account": None,
+                "authority_name": "FIRS",
+            },
+        )
+        return ob
+
+    def _accrue_output_vat(self, entity, period, *, net, vat, date=datetime.date(2026, 1, 10)):
+        # A sale: Dr cash, Cr revenue, Cr output VAT.
+        post_journal(self.make_entry(
+            entity, period,
+            [("1100", net + vat, 0), ("4100", 0, net), ("2200", 0, vat)],
+            date=date,
+        ))
+
+    def _accrue_input_vat(self, entity, period, *, net, vat, date=datetime.date(2026, 1, 12)):
+        # A purchase: Dr expense, Dr input VAT, Cr cash.
+        post_journal(self.make_entry(
+            entity, period,
+            [("5300", net, 0), ("1300", vat, 0), ("1100", 0, net + vat)],
+            date=date,
+        ))
+
+    def _accrue_wht(self, entity, period, *, amount, date=datetime.date(2026, 1, 12)):
+        # A vendor payment withholding: Dr expense, Cr WHT payable, Cr cash.
+        post_journal(self.make_entry(
+            entity, period,
+            [("5300", amount * 10, 0), ("2300", 0, amount), ("1100", 0, amount * 9)],
+            date=date,
+        ))
+
+    def test_prepare_vat_nets_input_against_output(self):
+        entity, _, periods = self.build_books()
+        ob = self._vat_obligation(entity)
+        self._accrue_output_vat(entity, periods[0], net=1000000, vat=75000)
+        self._accrue_input_vat(entity, periods[0], net=400000, vat=30000)
+        filing = prepare_filing(
+            ob, period_start=datetime.date(2026, 1, 1), period_end=datetime.date(2026, 1, 31),
+        )
+        self.assertEqual(filing.filing_status, TaxFilingStatus.DRAFT)
+        self.assertEqual(filing.gross_liability, 75000)
+        self.assertEqual(filing.recoverable_amount, 30000)
+        self.assertEqual(filing.amount_due, 45000)
+
+    def test_prepare_is_idempotent_for_same_period(self):
+        entity, _, periods = self.build_books()
+        ob = self._vat_obligation(entity)
+        self._accrue_output_vat(entity, periods[0], net=1000000, vat=75000)
+        a = prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
+                           period_end=datetime.date(2026, 1, 31))
+        b = prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
+                           period_end=datetime.date(2026, 1, 31))
+        self.assertEqual(a.pk, b.pk)
+        self.assertEqual(TaxFiling.objects.filter(entity=entity, obligation=ob).count(), 1)
+
+    def test_file_nets_input_vat_then_pay_clears_liability(self):
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        ob = self._vat_obligation(entity)
+        self._accrue_output_vat(entity, periods[0], net=1000000, vat=75000)
+        self._accrue_input_vat(entity, periods[0], net=400000, vat=30000)
+        filing = prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
+                                period_end=datetime.date(2026, 1, 31))
+        file_filing(filing, filed_date=datetime.date(2026, 2, 5), filing_reference="VAT-202601")
+        filing.refresh_from_db()
+        self.assertEqual(filing.filing_status, TaxFilingStatus.FILED)
+        # Netting journal cleared input VAT 1300 against output 2200.
+        self.assertIsNotNone(filing.filing_journal)
+        self.assertEqual(filing.filing_journal.lines.get(account__code="1300").credit, 30000)
+        self.assertEqual(filing.filing_journal.lines.get(account__code="2200").debit, 30000)
+
+        pay_filing(filing, bank_account=bank, pay_date=datetime.date(2026, 2, 20))
+        filing.refresh_from_db()
+        self.assertEqual(filing.filing_status, TaxFilingStatus.PAID)
+        self.assertEqual(filing.payment_status, InvoicePaymentStatus.PAID)
+        # Output VAT control account 2200 is now flat: 75,000 Cr − 30,000 net − 45,000 paid.
+        vat_acc = Account.objects.get(entity=entity, code="2200")
+        agg = JournalLine.objects.filter(
+            account=vat_acc, entry__status=DocumentStatus.POSTED,
+        ).aggregate(d=Sum("debit"), c=Sum("credit"))
+        self.assertEqual((agg["c"] or 0) - (agg["d"] or 0), 0)
+
+    def test_wht_filing_no_recoverable_pays_full(self):
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        ob = self._wht_obligation(entity)
+        self._accrue_wht(entity, periods[0], amount=50000)
+        filing = prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
+                                period_end=datetime.date(2026, 1, 31))
+        self.assertEqual(filing.gross_liability, 50000)
+        self.assertEqual(filing.recoverable_amount, 0)
+        self.assertEqual(filing.amount_due, 50000)
+        # No recoverable + no penalty → filing posts no journal.
+        file_filing(filing, filed_date=datetime.date(2026, 2, 5))
+        filing.refresh_from_db()
+        self.assertIsNone(filing.filing_journal)
+        pay_filing(filing, bank_account=bank, pay_date=datetime.date(2026, 2, 10))
+        filing.refresh_from_db()
+        self.assertEqual(filing.filing_status, TaxFilingStatus.PAID)
+        # The remittance Dr 2300 / Cr bank flattens the WHT payable control account.
+        for code in ("2300", "1100"):
+            acc = Account.objects.get(entity=entity, code=code)
+            agg = JournalLine.objects.filter(
+                account=acc, entry__status=DocumentStatus.POSTED,
+            ).aggregate(d=Sum("debit"), c=Sum("credit"))
+            if code == "2300":
+                self.assertEqual((agg["c"] or 0) - (agg["d"] or 0), 0)  # payable cleared
+        # The bank-side remittance leg credited cash by 50,000.
+        remit = JournalLine.objects.get(
+            account__code="2300", entry__status=DocumentStatus.POSTED, debit=50000,
+        )
+        self.assertEqual(remit.entry.lines.get(account__code="1100").credit, 50000)
+
+    def test_partial_remittance(self):
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        ob = self._wht_obligation(entity)
+        self._accrue_wht(entity, periods[0], amount=50000)
+        filing = prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
+                                period_end=datetime.date(2026, 1, 31))
+        file_filing(filing, filed_date=datetime.date(2026, 2, 5))
+        pay_filing(filing, bank_account=bank, pay_date=datetime.date(2026, 2, 10), amount=20000)
+        filing.refresh_from_db()
+        self.assertEqual(filing.payment_status, InvoicePaymentStatus.PARTIAL)
+        self.assertEqual(filing.filing_status, TaxFilingStatus.FILED)
+        self.assertEqual(filing.balance_due, 30000)
+        pay_filing(filing, bank_account=bank, pay_date=datetime.date(2026, 2, 25))
+        filing.refresh_from_db()
+        self.assertEqual(filing.filing_status, TaxFilingStatus.PAID)
+        self.assertEqual(filing.balance_due, 0)
+
+    def test_file_with_penalty_books_expense_and_raises_due(self):
+        entity, _, periods = self.build_books()
+        ob = self._wht_obligation(entity)
+        self._accrue_wht(entity, periods[0], amount=50000)
+        filing = prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
+                                period_end=datetime.date(2026, 1, 31))
+        file_filing(
+            filing, filed_date=datetime.date(2026, 3, 5),
+            adjustment_amount=5000,
+            adjustment_account=Account.objects.get(entity=entity, code="5300"),
+        )
+        filing.refresh_from_db()
+        self.assertEqual(filing.adjustment_amount, 5000)
+        self.assertEqual(filing.amount_due, 55000)
+        # Dr 5300 penalty 5,000 ; Cr 2300 payable 5,000.
+        self.assertEqual(filing.filing_journal.lines.get(account__code="5300").debit, 5000)
+        self.assertEqual(filing.filing_journal.lines.get(account__code="2300").credit, 5000)
+
+    def test_pay_before_file_is_rejected_and_audited(self):
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        ob = self._wht_obligation(entity)
+        self._accrue_wht(entity, periods[0], amount=50000)
+        filing = prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
+                                period_end=datetime.date(2026, 1, 31))
+        with self.assertRaises(TaxFilingError):
+            pay_filing(filing, bank_account=bank, pay_date=datetime.date(2026, 2, 10))
+        filing.refresh_from_db()
+        self.assertEqual(filing.filing_status, TaxFilingStatus.DRAFT)
+        self.assertTrue(
+            FinanceAuditLog.objects.filter(
+                entity=entity,
+                action=FinanceAuditAction.TAX_FILING_REJECTED,
+                status=FinanceAuditStatus.FAILED,
+            ).exists()
+        )
+
+    def test_outstanding_obligations_reports_net(self):
+        entity, _, periods = self.build_books()
+        ob = self._vat_obligation(entity)
+        self._accrue_output_vat(entity, periods[0], net=1000000, vat=75000)
+        self._accrue_input_vat(entity, periods[0], net=400000, vat=30000)
+        rows = {r["code"]: r for r in outstanding_obligations(entity)}
+        vat = rows["VAT"]
+        self.assertEqual(vat["payable_balance"], 75000)
+        self.assertEqual(vat["recoverable_balance"], 30000)
+        self.assertEqual(vat["net_outstanding"], 45000)
+
+    def test_seed_creates_four_nigerian_obligations(self):
+        entity, _, _ = self.build_books()
+        # seed_chart_of_accounts (run by the fixture) seeds obligations too.
+        rows = TaxObligation.objects.filter(entity=entity).order_by("code")
+        self.assertEqual(
+            list(rows.values_list("code", flat=True)),
+            ["PAYE", "PENSION", "VAT", "WHT"],
+        )
+        vat = rows.get(code="VAT")
+        self.assertEqual(vat.liability_account.code, "2200")
+        self.assertEqual(vat.recoverable_account.code, "1300")
+        wht = rows.get(code="WHT")
+        self.assertEqual(wht.liability_account.code, "2300")
+        self.assertIsNone(wht.recoverable_account)
+        # Re-running is idempotent — no duplicates.
+        seed_tax_obligations(entity)
+        self.assertEqual(TaxObligation.objects.filter(entity=entity).count(), 4)
 
 
 class PayrollTests(_Phase4FixtureMixin, TestCase):

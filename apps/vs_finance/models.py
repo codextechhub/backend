@@ -49,6 +49,9 @@ from .constants import (
     PayrollRunStatus,
     PeriodStatus,
     PLATFORM_ENTITY_CODE,
+    TaxFilingFrequency,
+    TaxFilingStatus,
+    TaxObligationType,
 )
 from .exceptions import DocumentNumberingError
 from .money import MoneyField
@@ -1812,6 +1815,313 @@ class ExpenseClaimLine(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.description or self.expense_account_id}: {self.line_total}"
+
+
+class PettyCashFund(TimeStampedModel):
+    """A physical petty-cash float, mapped 1:1 to its own petty-cash GL account.
+
+    Master data (like :class:`BankAccount`) — money only ever moves via journals against
+    :attr:`gl_account`; this row adds the operational metadata (custodian, the fixed
+    ``float_amount`` the imprest is restored to) and a live ``current_balance`` mirror of
+    the cash physically on hand. The fund runs **perpetually**: each
+    :class:`PettyCashVoucher` posts ``Dr expense, Cr petty cash`` as it is spent, and
+    :func:`vs_finance.petty_cash.replenish_fund` tops the float back up
+    (``Dr petty cash, Cr bank``). ``current_balance`` always equals the GL balance of
+    ``gl_account``.
+    """
+
+    entity = models.ForeignKey(
+        LedgerEntity, on_delete=models.PROTECT, related_name="petty_cash_funds",
+    )
+    branch = models.ForeignKey(
+        "vs_schools.Branch", on_delete=models.PROTECT,
+        related_name="finance_petty_cash_funds", null=True, blank=True,
+    )
+    gl_account = models.OneToOneField(
+        Account, on_delete=models.PROTECT, related_name="petty_cash_fund",
+        help_text="The petty-cash GL account this float maps to (1:1). All movement posts here.",
+    )
+    name = models.CharField(max_length=160, help_text="Friendly label, e.g. 'Front-desk float'.")
+    custodian = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="petty_cash_funds", null=True, blank=True,
+        help_text="The person accountable for the cash tin.",
+    )
+    custodian_name = models.CharField(
+        max_length=160, blank=True, default="",
+        help_text="Free-text custodian when not a platform user.",
+    )
+    float_amount = MoneyField(
+        help_text="The imprest/float the fund is restored to on replenishment, in kobo.",
+    )
+    current_balance = MoneyField(
+        help_text="Live cash on hand, in kobo (maintained by the petty-cash ledger).",
+    )
+    currency = models.ForeignKey(
+        Currency, on_delete=models.PROTECT, related_name="petty_cash_funds",
+        null=True, blank=True, help_text="Defaults to the entity base currency.",
+    )
+    last_replenished_at = models.DateField(null=True, blank=True)
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "name"], name="uniq_finance_pettycash_entity_name",
+            ),
+        ]
+        indexes = [models.Index(fields=["entity", "is_active"])]
+        ordering = ["entity", "name"]
+
+    @property
+    def shortfall(self) -> int:
+        """How much a replenishment would draw to restore the float (kobo, never negative)."""
+        return max(self.float_amount - self.current_balance, 0)
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.current_balance} kobo on hand)"
+
+
+class PettyCashVoucher(FinanceDocument):
+    """A single small disbursement from a petty-cash fund, recorded against a voucher slip.
+
+    Posting (perpetual) raises ``Dr expense(s) (+ Dr input VAT), Cr petty cash`` and lowers
+    the fund's ``current_balance`` by the gross total. A voucher whose total exceeds the
+    cash on hand is rejected (:class:`~vs_finance.exceptions.PettyCashOverdrawError`) — you
+    cannot pay out more than is in the tin.
+    """
+
+    DOC_TYPE = DocType.PETTY_CASH_VOUCHER
+
+    fund = models.ForeignKey(
+        PettyCashFund, on_delete=models.PROTECT, related_name="vouchers",
+    )
+    voucher_date = models.DateField()
+    payee = models.CharField(
+        max_length=160, blank=True, default="",
+        help_text="Who the cash was paid to.",
+    )
+    spent_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="petty_cash_vouchers", null=True, blank=True,
+        help_text="The staff member who incurred the spend.",
+    )
+    narration = models.CharField(max_length=255, blank=True, default="")
+    reference = models.CharField(max_length=64, blank=True, default="")
+    currency = models.ForeignKey(
+        Currency, on_delete=models.PROTECT, related_name="petty_cash_vouchers",
+        null=True, blank=True,
+    )
+    subtotal = MoneyField(help_text="Net of tax, in kobo.")
+    tax_total = MoneyField(help_text="Recoverable input tax, in kobo.")
+    total = MoneyField(help_text="subtotal + tax_total, in kobo (the cash paid out).")
+    journal = models.ForeignKey(
+        "JournalEntry", on_delete=models.PROTECT, related_name="petty_cash_vouchers",
+        null=True, blank=True,
+    )
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["fund"]),
+        ]
+
+    def recompute_totals(self, *, save: bool = True) -> None:
+        agg = self.lines.aggregate(
+            net=models.Sum("net_amount"), tax=models.Sum("tax_amount"),
+        )
+        self.subtotal = agg["net"] or 0
+        self.tax_total = agg["tax"] or 0
+        self.total = self.subtotal + self.tax_total
+        if save:
+            self.save(update_fields=["subtotal", "tax_total", "total", "updated_at"])
+
+    def __str__(self) -> str:
+        return f"{self.document_number or self.pk}: {self.total} kobo"
+
+
+class PettyCashVoucherLine(TimeStampedModel):
+    """One expense line of a petty-cash voucher → a GL expense account (+ optional tax)."""
+
+    voucher = models.ForeignKey(
+        PettyCashVoucher, on_delete=models.CASCADE, related_name="lines",
+    )
+    description = models.CharField(max_length=255, blank=True, default="")
+    expense_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="petty_cash_voucher_lines",
+        help_text="GL expense account debited for this line's net.",
+    )
+    quantity = models.DecimalField(max_digits=14, decimal_places=4, default=1)
+    unit_price = MoneyField(help_text="Price per unit in kobo.")
+    tax_code = models.ForeignKey(
+        TaxCode, on_delete=models.PROTECT, related_name="petty_cash_voucher_lines",
+        null=True, blank=True,
+    )
+    net_amount = MoneyField(help_text="quantity × unit_price, in kobo.")
+    tax_amount = MoneyField(help_text="Recoverable tax on the net, in kobo.")
+    cost_center = models.ForeignKey(
+        CostCenter, on_delete=models.PROTECT, related_name="petty_cash_voucher_lines",
+        null=True, blank=True,
+    )
+    line_no = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["voucher", "line_no", "id"]
+        indexes = [models.Index(fields=["voucher"]), models.Index(fields=["expense_account"])]
+
+    @property
+    def line_total(self) -> int:
+        return self.net_amount + self.tax_amount
+
+    def __str__(self) -> str:
+        return f"{self.description or self.expense_account_id}: {self.line_total}"
+
+
+class TaxObligation(TimeStampedModel):
+    """Master data for a recurring statutory remittance the entity must file & pay.
+
+    Maps a tax type (VAT / WHT / PAYE / pension …) to the GL **liability control account**
+    whose accumulated balance is what gets remitted, plus the authority it is paid to and
+    how often a return falls due. VAT additionally carries a ``recoverable_account`` (input
+    VAT, an asset) that is netted off the output payable at filing time.
+
+    Kept as data (not hard-coded in services) so an entity with a customised chart, or a
+    new statutory levy, can be configured without a code change.
+    """
+
+    entity = models.ForeignKey(
+        LedgerEntity, on_delete=models.PROTECT, related_name="tax_obligations",
+    )
+    code = models.CharField(max_length=24, help_text="Short slug, e.g. 'VAT', 'WHT', 'PAYE'.")
+    name = models.CharField(max_length=160)
+    obligation_type = models.CharField(
+        max_length=12, choices=TaxObligationType.choices,
+        help_text="Which statutory tax this obligation covers.",
+    )
+    liability_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="tax_obligations",
+        help_text="Liability control account whose balance is remitted (Dr on payment).",
+    )
+    recoverable_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="tax_obligations_recoverable",
+        null=True, blank=True,
+        help_text="Recoverable input account netted off at filing (VAT only). Usually 1300.",
+    )
+    authority_name = models.CharField(
+        max_length=160, blank=True, default="",
+        help_text="Who the tax is paid to, e.g. 'FIRS', 'Lagos State IRS', a PFA.",
+    )
+    frequency = models.CharField(
+        max_length=12, choices=TaxFilingFrequency.choices,
+        default=TaxFilingFrequency.MONTHLY,
+    )
+    filing_day = models.PositiveSmallIntegerField(
+        default=21,
+        help_text="Day of the month after period end the return is due (e.g. 21 for VAT).",
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "code"], name="uniq_finance_taxobligation_entity_code",
+            ),
+        ]
+        ordering = ["entity", "code"]
+        indexes = [models.Index(fields=["entity", "is_active"])]
+
+    def __str__(self) -> str:
+        return f"{self.code} → {self.authority_name or self.liability_account_id}"
+
+
+class TaxFiling(FinanceDocument):
+    """A single statutory return for one obligation over one period, with its remittance.
+
+    Lifecycle ``DRAFT → FILED → PAID`` (perpetual ledger; the liability already sits in the
+    control account from source transactions):
+
+    * **Prepare** (:func:`vs_finance.tax_filing.prepare_filing`): derive the amount owed
+      from the GL movement of the obligation's ``liability_account`` over the period (for
+      VAT, less the recoverable input movement). No posting — a draft worksheet.
+    * **File** (:func:`vs_finance.tax_filing.file_filing`): freeze the figures and submit.
+      Posts a netting/penalty journal only if there is recoverable input to clear or a
+      penalty/interest adjustment, so the liability account is left holding exactly
+      ``amount_due``.
+    * **Pay** (:func:`vs_finance.tax_filing.pay_filing`): ``Dr liability, Cr bank`` for the
+      remittance; supports partial payment. Reuses :class:`InvoicePaymentStatus`.
+    """
+
+    DOC_TYPE = DocType.TAX_FILING
+
+    obligation = models.ForeignKey(
+        TaxObligation, on_delete=models.PROTECT, related_name="filings",
+    )
+    period_start = models.DateField()
+    period_end = models.DateField()
+    due_date = models.DateField(null=True, blank=True)
+    filing_status = models.CharField(
+        max_length=10, choices=TaxFilingStatus.choices, default=TaxFilingStatus.DRAFT,
+    )
+    gross_liability = MoneyField(help_text="Output/payable accrued in the period, in kobo.")
+    recoverable_amount = MoneyField(help_text="Recoverable input netted off (VAT), in kobo.")
+    adjustment_amount = MoneyField(
+        help_text="Penalty / interest added at filing (increases amount due), in kobo.",
+    )
+    amount_due = MoneyField(help_text="gross_liability − recoverable_amount + adjustment, in kobo.")
+    amount_paid = MoneyField(help_text="Remitted so far, in kobo.")
+    payment_status = models.CharField(
+        max_length=8, choices=InvoicePaymentStatus.choices,
+        default=InvoicePaymentStatus.UNPAID,
+    )
+    adjustment_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="tax_filing_adjustments",
+        null=True, blank=True,
+        help_text="Expense account debited for a penalty/interest adjustment.",
+    )
+    currency = models.ForeignKey(
+        Currency, on_delete=models.PROTECT, related_name="tax_filings",
+        null=True, blank=True,
+    )
+    filing_reference = models.CharField(
+        max_length=64, blank=True, default="",
+        help_text="Authority's return/receipt number once filed.",
+    )
+    filed_at = models.DateField(null=True, blank=True)
+    narration = models.CharField(max_length=255, blank=True, default="")
+    filing_journal = models.ForeignKey(
+        "JournalEntry", on_delete=models.PROTECT, related_name="tax_filing_postings",
+        null=True, blank=True,
+        help_text="The netting/penalty journal posted at filing (if any).",
+    )
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "filing_status"]),
+            models.Index(fields=["obligation"]),
+        ]
+
+    @property
+    def balance_due(self) -> int:
+        return self.amount_due - self.amount_paid
+
+    def recompute_due(self, *, save: bool = True) -> None:
+        self.amount_due = self.gross_liability - self.recoverable_amount + self.adjustment_amount
+        if save:
+            self.save(update_fields=["amount_due", "updated_at"])
+
+    def refresh_payment_status(self, *, save: bool = True) -> None:
+        if self.amount_paid <= 0:
+            status = InvoicePaymentStatus.UNPAID
+        elif self.amount_paid >= self.amount_due:
+            status = InvoicePaymentStatus.PAID
+        else:
+            status = InvoicePaymentStatus.PARTIAL
+        self.payment_status = status
+        if save:
+            self.save(update_fields=["payment_status", "updated_at"])
+
+    def __str__(self) -> str:
+        return f"{self.document_number or self.pk}: {self.amount_due} kobo"
 
 
 class PayrollRun(FinanceDocument):

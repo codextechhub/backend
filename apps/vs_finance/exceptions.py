@@ -97,9 +97,37 @@ class ExpenseClaimError(PostingError):
     default_message = "The expense claim could not be processed."
 
 
+class PettyCashError(PostingError):
+    """Raised for petty-cash fund / voucher lifecycle violations."""
+    error_code = "PETTY_CASH_ERROR"
+    default_message = "The petty cash action could not be completed."
+    http_status = 409
+
+
+class PettyCashOverdrawError(PettyCashError):
+    """Raised when a voucher would drive the fund's on-hand cash below zero."""
+    error_code = "PETTY_CASH_OVERDRAWN"
+    default_message = "The petty cash fund does not hold enough cash for this voucher."
+
+    def __init__(self, *, fund_name="", requested=None, on_hand=None, **kwargs):
+        self.fund_name = fund_name
+        super().__init__(
+            f"Voucher of {requested} exceeds the '{fund_name}' fund's {on_hand} kobo on hand.",
+            fund_name=fund_name, requested=str(requested), on_hand=str(on_hand),
+            **kwargs,
+        )
+
+
 class PayrollError(PostingError):
     error_code = "PAYROLL_ERROR"
     default_message = "The payroll run could not be processed."
+
+
+class TaxFilingError(PostingError):
+    """Raised for tax-remittance / filing lifecycle violations."""
+    error_code = "TAX_FILING_ERROR"
+    default_message = "The tax filing action could not be completed."
+    http_status = 409
 
 
 class BudgetError(FinanceError):
