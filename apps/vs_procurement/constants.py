@@ -110,6 +110,41 @@ class MilestoneStatus(models.TextChoices):
     MISSED = "MISSED", "Missed"
 
 
+class ProcApprovalState(models.TextChoices):
+    """Spend-approval state of a procurement document, driven by ``vs_workflow``.
+
+    A governance overlay *independent of* the ledger ``status`` (DRAFT → POSTED …):
+    it records where the document sits in its approval workflow without colliding
+    with the posting lifecycle (a vendor invoice is still posted from DRAFT).
+
+    NOT_SUBMITTED -> never sent for approval (or withdrawn/cancelled back to start).
+    PENDING       -> a workflow instance is in flight.
+    APPROVED      -> the workflow fully approved it.
+    REJECTED      -> the workflow terminally rejected it.
+    """
+    NOT_SUBMITTED = "NOT_SUBMITTED", "Not submitted"
+    PENDING = "PENDING", "Pending approval"
+    APPROVED = "APPROVED", "Approved"
+    REJECTED = "REJECTED", "Rejected"
+
+
+#: ``document_type`` tokens registered with ``vs_workflow`` (see workflow_handlers.py).
+WF_DOCTYPE_REQUISITION = "procurement.requisition"
+WF_DOCTYPE_PURCHASE_ORDER = "procurement.purchase_order"
+WF_DOCTYPE_VENDOR_INVOICE = "procurement.vendor_invoice"
+
+#: Template code the default-template provisioner publishes and submission resolves to.
+WF_DEFAULT_TEMPLATE_CODE = "standard"
+
+#: Default amount (kobo) at/above which the second (senior) approval stage is included.
+#: ₦500,000.00 — overridable per call to ``ensure_default_approval_templates``.
+WF_DEFAULT_SENIOR_THRESHOLD = 50_000_000
+
+#: Default RBAC permission keys the seeded approval stages resolve approvers against.
+WF_DEFAULT_MANAGER_PERMISSION = "procurement.approval.approve"
+WF_DEFAULT_SENIOR_PERMISSION = "procurement.approval.approve_senior"
+
+
 class MatchStatus(models.TextChoices):
     """Outcome of the 3-way match (PO ↔ GRN ↔ vendor invoice).
 

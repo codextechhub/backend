@@ -103,6 +103,28 @@ def approve_requisition(requisition, *, actor_user=None):
     return requisition
 
 
+def approve_purchase_order(po, *, actor_user=None):
+    """Mark a purchase order APPROVED — the state the spend workflow drives to.
+
+    Like :func:`approve_requisition`, the *routing* by amount lives in ``vs_workflow``;
+    this is the ledger-status change its on-approved callback applies. A commitment,
+    not a posting, so no GL effect — recorded in the finance audit log.
+    """
+    if po.status not in (DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL):
+        raise RequisitionError(
+            f"Purchase order {po.document_number or po.pk} is '{po.status}' "
+            f"and cannot be approved.",
+        )
+    po.status = DocumentStatus.APPROVED
+    po.save(update_fields=["status", "updated_at"])
+    record(
+        entity=po.entity, action=FinanceAuditAction.PURCHASE_ORDER_APPROVED,
+        actor_user=actor_user, target=po,
+        message=f"Approved purchase order {po.document_number or po.pk}.",
+    )
+    return po
+
+
 # --------------------------------------------------------------------------- #
 # PR → PO conversion                                                           #
 # --------------------------------------------------------------------------- #

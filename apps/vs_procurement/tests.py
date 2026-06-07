@@ -730,3 +730,221 @@ class GRIRAgingTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(report.rows, [])          # nothing open
         self.assertEqual(report.total_open, 0)
         self.assertEqual(report.difference, 0)
+
+
+class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
+    """Spend approvals are routed through vs_workflow (threshold-gated stages).
+
+    Covers: default-template provisioning + idempotency, the auto-skip path (no
+    eligible approvers → the requisition is approved synchronously on submit),
+    threshold gating of the senior stage, a real APPROVED vote driving the document
+    to APPROVED, and a REJECTED vote cancelling the requisition.
+    """
+
+    # -- helpers ------------------------------------------------------------- #
+
+    @staticmethod
+    def _user(email):
+        from django.contrib.auth import get_user_model
+
+        return get_user_model().objects.create_user(
+            email=email, user_type="CX_STAFF", first_name="T", last_name="U",
+        )
+
+    def _make_requisition(self, entity, *, unit_price, qty=1):
+        from vs_procurement.models import PurchaseRequisition, PurchaseRequisitionLine
+
+        req = PurchaseRequisition.objects.create(
+            entity=entity, request_date=datetime.date(2026, 1, 3),
+            requested_by=self._user(f"req-{unit_price}-{qty}@t.com"),
+        )
+        PurchaseRequisitionLine.objects.create(
+            requisition=req, line_no=1, description="thing",
+            quantity=qty, estimated_unit_price=unit_price,
+            expense_account=self.acc(entity, "5300"),
+        )
+        req.recompute_total(save=True)
+        return req
+
+    # -- template provisioning ---------------------------------------------- #
+
+    def test_default_templates_are_provisioned_idempotently(self):
+        from vs_workflow.models import WorkflowStage, WorkflowTemplate
+        from vs_procurement.approvals import ensure_default_approval_templates
+        from vs_procurement.constants import (
+            WF_DEFAULT_TEMPLATE_CODE, WF_DOCTYPE_REQUISITION,
+        )
+
+        first = ensure_default_approval_templates()
+        self.assertEqual(len(first), 3)
+        # One platform-wide template per approvable document type.
+        self.assertEqual(
+            WorkflowTemplate.objects.filter(
+                school__isnull=True, branch__isnull=True,
+                code=WF_DEFAULT_TEMPLATE_CODE,
+            ).count(),
+            3,
+        )
+        req_tmpl = WorkflowTemplate.objects.get(
+            document_type=WF_DOCTYPE_REQUISITION, code=WF_DEFAULT_TEMPLATE_CODE,
+            school__isnull=True, branch__isnull=True,
+        )
+        stages = list(WorkflowStage.objects.filter(template=req_tmpl).order_by("order"))
+        self.assertEqual([s.code for s in stages], ["manager", "senior"])
+        # The senior stage is threshold-gated on the document's amount field.
+        self.assertEqual(stages[1].inclusion_condition.get("op"), "gte")
+        self.assertEqual(stages[1].inclusion_condition.get("field"), "estimated_total")
+
+        # Re-running upserts in place — still exactly three templates / two stages.
+        ensure_default_approval_templates()
+        self.assertEqual(
+            WorkflowTemplate.objects.filter(code=WF_DEFAULT_TEMPLATE_CODE).count(), 3,
+        )
+        self.assertEqual(WorkflowStage.objects.filter(template=req_tmpl).count(), 2)
+
+    # -- auto-skip (no approvers) ------------------------------------------- #
+
+    def test_submit_without_approvers_auto_approves(self):
+        from vs_workflow.constants import WorkflowInstanceStatus
+        from vs_procurement.approvals import (
+            ensure_default_approval_templates, submit_for_approval,
+        )
+        from vs_procurement.constants import ProcApprovalState
+
+        entity, _, _, _, _ = self.build_p2p()
+        ensure_default_approval_templates()
+        req = self._make_requisition(entity, unit_price=10_000)  # below threshold
+        actor = self._user("actor@t.com")
+
+        instance = submit_for_approval(req, actor_user=actor)
+        req.refresh_from_db()
+        # Both stages skip (no eligible approvers) → terminal APPROVED on submit.
+        self.assertEqual(instance.status, WorkflowInstanceStatus.APPROVED)
+        self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
+        self.assertEqual(req.status, DocumentStatus.APPROVED)
+
+    def test_double_submit_is_rejected(self):
+        from vs_procurement.approvals import (
+            ensure_default_approval_templates, submit_for_approval,
+        )
+        from vs_procurement.exceptions import ApprovalWorkflowError
+
+        entity, _, _, _, _ = self.build_p2p()
+        ensure_default_approval_templates()
+        req = self._make_requisition(entity, unit_price=10_000)
+        actor = self._user("actor2@t.com")
+        submit_for_approval(req, actor_user=actor)  # → APPROVED
+        with self.assertRaises(ApprovalWorkflowError):
+            submit_for_approval(req, actor_user=actor)
+
+    # -- real votes (mocked approver resolution) ---------------------------- #
+
+    def test_manager_vote_approves_low_value_requisition(self):
+        from unittest.mock import patch
+
+        from vs_workflow.constants import (
+            WorkflowInstanceStatus, WorkflowStageAction as ActionEnum,
+        )
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.services.approvers import EligibleApprover
+        from vs_procurement.approvals import (
+            ensure_default_approval_templates, submit_for_approval,
+        )
+        from vs_procurement.constants import ProcApprovalState
+
+        entity, _, _, _, _ = self.build_p2p()
+        ensure_default_approval_templates()
+        req = self._make_requisition(entity, unit_price=10_000)  # below threshold
+        actor = self._user("requester@t.com")
+        manager = self._user("manager@t.com")
+
+        with patch(
+            "vs_workflow.services.approvers.resolve_approvers",
+            return_value=[EligibleApprover(user=manager)],
+        ):
+            instance = submit_for_approval(req, actor_user=actor)
+            # Only the manager stage runs (senior excluded below threshold).
+            self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+            wf_actions.record_action(instance.id, manager, ActionEnum.APPROVED)
+
+        instance.refresh_from_db()
+        req.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.APPROVED)
+        self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
+        self.assertEqual(req.status, DocumentStatus.APPROVED)
+
+    def test_high_value_requisition_escalates_to_senior_stage(self):
+        from unittest.mock import patch
+
+        from vs_workflow.constants import (
+            WorkflowInstanceStatus, WorkflowStageAction as ActionEnum,
+        )
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.services.approvers import EligibleApprover
+        from vs_procurement.approvals import (
+            ensure_default_approval_templates, submit_for_approval,
+        )
+        from vs_procurement.constants import (
+            ProcApprovalState, WF_DEFAULT_SENIOR_THRESHOLD,
+        )
+
+        entity, _, _, _, _ = self.build_p2p()
+        ensure_default_approval_templates()
+        # Above the senior threshold → the senior stage is included.
+        req = self._make_requisition(entity, unit_price=WF_DEFAULT_SENIOR_THRESHOLD + 100)
+        actor = self._user("requester2@t.com")
+        manager = self._user("manager2@t.com")
+
+        with patch(
+            "vs_workflow.services.approvers.resolve_approvers",
+            return_value=[EligibleApprover(user=manager)],
+        ):
+            instance = submit_for_approval(req, actor_user=actor)
+            # Manager approves → not terminal: must escalate to the senior stage.
+            wf_actions.record_action(instance.id, manager, ActionEnum.APPROVED)
+            instance.refresh_from_db()
+            self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+            req.refresh_from_db()
+            self.assertEqual(req.approval_state, ProcApprovalState.PENDING)
+            # Senior approves → terminal APPROVED.
+            wf_actions.record_action(instance.id, manager, ActionEnum.APPROVED)
+
+        instance.refresh_from_db()
+        req.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.APPROVED)
+        self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
+        self.assertEqual(req.status, DocumentStatus.APPROVED)
+
+    def test_rejection_cancels_the_requisition(self):
+        from unittest.mock import patch
+
+        from vs_workflow.constants import (
+            WorkflowInstanceStatus, WorkflowStageAction as ActionEnum,
+        )
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.services.approvers import EligibleApprover
+        from vs_procurement.approvals import (
+            ensure_default_approval_templates, submit_for_approval,
+        )
+        from vs_procurement.constants import ProcApprovalState
+
+        entity, _, _, _, _ = self.build_p2p()
+        ensure_default_approval_templates()
+        req = self._make_requisition(entity, unit_price=10_000)
+        actor = self._user("requester3@t.com")
+        manager = self._user("manager3@t.com")
+
+        with patch(
+            "vs_workflow.services.approvers.resolve_approvers",
+            return_value=[EligibleApprover(user=manager)],
+        ):
+            instance = submit_for_approval(req, actor_user=actor)
+            wf_actions.record_action(
+                instance.id, manager, ActionEnum.REJECTED, comment="no budget",
+            )
+
+        instance.refresh_from_db()
+        req.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.REJECTED)
+        self.assertEqual(req.approval_state, ProcApprovalState.REJECTED)
+        self.assertEqual(req.status, DocumentStatus.CANCELLED)

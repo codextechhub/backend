@@ -33,7 +33,6 @@ urlpatterns = [
     path("requisitions/", views.RequisitionListCreateView.as_view(), name="proc-requisitions"),
     path("requisitions/<int:pk>/", views.RequisitionDetailView.as_view(), name="proc-requisition-detail"),
     path("requisitions/<int:pk>/submit/", views.RequisitionSubmitView.as_view(), name="proc-requisition-submit"),
-    path("requisitions/<int:pk>/approve/", views.RequisitionApproveView.as_view(), name="proc-requisition-approve"),
 
     # Requests for quotation (sourcing)
     path("rfqs/", views.RfqListCreateView.as_view(), name="proc-rfqs"),
@@ -50,6 +49,8 @@ urlpatterns = [
     # Purchase orders
     path("purchase-orders/", views.PurchaseOrderListCreateView.as_view(), name="proc-purchase-orders"),
     path("purchase-orders/<int:pk>/", views.PurchaseOrderDetailView.as_view(), name="proc-purchase-order-detail"),
+    path("purchase-orders/<int:pk>/submit/", views.PurchaseOrderSubmitApprovalView.as_view(),
+         name="proc-purchase-order-submit"),
 
     # Goods received notes
     path("goods-receipts/", views.GoodsReceiptListCreateView.as_view(), name="proc-goods-receipts"),
@@ -60,12 +61,18 @@ urlpatterns = [
     path("vendor-invoices/", views.VendorInvoiceListCreateView.as_view(), name="proc-vendor-invoices"),
     path("vendor-invoices/<int:pk>/", views.VendorInvoiceDetailView.as_view(), name="proc-vendor-invoice-detail"),
     path("vendor-invoices/<int:pk>/match/", views.VendorInvoiceMatchView.as_view(), name="proc-vendor-invoice-match"),
+    path("vendor-invoices/<int:pk>/submit/", views.VendorInvoiceSubmitApprovalView.as_view(),
+         name="proc-vendor-invoice-submit"),
     path("vendor-invoices/<int:pk>/post/", views.VendorInvoicePostView.as_view(), name="proc-vendor-invoice-post"),
 
     # Vendor payments
     path("vendor-payments/", views.VendorPaymentListCreateView.as_view(), name="proc-vendor-payments"),
     path("vendor-payments/<int:pk>/", views.VendorPaymentDetailView.as_view(), name="proc-vendor-payment-detail"),
     path("vendor-payments/<int:pk>/post/", views.VendorPaymentPostView.as_view(), name="proc-vendor-payment-post"),
+
+    # Spend approvals (vs_workflow)
+    path("approvals/default-templates/", views.ApprovalTemplateSetupView.as_view(),
+         name="proc-approval-default-templates"),
 
     # AP reports
     path("reports/ap-aging/", views.APAgingView.as_view(), name="proc-ap-aging"),

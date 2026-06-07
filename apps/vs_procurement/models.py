@@ -39,10 +39,14 @@ from .constants import (
     MatchStatus,
     MilestoneStatus,
     PaymentTerms,
+    ProcApprovalState,
     QuotationStatus,
     RfqStatus,
     VendorKycStatus,
     VendorRisk,
+    WF_DOCTYPE_PURCHASE_ORDER,
+    WF_DOCTYPE_REQUISITION,
+    WF_DOCTYPE_VENDOR_INVOICE,
 )
 
 
@@ -350,6 +354,9 @@ class PurchaseRequisition(FinanceDocument):
     """
 
     DOC_TYPE = DocType.PURCHASE_REQUISITION
+    #: vs_workflow integration — see vs_procurement.workflow_handlers / .approvals.
+    workflow_document_type = WF_DOCTYPE_REQUISITION
+    workflow_amount_field = "estimated_total"
 
     requested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
@@ -363,6 +370,11 @@ class PurchaseRequisition(FinanceDocument):
     )
     justification = models.CharField(max_length=255, blank=True, default="")
     estimated_total = MoneyField(help_text="Rolled-up estimate from the lines, in kobo.")
+    approval_state = models.CharField(
+        max_length=16, choices=ProcApprovalState.choices,
+        default=ProcApprovalState.NOT_SUBMITTED,
+        help_text="Spend-approval state driven by vs_workflow (overlay; not the ledger status).",
+    )
 
     class Meta(FinanceDocument.Meta):
         indexes = [
@@ -583,6 +595,9 @@ class PurchaseOrder(FinanceDocument):
     """
 
     DOC_TYPE = DocType.PURCHASE_ORDER
+    #: vs_workflow integration — see vs_procurement.workflow_handlers / .approvals.
+    workflow_document_type = WF_DOCTYPE_PURCHASE_ORDER
+    workflow_amount_field = "total"
 
     vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="purchase_orders")
     requisition = models.ForeignKey(
@@ -601,6 +616,11 @@ class PurchaseOrder(FinanceDocument):
     subtotal = MoneyField(help_text="Net of tax, in kobo.")
     tax_total = MoneyField(help_text="Total tax, in kobo.")
     total = MoneyField(help_text="subtotal + tax_total, in kobo.")
+    approval_state = models.CharField(
+        max_length=16, choices=ProcApprovalState.choices,
+        default=ProcApprovalState.NOT_SUBMITTED,
+        help_text="Spend-approval state driven by vs_workflow (overlay; not the ledger status).",
+    )
 
     class Meta(FinanceDocument.Meta):
         indexes = [
@@ -794,6 +814,9 @@ class VendorInvoice(FinanceDocument):
     """
 
     DOC_TYPE = DocType.VENDOR_INVOICE
+    #: vs_workflow integration — see vs_procurement.workflow_handlers / .approvals.
+    workflow_document_type = WF_DOCTYPE_VENDOR_INVOICE
+    workflow_amount_field = "total"
 
     vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="invoices")
     purchase_order = models.ForeignKey(
@@ -821,6 +844,11 @@ class VendorInvoice(FinanceDocument):
     )
     match_status = models.CharField(
         max_length=16, choices=MatchStatus.choices, default=MatchStatus.NOT_MATCHED,
+    )
+    approval_state = models.CharField(
+        max_length=16, choices=ProcApprovalState.choices,
+        default=ProcApprovalState.NOT_SUBMITTED,
+        help_text="Spend-approval state driven by vs_workflow (overlay; not the ledger status).",
     )
     journal = models.ForeignKey(
         "vs_finance.JournalEntry", on_delete=models.PROTECT, related_name="ap_invoices",

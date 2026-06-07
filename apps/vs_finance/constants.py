@@ -344,6 +344,7 @@ class FinanceAuditAction(models.TextChoices):
     GRN_POSTED = "GRN_POSTED", "Goods receipt posted"
     GRN_POST_REJECTED = "GRN_POST_REJECTED", "Goods receipt posting rejected"
     VENDOR_INVOICE_MATCHED = "VENDOR_INVOICE_MATCHED", "Vendor invoice matched"
+    VENDOR_INVOICE_APPROVED = "VENDOR_INVOICE_APPROVED", "Vendor invoice approved (workflow)"
     VENDOR_INVOICE_POSTED = "VENDOR_INVOICE_POSTED", "Vendor invoice posted"
     VENDOR_INVOICE_POST_REJECTED = "VENDOR_INVOICE_POST_REJECTED", "Vendor invoice posting rejected"
     VENDOR_PAYMENT_POSTED = "VENDOR_PAYMENT_POSTED", "Vendor payment posted"

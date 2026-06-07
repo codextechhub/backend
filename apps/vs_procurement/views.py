@@ -27,7 +27,7 @@ from vs_finance.money import format_naira
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 
-from . import contracts, payables, purchasing, sourcing
+from . import approvals, contracts, payables, purchasing, sourcing
 from .models import (
     CatalogItem,
     ContractMilestone,
@@ -651,6 +651,12 @@ class RequisitionDetailView(_ProcBase):
 
 
 class RequisitionSubmitView(_ProcBase):
+    """Submit a requisition into the ``vs_workflow`` approval engine.
+
+    Approval is no longer a direct endpoint — submitting hands the document to its
+    threshold-gated workflow template; approvers then vote through the ``vs_workflow``
+    API, and the engine's callback drives the requisition to APPROVED.
+    """
     rbac_permission = "procurement.requisition.submit"
 
     def post(self, request, pk):
@@ -658,20 +664,82 @@ class RequisitionSubmitView(_ProcBase):
         req = PurchaseRequisition.objects.filter(entity=entity, pk=pk).first()
         if req is None:
             raise NotFound("No such requisition in this entity.")
-        purchasing.submit_requisition(req, actor_user=request.user)
-        return success_response("Requisition submitted.", data=RequisitionSerializer(req).data)
+        instance = approvals.submit_for_approval(req, actor_user=request.user)
+        return _approval_response("Requisition submitted for approval.",
+                                  req, instance, RequisitionSerializer)
 
 
-class RequisitionApproveView(_ProcBase):
-    rbac_permission = "procurement.requisition.approve"
+# --------------------------------------------------------------------------- #
+# Spend approvals (vs_workflow hand-off)                                       #
+# --------------------------------------------------------------------------- #
+
+def _approval_response(message, document, instance, serializer_cls):
+    """Build the standard envelope for a submit-for-approval action.
+
+    Re-reads ``document`` because the engine may have reached a terminal decision
+    synchronously (all stages auto-skipped), mutating it via a different instance.
+    """
+    document.refresh_from_db()
+    return success_response(message, data={
+        "workflow_instance_id": instance.id,
+        "workflow_status": instance.status,
+        "approval_state": document.approval_state,
+        "document": serializer_cls(document).data,
+    })
+
+
+class PurchaseOrderSubmitApprovalView(_ProcBase):
+    rbac_permission = "procurement.purchase_order.submit"
 
     def post(self, request, pk):
         entity = resolve_entity(request)
-        req = PurchaseRequisition.objects.filter(entity=entity, pk=pk).first()
-        if req is None:
-            raise NotFound("No such requisition in this entity.")
-        purchasing.approve_requisition(req, actor_user=request.user)
-        return success_response("Requisition approved.", data=RequisitionSerializer(req).data)
+        po = PurchaseOrder.objects.filter(entity=entity, pk=pk).first()
+        if po is None:
+            raise NotFound("No such purchase order in this entity.")
+        instance = approvals.submit_for_approval(po, actor_user=request.user)
+        return _approval_response("Purchase order submitted for approval.",
+                                  po, instance, PurchaseOrderSerializer)
+
+
+class VendorInvoiceSubmitApprovalView(_ProcBase):
+    rbac_permission = "procurement.vendor_invoice.submit"
+
+    def post(self, request, pk):
+        entity = resolve_entity(request)
+        inv = VendorInvoice.objects.filter(entity=entity, pk=pk).first()
+        if inv is None:
+            raise NotFound("No such vendor invoice in this entity.")
+        instance = approvals.submit_for_approval(inv, actor_user=request.user)
+        return _approval_response("Vendor invoice submitted for approval.",
+                                  inv, instance, VendorInvoiceSerializer)
+
+
+class ApprovalTemplateSetupView(_ProcBase):
+    """Provision the platform-wide default threshold-gated approval templates.
+
+    POST body (all optional): ``threshold`` (kobo), ``manager_permission``,
+    ``senior_permission``. Idempotent — re-running upserts the templates in place.
+    """
+    rbac_permission = "procurement.approval.manage"
+
+    def post(self, request):
+        body = request.data or {}
+        kwargs = {}
+        if "threshold" in body:
+            kwargs["threshold"] = _money(body.get("threshold"), "threshold")
+        if body.get("manager_permission"):
+            kwargs["manager_permission"] = str(body["manager_permission"])
+        if body.get("senior_permission"):
+            kwargs["senior_permission"] = str(body["senior_permission"])
+        templates = approvals.ensure_default_approval_templates(
+            created_by=request.user, **kwargs,
+        )
+        return success_response("Default approval templates provisioned.", data={
+            "templates": [
+                {"id": t.id, "document_type": t.document_type, "code": t.code, "name": t.name}
+                for t in templates
+            ],
+        })
 
 
 # --------------------------------------------------------------------------- #

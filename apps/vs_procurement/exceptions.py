@@ -32,6 +32,13 @@ class ContractError(ProcurementError):
     default_message = "The contract action could not be completed."
 
 
+class ApprovalWorkflowError(ProcurementError):
+    """Raised for procurement spend-approval / vs_workflow hand-off violations."""
+    error_code = "APPROVAL_WORKFLOW_ERROR"
+    default_message = "The approval action could not be completed."
+    http_status = 409
+
+
 class ThreeWayMatchError(PostingError):
     """Raised when a vendor invoice fails the PO↔GRN↔invoice match and can't post."""
     error_code = "THREE_WAY_MATCH_FAILED"
