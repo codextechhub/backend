@@ -25,6 +25,9 @@ from .models import (
     Currency,
     Dimension,
     DepreciationSchedule,
+    DunningNotice,
+    DunningPolicy,
+    DunningStage,
     ExpenseClaim,
     ExpenseClaimLine,
     FinanceAuditLog,
@@ -258,6 +261,42 @@ class PaymentPlanSerializer(serializers.ModelSerializer):
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total_amount)
+
+
+class DunningStageSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = DunningStage
+        fields = [
+            "id", "level", "name", "min_days_overdue", "channel", "message",
+        ]
+
+
+class DunningPolicySerializer(serializers.ModelSerializer):
+    stages = DunningStageSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = DunningPolicy
+        fields = ["id", "name", "is_active", "is_default", "stages"]
+
+
+class DunningNoticeSerializer(serializers.ModelSerializer):
+    customer_code = serializers.CharField(source="customer.code", read_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    invoice_number = serializers.CharField(source="invoice.document_number", read_only=True)
+    policy_name = serializers.CharField(source="policy.name", read_only=True, default=None)
+    amount_due_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DunningNotice
+        fields = [
+            "id", "document_number", "customer_id", "customer_code", "customer_name",
+            "invoice_id", "invoice_number", "policy_id", "policy_name", "stage_id",
+            "level", "notice_date", "days_overdue", "amount_due", "amount_due_naira",
+            "channel", "message", "notice_status", "sent_at",
+        ]
+
+    def get_amount_due_naira(self, obj) -> str:
+        return format_naira(obj.amount_due)
 
 
 # --------------------------------------------------------------------------- #

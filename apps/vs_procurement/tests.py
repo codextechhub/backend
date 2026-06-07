@@ -22,19 +22,47 @@ from vs_finance.models import (
 )
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies
 
-from vs_procurement.constants import MatchStatus
-from vs_procurement.exceptions import ThreeWayMatchError
+from vs_procurement.constants import (
+    ContractStatus,
+    MatchStatus,
+    MilestoneStatus,
+    QuotationStatus,
+    RfqStatus,
+)
+from vs_procurement.exceptions import ContractError, SourcingError, ThreeWayMatchError
 from vs_procurement.models import (
+    CatalogItem,
+    ContractMilestone,
     GoodsReceivedNote,
     GoodsReceivedNoteLine,
     PurchaseOrder,
     PurchaseOrderLine,
     PurchaseRequisition,
     PurchaseRequisitionLine,
+    RequestForQuotation,
+    RfqLine,
     Vendor,
+    VendorContract,
     VendorInvoice,
     VendorInvoiceLine,
     VendorPayment,
+    VendorQuotation,
+    VendorQuotationLine,
+)
+from vs_procurement.contracts import (
+    activate_contract,
+    complete_milestone,
+    expiring_contracts,
+    flag_missed_milestones,
+    mark_expired,
+    renew_contract,
+    terminate_contract,
+)
+from vs_procurement.sourcing import (
+    award_quotation,
+    cancel_rfq,
+    issue_rfq,
+    submit_quotation,
 )
 from vs_procurement.payables import (
     post_vendor_invoice,
@@ -354,3 +382,351 @@ class FullChainTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(vi.payment_status, InvoicePaymentStatus.PAID)
         self.assertTrue(reconcile_ap(entity).is_reconciled)
         self.assertEqual(reconcile_ap(entity).control_total, 0)
+
+
+# --------------------------------------------------------------------------- #
+# Sourcing: RFQ → quotations → award → PO                                     #
+# --------------------------------------------------------------------------- #
+
+class SourcingTests(_P2PFixtureMixin, TestCase):
+    """RFQ lifecycle, quotation submission and award-into-PO conversion."""
+
+    def _make_rfq(self, entity, *, lines=None):
+        rfq = RequestForQuotation.objects.create(
+            entity=entity, title="Office chairs",
+            issue_date=datetime.date(2026, 1, 3),
+        )
+        for i, (desc, qty) in enumerate(lines or [("Mesh chair", 10)], start=1):
+            RfqLine.objects.create(
+                rfq=rfq, description=desc, quantity=qty, line_no=i,
+                expense_account=self.acc(entity, "5300"),
+            )
+        return rfq
+
+    def _make_quotation(self, entity, rfq, vendor, *, lines):
+        """lines: [(description, qty, unit_price_kobo)]."""
+        quo = VendorQuotation.objects.create(
+            entity=entity, rfq=rfq, vendor=vendor,
+            quote_date=datetime.date(2026, 1, 4),
+        )
+        rfq_lines = list(rfq.lines.all())
+        for i, (desc, qty, price) in enumerate(lines, start=1):
+            VendorQuotationLine.objects.create(
+                quotation=quo, description=desc, quantity=qty, unit_price=price,
+                line_no=i, expense_account=self.acc(entity, "5300"),
+                rfq_line=rfq_lines[i - 1] if i - 1 < len(rfq_lines) else None,
+            )
+        return quo
+
+    def test_issue_requires_lines_and_flips_status(self):
+        entity, _, _, _, _ = self.build_p2p()
+        empty = RequestForQuotation.objects.create(
+            entity=entity, title="Empty", issue_date=datetime.date(2026, 1, 3),
+        )
+        with self.assertRaises(SourcingError):
+            issue_rfq(empty)
+        rfq = self._make_rfq(entity)
+        issue_rfq(rfq)
+        rfq.refresh_from_db()
+        self.assertEqual(rfq.rfq_status, RfqStatus.ISSUED)
+        self.assertTrue(rfq.document_number)
+
+    def test_quotation_only_submits_against_issued_rfq(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._make_rfq(entity)
+        quo = self._make_quotation(entity, rfq, vendor, lines=[("Mesh chair", 10, 200_000)])
+        # RFQ still DRAFT — cannot submit.
+        with self.assertRaises(SourcingError):
+            submit_quotation(quo)
+        issue_rfq(rfq)
+        submit_quotation(quo)
+        quo.refresh_from_db()
+        self.assertEqual(quo.quotation_status, QuotationStatus.SUBMITTED)
+        self.assertEqual(quo.subtotal, 2_000_000)
+        self.assertEqual(quo.total, 2_000_000)
+
+    def test_award_builds_po_and_rejects_losers(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        loser = Vendor.objects.create(
+            entity=entity, code="RIVAL", name="Rival Co",
+            payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"),
+        )
+        rfq = self._make_rfq(entity)
+        issue_rfq(rfq)
+        winning = self._make_quotation(entity, rfq, vendor, lines=[("Mesh chair", 10, 200_000)])
+        losing = self._make_quotation(entity, rfq, loser, lines=[("Mesh chair", 10, 250_000)])
+        submit_quotation(winning)
+        submit_quotation(losing)
+
+        po = award_quotation(winning)
+
+        self.assertEqual(po.status, DocumentStatus.DRAFT)
+        self.assertEqual(po.vendor_id, vendor.pk)
+        self.assertEqual(po.total, 2_000_000)
+        self.assertEqual(po.lines.count(), 1)
+        line = po.lines.first()
+        self.assertEqual(line.unit_price, 200_000)
+        self.assertEqual(line.expense_account, self.acc(entity, "5300"))
+
+        winning.refresh_from_db()
+        losing.refresh_from_db()
+        rfq.refresh_from_db()
+        self.assertEqual(winning.quotation_status, QuotationStatus.AWARDED)
+        self.assertEqual(winning.awarded_po_id, po.pk)
+        self.assertEqual(losing.quotation_status, QuotationStatus.REJECTED)
+        self.assertEqual(rfq.rfq_status, RfqStatus.AWARDED)
+
+    def test_cannot_award_unsubmitted_quotation(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._make_rfq(entity)
+        issue_rfq(rfq)
+        quo = self._make_quotation(entity, rfq, vendor, lines=[("Mesh chair", 10, 200_000)])
+        with self.assertRaises(SourcingError):  # still DRAFT
+            award_quotation(quo)
+
+    def test_awarded_rfq_cannot_be_cancelled(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._make_rfq(entity)
+        issue_rfq(rfq)
+        quo = self._make_quotation(entity, rfq, vendor, lines=[("Mesh chair", 10, 200_000)])
+        submit_quotation(quo)
+        award_quotation(quo)
+        with self.assertRaises(SourcingError):
+            cancel_rfq(rfq)
+
+
+# --------------------------------------------------------------------------- #
+# Item catalog                                                                #
+# --------------------------------------------------------------------------- #
+
+class CatalogItemTests(_P2PFixtureMixin, TestCase):
+    """Catalog master data and its line-default seeding."""
+
+    def test_line_defaults_returns_buying_defaults(self):
+        entity, _, vendor, input_vat, _ = self.build_p2p()
+        item = CatalogItem.objects.create(
+            entity=entity, code="CHAIR", name="Mesh chair",
+            description="Ergonomic mesh chair",
+            preferred_vendor=vendor,
+            default_expense_account=self.acc(entity, "5300"),
+            default_tax_code=input_vat,
+            lead_time_days=7, standard_unit_price=200_000,
+        )
+        defaults = item.line_defaults()
+        self.assertEqual(defaults["description"], "Ergonomic mesh chair")
+        self.assertEqual(defaults["expense_account"], self.acc(entity, "5300"))
+        self.assertEqual(defaults["tax_code"], input_vat)
+        self.assertEqual(defaults["unit_price"], 200_000)
+
+    def test_line_defaults_falls_back_to_name(self):
+        entity, _, _, _, _ = self.build_p2p()
+        item = CatalogItem.objects.create(
+            entity=entity, code="PEN", name="Blue pen", standard_unit_price=5_000,
+        )
+        self.assertEqual(item.line_defaults()["description"], "Blue pen")
+        self.assertIsNone(item.line_defaults()["expense_account"])
+
+    def test_code_unique_per_entity(self):
+        from django.db import IntegrityError, transaction
+        entity, _, _, _, _ = self.build_p2p()
+        CatalogItem.objects.create(entity=entity, code="DUP", name="First")
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            CatalogItem.objects.create(entity=entity, code="DUP", name="Second")
+
+
+# --------------------------------------------------------------------------- #
+# Vendor contracts                                                            #
+# --------------------------------------------------------------------------- #
+
+class VendorContractTests(_P2PFixtureMixin, TestCase):
+    """Contract lifecycle, milestones and renewal/expiry alerts."""
+
+    def _contract(self, entity, vendor, *, ref="C-001", start, end, notice=30, status=None):
+        return VendorContract.objects.create(
+            entity=entity, vendor=vendor, reference=ref, title="Cleaning services",
+            start_date=start, end_date=end, contract_value=12_000_000,
+            renewal_notice_days=notice, status=status or ContractStatus.DRAFT,
+        )
+
+    def test_activate_requires_dates_and_flips_status(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        no_dates = VendorContract.objects.create(
+            entity=entity, vendor=vendor, reference="C-ND", title="No dates",
+        )
+        with self.assertRaises(ContractError):
+            activate_contract(no_dates)
+        c = self._contract(
+            entity, vendor, start=datetime.date(2026, 1, 1), end=datetime.date(2026, 12, 31),
+        )
+        activate_contract(c)
+        c.refresh_from_db()
+        self.assertEqual(c.status, ContractStatus.ACTIVE)
+
+    def test_renew_builds_successor_and_marks_original_renewed(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        c = self._contract(
+            entity, vendor, start=datetime.date(2026, 1, 1), end=datetime.date(2026, 12, 31),
+        )
+        activate_contract(c)
+        ContractMilestone.objects.create(
+            contract=c, name="Q1 review", due_date=datetime.date(2026, 3, 31),
+            amount=3_000_000, line_no=1,
+        )
+        successor = renew_contract(
+            c, reference="C-001-R", start_date=datetime.date(2027, 1, 1),
+            end_date=datetime.date(2027, 12, 31), copy_milestones=True,
+        )
+        c.refresh_from_db()
+        self.assertEqual(c.status, ContractStatus.RENEWED)
+        self.assertEqual(successor.status, ContractStatus.ACTIVE)
+        self.assertEqual(successor.renews_id, c.pk)
+        self.assertEqual(successor.contract_value, 12_000_000)  # carried over
+        self.assertEqual(successor.milestones.count(), 1)       # copied forward
+
+    def test_terminate_is_idempotent_and_refuses_draft(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        draft = self._contract(
+            entity, vendor, ref="C-D", start=datetime.date(2026, 1, 1),
+            end=datetime.date(2026, 12, 31),
+        )
+        with self.assertRaises(ContractError):
+            terminate_contract(draft)
+        activate_contract(draft)
+        terminate_contract(draft)
+        draft.refresh_from_db()
+        self.assertEqual(draft.status, ContractStatus.TERMINATED)
+        # Idempotent on terminal state.
+        terminate_contract(draft)
+        self.assertEqual(draft.status, ContractStatus.TERMINATED)
+
+    def test_complete_milestone_sets_date_and_status(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        c = self._contract(
+            entity, vendor, start=datetime.date(2026, 1, 1), end=datetime.date(2026, 12, 31),
+        )
+        ms = ContractMilestone.objects.create(
+            contract=c, name="Kickoff", due_date=datetime.date(2026, 2, 1),
+            amount=1_000_000, line_no=1,
+        )
+        complete_milestone(ms, on=datetime.date(2026, 1, 30))
+        ms.refresh_from_db()
+        self.assertEqual(ms.status, MilestoneStatus.COMPLETED)
+        self.assertEqual(ms.completed_date, datetime.date(2026, 1, 30))
+
+    def test_flag_missed_milestones(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        c = self._contract(
+            entity, vendor, start=datetime.date(2026, 1, 1), end=datetime.date(2026, 12, 31),
+        )
+        ContractMilestone.objects.create(
+            contract=c, name="Late", due_date=datetime.date(2026, 1, 5), amount=0, line_no=1,
+        )
+        ContractMilestone.objects.create(
+            contract=c, name="Future", due_date=datetime.date(2026, 12, 1), amount=0, line_no=2,
+        )
+        count = flag_missed_milestones(entity, as_of=datetime.date(2026, 6, 1))
+        self.assertEqual(count, 1)
+        self.assertEqual(
+            c.milestones.filter(status=MilestoneStatus.MISSED).count(), 1)
+
+    def test_expiring_and_mark_expired(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        # Ends soon, 30-day notice — inside window as of 2026-12-15.
+        soon = self._contract(
+            entity, vendor, ref="C-SOON", start=datetime.date(2026, 1, 1),
+            end=datetime.date(2026, 12, 31), notice=30,
+        )
+        activate_contract(soon)
+        # Ends far away — not yet in window.
+        later = self._contract(
+            entity, vendor, ref="C-LATER", start=datetime.date(2026, 1, 1),
+            end=datetime.date(2027, 6, 30), notice=30,
+        )
+        activate_contract(later)
+
+        due = expiring_contracts(entity, as_of=datetime.date(2026, 12, 15))
+        self.assertEqual([c.reference for c in due], ["C-SOON"])
+
+        # within_days horizon overrides per-contract notice.
+        due90 = expiring_contracts(entity, as_of=datetime.date(2026, 12, 15), within_days=400)
+        self.assertIn("C-LATER", [c.reference for c in due90])
+
+        # mark_expired flips only the lapsed one.
+        moved = mark_expired(entity, as_of=datetime.date(2027, 1, 1))
+        self.assertEqual(moved, 1)
+        soon.refresh_from_db()
+        self.assertEqual(soon.status, ContractStatus.EXPIRED)
+
+
+# --------------------------------------------------------------------------- #
+# AP cash-requirements forecast + GR/IR aging                                 #
+# --------------------------------------------------------------------------- #
+
+class CashForecastTests(_P2PFixtureMixin, TestCase):
+    def test_open_bill_buckets_by_days_until_due(self):
+        from vs_procurement.reports import ap_cash_requirements
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        vi = self.make_bill(
+            entity, vendor, [("5300", 1, 1_000_000, None, None)],
+            date=datetime.date(2026, 1, 10),
+        )
+        post_vendor_invoice(vi)  # POSTED, due 2026-01-10
+
+        # Five days before due → "0-7" window.
+        fc = ap_cash_requirements(entity, as_of=datetime.date(2026, 1, 5))
+        self.assertEqual(fc.total_due, 1_000_000)
+        self.assertEqual(fc.bucket_totals["0-7"], 1_000_000)
+        self.assertEqual(fc.rows[0].code, "ACME")
+
+        # Past the due date → "overdue".
+        fc2 = ap_cash_requirements(entity, as_of=datetime.date(2026, 1, 20))
+        self.assertEqual(fc2.bucket_totals["overdue"], 1_000_000)
+
+
+class GRIRAgingTests(_P2PFixtureMixin, TestCase):
+    def test_open_receipt_is_aged(self):
+        from vs_procurement.reports import grir_aging, grir_balance
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        grn = self.make_grn(entity, vendor, po, [(po.lines.first(), 10)])
+        post_grn(grn)  # received 2026-01-08, GR/IR credit 1,000,000
+
+        report = grir_aging(entity, as_of=datetime.date(2026, 1, 10))
+        self.assertEqual(len(report.rows), 1)
+        row = report.rows[0]
+        self.assertEqual(row.open_value, 1_000_000)
+        self.assertEqual(row.invoiced_value, 0)
+        self.assertEqual(row.bucket, "1-30")
+        self.assertEqual(report.total_open, 1_000_000)
+        # Aging total matches the GL control magnitude.
+        self.assertEqual(report.total_open, abs(grir_balance(entity)))
+        self.assertEqual(report.difference, 0)
+
+    def test_matched_invoice_clears_the_grir_row(self):
+        from vs_procurement.reports import grir_aging
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        po_line = po.lines.first()
+        grn = self.make_grn(entity, vendor, po, [(po_line, 10)])
+        post_grn(grn)
+        grn_line = grn.lines.first()
+
+        vi = VendorInvoice.objects.create(
+            entity=entity, vendor=vendor, purchase_order=po,
+            invoice_date=datetime.date(2026, 1, 10), due_date=datetime.date(2026, 1, 10),
+        )
+        VendorInvoiceLine.objects.create(
+            vendor_invoice=vi, po_line=po_line, grn_line=grn_line,
+            expense_account=self.acc(entity, "5100"), quantity=10,
+            unit_price=100_000, line_no=1,
+        )
+        post_vendor_invoice(vi)  # clears GR/IR
+
+        report = grir_aging(entity, as_of=datetime.date(2026, 1, 12))
+        self.assertEqual(report.rows, [])          # nothing open
+        self.assertEqual(report.total_open, 0)
+        self.assertEqual(report.difference, 0)

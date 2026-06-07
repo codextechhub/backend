@@ -156,6 +156,178 @@ def reconcile_ap(entity, *, as_of=None) -> APReconciliation:
     )
 
 
+# --------------------------------------------------------------------------- #
+# AP cash-requirements forecast                                               #
+# --------------------------------------------------------------------------- #
+
+#: Forward-looking buckets for the cash forecast, by days until due.
+FORECAST_BUCKETS = ("overdue", "0-7", "8-30", "31-60", "61-90", "90+")
+
+
+def _forecast_bucket(days_until_due: int) -> str:
+    if days_until_due < 0:
+        return "overdue"
+    if days_until_due <= 7:
+        return "0-7"
+    if days_until_due <= 30:
+        return "8-30"
+    if days_until_due <= 60:
+        return "31-60"
+    if days_until_due <= 90:
+        return "61-90"
+    return "90+"
+
+
+@dataclass
+class CashRequirementRow:
+    """One vendor's open AP, split by *when* the cash will be needed (kobo)."""
+
+    vendor_id: int
+    code: str
+    name: str
+    buckets: dict = field(default_factory=lambda: {b: 0 for b in FORECAST_BUCKETS})
+    total: int = 0
+
+
+@dataclass
+class CashRequirementsForecast:
+    entity_id: int
+    as_of: object
+    rows: list = field(default_factory=list)
+    bucket_totals: dict = field(default_factory=lambda: {b: 0 for b in FORECAST_BUCKETS})
+    total_due: int = 0
+
+
+def ap_cash_requirements(entity, *, as_of=None) -> CashRequirementsForecast:
+    """Forecast upcoming cash outflows by grouping open bills on *days until due*.
+
+    The forward-looking twin of :func:`ap_aging`: every POSTED, not-fully-paid bill's
+    ``balance_due`` is bucketed by ``due_date - as_of`` into overdue / 0-7 / 8-30 / 31-60
+    / 61-90 / 90+ days, per vendor, so treasury can see how much cash each window needs.
+    A bill with no ``due_date`` falls back to ``invoice_date`` (typically landing in
+    ``overdue``). All amounts are integer kobo.
+    """
+    from .models import VendorInvoice
+
+    as_of = as_of or timezone.now().date()
+    report = CashRequirementsForecast(entity_id=entity.id, as_of=as_of)
+    rows: dict[int, CashRequirementRow] = {}
+
+    posted_invoices = (
+        VendorInvoice.objects
+        .filter(entity=entity, status="POSTED")
+        .exclude(payment_status="PAID")
+        .select_related("vendor")
+    )
+    for inv in posted_invoices:
+        due = inv.balance_due
+        if due <= 0:
+            continue
+        ref_date = inv.due_date or inv.invoice_date
+        days_until_due = (ref_date - as_of).days
+        bucket = _forecast_bucket(days_until_due)
+        r = rows.get(inv.vendor_id)
+        if r is None:
+            r = CashRequirementRow(
+                vendor_id=inv.vendor_id, code=inv.vendor.code, name=inv.vendor.name,
+                buckets={b: 0 for b in FORECAST_BUCKETS},
+            )
+            rows[inv.vendor_id] = r
+        r.buckets[bucket] += due
+        r.total += due
+
+    for r in rows.values():
+        for b in FORECAST_BUCKETS:
+            report.bucket_totals[b] += r.buckets[b]
+        report.total_due += r.total
+
+    report.rows = sorted(rows.values(), key=lambda x: x.code)
+    return report
+
+
+# --------------------------------------------------------------------------- #
+# GR/IR aging                                                                 #
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class GRIRAgingRow:
+    """One goods receipt's still-open GR/IR position, aged by received date (kobo)."""
+
+    grn_id: int
+    reference: str
+    vendor_code: str
+    vendor_name: str
+    received_date: object
+    days: int
+    bucket: str
+    received_value: int
+    invoiced_value: int
+    open_value: int   # received − invoiced (received-not-invoiced when positive)
+
+
+@dataclass
+class GRIRAgingReport:
+    entity_id: int
+    as_of: object
+    rows: list = field(default_factory=list)
+    bucket_totals: dict = field(default_factory=lambda: {b: 0 for b in AGING_BUCKETS})
+    total_open: int = 0
+    control_balance: int = 0   # GL net of the GR/IR clearing account
+    difference: int = 0        # total_open − |control_balance| (price variance / non-PO noise)
+
+
+def grir_aging(entity, *, as_of=None) -> GRIRAgingReport:
+    """Age the open GR/IR clearing balance by goods-receipt date.
+
+    Where :func:`grir_balance` is a single point-in-time figure, this drills it into how
+    *long* each received-not-invoiced position has been sitting: per POSTED GRN, the
+    received value (credited to GR/IR) less the value of POSTED vendor-invoice lines that
+    reference its lines (which debited GR/IR clearing it). The remaining ``open_value`` is
+    aged off the GRN's ``received_date``. The GL ``control_balance`` is carried alongside;
+    a non-zero ``difference`` flags price variances or non-PO postings the GRN walk can't
+    see. All amounts are integer kobo.
+    """
+    from django.db.models import Sum
+
+    from .models import GoodsReceivedNote, VendorInvoiceLine
+
+    as_of = as_of or timezone.now().date()
+    report = GRIRAgingReport(entity_id=entity.id, as_of=as_of)
+
+    posted_grns = (
+        GoodsReceivedNote.objects
+        .filter(entity=entity, status="POSTED")
+        .select_related("vendor")
+        .order_by("received_date", "id")
+    )
+    rows = []
+    for grn in posted_grns:
+        invoiced = (
+            VendorInvoiceLine.objects
+            .filter(grn_line__grn=grn, vendor_invoice__status="POSTED")
+            .aggregate(v=Sum("net_amount"))["v"] or 0
+        )
+        open_value = grn.total_value - invoiced
+        if open_value == 0:
+            continue
+        days = (as_of - grn.received_date).days
+        bucket = _bucket_for(days)
+        rows.append(GRIRAgingRow(
+            grn_id=grn.id, reference=grn.document_number or str(grn.pk),
+            vendor_code=grn.vendor.code, vendor_name=grn.vendor.name,
+            received_date=grn.received_date, days=days, bucket=bucket,
+            received_value=grn.total_value, invoiced_value=invoiced, open_value=open_value,
+        ))
+        report.bucket_totals[bucket] += open_value
+        report.total_open += open_value
+
+    report.rows = rows
+    control = grir_balance(entity)
+    report.control_balance = control
+    report.difference = report.total_open - abs(control)
+    return report
+
+
 def grir_balance(entity) -> int:
     """Net balance of the GR/IR clearing account for ``entity`` (kobo, signed credit).
 

@@ -33,6 +33,13 @@ from .views_ar import (
     CreditNoteListCreateView,
     CreditNotePostView,
     CustomerStatementView,
+    DunningGenerateView,
+    DunningNoticeCancelView,
+    DunningNoticeDetailView,
+    DunningNoticeListCreateView,
+    DunningNoticeSendView,
+    DunningPolicyDetailView,
+    DunningPolicyListCreateView,
     InvoiceWriteOffView,
     PaymentPlanActivateView,
     PaymentPlanCancelView,
@@ -109,6 +116,19 @@ urlpatterns = [
          name="finance-paymentplan-refresh"),
     path("payment-plans/<int:pk>/cancel/", PaymentPlanCancelView.as_view(),
          name="finance-paymentplan-cancel"),
+
+    # Dunning — policies + automated reminder notices
+    path("dunning-policies/", DunningPolicyListCreateView.as_view(), name="finance-dunning-policy-list"),
+    path("dunning-policies/<int:pk>/", DunningPolicyDetailView.as_view(),
+         name="finance-dunning-policy-detail"),
+    path("dunning/generate/", DunningGenerateView.as_view(), name="finance-dunning-generate"),
+    path("dunning-notices/", DunningNoticeListCreateView.as_view(), name="finance-dunning-notice-list"),
+    path("dunning-notices/<int:pk>/", DunningNoticeDetailView.as_view(),
+         name="finance-dunning-notice-detail"),
+    path("dunning-notices/<int:pk>/send/", DunningNoticeSendView.as_view(),
+         name="finance-dunning-notice-send"),
+    path("dunning-notices/<int:pk>/cancel/", DunningNoticeCancelView.as_view(),
+         name="finance-dunning-notice-cancel"),
 
     # Actions
     path("journals/<int:id>/post/", JournalPostView.as_view(), name="finance-journal-post"),

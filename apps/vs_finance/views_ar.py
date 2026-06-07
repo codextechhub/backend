@@ -21,6 +21,9 @@ from .models import (
     CreditNote,
     CreditNoteLine,
     Customer,
+    DunningNotice,
+    DunningPolicy,
+    DunningStage,
     Invoice,
     PaymentPlan,
     Refund,
@@ -28,6 +31,8 @@ from .models import (
 from .serializers import (
     ConcessionSerializer,
     CreditNoteSerializer,
+    DunningNoticeSerializer,
+    DunningPolicySerializer,
     InvoiceSerializer,
     PaymentPlanSerializer,
     RefundSerializer,
@@ -612,4 +617,181 @@ class CustomerStatementView(_FinanceBase):
                 "closing_balance": _money_pair(stmt.closing_balance),
                 "aging": {b: _money_pair(v) for b, v in stmt.aging.items()},
             },
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Dunning — policies, stages and automated reminder notices                   #
+# --------------------------------------------------------------------------- #
+
+class DunningPolicyListCreateView(_FinanceBase):
+    """GET (list) dunning policies, or POST to create one (optionally with stages)."""
+
+    @property
+    def rbac_permission(self):
+        return "finance.dunning.manage" if self.request.method == "POST" \
+            else "finance.dunning.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = DunningPolicy.objects.filter(entity=entity).prefetch_related("stages")
+        return success_response(
+            "Dunning policies retrieved.",
+            data=DunningPolicySerializer(qs.order_by("name"), many=True).data,
+        )
+
+    @transaction.atomic
+    def post(self, request):
+        from .dunning import ensure_default_policy
+
+        entity = resolve_entity(request)
+        body = request.data or {}
+
+        # Shortcut: seed the standard ladder when explicitly requested.
+        if body.get("use_default"):
+            policy = ensure_default_policy(
+                entity, name=body.get("name") or "Standard reminders",
+            )
+            return success_response(
+                f"Default dunning policy '{policy.name}' ready.",
+                data=DunningPolicySerializer(policy).data, status=201,
+            )
+
+        name = (body.get("name") or "").strip()
+        if not name:
+            raise ValidationError({"name": "A policy name is required."})
+        policy = DunningPolicy.objects.create(
+            entity=entity, name=name,
+            is_active=bool(body.get("is_active", True)),
+            is_default=bool(body.get("is_default", False)),
+        )
+        for i, raw in enumerate(body.get("stages") or [], start=1):
+            DunningStage.objects.create(
+                policy=policy,
+                level=int(raw.get("level", i)),
+                name=raw.get("name") or f"Stage {i}",
+                min_days_overdue=int(raw.get("min_days_overdue", 0)),
+                channel=raw.get("channel") or "EMAIL",
+                message=raw.get("message") or "",
+            )
+        return success_response(
+            f"Dunning policy '{policy.name}' created.",
+            data=DunningPolicySerializer(policy).data, status=201,
+        )
+
+
+class DunningPolicyDetailView(_FinanceBase):
+    rbac_permission = "finance.dunning.view"
+
+    def get(self, request, pk):
+        entity = resolve_entity(request)
+        policy = DunningPolicy.objects.filter(entity=entity, pk=pk).first()
+        if policy is None:
+            raise NotFound("Dunning policy not found for this entity.")
+        return success_response(
+            "Dunning policy retrieved.", data=DunningPolicySerializer(policy).data,
+        )
+
+
+class DunningGenerateView(_FinanceBase):
+    """POST: run a dunning policy over the entity's overdue invoices, raising notices."""
+
+    rbac_permission = "finance.dunning.generate"
+
+    def post(self, request):
+        from .dunning import generate_dunning
+
+        entity = resolve_entity(request)
+        body = request.data or {}
+        as_of = _date(body.get("as_of"), "as_of")
+        policy = None
+        if body.get("policy") not in (None, ""):
+            policy = DunningPolicy.objects.filter(
+                entity=entity, pk=body["policy"],
+            ).first() if str(body["policy"]).isdigit() else \
+                DunningPolicy.objects.filter(entity=entity, name=body["policy"]).first()
+            if policy is None:
+                raise NotFound(f"No dunning policy matches '{body['policy']}'.")
+        customer = _resolve_customer(entity, body.get("customer"), required=False)
+
+        notices = generate_dunning(
+            entity, as_of=as_of, policy=policy, customer=customer,
+            actor_user=request.user,
+        )
+        return success_response(
+            f"Generated {len(notices)} dunning notice(s).",
+            data={
+                "created": len(notices),
+                "notices": DunningNoticeSerializer(notices, many=True).data,
+            },
+        )
+
+
+class DunningNoticeListCreateView(_FinanceBase):
+    """GET dunning notices for an entity (filterable by status / customer / invoice)."""
+
+    rbac_permission = "finance.dunning.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = DunningNotice.objects.filter(entity=entity).select_related("customer", "invoice")
+        if (status_val := request.query_params.get("status")):
+            qs = qs.filter(notice_status=status_val)
+        if (customer := request.query_params.get("customer")):
+            qs = qs.filter(customer=_resolve_customer(entity, customer))
+        if (invoice := request.query_params.get("invoice")):
+            qs = qs.filter(invoice=_resolve_invoice(entity, invoice))
+        return success_response(
+            "Dunning notices retrieved.",
+            data=DunningNoticeSerializer(qs.order_by("-notice_date", "-id")[:300], many=True).data,
+        )
+
+
+class _DunningNoticeActionBase(_FinanceBase):
+    def _notice(self, request, pk):
+        entity = resolve_entity(request)
+        notice = DunningNotice.objects.filter(entity=entity, pk=pk).first()
+        if notice is None:
+            raise NotFound("Dunning notice not found for this entity.")
+        return entity, notice
+
+
+class DunningNoticeDetailView(_DunningNoticeActionBase):
+    rbac_permission = "finance.dunning.view"
+
+    def get(self, request, pk):
+        _, notice = self._notice(request, pk)
+        return success_response(
+            "Dunning notice retrieved.", data=DunningNoticeSerializer(notice).data,
+        )
+
+
+class DunningNoticeSendView(_DunningNoticeActionBase):
+    rbac_permission = "finance.dunning.send"
+
+    def post(self, request, pk):
+        from .dunning import mark_notice_sent
+
+        _, notice = self._notice(request, pk)
+        mark_notice_sent(notice, actor_user=request.user)
+        notice.refresh_from_db()
+        return success_response(
+            f"Dunning notice {notice.document_number} marked sent.",
+            data=DunningNoticeSerializer(notice).data,
+        )
+
+
+class DunningNoticeCancelView(_DunningNoticeActionBase):
+    rbac_permission = "finance.dunning.send"
+
+    def post(self, request, pk):
+        from .dunning import cancel_notice
+
+        _, notice = self._notice(request, pk)
+        reason = (request.data or {}).get("reason", "")
+        cancel_notice(notice, reason=reason, actor_user=request.user)
+        notice.refresh_from_db()
+        return success_response(
+            f"Dunning notice {notice.document_number} cancelled.",
+            data=DunningNoticeSerializer(notice).data,
         )

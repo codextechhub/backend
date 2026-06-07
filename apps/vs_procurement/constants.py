@@ -50,6 +50,66 @@ PAYMENT_TERM_DAYS = {
 }
 
 
+class RfqStatus(models.TextChoices):
+    """Lifecycle of a request for quotation (a sourcing overlay — no GL effect).
+
+    DRAFT     -> being prepared; lines editable.
+    ISSUED    -> sent to vendors; quotations may be submitted against it.
+    AWARDED   -> a vendor's quotation was selected and converted to a PO.
+    CLOSED    -> finished with no award (e.g. all quotes rejected / cancelled sourcing).
+    CANCELLED -> abandoned before issue or award.
+    """
+    DRAFT = "DRAFT", "Draft"
+    ISSUED = "ISSUED", "Issued"
+    AWARDED = "AWARDED", "Awarded"
+    CLOSED = "CLOSED", "Closed"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class QuotationStatus(models.TextChoices):
+    """Lifecycle of a vendor's quotation against an RFQ.
+
+    DRAFT     -> being captured.
+    SUBMITTED -> a firm offer in contention.
+    AWARDED   -> selected; converted into a purchase order.
+    REJECTED  -> not selected (set on the losers when a sibling is awarded).
+    EXPIRED   -> past its validity date without award.
+    """
+    DRAFT = "DRAFT", "Draft"
+    SUBMITTED = "SUBMITTED", "Submitted"
+    AWARDED = "AWARDED", "Awarded"
+    REJECTED = "REJECTED", "Rejected"
+    EXPIRED = "EXPIRED", "Expired"
+
+
+class ContractStatus(models.TextChoices):
+    """Lifecycle of a vendor contract (a master-data overlay — no GL effect).
+
+    DRAFT      -> being prepared; not yet in force.
+    ACTIVE     -> in force between start_date and end_date.
+    EXPIRED    -> past end_date without renewal/termination.
+    TERMINATED -> ended early.
+    RENEWED    -> superseded by a successor contract (its renewal).
+    """
+    DRAFT = "DRAFT", "Draft"
+    ACTIVE = "ACTIVE", "Active"
+    EXPIRED = "EXPIRED", "Expired"
+    TERMINATED = "TERMINATED", "Terminated"
+    RENEWED = "RENEWED", "Renewed"
+
+
+class MilestoneStatus(models.TextChoices):
+    """Delivery state of a contract milestone.
+
+    PENDING   -> not yet delivered.
+    COMPLETED -> delivered / met.
+    MISSED    -> due date passed without completion.
+    """
+    PENDING = "PENDING", "Pending"
+    COMPLETED = "COMPLETED", "Completed"
+    MISSED = "MISSED", "Missed"
+
+
 class MatchStatus(models.TextChoices):
     """Outcome of the 3-way match (PO ↔ GRN ↔ vendor invoice).
 

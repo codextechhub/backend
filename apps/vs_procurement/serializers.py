@@ -16,18 +16,25 @@ from rest_framework import serializers
 from vs_finance.money import format_naira
 
 from .models import (
+    CatalogItem,
+    ContractMilestone,
     GoodsReceivedNote,
     GoodsReceivedNoteLine,
     PurchaseOrder,
     PurchaseOrderLine,
     PurchaseRequisition,
     PurchaseRequisitionLine,
+    RequestForQuotation,
+    RfqLine,
     Vendor,
     VendorCategory,
+    VendorContract,
     VendorInvoice,
     VendorInvoiceLine,
     VendorPayment,
     VendorPaymentAllocation,
+    VendorQuotation,
+    VendorQuotationLine,
 )
 
 
@@ -68,6 +75,76 @@ class VendorSerializer(serializers.ModelSerializer):
 
 
 # --------------------------------------------------------------------------- #
+# Vendor contracts                                                            #
+# --------------------------------------------------------------------------- #
+
+class ContractMilestoneSerializer(serializers.ModelSerializer):
+    amount_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ContractMilestone
+        fields = [
+            "id", "line_no", "name", "due_date", "amount", "amount_naira",
+            "status", "completed_date", "note",
+        ]
+
+    def get_amount_naira(self, obj) -> str:
+        return format_naira(obj.amount)
+
+
+class VendorContractSerializer(serializers.ModelSerializer):
+    milestones = ContractMilestoneSerializer(many=True, read_only=True)
+    vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+    renewal_window_start = serializers.DateField(read_only=True)
+    contract_value_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = VendorContract
+        fields = [
+            "id", "reference", "title", "status",
+            "vendor_id", "vendor_code",
+            "start_date", "end_date", "renewal_window_start",
+            "contract_value", "contract_value_naira", "payment_terms",
+            "auto_renew", "renewal_notice_days", "renews_id", "notes",
+            "milestones",
+        ]
+
+    def get_contract_value_naira(self, obj) -> str:
+        return format_naira(obj.contract_value)
+
+
+# --------------------------------------------------------------------------- #
+# Item catalog                                                                #
+# --------------------------------------------------------------------------- #
+
+class CatalogItemSerializer(serializers.ModelSerializer):
+    preferred_vendor_code = serializers.CharField(
+        source="preferred_vendor.code", read_only=True, default=None,
+    )
+    expense_code = serializers.CharField(
+        source="default_expense_account.code", read_only=True, default=None,
+    )
+    tax_code = serializers.CharField(
+        source="default_tax_code.code", read_only=True, default=None,
+    )
+    standard_unit_price_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = CatalogItem
+        fields = [
+            "id", "code", "name", "description", "unit_of_measure",
+            "preferred_vendor_id", "preferred_vendor_code",
+            "default_expense_account_id", "expense_code",
+            "default_tax_code_id", "tax_code",
+            "lead_time_days", "standard_unit_price", "standard_unit_price_naira",
+            "is_active",
+        ]
+
+    def get_standard_unit_price_naira(self, obj) -> str:
+        return format_naira(obj.standard_unit_price)
+
+
+# --------------------------------------------------------------------------- #
 # Purchase requisition                                                        #
 # --------------------------------------------------------------------------- #
 
@@ -96,6 +173,69 @@ class RequisitionSerializer(serializers.ModelSerializer):
 
     def get_estimated_total_naira(self, obj) -> str:
         return format_naira(obj.estimated_total)
+
+
+# --------------------------------------------------------------------------- #
+# Request for quotation (sourcing)                                            #
+# --------------------------------------------------------------------------- #
+
+class RfqLineSerializer(serializers.ModelSerializer):
+    expense_code = serializers.CharField(source="expense_account.code", read_only=True, default=None)
+
+    class Meta:
+        model = RfqLine
+        fields = [
+            "id", "line_no", "description", "quantity",
+            "requisition_line_id", "expense_account_id", "expense_code", "tax_code_id",
+        ]
+
+
+class RequestForQuotationSerializer(serializers.ModelSerializer):
+    lines = RfqLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = RequestForQuotation
+        fields = [
+            "id", "document_number", "rfq_status", "title",
+            "requisition_id", "issue_date", "response_due_date", "notes", "lines",
+        ]
+
+
+# --------------------------------------------------------------------------- #
+# Vendor quotation (sourcing)                                                 #
+# --------------------------------------------------------------------------- #
+
+class VendorQuotationLineSerializer(serializers.ModelSerializer):
+    expense_code = serializers.CharField(source="expense_account.code", read_only=True, default=None)
+
+    class Meta:
+        model = VendorQuotationLine
+        fields = [
+            "id", "line_no", "description", "rfq_line_id",
+            "expense_account_id", "expense_code",
+            "quantity", "unit_price", "tax_code_id", "net_amount", "tax_amount",
+        ]
+
+
+class VendorQuotationSerializer(serializers.ModelSerializer):
+    lines = VendorQuotationLineSerializer(many=True, read_only=True)
+    vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+    rfq_number = serializers.CharField(source="rfq.document_number", read_only=True)
+    total_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = VendorQuotation
+        fields = [
+            "id", "document_number", "quotation_status",
+            "rfq_id", "rfq_number", "vendor_id", "vendor_code",
+            "quote_date", "valid_until", "currency_id", "lead_time_days",
+            "reference", "notes",
+            "subtotal", "tax_total", "total", "total_naira",
+            "awarded_po_id", "lines",
+        ]
+
+    def get_total_naira(self, obj) -> str:
+        return format_naira(obj.total)
 
 
 # --------------------------------------------------------------------------- #

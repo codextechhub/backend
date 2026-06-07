@@ -17,12 +17,14 @@ control — **GR/IR clearing** — sits between receipt and invoice: receiving d
 expense and credits GR/IR; the matched invoice debits GR/IR (clearing it) and credits
 AP. When goods are both received and billed, GR/IR nets to zero.
 
-Sourcing sugar (RFQ/Quotation, CatalogItem, Contract) is intentionally **deferred** —
-it sits off the journal-posting acceptance path and adds no GL behaviour. The full
-double-entry P2P chain is here.
+The sourcing overlay (RFQ → VendorQuotation → award), the item :class:`CatalogItem` and
+:class:`VendorContract` (with :class:`ContractMilestone`) sit off the journal-posting
+path and add no GL behaviour — they feed the same chain. The full double-entry P2P chain
+is here.
 """
 from __future__ import annotations
 
+import datetime
 from decimal import Decimal
 
 from django.conf import settings
@@ -33,8 +35,12 @@ from vs_finance.models import FinanceDocument, TimeStampedModel
 from vs_finance.money import MoneyField
 
 from .constants import (
+    ContractStatus,
     MatchStatus,
+    MilestoneStatus,
     PaymentTerms,
+    QuotationStatus,
+    RfqStatus,
     VendorKycStatus,
     VendorRisk,
 )
@@ -166,6 +172,172 @@ class Vendor(TimeStampedModel):
 
 
 # --------------------------------------------------------------------------- #
+# Master data — item catalog                                                  #
+# --------------------------------------------------------------------------- #
+
+class CatalogItem(TimeStampedModel):
+    """A reusable purchasable item — pre-set buying defaults so lines aren't retyped.
+
+    Pure master data with **no GL effect**: a catalog item names a good/service and
+    carries the defaults a buyer would otherwise pick by hand on every requisition / RFQ
+    / PO line — a ``preferred_vendor``, the GL ``default_expense_account`` the cost lands
+    in, a ``default_tax_code``, an indicative ``standard_unit_price`` (kobo) and a
+    ``lead_time_days`` planning hint. :meth:`line_defaults` returns those as a dict the
+    line-building views can splat in. None of it is binding — every value is overridable
+    per line.
+    """
+
+    entity = models.ForeignKey(
+        "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="catalog_items",
+    )
+    code = models.CharField(max_length=40, help_text="Item code, unique within the entity.")
+    name = models.CharField(max_length=200)
+    description = models.CharField(max_length=255, blank=True, default="")
+    unit_of_measure = models.CharField(
+        max_length=24, blank=True, default="each", help_text="e.g. 'each', 'box', 'hour'.",
+    )
+
+    preferred_vendor = models.ForeignKey(
+        Vendor, on_delete=models.SET_NULL, related_name="catalog_items",
+        null=True, blank=True,
+    )
+    default_expense_account = models.ForeignKey(
+        "vs_finance.Account", on_delete=models.PROTECT, related_name="catalog_items",
+        null=True, blank=True,
+        help_text="GL account the cost lands in (seeds purchase lines).",
+    )
+    default_tax_code = models.ForeignKey(
+        "vs_finance.TaxCode", on_delete=models.PROTECT, related_name="catalog_items",
+        null=True, blank=True,
+    )
+    lead_time_days = models.PositiveSmallIntegerField(
+        null=True, blank=True, help_text="Typical delivery lead time, in days.",
+    )
+    standard_unit_price = MoneyField(help_text="Indicative price per unit, in kobo.")
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "code"], name="uniq_proc_catalogitem_entity_code",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "is_active"]),
+            models.Index(fields=["preferred_vendor"]),
+        ]
+        ordering = ["entity", "code"]
+
+    def line_defaults(self) -> dict:
+        """The buying defaults to seed a requisition / RFQ / PO line from this item."""
+        return {
+            "description": self.description or self.name,
+            "expense_account": self.default_expense_account,
+            "tax_code": self.default_tax_code,
+            "unit_price": self.standard_unit_price,
+        }
+
+    def __str__(self) -> str:
+        return f"{self.code} · {self.name}"
+
+
+# --------------------------------------------------------------------------- #
+# Vendor contracts (master data — no GL effect)                               #
+# --------------------------------------------------------------------------- #
+
+class VendorContract(TimeStampedModel):
+    """A term agreement with a vendor — the basis for renewal/expiry alerts.
+
+    Pure master data with **no GL effect**: a contract records the commercial envelope
+    (period, value, payment terms) and an optional list of :class:`ContractMilestone` s.
+    ``status`` runs its own lifecycle (:class:`~vs_procurement.constants.ContractStatus`).
+    A contract whose ``end_date`` is within ``renewal_notice_days`` of a given date is
+    surfaced as *due for renewal* by :func:`vs_procurement.contracts.expiring_contracts`;
+    ``renews`` points a successor contract back at the one it replaced.
+    """
+
+    entity = models.ForeignKey(
+        "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="vendor_contracts",
+    )
+    vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="contracts")
+    reference = models.CharField(max_length=64, help_text="Contract reference, unique within the entity.")
+    title = models.CharField(max_length=200)
+    status = models.CharField(
+        max_length=10, choices=ContractStatus.choices, default=ContractStatus.DRAFT,
+    )
+
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    contract_value = MoneyField(help_text="Total committed value over the term, in kobo.")
+    payment_terms = models.CharField(
+        max_length=8, choices=PaymentTerms.choices, default=PaymentTerms.NET_30,
+    )
+
+    auto_renew = models.BooleanField(default=False)
+    renewal_notice_days = models.PositiveSmallIntegerField(
+        default=30, help_text="Days before end_date to flag the contract for renewal.",
+    )
+    renews = models.ForeignKey(
+        "self", on_delete=models.SET_NULL, related_name="renewed_by",
+        null=True, blank=True, help_text="The prior contract this one renews/replaces.",
+    )
+    notes = models.CharField(max_length=255, blank=True, default="")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        related_name="vendor_contracts", null=True, blank=True,
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "reference"], name="uniq_proc_contract_entity_ref",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["entity", "end_date"]),
+            models.Index(fields=["vendor"]),
+        ]
+        ordering = ["entity", "-end_date", "reference"]
+
+    def renewal_window_start(self):
+        """The date from which this contract starts appearing in renewal alerts."""
+        if self.end_date is None:
+            return None
+        return self.end_date - datetime.timedelta(days=self.renewal_notice_days)
+
+    def __str__(self) -> str:
+        return f"{self.reference} · {self.title}"
+
+
+class ContractMilestone(TimeStampedModel):
+    """A deliverable / payment checkpoint on a :class:`VendorContract`."""
+
+    contract = models.ForeignKey(
+        VendorContract, on_delete=models.CASCADE, related_name="milestones",
+    )
+    name = models.CharField(max_length=200)
+    due_date = models.DateField(null=True, blank=True)
+    amount = MoneyField(help_text="Value tied to this milestone, in kobo.")
+    status = models.CharField(
+        max_length=10, choices=MilestoneStatus.choices, default=MilestoneStatus.PENDING,
+    )
+    completed_date = models.DateField(null=True, blank=True)
+    note = models.CharField(max_length=255, blank=True, default="")
+    line_no = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["contract", "line_no", "due_date", "id"]
+        indexes = [
+            models.Index(fields=["contract"]),
+            models.Index(fields=["status", "due_date"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.status})"
+
+
+# --------------------------------------------------------------------------- #
 # Purchase requisition (intent to buy — no GL effect)                         #
 # --------------------------------------------------------------------------- #
 
@@ -234,6 +406,168 @@ class PurchaseRequisitionLine(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.description}: {self.quantity}"
+
+
+# --------------------------------------------------------------------------- #
+# Sourcing — RFQ → vendor quotations → award (no GL effect)                   #
+# --------------------------------------------------------------------------- #
+
+class RequestForQuotation(FinanceDocument):
+    """A request inviting vendors to quote — competitive sourcing before a PO.
+
+    A sourcing overlay with no GL effect: an RFQ (optionally raised off an approved
+    :class:`PurchaseRequisition`) is issued to vendors who reply with
+    :class:`VendorQuotation` s; awarding the winning quote converts it into a
+    :class:`PurchaseOrder`. ``rfq_status`` runs its own lifecycle
+    (:class:`~vs_procurement.constants.RfqStatus`); the inherited ``status`` is unused.
+    """
+
+    DOC_TYPE = DocType.RFQ
+
+    requisition = models.ForeignKey(
+        PurchaseRequisition, on_delete=models.PROTECT, related_name="rfqs",
+        null=True, blank=True,
+    )
+    title = models.CharField(max_length=200, blank=True, default="")
+    rfq_status = models.CharField(
+        max_length=10, choices=RfqStatus.choices, default=RfqStatus.DRAFT,
+    )
+    issue_date = models.DateField()
+    response_due_date = models.DateField(
+        null=True, blank=True, help_text="Closing date for vendor responses.",
+    )
+    notes = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "rfq_status"]),
+            models.Index(fields=["entity", "issue_date"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.document_number or 'RFQ?'} · {self.title}"
+
+
+class RfqLine(TimeStampedModel):
+    """One requested item on an :class:`RequestForQuotation` (specification only)."""
+
+    rfq = models.ForeignKey(RequestForQuotation, on_delete=models.CASCADE, related_name="lines")
+    description = models.CharField(max_length=255)
+    quantity = models.DecimalField(max_digits=14, decimal_places=4, default=1)
+    requisition_line = models.ForeignKey(
+        PurchaseRequisitionLine, on_delete=models.PROTECT,
+        related_name="rfq_lines", null=True, blank=True,
+    )
+    expense_account = models.ForeignKey(
+        "vs_finance.Account", on_delete=models.PROTECT,
+        related_name="rfq_lines", null=True, blank=True,
+    )
+    tax_code = models.ForeignKey(
+        "vs_finance.TaxCode", on_delete=models.PROTECT,
+        related_name="rfq_lines", null=True, blank=True,
+    )
+    line_no = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["rfq", "line_no", "id"]
+        indexes = [models.Index(fields=["rfq"])]
+
+    def __str__(self) -> str:
+        return f"{self.description}: {self.quantity}"
+
+
+class VendorQuotation(FinanceDocument):
+    """A vendor's priced offer against an :class:`RequestForQuotation`.
+
+    No GL effect. ``quotation_status`` runs its own lifecycle
+    (:class:`~vs_procurement.constants.QuotationStatus`); the inherited ``status`` is
+    unused. Awarding the quote (:func:`vs_procurement.sourcing.award_quotation`) builds a
+    DRAFT :class:`PurchaseOrder` from the quotation's lines.
+    """
+
+    DOC_TYPE = DocType.QUOTATION
+
+    rfq = models.ForeignKey(
+        RequestForQuotation, on_delete=models.PROTECT, related_name="quotations",
+    )
+    vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="quotations")
+    quotation_status = models.CharField(
+        max_length=10, choices=QuotationStatus.choices, default=QuotationStatus.DRAFT,
+    )
+    quote_date = models.DateField()
+    valid_until = models.DateField(null=True, blank=True)
+    currency = models.ForeignKey(
+        "vs_finance.Currency", on_delete=models.PROTECT, related_name="quotations",
+        null=True, blank=True,
+    )
+    lead_time_days = models.PositiveSmallIntegerField(
+        null=True, blank=True, help_text="Promised delivery lead time in days.",
+    )
+    reference = models.CharField(max_length=64, blank=True, default="")
+    notes = models.CharField(max_length=255, blank=True, default="")
+
+    subtotal = MoneyField(help_text="Net of tax, in kobo.")
+    tax_total = MoneyField(help_text="Total tax, in kobo.")
+    total = MoneyField(help_text="subtotal + tax_total, in kobo.")
+
+    awarded_po = models.ForeignKey(
+        "PurchaseOrder", on_delete=models.SET_NULL, related_name="source_quotation",
+        null=True, blank=True,
+    )
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "quotation_status"]),
+            models.Index(fields=["rfq"]),
+            models.Index(fields=["vendor"]),
+        ]
+
+    def recompute_totals(self, *, save: bool = True) -> None:
+        agg = self.lines.aggregate(
+            net=models.Sum("net_amount"), tax=models.Sum("tax_amount"),
+        )
+        self.subtotal = agg["net"] or 0
+        self.tax_total = agg["tax"] or 0
+        self.total = self.subtotal + self.tax_total
+        if save:
+            self.save(update_fields=["subtotal", "tax_total", "total", "updated_at"])
+
+    def __str__(self) -> str:
+        return f"{self.document_number or 'QUO?'} · {self.vendor.code}"
+
+
+class VendorQuotationLine(TimeStampedModel):
+    """One priced line of a :class:`VendorQuotation`."""
+
+    quotation = models.ForeignKey(
+        VendorQuotation, on_delete=models.CASCADE, related_name="lines",
+    )
+    rfq_line = models.ForeignKey(
+        RfqLine, on_delete=models.PROTECT, related_name="quotation_lines",
+        null=True, blank=True,
+    )
+    description = models.CharField(max_length=255)
+    expense_account = models.ForeignKey(
+        "vs_finance.Account", on_delete=models.PROTECT, related_name="quotation_lines",
+        null=True, blank=True,
+        help_text="GL account the cost lands in once received (carried onto the PO line).",
+    )
+    quantity = models.DecimalField(max_digits=14, decimal_places=4, default=1)
+    unit_price = MoneyField(help_text="Quoted price per unit, in kobo.")
+    tax_code = models.ForeignKey(
+        "vs_finance.TaxCode", on_delete=models.PROTECT, related_name="quotation_lines",
+        null=True, blank=True,
+    )
+    net_amount = MoneyField(help_text="quantity × unit_price, in kobo.")
+    tax_amount = MoneyField(help_text="Tax on the net, in kobo.")
+    line_no = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["quotation", "line_no", "id"]
+        indexes = [models.Index(fields=["quotation"])]
+
+    def __str__(self) -> str:
+        return f"{self.description}: {self.quantity} @ {self.unit_price}"
 
 
 # --------------------------------------------------------------------------- #

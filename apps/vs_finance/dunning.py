@@ -1,0 +1,206 @@
+"""Dunning — automated, escalating reminders for overdue receivables.
+
+A :class:`~vs_finance.models.DunningPolicy` is a ladder of stages keyed by *days
+overdue*. :func:`generate_dunning` scans an entity's open invoices and, for each one
+past due, raises a :class:`~vs_finance.models.DunningNotice` at the **highest** stage it
+qualifies for — idempotent per ``(invoice, level)`` so re-running never re-issues a
+reminder the customer already got at that rung.
+
+Dunning is a *communications overlay*: nothing here touches the General Ledger.
+vs_finance only tracks the reminder lifecycle (PENDING → SENT, or CANCELLED / RESOLVED);
+an outer notifications service is expected to read PENDING notices and dispatch them
+through the recorded channel. All amounts are integer kobo.
+"""
+from __future__ import annotations
+
+import datetime
+
+from django.db import transaction
+from django.utils import timezone
+
+from .audit import record
+from .constants import (
+    DocumentStatus,
+    DunningChannel,
+    DunningNoticeStatus,
+    FinanceAuditAction,
+    InvoicePaymentStatus,
+)
+from .exceptions import PostingError
+
+
+#: A sensible out-of-the-box ladder: (level, name, min_days_overdue, channel).
+DEFAULT_STAGES = (
+    (1, "Friendly reminder", 1, DunningChannel.EMAIL),
+    (2, "Second reminder", 14, DunningChannel.EMAIL),
+    (3, "Final notice", 30, DunningChannel.EMAIL),
+)
+
+
+def ensure_default_policy(entity, *, name="Standard reminders"):
+    """Return ``entity``'s default dunning policy, creating a standard ladder if absent.
+
+    Idempotent: if a default policy already exists it is returned untouched; otherwise a
+    new default policy with the :data:`DEFAULT_STAGES` ladder is created.
+    """
+    from .models import DunningPolicy, DunningStage
+
+    existing = DunningPolicy.objects.filter(entity=entity, is_default=True).first()
+    if existing is not None:
+        return existing
+
+    policy = DunningPolicy.objects.create(
+        entity=entity, name=name, is_active=True, is_default=True,
+    )
+    DunningStage.objects.bulk_create([
+        DunningStage(
+            policy=policy, level=level, name=stage_name,
+            min_days_overdue=days, channel=channel,
+            message=f"{stage_name}: your account has an overdue balance.",
+        )
+        for level, stage_name, days, channel in DEFAULT_STAGES
+    ])
+    return policy
+
+
+def _resolve_policy(entity, policy=None):
+    """Pick the policy to run: the one passed, else the entity's active default."""
+    from .models import DunningPolicy
+
+    if policy is not None:
+        return policy
+    chosen = (
+        DunningPolicy.objects.filter(entity=entity, is_default=True, is_active=True).first()
+        or DunningPolicy.objects.filter(entity=entity, is_active=True).order_by("id").first()
+    )
+    if chosen is None:
+        raise PostingError(
+            "No active dunning policy for this entity. Create one (or call "
+            "ensure_default_policy) before generating reminders.",
+        )
+    return chosen
+
+
+def _stage_for(stages, days_overdue: int):
+    """Highest stage whose ``min_days_overdue`` is met by ``days_overdue`` (or ``None``)."""
+    match = None
+    for stage in stages:  # stages pre-sorted ascending by min_days_overdue
+        if days_overdue >= stage.min_days_overdue:
+            match = stage
+        else:
+            break
+    return match
+
+
+@transaction.atomic
+def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_user=None):
+    """Raise dunning notices for ``entity``'s overdue invoices as at ``as_of`` (today default).
+
+    For each posted, not-fully-paid invoice with an outstanding balance, the invoice's
+    days-overdue is measured from its due date (falling back to its invoice date) and the
+    highest qualifying :class:`~vs_finance.models.DunningStage` selected. A notice is
+    created **only** if one does not already exist for that ``(invoice, level)`` pair, so
+    repeated runs escalate rather than duplicate. Notices on invoices that have since been
+    settled are flipped to RESOLVED. Returns the list of newly created notices.
+    """
+    from .models import DunningNotice, Invoice
+
+    as_of = as_of or timezone.now().date()
+    policy = _resolve_policy(entity, policy)
+    stages = list(policy.stages.order_by("min_days_overdue", "level"))
+    if not stages:
+        raise PostingError(f"Dunning policy '{policy.name}' has no stages defined.")
+
+    invoices = Invoice.objects.filter(entity=entity, status=DocumentStatus.POSTED)
+    if customer is not None:
+        invoices = invoices.filter(customer=customer)
+
+    # Resolve any outstanding reminders whose invoice is now fully settled.
+    _resolve_settled(entity, actor_user=actor_user)
+
+    created = []
+    for invoice in invoices.exclude(payment_status=InvoicePaymentStatus.PAID).select_related("customer"):
+        if invoice.balance_due <= 0:
+            continue
+        due = invoice.due_date or invoice.invoice_date
+        days_overdue = (as_of - due).days
+        if days_overdue <= 0:
+            continue
+        stage = _stage_for(stages, days_overdue)
+        if stage is None:
+            continue
+        if DunningNotice.objects.filter(invoice=invoice, level=stage.level).exists():
+            continue
+
+        notice = DunningNotice.objects.create(
+            entity=entity, branch=invoice.branch, customer=invoice.customer,
+            invoice=invoice, policy=policy, stage=stage, level=stage.level,
+            notice_date=as_of, days_overdue=days_overdue, amount_due=invoice.balance_due,
+            channel=stage.channel, message=stage.message,
+            notice_status=DunningNoticeStatus.PENDING,
+            created_by=actor_user,
+        )
+        created.append(notice)
+
+    record(
+        entity=entity, action=FinanceAuditAction.DUNNING_RUN_GENERATED,
+        actor_user=actor_user, target=policy,
+        message=f"Generated {len(created)} dunning notice(s) under '{policy.name}' "
+                f"as at {as_of}.",
+        policy_id=policy.pk, as_of=str(as_of), notices_created=len(created),
+    )
+    return created
+
+
+def _resolve_settled(entity, *, actor_user=None):
+    """Flip any PENDING/SENT notice whose invoice is now fully paid to RESOLVED."""
+    from .models import DunningNotice
+
+    open_notices = DunningNotice.objects.filter(
+        entity=entity,
+        notice_status__in=[DunningNoticeStatus.PENDING, DunningNoticeStatus.SENT],
+    ).select_related("invoice")
+    for notice in open_notices:
+        if notice.invoice.balance_due <= 0:
+            notice.notice_status = DunningNoticeStatus.RESOLVED
+            notice.save(update_fields=["notice_status", "updated_at"])
+
+
+def mark_notice_sent(notice, *, actor_user=None):
+    """Record that a PENDING notice was dispatched. Idempotent once sent."""
+    from .models import DunningNotice  # noqa: F401  (typing/clarity)
+
+    if notice.notice_status == DunningNoticeStatus.SENT:
+        return notice
+    if notice.notice_status != DunningNoticeStatus.PENDING:
+        raise PostingError(
+            f"Notice {notice.document_number} is '{notice.notice_status}'; "
+            f"only a pending notice can be marked sent.",
+        )
+    notice.notice_status = DunningNoticeStatus.SENT
+    notice.sent_at = timezone.now()
+    notice.save(update_fields=["notice_status", "sent_at", "updated_at"])
+    record(
+        entity=notice.entity, action=FinanceAuditAction.DUNNING_NOTICE_SENT,
+        actor_user=actor_user, target=notice,
+        message=f"Dunning notice {notice.document_number} (L{notice.level}) sent to "
+                f"{notice.customer.code} via {notice.channel}.",
+        level=notice.level, channel=notice.channel,
+    )
+    return notice
+
+
+def cancel_notice(notice, *, reason="", actor_user=None):
+    """Withdraw a notice before/after sending. Idempotent on terminal states."""
+    if notice.notice_status in (DunningNoticeStatus.CANCELLED, DunningNoticeStatus.RESOLVED):
+        return notice
+    notice.notice_status = DunningNoticeStatus.CANCELLED
+    notice.save(update_fields=["notice_status", "updated_at"])
+    record(
+        entity=notice.entity, action=FinanceAuditAction.DUNNING_NOTICE_CANCELLED,
+        actor_user=actor_user, target=notice,
+        message=f"Dunning notice {notice.document_number} cancelled."
+                + (f" Reason: {reason}" if reason else ""),
+        level=notice.level,
+    )
+    return notice

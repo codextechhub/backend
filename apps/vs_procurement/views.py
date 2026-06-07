@@ -27,26 +27,37 @@ from vs_finance.money import format_naira
 from vs_finance.views import resolve_entity
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 
-from . import payables, purchasing
+from . import contracts, payables, purchasing, sourcing
 from .models import (
+    CatalogItem,
+    ContractMilestone,
     GoodsReceivedNote,
     GoodsReceivedNoteLine,
     PurchaseOrder,
     PurchaseRequisition,
     PurchaseRequisitionLine,
+    RequestForQuotation,
+    RfqLine,
     Vendor,
     VendorCategory,
+    VendorContract,
     VendorInvoice,
     VendorInvoiceLine,
     VendorPayment,
+    VendorQuotation,
+    VendorQuotationLine,
 )
 from .serializers import (
+    CatalogItemSerializer,
     GoodsReceivedNoteSerializer,
     PurchaseOrderSerializer,
+    RequestForQuotationSerializer,
     RequisitionSerializer,
     VendorCategorySerializer,
+    VendorContractSerializer,
     VendorInvoiceSerializer,
     VendorPaymentSerializer,
+    VendorQuotationSerializer,
     VendorSerializer,
 )
 
@@ -253,6 +264,326 @@ class VendorDetailView(_ProcBase):
 
 
 # --------------------------------------------------------------------------- #
+# Vendor contracts                                                            #
+# --------------------------------------------------------------------------- #
+
+def _build_milestones(contract, items):
+    """Create ContractMilestone rows from a request ``milestones`` list (optional)."""
+    for i, ms in enumerate(items or [], start=1):
+        if not ms.get("name"):
+            raise ValidationError({"milestones": "Each milestone needs a name."})
+        ContractMilestone.objects.create(
+            contract=contract, line_no=ms.get("line_no", i), name=ms["name"],
+            due_date=_date(ms.get("due_date"), "due_date"),
+            amount=_money(ms.get("amount", 0), "amount"),
+            note=ms.get("note", ""),
+        )
+
+
+class ContractListCreateView(_ProcBase):
+    """GET (list) / POST (create a DRAFT contract + optional milestones)."""
+
+    @property
+    def rbac_permission(self):
+        return "procurement.contract.create" if self.request.method == "POST" \
+            else "procurement.contract.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = VendorContract.objects.filter(entity=entity).select_related(
+            "vendor").prefetch_related("milestones")
+        if (status_ := request.query_params.get("status")):
+            qs = qs.filter(status=status_)
+        if (vendor := request.query_params.get("vendor")):
+            qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() \
+                else qs.filter(vendor__code=vendor)
+        return success_response(
+            "Vendor contracts retrieved.",
+            data=VendorContractSerializer(qs.order_by("-id")[:200], many=True).data,
+        )
+
+    def post(self, request):
+        entity = resolve_entity(request)
+        body = request.data
+        if not body.get("reference") or not body.get("title"):
+            raise ValidationError({"reference": "reference and title are required."})
+        vendor = _resolve_vendor(entity, body.get("vendor"))
+        contract = VendorContract.objects.create(
+            entity=entity, vendor=vendor,
+            reference=body["reference"], title=body["title"],
+            start_date=_date(body.get("start_date"), "start_date"),
+            end_date=_date(body.get("end_date"), "end_date"),
+            contract_value=_money(body.get("contract_value", 0), "contract_value"),
+            payment_terms=body.get("payment_terms") or "NET_30",
+            auto_renew=bool(body.get("auto_renew", False)),
+            renewal_notice_days=body.get("renewal_notice_days") or 30,
+            notes=body.get("notes", ""),
+            created_by=request.user if request.user.is_authenticated else None,
+        )
+        _build_milestones(contract, body.get("milestones"))
+        return success_response(
+            "Vendor contract created.", data=VendorContractSerializer(contract).data, status=201,
+        )
+
+
+class ContractDetailView(_ProcBase):
+    """GET (retrieve) / PATCH (update header fields) one contract."""
+
+    @property
+    def rbac_permission(self):
+        return "procurement.contract.update" if self.request.method == "PATCH" \
+            else "procurement.contract.view"
+
+    def _get(self, entity, pk):
+        contract = VendorContract.objects.filter(entity=entity, pk=pk).first()
+        if contract is None:
+            raise NotFound("No such contract in this entity.")
+        return contract
+
+    def get(self, request, pk):
+        entity = resolve_entity(request)
+        contract = self._get(entity, pk)
+        return success_response("Vendor contract retrieved.", data=VendorContractSerializer(contract).data)
+
+    def patch(self, request, pk):
+        entity = resolve_entity(request)
+        contract = self._get(entity, pk)
+        body = request.data
+        if "title" in body:
+            contract.title = body["title"]
+        if "start_date" in body:
+            contract.start_date = _date(body.get("start_date"), "start_date")
+        if "end_date" in body:
+            contract.end_date = _date(body.get("end_date"), "end_date")
+        if "contract_value" in body:
+            contract.contract_value = _money(body.get("contract_value", 0), "contract_value")
+        if "payment_terms" in body:
+            contract.payment_terms = body["payment_terms"] or "NET_30"
+        if "auto_renew" in body:
+            contract.auto_renew = bool(body["auto_renew"])
+        if "renewal_notice_days" in body:
+            contract.renewal_notice_days = body.get("renewal_notice_days") or 30
+        if "notes" in body:
+            contract.notes = body["notes"]
+        contract.save()
+        return success_response("Vendor contract updated.", data=VendorContractSerializer(contract).data)
+
+
+class _ContractActionBase(_ProcBase):
+    def _get(self, request, pk):
+        entity = resolve_entity(request)
+        contract = VendorContract.objects.filter(entity=entity, pk=pk).first()
+        if contract is None:
+            raise NotFound("No such contract in this entity.")
+        return contract
+
+
+class ContractActivateView(_ContractActionBase):
+    rbac_permission = "procurement.contract.activate"
+
+    def post(self, request, pk):
+        contract = self._get(request, pk)
+        contracts.activate_contract(contract, actor_user=request.user)
+        return success_response("Vendor contract activated.", data=VendorContractSerializer(contract).data)
+
+
+class ContractTerminateView(_ContractActionBase):
+    rbac_permission = "procurement.contract.terminate"
+
+    def post(self, request, pk):
+        contract = self._get(request, pk)
+        contracts.terminate_contract(
+            contract, reason=request.data.get("reason", ""), actor_user=request.user)
+        return success_response("Vendor contract terminated.", data=VendorContractSerializer(contract).data)
+
+
+class ContractRenewView(_ContractActionBase):
+    """POST — create a successor contract that renews this one (marks this RENEWED)."""
+
+    rbac_permission = "procurement.contract.renew"
+
+    def post(self, request, pk):
+        contract = self._get(request, pk)
+        body = request.data
+        if not body.get("reference"):
+            raise ValidationError({"reference": "A reference for the renewal contract is required."})
+        value = None
+        if "contract_value" in body:
+            value = _money(body.get("contract_value", 0), "contract_value")
+        successor = contracts.renew_contract(
+            contract, reference=body["reference"],
+            start_date=_date(body.get("start_date"), "start_date", required=True),
+            end_date=_date(body.get("end_date"), "end_date", required=True),
+            contract_value=value,
+            copy_milestones=bool(body.get("copy_milestones", False)),
+            actor_user=request.user,
+        )
+        return success_response(
+            f"Contract renewed → {successor.reference}.",
+            data=VendorContractSerializer(successor).data, status=201,
+        )
+
+
+class ContractMilestoneCompleteView(_ProcBase):
+    """POST — mark a milestone COMPLETED."""
+
+    rbac_permission = "procurement.contract.update"
+
+    def post(self, request, pk, milestone_id):
+        entity = resolve_entity(request)
+        milestone = ContractMilestone.objects.filter(
+            contract__entity=entity, contract_id=pk, pk=milestone_id).first()
+        if milestone is None:
+            raise NotFound("No such milestone on this contract.")
+        contracts.complete_milestone(
+            milestone, on=_date(request.data.get("completed_date"), "completed_date"),
+            actor_user=request.user,
+        )
+        milestone.contract.refresh_from_db()
+        return success_response(
+            "Milestone completed.", data=VendorContractSerializer(milestone.contract).data,
+        )
+
+
+class ContractRenewalsView(_ProcBase):
+    """GET — contracts due for renewal (inside their notice window or a ``within_days`` horizon)."""
+
+    rbac_permission = "procurement.contract.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        as_of = _date(request.query_params.get("as_of"), "as_of")
+        within = request.query_params.get("within_days")
+        rows = contracts.expiring_contracts(
+            entity, as_of=as_of, within_days=int(within) if within else None,
+        )
+        return success_response(
+            "Contracts due for renewal retrieved.",
+            data=VendorContractSerializer(rows, many=True).data,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Item catalog                                                                #
+# --------------------------------------------------------------------------- #
+
+def _resolve_catalog_item(entity, ref, field="catalog_item"):
+    """Resolve a catalog item by id/code, or ``None`` when ``ref`` is blank."""
+    if ref in (None, ""):
+        return None
+    qs = CatalogItem.objects.filter(entity=entity)
+    item = qs.filter(pk=int(ref)).first() if str(ref).isdigit() else qs.filter(code=str(ref)).first()
+    if item is None:
+        raise ValidationError({field: f"No catalog item '{ref}' in this entity."})
+    return item
+
+
+def _resolve_optional_vendor(entity, ref, field="preferred_vendor"):
+    """Resolve a vendor by id/code, or ``None`` when ``ref`` is blank."""
+    if ref in (None, ""):
+        return None
+    qs = Vendor.objects.filter(entity=entity)
+    vendor = (
+        qs.filter(pk=int(ref)).first() if str(ref).isdigit()
+        else qs.filter(code=str(ref)).first() or qs.filter(code=str(ref).upper()).first()
+    )
+    if vendor is None:
+        raise ValidationError({field: f"No vendor '{ref}' in this entity."})
+    return vendor
+
+
+class CatalogItemListCreateView(_ProcBase):
+    """GET (list) / POST (create) catalog items — reusable buying defaults."""
+
+    @property
+    def rbac_permission(self):
+        return "procurement.catalog_item.create" if self.request.method == "POST" \
+            else "procurement.catalog_item.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = CatalogItem.objects.filter(entity=entity).select_related(
+            "preferred_vendor", "default_expense_account", "default_tax_code")
+        if (active := request.query_params.get("is_active")) in ("true", "false"):
+            qs = qs.filter(is_active=active == "true")
+        if (vendor := request.query_params.get("vendor")):
+            qs = qs.filter(preferred_vendor_id=vendor) if str(vendor).isdigit() \
+                else qs.filter(preferred_vendor__code=vendor)
+        if (search := request.query_params.get("q")):
+            from django.db.models import Q
+            qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
+        return success_response(
+            "Catalog items retrieved.",
+            data=CatalogItemSerializer(qs[:200], many=True).data,
+        )
+
+    def post(self, request):
+        entity = resolve_entity(request)
+        body = request.data
+        if not body.get("code") or not body.get("name"):
+            raise ValidationError({"code": "code and name are required."})
+        item = CatalogItem.objects.create(
+            entity=entity, code=body["code"], name=body["name"],
+            description=body.get("description", ""),
+            unit_of_measure=body.get("unit_of_measure") or "each",
+            preferred_vendor=_resolve_optional_vendor(entity, body.get("preferred_vendor")),
+            default_expense_account=_resolve_account(
+                entity, body.get("default_expense_account"), "default_expense_account"),
+            default_tax_code=_resolve_tax(entity, body.get("default_tax_code"), "default_tax_code"),
+            lead_time_days=body.get("lead_time_days") or None,
+            standard_unit_price=_money(body.get("standard_unit_price", 0), "standard_unit_price"),
+            is_active=bool(body.get("is_active", True)),
+        )
+        return success_response(
+            "Catalog item created.", data=CatalogItemSerializer(item).data, status=201,
+        )
+
+
+class CatalogItemDetailView(_ProcBase):
+    """GET (retrieve) / PATCH (update buying defaults) one catalog item."""
+
+    @property
+    def rbac_permission(self):
+        return "procurement.catalog_item.update" if self.request.method == "PATCH" \
+            else "procurement.catalog_item.view"
+
+    def get(self, request, pk):
+        entity = resolve_entity(request)
+        item = CatalogItem.objects.filter(entity=entity, pk=pk).first()
+        if item is None:
+            raise NotFound("No such catalog item in this entity.")
+        return success_response("Catalog item retrieved.", data=CatalogItemSerializer(item).data)
+
+    def patch(self, request, pk):
+        entity = resolve_entity(request)
+        item = CatalogItem.objects.filter(entity=entity, pk=pk).first()
+        if item is None:
+            raise NotFound("No such catalog item in this entity.")
+        body = request.data
+        if "name" in body:
+            item.name = body["name"]
+        if "description" in body:
+            item.description = body["description"]
+        if "unit_of_measure" in body:
+            item.unit_of_measure = body["unit_of_measure"] or "each"
+        if "preferred_vendor" in body:
+            item.preferred_vendor = _resolve_optional_vendor(entity, body.get("preferred_vendor"))
+        if "default_expense_account" in body:
+            item.default_expense_account = _resolve_account(
+                entity, body.get("default_expense_account"), "default_expense_account")
+        if "default_tax_code" in body:
+            item.default_tax_code = _resolve_tax(entity, body.get("default_tax_code"), "default_tax_code")
+        if "lead_time_days" in body:
+            item.lead_time_days = body.get("lead_time_days") or None
+        if "standard_unit_price" in body:
+            item.standard_unit_price = _money(body.get("standard_unit_price", 0), "standard_unit_price")
+        if "is_active" in body:
+            item.is_active = bool(body["is_active"])
+        item.save()
+        return success_response("Catalog item updated.", data=CatalogItemSerializer(item).data)
+
+
+# --------------------------------------------------------------------------- #
 # Purchase requisitions                                                       #
 # --------------------------------------------------------------------------- #
 
@@ -287,13 +618,20 @@ class RequisitionListCreateView(_ProcBase):
             created_by=request.user if request.user.is_authenticated else None,
         )
         for i, ln in enumerate(lines, start=1):
+            item = _resolve_catalog_item(entity, ln.get("catalog_item"))
+            defaults = item.line_defaults() if item else {}
+            expense = _resolve_account(entity, ln.get("expense_account"), "expense_account") \
+                or defaults.get("expense_account")
+            tax = _resolve_tax(entity, ln.get("tax_code")) or defaults.get("tax_code")
+            unit_price = ln.get("estimated_unit_price")
+            if unit_price in (None, "") and item is not None:
+                unit_price = defaults.get("unit_price", 0)
             PurchaseRequisitionLine.objects.create(
                 requisition=req, line_no=ln.get("line_no", i),
-                description=ln.get("description", ""),
+                description=ln.get("description") or defaults.get("description", ""),
                 quantity=_dec(ln.get("quantity", 1), "quantity"),
-                estimated_unit_price=_money(ln.get("estimated_unit_price", 0), "estimated_unit_price"),
-                expense_account=_resolve_account(entity, ln.get("expense_account"), "expense_account"),
-                tax_code=_resolve_tax(entity, ln.get("tax_code")),
+                estimated_unit_price=_money(unit_price or 0, "estimated_unit_price"),
+                expense_account=expense, tax_code=tax,
             )
         req.recompute_total(save=True)
         return success_response(
@@ -388,6 +726,215 @@ class PurchaseOrderDetailView(_ProcBase):
         if po is None:
             raise NotFound("No such purchase order in this entity.")
         return success_response("Purchase order retrieved.", data=PurchaseOrderSerializer(po).data)
+
+
+# --------------------------------------------------------------------------- #
+# Requests for quotation (sourcing)                                           #
+# --------------------------------------------------------------------------- #
+
+class RfqListCreateView(_ProcBase):
+    """GET (list) / POST (create draft RFQ + lines)."""
+
+    @property
+    def rbac_permission(self):
+        return "procurement.rfq.create" if self.request.method == "POST" \
+            else "procurement.rfq.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = RequestForQuotation.objects.filter(entity=entity).prefetch_related("lines")
+        if (status_ := request.query_params.get("status")):
+            qs = qs.filter(rfq_status=status_)
+        return success_response(
+            "RFQs retrieved.",
+            data=RequestForQuotationSerializer(qs.order_by("-id")[:200], many=True).data,
+        )
+
+    def post(self, request):
+        entity = resolve_entity(request)
+        body = request.data
+        lines = _require_lines(body)
+        requisition = None
+        if body.get("requisition"):
+            requisition = PurchaseRequisition.objects.filter(
+                entity=entity, pk=body["requisition"]).first()
+            if requisition is None:
+                raise ValidationError({"requisition": "No such requisition in this entity."})
+        rfq = RequestForQuotation.objects.create(
+            entity=entity, requisition=requisition,
+            title=body.get("title", ""),
+            issue_date=_date(body.get("issue_date"), "issue_date", required=True),
+            response_due_date=_date(body.get("response_due_date"), "response_due_date"),
+            notes=body.get("notes", ""),
+            created_by=request.user if request.user.is_authenticated else None,
+        )
+        for i, ln in enumerate(lines, start=1):
+            req_line = None
+            if ln.get("requisition_line"):
+                req_line = PurchaseRequisitionLine.objects.filter(
+                    requisition__entity=entity, pk=ln["requisition_line"]).first()
+                if req_line is None:
+                    raise ValidationError(
+                        {"requisition_line": f"No such requisition line {ln['requisition_line']}."})
+            RfqLine.objects.create(
+                rfq=rfq, line_no=ln.get("line_no", i),
+                description=ln.get("description", ""),
+                quantity=_dec(ln.get("quantity", 1), "quantity"),
+                requisition_line=req_line,
+                expense_account=_resolve_account(entity, ln.get("expense_account"), "expense_account"),
+                tax_code=_resolve_tax(entity, ln.get("tax_code")),
+            )
+        return success_response(
+            "RFQ created.", data=RequestForQuotationSerializer(rfq).data, status=201,
+        )
+
+
+class RfqDetailView(_ProcBase):
+    rbac_permission = "procurement.rfq.view"
+
+    def get(self, request, pk):
+        entity = resolve_entity(request)
+        rfq = RequestForQuotation.objects.filter(entity=entity, pk=pk).first()
+        if rfq is None:
+            raise NotFound("No such RFQ in this entity.")
+        return success_response("RFQ retrieved.", data=RequestForQuotationSerializer(rfq).data)
+
+
+class RfqIssueView(_ProcBase):
+    rbac_permission = "procurement.rfq.issue"
+
+    def post(self, request, pk):
+        entity = resolve_entity(request)
+        rfq = RequestForQuotation.objects.filter(entity=entity, pk=pk).first()
+        if rfq is None:
+            raise NotFound("No such RFQ in this entity.")
+        sourcing.issue_rfq(rfq, actor_user=request.user)
+        return success_response("RFQ issued.", data=RequestForQuotationSerializer(rfq).data)
+
+
+class RfqCancelView(_ProcBase):
+    rbac_permission = "procurement.rfq.issue"
+
+    def post(self, request, pk):
+        entity = resolve_entity(request)
+        rfq = RequestForQuotation.objects.filter(entity=entity, pk=pk).first()
+        if rfq is None:
+            raise NotFound("No such RFQ in this entity.")
+        sourcing.cancel_rfq(rfq, reason=request.data.get("reason", ""), actor_user=request.user)
+        return success_response("RFQ cancelled.", data=RequestForQuotationSerializer(rfq).data)
+
+
+# --------------------------------------------------------------------------- #
+# Vendor quotations (sourcing)                                                #
+# --------------------------------------------------------------------------- #
+
+class QuotationListCreateView(_ProcBase):
+    """GET (list) / POST (create draft quotation + priced lines) against an RFQ."""
+
+    @property
+    def rbac_permission(self):
+        return "procurement.quotation.create" if self.request.method == "POST" \
+            else "procurement.quotation.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = VendorQuotation.objects.filter(entity=entity).select_related(
+            "vendor", "rfq").prefetch_related("lines")
+        if (status_ := request.query_params.get("status")):
+            qs = qs.filter(quotation_status=status_)
+        if (rfq := request.query_params.get("rfq")):
+            qs = qs.filter(rfq_id=rfq)
+        if (vendor := request.query_params.get("vendor")):
+            qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
+        return success_response(
+            "Quotations retrieved.",
+            data=VendorQuotationSerializer(qs.order_by("-id")[:200], many=True).data,
+        )
+
+    def post(self, request):
+        entity = resolve_entity(request)
+        body = request.data
+        lines = _require_lines(body)
+        rfq = RequestForQuotation.objects.filter(entity=entity, pk=body.get("rfq")).first()
+        if rfq is None:
+            raise ValidationError({"rfq": "An RFQ is required."})
+        vendor = _resolve_vendor(entity, body.get("vendor"))
+        quotation = VendorQuotation.objects.create(
+            entity=entity, rfq=rfq, vendor=vendor,
+            quote_date=_date(body.get("quote_date"), "quote_date", required=True),
+            valid_until=_date(body.get("valid_until"), "valid_until"),
+            currency=_resolve_currency(entity, body.get("currency")),
+            lead_time_days=body.get("lead_time_days") or None,
+            reference=body.get("reference", ""), notes=body.get("notes", ""),
+            created_by=request.user if request.user.is_authenticated else None,
+        )
+        for i, ln in enumerate(lines, start=1):
+            rfq_line = None
+            if ln.get("rfq_line"):
+                rfq_line = RfqLine.objects.filter(rfq__entity=entity, pk=ln["rfq_line"]).first()
+                if rfq_line is None:
+                    raise ValidationError({"rfq_line": f"No such RFQ line {ln['rfq_line']}."})
+            expense = _resolve_account(entity, ln.get("expense_account"), "expense_account") \
+                or (rfq_line.expense_account if rfq_line else None)
+            VendorQuotationLine.objects.create(
+                quotation=quotation, rfq_line=rfq_line, line_no=ln.get("line_no", i),
+                description=ln.get("description", rfq_line.description if rfq_line else ""),
+                expense_account=expense,
+                quantity=_dec(ln.get("quantity", rfq_line.quantity if rfq_line else 1), "quantity"),
+                unit_price=_money(ln.get("unit_price", 0), "unit_price"),
+                tax_code=_resolve_tax(entity, ln.get("tax_code")),
+            )
+        sourcing.price_quotation(quotation)
+        return success_response(
+            "Quotation created.", data=VendorQuotationSerializer(quotation).data, status=201,
+        )
+
+
+class QuotationDetailView(_ProcBase):
+    rbac_permission = "procurement.quotation.view"
+
+    def get(self, request, pk):
+        entity = resolve_entity(request)
+        quotation = VendorQuotation.objects.filter(entity=entity, pk=pk).first()
+        if quotation is None:
+            raise NotFound("No such quotation in this entity.")
+        return success_response("Quotation retrieved.", data=VendorQuotationSerializer(quotation).data)
+
+
+class QuotationSubmitView(_ProcBase):
+    rbac_permission = "procurement.quotation.submit"
+
+    def post(self, request, pk):
+        entity = resolve_entity(request)
+        quotation = VendorQuotation.objects.filter(entity=entity, pk=pk).first()
+        if quotation is None:
+            raise NotFound("No such quotation in this entity.")
+        sourcing.submit_quotation(quotation, actor_user=request.user)
+        quotation.refresh_from_db()
+        return success_response(
+            "Quotation submitted.", data=VendorQuotationSerializer(quotation).data,
+        )
+
+
+class QuotationAwardView(_ProcBase):
+    """POST — award the quotation: build a DRAFT PO and reject the losing quotes."""
+
+    rbac_permission = "procurement.quotation.award"
+
+    def post(self, request, pk):
+        entity = resolve_entity(request)
+        quotation = VendorQuotation.objects.filter(entity=entity, pk=pk).first()
+        if quotation is None:
+            raise NotFound("No such quotation in this entity.")
+        po = sourcing.award_quotation(
+            quotation,
+            order_date=_date(request.data.get("order_date"), "order_date"),
+            actor_user=request.user,
+        )
+        return success_response(
+            f"Quotation awarded → purchase order {po.document_number}.",
+            data=PurchaseOrderSerializer(po).data, status=201,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -778,5 +1325,67 @@ class GRIRBalanceView(_ProcBase):
                 "entity": entity.code,
                 "grir_balance": _kobo(balance),
                 "is_clear": balance == 0,
+            },
+        )
+
+
+class APCashRequirementsView(_ProcBase):
+    rbac_permission = "procurement.report.view"
+
+    def get(self, request):
+        from .reports import FORECAST_BUCKETS, ap_cash_requirements
+
+        entity = resolve_entity(request)
+        as_of = _date(request.query_params.get("as_of"), "as_of")
+        report = ap_cash_requirements(entity, as_of=as_of)
+        return success_response(
+            "AP cash-requirements forecast retrieved.",
+            data={
+                "entity": entity.code, "as_of": str(report.as_of),
+                "buckets": list(FORECAST_BUCKETS),
+                "rows": [
+                    {
+                        "vendor_id": r.vendor_id, "code": r.code, "name": r.name,
+                        "buckets": {b: _kobo(v) for b, v in r.buckets.items()},
+                        "total": _kobo(r.total),
+                    }
+                    for r in report.rows
+                ],
+                "bucket_totals": {b: _kobo(v) for b, v in report.bucket_totals.items()},
+                "total_due": _kobo(report.total_due),
+            },
+        )
+
+
+class GRIRAgingView(_ProcBase):
+    rbac_permission = "procurement.report.view"
+
+    def get(self, request):
+        from .reports import AGING_BUCKETS, grir_aging
+
+        entity = resolve_entity(request)
+        as_of = _date(request.query_params.get("as_of"), "as_of")
+        report = grir_aging(entity, as_of=as_of)
+        return success_response(
+            "GR/IR aging retrieved.",
+            data={
+                "entity": entity.code, "as_of": str(report.as_of),
+                "buckets": list(AGING_BUCKETS),
+                "rows": [
+                    {
+                        "grn_id": r.grn_id, "reference": r.reference,
+                        "vendor_code": r.vendor_code, "vendor_name": r.vendor_name,
+                        "received_date": str(r.received_date), "days": r.days,
+                        "bucket": r.bucket,
+                        "received_value": _kobo(r.received_value),
+                        "invoiced_value": _kobo(r.invoiced_value),
+                        "open_value": _kobo(r.open_value),
+                    }
+                    for r in report.rows
+                ],
+                "bucket_totals": {b: _kobo(v) for b, v in report.bucket_totals.items()},
+                "total_open": _kobo(report.total_open),
+                "control_balance": _kobo(report.control_balance),
+                "difference": _kobo(report.difference),
             },
         )

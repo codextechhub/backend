@@ -65,8 +65,10 @@ class DocType(models.TextChoices):
     REFUND = "RFD", "Customer Refund"
     PAYMENT_PLAN = "PPL", "Installment Payment Plan"
     CONCESSION = "CNC", "Concession / Discount / Waiver"
+    DUNNING_NOTICE = "DUN", "Dunning / Payment Reminder"
     PURCHASE_REQUISITION = "PR", "Purchase Requisition"
     RFQ = "RFQ", "Request for Quotation"
+    QUOTATION = "QUO", "Vendor Quotation"
     PURCHASE_ORDER = "PO", "Purchase Order"
     GOODS_RECEIVED = "GRN", "Goods Received Note"
     VENDOR_INVOICE = "VIN", "Vendor Invoice"
@@ -215,6 +217,32 @@ class ConcessionKind(models.TextChoices):
     SCHOLARSHIP = "SCHOLARSHIP", "Scholarship / bursary"
 
 
+class DunningChannel(models.TextChoices):
+    """How a dunning reminder is delivered (operational detail; vs_finance only records it).
+
+    vs_finance does not itself send email/SMS — it tracks the *intent* and outcome; an
+    outer service (notifications) reads PENDING notices and dispatches them.
+    """
+    EMAIL = "EMAIL", "Email"
+    SMS = "SMS", "SMS"
+    LETTER = "LETTER", "Letter"
+    IN_APP = "IN_APP", "In-app"
+
+
+class DunningNoticeStatus(models.TextChoices):
+    """Lifecycle of a single dunning notice (a communications overlay, never posted).
+
+    PENDING   -> generated, awaiting dispatch.
+    SENT      -> dispatched to the customer.
+    RESOLVED  -> the underlying invoice was settled (or written off) after the notice.
+    CANCELLED -> withdrawn before sending (e.g. a payment arrived, or a dispute opened).
+    """
+    PENDING = "PENDING", "Pending"
+    SENT = "SENT", "Sent"
+    RESOLVED = "RESOLVED", "Resolved"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
 class PaymentMethod(models.TextChoices):
     """How a customer receipt was tendered (operational detail, not posting logic)."""
     CASH = "CASH", "Cash"
@@ -293,6 +321,9 @@ class FinanceAuditAction(models.TextChoices):
     PAYMENT_PLAN_COMPLETED = "PAYMENT_PLAN_COMPLETED", "Installment plan completed"
     PAYMENT_PLAN_CANCELLED = "PAYMENT_PLAN_CANCELLED", "Installment plan cancelled"
     CONCESSION_POSTED = "CONCESSION_POSTED", "Concession / discount / waiver posted"
+    DUNNING_RUN_GENERATED = "DUNNING_RUN_GENERATED", "Dunning run generated"
+    DUNNING_NOTICE_SENT = "DUNNING_NOTICE_SENT", "Dunning notice marked sent"
+    DUNNING_NOTICE_CANCELLED = "DUNNING_NOTICE_CANCELLED", "Dunning notice cancelled"
     PERIOD_CLOSED = "PERIOD_CLOSED", "Period closed"
     PERIOD_REOPENED = "PERIOD_REOPENED", "Period re-opened"
     ACCOUNT_CREATED = "ACCOUNT_CREATED", "Account created"
@@ -301,6 +332,14 @@ class FinanceAuditAction(models.TextChoices):
     # but their audit vocabulary belongs to finance's authoritative log (finance does
     # not import procurement — these are just string constants).
     REQUISITION_APPROVED = "REQUISITION_APPROVED", "Requisition approved"
+    RFQ_ISSUED = "RFQ_ISSUED", "Request for quotation issued"
+    RFQ_CANCELLED = "RFQ_CANCELLED", "Request for quotation cancelled"
+    QUOTATION_SUBMITTED = "QUOTATION_SUBMITTED", "Vendor quotation submitted"
+    QUOTATION_AWARDED = "QUOTATION_AWARDED", "Vendor quotation awarded → PO"
+    VENDOR_CONTRACT_ACTIVATED = "VENDOR_CONTRACT_ACTIVATED", "Vendor contract activated"
+    VENDOR_CONTRACT_RENEWED = "VENDOR_CONTRACT_RENEWED", "Vendor contract renewed"
+    VENDOR_CONTRACT_TERMINATED = "VENDOR_CONTRACT_TERMINATED", "Vendor contract terminated"
+    CONTRACT_MILESTONE_COMPLETED = "CONTRACT_MILESTONE_COMPLETED", "Contract milestone completed"
     PURCHASE_ORDER_APPROVED = "PURCHASE_ORDER_APPROVED", "Purchase order approved"
     GRN_POSTED = "GRN_POSTED", "Goods receipt posted"
     GRN_POST_REJECTED = "GRN_POST_REJECTED", "Goods receipt posting rejected"

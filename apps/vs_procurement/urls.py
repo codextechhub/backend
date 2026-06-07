@@ -15,11 +15,37 @@ urlpatterns = [
     path("vendors/", views.VendorListCreateView.as_view(), name="proc-vendors"),
     path("vendors/<int:pk>/", views.VendorDetailView.as_view(), name="proc-vendor-detail"),
 
+    # Item catalog
+    path("catalog-items/", views.CatalogItemListCreateView.as_view(), name="proc-catalog-items"),
+    path("catalog-items/<int:pk>/", views.CatalogItemDetailView.as_view(), name="proc-catalog-item-detail"),
+
+    # Vendor contracts
+    path("contracts/", views.ContractListCreateView.as_view(), name="proc-contracts"),
+    path("contracts/renewals/", views.ContractRenewalsView.as_view(), name="proc-contract-renewals"),
+    path("contracts/<int:pk>/", views.ContractDetailView.as_view(), name="proc-contract-detail"),
+    path("contracts/<int:pk>/activate/", views.ContractActivateView.as_view(), name="proc-contract-activate"),
+    path("contracts/<int:pk>/renew/", views.ContractRenewView.as_view(), name="proc-contract-renew"),
+    path("contracts/<int:pk>/terminate/", views.ContractTerminateView.as_view(), name="proc-contract-terminate"),
+    path("contracts/<int:pk>/milestones/<int:milestone_id>/complete/",
+         views.ContractMilestoneCompleteView.as_view(), name="proc-contract-milestone-complete"),
+
     # Purchase requisitions
     path("requisitions/", views.RequisitionListCreateView.as_view(), name="proc-requisitions"),
     path("requisitions/<int:pk>/", views.RequisitionDetailView.as_view(), name="proc-requisition-detail"),
     path("requisitions/<int:pk>/submit/", views.RequisitionSubmitView.as_view(), name="proc-requisition-submit"),
     path("requisitions/<int:pk>/approve/", views.RequisitionApproveView.as_view(), name="proc-requisition-approve"),
+
+    # Requests for quotation (sourcing)
+    path("rfqs/", views.RfqListCreateView.as_view(), name="proc-rfqs"),
+    path("rfqs/<int:pk>/", views.RfqDetailView.as_view(), name="proc-rfq-detail"),
+    path("rfqs/<int:pk>/issue/", views.RfqIssueView.as_view(), name="proc-rfq-issue"),
+    path("rfqs/<int:pk>/cancel/", views.RfqCancelView.as_view(), name="proc-rfq-cancel"),
+
+    # Vendor quotations (sourcing)
+    path("quotations/", views.QuotationListCreateView.as_view(), name="proc-quotations"),
+    path("quotations/<int:pk>/", views.QuotationDetailView.as_view(), name="proc-quotation-detail"),
+    path("quotations/<int:pk>/submit/", views.QuotationSubmitView.as_view(), name="proc-quotation-submit"),
+    path("quotations/<int:pk>/award/", views.QuotationAwardView.as_view(), name="proc-quotation-award"),
 
     # Purchase orders
     path("purchase-orders/", views.PurchaseOrderListCreateView.as_view(), name="proc-purchase-orders"),
@@ -45,4 +71,6 @@ urlpatterns = [
     path("reports/ap-aging/", views.APAgingView.as_view(), name="proc-ap-aging"),
     path("reports/ap-reconciliation/", views.APReconciliationView.as_view(), name="proc-ap-reconciliation"),
     path("reports/grir/", views.GRIRBalanceView.as_view(), name="proc-grir"),
+    path("reports/ap-cash-requirements/", views.APCashRequirementsView.as_view(), name="proc-ap-cash-requirements"),
+    path("reports/grir-aging/", views.GRIRAgingView.as_view(), name="proc-grir-aging"),
 ]

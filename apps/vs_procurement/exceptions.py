@@ -20,6 +20,18 @@ class RequisitionError(ProcurementError):
     default_message = "The requisition could not be processed."
 
 
+class SourcingError(ProcurementError):
+    """Raised for RFQ / vendor-quotation lifecycle violations (issue, submit, award)."""
+    error_code = "SOURCING_ERROR"
+    default_message = "The sourcing action could not be completed."
+
+
+class ContractError(ProcurementError):
+    """Raised for vendor-contract lifecycle violations (activate, renew, terminate)."""
+    error_code = "CONTRACT_ERROR"
+    default_message = "The contract action could not be completed."
+
+
 class ThreeWayMatchError(PostingError):
     """Raised when a vendor invoice fails the PO↔GRN↔invoice match and can't post."""
     error_code = "THREE_WAY_MATCH_FAILED"

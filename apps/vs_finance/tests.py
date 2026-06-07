@@ -52,6 +52,9 @@ from vs_finance.models import (
     CreditNoteLine,
     Customer,
     DepreciationSchedule,
+    DunningNotice,
+    DunningPolicy,
+    DunningStage,
     ExpenseClaim,
     ExpenseClaimLine,
     FinanceAuditLog,
@@ -88,6 +91,12 @@ from vs_finance.installments import (
     post_concession,
     refresh_plan_progress,
     split_amount,
+)
+from vs_finance.dunning import (
+    cancel_notice,
+    ensure_default_policy,
+    generate_dunning,
+    mark_notice_sent,
 )
 from vs_finance.reports import (
     ar_aging,
@@ -924,6 +933,98 @@ class CustomerStatementTests(_ARFixtureMixin, TestCase):
         self.assertEqual([e.document_number for e in stmt.entries],
                          [later.document_number])
         self.assertEqual(stmt.closing_balance, 150000)
+
+
+class DunningTests(_ARFixtureMixin, TestCase):
+    def test_ensure_default_policy_is_idempotent_with_a_ladder(self):
+        entity, period, customer, vat = self.build_ar()
+        p1 = ensure_default_policy(entity)
+        p2 = ensure_default_policy(entity)
+        self.assertEqual(p1.pk, p2.pk)
+        self.assertTrue(p1.is_default)
+        self.assertEqual(p1.stages.count(), 3)
+        self.assertEqual(
+            [s.min_days_overdue for s in p1.stages.order_by("level")], [1, 14, 30],
+        )
+
+    def test_generate_raises_notice_at_highest_qualifying_stage(self):
+        entity, period, customer, vat = self.build_ar()
+        ensure_default_policy(entity)
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)],
+                                due=datetime.date(2026, 1, 25))
+        post_invoice(inv)  # 100,000 outstanding, due 25 Jan
+
+        notices = generate_dunning(entity, as_of=datetime.date(2026, 3, 1))  # 35 days late
+        self.assertEqual(len(notices), 1)
+        notice = notices[0]
+        self.assertEqual(notice.level, 3)            # Final notice (min 30 days)
+        self.assertEqual(notice.notice_status, "PENDING")
+        self.assertEqual(notice.amount_due, 100000)
+        self.assertEqual(notice.days_overdue, 35)
+        self.assertTrue(notice.document_number.startswith("CFX-TBOOK-DUN-"))
+        self.assertTrue(
+            FinanceAuditLog.objects.filter(action="DUNNING_RUN_GENERATED").exists()
+        )
+
+    def test_generate_is_idempotent_per_invoice_level(self):
+        entity, period, customer, vat = self.build_ar()
+        ensure_default_policy(entity)
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 80000, None)],
+                                due=datetime.date(2026, 1, 25))
+        post_invoice(inv)
+
+        first = generate_dunning(entity, as_of=datetime.date(2026, 2, 20))  # ~26 days → level 2
+        second = generate_dunning(entity, as_of=datetime.date(2026, 2, 20))
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0].level, 2)
+        self.assertEqual(len(second), 0)  # same level already issued → no duplicate
+        self.assertEqual(DunningNotice.objects.filter(invoice=inv).count(), 1)
+
+    def test_not_yet_due_invoice_is_skipped(self):
+        entity, period, customer, vat = self.build_ar()
+        ensure_default_policy(entity)
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)],
+                                due=datetime.date(2026, 1, 25))
+        post_invoice(inv)
+        notices = generate_dunning(entity, as_of=datetime.date(2026, 1, 20))  # before due
+        self.assertEqual(notices, [])
+
+    def test_settled_invoice_marks_notice_resolved_and_no_new_one(self):
+        entity, period, customer, vat = self.build_ar()
+        ensure_default_policy(entity)
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)],
+                                due=datetime.date(2026, 1, 25))
+        post_invoice(inv)
+        notice = generate_dunning(entity, as_of=datetime.date(2026, 3, 1))[0]
+
+        # Customer pays in full; the next run resolves the open notice, raises nothing new.
+        bank = Account.objects.get(entity=entity, code="1100")
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 28),
+            amount=100000, deposit_account=bank,
+        )
+        post_payment(pay)
+        again = generate_dunning(entity, as_of=datetime.date(2026, 3, 2))
+        notice.refresh_from_db()
+        self.assertEqual(again, [])
+        self.assertEqual(notice.notice_status, "RESOLVED")
+
+    def test_mark_sent_then_cancel_lifecycle(self):
+        entity, period, customer, vat = self.build_ar()
+        ensure_default_policy(entity)
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 60000, None)],
+                                due=datetime.date(2026, 1, 25))
+        post_invoice(inv)
+        notice = generate_dunning(entity, as_of=datetime.date(2026, 3, 1))[0]
+
+        mark_notice_sent(notice)
+        notice.refresh_from_db()
+        self.assertEqual(notice.notice_status, "SENT")
+        self.assertIsNotNone(notice.sent_at)
+
+        cancel_notice(notice, reason="Customer disputed")
+        notice.refresh_from_db()
+        self.assertEqual(notice.notice_status, "CANCELLED")
 
 
 # =========================================================================== #
