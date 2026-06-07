@@ -86,6 +86,7 @@ INSTALLED_APPS = [
     'vs_workflow',
     'vs_finance',
     'vs_procurement',
+    'vs_payments',
 ]
 
 MIDDLEWARE = [
@@ -186,6 +187,40 @@ EMAIL_CC = [
     if addr.strip()
 ]
 FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:3000")
+
+# --------------------------------------------------------------------------- #
+# Payment providers (vs_payments)                                             #
+# --------------------------------------------------------------------------- #
+# Secrets come from the environment — NEVER commit live keys. Each provider is
+# optional; an unconfigured provider raises ProviderNotConfiguredError when used.
+# Test/sandbox keys (sk_test_… for Paystack; sandbox host + sandbox keys for OPay)
+# are safe to use in non-production. Hosts/paths are overridable so the OPay
+# endpoints can be pinned to whatever the merchant dashboard issues without a code
+# change. ``PAYMENTS_DEFAULT_PROVIDER`` selects the provider when a caller doesn't.
+PAYMENTS_DEFAULT_PROVIDER = config("PAYMENTS_DEFAULT_PROVIDER", default="PAYSTACK")
+# A callback URL the hosted checkout returns the payer to after paying.
+PAYMENTS_CALLBACK_URL = config(
+    "PAYMENTS_CALLBACK_URL", default=f"{FRONTEND_BASE_URL}/payments/return"
+)
+
+# Paystack — https://api.paystack.co ; Authorization: Bearer <secret_key>.
+PAYSTACK_SECRET_KEY = config("PAYSTACK_SECRET_KEY", default="")
+PAYSTACK_PUBLIC_KEY = config("PAYSTACK_PUBLIC_KEY", default="")
+PAYSTACK_BASE_URL = config("PAYSTACK_BASE_URL", default="https://api.paystack.co")
+
+# OPay — merchant ID + secret (signing) + public key (bearer for status calls).
+# Base URL & paths default to the documented cashier host but stay overridable
+# because OPay issues environment-specific hosts/paths per merchant on onboarding.
+OPAY_MERCHANT_ID = config("OPAY_MERCHANT_ID", default="")
+OPAY_SECRET_KEY = config("OPAY_SECRET_KEY", default="")
+OPAY_PUBLIC_KEY = config("OPAY_PUBLIC_KEY", default="")
+OPAY_BASE_URL = config("OPAY_BASE_URL", default="https://api.opaycheckout.com")
+OPAY_CREATE_PATH = config("OPAY_CREATE_PATH", default="/api/v1/international/cashier/create")
+OPAY_STATUS_PATH = config("OPAY_STATUS_PATH", default="/api/v1/international/cashier/status")
+OPAY_TRANSFER_PATH = config("OPAY_TRANSFER_PATH", default="/api/v1/international/transfer/toBank")
+OPAY_TRANSFER_STATUS_PATH = config(
+    "OPAY_TRANSFER_STATUS_PATH", default="/api/v1/international/transfer/status"
+)
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.0/topics/i18n/

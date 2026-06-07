@@ -28,5 +28,6 @@ urlpatterns = [
     path("v1/import/", include("vs_import_data.urls")),
     path("v1/workflow/", include("vs_workflow.urls")),
     path("v1/finance/", include("vs_finance.urls")),
+    path("v1/payments/", include("vs_payments.urls")),
     # path("admin/", admin.site.urls),
 ]
