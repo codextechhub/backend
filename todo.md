@@ -1,5 +1,37 @@
 ## Undone
 
+# Finance backlog — remaining gaps from Crestfield-Finance/Finance-Gap-Checklist.md (all `G`-marked stretch items; core GL/AR/P2P/Payments shipped & tested). Build-first triage is DONE; these are the value-add / statutory / automation layer and do NOT block frontend work.
+
+## AR cycle (vs_finance receivables)
+# - Credit notes / debit notes / refunds / write-offs
+# - Installment payment plans / scholarships / discounts / waivers
+# - Customer (payer) statements of account
+# - Dunning / automated payment reminders
+# - School-fee billing adapter (fee categories + structures → emit generic invoices, behind a module flag)
+
+## Procurement (vs_procurement)
+# - RFQ + vendor quotations + award → PO
+# - Item catalog (preferred vendor, lead time, default tax/GL)
+# - Vendor contracts (renewal/expiry alerts, milestones)
+# - AP cash-requirements forecast
+# - Route PR/PO/invoice approvals through vs_workflow with thresholds (today approve is a direct endpoint)
+# - GR/IR monthly aging report (only point-in-time grir_balance exists today)
+
+## Banking / close (vs_finance)
+# - Inventory / stock ledger (valuation, reorder, stock movement) — catalog + GRN exist, no valuation
+# - Petty cash management
+# - Tax remittance / filing workflow (FIRS VAT/WHT, PAYE to State IRS, pension to PFA)
+
+## Reporting
+# - Statement of changes in equity
+# - Procurement analytics (spend analysis, vendor performance, PR→payment cycle time)
+# - Statutory export packs (IFRS-for-SMEs lines, FIRS/CAC-ready)
+
+## Payments (vs_payments)
+# - Bulk payout / disbursement file ("generate bank file" made real)
+# - Daily settlement reconciliation vs bank feed
+# - Open-banking statement feed (Mono/Okra) — optional, automates bank rec
+
 ## Done
 
 # 0c. Finance Phase 6 — Payment integration (NEW app vs_payments, mounted /v1/payments/). Both directions: collections (money-in) + payouts (money-out) end-to-end, behind a provider-neutral interface with real Paystack + OPay HTTP clients (stdlib urllib) and a deterministic FakeProvider for tests. Confirmed collection → vs_finance post_payment (Dr bank/Cr AR); confirmed payout → vs_procurement post_vendor_payment (Dr AP/Cr bank/Cr WHT). Idempotent webhooks (dedupe_key + select_for_update + terminal short-circuit → retried event never double-books). Public signature-verified webhook receiver. Append-only PaymentEvent audit. 17 tests pass, check clean, no vs_payments migration drift. Credential-sourcing guide for Paystack/OPay delivered to user.
