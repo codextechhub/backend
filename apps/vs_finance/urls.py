@@ -32,6 +32,7 @@ from .views_ar import (
     CreditNoteDetailView,
     CreditNoteListCreateView,
     CreditNotePostView,
+    CustomerStatementView,
     InvoiceWriteOffView,
     PaymentPlanActivateView,
     PaymentPlanCancelView,
@@ -121,6 +122,7 @@ urlpatterns = [
     path("reports/cash-flow/", CashFlowView.as_view(), name="finance-cash-flow"),
     path("reports/ar-aging/", ARAgingView.as_view(), name="finance-ar-aging"),
     path("reports/ar-reconciliation/", ARReconciliationView.as_view(), name="finance-ar-reconciliation"),
+    path("reports/customer-statement/", CustomerStatementView.as_view(), name="finance-customer-statement"),
 
     # Setup / reference data (currencies + FX rates are GLOBAL — no ?entity)
     path("currencies/", CurrencyListCreateView.as_view(), name="finance-currency-list"),

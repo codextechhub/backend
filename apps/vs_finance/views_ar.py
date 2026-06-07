@@ -533,3 +533,83 @@ class PaymentPlanCancelView(_PaymentPlanActionBase):
             f"Payment plan {plan.document_number} cancelled.",
             data=PaymentPlanSerializer(plan).data,
         )
+
+
+# --------------------------------------------------------------------------- #
+# Customer statement of account                                               #
+# --------------------------------------------------------------------------- #
+
+class CustomerStatementView(_FinanceBase):
+    """A dated statement of account for one customer (``?customer=<code|id>``).
+
+    Optional ``?start=`` / ``?end=`` ISO dates bound the period (``end`` defaults to
+    today; an absent ``start`` runs from inception with a zero opening balance).
+    Supports ``?export=csv|xlsx|pdf``. All money is reported in kobo + naira.
+    """
+
+    rbac_permission = "finance.report.view"
+
+    def get(self, request):
+        from .money import format_naira
+        from .reports import customer_statement
+        from .views import _maybe_export, _money as _money_pair
+
+        entity = resolve_entity(request)
+        customer = _resolve_customer(entity, request.query_params.get("customer"))
+        start = _date(request.query_params.get("start"), "start")
+        end = _date(request.query_params.get("end"), "end")
+        stmt = customer_statement(customer, start_date=start, end_date=end)
+
+        from .exports import ReportTable
+
+        columns = ["Date", "Type", "Document", "Description", "Debit", "Credit", "Balance"]
+        rows = [
+            [
+                str(e.date), e.doc_type, e.document_number, e.description,
+                format_naira(e.debit) if e.debit else "",
+                format_naira(e.credit) if e.credit else "",
+                format_naira(e.balance),
+            ]
+            for e in stmt.entries
+        ]
+        summary = ["", "", "", "TOTAL",
+                   format_naira(stmt.total_debits), format_naira(stmt.total_credits),
+                   format_naira(stmt.closing_balance)]
+        period = f"{stmt.start_date or 'inception'} → {stmt.end_date}"
+        export = _maybe_export(request, ReportTable(
+            title=f"Statement of Account — {stmt.customer_name}",
+            subtitle=f"{entity.code} · {stmt.customer_code} · {period} · "
+                     f"opening {format_naira(stmt.opening_balance)}",
+            columns=columns,
+            rows=rows,
+            summary_rows=[summary],
+        ), filename=f"statement_{entity.code}_{stmt.customer_code}")
+        if export is not None:
+            return export
+
+        return success_response(
+            "Customer statement retrieved.",
+            data={
+                "entity": entity.code,
+                "customer": {
+                    "id": stmt.customer_id, "code": stmt.customer_code,
+                    "name": stmt.customer_name,
+                },
+                "start_date": str(stmt.start_date) if stmt.start_date else None,
+                "end_date": str(stmt.end_date),
+                "opening_balance": _money_pair(stmt.opening_balance),
+                "entries": [
+                    {
+                        "date": str(e.date), "doc_type": e.doc_type,
+                        "document_number": e.document_number, "description": e.description,
+                        "debit": _money_pair(e.debit), "credit": _money_pair(e.credit),
+                        "balance": _money_pair(e.balance),
+                    }
+                    for e in stmt.entries
+                ],
+                "total_debits": _money_pair(stmt.total_debits),
+                "total_credits": _money_pair(stmt.total_credits),
+                "closing_balance": _money_pair(stmt.closing_balance),
+                "aging": {b: _money_pair(v) for b, v in stmt.aging.items()},
+            },
+        )

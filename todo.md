@@ -3,7 +3,6 @@
 # Finance backlog — remaining gaps from Crestfield-Finance/Finance-Gap-Checklist.md (all `G`-marked stretch items; core GL/AR/P2P/Payments shipped & tested). Build-first triage is DONE; these are the value-add / statutory / automation layer and do NOT block frontend work.
 
 ## AR cycle (vs_finance receivables)
-# - Customer (payer) statements of account
 # - Dunning / automated payment reminders
 # - School-fee billing adapter (fee categories + structures → emit generic invoices, behind a module flag)
 
@@ -31,6 +30,8 @@
 # - Open-banking statement feed (Mono/Okra) — optional, automates bank rec
 
 ## Done
+
+# 0f. Finance backlog — AR customer statements of account. New report `customer_statement(customer, *, start_date=None, end_date=None)` in reports.py builds a dated ledger of one customer's POSTED AR documents (invoices/debit notes/refunds debit; receipts/credit notes/concessions credit) with a running balance: opening_balance folds all movements before start_date (None = from inception, zero opening), entries cover [start_date, end_date] (end defaults to today), closing_balance = opening + debits − credits, plus an aging block over the customer's still-open invoice balance_due as at end_date. Write-offs clear invoices internally and aren't itemised (aging reflects live balances). REST at GET /v1/finance/reports/customer-statement/ (?entity=&customer=<code|id>&start=&end=, rbac finance.report.view, kobo+naira money, ?export=csv|xlsx|pdf) via CustomerStatementView in views_ar.py. No model change → no migration. 2 new tests, 92 vs_finance tests pass, check clean, no drift.
 
 # 0e. Finance backlog — AR installment plans + concessions. Concessions (discount/waiver/scholarship, doc CNC) post Dr 4910 Discounts & Concessions Allowed / Cr AR and clear the invoice via amount_credited (a policy-grounded targeted credit; SCHOLARSHIP is the domain-neutral name for a school bursary). PaymentPlan (doc PPL) is a pure scheduling overlay — never posts: splits a receivable into evenly-divided dated installments (WEEKLY/FORTNIGHTLY/MONTHLY/QUARTERLY, remainder on the last), DRAFT→ACTIVE→COMPLETED/CANCELLED; refresh_plan_progress distributes the linked invoice's settled_amount across installments oldest-first and auto-completes. New 4910 contra-income account seeded. Services in installments.py, REST in views_ar.py (/v1/finance/ concessions + payment-plans w/ activate/refresh/cancel), migration 0011. 7 new tests, 90 vs_finance tests pass, check clean, no drift.
 

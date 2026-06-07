@@ -94,6 +94,7 @@ from vs_finance.reports import (
     balance_sheet,
     budget_vs_actual,
     cash_flow_statement,
+    customer_statement,
     income_statement,
     reconcile_ar,
     trial_balance,
@@ -864,6 +865,65 @@ class PaymentPlanTests(_ARFixtureMixin, TestCase):
         cancel_payment_plan(plan)
         plan.refresh_from_db()
         self.assertEqual(plan.plan_status, "CANCELLED")
+
+
+class CustomerStatementTests(_ARFixtureMixin, TestCase):
+    def test_statement_runs_balance_and_buckets_open_invoices(self):
+        entity, period, customer, vat = self.build_ar()
+
+        # Two invoices; one part-paid, one discounted via a concession.
+        inv1 = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)],
+                                 date=datetime.date(2026, 1, 5))
+        post_invoice(inv1)  # +100,000
+        inv2 = self.make_invoice(entity, customer, lines=[("4100", 1, 60000, None)],
+                                 date=datetime.date(2026, 1, 18))
+        post_invoice(inv2)  # +60,000
+
+        bank = Account.objects.get(entity=entity, code="1100")
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 12),
+            amount=40000, deposit_account=bank,
+        )
+        post_payment(pay)  # -40,000 against inv1
+
+        concession = Concession.objects.create(
+            entity=entity, customer=customer, invoice=inv1, kind="DISCOUNT",
+            concession_date=datetime.date(2026, 1, 20), amount=10000,
+        )
+        post_concession(concession)  # -10,000 against inv1
+
+        stmt = customer_statement(customer, end_date=datetime.date(2026, 1, 31))
+
+        # Opening (no start_date) is zero; running movements net to the live balance.
+        self.assertEqual(stmt.opening_balance, 0)
+        self.assertEqual(stmt.total_debits, 160000)   # 100,000 + 60,000
+        self.assertEqual(stmt.total_credits, 50000)   # 40,000 receipt + 10,000 discount
+        self.assertEqual(stmt.closing_balance, 110000)
+        # Entries are ordered and carry a running balance ending at the close.
+        self.assertEqual([e.doc_type for e in stmt.entries],
+                         ["Invoice", "Receipt", "Invoice", "Discount"])
+        self.assertEqual(stmt.entries[-1].balance, 110000)
+        # Aging sums the two still-open invoices' live balances.
+        self.assertEqual(sum(stmt.aging.values()), 110000)
+
+    def test_start_date_folds_prior_movements_into_opening_balance(self):
+        entity, period, customer, vat = self.build_ar()
+        early = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)],
+                                  date=datetime.date(2026, 1, 3))
+        post_invoice(early)
+        later = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)],
+                                  date=datetime.date(2026, 1, 20))
+        post_invoice(later)
+
+        stmt = customer_statement(
+            customer, start_date=datetime.date(2026, 1, 10),
+            end_date=datetime.date(2026, 1, 31),
+        )
+        # The 3 Jan invoice predates the window → opening balance, not an entry.
+        self.assertEqual(stmt.opening_balance, 100000)
+        self.assertEqual([e.document_number for e in stmt.entries],
+                         [later.document_number])
+        self.assertEqual(stmt.closing_balance, 150000)
 
 
 # =========================================================================== #

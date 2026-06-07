@@ -273,6 +273,148 @@ def reconcile_ar(entity, *, as_of=None) -> ARReconciliation:
 
 
 # --------------------------------------------------------------------------- #
+# Customer statement of account                                               #
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class StatementEntry:
+    """One movement on a customer's account — a debit *raises* what they owe.
+
+    Invoices, debit notes and refunds debit (increase the receivable); receipts,
+    credit notes and concessions credit (reduce it). ``balance`` is the running
+    receivable after this entry, in kobo.
+    """
+
+    date: object
+    sort_key: tuple
+    doc_type: str
+    document_number: str
+    description: str
+    debit: int = 0
+    credit: int = 0
+    balance: int = 0
+
+
+@dataclass
+class CustomerStatement:
+    """A dated ledger of a customer's account with a running balance (all kobo).
+
+    Built from the customer's *posted* AR documents — invoices, receipts,
+    credit/debit notes, refunds and concessions. ``opening_balance`` is the net of
+    everything dated before ``start_date``; ``entries`` are the movements within
+    ``[start_date, end_date]``; ``closing_balance`` is where the account stands at
+    ``end_date``. ``aging`` buckets the customer's still-open invoice balances as at
+    ``end_date``. (Bad-debt write-offs clear an invoice internally and are not itemised
+    as their own statement line; the aging block always reflects live balances.)
+    """
+
+    entity_id: int
+    customer_id: int
+    customer_code: str
+    customer_name: str
+    start_date: object | None
+    end_date: object
+    opening_balance: int = 0
+    entries: list = field(default_factory=list)
+    total_debits: int = 0
+    total_credits: int = 0
+    closing_balance: int = 0
+    aging: dict = field(default_factory=lambda: {b: 0 for b in AGING_BUCKETS})
+
+
+def customer_statement(customer, *, start_date=None, end_date=None) -> CustomerStatement:
+    """Build a :class:`CustomerStatement` for ``customer`` over ``[start_date, end_date]``.
+
+    ``end_date`` defaults to today; ``start_date`` of ``None`` runs from the account's
+    inception (a zero opening balance). Movements are ordered by date, then by a stable
+    document-type ordering so same-day documents read sensibly (invoice before its
+    receipt).
+    """
+    from .constants import CreditNoteKind, DocumentStatus
+    from .models import Concession, CreditNote, Invoice, Payment, Refund
+
+    entity = customer.entity
+    end_date = end_date or timezone.now().date()
+
+    # Each movement: (date, type_order, doc_type, number, description, debit, credit).
+    movements: list = []
+
+    for inv in Invoice.objects.filter(customer=customer, status=DocumentStatus.POSTED):
+        movements.append((
+            inv.invoice_date, 0, "Invoice", inv.document_number,
+            inv.narration or "Invoice", inv.total, 0,
+        ))
+    for note in CreditNote.objects.filter(customer=customer, status=DocumentStatus.POSTED):
+        if note.kind == CreditNoteKind.DEBIT:
+            movements.append((
+                note.note_date, 1, "Debit note", note.document_number,
+                note.reason or "Debit note", note.total, 0,
+            ))
+        else:
+            movements.append((
+                note.note_date, 3, "Credit note", note.document_number,
+                note.reason or "Credit note", 0, note.total,
+            ))
+    for refund in Refund.objects.filter(customer=customer, status=DocumentStatus.POSTED):
+        movements.append((
+            refund.refund_date, 2, "Refund", refund.document_number,
+            refund.narration or "Refund", refund.amount, 0,
+        ))
+    for pay in Payment.objects.filter(customer=customer, status=DocumentStatus.POSTED):
+        movements.append((
+            pay.payment_date, 4, "Receipt", pay.document_number,
+            pay.narration or "Receipt", 0, pay.amount,
+        ))
+    for con in Concession.objects.filter(customer=customer, status=DocumentStatus.POSTED):
+        movements.append((
+            con.concession_date, 5, con.get_kind_display(), con.document_number,
+            con.reason or con.get_kind_display(), 0, con.amount,
+        ))
+
+    movements.sort(key=lambda m: (m[0], m[1], m[3]))
+
+    statement = CustomerStatement(
+        entity_id=entity.id, customer_id=customer.id,
+        customer_code=customer.code, customer_name=customer.name,
+        start_date=start_date, end_date=end_date,
+    )
+
+    balance = 0
+    for date_, type_order, doc_type, number, description, debit, credit in movements:
+        if date_ > end_date:
+            continue
+        if start_date is not None and date_ < start_date:
+            statement.opening_balance += debit - credit
+            balance = statement.opening_balance
+            continue
+        balance += debit - credit
+        statement.entries.append(StatementEntry(
+            date=date_, sort_key=(date_, type_order), doc_type=doc_type,
+            document_number=number, description=description,
+            debit=debit, credit=credit, balance=balance,
+        ))
+        statement.total_debits += debit
+        statement.total_credits += credit
+
+    statement.closing_balance = statement.opening_balance + \
+        statement.total_debits - statement.total_credits
+
+    # Aging of the customer's still-open invoices as at end_date.
+    for inv in (
+        Invoice.objects.filter(customer=customer, status=DocumentStatus.POSTED)
+        .exclude(payment_status="PAID")
+    ):
+        due = inv.balance_due
+        if due <= 0 or inv.invoice_date > end_date:
+            continue
+        ref_date = inv.due_date or inv.invoice_date
+        statement.aging[_bucket_for((end_date - ref_date).days)] += due
+
+    return statement
+
+
+# --------------------------------------------------------------------------- #
 # Budget vs actual                                                            #
 # --------------------------------------------------------------------------- #
 
