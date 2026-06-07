@@ -22,6 +22,7 @@ from vs_finance.exceptions import (
     UnbalancedJournalError,
 )
 from vs_finance.constants import (
+    CreditNoteKind,
     FinanceAuditAction,
     FinanceAuditStatus,
     InvoicePaymentStatus,
@@ -46,6 +47,8 @@ from vs_finance.models import (
     BankAccount,
     BankStatementLine,
     Budget,
+    CreditNote,
+    CreditNoteLine,
     Customer,
     DepreciationSchedule,
     ExpenseClaim,
@@ -62,12 +65,19 @@ from vs_finance.models import (
     Payment,
     PayrollLine,
     PayrollRun,
+    Refund,
     TaxCode,
 )
 from vs_finance.money import format_naira, to_kobo, to_naira
 from vs_finance.numbering import next_document_number
 from vs_finance.posting import ensure_balanced, ensure_period_open, post_journal, reverse_journal
 from vs_finance.receivables import post_invoice, post_payment
+from vs_finance.credit_notes import (
+    allocate_credit_note,
+    post_credit_note,
+    post_refund,
+    write_off_invoice,
+)
 from vs_finance.reports import (
     ar_aging,
     balance_sheet,
@@ -595,6 +605,115 @@ class ARReconciliationTests(_ARFixtureMixin, TestCase):
         self.assertTrue(rec.is_reconciled)
         self.assertEqual(rec.subledger_total, 70000)
         self.assertEqual(rec.control_total, 70000)
+
+
+class CreditNoteTests(_ARFixtureMixin, TestCase):
+    def test_credit_note_posts_reverses_ar_and_applies_to_invoice(self):
+        entity, period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, vat)])
+        post_invoice(inv)  # total 107,500 (Dr AR)
+
+        note = CreditNote.objects.create(
+            entity=entity, customer=customer, kind=CreditNoteKind.CREDIT,
+            note_date=datetime.date(2026, 1, 15), invoice=inv, reason="Returned goods",
+        )
+        CreditNoteLine.objects.create(
+            note=note, revenue_account=Account.objects.get(entity=entity, code="4900"),
+            quantity=1, unit_price=40000, tax_code=vat, line_no=1,
+        )
+        post_credit_note(note, auto_allocate=True)
+        note.refresh_from_db()
+        inv.refresh_from_db()
+
+        # CRN total = 40,000 + 7.5% = 43,000; balanced journal that credits AR.
+        self.assertEqual(note.status, "POSTED")
+        self.assertEqual(note.total, 43000)
+        self.assertTrue(note.document_number.startswith("CFX-TBOOK-CRN-"))
+        debit, credit = note.journal.totals()
+        self.assertEqual(debit, credit)
+        self.assertEqual(credit, 43000)
+
+        # Applied to the invoice as a non-cash reduction.
+        self.assertEqual(inv.amount_credited, 43000)
+        self.assertEqual(inv.balance_due, 107500 - 43000)
+        self.assertEqual(inv.payment_status, InvoicePaymentStatus.PARTIAL)
+
+        # AR control nets to the reduced balance.
+        rec = reconcile_ar(entity, as_of=datetime.date(2026, 2, 1))
+        self.assertTrue(rec.is_reconciled)
+        self.assertEqual(rec.control_total, 64500)
+
+    def test_debit_note_increases_ar_and_cannot_be_allocated(self):
+        entity, period, customer, vat = self.build_ar()
+        note = CreditNote.objects.create(
+            entity=entity, customer=customer, kind=CreditNoteKind.DEBIT,
+            note_date=datetime.date(2026, 1, 20), reason="Under-billed",
+        )
+        CreditNoteLine.objects.create(
+            note=note, revenue_account=Account.objects.get(entity=entity, code="4100"),
+            quantity=1, unit_price=25000, tax_code=None, line_no=1,
+        )
+        post_credit_note(note)
+        note.refresh_from_db()
+        self.assertEqual(note.total, 25000)
+        self.assertTrue(note.document_number.startswith("CFX-TBOOK-DRN-"))
+        # Dr AR (debit note raises the receivable).
+        ar_bal = AccountBalance.objects.get(account__code="1200", period=period)
+        self.assertEqual(ar_bal.debit_total, 25000)
+        with self.assertRaises(PostingError):
+            allocate_credit_note(note)
+
+    def test_refund_pays_out_credit_balance(self):
+        entity, period, customer, vat = self.build_ar()
+        bank = Account.objects.get(entity=entity, code="1100")
+        refund = Refund.objects.create(
+            entity=entity, customer=customer, refund_date=datetime.date(2026, 1, 18),
+            amount=30000, deposit_account=bank,
+        )
+        post_refund(refund)
+        refund.refresh_from_db()
+        self.assertEqual(refund.status, "POSTED")
+        self.assertTrue(refund.document_number.startswith("CFX-TBOOK-RFD-"))
+        debit, credit = refund.journal.totals()
+        self.assertEqual(debit, credit)
+        # Dr AR, Cr bank.
+        ar_bal = AccountBalance.objects.get(account__code="1200", period=period)
+        bank_bal = AccountBalance.objects.get(account__code="1100", period=period)
+        self.assertEqual(ar_bal.debit_total, 30000)
+        self.assertEqual(bank_bal.credit_total, 30000)
+
+    def test_write_off_clears_balance_as_bad_debt(self):
+        entity, period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
+        post_invoice(inv)  # 100,000 outstanding
+
+        write_off_invoice(inv, write_off_date=datetime.date(2026, 1, 28))
+        inv.refresh_from_db()
+        self.assertEqual(inv.amount_credited, 100000)
+        self.assertEqual(inv.balance_due, 0)
+        self.assertEqual(inv.payment_status, InvoicePaymentStatus.PAID)
+        # Dr bad-debt expense (5300), Cr AR.
+        exp_bal = AccountBalance.objects.get(account__code="5300", period=period)
+        self.assertEqual(exp_bal.debit_total, 100000)
+        self.assertTrue(
+            FinanceAuditLog.objects.filter(
+                action=FinanceAuditAction.INVOICE_WRITTEN_OFF, target_id=str(inv.pk),
+            ).exists()
+        )
+
+    def test_write_off_rejected_when_nothing_outstanding(self):
+        entity, period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)])
+        post_invoice(inv)
+        bank = Account.objects.get(entity=entity, code="1100")
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 15),
+            amount=50000, deposit_account=bank,
+        )
+        post_payment(pay)
+        inv.refresh_from_db()
+        with self.assertRaises(PostingError):
+            write_off_invoice(inv)
 
 
 # =========================================================================== #

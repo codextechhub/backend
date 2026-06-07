@@ -61,6 +61,8 @@ class DocType(models.TextChoices):
     RECEIPT = "RCP", "Receipt"
     PAYMENT = "PAY", "Payment"
     CREDIT_NOTE = "CRN", "Credit Note"
+    DEBIT_NOTE = "DRN", "Debit Note"
+    REFUND = "RFD", "Customer Refund"
     PURCHASE_REQUISITION = "PR", "Purchase Requisition"
     RFQ = "RFQ", "Request for Quotation"
     PURCHASE_ORDER = "PO", "Purchase Order"
@@ -152,6 +154,19 @@ class InvoicePaymentStatus(models.TextChoices):
     PAID = "PAID", "Paid"
 
 
+class CreditNoteKind(models.TextChoices):
+    """Direction of a credit/debit note against a customer's receivable.
+
+    CREDIT reduces what the customer owes (a sales return, allowance or correction:
+    ``Dr revenue/returns + Dr output tax, Cr AR``); it may be *applied* to specific
+    invoices like a non-cash payment. DEBIT increases what the customer owes (an extra
+    charge or under-bill correction: ``Dr AR, Cr revenue + Cr output tax``) — a
+    supplementary invoice, so it is never allocated to reduce another invoice.
+    """
+    CREDIT = "CREDIT", "Credit note (reduces AR)"
+    DEBIT = "DEBIT", "Debit note (increases AR)"
+
+
 class PaymentMethod(models.TextChoices):
     """How a customer receipt was tendered (operational detail, not posting logic)."""
     CASH = "CASH", "Cash"
@@ -219,8 +234,13 @@ class FinanceAuditAction(models.TextChoices):
     JOURNAL_POST_REJECTED = "JOURNAL_POST_REJECTED", "Journal posting rejected"
     INVOICE_POSTED = "INVOICE_POSTED", "Invoice posted"
     INVOICE_CANCELLED = "INVOICE_CANCELLED", "Invoice cancelled"
+    INVOICE_WRITTEN_OFF = "INVOICE_WRITTEN_OFF", "Invoice written off (bad debt)"
     PAYMENT_POSTED = "PAYMENT_POSTED", "Payment posted"
     PAYMENT_ALLOCATED = "PAYMENT_ALLOCATED", "Payment allocated"
+    CREDIT_NOTE_POSTED = "CREDIT_NOTE_POSTED", "Credit note posted"
+    CREDIT_NOTE_ALLOCATED = "CREDIT_NOTE_ALLOCATED", "Credit note allocated"
+    DEBIT_NOTE_POSTED = "DEBIT_NOTE_POSTED", "Debit note posted"
+    REFUND_POSTED = "REFUND_POSTED", "Customer refund posted"
     PERIOD_CLOSED = "PERIOD_CLOSED", "Period closed"
     PERIOD_REOPENED = "PERIOD_REOPENED", "Period re-opened"
     ACCOUNT_CREATED = "ACCOUNT_CREATED", "Account created"
@@ -273,6 +293,8 @@ DEPRECIATION_EXPENSE_CODE = "5400"        # Depreciation expense
 BANK_CHARGES_CODE = "5500"               # Bank charges expense
 RETAINED_EARNINGS_CODE = "3200"          # Retained earnings (equity) — net income closes here
 CASH_BANK_CODE = "1100"                  # Cash & bank (the cash-flow statement's cash line)
+SALES_RETURNS_CODE = "4900"              # Sales returns (contra-revenue) — credit notes default here
+BAD_DEBT_EXPENSE_CODE = "5300"           # Bad-debt / general expense — write-offs default here
 
 #: Document-number prefix for the whole platform's finance documents (Code X Finance).
 DOC_NUMBER_PREFIX = "CFX"

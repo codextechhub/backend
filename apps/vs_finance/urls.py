@@ -24,6 +24,16 @@ from .views import (
     PeriodCloseView,
     TrialBalanceView,
 )
+from .views_ar import (
+    CreditNoteAllocateView,
+    CreditNoteDetailView,
+    CreditNoteListCreateView,
+    CreditNotePostView,
+    InvoiceWriteOffView,
+    RefundDetailView,
+    RefundListCreateView,
+    RefundPostView,
+)
 from .views_ops import (
     BankAccountDetailView,
     BankAccountListCreateView,
@@ -64,6 +74,17 @@ urlpatterns = [
     path("journals/", JournalEntryListView.as_view(), name="finance-journal-list"),
     path("journals/<int:id>/", JournalEntryDetailView.as_view(), name="finance-journal-detail"),
     path("invoices/", InvoiceListView.as_view(), name="finance-invoice-list"),
+
+    # AR adjustments — credit/debit notes, refunds, write-offs
+    path("credit-notes/", CreditNoteListCreateView.as_view(), name="finance-creditnote-list"),
+    path("credit-notes/<int:pk>/", CreditNoteDetailView.as_view(), name="finance-creditnote-detail"),
+    path("credit-notes/<int:pk>/post/", CreditNotePostView.as_view(), name="finance-creditnote-post"),
+    path("credit-notes/<int:pk>/allocate/", CreditNoteAllocateView.as_view(),
+         name="finance-creditnote-allocate"),
+    path("refunds/", RefundListCreateView.as_view(), name="finance-refund-list"),
+    path("refunds/<int:pk>/", RefundDetailView.as_view(), name="finance-refund-detail"),
+    path("refunds/<int:pk>/post/", RefundPostView.as_view(), name="finance-refund-post"),
+    path("invoices/<int:pk>/write-off/", InvoiceWriteOffView.as_view(), name="finance-invoice-writeoff"),
 
     # Actions
     path("journals/<int:id>/post/", JournalPostView.as_view(), name="finance-journal-post"),

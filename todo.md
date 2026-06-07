@@ -3,7 +3,6 @@
 # Finance backlog — remaining gaps from Crestfield-Finance/Finance-Gap-Checklist.md (all `G`-marked stretch items; core GL/AR/P2P/Payments shipped & tested). Build-first triage is DONE; these are the value-add / statutory / automation layer and do NOT block frontend work.
 
 ## AR cycle (vs_finance receivables)
-# - Credit notes / debit notes / refunds / write-offs
 # - Installment payment plans / scholarships / discounts / waivers
 # - Customer (payer) statements of account
 # - Dunning / automated payment reminders
@@ -33,6 +32,8 @@
 # - Open-banking statement feed (Mono/Okra) — optional, automates bank rec
 
 ## Done
+
+# 0d. Finance backlog — AR adjustments: credit/debit notes (CRN/DRN tokens via per-instance DOC_TYPE), customer refunds (RFD), bad-debt write-offs. New Invoice.amount_credited tracks non-cash reductions; settled_amount = amount_paid + amount_credited drives balance_due / payment status (cash logic unchanged when amount_credited=0). CREDIT note Dr revenue+output tax / Cr AR then optional oldest-first allocation against open invoices; DEBIT note reverses (Dr AR / Cr revenue+tax, cannot allocate); refund Dr AR / Cr bank; write-off Dr bad-debt 5300 / Cr AR. Services in credit_notes.py, REST in views_ar.py (/v1/finance/ credit-notes, refunds, invoices/<pk>/write-off), migration 0010. 5 new tests, 83 vs_finance tests pass, check clean, no migration drift.
 
 # 0c. Finance Phase 6 — Payment integration (NEW app vs_payments, mounted /v1/payments/). Both directions: collections (money-in) + payouts (money-out) end-to-end, behind a provider-neutral interface with real Paystack + OPay HTTP clients (stdlib urllib) and a deterministic FakeProvider for tests. Confirmed collection → vs_finance post_payment (Dr bank/Cr AR); confirmed payout → vs_procurement post_vendor_payment (Dr AP/Cr bank/Cr WHT). Idempotent webhooks (dedupe_key + select_for_update + terminal short-circuit → retried event never double-books). Public signature-verified webhook receiver. Append-only PaymentEvent audit. 17 tests pass, check clean, no vs_payments migration drift. Credential-sourcing guide for Paystack/OPay delivered to user.
 

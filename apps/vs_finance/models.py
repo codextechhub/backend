@@ -28,6 +28,7 @@ from .constants import (
     AssetStatus,
     BankLineStatus,
     BudgetStatus,
+    CreditNoteKind,
     DepreciationMethod,
     DocType,
     DocumentStatus,
@@ -923,6 +924,10 @@ class Invoice(FinanceDocument):
     tax_total = MoneyField(help_text="Total tax, in kobo.")
     total = MoneyField(help_text="subtotal + tax_total, in kobo.")
     amount_paid = MoneyField(help_text="Cash allocated to this invoice, in kobo.")
+    amount_credited = MoneyField(
+        help_text="Non-cash reductions (credit notes, write-offs) applied to this "
+                  "invoice, in kobo. Reduces the balance due without recording cash.",
+    )
     payment_status = models.CharField(
         max_length=8, choices=InvoicePaymentStatus.choices,
         default=InvoicePaymentStatus.UNPAID,
@@ -942,9 +947,14 @@ class Invoice(FinanceDocument):
         ]
 
     @property
+    def settled_amount(self) -> int:
+        """Total settled (cash + non-cash credits/write-offs), in kobo."""
+        return self.amount_paid + self.amount_credited
+
+    @property
     def balance_due(self) -> int:
-        """Outstanding amount in kobo (total minus what's been allocated)."""
-        return self.total - self.amount_paid
+        """Outstanding amount in kobo (total minus cash paid and non-cash credits)."""
+        return self.total - self.settled_amount
 
     def recompute_totals(self, *, save: bool = True) -> None:
         """Roll the line amounts up into subtotal/tax_total/total (kobo)."""
@@ -958,10 +968,11 @@ class Invoice(FinanceDocument):
             self.save(update_fields=["subtotal", "tax_total", "total", "updated_at"])
 
     def refresh_payment_status(self, *, save: bool = True) -> None:
-        """Derive ``payment_status`` from ``amount_paid`` vs ``total``."""
-        if self.amount_paid <= 0:
+        """Derive ``payment_status`` from amount settled (cash + credits) vs ``total``."""
+        settled = self.settled_amount
+        if settled <= 0:
             status = InvoicePaymentStatus.UNPAID
-        elif self.amount_paid >= self.total:
+        elif settled >= self.total:
             status = InvoicePaymentStatus.PAID
         else:
             status = InvoicePaymentStatus.PARTIAL
@@ -1092,6 +1103,213 @@ class PaymentAllocation(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.payment_id}→{self.invoice_id}: {self.amount}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — AR adjustments (credit/debit notes, refunds, write-offs)
+# ---------------------------------------------------------------------------
+#
+# The other side of the revenue cycle: not every billed amount is collected as first
+# raised. A *credit note* gives value back (returns, allowances, corrections), a *debit
+# note* charges more, a *refund* hands cash back for an over-paid credit balance, and a
+# *write-off* concedes a receivable as bad debt. All post through the same
+# `post_journal` service; credit notes and write-offs reduce an invoice's balance via
+# its `amount_credited` field rather than recording cash.
+
+
+class CreditNote(FinanceDocument):
+    """A credit or debit note against a :class:`Customer`'s receivable.
+
+    ``kind`` selects direction (:class:`~vs_finance.constants.CreditNoteKind`): a CREDIT
+    note reduces AR (``Dr revenue/returns + Dr output tax, Cr AR``) and may be applied
+    to specific invoices like a non-cash payment; a DEBIT note increases AR
+    (``Dr AR, Cr revenue + Cr output tax``) as a supplementary charge. The document
+    number token follows the kind (``CRN`` vs ``DRN``). Money is kobo throughout.
+    """
+
+    DOC_TYPE = DocType.CREDIT_NOTE  # overridden per-instance for DEBIT notes (DRN)
+
+    customer = models.ForeignKey(
+        Customer, on_delete=models.PROTECT, related_name="credit_notes",
+    )
+    kind = models.CharField(
+        max_length=6, choices=CreditNoteKind.choices, default=CreditNoteKind.CREDIT,
+    )
+    note_date = models.DateField()
+    currency = models.ForeignKey(
+        Currency, on_delete=models.PROTECT, related_name="credit_notes",
+        null=True, blank=True,
+    )
+    reason = models.CharField(max_length=255, blank=True, default="")
+    reference = models.CharField(max_length=64, blank=True, default="")
+    invoice = models.ForeignKey(
+        Invoice, on_delete=models.PROTECT, related_name="credit_notes",
+        null=True, blank=True,
+        help_text="Optional originating invoice this note relates to.",
+    )
+
+    subtotal = MoneyField(help_text="Net of tax, in kobo.")
+    tax_total = MoneyField(help_text="Total tax reversed/charged, in kobo.")
+    total = MoneyField(help_text="subtotal + tax_total, in kobo.")
+    allocated_amount = MoneyField(
+        help_text="Portion of a CREDIT note applied to invoices, in kobo.",
+    )
+
+    journal = models.ForeignKey(
+        "JournalEntry", on_delete=models.PROTECT, related_name="credit_notes",
+        null=True, blank=True,
+    )
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["entity", "kind"]),
+            models.Index(fields=["customer"]),
+            models.Index(fields=["entity", "note_date"]),
+        ]
+
+    @property
+    def is_debit(self) -> bool:
+        return self.kind == CreditNoteKind.DEBIT
+
+    @property
+    def unallocated_amount(self) -> int:
+        """Credit not yet applied to an invoice (CREDIT notes only)."""
+        return self.total - self.allocated_amount
+
+    def recompute_totals(self, *, save: bool = True) -> None:
+        agg = self.lines.aggregate(
+            net=models.Sum("net_amount"), tax=models.Sum("tax_amount"),
+        )
+        self.subtotal = agg["net"] or 0
+        self.tax_total = agg["tax"] or 0
+        self.total = self.subtotal + self.tax_total
+        if save:
+            self.save(update_fields=["subtotal", "tax_total", "total", "updated_at"])
+
+    def save(self, *args, **kwargs):
+        # The document-number token tracks the note's direction (CRN vs DRN).
+        if not self.document_number:
+            self.DOC_TYPE = (
+                DocType.DEBIT_NOTE if self.kind == CreditNoteKind.DEBIT
+                else DocType.CREDIT_NOTE
+            )
+        return super().save(*args, **kwargs)
+
+
+class CreditNoteLine(TimeStampedModel):
+    """One line of a :class:`CreditNote` → a GL revenue/returns account (+ optional tax)."""
+
+    note = models.ForeignKey(
+        CreditNote, on_delete=models.CASCADE, related_name="lines",
+    )
+    description = models.CharField(max_length=255, blank=True, default="")
+    revenue_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="credit_note_lines",
+        help_text="Revenue/returns account adjusted for this line's net.",
+    )
+    quantity = models.DecimalField(max_digits=14, decimal_places=4, default=1)
+    unit_price = MoneyField(help_text="Price per unit in kobo.")
+    tax_code = models.ForeignKey(
+        TaxCode, on_delete=models.PROTECT, related_name="credit_note_lines",
+        null=True, blank=True,
+    )
+    net_amount = MoneyField(help_text="quantity × unit_price, in kobo.")
+    tax_amount = MoneyField(help_text="Tax on the net, in kobo.")
+    cost_center = models.ForeignKey(
+        CostCenter, on_delete=models.PROTECT, related_name="credit_note_lines",
+        null=True, blank=True,
+    )
+    line_no = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["note", "line_no", "id"]
+        indexes = [models.Index(fields=["note"]), models.Index(fields=["revenue_account"])]
+
+    @property
+    def line_total(self) -> int:
+        return self.net_amount + self.tax_amount
+
+    def __str__(self) -> str:
+        return f"{self.description or self.revenue_account_id}: {self.line_total}"
+
+
+class CreditNoteAllocation(TimeStampedModel):
+    """Links a slice of a CREDIT :class:`CreditNote` to a specific :class:`Invoice`.
+
+    The GL already moved when the note posted (Dr revenue, Cr AR); allocation is the
+    sub-ledger act of saying which invoices that credit settles, mirroring
+    :class:`PaymentAllocation`. It bumps the invoice's ``amount_credited``.
+    """
+
+    note = models.ForeignKey(
+        CreditNote, on_delete=models.CASCADE, related_name="allocations",
+    )
+    invoice = models.ForeignKey(
+        Invoice, on_delete=models.PROTECT, related_name="credit_allocations",
+    )
+    amount = MoneyField(help_text="Amount of the note applied to this invoice, in kobo.")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["note", "invoice"], name="uniq_finance_cnalloc_note_invoice",
+            ),
+            models.CheckConstraint(
+                check=models.Q(amount__gte=0), name="ck_finance_cnalloc_non_negative",
+            ),
+        ]
+        indexes = [models.Index(fields=["invoice"]), models.Index(fields=["note"])]
+        ordering = ["note", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.note_id}→{self.invoice_id}: {self.amount}"
+
+
+class Refund(FinanceDocument):
+    """A cash refund paid back to a :class:`Customer` for an over-paid credit balance.
+
+    Posting (:func:`vs_finance.credit_notes.post_refund`) raises ``Dr AR control,
+    Cr bank`` — handing money back and restoring the customer's receivable to zero.
+    """
+
+    DOC_TYPE = DocType.REFUND
+
+    customer = models.ForeignKey(
+        Customer, on_delete=models.PROTECT, related_name="refunds",
+    )
+    refund_date = models.DateField()
+    currency = models.ForeignKey(
+        Currency, on_delete=models.PROTECT, related_name="refunds",
+        null=True, blank=True,
+    )
+    method = models.CharField(
+        max_length=16, choices=PaymentMethod.choices, default=PaymentMethod.BANK_TRANSFER,
+    )
+    amount = MoneyField(help_text="Amount refunded, in kobo.")
+    bank_account = models.ForeignKey(
+        "BankAccount", on_delete=models.PROTECT, related_name="refunds",
+        null=True, blank=True,
+        help_text="Bank account the refund is paid from.",
+    )
+    deposit_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="customer_refunds",
+        null=True, blank=True,
+        help_text="Cash/bank GL account credited (where the money left from).",
+    )
+    reference = models.CharField(max_length=64, blank=True, default="")
+    narration = models.CharField(max_length=255, blank=True, default="")
+    journal = models.ForeignKey(
+        "JournalEntry", on_delete=models.PROTECT, related_name="ar_refunds",
+        null=True, blank=True,
+    )
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["customer"]),
+            models.Index(fields=["entity", "refund_date"]),
+        ]
 
 
 # ---------------------------------------------------------------------------

@@ -19,6 +19,8 @@ from .models import (
     Budget,
     BudgetLine,
     CostCenter,
+    CreditNote,
+    CreditNoteLine,
     Currency,
     Dimension,
     DepreciationSchedule,
@@ -34,6 +36,7 @@ from .models import (
     LedgerEntity,
     PayrollLine,
     PayrollRun,
+    Refund,
     TaxCode,
 )
 from .money import format_naira
@@ -144,6 +147,55 @@ class InvoiceSerializer(serializers.ModelSerializer):
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
+
+
+class CreditNoteLineSerializer(serializers.ModelSerializer):
+    revenue_account = serializers.CharField(source="revenue_account.code", read_only=True)
+    tax_code = serializers.CharField(source="tax_code.code", read_only=True, default=None)
+
+    class Meta:
+        model = CreditNoteLine
+        fields = [
+            "id", "line_no", "description", "revenue_account",
+            "quantity", "unit_price", "tax_code", "net_amount", "tax_amount",
+        ]
+
+
+class CreditNoteSerializer(serializers.ModelSerializer):
+    customer_code = serializers.CharField(source="customer.code", read_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    unallocated_amount = serializers.IntegerField(read_only=True)
+    total_naira = serializers.SerializerMethodField()
+    lines = CreditNoteLineSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = CreditNote
+        fields = [
+            "id", "document_number", "kind", "customer_id", "customer_code",
+            "customer_name", "invoice_id", "note_date", "status",
+            "subtotal", "tax_total", "total", "total_naira",
+            "allocated_amount", "unallocated_amount", "reason", "reference", "lines",
+        ]
+
+    def get_total_naira(self, obj) -> str:
+        return format_naira(obj.total)
+
+
+class RefundSerializer(serializers.ModelSerializer):
+    customer_code = serializers.CharField(source="customer.code", read_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    amount_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Refund
+        fields = [
+            "id", "document_number", "customer_id", "customer_code", "customer_name",
+            "refund_date", "method", "status", "amount", "amount_naira",
+            "bank_account_id", "reference", "narration",
+        ]
+
+    def get_amount_naira(self, obj) -> str:
+        return format_naira(obj.amount)
 
 
 # --------------------------------------------------------------------------- #
