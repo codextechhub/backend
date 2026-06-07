@@ -3,8 +3,12 @@
 
 from __future__ import annotations
 
+import logging
+
 from django.db import transaction
 from django.utils import timezone
+
+logger = logging.getLogger(__name__)
 
 from ..models import LoginSession, User, AuthEventLog
 from .audit import log_auth_event, blacklist_all_user_tokens
@@ -72,7 +76,13 @@ class UserCreationService:
         user.save(update_fields=["status", "updated_at"])
 
         InvitationService.create(user=user, invited_by=requested_by)
-        send_invitation_email_task.delay(str(user.activation_key))
+        try:
+            send_invitation_email_task.delay(str(user.activation_key))
+        except Exception:
+            logger.error(
+                'Failed to dispatch invitation email for user %s — email will need to be resent manually.',
+                user.pk, exc_info=True,
+            )
 
 
 class EmailChangeService:

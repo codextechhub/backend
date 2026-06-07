@@ -18,6 +18,8 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 import logging
+import smtplib
+import socket
 
 from celery import shared_task
 from django.conf import settings
@@ -27,6 +29,24 @@ from django.template.loader import render_to_string
 from core.mail import build_from_email, send_email
 
 logger = logging.getLogger('vs_user.tasks')
+
+
+def _classify_email_error(exc: Exception) -> str:
+    """Return a human-readable error label for an email-sending exception."""
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        host = getattr(settings, 'EMAIL_HOST', 'SMTP server')
+        return f'SMTP connection timed out — {host} unreachable'
+    if isinstance(exc, (ConnectionRefusedError, OSError)) and 'refused' in str(exc).lower():
+        return f'SMTP connection refused by {getattr(settings, "EMAIL_HOST", "server")}'
+    if isinstance(exc, smtplib.SMTPAuthenticationError):
+        return 'SMTP authentication failed — check EMAIL_HOST_USER / EMAIL_HOST_PASSWORD'
+    if isinstance(exc, smtplib.SMTPConnectError):
+        return f'Could not connect to SMTP server ({getattr(settings, "EMAIL_HOST", "")}:{getattr(settings, "EMAIL_PORT", "")})'
+    if isinstance(exc, smtplib.SMTPServerDisconnected):
+        return 'SMTP server disconnected unexpectedly'
+    if isinstance(exc, smtplib.SMTPException):
+        return f'SMTP error: {exc}'
+    return str(exc)
 
 
 # =============================================================================
@@ -109,7 +129,8 @@ def send_invitation_email_task(self, activation_key: str):
     except Exception as exc:
         error_str = str(exc)
         is_final  = self.request.retries >= self.max_retries
-        _record_invitation_email(activation_key, success=False, error=error_str)
+        label = _classify_email_error(exc)
+        _record_invitation_email(activation_key, success=False, error=label)
         if is_final:
             from .models import UserInvitation
             try:
@@ -118,9 +139,9 @@ def send_invitation_email_task(self, activation_key: str):
                 inv.save(update_fields=['email_status', 'updated_at'])
             except Exception:
                 pass
-            logger.error('Invitation email permanently failed for %s: %s', activation_key, error_str)
+            logger.error('Invitation email permanently failed for %s: %s', activation_key, label)
             return
-        logger.warning('Invitation email attempt %s failed for %s: %s', self.request.retries + 1, activation_key, error_str)
+        logger.warning('Invitation email attempt %s failed for %s: %s', self.request.retries + 1, activation_key, label)
         raise self.retry(exc=exc)
 
 
@@ -182,5 +203,6 @@ def send_password_reset_email_task(self, activation_key: str, origin: str, sende
         logger.error(f'send_password_reset_email_task: no user with activation_key={activation_key}')
         return
     except Exception as exc:
-        logger.error(f'send_password_reset_email_task failed for activation_key={activation_key}: {exc}')
+        label = _classify_email_error(exc)
+        logger.error('Password reset email failed for activation_key=%s: %s', activation_key, label)
         raise self.retry(exc=exc)
