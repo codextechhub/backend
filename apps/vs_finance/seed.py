@@ -46,6 +46,7 @@ DEFAULT_CHART = [
     ("4000", "Income", AccountType.INCOME, False, False),
     ("4100", "Operating Revenue", AccountType.INCOME, True, False),
     ("4900", "Sales Returns & Allowances", AccountType.INCOME, True, True),
+    ("4910", "Discounts & Concessions Allowed", AccountType.INCOME, True, True),
     # Expenses
     ("5000", "Expenses", AccountType.EXPENSE, False, False),
     ("5100", "Cost of Sales", AccountType.EXPENSE, True, False),
@@ -61,7 +62,7 @@ _PARENTS = {
     "2100": "2000", "2150": "2000", "2200": "2000", "2300": "2000",
     "2310": "2000", "2320": "2000", "2330": "2000", "2400": "2000",
     "3100": "3000", "3200": "3000",
-    "4100": "4000", "4900": "4000",
+    "4100": "4000", "4900": "4000", "4910": "4000",
     "5100": "5000", "5200": "5000", "5300": "5000", "5400": "5000", "5500": "5000",
 }
 

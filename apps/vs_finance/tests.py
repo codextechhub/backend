@@ -47,6 +47,7 @@ from vs_finance.models import (
     BankAccount,
     BankStatementLine,
     Budget,
+    Concession,
     CreditNote,
     CreditNoteLine,
     Customer,
@@ -63,6 +64,8 @@ from vs_finance.models import (
     JournalLine,
     LedgerEntity,
     Payment,
+    PaymentPlan,
+    PaymentPlanInstallment,
     PayrollLine,
     PayrollRun,
     Refund,
@@ -77,6 +80,14 @@ from vs_finance.credit_notes import (
     post_credit_note,
     post_refund,
     write_off_invoice,
+)
+from vs_finance.installments import (
+    activate_payment_plan,
+    build_installments,
+    cancel_payment_plan,
+    post_concession,
+    refresh_plan_progress,
+    split_amount,
 )
 from vs_finance.reports import (
     ar_aging,
@@ -714,6 +725,145 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
         inv.refresh_from_db()
         with self.assertRaises(PostingError):
             write_off_invoice(inv)
+
+
+class ConcessionTests(_ARFixtureMixin, TestCase):
+    def test_discount_reduces_invoice_and_posts_to_allowances(self):
+        entity, period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
+        post_invoice(inv)  # 100,000 outstanding
+
+        concession = Concession.objects.create(
+            entity=entity, customer=customer, invoice=inv, kind="DISCOUNT",
+            concession_date=datetime.date(2026, 1, 16), amount=20000,
+            reason="Early-settlement discount",
+        )
+        post_concession(concession)
+        concession.refresh_from_db()
+        inv.refresh_from_db()
+
+        self.assertEqual(concession.status, "POSTED")
+        self.assertTrue(concession.document_number.startswith("CFX-TBOOK-CNC-"))
+        # Dr 4910 Discounts & Concessions, Cr AR — balanced.
+        debit, credit = concession.journal.totals()
+        self.assertEqual(debit, credit)
+        self.assertEqual(debit, 20000)
+        disc_bal = AccountBalance.objects.get(account__code="4910", period=period)
+        self.assertEqual(disc_bal.debit_total, 20000)
+
+        # Invoice reduced via the non-cash credit path.
+        self.assertEqual(inv.amount_credited, 20000)
+        self.assertEqual(inv.balance_due, 80000)
+        self.assertEqual(inv.payment_status, InvoicePaymentStatus.PARTIAL)
+        self.assertTrue(
+            FinanceAuditLog.objects.filter(
+                action=FinanceAuditAction.CONCESSION_POSTED, target_id=str(concession.pk),
+            ).exists()
+        )
+
+    def test_concession_rejected_when_amount_exceeds_balance(self):
+        entity, period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)])
+        post_invoice(inv)
+        concession = Concession.objects.create(
+            entity=entity, customer=customer, invoice=inv, kind="WAIVER",
+            concession_date=datetime.date(2026, 1, 16), amount=60000,
+        )
+        with self.assertRaises(PostingError):
+            post_concession(concession)
+        inv.refresh_from_db()
+        self.assertEqual(inv.amount_credited, 0)
+
+
+class PaymentPlanTests(_ARFixtureMixin, TestCase):
+    def test_split_amount_is_integer_exact(self):
+        parts = split_amount(100000, 3)
+        self.assertEqual(parts, [33333, 33333, 33334])
+        self.assertEqual(sum(parts), 100000)
+
+    def test_plan_builds_dated_installments_and_tracks_settlement(self):
+        entity, period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
+        post_invoice(inv)  # 100,000 outstanding
+
+        plan = PaymentPlan.objects.create(
+            entity=entity, customer=customer, invoice=inv,
+            start_date=datetime.date(2026, 1, 10), frequency="MONTHLY",
+            installment_count=4, total_amount=inv.balance_due,
+        )
+        build_installments(plan)
+        self.assertTrue(plan.document_number.startswith("CFX-TBOOK-PPL-"))
+        installs = list(plan.installments.order_by("seq_no"))
+        self.assertEqual([i.amount for i in installs], [25000, 25000, 25000, 25000])
+        self.assertEqual(
+            [i.due_date for i in installs],
+            [datetime.date(2026, 1, 10), datetime.date(2026, 2, 10),
+             datetime.date(2026, 3, 10), datetime.date(2026, 4, 10)],
+        )
+
+        activate_payment_plan(plan)
+        plan.refresh_from_db()
+        self.assertEqual(plan.plan_status, "ACTIVE")
+
+        # A ₦500 part-payment settles the first two installments oldest-first.
+        bank = Account.objects.get(entity=entity, code="1100")
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 12),
+            amount=50000, deposit_account=bank,
+        )
+        post_payment(pay)
+        refresh_plan_progress(plan)
+        plan.refresh_from_db()
+        statuses = [i.status for i in plan.installments.order_by("seq_no")]
+        self.assertEqual(statuses, ["PAID", "PAID", "PENDING", "PENDING"])
+        self.assertEqual(plan.settled_total, 50000)
+        self.assertEqual(plan.plan_status, "ACTIVE")
+
+        # Settle the rest → plan completes.
+        pay2 = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 22),
+            amount=50000, deposit_account=bank,
+        )
+        post_payment(pay2)
+        refresh_plan_progress(plan)
+        plan.refresh_from_db()
+        self.assertEqual(plan.plan_status, "COMPLETED")
+        self.assertTrue(
+            all(i.status == "PAID" for i in plan.installments.all())
+        )
+
+    def test_build_rejects_mismatched_explicit_amounts(self):
+        entity, period, customer, vat = self.build_ar()
+        plan = PaymentPlan.objects.create(
+            entity=entity, customer=customer,
+            start_date=datetime.date(2026, 1, 10), frequency="WEEKLY",
+            installment_count=2, total_amount=100000,
+        )
+        with self.assertRaises(PostingError):
+            build_installments(plan, amounts=[40000, 40000])  # sums to 80,000 ≠ 100,000
+
+    def test_activate_requires_a_built_schedule(self):
+        entity, period, customer, vat = self.build_ar()
+        plan = PaymentPlan.objects.create(
+            entity=entity, customer=customer,
+            start_date=datetime.date(2026, 1, 10), frequency="MONTHLY",
+            installment_count=3, total_amount=90000,
+        )
+        with self.assertRaises(PostingError):
+            activate_payment_plan(plan)
+
+    def test_cancel_marks_plan_cancelled(self):
+        entity, period, customer, vat = self.build_ar()
+        plan = PaymentPlan.objects.create(
+            entity=entity, customer=customer,
+            start_date=datetime.date(2026, 1, 10), frequency="MONTHLY",
+            installment_count=2, total_amount=80000,
+        )
+        build_installments(plan)
+        activate_payment_plan(plan)
+        cancel_payment_plan(plan)
+        plan.refresh_from_db()
+        self.assertEqual(plan.plan_status, "CANCELLED")
 
 
 # =========================================================================== #

@@ -1,11 +1,13 @@
 """REST API for the AR adjustment cycle (mounted at ``/v1/finance/``).
 
-Credit/debit notes, customer refunds and bad-debt write-offs — the give-back side of
-receivables that complements the invoice/payment endpoints. Same conventions as the
-rest of the surface: entity-scoped via ``?entity=<id|code>``, the platform
-``{success, message, data}`` envelope, RBAC-gated (``finance.<resource>.<action>``),
-and thin views that resolve by **code or id** then hand off to the
-:mod:`vs_finance.credit_notes` services which own every posting. Money is integer kobo.
+Credit/debit notes, customer refunds, bad-debt write-offs, concessions
+(discounts/waivers/scholarships) and installment payment plans — the give-back and
+"how they pay" side of receivables that complements the invoice/payment endpoints. Same
+conventions as the rest of the surface: entity-scoped via ``?entity=<id|code>``, the
+platform ``{success, message, data}`` envelope, RBAC-gated
+(``finance.<resource>.<action>``), and thin views that resolve by **code or id** then
+hand off to the :mod:`vs_finance.credit_notes` / :mod:`vs_finance.installments` services
+which own every posting. Money is integer kobo.
 """
 from __future__ import annotations
 
@@ -14,8 +16,22 @@ from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
 
-from .models import CreditNote, CreditNoteLine, Customer, Invoice, Refund
-from .serializers import CreditNoteSerializer, InvoiceSerializer, RefundSerializer
+from .models import (
+    Concession,
+    CreditNote,
+    CreditNoteLine,
+    Customer,
+    Invoice,
+    PaymentPlan,
+    Refund,
+)
+from .serializers import (
+    ConcessionSerializer,
+    CreditNoteSerializer,
+    InvoiceSerializer,
+    PaymentPlanSerializer,
+    RefundSerializer,
+)
 from .views import resolve_entity
 from .views_ops import (
     _FinanceBase,
@@ -305,4 +321,215 @@ class InvoiceWriteOffView(_FinanceBase):
         return success_response(
             f"Invoice {invoice.document_number} written off.",
             data=InvoiceSerializer(invoice).data,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Concessions — discounts / waivers / scholarships                            #
+# --------------------------------------------------------------------------- #
+
+class ConcessionListCreateView(_FinanceBase):
+    """GET (list) / POST (create draft) concessions for an entity."""
+
+    @property
+    def rbac_permission(self):
+        return "finance.concession.create" if self.request.method == "POST" \
+            else "finance.concession.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = Concession.objects.filter(entity=entity).select_related("customer", "invoice")
+        if (kind := request.query_params.get("kind")):
+            qs = qs.filter(kind=kind)
+        if (status_val := request.query_params.get("status")):
+            qs = qs.filter(status=status_val)
+        if (customer := request.query_params.get("customer")):
+            qs = qs.filter(customer=_resolve_customer(entity, customer))
+        return success_response(
+            "Concessions retrieved.",
+            data=ConcessionSerializer(qs.order_by("-concession_date", "-id")[:200], many=True).data,
+        )
+
+    def post(self, request):
+        entity = resolve_entity(request)
+        body = request.data or {}
+        concession = Concession.objects.create(
+            entity=entity,
+            customer=_resolve_customer(entity, body.get("customer")),
+            invoice=_resolve_invoice(entity, body.get("invoice")),
+            kind=body.get("kind", "DISCOUNT"),
+            concession_date=_date(body.get("concession_date"), "concession_date", required=True),
+            amount=_money(body.get("amount", 0), "amount"),
+            allowance_account=_resolve_account(
+                entity, body.get("allowance_account"), "allowance_account", required=False),
+            reason=body.get("reason", ""),
+            reference=body.get("reference", ""),
+            created_by=request.user,
+        )
+        return success_response(
+            f"{concession.get_kind_display()} {concession.document_number} created.",
+            data=ConcessionSerializer(concession).data, status=201,
+        )
+
+
+class _ConcessionActionBase(_FinanceBase):
+    def _concession(self, request, pk):
+        entity = resolve_entity(request)
+        concession = Concession.objects.filter(entity=entity, pk=pk).first()
+        if concession is None:
+            raise NotFound("Concession not found for this entity.")
+        return entity, concession
+
+
+class ConcessionDetailView(_ConcessionActionBase):
+    rbac_permission = "finance.concession.view"
+
+    def get(self, request, pk):
+        _, concession = self._concession(request, pk)
+        return success_response(
+            "Concession retrieved.", data=ConcessionSerializer(concession).data,
+        )
+
+
+class ConcessionPostView(_ConcessionActionBase):
+    rbac_permission = "finance.concession.post"
+
+    def post(self, request, pk):
+        from .installments import post_concession
+
+        _, concession = self._concession(request, pk)
+        post_concession(concession, actor_user=request.user)
+        concession.refresh_from_db()
+        return success_response(
+            f"{concession.get_kind_display()} {concession.document_number} posted.",
+            data=ConcessionSerializer(concession).data,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Installment payment plans                                                   #
+# --------------------------------------------------------------------------- #
+
+class PaymentPlanListCreateView(_FinanceBase):
+    """GET (list) / POST (create draft + build schedule) payment plans for an entity."""
+
+    @property
+    def rbac_permission(self):
+        return "finance.paymentplan.create" if self.request.method == "POST" \
+            else "finance.paymentplan.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = (
+            PaymentPlan.objects.filter(entity=entity)
+            .select_related("customer", "invoice").prefetch_related("installments")
+        )
+        if (status_val := request.query_params.get("status")):
+            qs = qs.filter(plan_status=status_val)
+        if (customer := request.query_params.get("customer")):
+            qs = qs.filter(customer=_resolve_customer(entity, customer))
+        return success_response(
+            "Payment plans retrieved.",
+            data=PaymentPlanSerializer(qs.order_by("-start_date", "-id")[:200], many=True).data,
+        )
+
+    @transaction.atomic
+    def post(self, request):
+        from .installments import build_installments
+
+        entity = resolve_entity(request)
+        body = request.data or {}
+        invoice = _resolve_invoice(entity, body.get("invoice"), required=False)
+        # Default the spread total to the invoice's outstanding balance when omitted.
+        raw_total = body.get("total_amount")
+        if raw_total in (None, "") and invoice is not None:
+            total = invoice.balance_due
+        else:
+            total = _money(raw_total, "total_amount")
+        count = int(body.get("installment_count", 1) or 1)
+        plan = PaymentPlan.objects.create(
+            entity=entity,
+            customer=_resolve_customer(entity, body.get("customer")),
+            invoice=invoice,
+            start_date=_date(body.get("start_date"), "start_date", required=True),
+            frequency=body.get("frequency", "MONTHLY"),
+            installment_count=count,
+            total_amount=total,
+            notes=body.get("notes", ""),
+            created_by=request.user,
+        )
+        amounts = body.get("amounts")
+        if amounts:
+            amounts = [_money(a, f"amounts[{i}]") for i, a in enumerate(amounts)]
+        build_installments(plan, amounts=amounts)
+        return success_response(
+            f"Payment plan {plan.document_number} created.",
+            data=PaymentPlanSerializer(plan).data, status=201,
+        )
+
+
+class _PaymentPlanActionBase(_FinanceBase):
+    def _plan(self, request, pk):
+        entity = resolve_entity(request)
+        plan = PaymentPlan.objects.filter(entity=entity, pk=pk).first()
+        if plan is None:
+            raise NotFound("Payment plan not found for this entity.")
+        return entity, plan
+
+
+class PaymentPlanDetailView(_PaymentPlanActionBase):
+    rbac_permission = "finance.paymentplan.view"
+
+    def get(self, request, pk):
+        _, plan = self._plan(request, pk)
+        return success_response("Payment plan retrieved.", data=PaymentPlanSerializer(plan).data)
+
+
+class PaymentPlanActivateView(_PaymentPlanActionBase):
+    rbac_permission = "finance.paymentplan.activate"
+
+    def post(self, request, pk):
+        from .installments import activate_payment_plan
+
+        _, plan = self._plan(request, pk)
+        activate_payment_plan(plan, actor_user=request.user)
+        plan.refresh_from_db()
+        return success_response(
+            f"Payment plan {plan.document_number} activated.",
+            data=PaymentPlanSerializer(plan).data,
+        )
+
+
+class PaymentPlanRefreshView(_PaymentPlanActionBase):
+    rbac_permission = "finance.paymentplan.activate"
+
+    def post(self, request, pk):
+        from .installments import refresh_plan_progress
+
+        _, plan = self._plan(request, pk)
+        body = request.data or {}
+        settled = (
+            _money(body["settled_amount"], "settled_amount")
+            if body.get("settled_amount") not in (None, "") else None
+        )
+        refresh_plan_progress(plan, settled_amount=settled, actor_user=request.user)
+        plan.refresh_from_db()
+        return success_response(
+            f"Payment plan {plan.document_number} progress refreshed.",
+            data=PaymentPlanSerializer(plan).data,
+        )
+
+
+class PaymentPlanCancelView(_PaymentPlanActionBase):
+    rbac_permission = "finance.paymentplan.cancel"
+
+    def post(self, request, pk):
+        from .installments import cancel_payment_plan
+
+        _, plan = self._plan(request, pk)
+        cancel_payment_plan(plan, actor_user=request.user)
+        plan.refresh_from_db()
+        return success_response(
+            f"Payment plan {plan.document_number} cancelled.",
+            data=PaymentPlanSerializer(plan).data,
         )

@@ -28,18 +28,22 @@ from .constants import (
     AssetStatus,
     BankLineStatus,
     BudgetStatus,
+    ConcessionKind,
     CreditNoteKind,
     DepreciationMethod,
     DocType,
     DocumentStatus,
     FinanceAuditAction,
     FinanceAuditStatus,
+    InstallmentStatus,
     InvoicePaymentStatus,
     InvoiceSource,
     JournalSource,
     NORMAL_BALANCE_BY_TYPE,
     NormalBalance,
     PaymentMethod,
+    PaymentPlanFrequency,
+    PaymentPlanStatus,
     PayrollRunStatus,
     PeriodStatus,
     PLATFORM_ENTITY_CODE,
@@ -1310,6 +1314,150 @@ class Refund(FinanceDocument):
             models.Index(fields=["customer"]),
             models.Index(fields=["entity", "refund_date"]),
         ]
+
+
+class Concession(FinanceDocument):
+    """A non-cash reduction of a receivable — a discount, waiver or scholarship.
+
+    Posting (:func:`vs_finance.installments.post_concession`) raises ``Dr discounts &
+    allowances, Cr AR control`` for ``amount`` and clears that much of the linked
+    invoice via :attr:`Invoice.amount_credited` — exactly like a targeted, single-line
+    credit note, but tagged by :class:`~vs_finance.constants.ConcessionKind` for
+    reporting (a school tenant's *scholarship*/*bursary* is just ``kind=SCHOLARSHIP``).
+    """
+
+    DOC_TYPE = DocType.CONCESSION
+
+    customer = models.ForeignKey(
+        Customer, on_delete=models.PROTECT, related_name="concessions",
+    )
+    invoice = models.ForeignKey(
+        Invoice, on_delete=models.PROTECT, related_name="concessions",
+        help_text="The invoice whose balance this concession reduces.",
+    )
+    kind = models.CharField(
+        max_length=12, choices=ConcessionKind.choices, default=ConcessionKind.DISCOUNT,
+    )
+    concession_date = models.DateField()
+    amount = MoneyField(help_text="Amount of the receivable forgiven/discounted, in kobo.")
+    allowance_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="concessions",
+        null=True, blank=True,
+        help_text="Contra-revenue/expense account debited. Defaults to 4910 "
+                  "Discounts & Concessions Allowed.",
+    )
+    reason = models.CharField(max_length=255, blank=True, default="")
+    reference = models.CharField(max_length=64, blank=True, default="")
+    journal = models.ForeignKey(
+        "JournalEntry", on_delete=models.PROTECT, related_name="concessions",
+        null=True, blank=True,
+    )
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["entity", "kind"]),
+            models.Index(fields=["customer"]),
+            models.Index(fields=["invoice"]),
+            models.Index(fields=["entity", "concession_date"]),
+        ]
+
+
+class PaymentPlan(FinanceDocument):
+    """An installment schedule that spreads a receivable over dated installments.
+
+    A pure scheduling overlay — it never posts to the GL. The invoice it references
+    already sits in AR; the plan only says *when* the customer is expected to pay and
+    *how much* each time, so reminders/dunning and progress tracking have something to
+    measure against. Settlement is reflected by distributing the linked invoice's
+    settled amount across installments oldest-first
+    (:func:`vs_finance.installments.refresh_plan_progress`).
+    """
+
+    DOC_TYPE = DocType.PAYMENT_PLAN
+
+    customer = models.ForeignKey(
+        Customer, on_delete=models.PROTECT, related_name="payment_plans",
+    )
+    invoice = models.ForeignKey(
+        Invoice, on_delete=models.PROTECT, related_name="payment_plans",
+        null=True, blank=True,
+        help_text="The invoice this plan settles (optional for a standalone plan).",
+    )
+    plan_status = models.CharField(
+        max_length=10, choices=PaymentPlanStatus.choices, default=PaymentPlanStatus.DRAFT,
+    )
+    start_date = models.DateField(help_text="Due date of the first installment.")
+    frequency = models.CharField(
+        max_length=12, choices=PaymentPlanFrequency.choices,
+        default=PaymentPlanFrequency.MONTHLY,
+    )
+    installment_count = models.PositiveSmallIntegerField(default=1)
+    total_amount = MoneyField(help_text="Total amount being spread, in kobo.")
+    notes = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "plan_status"]),
+            models.Index(fields=["customer"]),
+            models.Index(fields=["invoice"]),
+            models.Index(fields=["entity", "start_date"]),
+        ]
+
+    @property
+    def scheduled_total(self) -> int:
+        """Sum of the installment amounts (should equal ``total_amount`` once built)."""
+        return self.installments.aggregate(s=models.Sum("amount"))["s"] or 0
+
+    @property
+    def settled_total(self) -> int:
+        """Sum settled across installments, in kobo."""
+        return self.installments.aggregate(s=models.Sum("amount_settled"))["s"] or 0
+
+    @property
+    def outstanding_total(self) -> int:
+        return self.total_amount - self.settled_total
+
+
+class PaymentPlanInstallment(TimeStampedModel):
+    """One dated installment of a :class:`PaymentPlan` (scheduling detail, no GL)."""
+
+    plan = models.ForeignKey(
+        PaymentPlan, on_delete=models.CASCADE, related_name="installments",
+    )
+    seq_no = models.PositiveSmallIntegerField(help_text="1-based position in the schedule.")
+    due_date = models.DateField()
+    amount = MoneyField(help_text="Amount due for this installment, in kobo.")
+    amount_settled = MoneyField(help_text="Amount settled against this installment, in kobo.")
+    status = models.CharField(
+        max_length=8, choices=InstallmentStatus.choices, default=InstallmentStatus.PENDING,
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["plan", "seq_no"], name="uniq_finance_installment_plan_seq",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["plan"]),
+            models.Index(fields=["due_date", "status"]),
+        ]
+        ordering = ["plan", "seq_no", "id"]
+
+    @property
+    def balance(self) -> int:
+        return self.amount - self.amount_settled
+
+    def is_overdue(self, *, as_of=None) -> bool:
+        """True if not fully settled and its due date has passed ``as_of`` (default today)."""
+        import datetime as _dt
+
+        ref = as_of or _dt.date.today()
+        return self.balance > 0 and self.due_date < ref
+
+    def __str__(self) -> str:
+        return f"#{self.seq_no} due {self.due_date}: {self.amount} ({self.status})"
 
 
 # ---------------------------------------------------------------------------

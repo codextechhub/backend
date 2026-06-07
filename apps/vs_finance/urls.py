@@ -25,11 +25,19 @@ from .views import (
     TrialBalanceView,
 )
 from .views_ar import (
+    ConcessionDetailView,
+    ConcessionListCreateView,
+    ConcessionPostView,
     CreditNoteAllocateView,
     CreditNoteDetailView,
     CreditNoteListCreateView,
     CreditNotePostView,
     InvoiceWriteOffView,
+    PaymentPlanActivateView,
+    PaymentPlanCancelView,
+    PaymentPlanDetailView,
+    PaymentPlanListCreateView,
+    PaymentPlanRefreshView,
     RefundDetailView,
     RefundListCreateView,
     RefundPostView,
@@ -85,6 +93,21 @@ urlpatterns = [
     path("refunds/<int:pk>/", RefundDetailView.as_view(), name="finance-refund-detail"),
     path("refunds/<int:pk>/post/", RefundPostView.as_view(), name="finance-refund-post"),
     path("invoices/<int:pk>/write-off/", InvoiceWriteOffView.as_view(), name="finance-invoice-writeoff"),
+
+    # Concessions — discounts / waivers / scholarships
+    path("concessions/", ConcessionListCreateView.as_view(), name="finance-concession-list"),
+    path("concessions/<int:pk>/", ConcessionDetailView.as_view(), name="finance-concession-detail"),
+    path("concessions/<int:pk>/post/", ConcessionPostView.as_view(), name="finance-concession-post"),
+
+    # Installment payment plans
+    path("payment-plans/", PaymentPlanListCreateView.as_view(), name="finance-paymentplan-list"),
+    path("payment-plans/<int:pk>/", PaymentPlanDetailView.as_view(), name="finance-paymentplan-detail"),
+    path("payment-plans/<int:pk>/activate/", PaymentPlanActivateView.as_view(),
+         name="finance-paymentplan-activate"),
+    path("payment-plans/<int:pk>/refresh/", PaymentPlanRefreshView.as_view(),
+         name="finance-paymentplan-refresh"),
+    path("payment-plans/<int:pk>/cancel/", PaymentPlanCancelView.as_view(),
+         name="finance-paymentplan-cancel"),
 
     # Actions
     path("journals/<int:id>/post/", JournalPostView.as_view(), name="finance-journal-post"),

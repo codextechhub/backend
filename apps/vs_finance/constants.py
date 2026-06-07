@@ -63,6 +63,8 @@ class DocType(models.TextChoices):
     CREDIT_NOTE = "CRN", "Credit Note"
     DEBIT_NOTE = "DRN", "Debit Note"
     REFUND = "RFD", "Customer Refund"
+    PAYMENT_PLAN = "PPL", "Installment Payment Plan"
+    CONCESSION = "CNC", "Concession / Discount / Waiver"
     PURCHASE_REQUISITION = "PR", "Purchase Requisition"
     RFQ = "RFQ", "Request for Quotation"
     PURCHASE_ORDER = "PO", "Purchase Order"
@@ -167,6 +169,52 @@ class CreditNoteKind(models.TextChoices):
     DEBIT = "DEBIT", "Debit note (increases AR)"
 
 
+class PaymentPlanFrequency(models.TextChoices):
+    """Spacing between installments in a payment plan (drives each due date)."""
+    WEEKLY = "WEEKLY", "Weekly"
+    FORTNIGHTLY = "FORTNIGHTLY", "Fortnightly (every 2 weeks)"
+    MONTHLY = "MONTHLY", "Monthly"
+    QUARTERLY = "QUARTERLY", "Quarterly"
+
+
+class PaymentPlanStatus(models.TextChoices):
+    """Lifecycle of an installment payment plan (a scheduling overlay, never posted).
+
+    DRAFT      -> schedule being built; editable.
+    ACTIVE     -> committed; installments are live and tracked against settlement.
+    COMPLETED  -> every installment fully settled.
+    CANCELLED  -> abandoned; no longer tracked.
+    """
+    DRAFT = "DRAFT", "Draft"
+    ACTIVE = "ACTIVE", "Active"
+    COMPLETED = "COMPLETED", "Completed"
+    CANCELLED = "CANCELLED", "Cancelled"
+
+
+class InstallmentStatus(models.TextChoices):
+    """Settlement state of a single installment, derived from amount settled vs due."""
+    PENDING = "PENDING", "Pending"
+    PARTIAL = "PARTIAL", "Partially settled"
+    PAID = "PAID", "Settled"
+
+
+class ConcessionKind(models.TextChoices):
+    """A non-cash reduction of a receivable granted to a customer.
+
+    DISCOUNT    -> commercial/early-settlement price reduction.
+    WAIVER      -> charge forgiven (e.g. a penalty or fee dropped).
+    SCHOLARSHIP -> a granted allowance against billed amounts (domain-neutral name for
+                   a bursary/scholarship in a school tenant).
+
+    All three post the same way — ``Dr discounts & allowances, Cr AR control`` — and
+    reduce the invoice's balance via :attr:`Invoice.amount_credited`; ``kind`` is a
+    reporting tag, not a different posting.
+    """
+    DISCOUNT = "DISCOUNT", "Discount"
+    WAIVER = "WAIVER", "Waiver"
+    SCHOLARSHIP = "SCHOLARSHIP", "Scholarship / bursary"
+
+
 class PaymentMethod(models.TextChoices):
     """How a customer receipt was tendered (operational detail, not posting logic)."""
     CASH = "CASH", "Cash"
@@ -241,6 +289,10 @@ class FinanceAuditAction(models.TextChoices):
     CREDIT_NOTE_ALLOCATED = "CREDIT_NOTE_ALLOCATED", "Credit note allocated"
     DEBIT_NOTE_POSTED = "DEBIT_NOTE_POSTED", "Debit note posted"
     REFUND_POSTED = "REFUND_POSTED", "Customer refund posted"
+    PAYMENT_PLAN_ACTIVATED = "PAYMENT_PLAN_ACTIVATED", "Installment plan activated"
+    PAYMENT_PLAN_COMPLETED = "PAYMENT_PLAN_COMPLETED", "Installment plan completed"
+    PAYMENT_PLAN_CANCELLED = "PAYMENT_PLAN_CANCELLED", "Installment plan cancelled"
+    CONCESSION_POSTED = "CONCESSION_POSTED", "Concession / discount / waiver posted"
     PERIOD_CLOSED = "PERIOD_CLOSED", "Period closed"
     PERIOD_REOPENED = "PERIOD_REOPENED", "Period re-opened"
     ACCOUNT_CREATED = "ACCOUNT_CREATED", "Account created"
@@ -294,6 +346,7 @@ BANK_CHARGES_CODE = "5500"               # Bank charges expense
 RETAINED_EARNINGS_CODE = "3200"          # Retained earnings (equity) — net income closes here
 CASH_BANK_CODE = "1100"                  # Cash & bank (the cash-flow statement's cash line)
 SALES_RETURNS_CODE = "4900"              # Sales returns (contra-revenue) — credit notes default here
+DISCOUNTS_ALLOWED_CODE = "4910"          # Discounts & allowances (contra-revenue) — concessions default here
 BAD_DEBT_EXPENSE_CODE = "5300"           # Bad-debt / general expense — write-offs default here
 
 #: Document-number prefix for the whole platform's finance documents (Code X Finance).

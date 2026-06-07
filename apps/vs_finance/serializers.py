@@ -18,6 +18,7 @@ from .models import (
     BankStatementLine,
     Budget,
     BudgetLine,
+    Concession,
     CostCenter,
     CreditNote,
     CreditNoteLine,
@@ -34,6 +35,8 @@ from .models import (
     JournalEntry,
     JournalLine,
     LedgerEntity,
+    PaymentPlan,
+    PaymentPlanInstallment,
     PayrollLine,
     PayrollRun,
     Refund,
@@ -196,6 +199,65 @@ class RefundSerializer(serializers.ModelSerializer):
 
     def get_amount_naira(self, obj) -> str:
         return format_naira(obj.amount)
+
+
+class ConcessionSerializer(serializers.ModelSerializer):
+    customer_code = serializers.CharField(source="customer.code", read_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    invoice_number = serializers.CharField(source="invoice.document_number", read_only=True)
+    allowance_account = serializers.CharField(
+        source="allowance_account.code", read_only=True, default=None,
+    )
+    amount_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Concession
+        fields = [
+            "id", "document_number", "kind", "customer_id", "customer_code",
+            "customer_name", "invoice_id", "invoice_number", "concession_date",
+            "status", "amount", "amount_naira", "allowance_account",
+            "reason", "reference",
+        ]
+
+    def get_amount_naira(self, obj) -> str:
+        return format_naira(obj.amount)
+
+
+class PaymentPlanInstallmentSerializer(serializers.ModelSerializer):
+    balance = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = PaymentPlanInstallment
+        fields = [
+            "id", "seq_no", "due_date", "amount", "amount_settled",
+            "balance", "status",
+        ]
+
+
+class PaymentPlanSerializer(serializers.ModelSerializer):
+    customer_code = serializers.CharField(source="customer.code", read_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    invoice_number = serializers.CharField(
+        source="invoice.document_number", read_only=True, default=None,
+    )
+    scheduled_total = serializers.IntegerField(read_only=True)
+    settled_total = serializers.IntegerField(read_only=True)
+    outstanding_total = serializers.IntegerField(read_only=True)
+    total_naira = serializers.SerializerMethodField()
+    installments = PaymentPlanInstallmentSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = PaymentPlan
+        fields = [
+            "id", "document_number", "customer_id", "customer_code", "customer_name",
+            "invoice_id", "invoice_number", "plan_status", "start_date", "frequency",
+            "installment_count", "total_amount", "total_naira",
+            "scheduled_total", "settled_total", "outstanding_total",
+            "notes", "installments",
+        ]
+
+    def get_total_naira(self, obj) -> str:
+        return format_naira(obj.total_amount)
 
 
 # --------------------------------------------------------------------------- #
