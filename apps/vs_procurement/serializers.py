@@ -26,6 +26,8 @@ from .models import (
     PurchaseRequisitionLine,
     RequestForQuotation,
     RfqLine,
+    StockItem,
+    StockMovement,
     Vendor,
     VendorCategory,
     VendorContract,
@@ -142,6 +144,67 @@ class CatalogItemSerializer(serializers.ModelSerializer):
 
     def get_standard_unit_price_naira(self, obj) -> str:
         return format_naira(obj.standard_unit_price)
+
+
+# --------------------------------------------------------------------------- #
+# Inventory / stock ledger                                                    #
+# --------------------------------------------------------------------------- #
+
+class StockItemSerializer(serializers.ModelSerializer):
+    inventory_code = serializers.CharField(
+        source="inventory_account.code", read_only=True, default=None,
+    )
+    expense_code = serializers.CharField(
+        source="default_expense_account.code", read_only=True, default=None,
+    )
+    catalog_item_code = serializers.CharField(
+        source="catalog_item.code", read_only=True, default=None,
+    )
+    unit_cost = serializers.IntegerField(read_only=True)
+    unit_cost_naira = serializers.SerializerMethodField()
+    stock_value_naira = serializers.SerializerMethodField()
+    needs_reorder = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = StockItem
+        fields = [
+            "id", "code", "name", "description", "unit_of_measure",
+            "catalog_item_id", "catalog_item_code",
+            "inventory_account_id", "inventory_code",
+            "default_expense_account_id", "expense_code",
+            "reorder_level", "reorder_qty",
+            "on_hand_qty", "stock_value", "stock_value_naira",
+            "unit_cost", "unit_cost_naira", "needs_reorder", "is_active",
+        ]
+
+    def get_unit_cost_naira(self, obj) -> str:
+        return format_naira(obj.unit_cost)
+
+    def get_stock_value_naira(self, obj) -> str:
+        return format_naira(obj.stock_value)
+
+
+class StockMovementSerializer(serializers.ModelSerializer):
+    stock_item_code = serializers.CharField(
+        source="stock_item.code", read_only=True, default=None,
+    )
+    value_amount_naira = serializers.SerializerMethodField()
+    balance_value_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = StockMovement
+        fields = [
+            "id", "stock_item_id", "stock_item_code", "movement_type",
+            "movement_date", "quantity", "value_amount", "value_amount_naira",
+            "balance_qty", "balance_value", "balance_value_naira",
+            "grn_id", "journal_id", "reference", "narration", "created_at",
+        ]
+
+    def get_value_amount_naira(self, obj) -> str:
+        return format_naira(obj.value_amount)
+
+    def get_balance_value_naira(self, obj) -> str:
+        return format_naira(obj.balance_value)
 
 
 # --------------------------------------------------------------------------- #

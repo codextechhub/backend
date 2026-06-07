@@ -39,6 +39,27 @@ class ApprovalWorkflowError(ProcurementError):
     http_status = 409
 
 
+class StockError(PostingError):
+    """Raised for stock-ledger violations (issue, adjustment, valuation)."""
+    error_code = "STOCK_ERROR"
+    default_message = "The stock action could not be completed."
+    http_status = 409
+
+
+class InsufficientStockError(StockError):
+    """Raised when an issue would drive on-hand quantity below zero."""
+    error_code = "INSUFFICIENT_STOCK"
+    default_message = "Not enough stock on hand for this issue."
+
+    def __init__(self, *, item_code="", requested=None, on_hand=None, **kwargs):
+        self.item_code = item_code
+        super().__init__(
+            f"Cannot issue {requested} of '{item_code}': only {on_hand} on hand.",
+            item_code=item_code, requested=str(requested), on_hand=str(on_hand),
+            **kwargs,
+        )
+
+
 class ThreeWayMatchError(PostingError):
     """Raised when a vendor invoice fails the PO↔GRN↔invoice match and can't post."""
     error_code = "THREE_WAY_MATCH_FAILED"

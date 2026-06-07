@@ -350,6 +350,11 @@ class FinanceAuditAction(models.TextChoices):
     VENDOR_PAYMENT_POSTED = "VENDOR_PAYMENT_POSTED", "Vendor payment posted"
     VENDOR_PAYMENT_POST_REJECTED = "VENDOR_PAYMENT_POST_REJECTED", "Vendor payment posting rejected"
     VENDOR_PAYMENT_ALLOCATED = "VENDOR_PAYMENT_ALLOCATED", "Vendor payment allocated"
+    STOCK_RECEIVED = "STOCK_RECEIVED", "Stock received (perpetual inventory)"
+    STOCK_ISSUED = "STOCK_ISSUED", "Stock issued"
+    STOCK_ISSUE_REJECTED = "STOCK_ISSUE_REJECTED", "Stock issue rejected"
+    STOCK_ADJUSTED = "STOCK_ADJUSTED", "Stock adjusted"
+    STOCK_ADJUST_REJECTED = "STOCK_ADJUST_REJECTED", "Stock adjustment rejected"
     # Phase 4 — banking, expenses, payroll, budget, fixed assets, period close.
     BANK_RECONCILED = "BANK_RECONCILED", "Bank statement reconciled"
     BANK_CHARGE_POSTED = "BANK_CHARGE_POSTED", "Bank charge posted"

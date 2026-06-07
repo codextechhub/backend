@@ -26,6 +26,7 @@ DEFAULT_CHART = [
     ("1100", "Cash & Bank", AccountType.ASSET, True, False),
     ("1200", "Accounts Receivable", AccountType.ASSET, True, False),
     ("1300", "Input VAT (Recoverable)", AccountType.ASSET, True, False),
+    ("1400", "Inventory", AccountType.ASSET, True, False),
     ("1500", "Property, Plant & Equipment", AccountType.ASSET, True, False),
     ("1900", "Accumulated Depreciation", AccountType.ASSET, True, True),
     # Liabilities
@@ -50,6 +51,7 @@ DEFAULT_CHART = [
     # Expenses
     ("5000", "Expenses", AccountType.EXPENSE, False, False),
     ("5100", "Cost of Sales", AccountType.EXPENSE, True, False),
+    ("5150", "Inventory Adjustments", AccountType.EXPENSE, True, False),
     ("5200", "Salaries & Wages", AccountType.EXPENSE, True, False),
     ("5300", "General & Administrative", AccountType.EXPENSE, True, False),
     ("5400", "Depreciation Expense", AccountType.EXPENSE, True, False),
@@ -58,12 +60,14 @@ DEFAULT_CHART = [
 
 #: parent_code by child_code — wires the tree after the flat create.
 _PARENTS = {
-    "1100": "1000", "1200": "1000", "1300": "1000", "1500": "1000", "1900": "1000",
+    "1100": "1000", "1200": "1000", "1300": "1000", "1400": "1000",
+    "1500": "1000", "1900": "1000",
     "2100": "2000", "2150": "2000", "2200": "2000", "2300": "2000",
     "2310": "2000", "2320": "2000", "2330": "2000", "2400": "2000",
     "3100": "3000", "3200": "3000",
     "4100": "4000", "4900": "4000", "4910": "4000",
-    "5100": "5000", "5200": "5000", "5300": "5000", "5400": "5000", "5500": "5000",
+    "5100": "5000", "5150": "5000", "5200": "5000", "5300": "5000",
+    "5400": "5000", "5500": "5000",
 }
 
 

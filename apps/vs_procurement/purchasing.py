@@ -205,11 +205,17 @@ def _post_grn_atomic(grn, *, actor_user=None):
             f"GRN {grn.document_number or grn.pk} is '{grn.status}', only a draft can be posted.",
         )
 
-    # Value each line (accepted_qty × unit_price) and roll up the receipt total.
+    # Value each line (accepted_qty × unit_price) and roll up the receipt total. A
+    # stock-tracked line capitalises to its item's inventory account instead of the
+    # line expense account (perpetual inventory: Dr inventory rather than Dr expense).
     expense_by_account: dict[int, int] = defaultdict(int)
     expense_objs: dict[int, object] = {}
     total_value = 0
-    lines = list(grn.lines.select_related("expense_account", "po_line").all())
+    lines = list(
+        grn.lines.select_related(
+            "expense_account", "po_line", "stock_item", "stock_item__inventory_account",
+        ).all()
+    )
     if not lines:
         raise PostingError("A goods receipt must have at least one line to post.")
 
@@ -220,8 +226,12 @@ def _post_grn_atomic(grn, *, actor_user=None):
             line.value_amount = value
         if value <= 0:
             continue
-        expense_by_account[line.expense_account_id] += value
-        expense_objs[line.expense_account_id] = line.expense_account
+        debit_account = (
+            line.stock_item.inventory_account if line.stock_item_id
+            else line.expense_account
+        )
+        expense_by_account[debit_account.id] += value
+        expense_objs[debit_account.id] = debit_account
         total_value += value
 
     if total_value <= 0:
@@ -257,6 +267,19 @@ def _post_grn_atomic(grn, *, actor_user=None):
         if line.po_line_id:
             PurchaseOrderLine.objects.filter(pk=line.po_line_id).update(
                 received_qty=F("received_qty") + line.accepted_qty,
+            )
+
+    # Raise the perpetual stock ledger for any stock-tracked lines (GL already booked
+    # the inventory debit above; this updates the sub-ledger and writes the movement).
+    from .stock import receive_stock
+
+    for line in lines:
+        if line.stock_item_id and line.value_amount > 0:
+            receive_stock(
+                line.stock_item, quantity=line.accepted_qty, value=line.value_amount,
+                movement_date=grn.received_date, grn=grn, journal=entry,
+                actor_user=actor_user,
+                narration=f"GRN {grn.document_number or grn.pk}",
             )
 
     grn.journal = entry

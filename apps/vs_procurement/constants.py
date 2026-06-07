@@ -164,6 +164,23 @@ class MatchStatus(models.TextChoices):
 #: Match outcomes that must NOT post without an explicit variance override.
 MATCH_BLOCKING = frozenset({MatchStatus.UNDER_RECEIVED, MatchStatus.OVER_BILLED})
 
+class StockMovementType(models.TextChoices):
+    """Direction/reason of a stock-ledger entry (perpetual inventory).
+
+    RECEIPT    -> goods came in (raised by a stock-tracked GRN line, or manually).
+                  Increases on-hand qty and value; sets the moving-average cost.
+    ISSUE      -> goods consumed/dispatched. Decreases on-hand at the current
+                  moving-average cost (Dr expense, Cr inventory).
+    ADJUSTMENT -> a stock-count / write-down / write-up correction (signed). Posts
+                  the value delta between inventory and an adjustment account.
+    """
+    RECEIPT = "RECEIPT", "Receipt"
+    ISSUE = "ISSUE", "Issue"
+    ADJUSTMENT = "ADJUSTMENT", "Adjustment"
+
+
 #: Well-known Chart-of-Accounts codes the P2P journals resolve against (per entity).
 GRIR_CLEARING_CODE = "2150"   # Goods-Received / Invoice-Received clearing (liability)
 WHT_PAYABLE_CODE = "2300"     # Withholding-tax payable (liability)
+INVENTORY_ASSET_CODE = "1400"        # Inventory / stock on hand (asset)
+INVENTORY_ADJUSTMENT_CODE = "5150"   # Inventory adjustments / shrinkage (expense)

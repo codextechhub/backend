@@ -41,6 +41,8 @@ from vs_procurement.models import (
     PurchaseRequisitionLine,
     RequestForQuotation,
     RfqLine,
+    StockItem,
+    StockMovement,
     Vendor,
     VendorContract,
     VendorInvoice,
@@ -75,6 +77,13 @@ from vs_procurement.purchasing import (
     submit_requisition,
 )
 from vs_procurement.reports import ap_aging, grir_balance, reconcile_ap
+from vs_procurement.stock import (
+    adjust_stock,
+    issue_stock,
+    reorder_report,
+    stock_valuation,
+)
+from vs_procurement.exceptions import InsufficientStockError, StockError
 
 
 class _P2PFixtureMixin:
@@ -948,3 +957,180 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(instance.status, WorkflowInstanceStatus.REJECTED)
         self.assertEqual(req.approval_state, ProcApprovalState.REJECTED)
         self.assertEqual(req.status, DocumentStatus.CANCELLED)
+
+
+class StockLedgerTests(_P2PFixtureMixin, TestCase):
+    """Perpetual inventory at weighted-average cost: receipt, issue, adjustment."""
+
+    def _stock_item(self, entity, *, code="WIDGET", reorder_level=0, reorder_qty=0):
+        return StockItem.objects.create(
+            entity=entity, code=code, name=f"Stock {code}",
+            inventory_account=self.acc(entity, "1400"),
+            default_expense_account=self.acc(entity, "5100"),
+            reorder_level=reorder_level, reorder_qty=reorder_qty,
+        )
+
+    def _receive_via_grn(self, entity, vendor, item, *, qty, unit_price,
+                         received_date=datetime.date(2026, 1, 8)):
+        """Build & post a single-line stock GRN, returning the posted GRN."""
+        po = PurchaseOrder.objects.create(
+            entity=entity, vendor=vendor, order_date=datetime.date(2026, 1, 5),
+        )
+        po_line = PurchaseOrderLine.objects.create(
+            purchase_order=po, description=item.name,
+            expense_account=self.acc(entity, "5100"), quantity=qty,
+            unit_price=unit_price, line_no=1,
+        )
+        from vs_procurement.purchasing import price_po
+        price_po(po)
+        grn = GoodsReceivedNote.objects.create(
+            entity=entity, vendor=vendor, purchase_order=po, received_date=received_date,
+        )
+        GoodsReceivedNoteLine.objects.create(
+            grn=grn, po_line=po_line, stock_item=item,
+            expense_account=self.acc(entity, "5100"),
+            accepted_qty=qty, unit_price=unit_price, line_no=1,
+        )
+        post_grn(grn)
+        item.refresh_from_db()      # GRN posted against a fresh instance; sync the caller's
+        return grn
+
+    def test_grn_into_stock_capitalises_to_inventory(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._stock_item(entity)
+        grn = self._receive_via_grn(entity, vendor, item, qty=10, unit_price=100_000)
+
+        # GL: Dr inventory (1400), Cr GR/IR (2150) — not the line expense account.
+        lines = {l.account.code: l for l in grn.journal.lines.all()}
+        self.assertEqual(lines["1400"].debit, 1_000_000)
+        self.assertEqual(lines["2150"].credit, 1_000_000)
+        self.assertNotIn("5100", lines)
+
+        # Sub-ledger raised; a RECEIPT movement snapshots the running balance.
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 10)
+        self.assertEqual(item.stock_value, 1_000_000)
+        self.assertEqual(item.unit_cost, 100_000)
+        movement = item.movements.get()
+        self.assertEqual(movement.movement_type, "RECEIPT")
+        self.assertEqual(movement.balance_qty, 10)
+        self.assertEqual(movement.balance_value, 1_000_000)
+
+    def test_weighted_average_cost_blends_two_lots(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._stock_item(entity)
+        self._receive_via_grn(entity, vendor, item, qty=10, unit_price=100_000)  # 10 @ 1000.00
+        self._receive_via_grn(entity, vendor, item, qty=10, unit_price=200_000)  # 10 @ 2000.00
+
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 20)
+        self.assertEqual(item.stock_value, 3_000_000)
+        self.assertEqual(item.unit_cost, 150_000)            # weighted average 1500.00
+
+    def test_issue_posts_dr_expense_cr_inventory_at_average(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._stock_item(entity)
+        self._receive_via_grn(entity, vendor, item, qty=10, unit_price=100_000)
+
+        movement = issue_stock(
+            item, quantity=4, movement_date=datetime.date(2026, 1, 12),
+        )
+        lines = {l.account.code: l for l in movement.journal.lines.all()}
+        self.assertEqual(lines["5100"].debit, 400_000)       # Dr expense at average
+        self.assertEqual(lines["1400"].credit, 400_000)      # Cr inventory relief
+
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 6)
+        self.assertEqual(item.stock_value, 600_000)
+        self.assertEqual(movement.movement_type, "ISSUE")
+        self.assertEqual(movement.quantity, -4)
+        self.assertEqual(movement.value_amount, -400_000)
+
+    def test_issue_beyond_on_hand_is_blocked_and_audited(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._stock_item(entity)
+        self._receive_via_grn(entity, vendor, item, qty=5, unit_price=100_000)
+
+        with self.assertRaises(InsufficientStockError):
+            issue_stock(item, quantity=8, movement_date=datetime.date(2026, 1, 12))
+
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 5)                # unchanged
+        self.assertTrue(
+            FinanceAuditLog.objects.filter(
+                entity=entity, action="STOCK_ISSUE_REJECTED",
+                status=FinanceAuditStatus.FAILED,
+            ).exists()
+        )
+
+    def test_issue_clears_value_exactly_when_emptying_stock(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._stock_item(entity)
+        self._receive_via_grn(entity, vendor, item, qty=3, unit_price=100_000)
+
+        issue_stock(item, quantity=1, movement_date=datetime.date(2026, 1, 12))
+        issue_stock(item, quantity=2, movement_date=datetime.date(2026, 1, 13))
+
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 0)
+        self.assertEqual(item.stock_value, 0)               # no residual drift
+
+    def test_adjustment_writeup_and_shrinkage(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._stock_item(entity)
+        self._receive_via_grn(entity, vendor, item, qty=10, unit_price=100_000)
+
+        # Shrinkage: count short by 2 at current average → Dr 5150, Cr 1400.
+        shrink = adjust_stock(
+            item, quantity_delta=-2, movement_date=datetime.date(2026, 1, 14),
+        )
+        lines = {l.account.code: l for l in shrink.journal.lines.all()}
+        self.assertEqual(lines["5150"].debit, 200_000)
+        self.assertEqual(lines["1400"].credit, 200_000)
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 8)
+        self.assertEqual(item.stock_value, 800_000)
+
+        # Write-up: found 2 more, priced at current average → Dr 1400, Cr 5150.
+        writeup = adjust_stock(
+            item, quantity_delta=2, movement_date=datetime.date(2026, 1, 15),
+        )
+        lines = {l.account.code: l for l in writeup.journal.lines.all()}
+        self.assertEqual(lines["1400"].debit, 200_000)
+        self.assertEqual(lines["5150"].credit, 200_000)
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 10)
+        self.assertEqual(item.stock_value, 1_000_000)
+
+    def test_writeup_into_empty_stock_requires_unit_cost(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._stock_item(entity)
+
+        with self.assertRaises(StockError):
+            adjust_stock(item, quantity_delta=5, movement_date=datetime.date(2026, 1, 14))
+
+        # With a unit_cost the opening write-up posts.
+        adjust_stock(
+            item, quantity_delta=5, unit_cost=50_000,
+            movement_date=datetime.date(2026, 1, 14),
+        )
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 5)
+        self.assertEqual(item.stock_value, 250_000)
+
+    def test_reorder_report_and_valuation(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        low = self._stock_item(entity, code="LOW", reorder_level=20, reorder_qty=50)
+        ok = self._stock_item(entity, code="OK", reorder_level=2, reorder_qty=10)
+        self._receive_via_grn(entity, vendor, low, qty=10, unit_price=100_000)
+        self._receive_via_grn(entity, vendor, ok, qty=10, unit_price=50_000)
+
+        report = reorder_report(entity)
+        codes = {r["code"] for r in report}
+        self.assertEqual(codes, {"LOW"})                    # only LOW is at/below level
+
+        valuation = stock_valuation(entity)
+        self.assertEqual(valuation["total_value"], 1_500_000)
+        by_code = {r["code"]: r for r in valuation["rows"]}
+        self.assertEqual(by_code["LOW"]["stock_value"], 1_000_000)
+        self.assertEqual(by_code["OK"]["stock_value"], 500_000)

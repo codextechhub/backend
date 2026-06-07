@@ -42,6 +42,7 @@ from .constants import (
     ProcApprovalState,
     QuotationStatus,
     RfqStatus,
+    StockMovementType,
     VendorKycStatus,
     VendorRisk,
     WF_DOCTYPE_PURCHASE_ORDER,
@@ -243,6 +244,152 @@ class CatalogItem(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.code} · {self.name}"
+
+
+# --------------------------------------------------------------------------- #
+# Inventory / stock ledger (perpetual, weighted-average cost)                 #
+# --------------------------------------------------------------------------- #
+
+class StockItem(TimeStampedModel):
+    """A physically stocked good — carries live on-hand quantity and its GL value.
+
+    Distinct from :class:`CatalogItem`: a catalog item is *buying* master data (defaults
+    that pre-fill purchase lines, including services you never hold), whereas a stock item
+    is *inventory* state — what is physically held, counted, and carried on the balance
+    sheet. The optional :attr:`catalog_item` link joins a stocked good to its buying
+    defaults when one exists.
+
+    Valuation is **weighted-average** held without floats: rather than storing a
+    fractional unit cost, the item carries integer ``on_hand_qty`` and the total
+    ``stock_value`` (kobo); the moving-average unit cost is *derived* (:attr:`unit_cost`).
+    Each :class:`StockMovement` adjusts both atomically, so ``stock_value`` always equals
+    the perpetual-inventory balance for this item in :attr:`inventory_account`.
+    """
+
+    entity = models.ForeignKey(
+        "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="stock_items",
+    )
+    code = models.CharField(max_length=40, help_text="Stock code, unique within the entity.")
+    name = models.CharField(max_length=200)
+    description = models.CharField(max_length=255, blank=True, default="")
+    unit_of_measure = models.CharField(max_length=24, blank=True, default="each")
+
+    catalog_item = models.ForeignKey(
+        CatalogItem, on_delete=models.SET_NULL, related_name="stock_items",
+        null=True, blank=True,
+        help_text="Optional link to the buying-defaults catalog entry for this good.",
+    )
+    inventory_account = models.ForeignKey(
+        "vs_finance.Account", on_delete=models.PROTECT, related_name="stock_items",
+        help_text="Balance-sheet asset account this item's value is carried in.",
+    )
+    default_expense_account = models.ForeignKey(
+        "vs_finance.Account", on_delete=models.PROTECT, related_name="stock_items_expense",
+        null=True, blank=True,
+        help_text="Default account debited when stock is issued (e.g. Cost of Sales).",
+    )
+
+    reorder_level = models.DecimalField(
+        max_digits=14, decimal_places=4, default=0,
+        help_text="On-hand at/below which the item is flagged for reorder.",
+    )
+    reorder_qty = models.DecimalField(
+        max_digits=14, decimal_places=4, default=0,
+        help_text="Suggested quantity to reorder when low.",
+    )
+
+    on_hand_qty = models.DecimalField(
+        max_digits=16, decimal_places=4, default=0,
+        help_text="Live quantity on hand (maintained by the stock ledger).",
+    )
+    stock_value = MoneyField(
+        help_text="Total value of on-hand stock, in kobo (weighted-average basis).",
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "code"], name="uniq_proc_stockitem_entity_code",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "is_active"]),
+            models.Index(fields=["catalog_item"]),
+        ]
+        ordering = ["entity", "code"]
+
+    @property
+    def unit_cost(self) -> int:
+        """Derived weighted-average unit cost in kobo (0 when nothing on hand)."""
+        if self.on_hand_qty and self.on_hand_qty > 0:
+            return int((Decimal(self.stock_value) / Decimal(self.on_hand_qty)).to_integral_value())
+        return 0
+
+    @property
+    def needs_reorder(self) -> bool:
+        return self.on_hand_qty <= self.reorder_level
+
+    def __str__(self) -> str:
+        return f"{self.code} · {self.name}"
+
+
+class StockMovement(TimeStampedModel):
+    """One immutable line of the perpetual stock ledger for a :class:`StockItem`.
+
+    Signed in both quantity and value (``+`` in, ``-`` out) so a running sum reproduces
+    the on-hand balance. ``balance_qty`` / ``balance_value`` snapshot the item's state
+    *after* this movement for audit and aged-stock reporting, and ``journal`` links the
+    GL entry the movement posted (a stock-tracked GRN line, an issue, or an adjustment).
+    """
+
+    entity = models.ForeignKey(
+        "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="stock_movements",
+    )
+    stock_item = models.ForeignKey(
+        StockItem, on_delete=models.PROTECT, related_name="movements",
+    )
+    movement_type = models.CharField(max_length=16, choices=StockMovementType.choices)
+    movement_date = models.DateField()
+
+    quantity = models.DecimalField(
+        max_digits=16, decimal_places=4,
+        help_text="Signed quantity change (+ receipt, − issue).",
+    )
+    value_amount = models.BigIntegerField(
+        help_text="Signed value change in kobo (+ in, − out).",
+    )
+    balance_qty = models.DecimalField(
+        max_digits=16, decimal_places=4, default=0,
+        help_text="On-hand quantity after this movement.",
+    )
+    balance_value = MoneyField(help_text="Stock value (kobo) after this movement.")
+
+    grn = models.ForeignKey(
+        "GoodsReceivedNote", on_delete=models.SET_NULL, related_name="stock_movements",
+        null=True, blank=True,
+    )
+    journal = models.ForeignKey(
+        "vs_finance.JournalEntry", on_delete=models.PROTECT, related_name="stock_movements",
+        null=True, blank=True,
+    )
+    reference = models.CharField(max_length=64, blank=True, default="")
+    narration = models.CharField(max_length=255, blank=True, default="")
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="stock_movements", null=True, blank=True,
+    )
+
+    class Meta:
+        ordering = ["-movement_date", "-id"]
+        indexes = [
+            models.Index(fields=["entity", "movement_date"]),
+            models.Index(fields=["stock_item", "movement_date"]),
+            models.Index(fields=["movement_type"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.movement_type} {self.quantity} of {self.stock_item_id}"
 
 
 # --------------------------------------------------------------------------- #
@@ -764,8 +911,11 @@ class GoodsReceivedNote(FinanceDocument):
 class GoodsReceivedNoteLine(TimeStampedModel):
     """One received item: accepted/rejected quantities and the value booked.
 
-    ``value_amount`` (kobo) = ``accepted_qty × unit_price`` is what posts to the
-    expense (Dr) and GR/IR clearing (Cr). Rejected quantity is recorded for the
+    ``value_amount`` (kobo) = ``accepted_qty × unit_price`` is what posts on receipt.
+    For a non-stock line the debit lands in ``expense_account`` (Dr expense, Cr GR/IR).
+    When ``stock_item`` is set the line is **perpetual inventory**: the debit is redirected
+    to the item's ``inventory_account`` and a receipt :class:`StockMovement` raises the
+    on-hand quantity/value at this cost. Rejected quantity is recorded for the
     returns/quality trail but does not post.
     """
 
@@ -776,10 +926,15 @@ class GoodsReceivedNoteLine(TimeStampedModel):
         PurchaseOrderLine, on_delete=models.PROTECT, related_name="grn_lines",
         null=True, blank=True,
     )
+    stock_item = models.ForeignKey(
+        StockItem, on_delete=models.PROTECT, related_name="grn_lines",
+        null=True, blank=True,
+        help_text="If set, the receipt is capitalised to inventory (perpetual stock).",
+    )
     description = models.CharField(max_length=255, blank=True, default="")
     expense_account = models.ForeignKey(
         "vs_finance.Account", on_delete=models.PROTECT, related_name="grn_lines",
-        help_text="GL account debited for the accepted value.",
+        help_text="GL account debited for the accepted value (non-stock lines).",
     )
     accepted_qty = models.DecimalField(max_digits=14, decimal_places=4, default=0)
     rejected_qty = models.DecimalField(max_digits=14, decimal_places=4, default=0)

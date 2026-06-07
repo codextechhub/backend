@@ -74,10 +74,19 @@ urlpatterns = [
     path("approvals/default-templates/", views.ApprovalTemplateSetupView.as_view(),
          name="proc-approval-default-templates"),
 
+    # Inventory / stock ledger
+    path("stock-items/", views.StockItemListCreateView.as_view(), name="proc-stock-items"),
+    path("stock-items/<int:pk>/", views.StockItemDetailView.as_view(), name="proc-stock-item-detail"),
+    path("stock-items/<int:pk>/issue/", views.StockIssueView.as_view(), name="proc-stock-issue"),
+    path("stock-items/<int:pk>/adjust/", views.StockAdjustView.as_view(), name="proc-stock-adjust"),
+    path("stock-movements/", views.StockMovementListView.as_view(), name="proc-stock-movements"),
+
     # AP reports
     path("reports/ap-aging/", views.APAgingView.as_view(), name="proc-ap-aging"),
     path("reports/ap-reconciliation/", views.APReconciliationView.as_view(), name="proc-ap-reconciliation"),
     path("reports/grir/", views.GRIRBalanceView.as_view(), name="proc-grir"),
     path("reports/ap-cash-requirements/", views.APCashRequirementsView.as_view(), name="proc-ap-cash-requirements"),
     path("reports/grir-aging/", views.GRIRAgingView.as_view(), name="proc-grir-aging"),
+    path("reports/stock-reorder/", views.StockReorderReportView.as_view(), name="proc-stock-reorder"),
+    path("reports/stock-valuation/", views.StockValuationReportView.as_view(), name="proc-stock-valuation"),
 ]
