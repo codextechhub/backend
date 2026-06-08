@@ -1,15 +1,7 @@
 ## Undone
 
-# Finance backlog — remaining gaps from Crestfield-Finance/Finance-Gap-Checklist.md (all `G`-marked stretch items; core GL/AR/P2P/Payments shipped & tested). Build-first triage is DONE; these are the value-add / statutory / automation layer and do NOT block frontend work.
-
 ## AR cycle (vs_finance receivables)
 # - School-fee billing adapter (fee categories + structures → emit generic invoices, behind a module flag)  [SKIP — user deferred]
-
-## Procurement (vs_procurement)
-
-## Banking / close (vs_finance)
-
-## Reporting
 
 ## Payments (vs_payments)
 # - Open-banking statement feed (Mono/Okra) — optional, automates bank rec  [SKIP — user deferred "skip for now"]
