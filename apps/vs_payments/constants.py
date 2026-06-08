@@ -76,6 +76,30 @@ PAYOUT_TERMINAL = frozenset(
 )
 
 
+class PayoutBatchStatus(models.TextChoices):
+    """Lifecycle of a bulk-disbursement batch grouping many payout instructions.
+
+    ``DRAFT`` → created locally with child instructions but not yet submitted;
+    ``PROCESSING`` → submitted, at least one child accepted by the provider and none
+    finished failing; ``COMPLETED`` → every child reached ``PAID``;
+    ``PARTIALLY_COMPLETED`` → batch finished but a mix of paid/failed children;
+    ``FAILED`` → every child failed to submit/settle.
+    """
+
+    DRAFT = "DRAFT", "Draft"
+    PROCESSING = "PROCESSING", "Processing"
+    COMPLETED = "COMPLETED", "Completed"
+    PARTIALLY_COMPLETED = "PARTIALLY_COMPLETED", "Partially completed"
+    FAILED = "FAILED", "Failed"
+
+
+#: Batch states past which no further automatic transition happens.
+PAYOUT_BATCH_TERMINAL = frozenset(
+    {PayoutBatchStatus.COMPLETED, PayoutBatchStatus.PARTIALLY_COMPLETED,
+     PayoutBatchStatus.FAILED}
+)
+
+
 class VirtualAccountStatus(models.TextChoices):
     ACTIVE = "ACTIVE", "Active"
     INACTIVE = "INACTIVE", "Inactive"
@@ -100,6 +124,8 @@ class PaymentAuditAction(models.TextChoices):
     PAYOUT_INITIATED = "PAYOUT_INITIATED", "Payout initiated"
     PAYOUT_CONFIRMED = "PAYOUT_CONFIRMED", "Payout confirmed"
     PAYOUT_FAILED = "PAYOUT_FAILED", "Payout failed"
+    PAYOUT_BATCH_CREATED = "PAYOUT_BATCH_CREATED", "Payout batch created"
+    PAYOUT_BATCH_SUBMITTED = "PAYOUT_BATCH_SUBMITTED", "Payout batch submitted"
     WEBHOOK_RECEIVED = "WEBHOOK_RECEIVED", "Webhook received"
     WEBHOOK_REJECTED = "WEBHOOK_REJECTED", "Webhook rejected"
 

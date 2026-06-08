@@ -23,6 +23,7 @@ from .constants import (
     CollectionStatus,
     PaymentAuditAction,
     PaymentProvider,
+    PayoutBatchStatus,
     PayoutStatus,
     VirtualAccountStatus,
     WebhookStatus,
@@ -166,6 +167,64 @@ class CollectionIntent(TimeStampedModel):
         return self.status in COLLECTION_TERMINAL
 
 
+class PayoutBatch(TimeStampedModel):
+    """A bulk disbursement: one envelope grouping many :class:`PayoutInstruction` rows.
+
+    The batch is the unit operators work with for payroll runs, vendor settlement runs,
+    etc. — they assemble many beneficiaries, then submit once. Submission loops the
+    existing per-instruction provider transfer (there is no proprietary bank-file export);
+    the batch tracks the aggregate so a partially-settled run is visible at a glance.
+    ``total_amount``/``item_count`` are denormalised sums of the child instructions, kept
+    in sync by the services layer.
+    """
+
+    entity = models.ForeignKey(
+        "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="payout_batches",
+    )
+    provider = models.CharField(max_length=16, choices=PaymentProvider.choices)
+    reference = models.CharField(
+        max_length=64, unique=True,
+        help_text="Our reference / idempotency key for this batch.",
+    )
+    title = models.CharField(max_length=200, blank=True, default="")
+    narration = models.CharField(max_length=255, blank=True, default="")
+    status = models.CharField(
+        max_length=20, choices=PayoutBatchStatus.choices, default=PayoutBatchStatus.DRAFT,
+    )
+    total_amount = MoneyField(default=0, help_text="Sum of child instruction amounts, in kobo.")
+    item_count = models.PositiveIntegerField(default=0)
+    currency = models.ForeignKey(
+        "vs_finance.Currency", on_delete=models.PROTECT,
+        related_name="payout_batches", null=True, blank=True,
+    )
+    source_account = models.ForeignKey(
+        "vs_finance.Account", on_delete=models.PROTECT,
+        related_name="payout_batches", null=True, blank=True,
+        help_text="Default bank/cash GL account the booked payouts credit.",
+    )
+    metadata = models.JSONField(default=dict, blank=True)
+    submitted_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
+        related_name="+", null=True, blank=True,
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["provider"]),
+        ]
+        ordering = ["-id"]
+
+    def __str__(self) -> str:
+        return f"{self.reference} · {self.item_count} items · {self.total_amount} kobo · {self.status}"
+
+    @property
+    def is_terminal(self) -> bool:
+        from .constants import PAYOUT_BATCH_TERMINAL
+        return self.status in PAYOUT_BATCH_TERMINAL
+
+
 class PayoutInstruction(TimeStampedModel):
     """A request to send money out of the entity via a provider (money *out*).
 
@@ -177,6 +236,11 @@ class PayoutInstruction(TimeStampedModel):
 
     entity = models.ForeignKey(
         "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="payout_instructions",
+    )
+    batch = models.ForeignKey(
+        PayoutBatch, on_delete=models.PROTECT, related_name="instructions",
+        null=True, blank=True,
+        help_text="The bulk batch this instruction belongs to, if any.",
     )
     provider = models.CharField(max_length=16, choices=PaymentProvider.choices)
     reference = models.CharField(

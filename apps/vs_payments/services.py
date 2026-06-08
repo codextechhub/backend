@@ -28,12 +28,13 @@ from .constants import (
     CollectionStatus,
     PaymentAuditAction,
     PaymentProvider,
+    PayoutBatchStatus,
     PayoutStatus,
     REFERENCE_PREFIX,
     VirtualAccountStatus,
 )
 from .exceptions import PaymentStateError
-from .models import CollectionIntent, PayoutInstruction, VirtualAccount
+from .models import CollectionIntent, PayoutBatch, PayoutInstruction, VirtualAccount
 from .providers.registry import get_provider
 
 
@@ -248,21 +249,35 @@ def initiate_payout(*, entity, amount, beneficiary_name, beneficiary_account_num
         metadata={**(metadata or {}), "wht_amount": int(wht_amount)},
         created_by=actor_user,
     )
+    return _dispatch_transfer(payout, client=client, metadata=metadata, actor_user=actor_user)
 
+
+def _dispatch_transfer(payout, *, client=None, metadata=None, actor_user=None):
+    """Ask the provider to transfer funds for an already-created ``PENDING`` payout.
+
+    Shared by single :func:`initiate_payout` and bulk :func:`submit_payout_batch`. On
+    provider rejection the payout is marked FAILED and the error re-raised; on success it
+    moves to PROCESSING with the provider's reference/recipient stored. Booking the ledger
+    entry still happens later, on confirmation.
+    """
+    client = client or get_provider(payout.provider)
+    currency = payout.currency
     try:
         result = client.create_transfer(
-            reference=reference, amount=amount,
+            reference=payout.reference, amount=payout.amount,
             currency=getattr(currency, "code", currency) or "NGN",
-            account_number=beneficiary_account_number, bank_code=beneficiary_bank_code,
-            account_name=beneficiary_name, narration=narration, metadata=metadata or {},
+            account_number=payout.beneficiary_account_number,
+            bank_code=payout.beneficiary_bank_code,
+            account_name=payout.beneficiary_name, narration=payout.narration,
+            metadata=metadata or {},
         )
     except FinanceError as exc:
         payout.status = PayoutStatus.FAILED
         payout.failure_reason = str(getattr(exc, "message", exc))[:255]
         payout.save(update_fields=["status", "failure_reason", "updated_at"])
         audit.record_rejection(
-            action=PaymentAuditAction.PAYOUT_INITIATED, exc=exc, entity=entity,
-            provider=provider_name, reference=reference, actor_user=actor_user,
+            action=PaymentAuditAction.PAYOUT_INITIATED, exc=exc, entity=payout.entity,
+            provider=payout.provider, reference=payout.reference, actor_user=actor_user,
         )
         raise
 
@@ -274,11 +289,135 @@ def initiate_payout(*, entity, amount, beneficiary_name, beneficiary_account_num
         "provider_reference", "recipient_code", "status", "raw_response", "updated_at",
     ])
     audit.record(
-        action=PaymentAuditAction.PAYOUT_INITIATED, entity=entity, provider=provider_name,
-        reference=reference, actor_user=actor_user,
-        message=f"Initiated {amount} kobo payout via {provider_name}.",
+        action=PaymentAuditAction.PAYOUT_INITIATED, entity=payout.entity,
+        provider=payout.provider, reference=payout.reference, actor_user=actor_user,
+        message=f"Initiated {payout.amount} kobo payout via {payout.provider}.",
     )
     return payout
+
+
+# --------------------------------------------------------------------------- #
+# Bulk payouts (provider bulk submit)                                          #
+# --------------------------------------------------------------------------- #
+
+def create_payout_batch(*, entity, items, provider=None, source_account=None,
+                        title="", narration="", currency=None, actor_user=None):
+    """Assemble a :class:`PayoutBatch` plus its child ``PENDING`` instructions (no submit).
+
+    ``items`` is an iterable of dicts, each with ``amount`` (kobo) and beneficiary fields
+    (``beneficiary_name``, ``beneficiary_account_number``, ``beneficiary_bank_code``) and
+    optional ``vendor`` / ``narration`` / ``wht_amount`` / ``metadata`` / ``source_account``.
+    Nothing is sent to the provider yet — call :func:`submit_payout_batch` for that.
+    """
+    from django.conf import settings
+
+    items = list(items)
+    if not items:
+        raise PaymentStateError("A payout batch must contain at least one item.")
+
+    provider_name = provider or getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")
+    get_provider(provider_name)  # validate the provider is configured up front
+    currency = currency or _entity_currency(entity)
+    batch_reference = _new_reference()
+
+    with transaction.atomic():
+        batch = PayoutBatch.objects.create(
+            entity=entity, provider=provider_name, reference=batch_reference,
+            title=title, narration=narration, currency=currency,
+            source_account=source_account, status=PayoutBatchStatus.DRAFT,
+            created_by=actor_user,
+        )
+        total = 0
+        for item in items:
+            amount = int(item.get("amount") or 0)
+            if amount <= 0:
+                raise PaymentStateError("Each payout item needs a positive amount (kobo).")
+            vendor = item.get("vendor")
+            PayoutInstruction.objects.create(
+                entity=entity, batch=batch, provider=provider_name,
+                reference=_new_reference(), amount=amount, currency=currency,
+                beneficiary_name=item["beneficiary_name"],
+                beneficiary_account_number=item["beneficiary_account_number"],
+                beneficiary_bank_code=item.get("beneficiary_bank_code", ""),
+                source_account=item.get("source_account") or source_account,
+                narration=item.get("narration", "") or narration,
+                status=PayoutStatus.PENDING,
+                vendor_source_type="vs_procurement.Vendor" if vendor else "",
+                vendor_source_id=str(vendor.pk) if vendor else "",
+                metadata={**(item.get("metadata") or {}),
+                          "wht_amount": int(item.get("wht_amount") or 0)},
+                created_by=actor_user,
+            )
+            total += amount
+        batch.total_amount = total
+        batch.item_count = len(items)
+        batch.save(update_fields=["total_amount", "item_count", "updated_at"])
+
+    audit.record(
+        action=PaymentAuditAction.PAYOUT_BATCH_CREATED, entity=entity,
+        provider=provider_name, reference=batch_reference, actor_user=actor_user,
+        message=f"Created payout batch of {len(items)} items, {total} kobo.",
+    )
+    return batch
+
+
+def submit_payout_batch(batch, *, actor_user=None):
+    """Submit every ``PENDING`` instruction in ``batch`` to the provider, one by one.
+
+    Each item rides the shared :func:`_dispatch_transfer`; a per-item provider rejection
+    marks that instruction FAILED but does not abort the run. The batch's aggregate status
+    is recomputed from its children afterwards. Idempotent: already-dispatched items
+    (non-PENDING) are skipped, so re-submitting a partially-failed batch only retries the
+    stragglers.
+    """
+    submitted = failed = 0
+    for payout in batch.instructions.filter(status=PayoutStatus.PENDING):
+        try:
+            _dispatch_transfer(payout, actor_user=actor_user)
+            submitted += 1
+        except FinanceError:
+            failed += 1
+
+    batch.submitted_at = batch.submitted_at or timezone.now()
+    _recompute_batch_status(batch)
+    audit.record(
+        action=PaymentAuditAction.PAYOUT_BATCH_SUBMITTED, entity=batch.entity,
+        provider=batch.provider, reference=batch.reference, actor_user=actor_user,
+        message=f"Submitted batch: {submitted} dispatched, {failed} failed.",
+        metadata={"submitted": submitted, "failed": failed},
+    )
+    return batch
+
+
+def _recompute_batch_status(batch):
+    """Derive and persist the batch status from the live state of its instructions."""
+    statuses = list(
+        batch.instructions.values_list("status", flat=True)
+    )
+    total = len(statuses)
+    paid = sum(1 for s in statuses if s == PayoutStatus.PAID)
+    failed = sum(1 for s in statuses if s in (PayoutStatus.FAILED, PayoutStatus.REVERSED))
+    pending = sum(1 for s in statuses if s == PayoutStatus.PENDING)
+    in_flight = sum(1 for s in statuses if s == PayoutStatus.PROCESSING)
+
+    if total == 0:
+        status = PayoutBatchStatus.DRAFT
+    elif pending == total:
+        status = PayoutBatchStatus.DRAFT
+    elif paid == total:
+        status = PayoutBatchStatus.COMPLETED
+    elif failed == total:
+        status = PayoutBatchStatus.FAILED
+    elif pending or in_flight:
+        status = PayoutBatchStatus.PROCESSING
+    else:
+        # Everything settled, but a mix of paid and failed.
+        status = PayoutBatchStatus.PARTIALLY_COMPLETED
+
+    if batch.status != status or batch.submitted_at is not None:
+        batch.status = status
+        batch.save(update_fields=["status", "submitted_at", "updated_at"])
+    return batch
 
 
 @transaction.atomic
@@ -305,6 +444,7 @@ def confirm_payout(payout, *, status=None, actor_user=None):
             provider=payout.provider, reference=payout.reference, succeeded=False,
             message=f"Payout ended '{status}'.", actor_user=actor_user,
         )
+        _refresh_batch(payout)
         return payout
 
     _book_vendor_payment(payout, actor_user=actor_user)
@@ -319,7 +459,16 @@ def confirm_payout(payout, *, status=None, actor_user=None):
         message=f"Booked vendor payment for {payout.amount} kobo.",
         metadata={"vendor_payment_id": payout.vendor_payment_id},
     )
+    _refresh_batch(payout)
     return payout
+
+
+def _refresh_batch(payout):
+    """Recompute the owning batch's aggregate status after a child changed, if any."""
+    if payout.batch_id:
+        _recompute_batch_status(
+            PayoutBatch.objects.select_for_update().get(pk=payout.batch_id)
+        )
 
 
 def _book_vendor_payment(payout, *, actor_user=None):

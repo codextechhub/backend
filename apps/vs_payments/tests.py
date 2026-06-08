@@ -32,10 +32,15 @@ from vs_finance.receivables import post_invoice
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies
 from vs_procurement.models import Vendor, VendorPayment
 
-from . import services, webhooks
-from .constants import CollectionStatus, PayoutStatus
+from . import reconciliation, services, webhooks
+from .constants import CollectionStatus, PayoutBatchStatus, PayoutStatus
 from .exceptions import DuplicateWebhookError, WebhookSignatureError
-from .models import CollectionIntent, PaymentEvent, PayoutInstruction
+from .models import (
+    CollectionIntent,
+    PaymentEvent,
+    PayoutBatch,
+    PayoutInstruction,
+)
 from .providers import registry
 from .providers.fake import FakeProvider
 
@@ -251,6 +256,167 @@ class PayoutTests(_PaymentsFixtureMixin, TestCase):
         self.assertFalse(VendorPayment.objects.filter(entity=entity).exists())
 
 
+class _FlakyProvider(FakeProvider):
+    """A FakeProvider that refuses to transfer a sentinel amount (to fail one item)."""
+
+    def __init__(self, *, fail_amount, **kwargs):
+        super().__init__(**kwargs)
+        self.fail_amount = fail_amount
+
+    def create_transfer(self, *, reference, amount, currency, account_number, bank_code,
+                        account_name="", narration="", metadata=None):
+        if amount == self.fail_amount:
+            from .exceptions import ProviderError
+            raise ProviderError("Beneficiary account rejected by the bank.")
+        return super().create_transfer(
+            reference=reference, amount=amount, currency=currency,
+            account_number=account_number, bank_code=bank_code,
+            account_name=account_name, narration=narration, metadata=metadata,
+        )
+
+
+class PayoutBatchTests(_PaymentsFixtureMixin, TestCase):
+    def _items(self, vendor, *amounts):
+        return [
+            {"amount": amt, "beneficiary_name": "Supplier Ltd",
+             "beneficiary_account_number": f"012345678{i}", "beneficiary_bank_code": "058",
+             "vendor": vendor}
+            for i, amt in enumerate(amounts)
+        ]
+
+    def test_create_batch_assembles_pending_instructions_without_submitting(self):
+        entity, _, vendor = self.build()
+        batch = services.create_payout_batch(
+            entity=entity, items=self._items(vendor, 10000, 20000, 30000),
+            title="June payroll",
+        )
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+        self.assertEqual(batch.item_count, 3)
+        self.assertEqual(batch.total_amount, 60000)
+        self.assertEqual(batch.instructions.count(), 3)
+        self.assertTrue(
+            all(p.status == PayoutStatus.PENDING for p in batch.instructions.all())
+        )
+        # Nothing was sent to the provider yet → no provider_reference.
+        self.assertTrue(all(not p.provider_reference for p in batch.instructions.all()))
+
+    def test_submit_batch_dispatches_every_item(self):
+        entity, _, vendor = self.build()
+        batch = services.create_payout_batch(entity=entity, items=self._items(vendor, 5000, 7000))
+        batch = services.submit_payout_batch(batch)
+        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+        self.assertIsNotNone(batch.submitted_at)
+        self.assertTrue(
+            all(p.status == PayoutStatus.PROCESSING for p in batch.instructions.all())
+        )
+
+    def test_confirming_all_items_completes_the_batch(self):
+        entity, _, vendor = self.build()
+        batch = services.create_payout_batch(entity=entity, items=self._items(vendor, 5000, 7000))
+        services.submit_payout_batch(batch)
+        for payout in batch.instructions.all():
+            services.confirm_payout(payout, status=PayoutStatus.PAID)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.COMPLETED)
+        self.assertEqual(
+            VendorPayment.objects.filter(entity=entity).count(), 2
+        )
+
+    def test_partial_failure_marks_batch_partially_completed(self):
+        entity, _, vendor = self.build()
+        flaky = _FlakyProvider(secret="test-secret", fail_amount=7000)
+        registry.register("PAYSTACK", flaky)
+        registry.register("FAKE", flaky)
+        batch = services.create_payout_batch(entity=entity, items=self._items(vendor, 5000, 7000))
+        services.submit_payout_batch(batch)
+        # One dispatched (PROCESSING), one rejected at submit (FAILED).
+        statuses = sorted(p.status for p in batch.instructions.all())
+        self.assertEqual(statuses, [PayoutStatus.FAILED, PayoutStatus.PROCESSING])
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+        # Confirm the surviving item → batch settles as PARTIALLY_COMPLETED.
+        survivor = batch.instructions.get(status=PayoutStatus.PROCESSING)
+        services.confirm_payout(survivor, status=PayoutStatus.PAID)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.PARTIALLY_COMPLETED)
+
+
+class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
+    def _bank_account(self, entity):
+        from vs_finance.models import BankAccount
+        return BankAccount.objects.create(
+            entity=entity, name="Operations",
+            gl_account=Account.objects.get(entity=entity, code="1100"),
+        )
+
+    def _bank_line(self, bank_account, *, amount, reference="", description="", day=None):
+        from vs_finance.models import BankStatementLine
+        return BankStatementLine.objects.create(
+            bank_account=bank_account, txn_date=day or datetime.date.today(),
+            description=description, reference=reference, amount=amount,
+        )
+
+    def test_reference_match_settles_a_collection(self):
+        entity, customer, _ = self.build()
+        intent = services.initiate_collection(entity=entity, amount=40000, customer=customer)
+        services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+        intent.refresh_from_db()
+        ba = self._bank_account(entity)
+        self._bank_line(ba, amount=40000, reference=intent.reference)
+
+        recon = reconciliation.settlement_reconciliation(entity)
+        self.assertEqual(recon.settled_count, 1)
+        self.assertEqual(recon.unsettled_count, 0)
+        self.assertEqual(recon.rows[0].match_basis, "reference")
+        self.assertTrue(recon.is_reconciled)
+
+    def test_amount_fallback_match_for_a_payout(self):
+        entity, _, vendor = self.build()
+        payout = services.initiate_payout(
+            entity=entity, amount=15000, beneficiary_name="Supplier Ltd",
+            beneficiary_account_number="0123456789", beneficiary_bank_code="058",
+            vendor=vendor,
+        )
+        services.confirm_payout(payout, status=PayoutStatus.PAID)
+        ba = self._bank_account(entity)
+        # No shared reference, but the signed amount matches (-15000 outflow).
+        self._bank_line(ba, amount=-15000, reference="GTB-REF-XYZ")
+
+        recon = reconciliation.settlement_reconciliation(entity)
+        self.assertEqual(recon.settled_count, 1)
+        self.assertEqual(recon.rows[0].amount, -15000)
+        self.assertEqual(recon.rows[0].match_basis, "amount")
+        self.assertTrue(recon.is_reconciled)
+
+    def test_unsettled_gateway_and_unexplained_bank_line_break_reconciliation(self):
+        entity, customer, _ = self.build()
+        intent = services.initiate_collection(entity=entity, amount=22000, customer=customer)
+        services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+        ba = self._bank_account(entity)
+        # A bank line that matches nothing (wrong amount, no shared reference).
+        self._bank_line(ba, amount=99999, reference="MYSTERY", description="Bank charge")
+
+        recon = reconciliation.settlement_reconciliation(entity)
+        self.assertEqual(recon.unsettled_count, 1)
+        self.assertEqual(len(recon.unmatched_bank_lines), 1)
+        self.assertFalse(recon.is_reconciled)
+
+    def test_date_window_filters_both_sides(self):
+        entity, customer, _ = self.build()
+        intent = services.initiate_collection(entity=entity, amount=12000, customer=customer)
+        services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+        ba = self._bank_account(entity)
+        self._bank_line(ba, amount=12000, reference=intent.reference)
+        # A window entirely in the past excludes today's confirmation and bank line.
+        past = datetime.date.today() - datetime.timedelta(days=10)
+        recon = reconciliation.settlement_reconciliation(
+            entity, start_date=past - datetime.timedelta(days=5), end_date=past,
+        )
+        self.assertEqual(recon.rows, [])
+        self.assertEqual(recon.unmatched_bank_lines, [])
+        self.assertTrue(recon.is_reconciled)
+
+
 class PaymentEventTests(_PaymentsFixtureMixin, TestCase):
     def test_payment_event_is_append_only(self):
         entity, customer, _ = self.build()
@@ -340,3 +506,48 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
         )
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(resp.json()["data"]["status"], PayoutStatus.PROCESSING)
+
+    def test_create_and_submit_payout_batch_endpoint(self):
+        entity, _, vendor = self.build()
+        resp = self.client.post(
+            f"/v1/payments/payout-batches/?entity={entity.code}",
+            {"title": "Run", "submit": True,
+             "items": [
+                 {"amount": 11000, "beneficiary_name": "Supplier Ltd",
+                  "beneficiary_account_number": "0123456789", "beneficiary_bank_code": "058",
+                  "vendor": vendor.pk},
+                 {"amount": 22000, "beneficiary_name": "Supplier Ltd",
+                  "beneficiary_account_number": "0123456780", "beneficiary_bank_code": "058",
+                  "vendor": vendor.pk},
+             ]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        data = resp.json()["data"]
+        self.assertEqual(data["status"], PayoutBatchStatus.PROCESSING)
+        self.assertEqual(data["item_count"], 2)
+        self.assertEqual(data["total_amount"], 33000)
+        self.assertEqual(len(data["instructions"]), 2)
+
+    def test_settlement_reconciliation_endpoint(self):
+        from vs_finance.models import BankAccount, BankStatementLine
+
+        entity, customer, _ = self.build()
+        intent = services.initiate_collection(entity=entity, amount=40000, customer=customer)
+        services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+        intent.refresh_from_db()
+        ba = BankAccount.objects.create(
+            entity=entity, name="Operations",
+            gl_account=Account.objects.get(entity=entity, code="1100"),
+        )
+        BankStatementLine.objects.create(
+            bank_account=ba, txn_date=datetime.date.today(),
+            reference=intent.reference, amount=40000,
+        )
+        resp = self.client.get(
+            f"/v1/payments/reports/settlement-reconciliation/?entity={entity.code}"
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()["data"]
+        self.assertTrue(data["is_reconciled"])
+        self.assertEqual(data["summary"]["settled_count"], 1)
