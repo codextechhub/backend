@@ -886,3 +886,172 @@ def cash_flow_statement(entity, *, period=None) -> CashFlowStatement:
         stmt.by_activity[_classify_cash_flow(leg.account)] += contribution
 
     return stmt
+
+
+# --------------------------------------------------------------------------- #
+# Statement of Changes in Equity (SOCE)                                        #
+# --------------------------------------------------------------------------- #
+#
+# The fourth primary statement: it reconciles opening to closing equity by
+# component (share capital, retained earnings, other reserves), splitting the
+# movement into *profit for the period* and *owner contributions / distributions*.
+#
+# In this ledger the year is never closed into Retained Earnings (P&L sits unclosed
+# and the Balance Sheet folds it into equity — see ``balance_sheet``). The SOCE
+# mirrors that exactly: each booked EQUITY account becomes a column whose movement in
+# the window is a contribution/distribution, and a synthetic *Retained earnings*
+# column carries the unclosed net income (opening = cumulative P&L before the window,
+# profit = P&L during the window). Closing therefore equals
+# ``balance_sheet(as_of=window end).total_equity`` — the invariant ``is_reconciled``
+# proves.
+
+
+#: Key/label for the synthetic retained-earnings (unclosed P&L) column.
+RETAINED_EARNINGS_COLUMN = "retained_earnings"
+
+
+@dataclass
+class EquityMovement:
+    """One equity component's opening → closing walk over a window (kobo).
+
+    ``closing == opening + profit + contributions``. ``profit`` is non-zero only for
+    the synthetic retained-earnings column; booked equity accounts move via
+    ``contributions`` (share issues +, dividends / drawings −).
+    """
+
+    key: str
+    label: str
+    account_id: int | None = None
+    code: str | None = None
+    opening: int = 0
+    profit: int = 0
+    contributions: int = 0
+
+    @property
+    def closing(self) -> int:
+        return self.opening + self.profit + self.contributions
+
+    @property
+    def opening_naira(self) -> str:
+        return format_naira(self.opening)
+
+    @property
+    def profit_naira(self) -> str:
+        return format_naira(self.profit)
+
+    @property
+    def contributions_naira(self) -> str:
+        return format_naira(self.contributions)
+
+    @property
+    def closing_naira(self) -> str:
+        return format_naira(self.closing)
+
+
+@dataclass
+class StatementOfChangesInEquity:
+    """Equity reconciliation by component for a window (kobo).
+
+    ``columns`` are the booked equity accounts plus a synthetic retained-earnings
+    column. The totals foot the four movement rows; ``is_reconciled`` checks the
+    closing total against an independently computed balance-sheet equity at the
+    window's end.
+    """
+
+    entity_id: int
+    period_id: int | None
+    as_of: object
+    columns: list = field(default_factory=list)
+    balance_sheet_equity: int = 0
+
+    @property
+    def total_opening(self) -> int:
+        return sum(c.opening for c in self.columns)
+
+    @property
+    def total_profit(self) -> int:
+        return sum(c.profit for c in self.columns)
+
+    @property
+    def total_contributions(self) -> int:
+        return sum(c.contributions for c in self.columns)
+
+    @property
+    def total_closing(self) -> int:
+        return sum(c.closing for c in self.columns)
+
+    @property
+    def is_reconciled(self) -> bool:
+        return self.total_closing == self.balance_sheet_equity
+
+
+def _net_income(qs) -> int:
+    """Net income (income − expense), signed positive for a profit, over ``qs``."""
+    from .constants import AccountType
+
+    _, total_income = _statement_rows(_net_by_account(qs, account_types={AccountType.INCOME}))
+    _, total_expense = _statement_rows(_net_by_account(qs, account_types={AccountType.EXPENSE}))
+    return total_income - total_expense
+
+
+def statement_of_changes_in_equity(entity, *, period=None) -> StatementOfChangesInEquity:
+    """Build the statement of changes in equity for ``entity``.
+
+    With ``period`` the window is that single period (opening = every earlier period;
+    movement = the period). Without it the window is the whole ledger to date (opening
+    zero, everything a movement from inception). Each booked EQUITY account is a
+    column; the unclosed P&L is the synthetic retained-earnings column. ``closing``
+    reconciles to the balance sheet's equity at the window end.
+    """
+    from .constants import AccountType
+    from .models import AccountBalance
+
+    base = AccountBalance.objects.filter(account__entity=entity).select_related("account")
+
+    if period is not None:
+        prior_qs = base.filter(period__start_date__lt=period.start_date)
+        window_qs = base.filter(period=period)
+        as_of = period.end_date
+    else:
+        prior_qs = base.none()
+        window_qs = base
+        as_of = timezone.now().date()
+
+    opening_map = _net_by_account(prior_qs, account_types={AccountType.EQUITY})
+    window_map = _net_by_account(window_qs, account_types={AccountType.EQUITY})
+
+    # One column per booked equity account (union of accounts seen opening or in-window).
+    columns: list[EquityMovement] = []
+    account_ids = sorted(
+        set(opening_map) | set(window_map),
+        key=lambda aid: (opening_map.get(aid) or window_map[aid])[0].code,
+    )
+    for aid in account_ids:
+        acc = (opening_map.get(aid) or window_map.get(aid))[0]
+        columns.append(EquityMovement(
+            key=acc.code,
+            label=acc.name,
+            account_id=acc.id,
+            code=acc.code,
+            opening=opening_map.get(aid, [None, 0])[1],
+            contributions=window_map.get(aid, [None, 0])[1],
+        ))
+
+    # Synthetic retained-earnings column: unclosed P&L before vs during the window.
+    columns.append(EquityMovement(
+        key=RETAINED_EARNINGS_COLUMN,
+        label="Retained earnings (unclosed P&L)",
+        opening=_net_income(prior_qs),
+        profit=_net_income(window_qs),
+    ))
+
+    # Independent reconciliation target: balance-sheet equity at the window end.
+    bs_equity = balance_sheet(entity, as_of=as_of).total_equity
+
+    return StatementOfChangesInEquity(
+        entity_id=entity.id,
+        period_id=getattr(period, "id", None),
+        as_of=as_of,
+        columns=columns,
+        balance_sheet_equity=bs_equity,
+    )

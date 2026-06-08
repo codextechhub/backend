@@ -115,6 +115,7 @@ from vs_finance.reports import (
     customer_statement,
     income_statement,
     reconcile_ar,
+    statement_of_changes_in_equity,
     trial_balance,
 )
 from vs_finance.banking import (
@@ -1912,6 +1913,113 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
         self.assertTrue(cf.is_reconciled)
 
 
+class ChangesInEquityTests(_Phase4FixtureMixin, TestCase):
+    """The statement of changes in equity over a two-month, two-component scenario."""
+
+    def _col(self, soce, key):
+        return next(c for c in soce.columns if c.key == key)
+
+    def test_single_period_splits_capital_from_profit(self):
+        entity, _, periods = self.build_books()
+        # Jan: 1,000,000 capital + 180,000 net income (300k rev − 120k salaries).
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 1000000, 0), ("3100", 0, 1000000)],
+            date=datetime.date(2026, 1, 5),
+        ))
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 300000, 0), ("4100", 0, 300000)],
+            date=datetime.date(2026, 1, 10),
+        ))
+        post_journal(self.make_entry(
+            entity, periods[0], [("5200", 120000, 0), ("1100", 0, 120000)],
+            date=datetime.date(2026, 1, 20),
+        ))
+
+        soce = statement_of_changes_in_equity(entity, period=periods[0])
+        cap = self._col(soce, "3100")
+        self.assertEqual(cap.opening, 0)
+        self.assertEqual(cap.contributions, 1000000)
+        self.assertEqual(cap.closing, 1000000)
+        re = self._col(soce, "retained_earnings")
+        self.assertEqual(re.opening, 0)
+        self.assertEqual(re.profit, 180000)
+        self.assertEqual(re.closing, 180000)
+        self.assertEqual(soce.total_opening, 0)
+        self.assertEqual(soce.total_profit, 180000)
+        self.assertEqual(soce.total_contributions, 1000000)
+        self.assertEqual(soce.total_closing, 1180000)
+        self.assertTrue(soce.is_reconciled)
+
+    def test_period_carries_opening_and_books_distribution(self):
+        entity, _, periods = self.build_books()
+        # January.
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 1000000, 0), ("3100", 0, 1000000)],
+            date=datetime.date(2026, 1, 5),
+        ))
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 300000, 0), ("4100", 0, 300000)],
+            date=datetime.date(2026, 1, 10),
+        ))
+        post_journal(self.make_entry(
+            entity, periods[0], [("5200", 120000, 0), ("1100", 0, 120000)],
+            date=datetime.date(2026, 1, 20),
+        ))
+        # February: 500k more capital, a 50k dividend (Dr retained earnings/Cr cash),
+        # and 120k net income (200k rev − 80k expense).
+        post_journal(self.make_entry(
+            entity, periods[1], [("1100", 500000, 0), ("3100", 0, 500000)],
+            date=datetime.date(2026, 2, 4),
+        ))
+        post_journal(self.make_entry(
+            entity, periods[1], [("3200", 50000, 0), ("1100", 0, 50000)],
+            date=datetime.date(2026, 2, 6),
+        ))
+        post_journal(self.make_entry(
+            entity, periods[1], [("1100", 200000, 0), ("4100", 0, 200000)],
+            date=datetime.date(2026, 2, 12),
+        ))
+        post_journal(self.make_entry(
+            entity, periods[1], [("5300", 80000, 0), ("1100", 0, 80000)],
+            date=datetime.date(2026, 2, 18),
+        ))
+
+        soce = statement_of_changes_in_equity(entity, period=periods[1])
+        cap = self._col(soce, "3100")
+        self.assertEqual(cap.opening, 1000000)        # carried from January
+        self.assertEqual(cap.contributions, 500000)
+        self.assertEqual(cap.closing, 1500000)
+        dist = self._col(soce, "3200")
+        self.assertEqual(dist.opening, 0)
+        self.assertEqual(dist.contributions, -50000)  # dividend is a distribution
+        self.assertEqual(dist.closing, -50000)
+        re = self._col(soce, "retained_earnings")
+        self.assertEqual(re.opening, 180000)          # January's unclosed profit
+        self.assertEqual(re.profit, 120000)
+        self.assertEqual(re.closing, 300000)
+        self.assertEqual(soce.total_opening, 1180000)
+        self.assertEqual(soce.total_contributions, 450000)
+        self.assertEqual(soce.total_profit, 120000)
+        self.assertEqual(soce.total_closing, 1750000)
+        self.assertTrue(soce.is_reconciled)
+
+    def test_unscoped_reconciles_to_balance_sheet_equity(self):
+        entity, _, periods = self.build_books()
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 1000000, 0), ("3100", 0, 1000000)],
+            date=datetime.date(2026, 1, 5),
+        ))
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 300000, 0), ("4100", 0, 300000)],
+            date=datetime.date(2026, 1, 10),
+        ))
+        soce = statement_of_changes_in_equity(entity)
+        # Life-to-date: everything is a movement from a zero opening.
+        self.assertEqual(soce.total_opening, 0)
+        self.assertEqual(soce.total_closing, balance_sheet(entity).total_equity)
+        self.assertTrue(soce.is_reconciled)
+
+
 class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     """The /v1/finance/ REST surface: entity scoping, reports, documents, actions.
 
@@ -1995,6 +2103,12 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(cf["closing_cash"]["kobo"], 780000)
         self.assertEqual(cf["by_activity"]["financing"]["kobo"], 1000000)
 
+        soce = self.client.get(f"/v1/finance/reports/changes-in-equity/?entity={ec}").json()["data"]
+        self.assertTrue(soce["is_reconciled"])
+        self.assertEqual(soce["total_closing"]["kobo"], 1180000)
+        re = next(c for c in soce["columns"] if c["key"] == "retained_earnings")
+        self.assertEqual(re["profit"]["kobo"], 180000)
+
     def test_journal_list_detail_and_post_action(self):
         entity, periods = self._seed()
         ec = entity.code
@@ -2070,7 +2184,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     def test_statement_exports_available(self):
         entity, _ = self._seed()
         ec = entity.code
-        for path in ("income-statement", "balance-sheet", "ar-aging"):
+        for path in ("income-statement", "balance-sheet", "changes-in-equity", "ar-aging"):
             resp = self.client.get(f"/v1/finance/reports/{path}/?entity={ec}&export=xlsx")
             self.assertEqual(resp.status_code, 200, path)
             self.assertTrue(resp.content)

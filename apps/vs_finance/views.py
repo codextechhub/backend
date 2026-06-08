@@ -502,6 +502,61 @@ class CashFlowView(APIView):
         )
 
 
+class ChangesInEquityView(APIView):
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.report.view"
+
+    def get(self, request):
+        from .reports import statement_of_changes_in_equity
+
+        from .exports import ReportTable
+
+        entity = resolve_entity(request)
+        period = _resolve_period(entity, request)
+        soce = statement_of_changes_in_equity(entity, period=period)
+
+        export = _maybe_export(request, ReportTable(
+            title="Statement of Changes in Equity",
+            subtitle=f"{entity.code} · {getattr(period, 'name', None) or 'Inception to date'}",
+            columns=["Component", "Opening", "Profit", "Contributions/(Distributions)", "Closing"],
+            rows=[
+                [c.label, c.opening_naira, c.profit_naira, c.contributions_naira, c.closing_naira]
+                for c in soce.columns
+            ],
+            summary_rows=[[
+                "TOTAL",
+                format_naira(soce.total_opening), format_naira(soce.total_profit),
+                format_naira(soce.total_contributions), format_naira(soce.total_closing),
+            ]],
+        ), filename=f"changes_in_equity_{entity.code}")
+        if export is not None:
+            return export
+
+        return success_response(
+            message="Statement of changes in equity retrieved.",
+            data={
+                "entity": entity.code,
+                "period": getattr(period, "name", None),
+                "as_of": str(soce.as_of),
+                "columns": [
+                    {
+                        "key": c.key, "label": c.label, "code": c.code,
+                        "account_id": c.account_id,
+                        "opening": _money(c.opening), "profit": _money(c.profit),
+                        "contributions": _money(c.contributions), "closing": _money(c.closing),
+                    }
+                    for c in soce.columns
+                ],
+                "total_opening": _money(soce.total_opening),
+                "total_profit": _money(soce.total_profit),
+                "total_contributions": _money(soce.total_contributions),
+                "total_closing": _money(soce.total_closing),
+                "balance_sheet_equity": _money(soce.balance_sheet_equity),
+                "is_reconciled": soce.is_reconciled,
+            },
+        )
+
+
 class ARAgingView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
