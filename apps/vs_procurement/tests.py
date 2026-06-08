@@ -76,7 +76,15 @@ from vs_procurement.purchasing import (
     post_grn,
     submit_requisition,
 )
-from vs_procurement.reports import ap_aging, grir_balance, reconcile_ap
+from vs_procurement.reports import (
+    ap_aging,
+    grir_balance,
+    procurement_cycle_time,
+    reconcile_ap,
+    spend_analysis,
+    vendor_performance,
+)
+from vs_procurement.models import VendorCategory
 from vs_procurement.stock import (
     adjust_stock,
     issue_stock,
@@ -391,6 +399,110 @@ class FullChainTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(vi.payment_status, InvoicePaymentStatus.PAID)
         self.assertTrue(reconcile_ap(entity).is_reconciled)
         self.assertEqual(reconcile_ap(entity).control_total, 0)
+
+
+# --------------------------------------------------------------------------- #
+# Procurement analytics: spend, vendor performance, cycle time                #
+# --------------------------------------------------------------------------- #
+
+class ProcurementAnalyticsTests(_P2PFixtureMixin, TestCase):
+    """Spend analysis, vendor performance and PR→payment cycle time."""
+
+    def _full_chain(self, entity, vendor, *, qty=5, unit=200_000,
+                    req=datetime.date(2026, 1, 2), order=datetime.date(2026, 1, 5),
+                    expected=datetime.date(2026, 1, 9), received=datetime.date(2026, 1, 8),
+                    invoiced=datetime.date(2026, 1, 10), paid=datetime.date(2026, 1, 25)):
+        """Run requisition → PO → GRN → invoice → payment, returning the documents."""
+        pr = PurchaseRequisition.objects.create(entity=entity, request_date=req)
+        PurchaseRequisitionLine.objects.create(
+            requisition=pr, description="chairs", quantity=qty,
+            estimated_unit_price=unit, expense_account=self.acc(entity, "5100"), line_no=1,
+        )
+        submit_requisition(pr)
+        approve_requisition(pr)
+        po = create_po_from_requisition(
+            pr, vendor=vendor, order_date=order, expected_date=expected,
+        )
+        po_line = po.lines.first()
+        grn = self.make_grn(entity, vendor, po, [(po_line, qty)])
+        grn.received_date = received
+        grn.save(update_fields=["received_date"])
+        post_grn(grn)
+        vi = self.make_bill(
+            entity, vendor, [("5100", qty, unit, None, po_line)], po=po, date=invoiced,
+        )
+        post_vendor_invoice(vi)
+        pay = VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=paid,
+            gross_amount=qty * unit, payment_account=self.acc(entity, "1100"),
+        )
+        post_vendor_payment(pay)
+        return pr, po, grn, vi, pay
+
+    def test_spend_analysis_groups_by_vendor_and_category(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        category = VendorCategory.objects.create(entity=entity, code="OFFICE", name="Office")
+        vendor.category = category
+        vendor.save(update_fields=["category"])
+        self._full_chain(entity, vendor)
+
+        report = spend_analysis(entity)
+        self.assertEqual(report.total_gross, 1_000_000)
+        self.assertEqual(report.invoice_count, 1)
+        self.assertEqual(len(report.by_vendor), 1)
+        self.assertEqual(report.by_vendor[0].key, "ACME")
+        self.assertEqual(report.by_vendor[0].gross, 1_000_000)
+        self.assertEqual(report.by_category[0].key, "OFFICE")
+        self.assertEqual(report.by_category[0].gross, 1_000_000)
+
+    def test_spend_window_excludes_out_of_range_invoices(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        self._full_chain(entity, vendor)  # invoiced 2026-01-10
+        # A window after the invoice date sees no spend.
+        report = spend_analysis(entity, start_date=datetime.date(2026, 2, 1))
+        self.assertEqual(report.total_gross, 0)
+        self.assertEqual(report.invoice_count, 0)
+
+    def test_vendor_performance_blends_ordering_delivery_payment(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        self._full_chain(entity, vendor)  # received 01-08 vs expected 01-09 → on time
+
+        report = vendor_performance(entity)
+        self.assertEqual(len(report.rows), 1)
+        row = report.rows[0]
+        self.assertEqual(row.po_count, 1)
+        self.assertEqual(row.total_ordered, 1_000_000)
+        self.assertEqual(row.receipt_count, 1)
+        self.assertEqual(row.on_time_receipts, 1)
+        self.assertEqual(row.late_receipts, 0)
+        self.assertEqual(row.on_time_rate, 1.0)
+        self.assertEqual(row.invoice_count, 1)
+        self.assertEqual(row.total_billed, 1_000_000)
+        self.assertEqual(row.payment_count, 1)
+        self.assertEqual(row.total_paid, 1_000_000)
+        self.assertEqual(row.avg_payment_days, 15.0)  # 01-10 → 01-25
+
+    def test_vendor_performance_flags_late_delivery(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        # Receipt 01-12 against an expected date of 01-09 → late.
+        self._full_chain(entity, vendor, received=datetime.date(2026, 1, 12))
+        row = vendor_performance(entity).rows[0]
+        self.assertEqual(row.on_time_receipts, 0)
+        self.assertEqual(row.late_receipts, 1)
+        self.assertEqual(row.on_time_rate, 0.0)
+
+    def test_cycle_time_measures_each_hop(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        self._full_chain(entity, vendor)
+
+        report = procurement_cycle_time(entity)
+        stages = {s.name: s for s in report.stages}
+        self.assertEqual(stages["req_to_po"].avg_days, 3.0)          # 01-02 → 01-05
+        self.assertEqual(stages["po_to_receipt"].avg_days, 3.0)      # 01-05 → 01-08
+        self.assertEqual(stages["receipt_to_invoice"].avg_days, 2.0)  # 01-08 → 01-10
+        self.assertEqual(stages["invoice_to_payment"].avg_days, 15.0)  # 01-10 → 01-25
+        self.assertEqual(report.end_to_end_avg_days, 23.0)           # 01-02 → 01-25
+        self.assertEqual(report.end_to_end_count, 1)
 
 
 # --------------------------------------------------------------------------- #

@@ -1055,3 +1055,242 @@ def statement_of_changes_in_equity(entity, *, period=None) -> StatementOfChanges
         columns=columns,
         balance_sheet_equity=bs_equity,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Statutory export pack (IFRS-for-SMEs presentation)                          #
+# --------------------------------------------------------------------------- #
+#
+# A single bundle that re-presents the primary statements the way a Nigerian
+# statutory filing (FIRS tax computation, CAC annual return) expects: the raw chart
+# is regrouped onto IFRS-for-SMEs presentation *lines* (see
+# :class:`~vs_finance.constants.IFRSLine`) rather than listed account-by-account.
+#
+# The pack never re-derives the numbers — it *regroups* the rows the existing
+# ``balance_sheet`` and ``income_statement`` already produce, so its section totals
+# foot to those statements by construction (``total_assets`` == the balance sheet's
+# total assets, etc.) and the accounting equation it asserts is exactly the one the
+# balance sheet proves. The cash-flow statement, statement of changes in equity and
+# trial balance ride along unchanged as the standard companions / appendix.
+
+
+#: Statement-of-Financial-Position sections, each an ordered list of its IFRS lines.
+#: (key, label, [IFRSLine, …]) — drives both presentation order and section subtotals.
+def _ifrs_sofp_sections():
+    from .constants import IFRSLine
+    return [
+        ("non_current_assets", "Non-current assets",
+         [IFRSLine.PPE, IFRSLine.INTANGIBLES, IFRSLine.INVESTMENTS]),
+        ("current_assets", "Current assets",
+         [IFRSLine.INVENTORIES, IFRSLine.TRADE_RECEIVABLES, IFRSLine.CURRENT_TAX_ASSET,
+          IFRSLine.OTHER_CURRENT_ASSETS, IFRSLine.CASH]),
+        ("equity", "Equity",
+         [IFRSLine.SHARE_CAPITAL, IFRSLine.RETAINED_EARNINGS, IFRSLine.OTHER_RESERVES]),
+        ("non_current_liabilities", "Non-current liabilities",
+         [IFRSLine.LONG_TERM_BORROWINGS]),
+        ("current_liabilities", "Current liabilities",
+         [IFRSLine.TRADE_PAYABLES, IFRSLine.CURRENT_TAX_PAYABLE,
+          IFRSLine.EMPLOYEE_PAYABLES, IFRSLine.SHORT_TERM_BORROWINGS]),
+    ]
+
+
+#: Income-statement lines in presentation order.
+def _ifrs_income_lines():
+    from .constants import IFRSLine
+    return [
+        IFRSLine.REVENUE, IFRSLine.COST_OF_SALES, IFRSLine.OTHER_INCOME,
+        IFRSLine.DISTRIBUTION_COSTS, IFRSLine.ADMIN_EXPENSES, IFRSLine.OTHER_EXPENSES,
+        IFRSLine.FINANCE_COSTS, IFRSLine.TAX_EXPENSE,
+    ]
+
+
+def _resolve_ifrs_line(account) -> str:
+    """The IFRS-for-SMEs line an account presents on (explicit, else type default)."""
+    from .constants import DEFAULT_IFRS_LINE_BY_TYPE
+    return account.ifrs_line or DEFAULT_IFRS_LINE_BY_TYPE[account.account_type]
+
+
+def _ifrs_line_map(entity) -> dict:
+    """``{account_id: resolved_ifrs_line}`` for every account in ``entity``."""
+    from .models import Account
+    return {
+        a.id: _resolve_ifrs_line(a)
+        for a in Account.objects.filter(entity=entity).only(
+            "id", "ifrs_line", "account_type",
+        )
+    }
+
+
+@dataclass
+class IFRSLineGroup:
+    """One IFRS-for-SMEs presentation line: its accounts rolled into a single total."""
+
+    line: str
+    label: str
+    amount: int = 0
+    accounts: list = field(default_factory=list)
+
+    @property
+    def amount_naira(self) -> str:
+        return format_naira(self.amount)
+
+
+@dataclass
+class IFRSSection:
+    """A statement section (e.g. *Current assets*) and its line subtotals."""
+
+    key: str
+    label: str
+    groups: list = field(default_factory=list)
+    total: int = 0
+
+    @property
+    def total_naira(self) -> str:
+        return format_naira(self.total)
+
+
+@dataclass
+class StatutoryPack:
+    """An IFRS-for-SMEs statutory pack bundling the primary statements.
+
+    ``sofp_sections`` is the Statement of Financial Position regrouped onto IFRS
+    lines; ``income_lines`` the Income Statement likewise. The cash-flow statement,
+    statement of changes in equity and trial balance accompany them unchanged.
+    Section totals foot to the underlying statements, so ``is_balanced`` mirrors the
+    balance sheet's accounting-equation check.
+    """
+
+    entity_id: int
+    entity_code: str
+    as_of: object
+    period_id: int | None
+    sofp_sections: list = field(default_factory=list)
+    income_lines: list = field(default_factory=list)
+    total_assets: int = 0
+    total_equity: int = 0
+    total_liabilities: int = 0
+    total_income: int = 0
+    total_expense: int = 0
+    net_income: int = 0
+    cash_flow: object = None
+    changes_in_equity: object = None
+    trial_balance: object = None
+
+    @property
+    def is_balanced(self) -> bool:
+        return self.total_assets == self.total_equity + self.total_liabilities
+
+    @property
+    def difference(self) -> int:
+        return self.total_assets - (self.total_equity + self.total_liabilities)
+
+
+def _group_rows_by_ifrs_line(rows, line_map, *, ordered_lines, extra=None) -> tuple[list, int]:
+    """Roll statement ``rows`` into ordered :class:`IFRSLineGroup` buckets.
+
+    ``rows`` are :class:`StatementLine` objects; ``line_map`` resolves each account to
+    its IFRS line. ``extra`` is an optional ``{line: amount}`` of figures with no
+    backing account row (e.g. the unclosed retained earnings folded into equity).
+    Returns the populated groups (only non-empty lines, in ``ordered_lines`` order)
+    and their combined total.
+    """
+    from .constants import IFRSLine
+
+    buckets: dict[str, IFRSLineGroup] = {}
+    labels = dict(IFRSLine.choices)
+
+    def bucket(line):
+        g = buckets.get(line)
+        if g is None:
+            g = IFRSLineGroup(line=line, label=labels.get(line, line))
+            buckets[line] = g
+        return g
+
+    for row in rows:
+        line = line_map.get(row.account_id)
+        if line is None:
+            continue
+        g = bucket(line)
+        g.amount += row.amount
+        g.accounts.append({
+            "account_id": row.account_id, "code": row.code, "name": row.name,
+            "amount": row.amount,
+        })
+
+    for line, amount in (extra or {}).items():
+        if amount:
+            bucket(line).amount += amount
+
+    groups: list[IFRSLineGroup] = []
+    total = 0
+    for line in ordered_lines:
+        g = buckets.get(line)
+        if g is None or (g.amount == 0 and not g.accounts):
+            continue
+        total += g.amount
+        groups.append(g)
+    return groups, total
+
+
+def statutory_pack(entity, *, as_of=None, period=None) -> StatutoryPack:
+    """Assemble the IFRS-for-SMEs statutory pack for ``entity``.
+
+    The Statement of Financial Position is taken as at ``as_of`` (default today); the
+    Income Statement, cash-flow statement and statement of changes in equity are scoped
+    to ``period`` when given (else year/inception-to-date). Every figure is *regrouped*
+    from the existing statements, so the pack's totals reconcile to them exactly.
+    """
+    from .constants import IFRSLine
+
+    as_of = as_of or timezone.now().date()
+    line_map = _ifrs_line_map(entity)
+
+    # --- Statement of Financial Position (regroup the balance sheet) ---------- #
+    bs = balance_sheet(entity, as_of=as_of)
+    section_rows = {
+        "non_current_assets": bs.asset_rows, "current_assets": bs.asset_rows,
+        "equity": bs.equity_rows,
+        "non_current_liabilities": bs.liability_rows,
+        "current_liabilities": bs.liability_rows,
+    }
+    sofp_sections: list[IFRSSection] = []
+    for key, label, lines in _ifrs_sofp_sections():
+        # Unclosed P&L is folded into the Retained-earnings equity line, mirroring the
+        # balance sheet (which adds it to equity so the equation holds before close).
+        extra = {IFRSLine.RETAINED_EARNINGS: bs.retained_earnings} if key == "equity" else None
+        groups, total = _group_rows_by_ifrs_line(
+            section_rows[key], line_map, ordered_lines=lines, extra=extra,
+        )
+        sofp_sections.append(IFRSSection(key=key, label=label, groups=groups, total=total))
+
+    section_total = {s.key: s.total for s in sofp_sections}
+    total_assets = section_total["non_current_assets"] + section_total["current_assets"]
+    total_equity = section_total["equity"]
+    total_liabilities = (
+        section_total["non_current_liabilities"] + section_total["current_liabilities"]
+    )
+
+    # --- Income statement (regroup the P&L) ----------------------------------- #
+    pnl = income_statement(entity, period=period)
+    income_lines, _ = _group_rows_by_ifrs_line(
+        list(pnl.income_rows) + list(pnl.expense_rows), line_map,
+        ordered_lines=_ifrs_income_lines(),
+    )
+
+    return StatutoryPack(
+        entity_id=entity.id,
+        entity_code=entity.code,
+        as_of=as_of,
+        period_id=getattr(period, "id", None),
+        sofp_sections=sofp_sections,
+        income_lines=income_lines,
+        total_assets=total_assets,
+        total_equity=total_equity,
+        total_liabilities=total_liabilities,
+        total_income=pnl.total_income,
+        total_expense=pnl.total_expense,
+        net_income=pnl.net_income,
+        cash_flow=cash_flow_statement(entity, period=period),
+        changes_in_equity=statement_of_changes_in_equity(entity, period=period),
+        trial_balance=trial_balance(entity, period=period),
+    )

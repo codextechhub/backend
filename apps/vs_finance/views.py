@@ -557,6 +557,108 @@ class ChangesInEquityView(APIView):
         )
 
 
+class StatutoryPackView(APIView):
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.report.view"
+
+    def get(self, request):
+        from .reports import statutory_pack
+
+        from .exports import ReportTable
+
+        entity = resolve_entity(request)
+        as_of = request.query_params.get("as_of") or None
+        period = _resolve_period(entity, request)
+        pack = statutory_pack(entity, as_of=as_of, period=period)
+
+        # Export face: the IFRS-mapped Statement of Financial Position + Income
+        # Statement as one flat table (the companion statements have their own exports).
+        rows: list = []
+        for section in pack.sofp_sections:
+            rows.append([section.label.upper(), "", ""])
+            for g in section.groups:
+                rows.append(["", g.label, g.amount_naira])
+            rows.append(["", f"  Total {section.label.lower()}", section.total_naira])
+        rows.append(["INCOME STATEMENT", "", ""])
+        for g in pack.income_lines:
+            rows.append(["", g.label, g.amount_naira])
+        rows.append(["", "  Net income", format_naira(pack.net_income)])
+        export = _maybe_export(request, ReportTable(
+            title="Statutory Pack (IFRS for SMEs)",
+            subtitle=f"{entity.code} · as at {pack.as_of}",
+            columns=["Section", "Line", "Amount"],
+            rows=rows,
+            summary_rows=[
+                ["", "Total assets", format_naira(pack.total_assets)],
+                ["", "Total equity", format_naira(pack.total_equity)],
+                ["", "Total liabilities", format_naira(pack.total_liabilities)],
+            ],
+        ), filename=f"statutory_pack_{entity.code}")
+        if export is not None:
+            return export
+
+        def _group(g):
+            return {
+                "line": g.line, "label": g.label, "amount": _money(g.amount),
+                "accounts": [
+                    {"account_id": a["account_id"], "code": a["code"],
+                     "name": a["name"], "amount": _money(a["amount"])}
+                    for a in g.accounts
+                ],
+            }
+
+        cf = pack.cash_flow
+        soce = pack.changes_in_equity
+        tb = pack.trial_balance
+        return success_response(
+            message="Statutory pack retrieved.",
+            data={
+                "entity": entity.code,
+                "as_of": str(pack.as_of),
+                "period": getattr(period, "name", None),
+                "statement_of_financial_position": {
+                    "sections": [
+                        {
+                            "key": s.key, "label": s.label,
+                            "groups": [_group(g) for g in s.groups],
+                            "total": _money(s.total),
+                        }
+                        for s in pack.sofp_sections
+                    ],
+                    "total_assets": _money(pack.total_assets),
+                    "total_equity": _money(pack.total_equity),
+                    "total_liabilities": _money(pack.total_liabilities),
+                    "is_balanced": pack.is_balanced,
+                },
+                "income_statement": {
+                    "lines": [_group(g) for g in pack.income_lines],
+                    "total_income": _money(pack.total_income),
+                    "total_expense": _money(pack.total_expense),
+                    "net_income": _money(pack.net_income),
+                },
+                "cash_flow": {
+                    "opening_cash": _money(cf.opening_cash),
+                    "closing_cash": _money(cf.closing_cash),
+                    "by_activity": {k: _money(v) for k, v in cf.by_activity.items()},
+                    "net_change": _money(cf.net_change),
+                    "is_reconciled": cf.is_reconciled,
+                },
+                "changes_in_equity": {
+                    "total_opening": _money(soce.total_opening),
+                    "total_profit": _money(soce.total_profit),
+                    "total_contributions": _money(soce.total_contributions),
+                    "total_closing": _money(soce.total_closing),
+                    "is_reconciled": soce.is_reconciled,
+                },
+                "trial_balance": {
+                    "total_debit": _money(tb.total_debit),
+                    "total_credit": _money(tb.total_credit),
+                    "is_balanced": tb.is_balanced,
+                },
+            },
+        )
+
+
 class ARAgingView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"

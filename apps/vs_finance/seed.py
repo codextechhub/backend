@@ -8,7 +8,7 @@ horizontal-module rule.
 """
 from __future__ import annotations
 
-from .constants import AccountType, TaxFilingFrequency, TaxObligationType
+from .constants import AccountType, IFRSLine, TaxFilingFrequency, TaxObligationType
 
 #: ISO currencies the platform knows out of the box. NGN is the platform base.
 DEFAULT_CURRENCIES = [
@@ -74,6 +74,31 @@ DEFAULT_TAX_OBLIGATIONS = [
      "Pension Fund Administrator", TaxFilingFrequency.MONTHLY, 7),
 ]
 
+#: IFRS-for-SMEs presentation line for each default-chart account code. Lets the
+#: statutory export pack regroup the raw chart into the lines a FIRS / CAC filing
+#: expects. Codes absent here fall back to the type default at read time.
+DEFAULT_IFRS_LINE_BY_CODE = {
+    # Assets
+    "1100": IFRSLine.CASH, "1110": IFRSLine.CASH,
+    "1200": IFRSLine.TRADE_RECEIVABLES,
+    "1300": IFRSLine.CURRENT_TAX_ASSET,
+    "1400": IFRSLine.INVENTORIES,
+    "1500": IFRSLine.PPE, "1900": IFRSLine.PPE,
+    # Liabilities
+    "2100": IFRSLine.TRADE_PAYABLES, "2150": IFRSLine.TRADE_PAYABLES,
+    "2200": IFRSLine.CURRENT_TAX_PAYABLE, "2300": IFRSLine.CURRENT_TAX_PAYABLE,
+    "2310": IFRSLine.EMPLOYEE_PAYABLES, "2320": IFRSLine.EMPLOYEE_PAYABLES,
+    "2330": IFRSLine.EMPLOYEE_PAYABLES, "2400": IFRSLine.TRADE_PAYABLES,
+    # Equity
+    "3100": IFRSLine.SHARE_CAPITAL, "3200": IFRSLine.RETAINED_EARNINGS,
+    # Income
+    "4100": IFRSLine.REVENUE, "4900": IFRSLine.REVENUE, "4910": IFRSLine.REVENUE,
+    # Expenses
+    "5100": IFRSLine.COST_OF_SALES, "5150": IFRSLine.COST_OF_SALES,
+    "5200": IFRSLine.ADMIN_EXPENSES, "5300": IFRSLine.ADMIN_EXPENSES,
+    "5400": IFRSLine.ADMIN_EXPENSES, "5500": IFRSLine.FINANCE_COSTS,
+}
+
 #: parent_code by child_code — wires the tree after the flat create.
 _PARENTS = {
     "1100": "1000", "1110": "1000", "1200": "1000", "1300": "1000", "1400": "1000",
@@ -108,15 +133,23 @@ def seed_chart_of_accounts(entity):
     created: dict[str, Account] = {}
     for code, name, acc_type, postable, contra in DEFAULT_CHART:
         # ``normal_balance`` is left for Account.save() to derive from type + contra.
-        account, _ = Account.objects.get_or_create(
+        ifrs_line = DEFAULT_IFRS_LINE_BY_CODE.get(code, "")
+        account, was_created = Account.objects.get_or_create(
             entity=entity, code=code,
             defaults={
                 "name": name,
                 "account_type": acc_type,
                 "is_postable": postable,
                 "is_contra": contra,
+                "ifrs_line": ifrs_line,
             },
         )
+        # Backfill the IFRS line on a pre-existing account that hasn't been mapped yet
+        # (e.g. a chart seeded before statutory packs existed); never override a line
+        # an operator has set deliberately.
+        if not was_created and ifrs_line and not account.ifrs_line:
+            account.ifrs_line = ifrs_line
+            account.save(update_fields=["ifrs_line", "updated_at"])
         created[code] = account
 
     # Second pass: link parents now that every node exists.

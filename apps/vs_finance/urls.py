@@ -23,6 +23,7 @@ from .views import (
     JournalPostView,
     JournalReverseView,
     PeriodCloseView,
+    StatutoryPackView,
     TrialBalanceView,
 )
 from .views_ar import (
@@ -157,6 +158,7 @@ urlpatterns = [
     path("reports/balance-sheet/", BalanceSheetView.as_view(), name="finance-balance-sheet"),
     path("reports/cash-flow/", CashFlowView.as_view(), name="finance-cash-flow"),
     path("reports/changes-in-equity/", ChangesInEquityView.as_view(), name="finance-changes-in-equity"),
+    path("reports/statutory-pack/", StatutoryPackView.as_view(), name="finance-statutory-pack"),
     path("reports/ar-aging/", ARAgingView.as_view(), name="finance-ar-aging"),
     path("reports/ar-reconciliation/", ARReconciliationView.as_view(), name="finance-ar-reconciliation"),
     path("reports/customer-statement/", CustomerStatementView.as_view(), name="finance-customer-statement"),

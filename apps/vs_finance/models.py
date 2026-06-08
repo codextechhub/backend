@@ -37,6 +37,7 @@ from .constants import (
     DunningNoticeStatus,
     FinanceAuditAction,
     FinanceAuditStatus,
+    IFRSLine,
     InstallmentStatus,
     InvoicePaymentStatus,
     InvoiceSource,
@@ -390,6 +391,10 @@ class Account(TimeStampedModel):
     )
     is_active = models.BooleanField(default=True)
     description = models.TextField(blank=True, default="")
+    ifrs_line = models.CharField(
+        max_length=32, choices=IFRSLine.choices, blank=True, default="",
+        help_text="IFRS-for-SMEs statutory presentation line; blank falls back to the type default.",
+    )
 
     objects = AccountManager()
 

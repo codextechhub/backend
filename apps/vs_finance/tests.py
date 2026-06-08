@@ -116,6 +116,7 @@ from vs_finance.reports import (
     income_statement,
     reconcile_ar,
     statement_of_changes_in_equity,
+    statutory_pack,
     trial_balance,
 )
 from vs_finance.banking import (
@@ -2020,6 +2021,88 @@ class ChangesInEquityTests(_Phase4FixtureMixin, TestCase):
         self.assertTrue(soce.is_reconciled)
 
 
+class StatutoryPackTests(_Phase4FixtureMixin, TestCase):
+    """The IFRS-for-SMEs statutory pack regroups the chart onto presentation lines."""
+
+    def _seed_activity(self, entity, period):
+        post_journal(self.make_entry(
+            entity, period, [("1100", 1000000, 0), ("3100", 0, 1000000)],
+        ))  # capital
+        post_journal(self.make_entry(
+            entity, period, [("1500", 400000, 0), ("1100", 0, 400000)],
+        ))  # buy equipment
+        post_journal(self.make_entry(
+            entity, period, [("1100", 300000, 0), ("4100", 0, 300000)],
+        ))  # cash revenue
+        post_journal(self.make_entry(
+            entity, period, [("5200", 120000, 0), ("1100", 0, 120000)],
+        ))  # salaries
+
+    def _group(self, section, line):
+        return next((g for g in section.groups if g.line == line), None)
+
+    def _section(self, pack, key):
+        return next(s for s in pack.sofp_sections if s.key == key)
+
+    def test_sofp_regroups_chart_onto_ifrs_lines(self):
+        entity, _, periods = self.build_books()
+        self._seed_activity(entity, periods[0])
+
+        pack = statutory_pack(entity)
+        nca = self._section(pack, "non_current_assets")
+        self.assertEqual(self._group(nca, "PPE").amount, 400000)
+        ca = self._section(pack, "current_assets")
+        self.assertEqual(self._group(ca, "CASH").amount, 780000)  # 1000k-400k+300k-120k
+        eq = self._section(pack, "equity")
+        self.assertEqual(self._group(eq, "SHARE_CAPITAL").amount, 1000000)
+        # Unclosed P&L is folded into the retained-earnings equity line.
+        self.assertEqual(self._group(eq, "RETAINED_EARNINGS").amount, 180000)
+
+        self.assertEqual(pack.total_assets, 1180000)
+        self.assertEqual(pack.total_equity, 1180000)
+        self.assertEqual(pack.total_liabilities, 0)
+        self.assertTrue(pack.is_balanced)
+        self.assertEqual(pack.difference, 0)
+
+    def test_income_statement_maps_to_ifrs_lines(self):
+        entity, _, periods = self.build_books()
+        self._seed_activity(entity, periods[0])
+
+        pack = statutory_pack(entity)
+        lines = {g.line: g.amount for g in pack.income_lines}
+        self.assertEqual(lines["REVENUE"], 300000)
+        self.assertEqual(lines["ADMIN_EXPENSES"], 120000)  # salaries map here
+        self.assertEqual(pack.total_income, 300000)
+        self.assertEqual(pack.total_expense, 120000)
+        self.assertEqual(pack.net_income, 180000)
+
+    def test_companion_statements_ride_along_and_reconcile(self):
+        entity, _, periods = self.build_books()
+        self.make_bank(entity)
+        self._seed_activity(entity, periods[0])
+
+        pack = statutory_pack(entity)
+        self.assertTrue(pack.cash_flow.is_reconciled)
+        self.assertEqual(pack.cash_flow.closing_cash, 780000)
+        self.assertTrue(pack.changes_in_equity.is_reconciled)
+        self.assertEqual(pack.changes_in_equity.total_closing, 1180000)
+        self.assertTrue(pack.trial_balance.is_balanced)
+
+    def test_unmapped_account_falls_back_to_type_default(self):
+        entity, _, periods = self.build_books()
+        # A custom asset account with no explicit IFRS line.
+        Account.objects.create(
+            entity=entity, code="1250", name="Prepayments",
+            account_type=AccountType.ASSET, is_postable=True,
+        )
+        post_journal(self.make_entry(
+            entity, periods[0], [("1250", 90000, 0), ("4100", 0, 90000)],
+        ))
+        pack = statutory_pack(entity)
+        ca = self._section(pack, "current_assets")
+        self.assertEqual(self._group(ca, "OTHER_CURRENT_ASSETS").amount, 90000)
+
+
 class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     """The /v1/finance/ REST surface: entity scoping, reports, documents, actions.
 
@@ -2109,6 +2192,15 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         re = next(c for c in soce["columns"] if c["key"] == "retained_earnings")
         self.assertEqual(re["profit"]["kobo"], 180000)
 
+        pack = self.client.get(f"/v1/finance/reports/statutory-pack/?entity={ec}").json()["data"]
+        sofp = pack["statement_of_financial_position"]
+        self.assertTrue(sofp["is_balanced"])
+        self.assertEqual(sofp["total_assets"]["kobo"], 1180000)
+        self.assertEqual(sofp["total_equity"]["kobo"], 1180000)
+        self.assertEqual(pack["income_statement"]["net_income"]["kobo"], 180000)
+        self.assertTrue(pack["cash_flow"]["is_reconciled"])
+        self.assertTrue(pack["trial_balance"]["is_balanced"])
+
     def test_journal_list_detail_and_post_action(self):
         entity, periods = self._seed()
         ec = entity.code
@@ -2184,7 +2276,8 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     def test_statement_exports_available(self):
         entity, _ = self._seed()
         ec = entity.code
-        for path in ("income-statement", "balance-sheet", "changes-in-equity", "ar-aging"):
+        for path in ("income-statement", "balance-sheet", "changes-in-equity",
+                     "statutory-pack", "ar-aging"):
             resp = self.client.get(f"/v1/finance/reports/{path}/?entity={ec}&export=xlsx")
             self.assertEqual(resp.status_code, 200, path)
             self.assertTrue(resp.content)

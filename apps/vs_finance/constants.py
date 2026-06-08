@@ -410,6 +410,60 @@ class TaxFilingStatus(models.TextChoices):
     CANCELLED = "CANCELLED", "Cancelled"
 
 
+class IFRSLine(models.TextChoices):
+    """IFRS-for-SMEs presentation lines a chart account rolls up to.
+
+    The five double-entry roots (:class:`AccountType`) decide *where* an account
+    lands on the statements; this finer classification decides *which statutory line*
+    it presents on, so the Statement of Financial Position and Income Statement read
+    the way FIRS / CAC filings expect rather than as a raw account list. An account
+    with a blank ``ifrs_line`` falls back to a type-derived default (see
+    :data:`DEFAULT_IFRS_LINE_BY_TYPE`), so the mapping degrades gracefully on a
+    customised chart.
+    """
+    # Statement of Financial Position — non-current assets.
+    PPE = "PPE", "Property, plant and equipment"
+    INTANGIBLES = "INTANGIBLES", "Intangible assets"
+    INVESTMENTS = "INVESTMENTS", "Investments"
+    # Statement of Financial Position — current assets.
+    INVENTORIES = "INVENTORIES", "Inventories"
+    TRADE_RECEIVABLES = "TRADE_RECEIVABLES", "Trade and other receivables"
+    CURRENT_TAX_ASSET = "CURRENT_TAX_ASSET", "Current tax assets"
+    CASH = "CASH", "Cash and cash equivalents"
+    OTHER_CURRENT_ASSETS = "OTHER_CURRENT_ASSETS", "Other current assets"
+    # Statement of Financial Position — equity.
+    SHARE_CAPITAL = "SHARE_CAPITAL", "Share capital"
+    RETAINED_EARNINGS = "RETAINED_EARNINGS", "Retained earnings"
+    OTHER_RESERVES = "OTHER_RESERVES", "Other reserves"
+    # Statement of Financial Position — non-current liabilities.
+    LONG_TERM_BORROWINGS = "LONG_TERM_BORROWINGS", "Long-term borrowings"
+    # Statement of Financial Position — current liabilities.
+    TRADE_PAYABLES = "TRADE_PAYABLES", "Trade and other payables"
+    CURRENT_TAX_PAYABLE = "CURRENT_TAX_PAYABLE", "Current tax payable"
+    EMPLOYEE_PAYABLES = "EMPLOYEE_PAYABLES", "Employee benefit obligations"
+    SHORT_TERM_BORROWINGS = "SHORT_TERM_BORROWINGS", "Short-term borrowings"
+    # Income statement.
+    REVENUE = "REVENUE", "Revenue"
+    COST_OF_SALES = "COST_OF_SALES", "Cost of sales"
+    OTHER_INCOME = "OTHER_INCOME", "Other income"
+    DISTRIBUTION_COSTS = "DISTRIBUTION_COSTS", "Distribution costs"
+    ADMIN_EXPENSES = "ADMIN_EXPENSES", "Administrative expenses"
+    OTHER_EXPENSES = "OTHER_EXPENSES", "Other expenses"
+    FINANCE_COSTS = "FINANCE_COSTS", "Finance costs"
+    TAX_EXPENSE = "TAX_EXPENSE", "Income tax expense"
+
+
+#: Fallback IFRS-for-SMEs line for an account whose ``ifrs_line`` is unset, derived
+#: from its :class:`AccountType` so a customised chart still presents coherently.
+DEFAULT_IFRS_LINE_BY_TYPE = {
+    AccountType.ASSET: IFRSLine.OTHER_CURRENT_ASSETS,
+    AccountType.LIABILITY: IFRSLine.TRADE_PAYABLES,
+    AccountType.EQUITY: IFRSLine.OTHER_RESERVES,
+    AccountType.INCOME: IFRSLine.OTHER_INCOME,
+    AccountType.EXPENSE: IFRSLine.OTHER_EXPENSES,
+}
+
+
 #: Well-known Chart-of-Accounts codes the Phase-4 services resolve by code. Kept here
 #: (not hard-coded in services) so an entity with a customised chart can be remapped in
 #: one place. All are seeded by :mod:`vs_finance.seed`.

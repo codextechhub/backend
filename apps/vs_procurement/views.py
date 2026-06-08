@@ -1464,6 +1464,112 @@ class GRIRAgingView(_ProcBase):
 
 
 # --------------------------------------------------------------------------- #
+# Procurement analytics                                                        #
+# --------------------------------------------------------------------------- #
+
+class SpendAnalysisView(_ProcBase):
+    rbac_permission = "procurement.report.view"
+
+    def get(self, request):
+        from .reports import spend_analysis
+
+        entity = resolve_entity(request)
+        start = _date(request.query_params.get("start_date"), "start_date")
+        end = _date(request.query_params.get("end_date"), "end_date")
+        report = spend_analysis(entity, start_date=start, end_date=end)
+
+        def _rows(rows):
+            return [
+                {
+                    "key": r.key, "label": r.label,
+                    "net": _kobo(r.net), "tax": _kobo(r.tax), "gross": _kobo(r.gross),
+                    "invoice_count": r.invoice_count,
+                }
+                for r in rows
+            ]
+
+        return success_response(
+            "Spend analysis retrieved.",
+            data={
+                "entity": entity.code,
+                "start_date": str(start) if start else None,
+                "end_date": str(end) if end else None,
+                "by_vendor": _rows(report.by_vendor),
+                "by_category": _rows(report.by_category),
+                "total_net": _kobo(report.total_net),
+                "total_tax": _kobo(report.total_tax),
+                "total_gross": _kobo(report.total_gross),
+                "invoice_count": report.invoice_count,
+            },
+        )
+
+
+class VendorPerformanceView(_ProcBase):
+    rbac_permission = "procurement.report.view"
+
+    def get(self, request):
+        from .reports import vendor_performance
+
+        entity = resolve_entity(request)
+        start = _date(request.query_params.get("start_date"), "start_date")
+        end = _date(request.query_params.get("end_date"), "end_date")
+        report = vendor_performance(entity, start_date=start, end_date=end)
+        return success_response(
+            "Vendor performance retrieved.",
+            data={
+                "entity": entity.code,
+                "start_date": str(start) if start else None,
+                "end_date": str(end) if end else None,
+                "rows": [
+                    {
+                        "vendor_id": r.vendor_id, "code": r.code, "name": r.name,
+                        "po_count": r.po_count, "total_ordered": _kobo(r.total_ordered),
+                        "receipt_count": r.receipt_count,
+                        "on_time_receipts": r.on_time_receipts,
+                        "late_receipts": r.late_receipts,
+                        "on_time_rate": r.on_time_rate,
+                        "invoice_count": r.invoice_count,
+                        "total_billed": _kobo(r.total_billed),
+                        "payment_count": r.payment_count,
+                        "total_paid": _kobo(r.total_paid),
+                        "avg_payment_days": r.avg_payment_days,
+                    }
+                    for r in report.rows
+                ],
+            },
+        )
+
+
+class ProcurementCycleTimeView(_ProcBase):
+    rbac_permission = "procurement.report.view"
+
+    def get(self, request):
+        from .reports import procurement_cycle_time
+
+        entity = resolve_entity(request)
+        start = _date(request.query_params.get("start_date"), "start_date")
+        end = _date(request.query_params.get("end_date"), "end_date")
+        report = procurement_cycle_time(entity, start_date=start, end_date=end)
+        return success_response(
+            "Procurement cycle time retrieved.",
+            data={
+                "entity": entity.code,
+                "start_date": str(start) if start else None,
+                "end_date": str(end) if end else None,
+                "stages": [
+                    {
+                        "name": s.name, "label": s.label,
+                        "sample_count": s.sample_count, "avg_days": s.avg_days,
+                    }
+                    for s in report.stages
+                ],
+                "end_to_end_avg_days": report.end_to_end_avg_days,
+                "end_to_end_count": report.end_to_end_count,
+            },
+        )
+
+
+# --------------------------------------------------------------------------- #
 # Inventory / stock ledger                                                     #
 # --------------------------------------------------------------------------- #
 

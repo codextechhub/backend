@@ -87,6 +87,9 @@ urlpatterns = [
     path("reports/grir/", views.GRIRBalanceView.as_view(), name="proc-grir"),
     path("reports/ap-cash-requirements/", views.APCashRequirementsView.as_view(), name="proc-ap-cash-requirements"),
     path("reports/grir-aging/", views.GRIRAgingView.as_view(), name="proc-grir-aging"),
+    path("reports/spend-analysis/", views.SpendAnalysisView.as_view(), name="proc-spend-analysis"),
+    path("reports/vendor-performance/", views.VendorPerformanceView.as_view(), name="proc-vendor-performance"),
+    path("reports/cycle-time/", views.ProcurementCycleTimeView.as_view(), name="proc-cycle-time"),
     path("reports/stock-reorder/", views.StockReorderReportView.as_view(), name="proc-stock-reorder"),
     path("reports/stock-valuation/", views.StockValuationReportView.as_view(), name="proc-stock-valuation"),
 ]
