@@ -74,6 +74,11 @@ class FieldSecurityMixin:
         if not user or not getattr(user, "is_authenticated", False):
             return set()
 
+        # Vision super admins bypass FLS entirely — they get all fields regardless of grants.
+        from vs_rbac.permissions import is_vision_super_admin
+        if is_vision_super_admin(user):
+            return None
+
         # Cache for the lifetime of the request so serializing a list of 1 000
         # records does not fire 1 000 separate evaluator queries.
         if not hasattr(request, "_fls_permissions"):

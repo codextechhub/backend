@@ -21,9 +21,10 @@ PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
 # (resource_name, resource_label, [(action, sensitivity), ...])
 PAYMENTS_RESOURCES = [
     ("collection",      "gateway collections", [("view", "NORMAL"), ("create", "CRITICAL")]),
-    ("payout",          "gateway payouts",     [("view", "NORMAL"), ("create", "CRITICAL")]),
+    ("payout",          "gateway payouts",     [("view", "NORMAL"), ("create", "CRITICAL"),
+                                               ("view_sensitive", "SENSITIVE")]),
     ("report",          "settlement reports",  [("view", "NORMAL")]),
-    ("virtual_account", "virtual accounts",    [("create", "SENSITIVE")]),
+    ("virtual_account", "virtual accounts",    [("create", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
 ]
 
 

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from vs_rbac.fls import FieldSecurityMixin
+
 from .models import (
     Account,
     BankAccount,
@@ -355,9 +357,15 @@ class DimensionSerializer(serializers.ModelSerializer):
 # Banking                                                                     #
 # --------------------------------------------------------------------------- #
 
-class BankAccountSerializer(serializers.ModelSerializer):
+class BankAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     gl_account = serializers.CharField(source="gl_account.code", read_only=True)
     currency = serializers.CharField(source="currency_id", read_only=True, default=None)
+
+    # FLS: the funding account number is sensitive — only holders of the
+    # sensitive grant see it; everyone else gets the record with it stripped.
+    read_permissions = {
+        "account_number": "finance.bankaccount.view_sensitive",
+    }
 
     class Meta:
         model = BankAccount
@@ -534,8 +542,19 @@ class TaxFilingSerializer(serializers.ModelSerializer):
 # Payroll                                                                     #
 # --------------------------------------------------------------------------- #
 
-class PayrollLineSerializer(serializers.ModelSerializer):
+class PayrollLineSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
+
+    # FLS: per-employee names and pay figures are sensitive — only holders of
+    # the payroll sensitive grant see them; everyone else gets the line with
+    # these fields stripped.
+    read_permissions = {
+        "employee_name": "finance.payrollrun.view_sensitive",
+        "gross_amount": "finance.payrollrun.view_sensitive",
+        "paye_amount": "finance.payrollrun.view_sensitive",
+        "pension_amount": "finance.payrollrun.view_sensitive",
+        "net_amount": "finance.payrollrun.view_sensitive",
+    }
 
     class Meta:
         model = PayrollLine

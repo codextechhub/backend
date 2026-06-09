@@ -14,6 +14,7 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from vs_finance.money import format_naira
+from vs_rbac.fls import FieldSecurityMixin
 
 from .models import (
     CatalogItem,
@@ -57,12 +58,21 @@ class VendorCategorySerializer(serializers.ModelSerializer):
         ]
 
 
-class VendorSerializer(serializers.ModelSerializer):
+class VendorSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     category_code = serializers.CharField(source="category.code", read_only=True, default=None)
     payable_code = serializers.CharField(source="payable_account.code", read_only=True, default=None)
     default_expense_code = serializers.CharField(
         source="default_expense_account.code", read_only=True, default=None,
     )
+
+    # FLS: vendor banking details are PII used for disbursement — only holders of
+    # the sensitive grant see them; everyone else gets the record with these
+    # fields stripped.
+    read_permissions = {
+        "bank_name": "procurement.vendor.view_sensitive",
+        "bank_account_number": "procurement.vendor.view_sensitive",
+        "bank_account_name": "procurement.vendor.view_sensitive",
+    }
 
     class Meta:
         model = Vendor

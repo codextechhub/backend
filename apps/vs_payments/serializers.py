@@ -4,6 +4,7 @@ from __future__ import annotations
 from rest_framework import serializers
 
 from vs_finance.money import format_naira
+from vs_rbac.fls import FieldSecurityMixin
 
 from .models import CollectionIntent, PayoutBatch, PayoutInstruction, VirtualAccount
 
@@ -27,9 +28,16 @@ class CollectionIntentSerializer(serializers.ModelSerializer):
         return format_naira(obj.amount)
 
 
-class VirtualAccountSerializer(serializers.ModelSerializer):
+class VirtualAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     customer_code = serializers.CharField(source="customer.code", read_only=True, default=None)
+
+    # FLS: the funding account number/name are only exposed to holders of the
+    # sensitive grant; everyone else sees the record with these fields stripped.
+    read_permissions = {
+        "account_number": "payments.virtual_account.view_sensitive",
+        "account_name": "payments.virtual_account.view_sensitive",
+    }
 
     class Meta:
         model = VirtualAccount
@@ -39,9 +47,16 @@ class VirtualAccountSerializer(serializers.ModelSerializer):
         ]
 
 
-class PayoutInstructionSerializer(serializers.ModelSerializer):
+class PayoutInstructionSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     amount_naira = serializers.SerializerMethodField()
+
+    # FLS: beneficiary bank details are PII — only holders of the sensitive grant
+    # see them.
+    read_permissions = {
+        "beneficiary_name": "payments.payout.view_sensitive",
+        "beneficiary_account_number": "payments.payout.view_sensitive",
+    }
 
     class Meta:
         model = PayoutInstruction

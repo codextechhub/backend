@@ -69,6 +69,7 @@ ACTIONS: list[tuple[str, str]] = [
     # ── Finance-specific ──────────────────────────────────────────────────────
     ("waive",      "Grant a full or partial exemption from a fee or charge."),
     ("apply",      "Apply for something on behalf of self (leave requests, waivers)."),
+    ("view_sensitive", "Read field-level sensitive data (bank account numbers, beneficiary details, salaries)."),
     ("reconcile",  "Match transactions against an external source (bank statements, sub-ledgers)."),
     ("edit",       "Edit a draft record's contents before submission or approval."),
     ("allocate",   "Apply a payment, credit note, or concession against open items."),
