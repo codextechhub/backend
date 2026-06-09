@@ -13,10 +13,14 @@ Run order::
 Safe to re-run — all operations are idempotent.
 """
 from django.core.management.base import BaseCommand
+from django.db import transaction
 
-from vs_rbac.seed_utils import register_app_permissions
-
+MODULE_NAME = "procurement"
+MODULE_DESCRIPTION = "Procure-to-pay: requisitions, sourcing, receipts, vendor invoicing and payments."
 PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
+
+# sensitivity → whether the permission must flow through approvals / audit
+_RESTRICTED = {"SENSITIVE", "CRITICAL"}
 
 # (resource_name, resource_label, [(action, sensitivity), ...])
 PROCUREMENT_RESOURCES = [
@@ -43,13 +47,102 @@ PROCUREMENT_RESOURCES = [
 class Command(BaseCommand):
     help = "Seed vs_procurement permission keys and grant them to platform admin roles."
 
+    @transaction.atomic
     def handle(self, *args, **options):
-        self.stdout.write(self.style.MIGRATE_HEADING("\n  Seeding procurement permissions...\n"))
-        register_app_permissions(
-            module_name="procurement",
-            module_description="Procure-to-pay: requisitions, sourcing, receipts, vendor invoicing and payments.",
-            resources=PROCUREMENT_RESOURCES,
-            role_ids=PLATFORM_ROLE_IDS,
-            stdout=self.stdout,
-            style=self.style,
+        from vs_rbac.models import (
+            Permission,
+            PermissionAction,
+            PermissionModule,
+            PermissionResource,
+            PlatformRolePermission,
+            PlatformRoleTemplate,
         )
+
+        self.stdout.write(self.style.MIGRATE_HEADING(f"\n  Seeding {MODULE_NAME} permissions...\n"))
+
+        # ── Defensively ensure every action verb the spec needs exists ────────
+        # seed_actions owns the canonical descriptions and normally runs first;
+        # get_or_create never overwrites an existing row, so this is just a
+        # safety net for standalone invocation.
+        needed_actions = {a for _, _, acts in PROCUREMENT_RESOURCES for a, _ in acts}
+        for name in sorted(needed_actions):
+            _, created = PermissionAction.objects.get_or_create(
+                name=name,
+                defaults={
+                    "description": f"Auto-registered action verb '{name}'.",
+                    "is_active": True,
+                },
+            )
+            if created:
+                self.stdout.write(
+                    f"  + action '{name}' (auto-registered — run seed_actions for full description)"
+                )
+
+        # ── Module bucket ─────────────────────────────────────────────────────
+        module, created = PermissionModule.objects.get_or_create(
+            name=MODULE_NAME,
+            defaults={"description": MODULE_DESCRIPTION, "is_active": True},
+        )
+        self.stdout.write(f"  module '{MODULE_NAME}' " + ("created" if created else "exists"))
+
+        # ── Resources + permission keys ───────────────────────────────────────
+        created_perms = 0
+        all_perms = []
+        for resource_name, resource_label, actions in PROCUREMENT_RESOURCES:
+            resource, _ = PermissionResource.objects.get_or_create(
+                module=module,
+                name=resource_name,
+                defaults={
+                    "description": f"{resource_label.capitalize()} ({MODULE_NAME}).",
+                    "is_active": True,
+                },
+            )
+            for action_name, sensitivity in actions:
+                action = PermissionAction.objects.get(name=action_name)
+                expected_key = f"{MODULE_NAME}.{resource_name}.{action_name}"
+                verb = action_name.replace("_", " ")
+
+                perm = Permission.objects.filter(key=expected_key).first()
+                if perm is None:
+                    perm = Permission(
+                        module=module,
+                        resource=resource,
+                        action=action,
+                        description=f"{verb.capitalize()} {resource_label}.",
+                        sensitivity_level=sensitivity,
+                        is_restricted=sensitivity in _RESTRICTED,
+                        is_active=True,
+                    )
+                    perm.save()
+                    created_perms += 1
+                    self.stdout.write(f"  + {perm.key}  [{sensitivity}]")
+                all_perms.append(perm)
+
+        # ── Grant every key to the platform admin roles ───────────────────────
+        for role_id in PLATFORM_ROLE_IDS:
+            try:
+                role = PlatformRoleTemplate.objects.get(id=role_id)
+            except PlatformRoleTemplate.DoesNotExist:
+                self.stdout.write(self.style.WARNING(
+                    f"  ⚠  role '{role_id}' not found — run create_superuser first; grants skipped."
+                ))
+                continue
+
+            granted = 0
+            for perm in all_perms:
+                _, link_created = PlatformRolePermission.objects.get_or_create(
+                    role=role,
+                    permission=perm,
+                    defaults={"granted": True, "granted_by": None},
+                )
+                if link_created:
+                    granted += 1
+            self.stdout.write(
+                f"  {role_id}: granted {granted} new key(s)." if granted
+                else f"  {role_id}: all keys already assigned."
+            )
+
+        self.stdout.write(self.style.SUCCESS(
+            f"\n  Done. {created_perms} new permission(s), {len(all_perms)} total "
+            f"'{MODULE_NAME}' keys registered.\n"
+        ))
