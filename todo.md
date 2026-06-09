@@ -1,5 +1,8 @@
 ## Undone
 
+## Platform staff profile (vs_user)
+# - Add a subset of PlatformStaffProfile fields (e.g. job_title, department, date_joined, employment_type, line_manager) to the user creation serializer (UserCreateSerializer) so they can be captured at invite creation. When provided, prefill them onto the PlatformStaffProfile that InvitationService.create() now creates for CX_STAFF at invite time — currently the profile is created empty and HR fills it later.
+
 ## AR cycle (vs_finance receivables)
 # - School-fee billing adapter (fee categories + structures → emit generic invoices, behind a module flag)  [SKIP — user deferred]
 

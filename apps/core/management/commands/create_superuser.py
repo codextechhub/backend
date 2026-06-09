@@ -54,6 +54,13 @@ SUPERUSER_PERMISSION_KEYS = [
     "platform.team.delete",
     "platform.team.suspend",
     "platform.team.reactivate",
+    # Staff profile (CX HR records)
+    "platform.staff_profile.view",
+    "platform.staff_profile.create",
+    "platform.staff_profile.update",
+    # Staff payroll (FLS-gated sensitive bank details)
+    "platform.staff_payroll.view",
+    "platform.staff_payroll.manage",
     # Schools
     "platform.schools.view",
     "platform.schools.create",
@@ -352,6 +359,23 @@ class Command(BaseCommand):
                     ('delete',     'Permanently remove a team member', True,  S.SENSITIVE),
                     ('suspend',    'Suspend a team member account',    True,  S.SENSITIVE),
                     ('reactivate', 'Reactivate a suspended account',   True,  S.SENSITIVE),
+                ],
+            ),
+            (
+                'staff_profile',
+                'CX staff HR / personal profile records',
+                [
+                    ('view',   'View CX staff profiles',          False, S.NORMAL),
+                    ('create', 'Create a CX staff profile',       False, S.NORMAL),
+                    ('update', 'Edit a CX staff profile',         False, S.NORMAL),
+                ],
+            ),
+            (
+                'staff_payroll',
+                'CX staff sensitive payroll / bank details (FLS-gated)',
+                [
+                    ('view',   'View staff bank / payroll details',   False, S.SENSITIVE),
+                    ('manage', 'Edit staff bank / payroll details',   True,  S.CRITICAL),
                 ],
             ),
             (

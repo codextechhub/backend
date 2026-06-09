@@ -25,12 +25,16 @@ from rest_framework_simplejwt.settings import api_settings as jwt_settings
 from rest_framework_simplejwt.utils import datetime_from_epoch
 from rest_framework_simplejwt.token_blacklist.models import OutstandingToken
 from vs_rbac.permissions import IsAuthenticatedAndActive, IsVisionStaff, HasRBACPermission
-from core.mixins import XVSModelViewSetMixin
+from core.mixins import (
+    XVSModelViewSetMixin,
+    RetrieveModelMixin, CreateModelMixin, UpdateModelMixin,
+)
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
 from .models import (
     User, UserInvitation, LoginSession, AuthAttempt,
     AccountLockout, AuthEventLog, PasswordResetRequest,
+    PlatformStaffProfile,
 )
 from .serializers import (
     PasswordResetPreviewSerializer, UserReadSerializer, UserListSerializer, UserCreateSerializer,
@@ -41,6 +45,7 @@ from .serializers import (
     LoginSessionReadSerializer, ForceLogoutSerializer,
     AuthAttemptReadSerializer, AccountLockoutReadSerializer,
     UnlockAccountSerializer, PasswordResetAdminSerializer,
+    PlatformStaffProfileSerializer, PlatformStaffProfileListSerializer,
 )
 from .services.auth       import LoginService
 from .services.invitation import InvitationService
@@ -1227,3 +1232,108 @@ class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             qs = qs.filter(event_at__date__lte=date_to)
 
         return qs
+
+
+# =============================================================================
+# # PLATFORM STAFF PROFILE VIEWS
+# =============================================================================
+
+class PlatformStaffProfileViewSet(
+    RetrieveModelMixin, CreateModelMixin, UpdateModelMixin,
+    mixins.ListModelMixin, viewsets.GenericViewSet,
+):
+    """
+    CX Staff HR / personal profiles. One profile per CX_STAFF user.
+
+    GET    /platform-staff-profiles/         — list (slim, no payroll)
+    POST   /platform-staff-profiles/         — create a profile for a CX staff user
+    GET    /platform-staff-profiles/{id}/    — retrieve full profile
+    PATCH  /platform-staff-profiles/{id}/    — update profile
+    GET    /platform-staff-profiles/me/      — own profile (self-service)
+    PATCH  /platform-staff-profiles/me/      — edit own profile (self-service)
+
+    Sensitive payroll fields (bank_name, account_name, account_number) are
+    gated by FLS — only callers holding platform.staff_payroll.view/manage
+    can read/write them, regardless of endpoint.
+
+    Permission matrix:
+      list / retrieve:        platform.staff_profile.view
+      create:                 platform.staff_profile.create
+      update / partial_update: platform.staff_profile.update
+      me:                     IsAuthenticatedAndActive (self-service)
+    """
+
+    pagination_class = XVSPagination
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return PlatformStaffProfileListSerializer
+        return PlatformStaffProfileSerializer
+
+    def get_permissions(self):
+        if self.action == 'me':
+            return [IsAuthenticatedAndActive()]
+        action_permissions = {
+            'list':           'platform.staff_profile.view',
+            'retrieve':       'platform.staff_profile.view',
+            'create':         'platform.staff_profile.create',
+            'update':         'platform.staff_profile.update',
+            'partial_update': 'platform.staff_profile.update',
+        }
+        self.rbac_permission = action_permissions.get(self.action, 'platform.staff_profile.view')
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_queryset(self):
+        params = self.request.query_params
+        qs = (
+            PlatformStaffProfile.objects
+            .select_related('user', 'line_manager')
+            .filter(user__user_type=User.UserType.CX_STAFF)
+            .order_by('-created_at')
+        )
+
+        if department := params.get('department'):
+            qs = qs.filter(department__iexact=department)
+
+        if employment_status := params.get('employment_status'):
+            qs = qs.filter(employment_status=employment_status)
+
+        if employment_type := params.get('employment_type'):
+            qs = qs.filter(employment_type=employment_type)
+
+        if search := params.get('search'):
+            if len(search) > 64:
+                raise ValidationError({'search': 'Search query must be 64 characters or fewer.'})
+            qs = qs.filter(
+                Q(user__first_name__icontains=search)
+                | Q(user__last_name__icontains=search)
+                | Q(user__email__icontains=search)
+                | Q(employee_id__icontains=search)
+                | Q(job_title__icontains=search)
+            )
+
+        return qs
+
+    @action(detail=False, methods=['get', 'patch'], url_path='me')
+    def me(self, request):
+        if getattr(request.user, 'user_type', None) != User.UserType.CX_STAFF:
+            return error_response(
+                message="Only CX staff have a platform staff profile.",
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        profile, _ = PlatformStaffProfile.objects.select_related('user', 'line_manager').get_or_create(
+            user=request.user,
+        )
+
+        if request.method.lower() == 'patch':
+            ser = PlatformStaffProfileSerializer(
+                profile, data=request.data, partial=True,
+                context={'request': request},
+            )
+            ser.is_valid(raise_exception=True)
+            ser.save()
+            return success_response(message="Profile updated successfully.", data=ser.data)
+
+        ser = PlatformStaffProfileSerializer(profile, context={'request': request})
+        return success_response(message="Profile retrieved successfully.", data=ser.data)

@@ -17,7 +17,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils import timezone
 
-from ..models import User, UserInvitation, AuthEventLog
+from ..models import User, UserInvitation, AuthEventLog, PlatformStaffProfile
 from ..services.audit import log_auth_event
 from ..tokens import CodeXRefreshToken
 
@@ -49,6 +49,10 @@ class InvitationService:
                     expires_at=timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS),
                     is_used=False,
                 )
+                
+            if user.user_type == User.UserType.CX_STAFF:
+                PlatformStaffProfile.objects.get_or_create(user=user)
+
         return invitation
 
     # ── Validate ──────────────────────────────────────────────────────────────

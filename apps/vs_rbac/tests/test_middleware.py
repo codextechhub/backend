@@ -237,8 +237,8 @@ class TenantBoundaryEnforcementMiddlewareTests(TestCase):
             self.middleware(request)
 
     def test_student_without_school_context_denied(self):
-        from vs_user.models import UserAccount
-        student = UserAccount.objects.create_user(
+        from vs_user.models import User
+        student = User.objects.create_user(
             email="student@test.com",
             password="testpass123",
             user_type="STUDENT",
@@ -252,8 +252,8 @@ class TenantBoundaryEnforcementMiddlewareTests(TestCase):
             self.middleware(request)
 
     def test_parent_without_school_context_denied(self):
-        from vs_user.models import UserAccount
-        parent = UserAccount.objects.create_user(
+        from vs_user.models import User
+        parent = User.objects.create_user(
             email="parent@test.com",
             password="testpass123",
             user_type="PARENT",

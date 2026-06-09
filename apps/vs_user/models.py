@@ -640,3 +640,117 @@ class AuthEventLog(TimeStampedModel):
 
     def __str__(self) -> str:
         return f'AuthEvent<{self.event}>'
+
+
+# =============================================================================
+# PlatformStaffProfile
+# =============================================================================
+
+class PlatformStaffProfile(TimeStampedModel):
+    """
+    Extended personal / HR profile for CX Staff (User.UserType.CX_STAFF).
+    One row per platform staff member. Kept separate from User so the auth
+    model stays lean — same pattern as AccountLockout / LoginSession.
+
+    CX-only by design. School-side staff profiles will live in the future
+    `staff` app and are intentionally out of scope here.
+    """
+
+    class MaritalStatus(models.TextChoices):
+        SINGLE   = 'SINGLE',   'Single'
+        MARRIED  = 'MARRIED',  'Married'
+        DIVORCED = 'DIVORCED', 'Divorced'
+        WIDOWED  = 'WIDOWED',  'Widowed'
+
+    class EmploymentType(models.TextChoices):
+        FULL_TIME = 'FULL_TIME', 'Full-time'
+        PART_TIME = 'PART_TIME', 'Part-time'
+        CONTRACT  = 'CONTRACT',  'Contract'
+        INTERN    = 'INTERN',    'Intern'
+
+    class EmploymentStatus(models.TextChoices):
+        ACTIVE    = 'ACTIVE',    'Active'
+        ON_LEAVE  = 'ON_LEAVE',  'On Leave'
+        SUSPENDED = 'SUSPENDED', 'Suspended'
+        EXITED    = 'EXITED',    'Exited'
+
+    # ── Link ──────────────────────────────────────────────────────────────────
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='platform_staff_profile',
+    )
+
+    # ── Personal ──────────────────────────────────────────────────────────────
+    date_of_birth   = models.DateField(null=True, blank=True)
+    marital_status  = models.CharField(
+        max_length=16, choices=MaritalStatus.choices, blank=True, default='',
+    )
+    nationality     = models.CharField(max_length=80, blank=True, default='')
+    state_of_origin = models.CharField(max_length=80, blank=True, default='')
+    profile_photo   = models.ImageField(
+        upload_to='platform_staff/photos/', null=True, blank=True,
+    )
+    bio             = models.TextField(blank=True, default='')
+
+    # ── Contact (personal — work email/phone live on User) ────────────────────
+    personal_email      = models.EmailField(max_length=254, blank=True, default='')
+    alternate_phone     = models.CharField(max_length=32, blank=True, default='')
+    residential_address = models.TextField(blank=True, default='')
+    city                = models.CharField(max_length=80, blank=True, default='')
+    state               = models.CharField(max_length=80, blank=True, default='')
+
+    # ── Next of kin ───────────────────────────────────────────────────────────
+    nok_name         = models.CharField(max_length=200, blank=True, default='')
+    nok_relationship = models.CharField(max_length=80,  blank=True, default='')
+    nok_phone        = models.CharField(max_length=32,  blank=True, default='')
+    nok_address      = models.TextField(blank=True, default='')
+
+    # ── Employment ────────────────────────────────────────────────────────────
+    # Human-facing staff number, distinct from User.uid.
+    employee_id       = models.CharField(max_length=32, null=True, blank=True, unique=True)
+    job_title         = models.CharField(max_length=120, blank=True, default='')
+    department        = models.CharField(max_length=120, blank=True, default='')
+    employment_type   = models.CharField(
+        max_length=16, choices=EmploymentType.choices, blank=True, default='',
+    )
+    employment_status = models.CharField(
+        max_length=16, choices=EmploymentStatus.choices,
+        default=EmploymentStatus.ACTIVE,
+    )
+    date_joined       = models.DateField(null=True, blank=True)
+    date_exited       = models.DateField(null=True, blank=True)
+    line_manager      = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='platform_staff_reports',
+    )
+
+    # ── Payroll (sensitive — gated behind FLS at the serializer layer) ────────
+    bank_name      = models.CharField(max_length=120, blank=True, default='')
+    account_name   = models.CharField(max_length=200, blank=True, default='')
+    account_number = models.CharField(max_length=20,  blank=True, default='')
+
+    class Meta:
+        db_table = 'vs_users_platform_staff_profile'
+        verbose_name = 'Platform Staff Profile'
+        indexes = [
+            models.Index(fields=['department', 'employment_status']),
+            models.Index(fields=['employee_id']),
+        ]
+
+    def clean(self):
+        super().clean()
+        # Profile is valid only for CX Staff. user_type lives on the User
+        # table, so this is enforced here rather than via a DB CheckConstraint.
+        if self.user_id and self.user.user_type != User.UserType.CX_STAFF:
+            raise ValidationError('PlatformStaffProfile can only be attached to CX Staff users.')
+        if self.line_manager_id and self.line_manager_id == self.user_id:
+            raise ValidationError('A staff member cannot be their own line manager.')
+
+    @property
+    def is_active_employee(self) -> bool:
+        return self.employment_status == self.EmploymentStatus.ACTIVE
+
+    def __str__(self) -> str:
+        return f'PlatformStaffProfile<{self.user_id}:{self.job_title or "staff"}>'

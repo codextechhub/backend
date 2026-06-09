@@ -4,7 +4,7 @@ Shared test helpers and fixture factories for vs_rbac tests.
 import itertools
 from django.utils import timezone
 from vs_schools.models import School, Branch
-from vs_user.models import UserAccount
+from vs_user.models import User
 from vs_rbac.models import (
     Permission,
     PermissionDependency,
@@ -39,7 +39,7 @@ def make_branch(school, name="Main Branch", is_main=True, **kwargs):
 
 
 def make_vision_user(email="vision@test.com", password="testpass123", **kwargs):
-    return UserAccount.objects.create_user(
+    return User.objects.create_user(
         email=email,
         password=password,
         user_type="VS_STAFF",
@@ -57,7 +57,7 @@ def make_school_admin(branch, email="admin@test.com", password="testpass123", **
         "full_name": "School Admin",
     }
     defaults.update(kwargs)
-    return UserAccount.objects.create_user(email=email, password=password, **defaults)
+    return User.objects.create_user(email=email, password=password, **defaults)
 
 
 def make_staff_user(branch, email="staff@test.com", password="testpass123", **kwargs):
@@ -68,7 +68,7 @@ def make_staff_user(branch, email="staff@test.com", password="testpass123", **kw
         "full_name": "Staff User",
     }
     defaults.update(kwargs)
-    return UserAccount.objects.create_user(email=email, password=password, **defaults)
+    return User.objects.create_user(email=email, password=password, **defaults)
 
 
 def make_permission(key, module_key=None, action=None, **kwargs):

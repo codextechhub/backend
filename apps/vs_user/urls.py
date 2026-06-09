@@ -45,6 +45,8 @@ from .views import (
     AuthAttemptViewSet,
     AccountLockoutViewSet,
     AuthEventLogViewSet,
+    # Platform staff profiles
+    PlatformStaffProfileViewSet,
 )
 
 # ── Router-registered viewsets ────────────────────────────────────────────────
@@ -54,6 +56,7 @@ router.register(r'sessions',          SessionViewSet,             basename='sess
 router.register(r'auth-attempts',     AuthAttemptViewSet,         basename='auth-attempts')
 router.register(r'account-lockouts',  AccountLockoutViewSet,      basename='account-lockouts')
 router.register(r'auth-events',       AuthEventLogViewSet,        basename='auth-events')
+router.register(r'platform-staff-profiles', PlatformStaffProfileViewSet, basename='platform-staff-profiles')
 
 urlpatterns = [
 

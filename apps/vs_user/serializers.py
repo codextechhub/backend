@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 from datetime import timedelta
 
@@ -25,6 +26,7 @@ from .models import (
     AccountLockout,
     PasswordResetRequest,
     AuthEventLog,
+    PlatformStaffProfile,
 )
 
 
@@ -509,5 +511,115 @@ class MyPasswordResetSerializer(serializers.ModelSerializer):
         model  = PasswordResetRequest
         fields = ('id', 'requested_by', 'requested_ip', 'expires_at', 'used_at', 'created_at')
         read_only_fields = fields
+
+
+# =============================================================================
+# PlatformStaffProfile
+# =============================================================================
+
+# Payroll/bank fields are gated by these keys via FLS. Kept as module-level
+# constants so the viewset can reuse them when deciding self-service exposure.
+STAFF_PAYROLL_READ_PERM  = 'platform.staff_payroll.view'
+STAFF_PAYROLL_WRITE_PERM = 'platform.staff_payroll.manage'
+STAFF_PAYROLL_FIELDS     = ('bank_name', 'account_name', 'account_number')
+
+
+class PlatformStaffProfileListSerializer(serializers.ModelSerializer):
+    """Slim representation for list endpoints — no sensitive payroll data."""
+
+    user = UserInlineSerializer(read_only=True)
+    is_active_employee = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = PlatformStaffProfile
+        fields = (
+            'id', 'user', 'employee_id', 'job_title', 'department',
+            'employment_type', 'employment_status', 'is_active_employee',
+            'created_at', 'updated_at',
+        )
+        read_only_fields = fields
+
+
+class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerializer):
+    """
+    Full CX-staff profile. Bank/payroll fields are stripped on read and
+    rejected on write unless the caller holds the matching payroll permission
+    (see FieldSecurityMixin in vs_rbac.fls).
+    """
+
+    read_permissions  = {f: STAFF_PAYROLL_READ_PERM  for f in STAFF_PAYROLL_FIELDS}
+    write_permissions = {f: STAFF_PAYROLL_WRITE_PERM for f in STAFF_PAYROLL_FIELDS}
+
+    # ── FLS owner exception ───────────────────────────────────────────────────
+    # A staff member can always read and write their own payroll fields,
+    # regardless of whether they hold the platform.staff_payroll.* permissions.
+
+    def _request_user_owns(self, obj) -> bool:
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        return bool(
+            obj is not None and user is not None
+            and getattr(obj, 'user_id', None) == getattr(user, 'id', None)
+        )
+
+    def to_representation(self, instance):
+        self._fls_is_owner = self._request_user_owns(instance)
+        return super().to_representation(instance)
+
+    def _can_read(self, field, user_perms):
+        if getattr(self, '_fls_is_owner', False) and field in STAFF_PAYROLL_FIELDS:
+            return True
+        return super()._can_read(field, user_perms)
+
+    def _can_write(self, field, user_perms):
+        if field in STAFF_PAYROLL_FIELDS and self._request_user_owns(self.instance):
+            return True
+        return super()._can_write(field, user_perms)
+
+    user            = UserInlineSerializer(read_only=True)
+    user_id         = serializers.PrimaryKeyRelatedField(
+        source='user', write_only=True, required=False,
+        queryset=User.objects.filter(user_type=User.UserType.CX_STAFF),
+    )
+    line_manager    = UserInlineSerializer(read_only=True)
+    line_manager_id = serializers.PrimaryKeyRelatedField(
+        source='line_manager', write_only=True, required=False, allow_null=True,
+        queryset=User.objects.filter(user_type=User.UserType.CX_STAFF),
+    )
+    is_active_employee = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = PlatformStaffProfile
+        fields = (
+            'id', 'user', 'user_id',
+            'date_of_birth', 'marital_status', 'nationality', 'state_of_origin',
+            'profile_photo', 'bio',
+            'personal_email', 'alternate_phone', 'residential_address',
+            'city', 'state',
+            'nok_name', 'nok_relationship', 'nok_phone', 'nok_address',
+            'employee_id', 'job_title', 'department', 'employment_type',
+            'employment_status', 'date_joined', 'date_exited',
+            'line_manager', 'line_manager_id',
+            'bank_name', 'account_name', 'account_number',
+            'is_active_employee', 'created_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at')
+
+    def validate(self, attrs):
+        # On create the target user must be supplied; on update it is fixed.
+        if self.instance is None and 'user' not in attrs:
+            raise serializers.ValidationError({'user_id': 'This field is required.'})
+
+        # Run model-level validation (CX-only, self-manager guard) before save.
+        target = copy.copy(self.instance) if self.instance is not None else PlatformStaffProfile()
+        for field, value in attrs.items():
+            setattr(target, field, value)
+        try:
+            target.clean()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(
+                exc.message_dict if hasattr(exc, 'message_dict') else exc.messages
+            )
+        return attrs
 
 
