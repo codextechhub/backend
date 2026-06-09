@@ -76,10 +76,12 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
     base_currency = serializers.PrimaryKeyRelatedField(
         queryset=Currency.objects.all(), required=False,
     )
+    # Optional: which fiscal year to open. Defaults to the current calendar year.
+    fiscal_year = serializers.IntegerField(required=False, write_only=True, min_value=2000)
 
     class Meta:
         model = LedgerEntity
-        fields = ["id", "code", "name", "kind", "base_currency", "source_school"]
+        fields = ["id", "code", "name", "kind", "base_currency", "source_school", "fiscal_year"]
         extra_kwargs = {
             "kind": {"required": False},
             "source_school": {"required": False, "allow_null": True},
@@ -94,12 +96,24 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
         return code
 
     def create(self, validated_data):
+        from django.db import transaction
         from django.utils import timezone
 
+        from .seed import seed_chart_of_accounts, seed_currencies, seed_fiscal_year
+
+        fiscal_year = validated_data.pop("fiscal_year", None)
         validated_data.setdefault("kind", LedgerEntity.Kind.TENANT)
-        entity = LedgerEntity.objects.create(
-            is_active=True, activated_at=timezone.now(), **validated_data,
-        )
+
+        # Provision a fully usable set of books in one call: the entity, the default
+        # currencies, a starter chart of accounts, and twelve open monthly periods.
+        # This keeps the bootstrap API-driven (no CLI seed_finance step required).
+        with transaction.atomic():
+            entity = LedgerEntity.objects.create(
+                is_active=True, activated_at=timezone.now(), **validated_data,
+            )
+            seed_currencies()
+            seed_chart_of_accounts(entity)
+            seed_fiscal_year(entity, year=fiscal_year)
         return entity
 
     def to_representation(self, instance):

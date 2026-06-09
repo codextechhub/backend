@@ -2187,6 +2187,28 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         listed = self.client.get("/v1/finance/entities/")
         self.assertIn("CREST", {e["code"] for e in listed.json()["data"]})
 
+        # The one POST provisions a fully usable set of books: chart of accounts
+        # and twelve open periods, so no CLI seed_finance step is needed.
+        accounts = self.client.get("/v1/finance/accounts/?entity=CREST").json()["data"]
+        codes = {a["code"] for a in accounts}
+        self.assertTrue({"1100", "1200", "3100"}.issubset(codes))  # cash, AR, share capital
+
+        periods = self.client.get("/v1/finance/periods/?entity=CREST").json()["data"]
+        self.assertEqual(len(periods), 12)
+        self.assertTrue(all(p["status"] == "OPEN" for p in periods))
+
+    def test_entity_create_accepts_explicit_fiscal_year(self):
+        self._seed()
+        resp = self.client.post(
+            "/v1/finance/entities/",
+            {"code": "LEKKI", "name": "Lekki Books", "fiscal_year": 2027},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        periods = self.client.get("/v1/finance/periods/?entity=LEKKI").json()["data"]
+        self.assertEqual(len(periods), 12)
+        self.assertTrue(all(p["name"].startswith("2027-") for p in periods))
+
     def test_entity_create_rejects_duplicate_code(self):
         self._seed()
         first = self.client.post(

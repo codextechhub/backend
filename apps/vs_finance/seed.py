@@ -164,6 +164,48 @@ def seed_chart_of_accounts(entity):
     return list(Account.objects.filter(entity=entity).order_by("code"))
 
 
+def seed_fiscal_year(entity, year=None):
+    """Open a fiscal year for ``entity`` with twelve monthly OPEN periods (idempotent).
+
+    Defaults to the current calendar year. Returns ``(fiscal_year, [periods])``. Safe
+    to re-run: the year is keyed by ``(entity, year)`` and each period by
+    ``(fiscal_year, period_no)``, so an existing set of books is left untouched.
+    """
+    import datetime
+
+    from django.utils import timezone
+
+    from .models import FiscalPeriod, FiscalYear
+
+    if year is None:
+        year = timezone.now().year
+
+    fiscal_year, _ = FiscalYear.objects.get_or_create(
+        entity=entity, year=year,
+        defaults={
+            "start_date": datetime.date(year, 1, 1),
+            "end_date": datetime.date(year, 12, 31),
+        },
+    )
+
+    periods = []
+    for m in range(1, 13):
+        start = datetime.date(year, m, 1)
+        end = (datetime.date(year, m + 1, 1) if m < 12 else datetime.date(year + 1, 1, 1))
+        end = end - datetime.timedelta(days=1)
+        period, _ = FiscalPeriod.objects.get_or_create(
+            fiscal_year=fiscal_year, period_no=m,
+            defaults={
+                "entity": entity,
+                "name": f"{year}-{m:02d}",
+                "start_date": start,
+                "end_date": end,
+            },
+        )
+        periods.append(period)
+    return fiscal_year, periods
+
+
 def seed_tax_obligations(entity):
     """Create the default statutory tax obligations for ``entity`` (idempotent).
 
