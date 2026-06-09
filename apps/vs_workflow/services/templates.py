@@ -8,6 +8,21 @@ from django.utils import timezone
 from vs_workflow.models import WorkflowInstance, WorkflowTemplate
 
 
+def _resolve_position(code: Optional[str]):
+    """Resolve a CX organogram Position by its code, or None.
+
+    Used only by ORGANOGRAM/SPECIFIC_POSITION stages. Degrades to None if the
+    code is blank or vs_user is unavailable, so RBAC-only installs are unaffected.
+    """
+    if not code:
+        return None
+    try:
+        from vs_user.models import Position
+    except ImportError:
+        return None
+    return Position.objects.filter(code=code).first()
+
+
 @transaction.atomic
 def publish_template(*, school, branch=None, document_type: str, code: str, name: str,
                      description: str = "", notification_events: Optional[dict] = None,
@@ -45,21 +60,28 @@ def publish_template(*, school, branch=None, document_type: str, code: str, name
     payload_codes = []
     for s in (stages_payload or []):
         payload_codes.append(s["code"])
+        defaults = {
+            "label": s["label"],
+            "kind": s.get("kind", "APPROVAL"),
+            "order": s.get("order", 0),
+            # Approver-source strategy. Defaults to the original RBAC path so
+            # existing template payloads keep working unchanged.
+            "approver_source": s.get("approver_source", "RBAC_PERMISSION"),
+            "approver_permission_key": s.get("approver_permission_key", ""),
+            "approver_scope": s.get("approver_scope", "SCHOOL"),
+            # Organogram config — only meaningful when approver_source==ORGANOGRAM.
+            "organogram_target": s.get("organogram_target", ""),
+            "organogram_levels": s.get("organogram_levels", 1),
+            "organogram_position": _resolve_position(s.get("organogram_position_code")),
+            "advance_rule": s.get("advance_rule", "UNANIMOUS"),
+            "quorum_count": s.get("quorum_count", 0),
+            "on_rejection": s.get("on_rejection", "TERMINAL"),
+            "skip_if_no_approvers": s.get("skip_if_no_approvers", True),
+            "inclusion_condition": s.get("inclusion_condition"),
+            "retired_at": None,  # (re)including a code reactivates it
+        }
         stage, _ = WorkflowStage.objects.update_or_create(
-            template=template, code=s["code"],
-            defaults={
-                "label": s["label"],
-                "kind": s.get("kind", "APPROVAL"),
-                "order": s.get("order", 0),
-                "approver_permission_key": s.get("approver_permission_key", ""),
-                "approver_scope": s.get("approver_scope", "SCHOOL"),
-                "advance_rule": s.get("advance_rule", "UNANIMOUS"),
-                "quorum_count": s.get("quorum_count", 0),
-                "on_rejection": s.get("on_rejection", "TERMINAL"),
-                "skip_if_no_approvers": s.get("skip_if_no_approvers", True),
-                "inclusion_condition": s.get("inclusion_condition"),
-                "retired_at": None,  # (re)including a code reactivates it
-            },
+            template=template, code=s["code"], defaults=defaults,
         )
         stage_by_code[s["code"]] = stage
 

@@ -35,6 +35,7 @@ from .models import (
     User, UserInvitation, LoginSession, AuthAttempt,
     AccountLockout, AuthEventLog, PasswordResetRequest,
     PlatformStaffProfile,
+    Department, Position, PositionAssignment, MatrixReport,
 )
 from .serializers import (
     PasswordResetPreviewSerializer, UserReadSerializer, UserListSerializer, UserCreateSerializer,
@@ -46,7 +47,11 @@ from .serializers import (
     AuthAttemptReadSerializer, AccountLockoutReadSerializer,
     UnlockAccountSerializer, PasswordResetAdminSerializer,
     PlatformStaffProfileSerializer, PlatformStaffProfileListSerializer,
+    DepartmentSerializer, PositionSerializer,
+    PositionAssignmentSerializer, MatrixReportSerializer,
+    OrganogramNodeSerializer,
 )
+from .services.organogram import OrganogramService
 from .services.auth       import LoginService
 from .services.invitation import InvitationService
 from .services.password   import PasswordService
@@ -1287,13 +1292,21 @@ class PlatformStaffProfileViewSet(
         params = self.request.query_params
         qs = (
             PlatformStaffProfile.objects
-            .select_related('user', 'line_manager')
+            .select_related('user', 'position', 'position__department')
             .filter(user__user_type=User.UserType.CX_STAFF)
             .order_by('-created_at')
         )
 
         if department := params.get('department'):
-            qs = qs.filter(department__iexact=department)
+            # Department is derived from the primary position. Accept either a
+            # department PK or a department code.
+            if str(department).isdigit():
+                qs = qs.filter(position__department_id=department)
+            else:
+                qs = qs.filter(position__department__code__iexact=department)
+
+        if position := params.get('position'):
+            qs = qs.filter(position_id=position)
 
         if employment_status := params.get('employment_status'):
             qs = qs.filter(employment_status=employment_status)
@@ -1322,9 +1335,9 @@ class PlatformStaffProfileViewSet(
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        profile, _ = PlatformStaffProfile.objects.select_related('user', 'line_manager').get_or_create(
-            user=request.user,
-        )
+        profile, _ = PlatformStaffProfile.objects.select_related(
+            'user', 'position', 'position__department',
+        ).get_or_create(user=request.user)
 
         if request.method.lower() == 'patch':
             ser = PlatformStaffProfileSerializer(
@@ -1337,3 +1350,203 @@ class PlatformStaffProfileViewSet(
 
         ser = PlatformStaffProfileSerializer(profile, context={'request': request})
         return success_response(message="Profile retrieved successfully.", data=ser.data)
+
+
+# =============================================================================
+# Organogram — Department / Position / PositionAssignment / MatrixReport
+# =============================================================================
+
+class DepartmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
+    """
+    CX org departments (hierarchical).
+
+    Read endpoints require platform.organogram.view; writes require
+    platform.organogram.manage.
+    """
+
+    serializer_class = DepartmentSerializer
+    pagination_class = XVSPagination
+
+    def get_permissions(self):
+        read_actions = {'list', 'retrieve'}
+        self.rbac_permission = (
+            'platform.organogram.view' if self.action in read_actions
+            else 'platform.organogram.manage'
+        )
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_queryset(self):
+        params = self.request.query_params
+        qs = Department.objects.select_related('parent', 'head_position').order_by('name')
+
+        if (is_active := params.get('is_active')) is not None:
+            qs = qs.filter(is_active=str(is_active).lower() in ('1', 'true', 'yes'))
+        if parent := params.get('parent'):
+            qs = qs.filter(parent_id=parent)
+        if (roots := params.get('roots')) and str(roots).lower() in ('1', 'true', 'yes'):
+            qs = qs.filter(parent__isnull=True)
+        if search := params.get('search'):
+            qs = qs.filter(Q(name__icontains=search) | Q(code__icontains=search))
+        return qs
+
+
+class PositionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
+    """
+    Seats in the org chart. People are attached via position assignments.
+
+    Read endpoints require platform.organogram.view; writes require
+    platform.organogram.manage.
+    """
+
+    serializer_class = PositionSerializer
+    pagination_class = XVSPagination
+
+    def get_permissions(self):
+        read_actions = {'list', 'retrieve', 'tree', 'vacancies'}
+        self.rbac_permission = (
+            'platform.organogram.view' if self.action in read_actions
+            else 'platform.organogram.manage'
+        )
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_queryset(self):
+        params = self.request.query_params
+        qs = (
+            Position.objects
+            .select_related('department', 'reports_to', 'default_role')
+            .prefetch_related('assignments__user')
+            .order_by('title')
+        )
+
+        if department := params.get('department'):
+            qs = qs.filter(department_id=department)
+        if reports_to := params.get('reports_to'):
+            qs = qs.filter(reports_to_id=reports_to)
+        if (is_active := params.get('is_active')) is not None:
+            qs = qs.filter(is_active=str(is_active).lower() in ('1', 'true', 'yes'))
+        if search := params.get('search'):
+            qs = qs.filter(Q(title__icontains=search) | Q(code__icontains=search))
+        return qs
+
+    @action(detail=False, methods=['get'], url_path='tree')
+    def tree(self, request):
+        """Full position tree (solid reporting lines), nested from the roots."""
+        root_id = request.query_params.get('root')
+        root = None
+        if root_id:
+            root = Position.objects.filter(pk=root_id).select_related('department').first()
+            if root is None:
+                return error_response(
+                    message="Root position not found.",
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+        nodes = OrganogramService.build_tree(root=root)
+        ser = OrganogramNodeSerializer(nodes, many=True, context={'request': request})
+        return success_response(message="Organogram retrieved successfully.", data=ser.data)
+
+    @action(detail=False, methods=['get'], url_path='vacancies')
+    def vacancies(self, request):
+        """Active positions with at least one open seat."""
+        positions = OrganogramService.vacancies()
+        ser = PositionSerializer(positions, many=True, context={'request': request})
+        return success_response(message="Vacancies retrieved successfully.", data=ser.data)
+
+
+class PositionAssignmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
+    """
+    Effective-dated assignments of users to positions (full history).
+
+    Creating / closing assignments routes through OrganogramService so the
+    "one current primary per user" invariant and department sync are honoured.
+    """
+
+    serializer_class = PositionAssignmentSerializer
+    pagination_class = XVSPagination
+
+    def get_permissions(self):
+        read_actions = {'list', 'retrieve'}
+        self.rbac_permission = (
+            'platform.organogram.view' if self.action in read_actions
+            else 'platform.organogram.manage'
+        )
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_queryset(self):
+        params = self.request.query_params
+        qs = (
+            PositionAssignment.objects
+            .select_related('user', 'position', 'position__department')
+            .order_by('-start_date')
+        )
+        if user_id := params.get('user'):
+            qs = qs.filter(user_id=user_id)
+        if position_id := params.get('position'):
+            qs = qs.filter(position_id=position_id)
+        if (current := params.get('current')) is not None:
+            if str(current).lower() in ('1', 'true', 'yes'):
+                qs = qs.filter(end_date__isnull=True)
+            else:
+                qs = qs.filter(end_date__isnull=False)
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        ser = self.get_serializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+        try:
+            assignment = OrganogramService.assign_position(
+                user=data['user'],
+                position=data['position'],
+                is_primary=data.get('is_primary', True),
+                is_acting=data.get('is_acting', False),
+                start_date=data.get('start_date'),
+                assigned_by=request.user,
+            )
+        except ValueError as exc:
+            payload = exc.args[0] if exc.args else {'message': 'Assignment failed.'}
+            return error_response(
+                message=payload.get('message', 'Assignment failed.'),
+                error=payload, status=status.HTTP_400_BAD_REQUEST,
+            )
+        out = PositionAssignmentSerializer(assignment, context={'request': request})
+        return success_response(
+            message="Position assigned successfully.",
+            data=out.data, status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=['post'], url_path='close')
+    def close(self, request, pk=None):
+        """Ends an open assignment (sets end_date)."""
+        assignment = self.get_object()
+        end_date = _parse_date(request.data.get('end_date', '')) if request.data.get('end_date') else None
+        OrganogramService.end_assignment(assignment, end_date=end_date)
+        out = PositionAssignmentSerializer(assignment, context={'request': request})
+        return success_response(message="Assignment closed.", data=out.data)
+
+
+class MatrixReportViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
+    """Dotted-line (matrix) reporting between positions."""
+
+    serializer_class = MatrixReportSerializer
+    pagination_class = XVSPagination
+
+    def get_permissions(self):
+        read_actions = {'list', 'retrieve'}
+        self.rbac_permission = (
+            'platform.organogram.view' if self.action in read_actions
+            else 'platform.organogram.manage'
+        )
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_queryset(self):
+        params = self.request.query_params
+        qs = (
+            MatrixReport.objects
+            .select_related('position', 'reports_to')
+            .order_by('-created_at')
+        )
+        if position_id := params.get('position'):
+            qs = qs.filter(position_id=position_id)
+        if reports_to := params.get('reports_to'):
+            qs = qs.filter(reports_to_id=reports_to)
+        return qs

@@ -61,6 +61,9 @@ SUPERUSER_PERMISSION_KEYS = [
     # Staff payroll (FLS-gated sensitive bank details)
     "platform.staff_payroll.view",
     "platform.staff_payroll.manage",
+    # Organogram (departments, positions, assignments, matrix lines)
+    "platform.organogram.view",
+    "platform.organogram.manage",
     # Schools
     "platform.schools.view",
     "platform.schools.create",
@@ -376,6 +379,14 @@ class Command(BaseCommand):
                 [
                     ('view',   'View staff bank / payroll details',   False, S.SENSITIVE),
                     ('manage', 'Edit staff bank / payroll details',   True,  S.CRITICAL),
+                ],
+            ),
+            (
+                'organogram',
+                'CX organogram — departments, positions, assignments, matrix lines',
+                [
+                    ('view',   'View the org chart and its records',  False, S.NORMAL),
+                    ('manage', 'Edit departments, positions and assignments', True, S.SENSITIVE),
                 ],
             ),
             (

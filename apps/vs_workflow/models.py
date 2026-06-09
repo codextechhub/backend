@@ -21,7 +21,9 @@ from django.db.models import Q  # used in WorkflowStageAction constraint
 
 from vs_workflow.constants import (
     ApproverScope,
+    ApproverSource,
     AuditEventType,
+    OrganogramTarget,
     StageAdvanceRule,
     StageKind,
     StageOnRejection,
@@ -117,9 +119,30 @@ class WorkflowStage(models.Model):
     label = models.CharField(max_length=120)
     kind = models.CharField(max_length=20, choices=StageKind.choices, default=StageKind.APPROVAL)
     order = models.PositiveIntegerField(default=0)
+    # ── Approver resolution strategy ────────────────────────────────────────
+    # RBAC_PERMISSION (default) uses approver_permission_key + approver_scope.
+    # ORGANOGRAM is an additive, opt-in strategy that climbs the CX organogram
+    # relative to the requester (see the organogram_* fields below). The two are
+    # mutually exclusive; the existing RBAC path is unchanged when source is
+    # left at its default.
+    approver_source = models.CharField(
+        max_length=20, choices=ApproverSource.choices,
+        default=ApproverSource.RBAC_PERMISSION,
+    )
     approver_permission_key = models.CharField(max_length=150, blank=True, default="")
     approver_scope = models.CharField(max_length=20, choices=ApproverScope.choices,
                                       default=ApproverScope.SCHOOL)
+    # ── Organogram config (only used when approver_source == ORGANOGRAM) ──────
+    organogram_target = models.CharField(
+        max_length=20, choices=OrganogramTarget.choices, blank=True, default="",
+    )
+    # Number of levels to climb when organogram_target == N_LEVELS_UP.
+    organogram_levels = models.PositiveSmallIntegerField(default=1)
+    # The explicit seat used when organogram_target == SPECIFIC_POSITION.
+    organogram_position = models.ForeignKey(
+        "vs_user.Position", on_delete=models.SET_NULL,
+        null=True, blank=True, related_name="workflow_stages",
+    )
     advance_rule = models.CharField(max_length=20, choices=StageAdvanceRule.choices,
                                     default=StageAdvanceRule.UNANIMOUS)
     quorum_count = models.PositiveIntegerField(default=0)

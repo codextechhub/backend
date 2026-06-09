@@ -10,11 +10,17 @@ from vs_workflow.models import (
 
 
 class WorkflowStageReadSerializer(serializers.ModelSerializer):
+    organogram_position_code = serializers.CharField(
+        source="organogram_position.code", read_only=True, default=None,
+    )
+
     class Meta:
         model = WorkflowStage
         fields = [
             "id", "code", "label", "kind", "order",
+            "approver_source",
             "approver_permission_key", "approver_scope",
+            "organogram_target", "organogram_levels", "organogram_position_code",
             "advance_rule", "quorum_count", "on_rejection",
             "skip_if_no_approvers", "inclusion_condition",
         ]
@@ -60,11 +66,14 @@ class WorkflowTemplatePublishSerializer(serializers.Serializer):
         """Reject unknown enum values (e.g. on_rejection='STOP') up front, rather
         than silently mis-routing at vote time."""
         from vs_workflow.constants import (
-            ApproverScope, StageAdvanceRule, StageKind, StageOnRejection,
+            ApproverScope, ApproverSource, OrganogramTarget,
+            StageAdvanceRule, StageKind, StageOnRejection,
         )
         allowed = {
             "kind": {c.value for c in StageKind},
+            "approver_source": {c.value for c in ApproverSource},
             "approver_scope": {c.value for c in ApproverScope},
+            "organogram_target": {c.value for c in OrganogramTarget},
             "advance_rule": {c.value for c in StageAdvanceRule},
             "on_rejection": {c.value for c in StageOnRejection},
         }
@@ -79,6 +88,20 @@ class WorkflowTemplatePublishSerializer(serializers.Serializer):
                     raise serializers.ValidationError(
                         f"Stage '{label}': invalid {field} '{s[field]}'. "
                         f"Allowed: {', '.join(sorted(choices))}."
+                    )
+            # When using the organogram strategy, a climb mode is mandatory and
+            # SPECIFIC_POSITION additionally needs a position code.
+            if s.get("approver_source") == ApproverSource.ORGANOGRAM.value:
+                target = s.get("organogram_target")
+                if not target:
+                    raise serializers.ValidationError(
+                        f"Stage '{label}': organogram_target is required when "
+                        f"approver_source is ORGANOGRAM."
+                    )
+                if target == OrganogramTarget.SPECIFIC_POSITION.value and not s.get("organogram_position_code"):
+                    raise serializers.ValidationError(
+                        f"Stage '{label}': organogram_position_code is required "
+                        f"when organogram_target is SPECIFIC_POSITION."
                     )
         return value
 

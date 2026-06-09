@@ -27,6 +27,10 @@ from .models import (
     PasswordResetRequest,
     AuthEventLog,
     PlatformStaffProfile,
+    Department,
+    Position,
+    PositionAssignment,
+    MatrixReport,
 )
 
 
@@ -524,16 +528,36 @@ STAFF_PAYROLL_WRITE_PERM = 'platform.staff_payroll.manage'
 STAFF_PAYROLL_FIELDS     = ('bank_name', 'account_name', 'account_number')
 
 
+class DepartmentInlineSerializer(serializers.ModelSerializer):
+    """Minimal nested department representation for related objects."""
+
+    class Meta:
+        model = Department
+        fields = ('id', 'name', 'code')
+
+
+class PositionInlineSerializer(serializers.ModelSerializer):
+    """Minimal nested position representation for related objects."""
+
+    department = DepartmentInlineSerializer(read_only=True)
+
+    class Meta:
+        model = Position
+        fields = ('id', 'title', 'code', 'department')
+
+
 class PlatformStaffProfileListSerializer(serializers.ModelSerializer):
     """Slim representation for list endpoints — no sensitive payroll data."""
 
     user = UserInlineSerializer(read_only=True)
+    position = PositionInlineSerializer(read_only=True)
+    department = DepartmentInlineSerializer(read_only=True)
     is_active_employee = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = PlatformStaffProfile
         fields = (
-            'id', 'user', 'employee_id', 'job_title', 'department',
+            'id', 'user', 'employee_id', 'job_title', 'position', 'department',
             'employment_type', 'employment_status', 'is_active_employee',
             'created_at', 'updated_at',
         )
@@ -581,12 +605,20 @@ class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerial
         source='user', write_only=True, required=False,
         queryset=User.objects.filter(user_type=User.UserType.CX_STAFF),
     )
-    line_manager    = UserInlineSerializer(read_only=True)
-    line_manager_id = serializers.PrimaryKeyRelatedField(
-        source='line_manager', write_only=True, required=False, allow_null=True,
-        queryset=User.objects.filter(user_type=User.UserType.CX_STAFF),
+    # The primary seat is the single source everything settles off. Assign it
+    # via position_id (or, preferably, through OrganogramService so the
+    # effective-dated PositionAssignment history is written too).
+    position        = PositionInlineSerializer(read_only=True)
+    position_id     = serializers.PrimaryKeyRelatedField(
+        source='position', write_only=True, required=False, allow_null=True,
+        queryset=Position.objects.all(),
     )
-    is_active_employee = serializers.BooleanField(read_only=True)
+    # Department and line manager are DERIVED from the primary position — read
+    # only. Department is the position's department; line manager is the holder
+    # of the position's reports_to seat.
+    department           = DepartmentInlineSerializer(read_only=True)
+    current_line_manager = UserInlineSerializer(read_only=True)
+    is_active_employee   = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = PlatformStaffProfile
@@ -597,9 +629,9 @@ class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerial
             'personal_email', 'alternate_phone', 'residential_address',
             'city', 'state',
             'nok_name', 'nok_relationship', 'nok_phone', 'nok_address',
-            'employee_id', 'job_title', 'department', 'employment_type',
-            'employment_status', 'date_joined', 'date_exited',
-            'line_manager', 'line_manager_id',
+            'employee_id', 'job_title', 'position', 'position_id', 'department',
+            'employment_type', 'employment_status', 'date_joined', 'date_exited',
+            'current_line_manager',
             'bank_name', 'account_name', 'account_number',
             'is_active_employee', 'created_at', 'updated_at',
         )
@@ -621,5 +653,202 @@ class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerial
                 exc.message_dict if hasattr(exc, 'message_dict') else exc.messages
             )
         return attrs
+
+
+# =============================================================================
+# Organogram — Department / Position / PositionAssignment / MatrixReport
+# =============================================================================
+
+def _run_model_clean(instance, attrs):
+    """
+    Applies attrs onto a (copied) model instance and runs full_clean's clean().
+    Translates a Django ValidationError into a DRF ValidationError.
+    """
+    target = copy.copy(instance) if instance is not None else None
+    if target is None:
+        # Build a throwaway instance from the model class on the serializer.
+        target = instance
+    for field, value in attrs.items():
+        setattr(target, field, value)
+    try:
+        target.clean()
+    except DjangoValidationError as exc:
+        raise serializers.ValidationError(
+            exc.message_dict if hasattr(exc, 'message_dict') else exc.messages
+        )
+
+
+class DepartmentSerializer(serializers.ModelSerializer):
+    """Full department serializer with parent + derived head."""
+
+    parent      = DepartmentInlineSerializer(read_only=True)
+    parent_id   = serializers.PrimaryKeyRelatedField(
+        source='parent', write_only=True, required=False, allow_null=True,
+        queryset=Department.objects.all(),
+    )
+    head_position    = PositionInlineSerializer(read_only=True)
+    head_position_id = serializers.PrimaryKeyRelatedField(
+        source='head_position', write_only=True, required=False, allow_null=True,
+        queryset=Position.objects.all(),
+    )
+    head    = UserInlineSerializer(read_only=True)
+    children_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Department
+        fields = (
+            'id', 'name', 'code',
+            'parent', 'parent_id',
+            'head_position', 'head_position_id', 'head',
+            'description', 'is_active', 'children_count',
+            'created_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at')
+
+    def get_children_count(self, obj) -> int:
+        return obj.children.count()
+
+    def validate(self, attrs):
+        target = copy.copy(self.instance) if self.instance is not None else Department()
+        for field, value in attrs.items():
+            setattr(target, field, value)
+        try:
+            target.clean()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(
+                exc.message_dict if hasattr(exc, 'message_dict') else exc.messages
+            )
+        return attrs
+
+
+class PositionSerializer(serializers.ModelSerializer):
+    """Full position serializer with department + reports_to + occupancy."""
+
+    department      = DepartmentInlineSerializer(read_only=True)
+    department_id   = serializers.PrimaryKeyRelatedField(
+        source='department', write_only=True,
+        queryset=Department.objects.all(),
+    )
+    reports_to      = PositionInlineSerializer(read_only=True)
+    reports_to_id   = serializers.PrimaryKeyRelatedField(
+        source='reports_to', write_only=True, required=False, allow_null=True,
+        queryset=Position.objects.all(),
+    )
+    default_role    = serializers.PrimaryKeyRelatedField(
+        required=False, allow_null=True,
+        queryset=PlatformRoleTemplate.objects.all(),
+    )
+    current_holders = UserInlineSerializer(many=True, read_only=True)
+    is_vacant       = serializers.BooleanField(read_only=True)
+    open_seats      = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Position
+        fields = (
+            'id', 'title', 'code',
+            'department', 'department_id',
+            'reports_to', 'reports_to_id',
+            'default_role', 'headcount', 'is_active',
+            'current_holders', 'is_vacant', 'open_seats',
+            'created_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at')
+
+    def validate(self, attrs):
+        target = copy.copy(self.instance) if self.instance is not None else Position()
+        for field, value in attrs.items():
+            setattr(target, field, value)
+        try:
+            target.clean()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(
+                exc.message_dict if hasattr(exc, 'message_dict') else exc.messages
+            )
+        return attrs
+
+
+class PositionAssignmentSerializer(serializers.ModelSerializer):
+    """
+    Read/write serializer for effective-dated position assignments.
+    Writes go through OrganogramService for primary-seat handling, so this is
+    mostly used for representation and validation.
+    """
+
+    user        = UserInlineSerializer(read_only=True)
+    user_id     = serializers.PrimaryKeyRelatedField(
+        source='user', write_only=True,
+        queryset=User.objects.filter(user_type=User.UserType.CX_STAFF),
+    )
+    position    = PositionInlineSerializer(read_only=True)
+    position_id = serializers.PrimaryKeyRelatedField(
+        source='position', write_only=True,
+        queryset=Position.objects.all(),
+    )
+    is_current  = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = PositionAssignment
+        fields = (
+            'id', 'user', 'user_id', 'position', 'position_id',
+            'is_primary', 'is_acting', 'start_date', 'end_date',
+            'is_current', 'created_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at')
+
+
+class MatrixReportSerializer(serializers.ModelSerializer):
+    """Dotted-line reporting between two positions."""
+
+    position       = PositionInlineSerializer(read_only=True)
+    position_id    = serializers.PrimaryKeyRelatedField(
+        source='position', write_only=True,
+        queryset=Position.objects.all(),
+    )
+    reports_to     = PositionInlineSerializer(read_only=True)
+    reports_to_id  = serializers.PrimaryKeyRelatedField(
+        source='reports_to', write_only=True,
+        queryset=Position.objects.all(),
+    )
+
+    class Meta:
+        model = MatrixReport
+        fields = (
+            'id', 'position', 'position_id',
+            'reports_to', 'reports_to_id', 'relationship_label',
+            'created_at', 'updated_at',
+        )
+        read_only_fields = ('id', 'created_at', 'updated_at')
+
+    def validate(self, attrs):
+        target = copy.copy(self.instance) if self.instance is not None else MatrixReport()
+        for field, value in attrs.items():
+            setattr(target, field, value)
+        try:
+            target.clean()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(
+                exc.message_dict if hasattr(exc, 'message_dict') else exc.messages
+            )
+        return attrs
+
+
+class OrganogramNodeSerializer(serializers.Serializer):
+    """
+    Recursive read-only serializer for the position tree returned by
+    OrganogramService.build_tree(). Each node is a Position plus its holders
+    and nested direct reports.
+    """
+
+    id            = serializers.IntegerField()
+    title         = serializers.CharField()
+    code          = serializers.CharField()
+    department    = DepartmentInlineSerializer()
+    holders       = UserInlineSerializer(many=True)
+    is_vacant     = serializers.BooleanField()
+    direct_reports = serializers.SerializerMethodField()
+
+    def get_direct_reports(self, obj):
+        children = obj.get('direct_reports', [])
+        return OrganogramNodeSerializer(children, many=True, context=self.context).data
 
 

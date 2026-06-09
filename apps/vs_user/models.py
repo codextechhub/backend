@@ -710,7 +710,11 @@ class PlatformStaffProfile(TimeStampedModel):
     # Human-facing staff number, distinct from User.uid.
     employee_id       = models.CharField(max_length=32, null=True, blank=True, unique=True)
     job_title         = models.CharField(max_length=120, blank=True, default='')
-    department        = models.CharField(max_length=120, blank=True, default='')
+    position          = models.ForeignKey(
+        'Position',
+        on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='staff_profiles',
+    )
     employment_type   = models.CharField(
         max_length=16, choices=EmploymentType.choices, blank=True, default='',
     )
@@ -720,11 +724,6 @@ class PlatformStaffProfile(TimeStampedModel):
     )
     date_joined       = models.DateField(null=True, blank=True)
     date_exited       = models.DateField(null=True, blank=True)
-    line_manager      = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL, null=True, blank=True,
-        related_name='platform_staff_reports',
-    )
 
     # ── Payroll (sensitive — gated behind FLS at the serializer layer) ────────
     bank_name      = models.CharField(max_length=120, blank=True, default='')
@@ -735,7 +734,7 @@ class PlatformStaffProfile(TimeStampedModel):
         db_table = 'vs_users_platform_staff_profile'
         verbose_name = 'Platform Staff Profile'
         indexes = [
-            models.Index(fields=['department', 'employment_status']),
+            models.Index(fields=['position', 'employment_status']),
             models.Index(fields=['employee_id']),
         ]
 
@@ -745,12 +744,308 @@ class PlatformStaffProfile(TimeStampedModel):
         # table, so this is enforced here rather than via a DB CheckConstraint.
         if self.user_id and self.user.user_type != User.UserType.CX_STAFF:
             raise ValidationError('PlatformStaffProfile can only be attached to CX Staff users.')
-        if self.line_manager_id and self.line_manager_id == self.user_id:
-            raise ValidationError('A staff member cannot be their own line manager.')
 
     @property
     def is_active_employee(self) -> bool:
         return self.employment_status == self.EmploymentStatus.ACTIVE
 
+    @property
+    def department(self):
+        """Derived from the cached primary position. Returns a Department or None."""
+        return self.position.department if self.position_id else None
+
+    @property
+    def primary_assignment(self):
+        """The user's current primary PositionAssignment (carries dates/acting), or None."""
+        return (
+            self.user.position_assignments
+            .filter(is_primary=True, end_date__isnull=True)
+            .select_related('position', 'position__department')
+            .first()
+        )
+
+    @property
+    def current_line_manager(self):
+        """
+        Derives the user's line manager from their cached primary position's
+        reports_to seat. Returns a User (the holder of the manager position),
+        or None if there is no position, no parent seat, or it is vacant.
+        """
+        if not self.position_id or self.position.reports_to_id is None:
+            return None
+        return self.position.reports_to.current_holder
+
     def __str__(self) -> str:
         return f'PlatformStaffProfile<{self.user_id}:{self.job_title or "staff"}>'
+
+
+# =============================================================================
+# Organogram — Department / Position / PositionAssignment / MatrixReport
+# =============================================================================
+#
+# Position-based organisational chart for CX (platform) staff only.
+#
+#   Department          - hierarchical tree of org units (self-referential)
+#   Position            - a seat in the org (title), belonging to a department,
+#                         reporting to another position (solid line)
+#   PositionAssignment  - effective-dated link of a user to a position
+#                         (FULL HISTORY: end_date IS NULL == current)
+#   MatrixReport        - dotted-line / secondary reporting between positions
+#
+# CX-only by design: no school / branch fields. School org charts will live in
+# the future `staff` app.
+
+class Department(TimeStampedModel):
+    """A node in the CX org tree (e.g. Engineering → Backend)."""
+
+    name        = models.CharField(max_length=150)
+    code        = models.CharField(max_length=40, unique=True)
+    parent      = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='children',
+    )
+    # The position whose holder heads this department (e.g. "Head of Engineering").
+    # Nullable so a department can exist before its head seat is defined.
+    head_position = models.ForeignKey(
+        'Position',
+        on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='heads_department',
+    )
+    description = models.TextField(blank=True, default='')
+    is_active   = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'vs_users_department'
+        verbose_name = 'Department'
+        ordering = ['name']
+        indexes = [
+            models.Index(fields=['parent', 'is_active']),
+            models.Index(fields=['code']),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.parent_id and self.parent_id == self.pk:
+            raise ValidationError('A department cannot be its own parent.')
+        # Guard against cycles in the parent chain.
+        ancestor = self.parent
+        while ancestor is not None:
+            if ancestor.pk == self.pk:
+                raise ValidationError('Department parent chain cannot contain a cycle.')
+            ancestor = ancestor.parent
+
+    @property
+    def head(self):
+        """The User currently heading this department, or None."""
+        if self.head_position_id is None:
+            return None
+        return self.head_position.current_holder
+
+    def ancestors(self):
+        """Yields departments from immediate parent up to the root."""
+        node = self.parent
+        while node is not None:
+            yield node
+            node = node.parent
+
+    def __str__(self) -> str:
+        return f'Department<{self.code}>'
+
+
+class Position(TimeStampedModel):
+    """
+    A seat in the organogram (e.g. "Backend Engineer"). People are assigned to
+    positions via PositionAssignment; the solid reporting line is position→position
+    through `reports_to`.
+    """
+
+    title        = models.CharField(max_length=150)
+    code         = models.CharField(max_length=40, unique=True)
+    department   = models.ForeignKey(
+        Department,
+        on_delete=models.PROTECT,
+        related_name='positions',
+    )
+    # Solid-line manager seat. Null for the top of the tree (e.g. CEO).
+    reports_to   = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='direct_reports',
+    )
+    # Optional default RBAC role granted when someone is assigned this seat.
+    default_role = models.ForeignKey(
+        'vs_rbac.PlatformRoleTemplate',
+        on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='default_for_positions',
+    )
+    # Number of people the seat may hold simultaneously (1 == single-incumbent).
+    headcount    = models.PositiveSmallIntegerField(default=1)
+    is_active    = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'vs_users_position'
+        verbose_name = 'Position'
+        ordering = ['title']
+        indexes = [
+            models.Index(fields=['department', 'is_active']),
+            models.Index(fields=['reports_to']),
+            models.Index(fields=['code']),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.reports_to_id and self.reports_to_id == self.pk:
+            raise ValidationError('A position cannot report to itself.')
+        # Guard against cycles in the reporting chain.
+        node = self.reports_to
+        while node is not None:
+            if node.pk == self.pk:
+                raise ValidationError('Position reporting chain cannot contain a cycle.')
+            node = node.reports_to
+
+    @property
+    def current_assignments(self):
+        """All current (open-ended) assignments to this seat."""
+        return self.assignments.filter(end_date__isnull=True).select_related('user')
+
+    @property
+    def current_holder(self):
+        """
+        The single primary current holder of this seat, or None.
+        For multi-incumbent seats this returns the primary holder.
+        """
+        assignment = (
+            self.assignments
+            .filter(end_date__isnull=True, is_primary=True)
+            .select_related('user')
+            .first()
+        )
+        if assignment is None:
+            assignment = (
+                self.assignments
+                .filter(end_date__isnull=True)
+                .select_related('user')
+                .first()
+            )
+        return assignment.user if assignment else None
+
+    @property
+    def current_holders(self):
+        """All Users currently holding this seat (multi-incumbent aware)."""
+        return [a.user for a in self.current_assignments]
+
+    @property
+    def is_vacant(self) -> bool:
+        return not self.assignments.filter(end_date__isnull=True).exists()
+
+    @property
+    def open_seats(self) -> int:
+        filled = self.assignments.filter(end_date__isnull=True).count()
+        return max(self.headcount - filled, 0)
+
+    def __str__(self) -> str:
+        return f'Position<{self.code}>'
+
+
+class PositionAssignment(TimeStampedModel):
+    """
+    Effective-dated assignment of a user to a position. FULL HISTORY:
+    a row with end_date IS NULL is the user's current tenure in that seat;
+    closing a tenure is setting end_date. Past rows are retained.
+
+    "One current primary assignment per user" cannot be a conditional unique
+    constraint on MariaDB, so it is enforced in OrganogramService / clean().
+    """
+
+    user       = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='position_assignments',
+    )
+    position   = models.ForeignKey(
+        Position,
+        on_delete=models.PROTECT,
+        related_name='assignments',
+    )
+    # The primary seat drives department + line-manager derivation. A user may
+    # hold secondary (non-primary) seats simultaneously.
+    is_primary = models.BooleanField(default=True)
+    # Acting / interim cover (e.g. covering a vacant manager seat).
+    is_acting  = models.BooleanField(default=False)
+    start_date = models.DateField(default=timezone.localdate)
+    end_date   = models.DateField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'vs_users_position_assignment'
+        verbose_name = 'Position Assignment'
+        ordering = ['-start_date']
+        indexes = [
+            models.Index(fields=['user', 'end_date']),
+            models.Index(fields=['position', 'end_date']),
+            models.Index(fields=['is_primary', 'end_date']),
+        ]
+
+    @property
+    def is_current(self) -> bool:
+        return self.end_date is None
+
+    def clean(self):
+        super().clean()
+        if self.user_id and self.user.user_type != User.UserType.CX_STAFF:
+            raise ValidationError('Only CX Staff can be assigned to a position.')
+        if self.end_date and self.end_date < self.start_date:
+            raise ValidationError('end_date cannot be before start_date.')
+        # One current primary assignment per user (MariaDB-safe: enforced here).
+        if self.is_primary and self.end_date is None and self.user_id:
+            clash = (
+                PositionAssignment.objects
+                .filter(user_id=self.user_id, is_primary=True, end_date__isnull=True)
+                .exclude(pk=self.pk)
+            )
+            if clash.exists():
+                raise ValidationError(
+                    'This user already has a current primary position. '
+                    'Close it before assigning a new primary position.'
+                )
+
+    def __str__(self) -> str:
+        state = 'current' if self.is_current else f'ended {self.end_date}'
+        return f'PositionAssignment<{self.user_id}@{self.position_id}:{state}>'
+
+
+class MatrixReport(TimeStampedModel):
+    """
+    Dotted-line (matrix / secondary) reporting between two positions. Distinct
+    from the solid line carried by Position.reports_to. Used for cross-functional
+    or project reporting that the approval engine can optionally honour.
+    """
+
+    position    = models.ForeignKey(
+        Position,
+        on_delete=models.CASCADE,
+        related_name='matrix_reports',
+    )
+    reports_to  = models.ForeignKey(
+        Position,
+        on_delete=models.CASCADE,
+        related_name='matrix_directs',
+    )
+    relationship_label = models.CharField(max_length=120, blank=True, default='')
+
+    class Meta:
+        db_table = 'vs_users_matrix_report'
+        verbose_name = 'Matrix Report'
+        unique_together = [('position', 'reports_to')]
+        indexes = [
+            models.Index(fields=['position']),
+            models.Index(fields=['reports_to']),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.position_id and self.position_id == self.reports_to_id:
+            raise ValidationError('A position cannot have a matrix line to itself.')
+
+    def __str__(self) -> str:
+        return f'MatrixReport<{self.position_id}⇢{self.reports_to_id}>'

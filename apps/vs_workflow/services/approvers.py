@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, List, Optional
 from django.db.models import Q
 from django.utils import timezone
 
-from vs_workflow.constants import ApproverScope
+from vs_workflow.constants import ApproverScope, ApproverSource, OrganogramTarget
 from vs_workflow.models import ApprovalDelegation, WorkflowInstance, WorkflowStage
 
 if TYPE_CHECKING:
@@ -66,30 +66,73 @@ def _users_with_permission(school, branch, permission_key: str, scope: ApproverS
     )
 
 
+def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
+    """Resolve base approvers by climbing the CX organogram relative to the requester.
+
+    Opt-in strategy (ApproverSource.ORGANOGRAM). Degrades gracefully to an empty
+    list if vs_user / the organogram service is unavailable, mirroring the RBAC
+    path's defensive ImportError handling. The requester is excluded inside the
+    service helpers, so they can never approve their own submission.
+    """
+    try:
+        from vs_user.services.organogram import OrganogramService
+    except ImportError:
+        import logging
+        logging.getLogger(__name__).warning(
+            "vs_user organogram not available; ORGANOGRAM stage resolved to no approvers.")
+        return []
+
+    requester = instance.requested_by
+    target = stage.organogram_target
+
+    if target == OrganogramTarget.DIRECT_MANAGER:
+        return OrganogramService.resolve_direct_manager(requester)
+    if target == OrganogramTarget.N_LEVELS_UP:
+        return OrganogramService.resolve_n_levels_up(requester, stage.organogram_levels)
+    if target == OrganogramTarget.DEPARTMENT_HEAD:
+        return OrganogramService.resolve_department_head(requester)
+    if target == OrganogramTarget.SPECIFIC_POSITION:
+        return OrganogramService.resolve_specific_position(
+            stage.organogram_position, exclude_user=requester,
+        )
+    return []
+
+
 def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[EligibleApprover]:
     """Build the full eligible approver list for a stage at the moment it activates.
 
-    Base approvers are users who hold stage.approver_permission_key in the
-    configured scope. The requester is always excluded — they cannot approve
-    their own submission. Active delegations then expand the list: if an
-    eligible approver has delegated their authority, the delegate is added
-    on their behalf (and the delegator removed when the delegation is exclusive).
-    De-duplication via a seen-set on (user_id, on_behalf_of_id) pairs prevents
-    the same row appearing twice if the queryset returns duplicates. A delegate
-    acting for two different delegators intentionally appears twice — once per
-    delegator — because the on_behalf_of field differs.
-    """
-    if not stage.approver_permission_key:
-        return []
+    The base approver set is produced by the stage's `approver_source`:
+      - RBAC_PERMISSION (default): users holding stage.approver_permission_key
+        in the configured scope. This is the original, untouched behaviour.
+      - ORGANOGRAM (opt-in): the holder(s) of the seat reached by climbing the
+        CX organogram relative to the requester (direct manager, N levels up,
+        department head, or a specific position).
 
-    base_qs = _users_with_permission(
-        school=instance.school,
-        branch=instance.branch,
-        permission_key=stage.approver_permission_key,
-        scope=ApproverScope(stage.approver_scope),
-    )
-    base_qs = base_qs.exclude(pk=instance.requested_by_id)
-    base_users = list(base_qs.distinct())
+    The requester is always excluded — they cannot approve their own submission.
+    Active delegations then expand the list regardless of source: if an eligible
+    approver has delegated their authority, the delegate is added on their behalf
+    (and the delegator removed when the delegation is exclusive). De-duplication
+    via a seen-set on (user_id, on_behalf_of_id) pairs prevents the same row
+    appearing twice. A delegate acting for two different delegators intentionally
+    appears twice — once per delegator — because the on_behalf_of field differs.
+    """
+    if stage.approver_source == ApproverSource.ORGANOGRAM:
+        base_users = [
+            u for u in _organogram_base_users(stage, instance)
+            if u and u.pk != instance.requested_by_id
+        ]
+    else:
+        if not stage.approver_permission_key:
+            return []
+        base_qs = _users_with_permission(
+            school=instance.school,
+            branch=instance.branch,
+            permission_key=stage.approver_permission_key,
+            scope=ApproverScope(stage.approver_scope),
+        )
+        base_qs = base_qs.exclude(pk=instance.requested_by_id)
+        base_users = list(base_qs.distinct())
+
     base_ids = {u.pk for u in base_users}
 
     now = timezone.now()

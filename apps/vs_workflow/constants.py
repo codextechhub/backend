@@ -65,6 +65,25 @@ class StageKind(models.TextChoices):
     APPROVAL = "APPROVAL", "Approval"
     BRANCH   = "BRANCH",   "Branch"
 
+class ApproverSource(models.TextChoices):
+    """
+    How a stage resolves its eligible approvers.
+
+    RBAC_PERMISSION is the original (and default) strategy: anyone holding
+    `approver_permission_key` within `approver_scope`. ORGANOGRAM is an
+    additive, opt-in strategy that climbs the CX organogram relative to the
+    requester. The two are mutually exclusive per stage.
+    """
+    RBAC_PERMISSION = "RBAC_PERMISSION", "RBAC permission holders (default)"
+    ORGANOGRAM      = "ORGANOGRAM",      "Organogram (relative to requester)"
+
+class OrganogramTarget(models.TextChoices):
+    """The climb mode used when ApproverSource is ORGANOGRAM."""
+    DIRECT_MANAGER   = "DIRECT_MANAGER",   "Requester's direct manager"
+    N_LEVELS_UP      = "N_LEVELS_UP",      "N levels up the reporting chain"
+    DEPARTMENT_HEAD  = "DEPARTMENT_HEAD",  "Head of requester's department"
+    SPECIFIC_POSITION = "SPECIFIC_POSITION", "Holder(s) of a specific position"
+
 # Permission keys (vs_rbac contract)
 PERM_TEMPLATE_MANAGE = "workflow.template.manage"
 PERM_TEMPLATE_VIEW   = "workflow.template.view"
