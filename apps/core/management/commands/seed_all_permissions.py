@@ -18,6 +18,9 @@ Seed order
 2. seed_prebuilt_role_templates — school_admin / branch_admin prebuilt roles
 3. seed_import_permissions   — import pipeline permissions → xvs_super_admin
 4. seed_workflow_permissions — workflow engine permissions → both platform roles
+5. seed_finance_permissions  — vs_finance permissions → both platform roles
+6. seed_procurement_permissions — vs_procurement permissions → both platform roles
+7. seed_payments_permissions — vs_payments permissions → both platform roles
 """
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
@@ -29,6 +32,9 @@ SEED_STEPS: list[tuple[str, list]] = [
     ("seed_prebuilt_role_templates", []),
     ("seed_import_permissions",      []),
     ("seed_workflow_permissions",    []),
+    ("seed_finance_permissions",     []),
+    ("seed_procurement_permissions", []),
+    ("seed_payments_permissions",    []),
 ]
 
 

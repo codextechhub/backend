@@ -69,6 +69,27 @@ ACTIONS: list[tuple[str, str]] = [
     # ── Finance-specific ──────────────────────────────────────────────────────
     ("waive",      "Grant a full or partial exemption from a fee or charge."),
     ("apply",      "Apply for something on behalf of self (leave requests, waivers)."),
+    ("reconcile",  "Match transactions against an external source (bank statements, sub-ledgers)."),
+    ("edit",       "Edit a draft record's contents before submission or approval."),
+    ("allocate",   "Apply a payment, credit note, or concession against open items."),
+    ("settle",     "Settle or disburse an approved liability (expense claims, payables)."),
+    ("acquire",    "Record the acquisition of a fixed asset onto the register."),
+    ("depreciate", "Run depreciation against the fixed-asset register."),
+    ("writeoff",   "Write off an uncollectable balance against a loss account."),
+    ("activate",   "Activate a draft record into its live, operative state."),
+    ("pay",        "Disburse funds to settle a payable, payroll, or tax liability."),
+    ("close",      "Close an accounting period, locking it against further postings."),
+    ("replenish",  "Replenish a petty-cash float back to its imprest level."),
+    ("file",       "File a statutory return (VAT, WHT, PAYE) with the authority."),
+    ("approve_senior", "Provide senior-tier approval for high-value records above threshold."),
+
+    # ── Procurement-specific ──────────────────────────────────────────────────
+    ("renew",      "Renew a contract or agreement into a successor term."),
+    ("terminate",  "Terminate an active contract or agreement before expiry."),
+    ("award",      "Award a quotation or tender to the winning vendor."),
+    ("issue",      "Issue a document to its counterparty (RFQ, stock issue)."),
+    ("match",      "Perform a multi-way match (PO ↔ GRN ↔ invoice)."),
+    ("adjust",     "Record a manual adjustment (stock revaluation, corrections)."),
 
     # ── Library-specific ──────────────────────────────────────────────────────
     ("return",     "Record the return of a borrowed item."),
