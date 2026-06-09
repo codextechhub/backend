@@ -131,6 +131,7 @@ class Permission(TimeStampedModel):
     )
     resource = models.ForeignKey(
         PermissionResource,
+        db_column="resource_key",
         db_constraint=False,
         on_delete=models.PROTECT,
         related_name="permissions",
