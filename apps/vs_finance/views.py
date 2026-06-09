@@ -33,6 +33,7 @@ from .serializers import (
     InvoiceSerializer,
     JournalEntryDetailSerializer,
     JournalEntryListSerializer,
+    LedgerEntityCreateSerializer,
     LedgerEntitySerializer,
 )
 
@@ -93,12 +94,26 @@ def _resolve_period(entity, request, *, param="period"):
 # Master data + documents                                                     #
 # --------------------------------------------------------------------------- #
 
-class EntityListView(generics.ListAPIView):
-    """GET /finance/entities/ — the ledger entities (sets of books) on the platform."""
+class EntityListCreateView(generics.ListCreateAPIView):
+    """GET /finance/entities/ — the ledger entities (sets of books) on the platform.
 
-    serializer_class = LedgerEntitySerializer
+    POST /finance/entities/ — provision a **new** set of books. Entity creation is a
+    structural, platform-level operation (a new entity becomes the tenant of its own
+    documents and numbering), so it is gated on the dedicated ``finance.entity.create``
+    key, which is granted only to the platform admin roles.
+    """
+
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
-    rbac_permission = "finance.entity.view"
+
+    @property
+    def rbac_permission(self):
+        return ("finance.entity.create" if self.request.method == "POST"
+                else "finance.entity.view")
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return LedgerEntityCreateSerializer
+        return LedgerEntitySerializer
 
     def get_queryset(self):
         qs = LedgerEntity.objects.all().order_by("code")
@@ -108,6 +123,15 @@ class EntityListView(generics.ListAPIView):
             if active.lower() in ("true", "false"):
                 qs = qs.filter(is_active=active.lower() == "true")
         return qs
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        entity = serializer.save()
+        return success_response(
+            f"Ledger entity {entity.code} created.",
+            data=serializer.data, status=201,
+        )
 
 
 class AccountListView(EntityScopedListMixin, generics.ListAPIView):

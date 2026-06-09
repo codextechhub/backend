@@ -2169,6 +2169,35 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         types = {a["account_type"] for a in resp.json()["data"]}
         self.assertEqual(types, {"ASSET"})
 
+    def test_entity_create_provisions_new_books(self):
+        # Seed first so the NGN currency exists for the default base_currency.
+        self._seed()
+        resp = self.client.post(
+            "/v1/finance/entities/",
+            {"code": "crest", "name": "Crestfield Academy", "kind": "TENANT"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        data = resp.json()["data"]
+        self.assertEqual(data["code"], "CREST")          # normalised to uppercase
+        self.assertEqual(data["base_currency"], "NGN")   # model default
+        self.assertTrue(data["is_active"])
+
+        # And it now shows up in the list endpoint.
+        listed = self.client.get("/v1/finance/entities/")
+        self.assertIn("CREST", {e["code"] for e in listed.json()["data"]})
+
+    def test_entity_create_rejects_duplicate_code(self):
+        self._seed()
+        first = self.client.post(
+            "/v1/finance/entities/", {"code": "CREST", "name": "Crestfield"}, format="json",
+        )
+        self.assertEqual(first.status_code, 201, first.content)
+        dupe = self.client.post(
+            "/v1/finance/entities/", {"code": "crest", "name": "Crestfield Dup"}, format="json",
+        )
+        self.assertEqual(dupe.status_code, 400)
+
     def test_statement_endpoints_match_service_output(self):
         entity, _ = self._seed()
         ec = entity.code
@@ -2289,3 +2318,35 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         )
         self.assertEqual(resp.status_code, 400)
         self.assertFalse(resp.json()["success"])
+
+
+class EntityCreatePermissionTests(TestCase):
+    """Provisioning a new entity must be gated on ``finance.entity.create``.
+
+    A plain authenticated staff user holding no role (hence no grant) must be
+    denied — proving the POST is RBAC-gated, not open like the GET-only list was.
+    """
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIClient
+
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            email="no-grant@test.com", password="testpass123",
+            user_type="CX_STAFF", status="ACTIVE",
+            first_name="No", last_name="Grant",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_create_denied_without_grant(self):
+        resp = self.client.post(
+            "/v1/finance/entities/", {"code": "NOPE", "name": "Nope"}, format="json",
+        )
+        self.assertEqual(resp.status_code, 403)
+
+    def test_list_still_denied_without_view_grant(self):
+        # The GET side is gated on finance.entity.view; same ungranted user is denied.
+        resp = self.client.get("/v1/finance/entities/")
+        self.assertEqual(resp.status_code, 403)

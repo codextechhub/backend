@@ -25,7 +25,7 @@ _RESTRICTED = {"SENSITIVE", "CRITICAL"}
 # (resource_name, resource_label, [(action, sensitivity), ...])
 # sensitivity: NORMAL (reads / master data) | SENSITIVE (state change) | CRITICAL (money / ledger-irreversible)
 FINANCE_RESOURCES = [
-    ("entity",       "ledger entities",        [("view", "NORMAL")]),
+    ("entity",       "ledger entities",        [("view", "NORMAL"), ("create", "SENSITIVE")]),
     ("account",      "chart-of-accounts",      [("view", "NORMAL")]),
     ("costcenter",   "cost centers",           [("view", "NORMAL"), ("create", "NORMAL")]),
     ("dimension",    "reporting dimensions",   [("view", "NORMAL"), ("create", "NORMAL")]),

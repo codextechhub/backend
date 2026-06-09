@@ -14,7 +14,7 @@ from .views import (
     BalanceSheetView,
     CashFlowView,
     ChangesInEquityView,
-    EntityListView,
+    EntityListCreateView,
     FiscalPeriodListView,
     IncomeStatementView,
     InvoiceListView,
@@ -101,7 +101,7 @@ from .views_ops import (
 
 urlpatterns = [
     # Master data + documents
-    path("entities/", EntityListView.as_view(), name="finance-entity-list"),
+    path("entities/", EntityListCreateView.as_view(), name="finance-entity-list"),
     path("accounts/", AccountListView.as_view(), name="finance-account-list"),
     path("periods/", FiscalPeriodListView.as_view(), name="finance-period-list"),
     path("journals/", JournalEntryListView.as_view(), name="finance-journal-list"),

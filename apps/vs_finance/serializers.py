@@ -66,6 +66,47 @@ class LedgerEntitySerializer(serializers.ModelSerializer):
         ]
 
 
+class LedgerEntityCreateSerializer(serializers.ModelSerializer):
+    """Write serializer for provisioning a new set of books (super-admin only).
+
+    ``code`` is normalised to uppercase (it appears verbatim inside every document
+    number) and ``base_currency`` accepts the 3-letter currency code (its PK).
+    """
+
+    base_currency = serializers.PrimaryKeyRelatedField(
+        queryset=Currency.objects.all(), required=False,
+    )
+
+    class Meta:
+        model = LedgerEntity
+        fields = ["id", "code", "name", "kind", "base_currency", "source_school"]
+        extra_kwargs = {
+            "kind": {"required": False},
+            "source_school": {"required": False, "allow_null": True},
+        }
+
+    def validate_code(self, value):
+        code = (value or "").strip().upper()
+        if not code:
+            raise serializers.ValidationError("Entity code is required.")
+        if LedgerEntity.objects.filter(code=code).exists():
+            raise serializers.ValidationError(f"A ledger entity with code '{code}' already exists.")
+        return code
+
+    def create(self, validated_data):
+        from django.utils import timezone
+
+        validated_data.setdefault("kind", LedgerEntity.Kind.TENANT)
+        entity = LedgerEntity.objects.create(
+            is_active=True, activated_at=timezone.now(), **validated_data,
+        )
+        return entity
+
+    def to_representation(self, instance):
+        # Echo back the canonical read shape so the caller sees base_currency code.
+        return LedgerEntitySerializer(instance, context=self.context).data
+
+
 class AccountSerializer(serializers.ModelSerializer):
     parent_code = serializers.CharField(source="parent.code", read_only=True, default=None)
 
