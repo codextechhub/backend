@@ -611,12 +611,13 @@ class PlatformStaffProfileListSerializer(serializers.ModelSerializer):
     position = PositionInlineSerializer(read_only=True)
     org_node = OrgNodeInlineSerializer(read_only=True)
     department = OrgNodeInlineSerializer(read_only=True)
+    division = OrgNodeInlineSerializer(read_only=True)
     is_active_employee = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = PlatformStaffProfile
         fields = (
-            'id', 'user', 'employee_id', 'job_title', 'position', 'org_node', 'department',
+            'id', 'user', 'employee_id', 'job_title', 'position', 'org_node', 'department', 'division',
             'employment_type', 'employment_status', 'is_active_employee',
             'created_at', 'updated_at',
         )

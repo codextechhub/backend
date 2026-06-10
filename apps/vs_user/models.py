@@ -766,6 +766,16 @@ class PlatformStaffProfile(TimeStampedModel):
         return node.nearest_of_kind(OrgNode.Kind.DEPARTMENT) if node else None
 
     @property
+    def division(self):
+        """
+        The DIVISION-tier node the person belongs to, derived by walking up the
+        org tree from their seat (Team → Department → Division). Returns an
+        OrgNode of kind DIVISION, or None if there is no division ancestor.
+        """
+        node = self.org_node
+        return node.nearest_of_kind(OrgNode.Kind.DIVISION) if node else None
+
+    @property
     def primary_assignment(self):
         """The user's current primary PositionAssignment (carries dates/acting), or None."""
         return (
