@@ -20,7 +20,7 @@ from django.utils import timezone
 
 from ..models import (
     User,
-    Department,
+    OrgNode,
     Position,
     PositionAssignment,
     PlatformStaffProfile,
@@ -116,7 +116,7 @@ class OrganogramService:
         assignment = (
             PositionAssignment.objects
             .filter(user=user, is_primary=True, end_date__isnull=True)
-            .select_related('position', 'position__department')
+            .select_related('position', 'position__org_node')
             .first()
         )
         return assignment.position if assignment else None
@@ -145,13 +145,13 @@ class OrganogramService:
     def build_tree(root: Optional[Position] = None) -> list:
         """
         Builds the position tree as nested dicts suitable for
-        OrganogramNodeSerializer. If `root` is given, builds the subtree under
+        OrgTreeNodeSerializer. If `root` is given, builds the subtree under
         it; otherwise returns all top-level positions (reports_to IS NULL).
         """
         positions = list(
             Position.objects
             .filter(is_active=True)
-            .select_related('department')
+            .select_related('org_node')
             .prefetch_related('assignments__user')
         )
         children_by_parent: dict = {}
@@ -164,7 +164,7 @@ class OrganogramService:
                 'id': pos.id,
                 'title': pos.title,
                 'code': pos.code,
-                'department': pos.department,
+                'org_node': pos.org_node,
                 'holders': pos.current_holders,
                 'is_vacant': pos.is_vacant,
                 'direct_reports': [
@@ -187,7 +187,7 @@ class OrganogramService:
         """Active positions with at least one open seat."""
         return [
             pos for pos in (
-                Position.objects.filter(is_active=True).select_related('department')
+                Position.objects.filter(is_active=True).select_related('org_node')
             )
             if pos.open_seats > 0
         ]
@@ -217,20 +217,21 @@ class OrganogramService:
     @staticmethod
     def resolve_department_head(user: User) -> List[User]:
         """
-        Climb mode: DEPARTMENT_HEAD — holder of the head_position of the user's
-        department, walking up the department tree until a head seat is found.
+        Climb mode: DEPARTMENT_HEAD — holder of the head_position of the org node
+        the user sits in, walking UP the org tree (Team → Department → Division)
+        until a node with a filled head seat is found.
         """
         position = OrganogramService.primary_position_for(user)
         if position is None:
             return []
-        department = position.department
-        while department is not None:
-            if department.head_position_id is not None:
-                holders = department.head_position.current_holders
+        node = position.org_node
+        while node is not None:
+            if node.head_position_id is not None:
+                holders = node.head_position.current_holders
                 resolved = [u for u in holders if u and u.pk != user.pk]
                 if resolved:
                     return resolved
-            department = department.parent
+            node = node.parent
         return []
 
     @staticmethod

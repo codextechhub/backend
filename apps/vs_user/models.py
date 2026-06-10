@@ -750,9 +750,20 @@ class PlatformStaffProfile(TimeStampedModel):
         return self.employment_status == self.EmploymentStatus.ACTIVE
 
     @property
+    def org_node(self):
+        """The exact org node the person sits in (could be a Team). Or None."""
+        return self.position.org_node if self.position_id else None
+
+    @property
     def department(self):
-        """Derived from the cached primary position. Returns a Department or None."""
-        return self.position.department if self.position_id else None
+        """
+        The DEPARTMENT-tier node the person belongs to, derived by walking up
+        from their seat's org node (a Team resolves to its parent Department).
+        Returns an OrgNode of kind DEPARTMENT, or None if they sit directly on a
+        Division (no department tier).
+        """
+        node = self.org_node
+        return node.nearest_of_kind(OrgNode.Kind.DEPARTMENT) if node else None
 
     @property
     def primary_assignment(self):
@@ -760,7 +771,7 @@ class PlatformStaffProfile(TimeStampedModel):
         return (
             self.user.position_assignments
             .filter(is_primary=True, end_date__isnull=True)
-            .select_related('position', 'position__department')
+            .select_related('position', 'position__org_node')
             .first()
         )
 
@@ -780,13 +791,14 @@ class PlatformStaffProfile(TimeStampedModel):
 
 
 # =============================================================================
-# Organogram — Department / Position / PositionAssignment / MatrixReport
+# Organogram — OrgNode / Position / PositionAssignment / MatrixReport
 # =============================================================================
 #
 # Position-based organisational chart for CX (platform) staff only.
 #
-#   Department          - hierarchical tree of org units (self-referential)
-#   Position            - a seat in the org (title), belonging to a department,
+#   OrgNode             - hierarchical tree of org units (self-referential),
+#                         tiered as DIVISION → DEPARTMENT → TEAM
+#   Position            - a seat in the org (title), belonging to an org node,
 #                         reporting to another position (solid line)
 #   PositionAssignment  - effective-dated link of a user to a position
 #                         (FULL HISTORY: end_date IS NULL == current)
@@ -795,62 +807,113 @@ class PlatformStaffProfile(TimeStampedModel):
 # CX-only by design: no school / branch fields. School org charts will live in
 # the future `staff` app.
 
-class Department(TimeStampedModel):
-    """A node in the CX org tree (e.g. Engineering → Backend)."""
+class OrgNode(TimeStampedModel):
+    """
+    A node in the CX org tree, tiered DIVISION → DEPARTMENT → TEAM.
+
+    The hierarchy is strictly enforced in clean(): a Division is top-level, a
+    Department must sit under a Division, and a Team must sit under a Department.
+    """
+
+    class Kind(models.TextChoices):
+        DIVISION   = 'DIVISION',   'Division'
+        DEPARTMENT = 'DEPARTMENT', 'Department'
+        TEAM       = 'TEAM',       'Team'
+
+    # Which parent tier each kind must sit under (None == must be top-level).
+    _REQUIRED_PARENT_KIND = {
+        Kind.DIVISION:   None,
+        Kind.DEPARTMENT: Kind.DIVISION,
+        Kind.TEAM:       Kind.DEPARTMENT,
+    }
 
     name        = models.CharField(max_length=150)
     code        = models.CharField(max_length=40, unique=True)
+    kind        = models.CharField(
+        max_length=16, choices=Kind.choices, default=Kind.DEPARTMENT,
+    )
     parent      = models.ForeignKey(
         'self',
         on_delete=models.SET_NULL, null=True, blank=True,
         related_name='children',
     )
-    # The position whose holder heads this department (e.g. "Head of Engineering").
-    # Nullable so a department can exist before its head seat is defined.
+    # The position whose holder heads this node (e.g. "Head of Engineering").
+    # Nullable so a node can exist before its head seat is defined.
     head_position = models.ForeignKey(
         'Position',
         on_delete=models.SET_NULL, null=True, blank=True,
-        related_name='heads_department',
+        related_name='heads_node',
     )
     description = models.TextField(blank=True, default='')
     is_active   = models.BooleanField(default=True)
 
     class Meta:
-        db_table = 'vs_users_department'
-        verbose_name = 'Department'
+        db_table = 'vs_users_org_node'
+        verbose_name = 'Org Node'
         ordering = ['name']
         indexes = [
             models.Index(fields=['parent', 'is_active']),
+            models.Index(fields=['kind']),
             models.Index(fields=['code']),
         ]
 
     def clean(self):
         super().clean()
         if self.parent_id and self.parent_id == self.pk:
-            raise ValidationError('A department cannot be its own parent.')
+            raise ValidationError('An org node cannot be its own parent.')
         # Guard against cycles in the parent chain.
         ancestor = self.parent
         while ancestor is not None:
             if ancestor.pk == self.pk:
-                raise ValidationError('Department parent chain cannot contain a cycle.')
+                raise ValidationError('Org node parent chain cannot contain a cycle.')
             ancestor = ancestor.parent
+
+        # Enforce the DIVISION → DEPARTMENT → TEAM tiering.
+        required_parent = self._REQUIRED_PARENT_KIND.get(self.kind)
+        if required_parent is None:
+            if self.parent_id is not None:
+                raise ValidationError(
+                    {'parent': f'A {self.get_kind_display()} is top-level and cannot have a parent.'}
+                )
+        else:
+            if self.parent_id is None:
+                raise ValidationError(
+                    {'parent': f'A {self.get_kind_display()} must sit under a {OrgNode.Kind(required_parent).label}.'}
+                )
+            if self.parent.kind != required_parent:
+                raise ValidationError(
+                    {'parent': f'A {self.get_kind_display()} must sit under a '
+                               f'{OrgNode.Kind(required_parent).label}, not a {self.parent.get_kind_display()}.'}
+                )
 
     @property
     def head(self):
-        """The User currently heading this department, or None."""
+        """The User currently heading this node, or None."""
         if self.head_position_id is None:
             return None
         return self.head_position.current_holder
 
     def ancestors(self):
-        """Yields departments from immediate parent up to the root."""
+        """Yields nodes from immediate parent up to the root."""
         node = self.parent
         while node is not None:
             yield node
             node = node.parent
 
+    def nearest_of_kind(self, kind):
+        """
+        Returns self (or the nearest ancestor) whose kind matches `kind`,
+        walking up the tree. None if no node of that kind exists in the chain.
+        """
+        node = self
+        while node is not None:
+            if node.kind == kind:
+                return node
+            node = node.parent
+        return None
+
     def __str__(self) -> str:
-        return f'Department<{self.code}>'
+        return f'OrgNode<{self.kind}:{self.code}>'
 
 
 class Position(TimeStampedModel):
@@ -862,8 +925,9 @@ class Position(TimeStampedModel):
 
     title        = models.CharField(max_length=150)
     code         = models.CharField(max_length=40, unique=True)
-    department   = models.ForeignKey(
-        Department,
+    # The org node this seat belongs to — may be a Division, Department, or Team.
+    org_node     = models.ForeignKey(
+        OrgNode,
         on_delete=models.PROTECT,
         related_name='positions',
     )
@@ -888,7 +952,7 @@ class Position(TimeStampedModel):
         verbose_name = 'Position'
         ordering = ['title']
         indexes = [
-            models.Index(fields=['department', 'is_active']),
+            models.Index(fields=['org_node', 'is_active'], name='pos_orgnode_active_idx'),
             models.Index(fields=['reports_to']),
             models.Index(fields=['code']),
         ]

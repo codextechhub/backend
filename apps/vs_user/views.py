@@ -35,7 +35,7 @@ from .models import (
     User, UserInvitation, LoginSession, AuthAttempt,
     AccountLockout, AuthEventLog, PasswordResetRequest,
     PlatformStaffProfile,
-    Department, Position, PositionAssignment, MatrixReport,
+    OrgNode, Position, PositionAssignment, MatrixReport,
 )
 from .serializers import (
     PasswordResetPreviewSerializer, UserReadSerializer, UserListSerializer, UserCreateSerializer,
@@ -47,9 +47,9 @@ from .serializers import (
     AuthAttemptReadSerializer, AccountLockoutReadSerializer,
     UnlockAccountSerializer, PasswordResetAdminSerializer,
     PlatformStaffProfileSerializer, PlatformStaffProfileListSerializer,
-    DepartmentSerializer, PositionSerializer,
+    OrgNodeSerializer, PositionSerializer,
     PositionAssignmentSerializer, MatrixReportSerializer,
-    OrganogramNodeSerializer,
+    OrgTreeNodeSerializer,
 )
 from .services.organogram import OrganogramService
 from .services.auth       import LoginService
@@ -1292,18 +1292,17 @@ class PlatformStaffProfileViewSet(
         params = self.request.query_params
         qs = (
             PlatformStaffProfile.objects
-            .select_related('user', 'position', 'position__department')
+            .select_related('user', 'position', 'position__org_node')
             .filter(user__user_type=User.UserType.CX_STAFF)
             .order_by('-created_at')
         )
 
-        if department := params.get('department'):
-            # Department is derived from the primary position. Accept either a
-            # department PK or a department code.
-            if str(department).isdigit():
-                qs = qs.filter(position__department_id=department)
+        if org_node := params.get('org_node'):
+            # The org node the person's seat belongs to. Accept PK or code.
+            if str(org_node).isdigit():
+                qs = qs.filter(position__org_node_id=org_node)
             else:
-                qs = qs.filter(position__department__code__iexact=department)
+                qs = qs.filter(position__org_node__code__iexact=org_node)
 
         if position := params.get('position'):
             qs = qs.filter(position_id=position)
@@ -1336,7 +1335,7 @@ class PlatformStaffProfileViewSet(
             )
 
         profile, _ = PlatformStaffProfile.objects.select_related(
-            'user', 'position', 'position__department',
+            'user', 'position', 'position__org_node',
         ).get_or_create(user=request.user)
 
         if request.method.lower() == 'patch':
@@ -1356,15 +1355,15 @@ class PlatformStaffProfileViewSet(
 # Organogram — Department / Position / PositionAssignment / MatrixReport
 # =============================================================================
 
-class DepartmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
+class OrgNodeViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     """
-    CX org departments (hierarchical).
+    CX org nodes (hierarchical): Division → Department → Team.
 
     Read endpoints require platform.organogram.view; writes require
     platform.organogram.manage.
     """
 
-    serializer_class = DepartmentSerializer
+    serializer_class = OrgNodeSerializer
     pagination_class = XVSPagination
 
     def get_permissions(self):
@@ -1377,10 +1376,12 @@ class DepartmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         params = self.request.query_params
-        qs = Department.objects.select_related('parent', 'head_position').order_by('name')
+        qs = OrgNode.objects.select_related('parent', 'head_position').order_by('name')
 
         if (is_active := params.get('is_active')) is not None:
             qs = qs.filter(is_active=str(is_active).lower() in ('1', 'true', 'yes'))
+        if kind := params.get('kind'):
+            qs = qs.filter(kind=kind.upper())
         if parent := params.get('parent'):
             qs = qs.filter(parent_id=parent)
         if (roots := params.get('roots')) and str(roots).lower() in ('1', 'true', 'yes'):
@@ -1413,13 +1414,13 @@ class PositionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         params = self.request.query_params
         qs = (
             Position.objects
-            .select_related('department', 'reports_to', 'default_role')
+            .select_related('org_node', 'reports_to', 'default_role')
             .prefetch_related('assignments__user')
             .order_by('title')
         )
 
-        if department := params.get('department'):
-            qs = qs.filter(department_id=department)
+        if org_node := params.get('org_node'):
+            qs = qs.filter(org_node_id=org_node)
         if reports_to := params.get('reports_to'):
             qs = qs.filter(reports_to_id=reports_to)
         if (is_active := params.get('is_active')) is not None:
@@ -1434,14 +1435,14 @@ class PositionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         root_id = request.query_params.get('root')
         root = None
         if root_id:
-            root = Position.objects.filter(pk=root_id).select_related('department').first()
+            root = Position.objects.filter(pk=root_id).select_related('org_node').first()
             if root is None:
                 return error_response(
                     message="Root position not found.",
                     status=status.HTTP_404_NOT_FOUND,
                 )
         nodes = OrganogramService.build_tree(root=root)
-        ser = OrganogramNodeSerializer(nodes, many=True, context={'request': request})
+        ser = OrgTreeNodeSerializer(nodes, many=True, context={'request': request})
         return success_response(message="Organogram retrieved successfully.", data=ser.data)
 
     @action(detail=False, methods=['get'], url_path='vacancies')

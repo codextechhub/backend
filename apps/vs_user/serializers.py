@@ -27,7 +27,7 @@ from .models import (
     PasswordResetRequest,
     AuthEventLog,
     PlatformStaffProfile,
-    Department,
+    OrgNode,
     Position,
     PositionAssignment,
     MatrixReport,
@@ -586,22 +586,22 @@ STAFF_PAYROLL_WRITE_PERM = 'platform.staff_payroll.manage'
 STAFF_PAYROLL_FIELDS     = ('bank_name', 'account_name', 'account_number')
 
 
-class DepartmentInlineSerializer(serializers.ModelSerializer):
-    """Minimal nested department representation for related objects."""
+class OrgNodeInlineSerializer(serializers.ModelSerializer):
+    """Minimal nested org-node representation for related objects."""
 
     class Meta:
-        model = Department
-        fields = ('id', 'name', 'code')
+        model = OrgNode
+        fields = ('id', 'name', 'code', 'kind')
 
 
 class PositionInlineSerializer(serializers.ModelSerializer):
     """Minimal nested position representation for related objects."""
 
-    department = DepartmentInlineSerializer(read_only=True)
+    org_node = OrgNodeInlineSerializer(read_only=True)
 
     class Meta:
         model = Position
-        fields = ('id', 'title', 'code', 'department')
+        fields = ('id', 'title', 'code', 'org_node')
 
 
 class PlatformStaffProfileListSerializer(serializers.ModelSerializer):
@@ -609,13 +609,14 @@ class PlatformStaffProfileListSerializer(serializers.ModelSerializer):
 
     user = UserInlineSerializer(read_only=True)
     position = PositionInlineSerializer(read_only=True)
-    department = DepartmentInlineSerializer(read_only=True)
+    org_node = OrgNodeInlineSerializer(read_only=True)
+    department = OrgNodeInlineSerializer(read_only=True)
     is_active_employee = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = PlatformStaffProfile
         fields = (
-            'id', 'user', 'employee_id', 'job_title', 'position', 'department',
+            'id', 'user', 'employee_id', 'job_title', 'position', 'org_node', 'department',
             'employment_type', 'employment_status', 'is_active_employee',
             'created_at', 'updated_at',
         )
@@ -671,10 +672,13 @@ class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerial
         source='position', write_only=True, required=False, allow_null=True,
         queryset=Position.objects.all(),
     )
-    # Department and line manager are DERIVED from the primary position — read
-    # only. Department is the position's department; line manager is the holder
-    # of the position's reports_to seat.
-    department           = DepartmentInlineSerializer(read_only=True)
+    # org_node (the exact seat's node — could be a Team), department (the
+    # DEPARTMENT-tier ancestor), division (the
+    # DIVISION-tier ancestor), and line manager are all DERIVED from the
+    # primary position — read only.
+    org_node             = OrgNodeInlineSerializer(read_only=True)
+    department           = OrgNodeInlineSerializer(read_only=True)
+    division             = OrgNodeInlineSerializer(read_only=True)
     current_line_manager = UserInlineSerializer(read_only=True)
     is_active_employee   = serializers.BooleanField(read_only=True)
 
@@ -687,8 +691,8 @@ class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerial
             'personal_email', 'alternate_phone', 'residential_address',
             'city', 'state',
             'nok_name', 'nok_relationship', 'nok_phone', 'nok_address',
-            'employee_id', 'job_title', 'position', 'position_id', 'department',
-            'employment_type', 'employment_status', 'date_joined', 'date_exited',
+            'employee_id', 'job_title', 'position', 'position_id', 'org_node', 'department',
+            'division', 'employment_type', 'employment_status', 'date_joined', 'date_exited',
             'current_line_manager',
             'bank_name', 'account_name', 'account_number',
             'is_active_employee', 'created_at', 'updated_at',
@@ -714,35 +718,16 @@ class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerial
 
 
 # =============================================================================
-# Organogram — Department / Position / PositionAssignment / MatrixReport
+# Organogram — OrgNode / Position / PositionAssignment / MatrixReport
 # =============================================================================
 
-def _run_model_clean(instance, attrs):
-    """
-    Applies attrs onto a (copied) model instance and runs full_clean's clean().
-    Translates a Django ValidationError into a DRF ValidationError.
-    """
-    target = copy.copy(instance) if instance is not None else None
-    if target is None:
-        # Build a throwaway instance from the model class on the serializer.
-        target = instance
-    for field, value in attrs.items():
-        setattr(target, field, value)
-    try:
-        target.clean()
-    except DjangoValidationError as exc:
-        raise serializers.ValidationError(
-            exc.message_dict if hasattr(exc, 'message_dict') else exc.messages
-        )
+class OrgNodeSerializer(serializers.ModelSerializer):
+    """Full org-node serializer with tier (kind), parent + derived head."""
 
-
-class DepartmentSerializer(serializers.ModelSerializer):
-    """Full department serializer with parent + derived head."""
-
-    parent      = DepartmentInlineSerializer(read_only=True)
+    parent      = OrgNodeInlineSerializer(read_only=True)
     parent_id   = serializers.PrimaryKeyRelatedField(
         source='parent', write_only=True, required=False, allow_null=True,
-        queryset=Department.objects.all(),
+        queryset=OrgNode.objects.all(),
     )
     head_position    = PositionInlineSerializer(read_only=True)
     head_position_id = serializers.PrimaryKeyRelatedField(
@@ -753,9 +738,9 @@ class DepartmentSerializer(serializers.ModelSerializer):
     children_count = serializers.SerializerMethodField()
 
     class Meta:
-        model = Department
+        model = OrgNode
         fields = (
-            'id', 'name', 'code',
+            'id', 'name', 'code', 'kind',
             'parent', 'parent_id',
             'head_position', 'head_position_id', 'head',
             'description', 'is_active', 'children_count',
@@ -767,7 +752,7 @@ class DepartmentSerializer(serializers.ModelSerializer):
         return obj.children.count()
 
     def validate(self, attrs):
-        target = copy.copy(self.instance) if self.instance is not None else Department()
+        target = copy.copy(self.instance) if self.instance is not None else OrgNode()
         for field, value in attrs.items():
             setattr(target, field, value)
         try:
@@ -780,12 +765,12 @@ class DepartmentSerializer(serializers.ModelSerializer):
 
 
 class PositionSerializer(serializers.ModelSerializer):
-    """Full position serializer with department + reports_to + occupancy."""
+    """Full position serializer with org node + reports_to + occupancy."""
 
-    department      = DepartmentInlineSerializer(read_only=True)
-    department_id   = serializers.PrimaryKeyRelatedField(
-        source='department', write_only=True,
-        queryset=Department.objects.all(),
+    org_node      = OrgNodeInlineSerializer(read_only=True)
+    org_node_id   = serializers.PrimaryKeyRelatedField(
+        source='org_node', write_only=True,
+        queryset=OrgNode.objects.all(),
     )
     reports_to      = PositionInlineSerializer(read_only=True)
     reports_to_id   = serializers.PrimaryKeyRelatedField(
@@ -804,7 +789,7 @@ class PositionSerializer(serializers.ModelSerializer):
         model = Position
         fields = (
             'id', 'title', 'code',
-            'department', 'department_id',
+            'org_node', 'org_node_id',
             'reports_to', 'reports_to_id',
             'default_role', 'headcount', 'is_active',
             'current_holders', 'is_vacant', 'open_seats',
@@ -890,7 +875,7 @@ class MatrixReportSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class OrganogramNodeSerializer(serializers.Serializer):
+class OrgTreeNodeSerializer(serializers.Serializer):
     """
     Recursive read-only serializer for the position tree returned by
     OrganogramService.build_tree(). Each node is a Position plus its holders
@@ -900,13 +885,13 @@ class OrganogramNodeSerializer(serializers.Serializer):
     id            = serializers.IntegerField()
     title         = serializers.CharField()
     code          = serializers.CharField()
-    department    = DepartmentInlineSerializer()
+    org_node      = OrgNodeInlineSerializer()
     holders       = UserInlineSerializer(many=True)
     is_vacant     = serializers.BooleanField()
     direct_reports = serializers.SerializerMethodField()
 
     def get_direct_reports(self, obj):
         children = obj.get('direct_reports', [])
-        return OrganogramNodeSerializer(children, many=True, context=self.context).data
+        return OrgTreeNodeSerializer(children, many=True, context=self.context).data
 
 
