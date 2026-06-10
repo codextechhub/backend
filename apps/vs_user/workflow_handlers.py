@@ -59,7 +59,8 @@ class UserCreationWorkflowHandler(BaseWorkflowHandler):
         )
 
     def on_rejected(self, instance, context: dict) -> None:
-        from vs_user.models import User
+        from vs_user.models import User, PositionAssignment
+        from vs_user.services.organogram import OrganogramService
         try:
             user = User.objects.get(pk=instance.document_object_id)
         except User.DoesNotExist:
@@ -67,6 +68,11 @@ class UserCreationWorkflowHandler(BaseWorkflowHandler):
         user.status = User.Status.REJECTED
         user.is_active = False
         user.save(update_fields=["status", "is_active", "updated_at"])
+
+        # Vacate any seat reserved for this hire at creation time — a rejected
+        # hire must not keep occupying an organogram position.
+        for assignment in PositionAssignment.objects.filter(user=user, end_date__isnull=True):
+            OrganogramService.end_assignment(assignment)
 
     def on_withdrawn(self, instance, context: dict) -> None:
         self.on_rejected(instance, context)

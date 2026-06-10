@@ -51,7 +51,15 @@ class InvitationService:
                 )
                 
             if user.user_type == User.UserType.CX_STAFF:
-                PlatformStaffProfile.objects.get_or_create(user=user)
+                profile, _ = PlatformStaffProfile.objects.get_or_create(user=user)
+                # If a seat was assigned at creation time, settle the profile's
+                # position cache (and thus department + line manager) now that
+                # the profile exists.
+                from .organogram import OrganogramService
+                primary = OrganogramService.primary_position_for(user)
+                if primary is not None and profile.position_id != primary.pk:
+                    profile.position = primary
+                    profile.save(update_fields=['position', 'updated_at'])
 
         return invitation
 

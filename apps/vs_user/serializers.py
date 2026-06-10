@@ -176,6 +176,10 @@ class UserCreateSerializer(serializers.Serializer):
             'null':     'A role must be assigned to the user.',
         },
     )
+    # Optional organogram seat to slot a CX hire into. Accepts a Position PK or
+    # code. Resolved here and materialised into a real (effective-dated) primary
+    # PositionAssignment by UserCreationService.create_pending.
+    position    = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
 
     def validate_email(self, value):
         # Enforce email uniqueness here to provide a clear error message, rather than relying on DB constraint which raises IntegrityError.
@@ -269,6 +273,27 @@ class UserCreateSerializer(serializers.Serializer):
 
         attrs['role'] = role.name
         attrs['role_instance'] = role
+
+        # Resolve the optional organogram seat (PK or code). CX staff only.
+        position_ref = attrs.pop('position', None)
+        position_instance = None
+        if position_ref:
+            if user_type != User.UserType.CX_STAFF:
+                raise serializers.ValidationError(
+                    {'position': 'Only platform (CX) staff can be assigned an organogram position.'}
+                )
+            qs = Position.objects.filter(is_active=True)
+            position_ref = str(position_ref).strip()
+            pos = (
+                qs.filter(pk=position_ref).first() if position_ref.isdigit()
+                else qs.filter(code__iexact=position_ref).first()
+            )
+            if pos is None:
+                raise serializers.ValidationError(
+                    {'position': f'Active position "{position_ref}" not found.'}
+                )
+            position_instance = pos
+        attrs['position_instance'] = position_instance
 
         return attrs
 

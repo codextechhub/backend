@@ -26,6 +26,7 @@ class UserCreationService:
         drives the next step. Call finalize_invitation() on approval.
         """
         role_instance = validated_data.pop('role_instance', None)
+        position_instance = validated_data.pop('position_instance', None)
 
         user = User.objects.create_user(
             email=validated_data['email'].lower().strip(),
@@ -52,6 +53,17 @@ class UserCreationService:
         else:
             SchoolUserRoleAssignment.objects.create(
                 user=user, role=role_instance, school=user.school, assigned_by=requesting_user,
+            )
+
+        # Slot the CX hire into their organogram seat, if one was supplied. This
+        # writes the effective-dated primary PositionAssignment now; the profile
+        # cache (PlatformStaffProfile.position) is synced when the profile is
+        # created at invite time, and the seat is vacated again if the creation
+        # workflow is rejected (see workflow_handlers).
+        if position_instance is not None and user.user_type == User.UserType.CX_STAFF:
+            from .organogram import OrganogramService
+            OrganogramService.assign_position(
+                user=user, position=position_instance, assigned_by=requesting_user,
             )
 
         log_auth_event(
