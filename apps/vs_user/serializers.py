@@ -180,6 +180,13 @@ class UserCreateSerializer(serializers.Serializer):
     # code. Resolved here and materialised into a real (effective-dated) primary
     # PositionAssignment by UserCreationService.create_pending.
     position    = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
+    job_title       = serializers.CharField(max_length=120, required=False, allow_blank=True, default='')
+    employee_id     = serializers.CharField(max_length=32, required=False, allow_blank=True, allow_null=True, default=None)
+    employment_type = serializers.ChoiceField(
+        choices=PlatformStaffProfile.EmploymentType.choices,
+        required=False, allow_blank=True, default='',
+    )
+    date_joined     = serializers.DateField(required=False, allow_null=True, default=None)
 
     def validate_email(self, value):
         # Enforce email uniqueness here to provide a clear error message, rather than relying on DB constraint which raises IntegrityError.
@@ -294,6 +301,32 @@ class UserCreateSerializer(serializers.Serializer):
                 )
             position_instance = pos
         attrs['position_instance'] = position_instance
+
+        job_title   = (attrs.pop('job_title', '') or '').strip()
+        employee_id = (attrs.pop('employee_id', None) or '').strip()
+        emp_type    = attrs.pop('employment_type', '') or ''
+        date_joined = attrs.pop('date_joined', None)
+
+        profile_prefill = {}
+        if job_title:
+            profile_prefill['job_title'] = job_title
+        if employee_id:
+            profile_prefill['employee_id'] = employee_id
+        if emp_type:
+            profile_prefill['employment_type'] = emp_type
+        if date_joined:
+            profile_prefill['date_joined'] = date_joined
+
+        if profile_prefill:
+            if user_type != User.UserType.CX_STAFF:
+                raise serializers.ValidationError(
+                    {'job_title': 'Staff profile fields can only be set for platform (CX) staff.'}
+                )
+            if employee_id and PlatformStaffProfile.objects.filter(employee_id=employee_id).exists():
+                raise serializers.ValidationError(
+                    {'employee_id': 'This employee ID is already in use.'}
+                )
+        attrs['profile_prefill'] = profile_prefill
 
         return attrs
 

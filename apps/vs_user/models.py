@@ -904,10 +904,19 @@ class Position(TimeStampedModel):
                 raise ValidationError('Position reporting chain cannot contain a cycle.')
             node = node.reports_to
 
+    # NOTE: "current holder" means an OPEN assignment held by an ACTIVE user.
+    # A seat reserved for a hire who is still pending approval/activation
+    # (user.is_active == False) is intentionally NOT counted as occupied, so
+    # such a hire never shows up as a holder and never blocks headcount until
+    # they actually activate.
     @property
     def current_assignments(self):
-        """All current (open-ended) assignments to this seat."""
-        return self.assignments.filter(end_date__isnull=True).select_related('user')
+        """Open assignments to this seat held by active users."""
+        return (
+            self.assignments
+            .filter(end_date__isnull=True, user__is_active=True)
+            .select_related('user')
+        )
 
     @property
     def current_holder(self):
@@ -917,14 +926,14 @@ class Position(TimeStampedModel):
         """
         assignment = (
             self.assignments
-            .filter(end_date__isnull=True, is_primary=True)
+            .filter(end_date__isnull=True, is_primary=True, user__is_active=True)
             .select_related('user')
             .first()
         )
         if assignment is None:
             assignment = (
                 self.assignments
-                .filter(end_date__isnull=True)
+                .filter(end_date__isnull=True, user__is_active=True)
                 .select_related('user')
                 .first()
             )
@@ -932,16 +941,20 @@ class Position(TimeStampedModel):
 
     @property
     def current_holders(self):
-        """All Users currently holding this seat (multi-incumbent aware)."""
+        """All active Users currently holding this seat (multi-incumbent aware)."""
         return [a.user for a in self.current_assignments]
 
     @property
     def is_vacant(self) -> bool:
-        return not self.assignments.filter(end_date__isnull=True).exists()
+        return not self.assignments.filter(
+            end_date__isnull=True, user__is_active=True,
+        ).exists()
 
     @property
     def open_seats(self) -> int:
-        filled = self.assignments.filter(end_date__isnull=True).count()
+        filled = self.assignments.filter(
+            end_date__isnull=True, user__is_active=True,
+        ).count()
         return max(self.headcount - filled, 0)
 
     def __str__(self) -> str:

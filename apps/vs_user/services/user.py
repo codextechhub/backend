@@ -27,6 +27,7 @@ class UserCreationService:
         """
         role_instance = validated_data.pop('role_instance', None)
         position_instance = validated_data.pop('position_instance', None)
+        profile_prefill = validated_data.pop('profile_prefill', None) or {}
 
         user = User.objects.create_user(
             email=validated_data['email'].lower().strip(),
@@ -55,16 +56,27 @@ class UserCreationService:
                 user=user, role=role_instance, school=user.school, assigned_by=requesting_user,
             )
 
-        # Slot the CX hire into their organogram seat, if one was supplied. This
-        # writes the effective-dated primary PositionAssignment now; the profile
-        # cache (PlatformStaffProfile.position) is synced when the profile is
-        # created at invite time, and the seat is vacated again if the creation
-        # workflow is rejected (see workflow_handlers).
-        if position_instance is not None and user.user_type == User.UserType.CX_STAFF:
-            from .organogram import OrganogramService
-            OrganogramService.assign_position(
-                user=user, position=position_instance, assigned_by=requesting_user,
-            )
+        if user.user_type == User.UserType.CX_STAFF:
+            # If HR fields were supplied, create the profile now and prefill it.
+            # InvitationService.create() later get_or_creates this same profile
+            # (idempotent), so the only effect of doing it here is that the
+            # captured-at-creation HR data is already present.
+            if profile_prefill:
+                from ..models import PlatformStaffProfile
+                PlatformStaffProfile.objects.update_or_create(
+                    user=user, defaults=profile_prefill,
+                )
+
+            # Slot the hire into their organogram seat, if one was supplied. This
+            # writes the effective-dated primary PositionAssignment now; when the
+            # profile already exists (prefill above) its position cache is synced
+            # immediately, otherwise it is synced at invite time. The seat is
+            # vacated again if the creation workflow is rejected (workflow_handlers).
+            if position_instance is not None:
+                from .organogram import OrganogramService
+                OrganogramService.assign_position(
+                    user=user, position=position_instance, assigned_by=requesting_user,
+                )
 
         log_auth_event(
             actor=requesting_user, subject=user, school=user.school,
