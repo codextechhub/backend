@@ -1476,7 +1476,7 @@ class PositionAssignmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         params = self.request.query_params
         qs = (
             PositionAssignment.objects
-            .select_related('user', 'position', 'position__department')
+            .select_related('user', 'position', 'position__org_node')
             .order_by('-start_date')
         )
         if user_id := params.get('user'):

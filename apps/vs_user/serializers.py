@@ -187,6 +187,14 @@ class UserCreateSerializer(serializers.Serializer):
         required=False, allow_blank=True, default='',
     )
     date_joined     = serializers.DateField(required=False, allow_null=True, default=None)
+    # Personal details (CX staff only) — prefilled onto the PlatformStaffProfile.
+    date_of_birth   = serializers.DateField(required=False, allow_null=True, default=None)
+    marital_status  = serializers.ChoiceField(
+        choices=PlatformStaffProfile.MaritalStatus.choices,
+        required=False, allow_blank=True, default='',
+    )
+    nationality     = serializers.CharField(max_length=80, required=False, allow_blank=True, default='')
+    state_of_origin = serializers.CharField(max_length=80, required=False, allow_blank=True, default='')
 
     def validate_email(self, value):
         # Enforce email uniqueness here to provide a clear error message, rather than relying on DB constraint which raises IntegrityError.
@@ -302,10 +310,14 @@ class UserCreateSerializer(serializers.Serializer):
             position_instance = pos
         attrs['position_instance'] = position_instance
 
-        job_title   = (attrs.pop('job_title', '') or '').strip()
-        employee_id = (attrs.pop('employee_id', None) or '').strip()
-        emp_type    = attrs.pop('employment_type', '') or ''
-        date_joined = attrs.pop('date_joined', None)
+        job_title       = (attrs.pop('job_title', '') or '').strip()
+        employee_id     = (attrs.pop('employee_id', None) or '').strip()
+        emp_type        = attrs.pop('employment_type', '') or ''
+        date_joined     = attrs.pop('date_joined', None)
+        date_of_birth   = attrs.pop('date_of_birth', None)
+        marital_status  = attrs.pop('marital_status', '') or ''
+        nationality     = (attrs.pop('nationality', '') or '').strip()
+        state_of_origin = (attrs.pop('state_of_origin', '') or '').strip()
 
         profile_prefill = {}
         if job_title:
@@ -316,6 +328,14 @@ class UserCreateSerializer(serializers.Serializer):
             profile_prefill['employment_type'] = emp_type
         if date_joined:
             profile_prefill['date_joined'] = date_joined
+        if date_of_birth:
+            profile_prefill['date_of_birth'] = date_of_birth
+        if marital_status:
+            profile_prefill['marital_status'] = marital_status
+        if nationality:
+            profile_prefill['nationality'] = nationality
+        if state_of_origin:
+            profile_prefill['state_of_origin'] = state_of_origin
 
         if profile_prefill:
             if user_type != User.UserType.CX_STAFF:
