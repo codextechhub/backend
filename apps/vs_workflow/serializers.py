@@ -2,6 +2,7 @@
 
 from rest_framework import serializers
 
+from vs_workflow.constants import ApproverScope, ApproverSource, OrganogramTarget
 from vs_workflow.models import (
     ApprovalDelegation, WorkflowAuditLog, WorkflowInstance,
     WorkflowRoutePath, WorkflowStage, WorkflowStageAction,
@@ -207,3 +208,41 @@ class ApprovalDelegationSerializer(serializers.ModelSerializer):
         # delegator is set from request.user in the view's perform_create — it
         # must be read-only so DRF validation doesn't require the client to send it.
         read_only_fields = ["id", "delegator", "created_at", "revoked_at"]
+
+
+class ApproverPreviewRequestSerializer(serializers.Serializer):
+    """Validates an ad-hoc stage config + sample requester for the approver
+    preview endpoint. Mirrors the WorkflowStage approver fields so a template
+    builder can ask "who would approve?" without persisting anything."""
+
+    requester = serializers.CharField(help_text="User id of the sample requester.")
+    approver_source = serializers.ChoiceField(
+        choices=ApproverSource.choices, default=ApproverSource.RBAC_PERMISSION,
+    )
+    # ORGANOGRAM config
+    organogram_target = serializers.ChoiceField(
+        choices=OrganogramTarget.choices, required=False, allow_blank=True, default="",
+    )
+    organogram_levels = serializers.IntegerField(required=False, min_value=1, default=1)
+    # A Position *code* (matches the publish payload's organogram_position_code).
+    organogram_position_code = serializers.CharField(required=False, allow_blank=True, default="")
+    # RBAC config
+    approver_permission_key = serializers.CharField(required=False, allow_blank=True, default="")
+    approver_scope = serializers.ChoiceField(
+        choices=ApproverScope.choices, required=False, default=ApproverScope.PLATFORM,
+    )
+    # Optional context for delegation matching.
+    document_type = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate(self, attrs):
+        if attrs["approver_source"] == ApproverSource.ORGANOGRAM:
+            if not attrs.get("organogram_target"):
+                raise serializers.ValidationError(
+                    {"organogram_target": "Required when approver_source is ORGANOGRAM."})
+            if attrs["organogram_target"] == OrganogramTarget.SPECIFIC_POSITION and not attrs.get("organogram_position_code"):
+                raise serializers.ValidationError(
+                    {"organogram_position_code": "Required when target is SPECIFIC_POSITION."})
+        elif not attrs.get("approver_permission_key"):
+            raise serializers.ValidationError(
+                {"approver_permission_key": "Required when approver_source is RBAC_PERMISSION."})
+        return attrs

@@ -19,13 +19,15 @@ from vs_workflow.constants import (
     PERM_TEMPLATE_MANAGE, PERM_TEMPLATE_VIEW,
     PERM_INSTANCE_SUBMIT, PERM_INSTANCE_VIEW, PERM_INSTANCE_CANCEL,
     PERM_ACTION_REVERSE,
+    ApproverSource, OrganogramTarget,
 )
 from vs_workflow.models import (
-    ApprovalDelegation, WorkflowInstance, WorkflowStageAction,
+    ApprovalDelegation, WorkflowInstance, WorkflowStage, WorkflowStageAction,
     WorkflowStageApprover, WorkflowStageInstance, WorkflowTemplate,
 )
 from vs_workflow.serializers import (
-    ApprovalDelegationSerializer, CancelInstanceSerializer, ReverseActionSerializer,
+    ApprovalDelegationSerializer, ApproverPreviewRequestSerializer,
+    CancelInstanceSerializer, ReverseActionSerializer,
     StageActionWriteSerializer, SubmitForApprovalSerializer,
     WorkflowInstanceDetailSerializer, WorkflowInstanceListSerializer,
     WorkflowTemplatePublishSerializer, WorkflowTemplateReadSerializer,
@@ -33,6 +35,7 @@ from vs_workflow.serializers import (
 from vs_workflow.services import actions as actions_svc
 from vs_workflow.services import submission as submission_svc
 from vs_workflow.services import templates as templates_svc
+from vs_workflow.services.approvers import resolve_approvers
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -72,6 +75,65 @@ class WorkflowTemplateViewSet(
         qs = _filter_by_school(WorkflowTemplate.objects.all(), self.get_school())
         qs = _filter_by_branch(qs, self.get_branch())
         return qs.prefetch_related("stages", "routes")
+
+    @action(detail=False, methods=["post"], url_path="preview-approvers")
+    def preview_approvers(self, request):
+        """Resolve the eligible approvers for an ad-hoc stage config + sample
+        requester WITHOUT persisting anything. Powers the template builder's
+        live "who would approve?" preview. Honours both approver sources and
+        active delegations, exactly like activation-time resolution."""
+        s = ApproverPreviewRequestSerializer(data=request.data)
+        s.is_valid(raise_exception=True)
+        d = s.validated_data
+
+        from django.contrib.auth import get_user_model
+        UserModel = get_user_model()
+        requester = UserModel.objects.filter(pk=d["requester"]).first()
+        if requester is None:
+            return Response({"detail": "Requester not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        # Build a transient (unsaved) stage from the posted config.
+        stage = WorkflowStage(
+            approver_source=d["approver_source"],
+            organogram_target=d.get("organogram_target", "") or "",
+            organogram_levels=d.get("organogram_levels", 1) or 1,
+            approver_permission_key=d.get("approver_permission_key", "") or "",
+            approver_scope=d.get("approver_scope"),
+        )
+        if d["approver_source"] == ApproverSource.ORGANOGRAM and \
+                d.get("organogram_target") == OrganogramTarget.SPECIFIC_POSITION:
+            try:
+                from vs_user.models import Position
+                stage.organogram_position = Position.objects.filter(code=d["organogram_position_code"]).first()
+            except ImportError:
+                stage.organogram_position = None
+
+        # Build a transient instance carrying just the context the resolver reads.
+        instance = WorkflowInstance(
+            requested_by=requester,
+            school=getattr(requester, "school", None),
+            branch=getattr(requester, "branch", None),
+            document_type=d.get("document_type", "") or "",
+        )
+
+        eligible = resolve_approvers(stage, instance)
+
+        def _u(user):
+            if user is None:
+                return None
+            return {
+                "id": str(user.pk),
+                "full_name": getattr(user, "full_name", "") or user.get_username(),
+                "email": getattr(user, "email", ""),
+            }
+
+        approvers = [{"user": _u(e.user), "on_behalf_of": _u(e.on_behalf_of)} for e in eligible]
+        return Response({
+            "approver_source": d["approver_source"],
+            "organogram_target": d.get("organogram_target") or None,
+            "count": len(approvers),
+            "approvers": approvers,
+        }, status=status.HTTP_200_OK)
 
     @action(detail=False, methods=["post"], url_path="publish")
     def publish(self, request):
