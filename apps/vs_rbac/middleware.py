@@ -38,10 +38,13 @@ def _get_school_from_request(request: HttpRequest):
         request._cached_school = None
         return None
     
-    # Check if school was explicitly set (e.g., via JWT claim or header)
+    # Check if school was explicitly set (e.g., via JWT claim or header).
+    # Accept the surrogate id (B23) or the slug — older clients carry slugs.
     if hasattr(request, "school_id"):
+        raw = request.school_id
+        lookup = {"pk": raw} if str(raw).isdigit() else {"slug": raw}
         try:
-            school = School.objects.get(pk=request.school_id)
+            school = School.objects.get(**lookup)
             request._cached_school = school
             return school
         except School.DoesNotExist:

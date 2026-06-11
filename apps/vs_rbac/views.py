@@ -8,6 +8,7 @@ from rest_framework.views import APIView
 from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, DestroyModelMixin
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
+from vs_schools.models import School
 from .models import (
     Permission,
     PermissionAction,
@@ -431,7 +432,7 @@ class SchoolRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIV
         qp = self.request.query_params
 
         qs = (
-            SchoolRoleTemplate.objects.filter(school_id=school_slug)
+            SchoolRoleTemplate.objects.filter(school__slug=school_slug)
             .annotate(
                 assigned_users_count=Count(
                     "user_assignments",
@@ -459,7 +460,7 @@ class SchoolRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIV
         return SchoolRoleTemplateListSerializer
 
     def perform_create(self, serializer):
-        serializer.save(school_id=self.kwargs["school_slug"])
+        serializer.save(school=School.objects.get(slug=self.kwargs["school_slug"]))
 
 
 class SchoolRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
@@ -476,7 +477,7 @@ class SchoolRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, Destroy
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
         return (
-            SchoolRoleTemplate.objects.filter(school_id=school_slug)
+            SchoolRoleTemplate.objects.filter(school__slug=school_slug)
             .select_related("created_by", "school")
             .prefetch_related(
                 "role_permissions__permission",
@@ -530,7 +531,7 @@ class SchoolUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCrea
         school_slug = self.kwargs["school_slug"]
 
         qs = (
-            SchoolUserRoleAssignment.objects.filter(school_id=school_slug)
+            SchoolUserRoleAssignment.objects.filter(school__slug=school_slug)
             .select_related("user", "role", "assigned_by", "revoked_by", "school")
             .order_by("-created_at")
         )
@@ -549,7 +550,7 @@ class SchoolUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCrea
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(school_id=self.kwargs["school_slug"])
+        serializer.save(school=School.objects.get(slug=self.kwargs["school_slug"]))
 
 
 class SchoolUserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin, generics.RetrieveUpdateAPIView):
@@ -565,7 +566,7 @@ class SchoolUserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin, g
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
         return (
-            SchoolUserRoleAssignment.objects.filter(school_id=school_slug)
+            SchoolUserRoleAssignment.objects.filter(school__slug=school_slug)
             .select_related("user", "role", "assigned_by", "revoked_by", "school")
         )
 
@@ -586,7 +587,7 @@ class SchoolRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCreat
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
         qs = (
-            SchoolRoleChangeRequest.objects.filter(school_id=school_slug)
+            SchoolRoleChangeRequest.objects.filter(school__slug=school_slug)
             .select_related("requested_by", "reviewer", "target_role", "school")
             .prefetch_related("delta_items__permission")
             .order_by("-submitted_at")
@@ -603,7 +604,7 @@ class SchoolRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCreat
         return qs
 
     def perform_create(self, serializer):
-        serializer.save(school_id=self.kwargs["school_slug"])
+        serializer.save(school=School.objects.get(slug=self.kwargs["school_slug"]))
 
 
 class SchoolRoleChangeRequestApprovalQueueView(generics.ListAPIView):
@@ -618,7 +619,7 @@ class SchoolRoleChangeRequestApprovalQueueView(generics.ListAPIView):
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
         qs = (
-            SchoolRoleChangeRequest.objects.filter(school_id=school_slug)
+            SchoolRoleChangeRequest.objects.filter(school__slug=school_slug)
             .select_related("requested_by", "reviewer", "target_role", "school")
             .prefetch_related("delta_items__permission")
             .order_by("-submitted_at")
@@ -647,7 +648,7 @@ class SchoolRoleChangeRequestApprovalDetailView(RetrieveModelMixin, generics.Ret
     def get_queryset(self):
         school_slug = self.kwargs["school_slug"]
         return (
-            SchoolRoleChangeRequest.objects.filter(school_id=school_slug)
+            SchoolRoleChangeRequest.objects.filter(school__slug=school_slug)
             .select_related("requested_by", "reviewer", "target_role", "school")
             .prefetch_related("delta_items__permission")
         )
@@ -671,7 +672,7 @@ class SchoolRoleChangeRequestDecisionView(APIView):
 
         try:
             obj = SchoolRoleChangeRequest.objects.select_related("target_role", "school").get(
-                id=request_id, school_id=school_slug,
+                id=request_id, school__slug=school_slug,
             )
         except SchoolRoleChangeRequest.DoesNotExist:
             return error_response(

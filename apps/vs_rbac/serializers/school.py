@@ -18,6 +18,7 @@ from ..models import (
 
 
 from .registry import (
+    SchoolField,
     PermissionGroupListSerializer,
     PermissionKeyListValidationMixin,
     PermissionSerializer,
@@ -136,6 +137,7 @@ class SchoolRoleGroupAttachmentSerializer(serializers.ModelSerializer):
 class SchoolRoleTemplateDetailSerializer(
     PermissionKeyListValidationMixin, serializers.ModelSerializer
 ):
+    school = SchoolField(required=False)
     """
     Detailed serializer for school role templates.
 
@@ -354,6 +356,7 @@ class SchoolRoleTemplateDetailSerializer(
 # 3) School User Role Assignments
 # -----------------------------------------------------------------------------
 class SchoolUserRoleAssignmentSerializer(serializers.ModelSerializer):
+    school = SchoolField(required=False)
     """
     Assign or revoke a school role for a user.
 
@@ -496,6 +499,7 @@ class SchoolRoleChangeDeltaItemSerializer(serializers.ModelSerializer):
 
 
 class SchoolRoleChangeRequestSerializer(serializers.ModelSerializer):
+    school = SchoolField(required=False)
     """
     Create a school-level role change request with delta items.
 

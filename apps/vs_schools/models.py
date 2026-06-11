@@ -137,8 +137,11 @@ class School(TimeStampedModel):
     """
 
     name = models.CharField(max_length=255)
+    # The slug WAS the primary key. It's now a unique business identifier
+    # over a surrogate BigAuto id (added implicitly via DEFAULT_AUTO_FIELD), so
+    # renaming a school's slug no longer means rewriting every FK in the
+    # platform - and FK indexes carry 8-byte ints instead of varchar(80).
     slug = models.SlugField(
-        primary_key=True,
         max_length=80,
         unique=True,
         validators=[slug_validator],

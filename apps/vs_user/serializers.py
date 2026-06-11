@@ -219,8 +219,11 @@ class UserCreateSerializer(serializers.Serializer):
         branch_id      = attrs.pop('branch', None)
 
         if school_id:
+            # Accept the surrogate id (B23) or the slug — clients sent slugs
+            # while the slug was the primary key.
+            lookup = {'id': school_id} if str(school_id).isdigit() else {'slug': school_id}
             try:
-                attrs['school'] = School.objects.get(id=school_id)
+                attrs['school'] = School.objects.get(**lookup)
             except School.DoesNotExist:
                 raise serializers.ValidationError({'school': 'School not found.'})
         else:

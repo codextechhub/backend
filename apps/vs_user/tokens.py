@@ -47,6 +47,7 @@ class CodeXRefreshToken(RefreshToken):
         # Embed school and branch context
         token['user_type']      = user.user_type
         token['school_id'] = str(user.school_id) if user.school_id else None
+        token['school_slug'] = user.school.slug if user.school_id else None
         token['branch_id']      = str(user.branch_id) if user.branch_id else None
         token['account_status'] = user.status
         token['full_name']      = user.full_name
@@ -90,6 +91,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             'user_type':      self.user.user_type,
             'account_status': self.user.status,
             'school_id': str(self.user.school_id) if self.user.school_id else None,
+            'school_slug': self.user.school.slug if self.user.school_id else None,
             'branch_id':      str(self.user.branch_id) if self.user.branch_id else None,
         }
 

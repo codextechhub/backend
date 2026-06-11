@@ -117,7 +117,8 @@ class SchoolRoleTemplateModelTests(TestCase):
 
     def test_str(self):
         role = make_role(self.school, name="Accountant")
-        self.assertEqual(str(role), f"{self.school.slug}:Accountant")
+        # B23: __str__ renders the school's surrogate pk, not the slug.
+        self.assertEqual(str(role), f"{self.school.pk}:Accountant")
 
     def test_bump_version(self):
         role = make_role(self.school)

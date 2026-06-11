@@ -24,6 +24,41 @@ from ..models import (
 # -----------------------------------------------------------------------------
 # Shared helpers
 # -----------------------------------------------------------------------------
+class SchoolField(serializers.PrimaryKeyRelatedField):
+    """School reference that accepts the surrogate id OR the slug (B23).
+
+    Clients addressed schools by slug while the slug was the primary key;
+    this keeps that contract: writes take either form, reads render the slug
+    so the wire format is unchanged.
+    """
+
+    def get_queryset(self):
+        from vs_schools.models import School
+
+        return School.objects.all()
+
+    def to_internal_value(self, data):
+        from vs_schools.models import School
+
+        if isinstance(data, School):
+            return data
+        qs = self.get_queryset()
+        try:
+            if str(data).isdigit():
+                return qs.get(pk=data)
+            return qs.get(slug=data)
+        except School.DoesNotExist:
+            self.fail("does_not_exist", pk_value=data)
+
+    def to_representation(self, value):
+        from vs_schools.models import School
+
+        if isinstance(value, School):
+            return value.slug
+        # PKOnlyObject fast path — fetch the slug.
+        return School.objects.filter(pk=value.pk).values_list("slug", flat=True).first()
+
+
 class PermissionKeyListValidationMixin:
     """
     Reusable helper for serializers that accept a list of permission keys.
