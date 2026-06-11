@@ -132,7 +132,10 @@ def blacklist_token_by_jti(jti: str) -> bool:
 def get_client_ip(request) -> str | None:
     """
     Extracts the real client IP, handling reverse proxy X-Forwarded-For headers.
+    Tolerates request=None (service-layer callers without an HTTP request).
     """
+    if request is None:
+        return None
     x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
     if x_forwarded_for:
         return x_forwarded_for.split(',')[0].strip()

@@ -212,6 +212,7 @@ class SpecialLoginPreviewView(APIView):
 
     permission_classes    = [AllowAny]
     authentication_classes = []
+    throttle_scope        = 'login_preview'
 
     _STATUS_MESSAGES = {
         User.Status.PENDING:     'Account not yet activated. Please check your invitation email or contact your administrator.',
@@ -270,10 +271,17 @@ class LogoutView(APIView):
         except TokenError:
             return success_response(message="Logged out successfully.")
 
+        # Scope the logout to THIS session only: blacklist the submitted
+        # refresh token and end the session that carries its JTI. Other
+        # devices stay logged in — the all-device revocation lives in the
+        # admin force-logout / suspend flows (blacklist_all_user_tokens).
         with transaction.atomic():
-            blacklist_all_user_tokens(request.user)
+            try:
+                token.blacklist()
+            except TokenError:
+                pass  # already blacklisted — logout stays idempotent
             LoginSession.objects.filter(
-                user=request.user, is_active=True,
+                user=request.user, refresh_jti=str(jti), is_active=True,
             ).update(
                 is_active=False,
                 ended_at=timezone.now(),
@@ -364,8 +372,18 @@ class TokenRefreshView(APIView):
                         'expires_at': datetime_from_epoch(exp),
                     },
                 )
-                # Keep LoginSession in sync with the new JTI
-                LoginSession.objects.filter(user=token_user, is_active=True).update(
+                # Keep LoginSession in sync with the new JTI — only the session
+                # that owned the OLD token; other devices keep their own JTIs.
+                old_jti = ''
+                try:
+                    old_jti = RefreshToken(
+                        request.data.get('refresh', ''), verify=False
+                    ).get('jti', '')
+                except TokenError:
+                    pass
+                LoginSession.objects.filter(
+                    user=token_user, refresh_jti=str(old_jti), is_active=True,
+                ).update(
                     refresh_jti=str(jti),
                     last_seen_at=timezone.now(),
                 )

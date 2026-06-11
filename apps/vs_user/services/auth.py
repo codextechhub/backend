@@ -3,7 +3,6 @@
 # lockout handling, and JWT token issuance.
 
 from __future__ import annotations
-import email
 
 from django.db import transaction
 from django.utils import timezone
@@ -33,9 +32,11 @@ class LoginService:
 
         Steps:
           1. Find user by email
-          2. Check account lockout
-          3. Enforce school context (non-Vision Staff must provide slug)
-          4. Authenticate credentials
+          2. Enforce school context (non-Vision Staff must provide slug)
+          3. Authenticate credentials
+          4. Check account lockout — only AFTER a correct password, so the
+             locked state is never revealed to someone who doesn't know it
+             (prevents an account-state oracle)
           5. Check account status
           6. [atomic] Clear lockout, create session, issue tokens, update user
           7. Write audit logs
@@ -46,23 +47,7 @@ class LoginService:
         user = User.objects.filter(email__iexact=email).first()
         school = user.school if user else None
 
-        # 2. Check lockout before attempting the password
-        if user:
-            with transaction.atomic():
-                lockout = AccountLockout.objects.select_for_update().filter(user=user).first()
-                if lockout and lockout.is_locked_now():
-                    record_attempt(
-                        email_entered=email,
-                        user=user, school=school,
-                        result=AuthAttempt.Result.BLOCKED, failure_code='LOCKED',
-                        request=request,
-                    )
-                    raise ValueError({
-                        'code':   'ACCOUNT_LOCKED',
-                        'detail': 'Your account is locked. Please contact your administrator or reset your password.',
-                    })
-
-        # 3. School context enforcement — non-Vision Staff must have a school.
+        # 2. School context enforcement — non-Vision Staff must have a school.
         if user and user.user_type != User.UserType.CX_STAFF:
             if not school:
                 record_attempt(
@@ -73,12 +58,28 @@ class LoginService:
                 )
                 raise ValueError({'code': 'INVALID_CREDENTIALS', 'detail': 'Invalid credentials.'})
 
-        # 4. Authenticate credentials.
+        # 3. Authenticate credentials.
         # check_password directly instead of django's authenticate() — authenticate()
         # returns None for is_active=False users, masking the real reason.
         if not user or not user.check_password(password):
-            LoginService._handle_failed_attempt(user, school, school.slug if school else '', request)
+            LoginService._handle_failed_attempt(user, school, email, request)
             raise ValueError({'code': 'INVALID_CREDENTIALS', 'detail': 'Invalid credentials.'})
+
+        # 4. Lockout check — the caller proved they know the password, so a
+        # status-specific message is safe (and genuinely useful) here.
+        with transaction.atomic():
+            lockout = AccountLockout.objects.select_for_update().filter(user=user).first()
+            if lockout and lockout.is_locked_now():
+                record_attempt(
+                    email_entered=email,
+                    user=user, school=school,
+                    result=AuthAttempt.Result.BLOCKED, failure_code='LOCKED',
+                    request=request,
+                )
+                raise ValueError({
+                    'code':   'ACCOUNT_LOCKED',
+                    'detail': 'Your account is locked. Please contact your administrator or reset your password.',
+                })
 
         authed = user
 
@@ -179,7 +180,7 @@ class LoginService:
         return errors.get(user.status)
 
     @staticmethod
-    def _handle_failed_attempt(user, school, school_slug, request):
+    def _handle_failed_attempt(user, school, email_entered, request):
         """Increment the failure counter, lock the account if threshold is reached, and record the attempt.
 
         The lockout update is wrapped in its own atomic block so the counter
@@ -211,8 +212,10 @@ class LoginService:
                     event=AuthEventLog.Event.ACCOUNT_LOCKED, request=request,
                 )
 
+        # Always record the email as ENTERED — for unknown accounts this is the
+        # only identifying datum the security team has (spraying, typos, probes).
         record_attempt(
-            email_entered=user.email if user else '',
+            email_entered=email_entered or (user.email if user else ''),
             user=user, school=school,
             result=AuthAttempt.Result.FAIL, failure_code='INVALID_CREDENTIALS',
             request=request,
