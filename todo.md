@@ -1,5 +1,18 @@
 ## Undone
 
+## Deferred from the deep-review fixes (2026-06-11; B-numbers from ~/Downloads/XVision-Backend-Deep-Review.docx)
+- B4 (still open — user chose to keep the commented values in base.py for now): ROTATE the credentials (Render API key, old SECRET_KEY, temp-password pepper), then remove the comment lines and purge them from git history (git filter-repo); add a gitleaks pre-commit hook.
+- B7: add a real Celery worker (+ beat) to staging and remove CELERY_TASK_ALWAYS_EAGER — large imports currently run inside the web request; periodic tasks (mark_stuck_import_jobs, retry_failed_import_notifications) never fire without beat.
+- B17: standardise on PostgreSQL across local/staging/tests (staging already PG); regenerate or guard the MySQL-only raw-SQL migrations (vs_import_data 0003/0004/0006, vs_user 0003/0004); add CI running migrations + tests on PG.
+- B21: durable audit for high-stakes non-finance modules (RBAC, config) — adopt the finance hybrid pattern (transactional in-app log + best-effort central mirror) or queue-with-alerting; central emit_audit_event can silently drop events.
+- B23: migrate School off slug-as-primary-key to a surrogate key (slug stays unique) — do before any school-rename feature; touches every school FK.
+- B25: split monolithic modules into packages (vs_finance/models.py 2.4k lines, vs_procurement/views.py 1.8k, vs_finance/views_ops.py 1.6k, vs_rbac/serializers.py 1.5k, vs_user/views.py 1.5k) with __init__ re-exports.
+- B26: SMS channel for vs_notifications (Termii/Twilio behind the existing dispatch service) + scheduled sends; FRD Module 8 claims SMS but it doesn't exist.
+- B27: document (or eventually rename) the apps/apps project-package naming.
+- B9 follow-up: move media to object storage (S3/R2 via django-storages) — MEDIA_ROOT now outside the static tree, but uploads still die on redeploy (ephemeral disk).
+- Test-suite repair (pre-existing rot, partially fixed 2026-06-11): vs_rbac/tests/test_views.py still has ~44 failures (renamed URL routes, changed response shapes), test_models.py 6, test_validators.py 7. Helpers + test_permissions/test_middleware/test_authentication/test_tenant_isolation are green.
+- B2 follow-up: extend TenantAwareManager to remaining school-FK models once school-user flows exist (vs_user.User + session/security models, vs_notifications, vs_audit, vs_workflow instances — mind nullable-school global rows).
+
 ## AR cycle (vs_finance receivables)
 # - School-fee billing adapter (fee categories + structures → emit generic invoices, behind a module flag)  [SKIP — user deferred]
 
