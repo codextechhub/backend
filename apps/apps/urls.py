@@ -14,10 +14,10 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
-from django.conf import settings
-from django.conf.urls.static import static
 from django.contrib import admin
 from django.urls import path, include
+
+from core.views import MediaView
 
 urlpatterns = [
     path("v1/i/", include("vs_schools.urls")),
@@ -32,9 +32,12 @@ urlpatterns = [
     path("v1/finance/", include("vs_finance.urls")),
     path("v1/procurement/", include("vs_procurement.urls")),
     path("v1/payments/", include("vs_payments.urls")),
+    path("v1/todo/", include("vs_todo.urls")),
     # path("admin/", admin.site.urls),
 ]
 
-# Serve user uploads from the dev server only — production needs object storage.
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+# Media is database-backed (core.storage.DatabaseStorage) and served with
+# authentication in every environment.
+urlpatterns += [
+    path("media/<path:name>", MediaView.as_view(), name="stored-media"),
+]

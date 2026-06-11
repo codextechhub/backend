@@ -92,6 +92,7 @@ INSTALLED_APPS = [
     'vs_finance',
     'vs_procurement',
     'vs_payments',
+    'vs_todo',
 ]
 
 MIDDLEWARE = [
@@ -257,11 +258,20 @@ STATICFILES_DIRS = [
     BASE_DIR / "static",
 ]
 
-# Media (user uploads) lives OUTSIDE the static tree so collectstatic never
-# picks it up and WhiteNoise never tries to serve it. Note: on ephemeral-disk
-# hosts uploads are lost on redeploy — object storage is the real fix (todo).
+# Media: the platform only receives import spreadsheets and images, all
+# small — so uploads live in the DATABASE (core.storage.DatabaseStorage).
+# They survive ephemeral-disk redeploys, ride along with DB backups, and are
+# served with authentication by core.views.MediaView at /media/<name>.
+# Outgrow it? Point STORAGES["default"] at S3 and migrate the rows.
 MEDIA_URL = "/media/"
-MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+MEDIA_ROOT = os.path.join(BASE_DIR, "media")  # unused by DatabaseStorage; kept for tooling
+
+STORAGES = {
+    "default": {"BACKEND": "core.storage.DatabaseStorage"},
+    "staticfiles": {"BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage"},
+}
+# Upload ceiling for the DB-backed storage (bytes).
+MEDIA_DB_MAX_BYTES = config("MEDIA_DB_MAX_BYTES", default=25 * 1024 * 1024, cast=int)
 
 STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 
