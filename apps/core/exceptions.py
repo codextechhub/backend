@@ -12,6 +12,28 @@ from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 logger = logging.getLogger('core.exceptions')
 
 
+def _is_unique_violation(exc: IntegrityError) -> bool:
+    """True when the IntegrityError is a UNIQUE-constraint violation.
+
+    Engine-aware: PostgreSQL exposes SQLSTATE 23505 on the driver exception,
+    MySQL/MariaDB use error code 1062, SQLite spells it out in the message.
+    """
+    cause = exc.__cause__
+    # PostgreSQL (psycopg2/psycopg3): SQLSTATE 23505 = unique_violation
+    sqlstate = getattr(cause, 'pgcode', None) or getattr(
+        getattr(cause, 'diag', None), 'sqlstate', None
+    )
+    if sqlstate == '23505':
+        return True
+    # MySQL / MariaDB: (1062, "Duplicate entry ...")
+    args = getattr(cause, 'args', None) or exc.args
+    if args and args[0] == 1062:
+        return True
+    # SQLite and fallback
+    text = str(exc).lower()
+    return 'unique constraint' in text or 'duplicate entry' in text
+
+
 def custom_exception_handler(exc, context):
 
     # Let DRF handle it first
@@ -38,13 +60,22 @@ def custom_exception_handler(exc, context):
             "error": {"code": "VALIDATION_ERROR", "detail": messages},
         }, status=status.HTTP_400_BAD_REQUEST)
 
-    # Intercept DB integrity violations (unique constraint, FK, not-null, etc.)
+    # Intercept DB integrity violations. ONLY unique violations are the
+    # client's fault ("already exists"); FK / NOT NULL / CHECK violations are
+    # server-side bugs and must surface as logged 500s, not fake duplicates.
     if isinstance(exc, IntegrityError):
+        if _is_unique_violation(exc):
+            return Response({
+                "success": False,
+                "message": "A record with these details already exists.",
+                "error": {"code": "DUPLICATE"},
+            }, status=status.HTTP_400_BAD_REQUEST)
+        logger.exception("Non-unique IntegrityError in request", exc_info=exc)
         return Response({
             "success": False,
-            "message": "A record with these details already exists.",
-            "error": {"code": "DUPLICATE"},
-        }, status=status.HTTP_400_BAD_REQUEST)
+            "message": "An unexpected error occurred.",
+            "error": {"code": "SERVER_ERROR"},
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     # Handle typed domain exceptions from any app (duck-typed: error_code + message attributes)
     if hasattr(exc, 'error_code') and hasattr(exc, 'message'):
