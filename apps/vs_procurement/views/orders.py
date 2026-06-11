@@ -1,0 +1,302 @@
+"""Purchase orders, RFQs and quotations.
+"""
+from __future__ import annotations
+
+
+from rest_framework.exceptions import NotFound, ValidationError
+
+from core.response import success_response
+from vs_finance.views import resolve_entity
+
+from .. import purchasing, sourcing
+from ..models import (
+    PurchaseOrder,
+    PurchaseRequisition,
+    PurchaseRequisitionLine,
+    RequestForQuotation,
+    RfqLine,
+    VendorQuotation,
+    VendorQuotationLine,
+)
+from ..serializers import (
+    PurchaseOrderSerializer,
+    RequestForQuotationSerializer,
+    VendorQuotationSerializer,
+)
+
+
+from .base import (
+    _ProcBase,
+    _date,
+    _dec,
+    _money,
+    _require_lines,
+    _resolve_account,
+    _resolve_currency,
+    _resolve_tax,
+    _resolve_vendor,
+)
+
+# --------------------------------------------------------------------------- #
+# Purchase orders                                                             #
+# --------------------------------------------------------------------------- #
+
+class PurchaseOrderListCreateView(_ProcBase):
+    """GET (list) / POST (create from an approved requisition)."""
+
+    @property
+    def rbac_permission(self):
+        return "procurement.purchase_order.create" if self.request.method == "POST" \
+            else "procurement.purchase_order.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = PurchaseOrder.objects.filter(entity=entity).select_related("vendor").prefetch_related("lines")
+        if (status_ := request.query_params.get("status")):
+            qs = qs.filter(status=status_)
+        if (vendor := request.query_params.get("vendor")):
+            qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
+        return success_response(
+            "Purchase orders retrieved.",
+            data=PurchaseOrderSerializer(qs.order_by("-id")[:200], many=True).data,
+        )
+
+    def post(self, request):
+        entity = resolve_entity(request)
+        body = request.data
+        req = PurchaseRequisition.objects.filter(entity=entity, pk=body.get("requisition")).first()
+        if req is None:
+            raise ValidationError({"requisition": "An approved requisition is required."})
+        vendor = _resolve_vendor(entity, body.get("vendor"))
+        po = purchasing.create_po_from_requisition(
+            req, vendor=vendor,
+            order_date=_date(body.get("order_date"), "order_date", required=True),
+            expected_date=_date(body.get("expected_date"), "expected_date"),
+            currency=_resolve_currency(entity, body.get("currency")),
+            actor_user=request.user,
+        )
+        return success_response(
+            "Purchase order created.", data=PurchaseOrderSerializer(po).data, status=201,
+        )
+
+
+class PurchaseOrderDetailView(_ProcBase):
+    rbac_permission = "procurement.purchase_order.view"
+
+    def get(self, request, pk):
+        entity = resolve_entity(request)
+        po = PurchaseOrder.objects.filter(entity=entity, pk=pk).first()
+        if po is None:
+            raise NotFound("No such purchase order in this entity.")
+        return success_response("Purchase order retrieved.", data=PurchaseOrderSerializer(po).data)
+
+
+# --------------------------------------------------------------------------- #
+# Requests for quotation (sourcing)                                           #
+# --------------------------------------------------------------------------- #
+
+class RfqListCreateView(_ProcBase):
+    """GET (list) / POST (create draft RFQ + lines)."""
+
+    @property
+    def rbac_permission(self):
+        return "procurement.rfq.create" if self.request.method == "POST" \
+            else "procurement.rfq.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = RequestForQuotation.objects.filter(entity=entity).prefetch_related("lines")
+        if (status_ := request.query_params.get("status")):
+            qs = qs.filter(rfq_status=status_)
+        return success_response(
+            "RFQs retrieved.",
+            data=RequestForQuotationSerializer(qs.order_by("-id")[:200], many=True).data,
+        )
+
+    def post(self, request):
+        entity = resolve_entity(request)
+        body = request.data
+        lines = _require_lines(body)
+        requisition = None
+        if body.get("requisition"):
+            requisition = PurchaseRequisition.objects.filter(
+                entity=entity, pk=body["requisition"]).first()
+            if requisition is None:
+                raise ValidationError({"requisition": "No such requisition in this entity."})
+        rfq = RequestForQuotation.objects.create(
+            entity=entity, requisition=requisition,
+            title=body.get("title", ""),
+            issue_date=_date(body.get("issue_date"), "issue_date", required=True),
+            response_due_date=_date(body.get("response_due_date"), "response_due_date"),
+            notes=body.get("notes", ""),
+            created_by=request.user if request.user.is_authenticated else None,
+        )
+        for i, ln in enumerate(lines, start=1):
+            req_line = None
+            if ln.get("requisition_line"):
+                req_line = PurchaseRequisitionLine.objects.filter(
+                    requisition__entity=entity, pk=ln["requisition_line"]).first()
+                if req_line is None:
+                    raise ValidationError(
+                        {"requisition_line": f"No such requisition line {ln['requisition_line']}."})
+            RfqLine.objects.create(
+                rfq=rfq, line_no=ln.get("line_no", i),
+                description=ln.get("description", ""),
+                quantity=_dec(ln.get("quantity", 1), "quantity"),
+                requisition_line=req_line,
+                expense_account=_resolve_account(entity, ln.get("expense_account"), "expense_account"),
+                tax_code=_resolve_tax(entity, ln.get("tax_code")),
+            )
+        return success_response(
+            "RFQ created.", data=RequestForQuotationSerializer(rfq).data, status=201,
+        )
+
+
+class RfqDetailView(_ProcBase):
+    rbac_permission = "procurement.rfq.view"
+
+    def get(self, request, pk):
+        entity = resolve_entity(request)
+        rfq = RequestForQuotation.objects.filter(entity=entity, pk=pk).first()
+        if rfq is None:
+            raise NotFound("No such RFQ in this entity.")
+        return success_response("RFQ retrieved.", data=RequestForQuotationSerializer(rfq).data)
+
+
+class RfqIssueView(_ProcBase):
+    rbac_permission = "procurement.rfq.issue"
+
+    def post(self, request, pk):
+        entity = resolve_entity(request)
+        rfq = RequestForQuotation.objects.filter(entity=entity, pk=pk).first()
+        if rfq is None:
+            raise NotFound("No such RFQ in this entity.")
+        sourcing.issue_rfq(rfq, actor_user=request.user)
+        return success_response("RFQ issued.", data=RequestForQuotationSerializer(rfq).data)
+
+
+class RfqCancelView(_ProcBase):
+    rbac_permission = "procurement.rfq.issue"
+
+    def post(self, request, pk):
+        entity = resolve_entity(request)
+        rfq = RequestForQuotation.objects.filter(entity=entity, pk=pk).first()
+        if rfq is None:
+            raise NotFound("No such RFQ in this entity.")
+        sourcing.cancel_rfq(rfq, reason=request.data.get("reason", ""), actor_user=request.user)
+        return success_response("RFQ cancelled.", data=RequestForQuotationSerializer(rfq).data)
+
+
+# --------------------------------------------------------------------------- #
+# Vendor quotations (sourcing)                                                #
+# --------------------------------------------------------------------------- #
+
+class QuotationListCreateView(_ProcBase):
+    """GET (list) / POST (create draft quotation + priced lines) against an RFQ."""
+
+    @property
+    def rbac_permission(self):
+        return "procurement.quotation.create" if self.request.method == "POST" \
+            else "procurement.quotation.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = VendorQuotation.objects.filter(entity=entity).select_related(
+            "vendor", "rfq").prefetch_related("lines")
+        if (status_ := request.query_params.get("status")):
+            qs = qs.filter(quotation_status=status_)
+        if (rfq := request.query_params.get("rfq")):
+            qs = qs.filter(rfq_id=rfq)
+        if (vendor := request.query_params.get("vendor")):
+            qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
+        return success_response(
+            "Quotations retrieved.",
+            data=VendorQuotationSerializer(qs.order_by("-id")[:200], many=True).data,
+        )
+
+    def post(self, request):
+        entity = resolve_entity(request)
+        body = request.data
+        lines = _require_lines(body)
+        rfq = RequestForQuotation.objects.filter(entity=entity, pk=body.get("rfq")).first()
+        if rfq is None:
+            raise ValidationError({"rfq": "An RFQ is required."})
+        vendor = _resolve_vendor(entity, body.get("vendor"))
+        quotation = VendorQuotation.objects.create(
+            entity=entity, rfq=rfq, vendor=vendor,
+            quote_date=_date(body.get("quote_date"), "quote_date", required=True),
+            valid_until=_date(body.get("valid_until"), "valid_until"),
+            currency=_resolve_currency(entity, body.get("currency")),
+            lead_time_days=body.get("lead_time_days") or None,
+            reference=body.get("reference", ""), notes=body.get("notes", ""),
+            created_by=request.user if request.user.is_authenticated else None,
+        )
+        for i, ln in enumerate(lines, start=1):
+            rfq_line = None
+            if ln.get("rfq_line"):
+                rfq_line = RfqLine.objects.filter(rfq__entity=entity, pk=ln["rfq_line"]).first()
+                if rfq_line is None:
+                    raise ValidationError({"rfq_line": f"No such RFQ line {ln['rfq_line']}."})
+            expense = _resolve_account(entity, ln.get("expense_account"), "expense_account") \
+                or (rfq_line.expense_account if rfq_line else None)
+            VendorQuotationLine.objects.create(
+                quotation=quotation, rfq_line=rfq_line, line_no=ln.get("line_no", i),
+                description=ln.get("description", rfq_line.description if rfq_line else ""),
+                expense_account=expense,
+                quantity=_dec(ln.get("quantity", rfq_line.quantity if rfq_line else 1), "quantity"),
+                unit_price=_money(ln.get("unit_price", 0), "unit_price"),
+                tax_code=_resolve_tax(entity, ln.get("tax_code")),
+            )
+        sourcing.price_quotation(quotation)
+        return success_response(
+            "Quotation created.", data=VendorQuotationSerializer(quotation).data, status=201,
+        )
+
+
+class QuotationDetailView(_ProcBase):
+    rbac_permission = "procurement.quotation.view"
+
+    def get(self, request, pk):
+        entity = resolve_entity(request)
+        quotation = VendorQuotation.objects.filter(entity=entity, pk=pk).first()
+        if quotation is None:
+            raise NotFound("No such quotation in this entity.")
+        return success_response("Quotation retrieved.", data=VendorQuotationSerializer(quotation).data)
+
+
+class QuotationSubmitView(_ProcBase):
+    rbac_permission = "procurement.quotation.submit"
+
+    def post(self, request, pk):
+        entity = resolve_entity(request)
+        quotation = VendorQuotation.objects.filter(entity=entity, pk=pk).first()
+        if quotation is None:
+            raise NotFound("No such quotation in this entity.")
+        sourcing.submit_quotation(quotation, actor_user=request.user)
+        quotation.refresh_from_db()
+        return success_response(
+            "Quotation submitted.", data=VendorQuotationSerializer(quotation).data,
+        )
+
+
+class QuotationAwardView(_ProcBase):
+    """POST — award the quotation: build a DRAFT PO and reject the losing quotes."""
+
+    rbac_permission = "procurement.quotation.award"
+
+    def post(self, request, pk):
+        entity = resolve_entity(request)
+        quotation = VendorQuotation.objects.filter(entity=entity, pk=pk).first()
+        if quotation is None:
+            raise NotFound("No such quotation in this entity.")
+        po = sourcing.award_quotation(
+            quotation,
+            order_date=_date(request.data.get("order_date"), "order_date"),
+            actor_user=request.user,
+        )
+        return success_response(
+            f"Quotation awarded → purchase order {po.document_number}.",
+            data=PurchaseOrderSerializer(po).data, status=201,
+        )
+
+
