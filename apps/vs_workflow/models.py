@@ -19,6 +19,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.db import models
 from django.db.models import Q  # used in WorkflowStageAction constraint
 
+from vs_rbac.managers import TenantAwareManager
 from vs_workflow.constants import (
     ApproverScope,
     ApproverSource,
@@ -77,7 +78,12 @@ class WorkflowTemplate(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    objects = TenantAwareManager(include_global=True)
+    all_objects = models.Manager()
+
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         constraints = [
             models.UniqueConstraint(
                 fields=["school", "branch", "document_type", "code"],
@@ -272,9 +278,14 @@ class WorkflowInstance(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    objects = WorkflowInstanceQuerySet.as_manager()
+    # Tenant-scoped default manager composed with the domain queryset so its
+    # helper methods stay available; all_objects keeps the unscoped view.
+    objects = TenantAwareManager.from_queryset(WorkflowInstanceQuerySet)()
+    all_objects = WorkflowInstanceQuerySet.as_manager()
 
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         indexes = [
             models.Index(fields=["school", "document_type", "status"]),
             models.Index(fields=["document_content_type", "document_object_id"]),
@@ -431,7 +442,12 @@ class ApprovalDelegation(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     revoked_at = models.DateTimeField(null=True, blank=True)
 
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         indexes = [
             models.Index(fields=["delegator", "starts_at", "ends_at"]),
             models.Index(fields=["delegate", "starts_at", "ends_at"]),

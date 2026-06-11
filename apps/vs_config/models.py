@@ -21,6 +21,7 @@ from django.db import models
 from django.conf import settings
 
 from .constants import ChangeType
+from vs_rbac.managers import TenantAwareManager
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +214,12 @@ class ConfigurationChangeLog(models.Model):
     # on a Live institution (enforced at service level, not DB level).
     reason = models.TextField(blank=True, default="")
 
+    objects = TenantAwareManager(tenant_field="institution", include_global=True)
+    all_objects = models.Manager()
+
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         ordering = ["-changed_at"]
         indexes = [
             models.Index(fields=["institution", "change_type", "-changed_at"]),

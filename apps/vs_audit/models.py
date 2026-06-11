@@ -9,6 +9,7 @@ from django.db import models
 from django.utils import timezone
 
 from vs_schools.models import School
+from vs_rbac.managers import TenantAwareManager
 
 
 # -----------------------------------------------------------------------------
@@ -534,7 +535,12 @@ class ComplianceRule(TimeStampedModel):
         help_text="Extra policy configuration."
     )
 
+    objects = TenantAwareManager(include_global=True)
+    all_objects = models.Manager()
+
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         ordering = ["name"]
         indexes = [
             models.Index(fields=["rule_type", "is_active"]),

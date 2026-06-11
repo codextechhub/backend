@@ -14,6 +14,7 @@ from django.conf import settings
 from django.db import models
 
 from .constants import ChannelChoices, NotificationStatus
+from vs_rbac.managers import TenantAwareManager
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +244,12 @@ class SchoolNotificationSetting(models.Model):
     )
     updated_at = models.DateTimeField(auto_now=True)
 
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         unique_together = [["school", "event_type", "channel"]]
         indexes = [
             models.Index(fields=["school", "event_type"]),
@@ -372,7 +378,12 @@ class Notification(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         ordering = ["-created_at"]
         indexes = [
             # Primary feed query: user's unread in-app notifications

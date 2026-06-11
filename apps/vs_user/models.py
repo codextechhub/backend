@@ -26,6 +26,7 @@ from django.db.models import Q, Max
 from django.utils import timezone
 
 from vs_schools.models import School, Branch
+from vs_rbac.managers import TenantAwareManager
 
 
 # =============================================================================
@@ -429,7 +430,12 @@ class LoginSession(TimeStampedModel):
         max_length=64, blank=True, default='',
         help_text='LOGOUT / FORCE_LOGOUT / EXPIRED',
     )
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         ordering = ['-last_seen_at']
         indexes = [
             models.Index(fields=['user', 'is_active']),
@@ -480,7 +486,12 @@ class AuthAttempt(TimeStampedModel):
     def __str__(self) -> str:
         return f'AuthAttempt<{self.email_entered}:{self.result}>'
 
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         ordering = ['-created_at']
         indexes = [
             models.Index(fields=['email_entered']),
@@ -635,7 +646,12 @@ class AuthEventLog(TimeStampedModel):
     user_agent = models.TextField(blank=True, default='')
     metadata   = models.JSONField(default=dict, blank=True)
 
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         ordering = ['-created_at']
 
     def __str__(self) -> str:
