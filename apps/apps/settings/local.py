@@ -4,6 +4,16 @@ DEBUG = True
 
 ALLOWED_HOSTS = []
 
+# Dev conveniences — open CORS and the browsable API (both locked down in base).
+CORS_ALLOW_ALL_ORIGINS = True
+REST_FRAMEWORK = {
+    **REST_FRAMEWORK,
+    "DEFAULT_RENDERER_CLASSES": [
+        "rest_framework.renderers.JSONRenderer",
+        "rest_framework.renderers.BrowsableAPIRenderer",
+    ],
+}
+
 # Run Celery tasks synchronously in local dev — no broker needed.
 # Zoho SMTP — port 465 + SSL works where 587/TLS is blocked locally.
 EMAIL_PORT    = 465

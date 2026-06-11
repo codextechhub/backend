@@ -25,12 +25,14 @@ TEMP_PASSWORD_PEPPER = config("TEMP_PASSWORD_PEPPER")
 AUTH_USER_MODEL = "vs_user.User"
 
 REST_FRAMEWORK = {
+    # JSON only by default — local.py adds the browsable API for development.
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
-        "rest_framework.renderers.BrowsableAPIRenderer",
     ],
+    # JWT auth that also resolves request.school + the thread-local tenant
+    # context (Django middleware runs too early to see JWT users).
     "DEFAULT_AUTHENTICATION_CLASSES": (
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "vs_rbac.authentication.TenantJWTAuthentication",
     ),
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
@@ -45,6 +47,9 @@ REST_FRAMEWORK = {
         "login":          "5/minute",
         "password_reset": "3/minute",
         "activation":     "10/minute",
+        # Public barcode-login preview — throttled hard because it confirms
+        # whether an email belongs to a known account (enumeration surface).
+        "login_preview":  "10/minute",
     },
     "DATETIME_FORMAT": "%Y-%m-%dT%H:%M:%S.%fZ",
     "DATE_FORMAT":     "%Y-%m-%d",
@@ -118,7 +123,16 @@ CELERY_TASK_SERIALIZER   = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE          = "UTC"
 
-CORS_ALLOW_ALL_ORIGINS = True
+# CORS — locked to known frontend origins (comma-separated env override).
+# local.py re-opens this for development servers.
+CORS_ALLOW_ALL_ORIGINS = False
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in config(
+        "CORS_ALLOWED_ORIGINS", default="https://intranet.codexng.com"
+    ).split(",")
+    if origin.strip()
+]
 CORS_ALLOW_CREDENTIALS = True
 
 SESSION_COOKIE_SAMESITE = "Lax"
@@ -238,13 +252,16 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/5.0/howto/static-files/
 
 STATIC_URL = "/static/"
-MEDIA_URL = "/images/"
 
 STATICFILES_DIRS = [
     BASE_DIR / "static",
 ]
 
-MEDIA_ROOT = os.path.join(BASE_DIR, "static/images")
+# Media (user uploads) lives OUTSIDE the static tree so collectstatic never
+# picks it up and WhiteNoise never tries to serve it. Note: on ephemeral-disk
+# hosts uploads are lost on redeploy — object storage is the real fix (todo).
+MEDIA_URL = "/media/"
+MEDIA_ROOT = os.path.join(BASE_DIR, "media")
 
 STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 

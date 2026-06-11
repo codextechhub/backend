@@ -78,31 +78,34 @@ class TenantContextMiddleware:
         # Clear any previous school context from thread-local
         clear_current_school()
 
-        # Short-circuit for anonymous requests — no school context needed
-        user = getattr(request, "user", None)
-        if not user or not user.is_authenticated:
-            request.school = None
-            return self.get_response(request)
-
-        # Resolve school eagerly so a PermissionDenied returns JSON rather than
-        # Django's HTML 403 (which bypasses DRF's exception handler entirely).
         try:
-            request.school = _get_school_from_request(request)
-            if request.school:
-                set_current_school(request.school)
-        except PermissionDenied as exc:
-            return JsonResponse(
-                {'success': False, 'message': str(exc)},
-                status=403,
-            )
+            # Short-circuit for anonymous requests. JWT users are still
+            # anonymous at middleware time — their school context is set later
+            # by vs_rbac.authentication.TenantJWTAuthentication; the finally
+            # below owns the cleanup for both paths.
+            user = getattr(request, "user", None)
+            if not user or not user.is_authenticated:
+                request.school = None
+                return self.get_response(request)
 
-        # Process request
-        response = self.get_response(request)
+            # Session-authenticated path: resolve school eagerly so a
+            # PermissionDenied returns JSON rather than Django's HTML 403
+            # (which bypasses DRF's exception handler entirely).
+            try:
+                request.school = _get_school_from_request(request)
+                if request.school:
+                    set_current_school(request.school)
+            except PermissionDenied as exc:
+                return JsonResponse(
+                    {'success': False, 'message': str(exc)},
+                    status=403,
+                )
 
-        # Clean up thread-local after request completes
-        clear_current_school()
-
-        return response
+            return self.get_response(request)
+        finally:
+            # Always clear — even when the view raises — so a stale school
+            # never leaks into the next request on this worker thread.
+            clear_current_school()
 
 
 class TenantBoundaryEnforcementMiddleware:
