@@ -4,13 +4,13 @@
 - B4 (still open — user chose to keep the commented values in base.py for now): ROTATE the credentials (Render API key, old SECRET_KEY, temp-password pepper), then remove the comment lines and purge them from git history (git filter-repo); add a gitleaks pre-commit hook.
 - B7: add a real Celery worker (+ beat) to staging and remove CELERY_TASK_ALWAYS_EAGER — large imports currently run inside the web request; periodic tasks (mark_stuck_import_jobs, retry_failed_import_notifications) never fire without beat.
 - B17: standardise on PostgreSQL across local/staging/tests (staging already PG); regenerate or guard the MySQL-only raw-SQL migrations (vs_import_data 0003/0004/0006, vs_user 0003/0004); add CI running migrations + tests on PG.
-- B21: durable audit for high-stakes non-finance modules (RBAC, config) — adopt the finance hybrid pattern (transactional in-app log + best-effort central mirror) or queue-with-alerting; central emit_audit_event can silently drop events.
+
 - B23: migrate School off slug-as-primary-key to a surrogate key (slug stays unique) — do before any school-rename feature; touches every school FK.
-- B25: split monolithic modules into packages (vs_finance/models.py 2.4k lines, vs_procurement/views.py 1.8k, vs_finance/views_ops.py 1.6k, vs_rbac/serializers.py 1.5k, vs_user/views.py 1.5k) with __init__ re-exports.
-- B26: SMS channel for vs_notifications (Termii/Twilio behind the existing dispatch service) + scheduled sends; FRD Module 8 claims SMS but it doesn't exist.
+
+- B26 (CLOSED — user decision 2026-06-11: NO SMS channel; notification media are in-app + email only): amend FRD v2.1 Module 8 to drop the SMS capability instead. Scheduled sends (Celery beat) may still be wanted separately.
 - B27: document (or eventually rename) the apps/apps project-package naming.
 - B9 follow-up: move media to object storage (S3/R2 via django-storages) — MEDIA_ROOT now outside the static tree, but uploads still die on redeploy (ephemeral disk).
-- Test-suite repair (pre-existing rot, partially fixed 2026-06-11): vs_rbac/tests/test_views.py still has ~44 failures (renamed URL routes, changed response shapes), test_models.py 6, test_validators.py 7. Helpers + test_permissions/test_middleware/test_authentication/test_tenant_isolation are green.
+
 - B2 follow-up: extend TenantAwareManager to remaining school-FK models once school-user flows exist (vs_user.User + session/security models, vs_notifications, vs_audit, vs_workflow instances — mind nullable-school global rows).
 
 ## AR cycle (vs_finance receivables)
@@ -20,6 +20,26 @@
 # - Open-banking statement feed (Mono/Okra) — optional, automates bank rec  [SKIP — user deferred "skip for now"]
 
 ## Done
+
+# B21 durable audit (2026-06-11): vs_rbac.RBACAuditLog (append-only, immutable) + audit.record_rbac_audit —
+# durable row written transactionally with the action, central vs_audit kept as guarded best-effort mirror;
+# all 35 emit sites in signals.py/services.py converted via import swap; vs_config already had its own
+# append-only ConfigurationChangeLog so needed nothing. Migration 0006. Tests in vs_rbac/tests/test_audit.py.
+
+# B25 module splits (2026-06-11): vs_finance/models.py (2.4k) → models/{core,gl,ar,adjustments,dunning,ops};
+# vs_finance/views_ops.py (1.6k) → views_ops/{base,masterdata,banking,expenses,pettycash,tax,payroll,budgets,assets,audit};
+# vs_procurement/views.py (1.8k) → views/{base,vendors,contracts,catalog,requisitions,orders,receiving,vendor_payments,reports,stock};
+# vs_user/views.py (1.6k) → views/{me,auth,passwords,accounts,security,organogram};
+# vs_rbac/serializers.py (1.5k) → serializers/{registry,school,platform}. All via package __init__ star
+# re-exports — import paths unchanged, no migration drift, full suite green.
+
+# vs_rbac test-suite repair COMPLETE (2026-06-11): all 214 tests green. Along the way fixed two REAL bugs the
+# rotted tests were hiding: (1) school role detail/update/delete routes declared <int:id> but
+# SchoolRoleTemplate.id is a slug — endpoints could never match; now <slug:id>. (2)
+# SchoolRoleChangeRequestDecisionView.post() didn't accept the school_slug URL kwarg — every decide call 500'd;
+# now accepts it and scopes the lookup by school. Also restored lost invariants with real constraints:
+# uq_school_role_name (school,name), uq_platform_role_name (name) + dedupe data migration 0005, and app-level
+# one-ACTIVE-assignment guards on both assignment models (conditional unique isn't portable to MariaDB).
 
 # 0u. Tiered org structure DIVISION → DEPARTMENT → TEAM + Department→OrgNode rename (user decision: enforce hierarchy; model renamed to OrgNode). (A) models.py: Department renamed to OrgNode (generic tiered node); +kind TextChoices (DIVISION/DEPARTMENT/TEAM, default DEPARTMENT); clean() now enforces strict tiering via _REQUIRED_PARENT_KIND map (DIVISION must be top-level/no parent; DEPARTMENT must sit under a DIVISION; TEAM must sit under a DEPARTMENT) on top of the existing self-parent + cycle guards; +nearest_of_kind(kind) helper (walks self→ancestors); head_position related_name heads_department→heads_node; db_table vs_users_department→vs_users_org_node; +index on kind. Position.department FK renamed to Position.org_node (related_name 'positions'); a seat may hang off ANY tier. PlatformStaffProfile: .department is now a DERIVED property = org_node.nearest_of_kind(DEPARTMENT) (a Team seat resolves to its parent Department; sitting directly on a Division → None); +new .org_node property = the exact node the seat is in. (B) services/organogram.py: import OrgNode; build_tree/vacancies/primary_position_for select_related 'org_node'; tree node dict key department→org_node; resolve_department_head walks org_node.parent up Team→Department→Division to the nearest filled head seat. (C) serializers.py: DepartmentInlineSerializer→OrgNodeInlineSerializer (+kind); DepartmentSerializer→OrgNodeSerializer (+kind); OrganogramNodeSerializer→OrgTreeNodeSerializer (department→org_node); PositionSerializer department/department_id→org_node/org_node_id; PositionInlineSerializer department→org_node; profile serializers expose position + org_node + derived department. (D) views.py + urls.py: DepartmentViewSet→OrgNodeViewSet (+?kind= filter); route /organogram/departments/→/organogram/nodes/ (basename org-nodes); Position viewset/tree select_related + ?org_node= filter; profile queryset ?org_node= (PK or code) via position__org_node, select_related position__org_node. (E) Migrations (data-preserving, MariaDB-safe): 0009 hand-written RenameModel + AlterModelTable + RenameField(position.department→org_node) + AddField(kind); 0010 cosmetic (verbose_name, head_position related_name, kind index, index renames) — the Position index drop was converted to RenameIndex to dodge MariaDB's FK auto-index management (dropping an FK-covering index calls _create_missing_fk_index which looked up the now-gone 'department' field and crashed); 0011 RenameIndex to a stable explicit name pos_orgnode_active_idx; 0012 SeparateDatabaseAndState state-only fix (RenameIndex updates the name but NOT the index field list in migration state, so state still said fields=['department'] → autodetector kept emitting a failing drop; reconciled state to fields=['org_node'] with zero DDL since the physical index was already correct). All applied; makemigrations --check clean; manage.py check clean. Verified via shell (rolled back): Division>Department>Team builds; all 4 invalid tier combos rejected; hire into a Team seat → profile.org_node=Team, derived department=parent Department, line manager=reports_to holder, dept-head climb resolves up to the Department head. URL reverses OK (/v1/user/organogram/nodes/, .../positions/tree/); vs_workflow ORGANOGRAM approver path still wired.
 
