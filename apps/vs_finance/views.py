@@ -45,13 +45,28 @@ from .serializers import (
 def resolve_entity(request):
     """Resolve the ``?entity=`` query param (id or code) to a :class:`LedgerEntity`.
 
-    Raises DRF :class:`ValidationError` when missing, :class:`NotFound` when unknown —
-    both rendered into the standard error envelope by the custom exception handler.
+    Authorization: holding a finance permission key is NOT enough — the caller
+    must also be entitled to this specific entity's books. CX staff may access
+    every entity; school-scoped users only entities sourced from their school.
+    Unknown and forbidden entities both return NotFound so an outsider can't
+    probe which entity codes exist.
+
+    Raises DRF :class:`ValidationError` when missing, :class:`NotFound` when
+    unknown/forbidden — both rendered into the standard error envelope by the
+    custom exception handler.
     """
     raw = request.query_params.get("entity")
     if not raw:
         raise ValidationError({"entity": "An 'entity' query parameter (id or code) is required."})
     qs = LedgerEntity.objects.all()
+
+    user = getattr(request, "user", None)
+    if getattr(user, "user_type", None) != "CX_STAFF":
+        school = getattr(request, "school", None) or getattr(user, "school", None)
+        if school is None:
+            raise NotFound(f"No ledger entity matches '{raw}'.")
+        qs = qs.filter(source_school=school)
+
     entity = (
         qs.filter(pk=int(raw)).first() if str(raw).isdigit()
         else qs.filter(code=str(raw).upper()).first()
