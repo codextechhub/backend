@@ -13,7 +13,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from vs_audit.models import AuditModuleKey, AuditActionType
-from vs_audit.services import emit_audit_event
+from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
 from .models import (
     PlatformRoleChangeDeltaItem,

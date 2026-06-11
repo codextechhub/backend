@@ -74,7 +74,7 @@ def sync_user_role_on_platform_assignment(sender, instance, **kwargs):
 def audit_platform_role_assignment(sender, instance, created, **kwargs):
     """Emit an AuditEvent whenever a platform role is assigned or its status changes."""
     from vs_audit.models import AuditActionType, AuditModuleKey
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     action_type = AuditActionType.ROLE_ASSIGNED if created else AuditActionType.ROLE_CHANGED
     role_name = getattr(getattr(instance, "role", None), "name", "")
@@ -124,7 +124,7 @@ def audit_platform_role_assignment(sender, instance, created, **kwargs):
 def audit_school_role_assignment(sender, instance, created, **kwargs):
     """Emit an audit event when a school role is assigned or revoked."""
     from vs_audit.models import AuditActionType, AuditModuleKey
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     role_name = getattr(getattr(instance, "role", None), "name", "")
     user = instance.user
@@ -182,7 +182,7 @@ pre_save.connect(_capture_old_is_active, sender=Permission)
 def audit_permission_change(sender, instance, created, **kwargs):
     """Emit an audit event when a permission is created or deactivated."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     if created:
         emit_audit_event(
@@ -227,7 +227,7 @@ def audit_permission_dependency_created(sender, instance, created, **kwargs):
         return
 
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     emit_audit_event(
         module_key=AuditModuleKey.RBAC,
@@ -248,7 +248,7 @@ def audit_permission_dependency_created(sender, instance, created, **kwargs):
 def audit_permission_dependency_removed(sender, instance, **kwargs):
     """Emit an audit event when a permission dependency is removed."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     emit_audit_event(
         module_key=AuditModuleKey.RBAC,
@@ -276,7 +276,7 @@ def audit_group_permission_added(sender, instance, created, **kwargs):
         return
 
     from vs_audit.models import AuditActionType, AuditModuleKey
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     group_name = getattr(getattr(instance, "group", None), "name", str(instance.group_id))
     emit_audit_event(
@@ -295,7 +295,7 @@ def audit_group_permission_added(sender, instance, created, **kwargs):
 def audit_group_permission_removed(sender, instance, **kwargs):
     """Emit an audit event when a permission is removed from a group."""
     from vs_audit.models import AuditActionType, AuditModuleKey
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     group_name = getattr(getattr(instance, "group", None), "name", str(instance.group_id))
     emit_audit_event(
@@ -321,7 +321,7 @@ pre_save.connect(_capture_old_status, sender=SchoolRoleTemplate)
 def audit_school_role_template(sender, instance, created, **kwargs):
     """Emit an audit event when a school role template is created or its status changes."""
     from vs_audit.models import AuditActionType, AuditModuleKey
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     if created:
         emit_audit_event(
@@ -364,7 +364,7 @@ pre_save.connect(_capture_old_status, sender=PlatformRoleTemplate)
 def audit_platform_role_template(sender, instance, created, **kwargs):
     """Emit an audit event when a platform role template is created or its status changes."""
     from vs_audit.models import AuditActionType, AuditModuleKey
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     if created:
         emit_audit_event(
@@ -403,7 +403,7 @@ def audit_school_role_group_attached(sender, instance, created, **kwargs):
         return
 
     from vs_audit.models import AuditActionType, AuditModuleKey
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     role_name = getattr(getattr(instance, "role", None), "name", str(instance.role_id))
     group_name = getattr(getattr(instance, "group", None), "name", str(instance.group_id))
@@ -423,7 +423,7 @@ def audit_school_role_group_attached(sender, instance, created, **kwargs):
 def audit_school_role_group_detached(sender, instance, **kwargs):
     """Emit an audit event when a permission group is detached from a school role."""
     from vs_audit.models import AuditActionType, AuditModuleKey
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     role_name = getattr(getattr(instance, "role", None), "name", str(instance.role_id))
     group_name = getattr(getattr(instance, "group", None), "name", str(instance.group_id))
@@ -449,7 +449,7 @@ def audit_platform_role_group_attached(sender, instance, created, **kwargs):
         return
 
     from vs_audit.models import AuditActionType, AuditModuleKey
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     role_name = getattr(getattr(instance, "role", None), "name", str(instance.role_id))
     group_name = getattr(getattr(instance, "group", None), "name", str(instance.group_id))
@@ -469,7 +469,7 @@ def audit_platform_role_group_attached(sender, instance, created, **kwargs):
 def audit_platform_role_group_detached(sender, instance, **kwargs):
     """Emit an audit event when a permission group is detached from a platform role."""
     from vs_audit.models import AuditActionType, AuditModuleKey
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     role_name = getattr(getattr(instance, "role", None), "name", str(instance.role_id))
     group_name = getattr(getattr(instance, "group", None), "name", str(instance.group_id))
@@ -496,7 +496,7 @@ pre_save.connect(_capture_old_status, sender=SchoolRoleChangeRequest)
 def audit_school_role_change_request(sender, instance, created, **kwargs):
     """Emit audit events for school role change request lifecycle transitions."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity, AuditStatus
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     role_name = getattr(getattr(instance, "target_role", None), "name", str(instance.target_role_id))
 
@@ -570,7 +570,7 @@ pre_save.connect(_capture_old_status, sender=PlatformRoleChangeRequest)
 def audit_platform_role_change_request(sender, instance, created, **kwargs):
     """Emit audit events for platform role change request lifecycle transitions."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity, AuditStatus
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     role_name = getattr(getattr(instance, "target_role", None), "name", str(instance.target_role_id))
 
@@ -636,7 +636,7 @@ pre_save.connect(_capture_old_is_active, sender=PermissionModule)
 def audit_permission_module(sender, instance, created, **kwargs):
     """Emit an audit event on PermissionModule create or is_active change."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     if created:
         emit_audit_event(
@@ -674,7 +674,7 @@ def audit_permission_module(sender, instance, created, **kwargs):
 def audit_permission_module_deleted(sender, instance, **kwargs):
     """Emit an audit event when a PermissionModule is hard-deleted."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     emit_audit_event(
         module_key=AuditModuleKey.RBAC,
@@ -699,7 +699,7 @@ pre_save.connect(_capture_old_is_active, sender=PermissionResource)
 def audit_permission_resource(sender, instance, created, **kwargs):
     """Emit an audit event on PermissionResource create or is_active change."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     label = str(instance)  # "module.resource"
 
@@ -739,7 +739,7 @@ def audit_permission_resource(sender, instance, created, **kwargs):
 def audit_permission_resource_deleted(sender, instance, **kwargs):
     """Emit an audit event when a PermissionResource is hard-deleted."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     label = str(instance)
     emit_audit_event(
@@ -765,7 +765,7 @@ pre_save.connect(_capture_old_is_active, sender=PermissionAction)
 def audit_permission_action(sender, instance, created, **kwargs):
     """Emit an audit event on PermissionAction create or is_active change."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     if created:
         emit_audit_event(
@@ -803,7 +803,7 @@ def audit_permission_action(sender, instance, created, **kwargs):
 def audit_permission_action_deleted(sender, instance, **kwargs):
     """Emit an audit event when a PermissionAction is hard-deleted."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
-    from vs_audit.services import emit_audit_event
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
 
     emit_audit_event(
         module_key=AuditModuleKey.RBAC,
