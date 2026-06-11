@@ -10,6 +10,8 @@ from django.utils.text import slugify
 
 from vs_schools.models import Branch, School
 
+from .managers import TenantAwareManager
+
 User = settings.AUTH_USER_MODEL
 
 
@@ -440,7 +442,14 @@ class SchoolRoleTemplate(TimeStampedModel):
         blank=True,
     )
 
+    # Tenant isolation: school users are automatically scoped to their school;
+    # all_objects is the unscoped escape hatch for platform code.
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         indexes = [
             models.Index(fields=["school", "status"]),
             models.Index(fields=["school", "is_locked"]),
@@ -613,7 +622,12 @@ class SchoolUserRoleAssignment(TimeStampedModel):
 
     reason_note = models.TextField(blank=True)
 
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         indexes = [
             models.Index(fields=["school", "user", "assignment_status"]),
             models.Index(fields=["school", "role", "assignment_status"]),
@@ -697,7 +711,12 @@ class SchoolRoleChangeRequest(TimeStampedModel):
     # Optional: store derived info so reviewers don’t have to recompute
     impact_summary = models.JSONField(default=dict, blank=True)
 
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         indexes = [
             models.Index(fields=["school", "status", "submitted_at"]),
             models.Index(fields=["status", "submitted_at"]),

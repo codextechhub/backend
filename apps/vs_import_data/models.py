@@ -8,6 +8,7 @@ from django.db import models
 from django.utils import timezone
 
 from vs_schools.models import Branch, School
+from vs_rbac.managers import TenantAwareManager
 
 
 # =========================================================
@@ -283,7 +284,14 @@ class ImportBatch(TimeStampedModel):
 
     notes = models.TextField(blank=True)
 
+    # Tenant isolation: school users are automatically scoped to their school;
+    # all_objects is the unscoped escape hatch for platform code.
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["school", "status"]),

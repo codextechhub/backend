@@ -6,6 +6,8 @@ from django.db import models, transaction
 from django.db.models import Q, Max
 from django.utils import timezone
 
+from vs_rbac.managers import TenantAwareManager
+
 
 # -----------------------------------------------------------------------------
 # Shared base + helpers
@@ -265,7 +267,14 @@ class Branch(TimeStampedModel):
     activated_at = models.DateTimeField(null=True, blank=True)
     deactivated_at = models.DateTimeField(null=True, blank=True)
 
+    # Tenant isolation: school users are automatically scoped to their school;
+    # all_objects is the unscoped escape hatch for platform code.
+    objects = TenantAwareManager()
+    all_objects = models.Manager()
+
     class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
         indexes = [
             models.Index(fields=["school", "is_main"]),
             models.Index(fields=["school", "status"]),
