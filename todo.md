@@ -4,12 +4,8 @@
 - B7: add a real Celery worker (+ beat) to staging and remove CELERY_TASK_ALWAYS_EAGER — large imports currently run inside the web request; periodic tasks (mark_stuck_import_jobs, retry_failed_import_notifications) never fire without beat.
 - B17: standardise on PostgreSQL across local/staging/tests (staging already PG); regenerate or guard the MySQL-only raw-SQL migrations (vs_import_data 0003/0004/0006, vs_user 0003/0004); add CI running migrations + tests on PG.
 
-- B23: migrate School off slug-as-primary-key to a surrogate key (slug stays unique) — do before any school-rename feature; touches every school FK.
 
-- B27: document (or eventually rename) the apps/apps project-package naming.
-- B9 follow-up: move media to object storage (S3/R2 via django-storages) — MEDIA_ROOT now outside the static tree, but uploads still die on redeploy (ephemeral disk).
 
-- B2 follow-up: extend TenantAwareManager to remaining school-FK models once school-user flows exist (vs_user.User + session/security models, vs_notifications, vs_audit, vs_workflow instances — mind nullable-school global rows).
 
 ## AR cycle (vs_finance receivables)
 # - School-fee billing adapter (fee categories + structures → emit generic invoices, behind a module flag)  [SKIP — user deferred]
@@ -18,6 +14,28 @@
 # - Open-banking statement feed (Mono/Okra) — optional, automates bank rec  [SKIP — user deferred "skip for now"]
 
 ## Done
+
+# B23 (2026-06-11): School slug-PK → surrogate BigAuto id, slug stays unique. ONE migration
+# (vs_schools 0003) flips state + remaps the DB: drops/rediscovers FK + CHECK constraints dynamically,
+# adds+populates id, rewrites all 21 school FKs slug→id, retypes them BIGINT, restores constraints.
+# Vendor branches for MariaDB (local) + PostgreSQL (staging); fresh-install replay validated by the test
+# runner. JWT now carries numeric school_id + NEW school_slug claim; middleware/serializers accept id OR
+# slug (SchoolField renders slug so the wire format is unchanged). Slug-based URLs (school__slug) untouched.
+# Dev DB backup taken pre-flip: /tmp/cx_db_backup_before_b23.sql. STAGING: back up Postgres before deploying this.
+
+# B9 follow-up (2026-06-11): media = ONLY import CSVs + images (user decision), so uploads are now
+# DATABASE-backed: core.StoredFile + core.storage.DatabaseStorage (extension allowlist csv/xlsx/xls/png/
+# jpg/jpeg/gif/webp — svg deliberately excluded, MEDIA_DB_MAX_BYTES=25MB ceiling, path-traversal guard),
+# served with auth by core.views.MediaView at /media/<name> in every env. Survives ephemeral-disk
+# redeploys, ships with DB backups; outgrowing it = point STORAGES["default"] at S3 and copy rows out.
+# Side-fix: staging's STATICFILES_STORAGE was removed in Django 5.1 and silently ignored — WhiteNoise
+# is now wired via STORAGES correctly.
+
+# B2 follow-up (2026-06-11): TenantAwareManager extended to LoginSession/AuthAttempt/AuthEventLog,
+# Notification/SchoolNotificationSetting, WorkflowTemplate(include_global)/WorkflowInstance(composed with
+# its domain queryset)/ApprovalDelegation, ComplianceRule(include_global), ConfigurationChangeLog
+# (tenant_field="institution", include_global). Manager grew include_global + tenant_field options.
+# vs_user.User deliberately EXCLUDED (auth machinery resolves users before any tenant context exists).
 
 # B21 durable audit (2026-06-11): vs_rbac.RBACAuditLog (append-only, immutable) + audit.record_rbac_audit —
 # durable row written transactionally with the action, central vs_audit kept as guarded best-effort mirror;
