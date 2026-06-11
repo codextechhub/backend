@@ -43,65 +43,65 @@ class PermissionDependencyValidatorTests(TestCase):
         )
 
     def test_transitive_dependency(self):
-        make_permission("a.base")
-        make_permission("a.mid")
-        make_permission("a.top")
-        make_dependency("a.mid", "a.base")
-        make_dependency("a.top", "a.mid")
+        make_permission("a.res.base")
+        make_permission("a.res.mid")
+        make_permission("a.res.top")
+        make_dependency("a.res.mid", "a.res.base")
+        make_dependency("a.res.top", "a.res.mid")
 
         validator = PermissionDependencyValidator()
 
         # Missing transitive dep
-        result = validator.validate_permission_set(["a.top", "a.mid"])
+        result = validator.validate_permission_set(["a.res.top", "a.res.mid"])
         self.assertFalse(result["valid"])
-        self.assertIn("a.mid", result["missing_dependencies"])
+        self.assertIn("a.res.mid", result["missing_dependencies"])
 
         # All satisfied
-        result = validator.validate_permission_set(["a.top", "a.mid", "a.base"])
+        result = validator.validate_permission_set(["a.res.top", "a.res.mid", "a.res.base"])
         self.assertTrue(result["valid"])
 
     def test_circular_dependency_detected(self):
-        make_permission("x.a")
-        make_permission("x.b")
-        make_dependency("x.a", "x.b")
-        make_dependency("x.b", "x.a")
+        make_permission("x.res.a")
+        make_permission("x.res.b")
+        make_dependency("x.res.a", "x.res.b")
+        make_dependency("x.res.b", "x.res.a")
 
         validator = PermissionDependencyValidator()
-        result = validator.validate_permission_set(["x.a", "x.b"])
+        result = validator.validate_permission_set(["x.res.a", "x.res.b"])
         self.assertFalse(result["valid"])
         self.assertTrue(len(result["errors"]) > 0)
 
     def test_detect_circular_dependencies(self):
-        make_permission("c.a")
-        make_permission("c.b")
-        make_dependency("c.a", "c.b")
-        make_dependency("c.b", "c.a")
+        make_permission("c.res.a")
+        make_permission("c.res.b")
+        make_dependency("c.res.a", "c.res.b")
+        make_dependency("c.res.b", "c.res.a")
 
         validator = PermissionDependencyValidator()
         errors = validator.detect_circular_dependencies()
         self.assertTrue(len(errors) > 0)
 
     def test_get_dependencies(self):
-        make_permission("d.view")
-        make_permission("d.edit")
-        make_permission("d.delete")
-        make_dependency("d.edit", "d.view")
-        make_dependency("d.delete", "d.view")
+        make_permission("d.res.view")
+        make_permission("d.res.edit")
+        make_permission("d.res.delete")
+        make_dependency("d.res.edit", "d.res.view")
+        make_dependency("d.res.delete", "d.res.view")
 
         validator = PermissionDependencyValidator()
-        deps = validator.get_dependencies("d.edit")
-        self.assertEqual(deps, {"d.view"})
+        deps = validator.get_dependencies("d.res.edit")
+        self.assertEqual(deps, {"d.res.view"})
 
     def test_get_all_dependencies(self):
-        make_permission("e.a")
-        make_permission("e.b")
-        make_permission("e.c")
-        make_dependency("e.c", "e.b")
-        make_dependency("e.b", "e.a")
+        make_permission("e.res.a")
+        make_permission("e.res.b")
+        make_permission("e.res.c")
+        make_dependency("e.res.c", "e.res.b")
+        make_dependency("e.res.b", "e.res.a")
 
         validator = PermissionDependencyValidator()
-        all_deps = validator.get_all_dependencies("e.c")
-        self.assertEqual(all_deps, {"e.a", "e.b"})
+        all_deps = validator.get_all_dependencies("e.res.c")
+        self.assertEqual(all_deps, {"e.res.a", "e.res.b"})
 
     def test_empty_set_validates(self):
         validator = PermissionDependencyValidator()
@@ -111,18 +111,18 @@ class PermissionDependencyValidatorTests(TestCase):
 
 class ValidateRolePermissionsTests(TestCase):
     def test_valid_set_passes(self):
-        make_permission("f.view")
-        make_permission("f.edit")
-        make_dependency("f.edit", "f.view")
+        make_permission("f.res.view")
+        make_permission("f.res.edit")
+        make_dependency("f.res.edit", "f.res.view")
         # Should not raise
-        validate_role_permissions(["f.view", "f.edit"])
+        validate_role_permissions(["f.res.view", "f.res.edit"])
 
     def test_missing_dependency_raises(self):
-        make_permission("g.view")
-        make_permission("g.edit")
-        make_dependency("g.edit", "g.view")
+        make_permission("g.res.view")
+        make_permission("g.res.edit")
+        make_dependency("g.res.edit", "g.res.view")
         with self.assertRaises(ValidationError) as ctx:
-            validate_role_permissions(["g.edit"])
+            validate_role_permissions(["g.res.edit"])
         self.assertIn("permission_keys", ctx.exception.message_dict)
 
     def test_empty_set_passes(self):

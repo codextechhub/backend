@@ -665,12 +665,14 @@ class SchoolRoleChangeRequestDecisionView(APIView):
     """
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
 
-    def post(self, request, request_id: str):
+    def post(self, request, school_slug: str, request_id: str):
         action = (request.data.get("action") or "").upper().strip()
         notes = (request.data.get("notes") or "").strip()
 
         try:
-            obj = SchoolRoleChangeRequest.objects.select_related("target_role", "school").get(id=request_id)
+            obj = SchoolRoleChangeRequest.objects.select_related("target_role", "school").get(
+                id=request_id, school_id=school_slug,
+            )
         except SchoolRoleChangeRequest.DoesNotExist:
             return error_response(
                 message="Request not found.",

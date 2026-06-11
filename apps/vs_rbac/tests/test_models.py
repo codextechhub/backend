@@ -48,8 +48,9 @@ class PermissionModelTests(TestCase):
     def test_create_permission(self):
         perm = make_permission("finance.invoice.view")
         self.assertEqual(perm.key, "finance.invoice.view")
-        self.assertEqual(perm.module_key, "finance.invoice")
-        self.assertEqual(perm.action, "view")
+        self.assertEqual(perm.module_id, "finance")
+        self.assertEqual(perm.resource.name, "invoice")
+        self.assertEqual(perm.action_id, "view")
         self.assertEqual(perm.sensitivity_level, Permission.Sensitivity.NORMAL)
         self.assertFalse(perm.is_restricted)
         self.assertTrue(perm.is_active)
@@ -59,9 +60,13 @@ class PermissionModelTests(TestCase):
         self.assertEqual(str(perm), "students.profile.update")
 
     def test_duplicate_key_raises(self):
-        make_permission("finance.invoice.view")
+        first = make_permission("finance.invoice.view")
         with self.assertRaises(IntegrityError):
-            make_permission("finance.invoice.view")
+            Permission.objects.create(
+                module=first.module,
+                resource=first.resource,
+                action=first.action,
+            )
 
     def test_sensitivity_levels(self):
         for level in Permission.Sensitivity:

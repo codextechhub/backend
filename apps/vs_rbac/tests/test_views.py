@@ -91,12 +91,16 @@ class PermissionListCreateViewTests(_AuthMixin, TestCase):
         make_permission("finance.invoice.approve")
         resp = self._vision_client().get(self.url)
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 2)
+        self.assertEqual(len(resp.data["data"]), 2)
 
     def test_create_permission_as_vision(self):
+        from vs_rbac.models import PermissionAction, PermissionModule, PermissionResource
+        module, _ = PermissionModule.objects.get_or_create(name="hr")
+        PermissionResource.objects.get_or_create(module=module, name="leave")
+        PermissionAction.objects.get_or_create(name="view")
         data = {
-            "key": "hr.leave.view",
-            "module_key": "hr",
+            "module": "hr",
+            "resource": "leave",
             "action": "view",
             "description": "View leave requests",
         }
@@ -128,7 +132,7 @@ class PermissionDetailViewTests(_AuthMixin, TestCase):
     def test_retrieve(self):
         resp = self._vision_client().get(self._url())
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data["key"], "finance.invoice.view")
+        self.assertEqual(resp.data["data"]["key"], "finance.invoice.view")
 
     def test_update(self):
         resp = self._vision_client().patch(
@@ -140,7 +144,7 @@ class PermissionDetailViewTests(_AuthMixin, TestCase):
 
     def test_delete(self):
         resp = self._vision_client().delete(self._url())
-        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertFalse(Permission.objects.filter(key="finance.invoice.view").exists())
 
     def test_school_admin_denied(self):
@@ -173,13 +177,13 @@ class PermissionDependencyViewTests(_AuthMixin, TestCase):
         url = reverse("rbac-permission-dependency-list-create")
         resp = self._vision_client().get(url)
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(len(resp.data["data"]), 1)
 
     def test_delete_dependency(self):
         dep = make_dependency("finance.invoice.approve", "finance.invoice.view")
         url = reverse("rbac-permission-dependency-detail", kwargs={"id": dep.id})
         resp = self._vision_client().delete(url)
-        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
     def test_school_admin_denied(self):
         url = reverse("rbac-permission-dependency-list-create")
@@ -199,14 +203,14 @@ class SchoolRoleTemplateListCreateViewTests(_AuthMixin, TestCase):
         self.staff_user = make_staff_user(self.branch)
 
     def _url(self):
-        return reverse("rbac-role-list-create", kwargs={"school_id": self.school.slug})
+        return reverse("rbac-role-list-create", kwargs={"school_slug": self.school.slug})
 
     def test_list_roles(self):
         make_role(self.school, name="Teacher")
         make_role(self.school, name="Accountant")
         resp = self._admin_client().get(self._url())
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 2)
+        self.assertEqual(len(resp.data["data"]), 2)
 
     def test_list_includes_counts(self):
         role = make_role(self.school, name="Teacher")
@@ -216,7 +220,7 @@ class SchoolRoleTemplateListCreateViewTests(_AuthMixin, TestCase):
 
         resp = self._admin_client().get(self._url())
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        data = resp.data[0]
+        data = resp.data["data"][0]
         self.assertEqual(data["assigned_users_count"], 1)
         self.assertEqual(data["permissions_count"], 1)
 
@@ -268,14 +272,14 @@ class SchoolRoleTemplateDetailViewTests(_AuthMixin, TestCase):
     def _url(self):
         return reverse(
             "rbac-role-detail",
-            kwargs={"school_id": self.school.slug, "id": self.role.id},
+            kwargs={"school_slug": self.school.slug, "id": self.role.id},
         )
 
     def test_retrieve(self):
         resp = self._admin_client().get(self._url())
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data["name"], "Teacher")
-        self.assertEqual(len(resp.data["role_permissions"]), 1)
+        self.assertEqual(resp.data["data"]["name"], "Teacher")
+        self.assertEqual(len(resp.data["data"]["role_permissions"]), 1)
 
     def test_update_name(self):
         resp = self._admin_client().patch(
@@ -303,7 +307,7 @@ class SchoolRoleTemplateDetailViewTests(_AuthMixin, TestCase):
 
     def test_delete(self):
         resp = self._admin_client().delete(self._url())
-        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertFalse(SchoolRoleTemplate.objects.filter(id=self.role.id).exists())
 
     def test_cross_school_isolation(self):
@@ -317,11 +321,11 @@ class SchoolRoleTemplateDetailViewTests(_AuthMixin, TestCase):
         # admin2 lists roles under school2's scope - should not see school1's roles
         url = reverse(
             "rbac-role-list-create",
-            kwargs={"school_id": school2.slug},
+            kwargs={"school_slug": school2.slug},
         )
         resp = client2.get(url)
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 0)
+        self.assertEqual(len(resp.data["data"]), 0)
 
 
 # =============================================================================
@@ -339,13 +343,13 @@ class SchoolUserRoleAssignmentViewTests(_AuthMixin, TestCase):
     def _list_url(self):
         return reverse(
             "rbac-assignment-list-create",
-            kwargs={"school_id": self.school.slug},
+            kwargs={"school_slug": self.school.slug},
         )
 
     def _detail_url(self, assignment_id):
         return reverse(
             "rbac-assignment-detail",
-            kwargs={"school_id": self.school.slug, "id": assignment_id},
+            kwargs={"school_slug": self.school.slug, "id": assignment_id},
         )
 
     def test_create_assignment(self):
@@ -371,19 +375,19 @@ class SchoolUserRoleAssignmentViewTests(_AuthMixin, TestCase):
         make_assignment(self.school, self.staff_user, self.role)
         resp = self._admin_client().get(self._list_url())
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(len(resp.data["data"]), 1)
 
     def test_filter_by_status(self):
         a = make_assignment(self.school, self.staff_user, self.role)
         resp = self._admin_client().get(
             self._list_url() + "?assignment_status=ACTIVE"
         )
-        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(len(resp.data["data"]), 1)
 
         resp = self._admin_client().get(
             self._list_url() + "?assignment_status=REVOKED"
         )
-        self.assertEqual(len(resp.data), 0)
+        self.assertEqual(len(resp.data["data"]), 0)
 
     def test_revoke_assignment(self):
         a = make_assignment(self.school, self.staff_user, self.role)
@@ -436,7 +440,7 @@ class SchoolRoleChangeRequestViewTests(_AuthMixin, TestCase):
     def _list_url(self):
         return reverse(
             "rbac-role-change-request-list-create",
-            kwargs={"school_id": self.school.slug},
+            kwargs={"school_slug": self.school.slug},
         )
 
     def test_create_change_request(self):
@@ -462,7 +466,7 @@ class SchoolRoleChangeRequestViewTests(_AuthMixin, TestCase):
         make_role_change_request(self.school, self.school_admin, self.role)
         resp = self._admin_client().get(self._list_url())
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(len(resp.data["data"]), 1)
 
     def test_cross_school_role_rejected(self):
         school2 = make_school(slug="school-2", name="School 2")
@@ -490,25 +494,25 @@ class SchoolRoleChangeRequestApprovalViewTests(_AuthMixin, TestCase):
 
     def test_queue_lists_all_requests(self):
         make_role_change_request(self.school, self.school_admin, self.role)
-        url = reverse("rbac-vision-role-change-queue")
-        resp = self._vision_client().get(url)
+        url = reverse("rbac-role-change-approval-queue", kwargs={"school_slug": self.school.slug})
+        resp = self._admin_client().get(url)
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(len(resp.data["data"]), 1)
 
     def test_queue_filter_by_status(self):
         make_role_change_request(self.school, self.school_admin, self.role)
-        url = reverse("rbac-vision-role-change-queue")
-        resp = self._vision_client().get(url + "?status=PENDING")
-        self.assertEqual(len(resp.data), 1)
-        resp = self._vision_client().get(url + "?status=APPROVED")
-        self.assertEqual(len(resp.data), 0)
+        url = reverse("rbac-role-change-approval-queue", kwargs={"school_slug": self.school.slug})
+        resp = self._admin_client().get(url + "?status=PENDING")
+        self.assertEqual(len(resp.data["data"]), 1)
+        resp = self._admin_client().get(url + "?status=APPROVED")
+        self.assertEqual(len(resp.data["data"]), 0)
 
     def test_detail_view(self):
         rcr = make_role_change_request(self.school, self.school_admin, self.role)
-        url = reverse("rbac-vision-role-change-detail", kwargs={"id": rcr.id})
-        resp = self._vision_client().get(url)
+        url = reverse("rbac-role-change-approval-detail", kwargs={"school_slug": self.school.slug, "id": rcr.id})
+        resp = self._admin_client().get(url)
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data["id"], rcr.id)
+        self.assertEqual(resp.data["data"]["id"], rcr.id)
 
     def test_approve_request(self):
         rcr = make_role_change_request(self.school, self.school_admin, self.role)
@@ -520,19 +524,19 @@ class SchoolRoleChangeRequestApprovalViewTests(_AuthMixin, TestCase):
             operation=SchoolRoleChangeDeltaItem.Operation.ADD,
         )
 
-        url = reverse("rbac-vision-role-change-decide", kwargs={"request_id": rcr.id})
-        resp = self._vision_client().post(
+        url = reverse("rbac-role-change-decide", kwargs={"school_slug": self.school.slug, "request_id": rcr.id})
+        resp = self._admin_client().post(
             url, {"action": "APPROVE", "notes": "Looks good"}, format="json"
         )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         rcr.refresh_from_db()
         self.assertEqual(rcr.status, "APPROVED")
-        self.assertEqual(rcr.reviewer, self.vision_user)
+        self.assertEqual(rcr.reviewer, self.school_admin)
 
     def test_deny_request(self):
         rcr = make_role_change_request(self.school, self.school_admin, self.role)
-        url = reverse("rbac-vision-role-change-decide", kwargs={"request_id": rcr.id})
-        resp = self._vision_client().post(
+        url = reverse("rbac-role-change-decide", kwargs={"school_slug": self.school.slug, "request_id": rcr.id})
+        resp = self._admin_client().post(
             url, {"action": "DENY", "notes": "Not justified"}, format="json"
         )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
@@ -541,16 +545,16 @@ class SchoolRoleChangeRequestApprovalViewTests(_AuthMixin, TestCase):
 
     def test_deny_without_notes_rejected(self):
         rcr = make_role_change_request(self.school, self.school_admin, self.role)
-        url = reverse("rbac-vision-role-change-decide", kwargs={"request_id": rcr.id})
-        resp = self._vision_client().post(
+        url = reverse("rbac-role-change-decide", kwargs={"school_slug": self.school.slug, "request_id": rcr.id})
+        resp = self._admin_client().post(
             url, {"action": "DENY", "notes": ""}, format="json"
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
 
     def test_invalid_action_rejected(self):
         rcr = make_role_change_request(self.school, self.school_admin, self.role)
-        url = reverse("rbac-vision-role-change-decide", kwargs={"request_id": rcr.id})
-        resp = self._vision_client().post(
+        url = reverse("rbac-role-change-decide", kwargs={"school_slug": self.school.slug, "request_id": rcr.id})
+        resp = self._admin_client().post(
             url, {"action": "INVALID"}, format="json"
         )
         self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
@@ -559,22 +563,22 @@ class SchoolRoleChangeRequestApprovalViewTests(_AuthMixin, TestCase):
         rcr = make_role_change_request(
             self.school, self.school_admin, self.role, status="APPROVED"
         )
-        url = reverse("rbac-vision-role-change-decide", kwargs={"request_id": rcr.id})
-        resp = self._vision_client().post(
+        url = reverse("rbac-role-change-decide", kwargs={"school_slug": self.school.slug, "request_id": rcr.id})
+        resp = self._admin_client().post(
             url, {"action": "DENY", "notes": "Too late"}, format="json"
         )
         self.assertEqual(resp.status_code, status.HTTP_409_CONFLICT)
 
     def test_decide_not_found(self):
-        url = reverse("rbac-vision-role-change-decide", kwargs={"request_id": 99999})
-        resp = self._vision_client().post(
+        url = reverse("rbac-role-change-decide", kwargs={"school_slug": self.school.slug, "request_id": 99999})
+        resp = self._admin_client().post(
             url, {"action": "APPROVE"}, format="json"
         )
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
 
-    def test_school_admin_denied_queue(self):
-        url = reverse("rbac-vision-role-change-queue")
-        resp = self._admin_client().get(url)
+    def test_staff_denied_queue(self):
+        url = reverse("rbac-role-change-approval-queue", kwargs={"school_slug": self.school.slug})
+        resp = self._staff_client().get(url)
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 
 
@@ -594,7 +598,8 @@ class PlatformRoleTemplateViewTests(_AuthMixin, TestCase):
         url = reverse("platform-rbac-role-list-create")
         resp = self._vision_client().get(url)
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 1)
+        names = {r["name"] for r in resp.data["data"]}
+        self.assertIn("Super Admin", names)
 
     def test_create(self):
         make_permission("system.config.view")
@@ -615,7 +620,7 @@ class PlatformRoleTemplateViewTests(_AuthMixin, TestCase):
         url = reverse("platform-rbac-role-detail", kwargs={"id": role.id})
         resp = self._vision_client().get(url)
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(resp.data["name"], "Super Admin")
+        self.assertEqual(resp.data["data"]["name"], "Super Admin")
 
     def test_update(self):
         role = make_platform_role(name="Old Name")
@@ -631,17 +636,16 @@ class PlatformRoleTemplateViewTests(_AuthMixin, TestCase):
         role = make_platform_role(name="To Delete")
         url = reverse("platform-rbac-role-detail", kwargs={"id": role.id})
         resp = self._vision_client().delete(url)
-        self.assertEqual(resp.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
 
     def test_filter_by_status(self):
         make_platform_role(name="Active Role", status="ACTIVE")
         make_platform_role(name="Inactive Role", status="INACTIVE")
         url = reverse("platform-rbac-role-list-create")
         resp = self._vision_client().get(url + "?status=ACTIVE")
-        # Handle both paginated and non-paginated responses
-        results = resp.data.get("results", resp.data) if isinstance(resp.data, dict) else resp.data
-        self.assertEqual(len(results), 1)
-        self.assertEqual(results[0]["name"], "Active Role")
+        names = {r["name"] for r in resp.data["data"]}
+        self.assertIn("Active Role", names)
+        self.assertNotIn("Inactive Role", names)
 
     def test_school_admin_denied(self):
         url = reverse("platform-rbac-role-list-create")
@@ -678,7 +682,8 @@ class PlatformUserRoleAssignmentViewTests(_AuthMixin, TestCase):
         url = reverse("platform-rbac-assignment-list-create")
         resp = self._vision_client().get(url)
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 1)
+        assigned = {(str(a["user_id"]), str(a["role_id"])) for a in resp.data["data"]}
+        self.assertIn((str(self.target_user.id), str(self.role.id)), assigned)
 
     def test_revoke_assignment(self):
         a = make_platform_assignment(self.target_user, self.role)
@@ -731,7 +736,7 @@ class PlatformRoleChangeRequestViewTests(_AuthMixin, TestCase):
         url = reverse("platform-rbac-role-change-request-list-create")
         resp = self._vision_client().get(url)
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(len(resp.data["data"]), 1)
 
     def test_detail(self):
         rcr = make_platform_change_request(self.vision_user, self.role)

@@ -84,7 +84,7 @@ urlpatterns = [
         name="rbac-role-list-create",
     ),
     path(
-        "schools/<slug:school_slug>/roles/<int:id>/",
+        "schools/<slug:school_slug>/roles/<slug:id>/",
         views.SchoolRoleTemplateDetailView.as_view(),
         name="rbac-role-detail",
     ),

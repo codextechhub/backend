@@ -454,6 +454,14 @@ class SchoolRoleTemplate(TimeStampedModel):
             models.Index(fields=["school", "status"]),
             models.Index(fields=["school", "is_locked"]),
         ]
+        constraints = [
+            # Role names are unique within a school. Case-insensitive on
+            # MySQL/MariaDB via the ci collation; PostgreSQL would need a
+            # functional index for the same guarantee.
+            models.UniqueConstraint(
+                fields=["school", "name"], name="uq_school_role_name"
+            ),
+        ]
 
     def __str__(self) -> str:
         return f"{self.school_id}:{self.name}"
@@ -636,6 +644,24 @@ class SchoolUserRoleAssignment(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.school_id}:{self.user_id}->{self.role_id} ({self.assignment_status})"
+
+    def save(self, *args, **kwargs):
+        # One ACTIVE assignment per (school, user, role). A conditional unique
+        # constraint isn't portable to MariaDB, so the invariant is enforced
+        # here at the app level.
+        if self._state.adding and self.assignment_status == self.AssignmentStatus.ACTIVE:
+            duplicate = type(self).all_objects.filter(
+                school=self.school,
+                user=self.user,
+                role=self.role,
+                assignment_status=self.AssignmentStatus.ACTIVE,
+            ).exists()
+            if duplicate:
+                from django.db import IntegrityError
+                raise IntegrityError(
+                    "An active assignment for this user and role already exists."
+                )
+        super().save(*args, **kwargs)
 
     def clean(self):
         if self.role_id and self.school_id and self.role.school_id != self.school_id:
@@ -864,6 +890,11 @@ class PlatformRoleTemplate(TimeStampedModel):
             models.Index(fields=["status"]),
             models.Index(fields=["is_locked"]),
         ]
+        constraints = [
+            # Platform role names are globally unique (case-insensitive on
+            # MySQL/MariaDB via the ci collation).
+            models.UniqueConstraint(fields=["name"], name="uq_platform_role_name"),
+        ]
 
     def __str__(self) -> str:
         return self.name
@@ -1043,6 +1074,22 @@ class PlatformUserRoleAssignment(TimeStampedModel):
         ]
         constraints = []
 
+    def save(self, *args, **kwargs):
+        # One ACTIVE assignment per (user, role) — app-level guard because a
+        # conditional unique constraint isn't portable to MariaDB.
+        if self._state.adding and self.assignment_status == self.AssignmentStatus.ACTIVE:
+            duplicate = type(self).objects.filter(
+                user=self.user,
+                role=self.role,
+                assignment_status=self.AssignmentStatus.ACTIVE,
+            ).exists()
+            if duplicate:
+                from django.db import IntegrityError
+                raise IntegrityError(
+                    "An active platform assignment for this user and role already exists."
+                )
+        super().save(*args, **kwargs)
+
     def __str__(self) -> str:
         return f"{self.user_id}->{self.role_id} ({self.assignment_status})"
 
@@ -1186,3 +1233,64 @@ class PlatformRoleChangeDeltaItem(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.request_id} {self.operation} {self.permission_id}"
+
+
+# ---------------------------------------------------------------------------
+# RBACAuditLog — authoritative, append-only audit for RBAC actions
+# ---------------------------------------------------------------------------
+
+class RBACAuditLog(models.Model):
+    """Append-only audit log for RBAC actions (B21 hybrid-audit pattern).
+
+    The central ``vs_audit.emit_audit_event`` is best-effort by contract — it
+    swallows failures so it can never break business logic. That is the wrong
+    durability contract for permission/role changes, which are security
+    system-of-record events. This table is written transactionally with the
+    action (a write failure rolls the action back too); the central audit
+    trail is kept as a best-effort mirror for the platform-wide activity view.
+
+    Immutable: rows can never be updated or deleted through the ORM.
+    """
+
+    action_type = models.CharField(max_length=40)
+    severity = models.CharField(max_length=16, default="INFO")
+    status = models.CharField(max_length=16, default="SUCCESS")
+
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name="rbac_audit_entries",
+    )
+    # Loose school reference (slug) — survives school deletion, no FK cascade.
+    school_id = models.CharField(max_length=80, blank=True, default="")
+
+    entity_type = models.CharField(max_length=80)
+    entity_id = models.CharField(max_length=180)
+    entity_label = models.CharField(max_length=255, blank=True, default="")
+
+    summary = models.TextField(blank=True, default="")
+    before_data = models.JSONField(null=True, blank=True)
+    diff_data = models.JSONField(null=True, blank=True)
+    metadata = models.JSONField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["entity_type", "entity_id"]),
+            models.Index(fields=["action_type", "created_at"]),
+            models.Index(fields=["school_id", "created_at"]),
+        ]
+        ordering = ["-created_at"]
+
+    def save(self, *args, **kwargs):
+        if self.pk is not None:
+            raise ValidationError("RBACAuditLog entries are immutable.")
+        super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValidationError("RBACAuditLog entries cannot be deleted.")
+
+    def __str__(self) -> str:
+        return f"{self.action_type} {self.entity_type}:{self.entity_id} @ {self.created_at}"
