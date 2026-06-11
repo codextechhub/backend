@@ -1,13 +1,11 @@
 ## Undone
 
 ## Deferred from the deep-review fixes (2026-06-11; B-numbers from ~/Downloads/XVision-Backend-Deep-Review.docx)
-- B4 (still open — user chose to keep the commented values in base.py for now): ROTATE the credentials (Render API key, old SECRET_KEY, temp-password pepper), then remove the comment lines and purge them from git history (git filter-repo); add a gitleaks pre-commit hook.
 - B7: add a real Celery worker (+ beat) to staging and remove CELERY_TASK_ALWAYS_EAGER — large imports currently run inside the web request; periodic tasks (mark_stuck_import_jobs, retry_failed_import_notifications) never fire without beat.
 - B17: standardise on PostgreSQL across local/staging/tests (staging already PG); regenerate or guard the MySQL-only raw-SQL migrations (vs_import_data 0003/0004/0006, vs_user 0003/0004); add CI running migrations + tests on PG.
 
 - B23: migrate School off slug-as-primary-key to a surrogate key (slug stays unique) — do before any school-rename feature; touches every school FK.
 
-- B26 (CLOSED — user decision 2026-06-11: NO SMS channel; notification media are in-app + email only): amend FRD v2.1 Module 8 to drop the SMS capability instead. Scheduled sends (Celery beat) may still be wanted separately.
 - B27: document (or eventually rename) the apps/apps project-package naming.
 - B9 follow-up: move media to object storage (S3/R2 via django-storages) — MEDIA_ROOT now outside the static tree, but uploads still die on redeploy (ephemeral disk).
 
