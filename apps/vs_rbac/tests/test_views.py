@@ -79,7 +79,7 @@ class _AuthMixin:
 # =============================================================================
 class PermissionListCreateViewTests(_AuthMixin, TestCase):
     def setUp(self):
-        self.vision_user = make_vision_user()
+        self.vision_user = make_vision_user(super_admin=True)
         self.school = make_school()
         self.branch = make_branch(self.school)
         self.school_admin = make_school_admin(self.branch)
@@ -115,7 +115,7 @@ class PermissionListCreateViewTests(_AuthMixin, TestCase):
 
 class PermissionDetailViewTests(_AuthMixin, TestCase):
     def setUp(self):
-        self.vision_user = make_vision_user()
+        self.vision_user = make_vision_user(super_admin=True)
         self.school = make_school()
         self.branch = make_branch(self.school)
         self.school_admin = make_school_admin(self.branch)
@@ -150,7 +150,7 @@ class PermissionDetailViewTests(_AuthMixin, TestCase):
 
 class PermissionDependencyViewTests(_AuthMixin, TestCase):
     def setUp(self):
-        self.vision_user = make_vision_user()
+        self.vision_user = make_vision_user(super_admin=True)
         self.school = make_school()
         self.branch = make_branch(self.school)
         self.school_admin = make_school_admin(self.branch)
@@ -192,7 +192,7 @@ class PermissionDependencyViewTests(_AuthMixin, TestCase):
 # =============================================================================
 class SchoolRoleTemplateListCreateViewTests(_AuthMixin, TestCase):
     def setUp(self):
-        self.vision_user = make_vision_user()
+        self.vision_user = make_vision_user(super_admin=True)
         self.school = make_school()
         self.branch = make_branch(self.school)
         self.school_admin = make_school_admin(self.branch)
@@ -256,7 +256,7 @@ class SchoolRoleTemplateListCreateViewTests(_AuthMixin, TestCase):
 
 class SchoolRoleTemplateDetailViewTests(_AuthMixin, TestCase):
     def setUp(self):
-        self.vision_user = make_vision_user()
+        self.vision_user = make_vision_user(super_admin=True)
         self.school = make_school()
         self.branch = make_branch(self.school)
         self.school_admin = make_school_admin(self.branch)
@@ -329,7 +329,7 @@ class SchoolRoleTemplateDetailViewTests(_AuthMixin, TestCase):
 # =============================================================================
 class SchoolUserRoleAssignmentViewTests(_AuthMixin, TestCase):
     def setUp(self):
-        self.vision_user = make_vision_user()
+        self.vision_user = make_vision_user(super_admin=True)
         self.school = make_school()
         self.branch = make_branch(self.school)
         self.school_admin = make_school_admin(self.branch)
@@ -425,7 +425,7 @@ class SchoolUserRoleAssignmentViewTests(_AuthMixin, TestCase):
 # =============================================================================
 class SchoolRoleChangeRequestViewTests(_AuthMixin, TestCase):
     def setUp(self):
-        self.vision_user = make_vision_user()
+        self.vision_user = make_vision_user(super_admin=True)
         self.school = make_school()
         self.branch = make_branch(self.school)
         self.school_admin = make_school_admin(self.branch)
@@ -479,7 +479,7 @@ class SchoolRoleChangeRequestViewTests(_AuthMixin, TestCase):
 
 class SchoolRoleChangeRequestApprovalViewTests(_AuthMixin, TestCase):
     def setUp(self):
-        self.vision_user = make_vision_user()
+        self.vision_user = make_vision_user(super_admin=True)
         self.school = make_school()
         self.branch = make_branch(self.school)
         self.school_admin = make_school_admin(self.branch)
@@ -583,7 +583,7 @@ class SchoolRoleChangeRequestApprovalViewTests(_AuthMixin, TestCase):
 # =============================================================================
 class PlatformRoleTemplateViewTests(_AuthMixin, TestCase):
     def setUp(self):
-        self.vision_user = make_vision_user()
+        self.vision_user = make_vision_user(super_admin=True)
         self.school = make_school()
         self.branch = make_branch(self.school)
         self.school_admin = make_school_admin(self.branch)
@@ -654,7 +654,7 @@ class PlatformRoleTemplateViewTests(_AuthMixin, TestCase):
 # =============================================================================
 class PlatformUserRoleAssignmentViewTests(_AuthMixin, TestCase):
     def setUp(self):
-        self.vision_user = make_vision_user()
+        self.vision_user = make_vision_user(super_admin=True)
         self.school = make_school()
         self.branch = make_branch(self.school)
         self.school_admin = make_school_admin(self.branch)
@@ -703,7 +703,7 @@ class PlatformUserRoleAssignmentViewTests(_AuthMixin, TestCase):
 # =============================================================================
 class PlatformRoleChangeRequestViewTests(_AuthMixin, TestCase):
     def setUp(self):
-        self.vision_user = make_vision_user()
+        self.vision_user = make_vision_user(super_admin=True)
         self.school = make_school()
         self.branch = make_branch(self.school)
         self.school_admin = make_school_admin(self.branch)

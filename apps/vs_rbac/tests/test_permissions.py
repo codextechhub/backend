@@ -56,25 +56,34 @@ class IsAuthenticatedAndActiveTests(TestCase):
         self.assertTrue(self.perm.has_permission(request, self.view))
 
     def test_suspended_user_denied(self):
+        from rest_framework.exceptions import PermissionDenied
+
         school = make_school()
         branch = make_branch(school)
         user = make_school_admin(branch, status="SUSPENDED")
         request = _make_request(user=user)
-        self.assertFalse(self.perm.has_permission(request, self.view))
+        with self.assertRaises(PermissionDenied):
+            self.perm.has_permission(request, self.view)
 
     def test_locked_user_denied(self):
+        from rest_framework.exceptions import PermissionDenied
+
         school = make_school()
         branch = make_branch(school)
         user = make_school_admin(branch, status="LOCKED")
         request = _make_request(user=user)
-        self.assertFalse(self.perm.has_permission(request, self.view))
+        with self.assertRaises(PermissionDenied):
+            self.perm.has_permission(request, self.view)
 
-    def test_deleted_user_denied(self):
+    def test_deactivated_user_denied(self):
+        from rest_framework.exceptions import PermissionDenied
+
         school = make_school()
         branch = make_branch(school)
-        user = make_school_admin(branch, status="DELETED")
+        user = make_school_admin(branch, status="DEACTIVATED")
         request = _make_request(user=user)
-        self.assertFalse(self.perm.has_permission(request, self.view))
+        with self.assertRaises(PermissionDenied):
+            self.perm.has_permission(request, self.view)
 
     def test_vision_staff_allowed(self):
         user = make_vision_user()

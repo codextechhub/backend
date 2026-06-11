@@ -57,7 +57,17 @@ def get_effective_permissions(user, school=None) -> Set[str]:
 
     Explicit denies (``SchoolRolePermission.granted=False`` or
     ``PlatformRolePermission.granted=False``) override every grant source.
+
+    The result is memoised on the user instance (keyed by school). User
+    objects are re-fetched from the DB on every request, so the cache is
+    naturally request-scoped — permission changes still apply on the next
+    request, but a single request no longer pays 4-6 queries per checked key.
     """
+    cache_key = getattr(school, "pk", None) if school is not None else None
+    cache = getattr(user, "_rbac_effective_perms", None)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+
     granted: Set[str] = set()
     denied: Set[str] = set()
 
@@ -113,7 +123,17 @@ def get_effective_permissions(user, school=None) -> Set[str]:
             granted.update(_group_permission_keys(group_ids))
 
     # Explicit denies win over grants
-    return granted - denied
+    effective = granted - denied
+
+    try:
+        if cache is None:
+            cache = {}
+            user._rbac_effective_perms = cache
+        cache[cache_key] = effective
+    except AttributeError:
+        pass  # exotic user objects without settable attrs — just skip caching
+
+    return effective
 
 
 def has_permission(user, permission_key: str, school=None) -> bool:

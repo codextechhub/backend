@@ -226,15 +226,15 @@ class TenantBoundaryEnforcementMiddlewareTests(TestCase):
         request = HttpRequest()
         request.user = make_school_admin(self.branch)
         request.school = None
-        with self.assertRaises(PermissionDenied):
-            self.middleware(request)
+        response = self.middleware(request)
+        self.assertEqual(response.status_code, 403)
 
     def test_staff_user_without_school_context_denied(self):
         request = HttpRequest()
         request.user = make_staff_user(self.branch)
         request.school = None
-        with self.assertRaises(PermissionDenied):
-            self.middleware(request)
+        response = self.middleware(request)
+        self.assertEqual(response.status_code, 403)
 
     def test_student_without_school_context_denied(self):
         from vs_user.models import User
@@ -243,13 +243,16 @@ class TenantBoundaryEnforcementMiddlewareTests(TestCase):
             password="testpass123",
             user_type="STUDENT",
             status="ACTIVE",
+            first_name="Test",
+            last_name="Student",
+            school=self.school,
             branch=self.branch,
         )
         request = HttpRequest()
         request.user = student
         request.school = None
-        with self.assertRaises(PermissionDenied):
-            self.middleware(request)
+        response = self.middleware(request)
+        self.assertEqual(response.status_code, 403)
 
     def test_parent_without_school_context_denied(self):
         from vs_user.models import User
@@ -258,13 +261,16 @@ class TenantBoundaryEnforcementMiddlewareTests(TestCase):
             password="testpass123",
             user_type="PARENT",
             status="ACTIVE",
+            first_name="Test",
+            last_name="Parent",
+            school=self.school,
             branch=self.branch,
         )
         request = HttpRequest()
         request.user = parent
         request.school = None
-        with self.assertRaises(PermissionDenied):
-            self.middleware(request)
+        response = self.middleware(request)
+        self.assertEqual(response.status_code, 403)
 
     def test_staff_with_school_context_passes(self):
         request = HttpRequest()

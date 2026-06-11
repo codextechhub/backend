@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from django.core.exceptions import ImproperlyConfigured
-from django.db.models import Q
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission, SAFE_METHODS
 from .evaluator import _group_permission_keys, has_permission, has_all_permissions
@@ -12,15 +11,28 @@ def _get_user(obj, request):
 
 
 def is_vision_super_admin(user):
-    """Return True if *user* currently holds an active xvs_super_admin role."""
+    """Return True if *user* currently holds an active xvs_super_admin role.
+
+    Memoised on the user instance — user objects are re-fetched on every
+    request, so this saves one EXISTS query per permission check within a
+    request without ever serving stale data across requests.
+    """
     if not user or not getattr(user, "is_authenticated", False):
         return False
+    cached = getattr(user, "_is_xvs_super_admin", None)
+    if cached is not None:
+        return cached
     from .models import PlatformUserRoleAssignment
-    return PlatformUserRoleAssignment.objects.filter(
+    result = PlatformUserRoleAssignment.objects.filter(
         user=user,
         role_id="xvs_super_admin",
         assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
     ).exists()
+    try:
+        user._is_xvs_super_admin = result
+    except AttributeError:
+        pass
+    return result
 
 
 def user_has_rbac_permission(user, permission_key, school=None):
@@ -53,17 +65,21 @@ def user_has_rbac_permission(user, permission_key, school=None):
             granted=True,
         ).exists()
 
-    # School-scoped users: check school roles
-    filters = Q(
+    # School-scoped users: check school roles. Without a school we fall back
+    # to the user's own school — NEVER an unscoped check, which would grant a
+    # permission held in any school to every school (fail closed instead).
+    if school is None:
+        school = getattr(user, "school", None)
+        if school is None:
+            return False
+
+    return SchoolRolePermission.objects.filter(
         role__user_assignments__user=user,
         role__user_assignments__assignment_status="ACTIVE",
+        role__user_assignments__school=school,
         permission_id=permission_key,
         granted=True,
-    )
-    if school is not None:
-        filters &= Q(role__user_assignments__school=school)
-
-    return SchoolRolePermission.objects.filter(filters).exists()
+    ).exists()
 
 
 class IsAuthenticatedAndActive(BasePermission):
@@ -83,8 +99,8 @@ class IsAuthenticatedAndActive(BasePermission):
             raise PermissionDenied("Your account is suspended. Contact your administrator.")
         if status == "LOCKED":
             raise PermissionDenied("Your account is locked due to too many failed login attempts. Contact your administrator.")
-        if status == "DELETED":
-            raise PermissionDenied("This account no longer exists.")
+        if status == "DEACTIVATED":
+            raise PermissionDenied("This account has been deactivated. Contact your administrator.")
 
         return True
 
