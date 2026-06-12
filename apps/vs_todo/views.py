@@ -138,7 +138,7 @@ class TaskViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             raise PermissionDenied("You cannot update this task.")
         ser = ToggleSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
-        tasks_svc.set_done(task, done=ser.validated_data["done"])
+        tasks_svc.set_done(task, done=ser.validated_data["done"], actor=request.user)
         return success_response(
             message="Task updated successfully.",
             data=TaskSerializer(task).data,

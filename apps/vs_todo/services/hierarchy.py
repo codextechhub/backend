@@ -131,6 +131,26 @@ class TodoHierarchy:
         return any(d.pk == target.pk for d in cls.descendant_users(manager))
 
     @classmethod
+    def direct_manager(cls, user: User) -> Optional[User]:
+        """The user's line manager: the holder of the seat their primary
+        position reports to. Walks up past vacant seats so a missing middle
+        manager doesn't swallow escalations (e.g. completion review requests).
+        Returns None at the top of the tree or when the user holds no seat.
+        """
+        position = cls.primary_position(user)
+        if position is None:
+            return None
+        seen: Set[int] = {position.pk}
+        seat = position.reports_to
+        while seat is not None and seat.pk not in seen:
+            seen.add(seat.pk)
+            holder = seat.current_holder
+            if holder is not None and holder.pk != user.pk:
+                return holder
+            seat = seat.reports_to
+        return None
+
+    @classmethod
     def chain_to(cls, user: User) -> List[User]:
         """Root → user, the line-management breadcrumb (design: chainTo).
 

@@ -40,3 +40,8 @@ PERM_TASK_ASSIGN   = "todo.task.assign"
 # Notification event keys emitted by this app (registered in vs_notifications).
 EVENT_TASK_ASSIGNED  = "todo.task_assigned"
 EVENT_TASK_COMPLETED = "todo.task_completed"
+
+# Grace window between a user self-completing a task and the review request
+# going out. The Celery task is queued with this countdown and re-checks the
+# task's state at send time, so undoing within the window cancels the email.
+REVIEW_GRACE_SECONDS = 5

@@ -77,13 +77,44 @@ def create_task(
 
 
 @transaction.atomic
-def set_done(task: Task, *, done: bool) -> Task:
-    """Complete or reopen a task and persist the change."""
+def set_done(task: Task, *, done: bool, actor: Optional[User] = None) -> Task:
+    """Complete or reopen a task and persist the change.
+
+    When the ASSIGNEE completes their own task (actor == assignee), a review
+    request to their reviewer (the assigner, else their direct line manager) is
+    queued with a short countdown — the undo window. The Celery task re-checks
+    the row at send time, so reopening within the window cancels the email.
+    A manager toggling a report's task never triggers the flow.
+    """
+    was_done = task.is_done
     if done:
         task.mark_done()
     else:
         task.reopen()
     task.save(update_fields=["is_done", "completed_at", "updated_at"])
+
+    is_self_completion = (
+        done and not was_done and actor is not None and actor.pk == task.assignee_id
+    )
+    if is_self_completion:
+        from ..constants import REVIEW_GRACE_SECONDS
+        from ..tasks import send_completion_review_request
+
+        stamp = task.completed_at.isoformat() if task.completed_at else ""
+        task_pk, actor_pk, title = task.pk, actor.pk, task.title
+        transaction.on_commit(
+            lambda: send_completion_review_request.apply_async(
+                kwargs={
+                    "task_id": task_pk,
+                    "completed_at": stamp,
+                    # Queue-row attribution (View Queues page).
+                    "_job_owner_id": str(actor_pk),
+                    "_job_label": f"Review request: {title}"[:255],
+                    "_job_kind": "email",
+                },
+                countdown=REVIEW_GRACE_SECONDS,
+            )
+        )
     return task
 
 
