@@ -25,9 +25,12 @@ already applied — the schema is identical, only the bookkeeping changes.
 
 3. Open a shell on the staging service (Render → Shell tab) and run:
 
+   Paste ONE line at a time (multi-line pastes trip the shell's quote
+   continuation). This form needs no psql client in the container:
+
    ```bash
    cd apps
-   python manage.py dbshell -c "TRUNCATE django_migrations;"
+   python manage.py shell -c "from django.db import connection; cur = connection.cursor(); cur.execute('TRUNCATE django_migrations'); print('truncated OK')"
    python manage.py migrate --fake
    ```
 
