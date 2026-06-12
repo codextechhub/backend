@@ -18,3 +18,5 @@ apps/static/images/imports/
 .env
 .env.*
 !.env.example
+# Local-only onboarding doc (shared privately, references the .env handoff)
+COLLEAGUE_SETUP.md
