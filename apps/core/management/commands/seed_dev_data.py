@@ -35,6 +35,8 @@ Passwords: vision staff "Vision@2025" (from seed_vision_staff);
            school users "School@2025".
 
 How to run:
+./reseed-dev.sh
+---OR---
 dropdb cx_db && createdb cx_db
 cd apps && ../cx/bin/python manage.py migrate --settings=apps.settings.local
 # then the seed chain (order matters):
