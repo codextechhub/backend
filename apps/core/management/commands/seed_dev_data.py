@@ -2,6 +2,12 @@
 seed_dev_data — one command that fills a fresh dev database with a connected
 world covering every module EXCEPT finance/procurement/payments.
 
+FOCUS: CX (Codex) staff are the main subjects — the platform currently runs
+as the Codex staff intranet. The seeder builds a complete 25-seat company
+(5 departments, 3-level reporting lines, rich HR profiles, platform roles,
+todo board, login/security history, impersonation sessions). The schools
+exist as the CUSTOMER BASE those staff manage, not as the protagonists.
+
 What it creates (idempotent — safe to re-run):
   1. Codex organogram: Division → Departments → Team, positions with
      reports_to, the 25 seeded vision staff in seats, staff profiles.
@@ -27,6 +33,20 @@ Afterwards run: seed_notification_settings --all
 
 Passwords: vision staff "Vision@2025" (from seed_vision_staff);
            school users "School@2025".
+
+How to run:
+dropdb cx_db && createdb cx_db
+cd apps && ../cx/bin/python manage.py migrate --settings=apps.settings.local
+# then the seed chain (order matters):
+for c in seed_all_permissions seed_xvs_modules seed_package; do
+../cx/bin/python manage.py $c --settings=apps.settings.local; done
+../cx/bin/python manage.py create_superuser --force --settings=apps.settings.local
+../cx/bin/python manage.py seed_vision_staff --settings=apps.settings.local
+../cx/bin/python manage.py seed_import --settings=apps.settings.local
+../cx/bin/python manage.py seed_notification_event_types --settings=apps.settings.local
+../cx/bin/python manage.py seed_notification_templates --settings=apps.settings.local
+../cx/bin/python manage.py seed_dev_data --settings=apps.settings.local       # ← the new command
+../cx/bin/python manage.py seed_notification_settings --all --settings=apps.settings.local
 """
 from __future__ import annotations
 
@@ -72,6 +92,7 @@ class Command(BaseCommand):
         self._rbac(schools, users_by_school)
         self._notifications(schools, users_by_school)
         self._todo_tasks()
+        self._cx_security(schools)
         self._audit_events(schools)
         self.stdout.write(self.style.SUCCESS(
             "\nDone. Now run:  manage.py seed_notification_settings --all\n"
@@ -86,7 +107,7 @@ class Command(BaseCommand):
             OrgNode, PlatformStaffProfile, Position, PositionAssignment, User,
         )
 
-        self.stdout.write(self.style.MIGRATE_HEADING("Organogram (Codex internal)..."))
+        self.stdout.write(self.style.MIGRATE_HEADING("Organogram (Codex internal, 25 seats)..."))
         staff = list(
             User.objects.filter(user_type="CX_STAFF", email__endswith="@vision.edu")
             .order_by("email")
@@ -95,52 +116,95 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR("  No vision staff — run seed_vision_staff first."))
             return
 
-        ops, _ = OrgNode.objects.get_or_create(
-            code="CX-OPS",
-            defaults=dict(name="Operations", kind=OrgNode.Kind.DIVISION),
-        )
-        eng, _ = OrgNode.objects.get_or_create(
-            code="CX-ENG",
-            defaults=dict(name="Engineering", kind=OrgNode.Kind.DEPARTMENT, parent=ops),
-        )
-        cs, _ = OrgNode.objects.get_or_create(
-            code="CX-CS",
-            defaults=dict(name="Customer Success", kind=OrgNode.Kind.DEPARTMENT, parent=ops),
-        )
-        platform_team, _ = OrgNode.objects.get_or_create(
-            code="CX-ENG-PLAT",
-            defaults=dict(name="Platform Team", kind=OrgNode.Kind.TEAM, parent=eng),
-        )
+        def node(code, name, kind, parent=None):
+            n, _ = OrgNode.objects.get_or_create(
+                code=code, defaults=dict(name=name, kind=kind, parent=parent),
+            )
+            return n
 
-        def seat(code, title, node, reports_to=None):
+        K = OrgNode.Kind
+        exec_office = node("CX-EXEC", "Executive Office", K.DIVISION)
+        eng = node("CX-ENG", "Engineering", K.DEPARTMENT, exec_office)
+        cs = node("CX-CS", "Customer Success", K.DEPARTMENT, exec_office)
+        growth = node("CX-GROWTH", "Growth & Partnerships", K.DEPARTMENT, exec_office)
+        people = node("CX-PEOPLE", "People & Operations", K.DEPARTMENT, exec_office)
+        platform_team = node("CX-ENG-PLAT", "Platform Team", K.TEAM, eng)
+        product_team = node("CX-ENG-PROD", "Product Team", K.TEAM, eng)
+        onboarding_team = node("CX-CS-ONB", "Onboarding Team", K.TEAM, cs)
+        support_team = node("CX-CS-SUP", "Support Team", K.TEAM, cs)
+
+        def seat(code, title, org_node, reports_to=None):
             pos, _ = Position.objects.get_or_create(
                 code=code,
-                defaults=dict(title=title, org_node=node, reports_to=reports_to),
+                defaults=dict(title=title, org_node=org_node, reports_to=reports_to),
             )
             return pos
 
-        md = seat("CX-MD", "Managing Director", ops)
+        md = seat("CX-MD", "Managing Director", exec_office)
         eng_lead = seat("CX-ENG-LEAD", "Engineering Lead", eng, md)
         cs_lead = seat("CX-CS-LEAD", "Customer Success Lead", cs, md)
-        engineers = [seat(f"CX-ENG-{i}", f"Software Engineer {i}", platform_team, eng_lead) for i in (1, 2, 3, 4)]
-        cs_officers = [seat(f"CX-CS-{i}", f"Success Officer {i}", cs, cs_lead) for i in (1, 2, 3)]
+        growth_lead = seat("CX-GROWTH-LEAD", "Growth Lead", growth, md)
+        people_lead = seat("CX-PEOPLE-LEAD", "People & Ops Lead", people, md)
 
-        for node, pos in ((ops, md), (eng, eng_lead), (cs, cs_lead)):
-            if node.head_position_id is None:
-                node.head_position = pos
-                node.save(update_fields=["head_position"])
+        seats = [md, eng_lead, cs_lead, growth_lead, people_lead]
+        seats += [seat(f"CX-ENG-PLAT-{i}", f"Software Engineer {i}", platform_team, eng_lead) for i in (1, 2, 3, 4)]
+        seats += [seat(f"CX-ENG-PROD-{i}", t, product_team, eng_lead)
+                  for i, t in ((1, "Product Designer"), (2, "Product Manager"), (3, "QA Engineer"))]
+        seats += [seat(f"CX-CS-ONB-{i}", f"Onboarding Specialist {i}", onboarding_team, cs_lead) for i in (1, 2, 3)]
+        seats += [seat(f"CX-CS-SUP-{i}", f"Support Officer {i}", support_team, cs_lead) for i in (1, 2, 3)]
+        seats += [seat(f"CX-GROWTH-{i}", f"Partnerships Officer {i}", growth, growth_lead) for i in (1, 2, 3)]
+        seats += [seat(f"CX-PEOPLE-{i}", t, people, people_lead)
+                  for i, t in ((1, "HR Officer"), (2, "Operations Officer"),
+                               (3, "Internal Accounts Officer"), (4, "Facilities Officer"))]
 
-        seats = [md, eng_lead, cs_lead, *engineers, *cs_officers]
-        for user, pos in zip(staff, seats):
+        for n, pos in ((exec_office, md), (eng, eng_lead), (cs, cs_lead),
+                       (growth, growth_lead), (people, people_lead)):
+            if n.head_position_id is None:
+                n.head_position = pos
+                n.save(update_fields=["head_position"])
+
+        joined = self.now - timedelta(days=400)
+        for idx, (user, pos) in enumerate(zip(staff, seats)):
             PositionAssignment.objects.get_or_create(
                 user=user, position=pos,
-                defaults=dict(is_primary=True, start_date=self.now.date()),
+                defaults=dict(is_primary=True, start_date=joined.date()),
             )
             PlatformStaffProfile.objects.get_or_create(
                 user=user,
-                defaults=dict(employee_id=f"CX{user.pk:04d}", job_title=pos.title),
+                defaults=dict(
+                    employee_id=f"CX{idx + 1:04d}",
+                    job_title=pos.title,
+                    employment_type="FULL_TIME",
+                    employment_status="ACTIVE",
+                    date_joined=(joined + timedelta(days=idx * 9)).date(),
+                    nationality="Nigerian",
+                    city="Lagos",
+                    state="Lagos",
+                ),
             )
-        self.stdout.write(f"  4 org nodes, {len(seats)} positions, {min(len(staff), len(seats))} filled seats.")
+
+        # Platform roles: department leads run the backoffice day-to-day.
+        self._platform_roles(staff, seats)
+        self.stdout.write(
+            f"  9 org nodes, {len(seats)} positions, {min(len(staff), len(seats))} seated staff with HR profiles."
+        )
+
+    def _platform_roles(self, staff, seats):
+        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+
+        role = PlatformRoleTemplate.objects.filter(id="xvs_platform_admin").first()
+        if role is None:
+            return
+        lead_codes = {"CX-MD", "CX-ENG-LEAD", "CX-CS-LEAD", "CX-GROWTH-LEAD", "CX-PEOPLE-LEAD"}
+        granted = 0
+        for user, pos in zip(staff, seats):
+            if pos.code in lead_codes:
+                _, created = PlatformUserRoleAssignment.objects.get_or_create(
+                    user=user, role=role,
+                    defaults=dict(assignment_status="ACTIVE"),
+                )
+                granted += int(created)
+        self.stdout.write(f"  xvs_platform_admin granted to {granted} new lead(s).")
 
     # ------------------------------------------------------------------ #
     # 2. Schools, branches, package, primary admins                      #
@@ -361,35 +425,126 @@ class Command(BaseCommand):
         from vs_todo.models import Task
         from vs_user.models import PositionAssignment
 
-        self.stdout.write(self.style.MIGRATE_HEADING("ToDo tasks..."))
+        self.stdout.write(self.style.MIGRATE_HEADING("ToDo board (CX staff)..."))
         seats = {
-            pa.position.code: pa.user
-            for pa in PositionAssignment.objects.select_related("user", "position")
+            pa.position.code: (pa.user, pa.position)
+            for pa in PositionAssignment.objects.select_related("user", "position__org_node")
         }
-        md, eng_lead = seats.get("CX-MD"), seats.get("CX-ENG-LEAD")
-        cs_lead, eng1 = seats.get("CX-CS-LEAD"), seats.get("CX-ENG-1")
+
+        def u(code):
+            entry = seats.get(code)
+            return entry[0] if entry else None
+
+        def dept(code):
+            entry = seats.get(code)
+            return entry[1].org_node.name if entry else ""
+
+        D = timedelta
+        # (assigner, assignee, title, priority, deadline-offset-days, done)
         specs = [
-            (md, eng_lead, "Ship the academic core MVP", "HIGH", 21),
-            (md, cs_lead, "Prepare the pilot-school onboarding pack", "MEDIUM", 14),
-            (eng_lead, eng1, "Profile slow dashboard endpoints", "MEDIUM", 7),
-            (eng_lead, eng1, "Add OpenAPI schema generation", "LOW", 30),
+            ("CX-MD", "CX-ENG-LEAD", "Ship the academic core MVP", "HIGH", 21, False),
+            ("CX-MD", "CX-CS-LEAD", "Prepare the pilot-school onboarding pack", "HIGH", 14, False),
+            ("CX-MD", "CX-GROWTH-LEAD", "Close two pilot-school partnerships", "HIGH", 30, False),
+            ("CX-MD", "CX-PEOPLE-LEAD", "Run Q3 performance reviews", "MEDIUM", 28, False),
+            ("CX-ENG-LEAD", "CX-ENG-PLAT-1", "Profile slow dashboard endpoints", "MEDIUM", 7, False),
+            ("CX-ENG-LEAD", "CX-ENG-PLAT-2", "Add OpenAPI schema generation", "LOW", 30, False),
+            ("CX-ENG-LEAD", "CX-ENG-PLAT-3", "Rotate staging credentials", "HIGH", -3, False),
+            ("CX-ENG-LEAD", "CX-ENG-PLAT-4", "Write the deploy runbook", "MEDIUM", -1, True),
+            ("CX-ENG-LEAD", "CX-ENG-PROD-1", "Design the parent portal flows", "MEDIUM", 18, False),
+            ("CX-ENG-LEAD", "CX-ENG-PROD-3", "Regression-test the import pipeline", "HIGH", 5, True),
+            ("CX-CS-LEAD", "CX-CS-ONB-1", "Draft the onboarding checklist", "HIGH", 10, False),
+            ("CX-CS-LEAD", "CX-CS-ONB-2", "Verify Greenfield data import", "MEDIUM", -2, False),
+            ("CX-CS-LEAD", "CX-CS-SUP-1", "Triage open support threads", "HIGH", 2, False),
+            ("CX-GROWTH-LEAD", "CX-GROWTH-1", "Prepare the Royal Crest demo", "MEDIUM", 6, True),
+            ("CX-PEOPLE-LEAD", "CX-PEOPLE-1", "Collect updated staff documents", "LOW", 20, False),
+            ("CX-PEOPLE-LEAD", "CX-PEOPLE-3", "Reconcile office running costs", "MEDIUM", 9, False),
         ]
         count = 0
-        for assigner, assignee, title, priority, days in specs:
+        for assigner_code, assignee_code, title, priority, days, done in specs:
+            assigner, assignee = u(assigner_code), u(assignee_code)
             if assigner is None or assignee is None:
                 continue
-            _, created = Task.objects.get_or_create(
+            task, created = Task.objects.get_or_create(
                 assignee=assignee, title=title,
                 defaults=dict(
                     assigned_by=assigner,
                     assigned_by_name=assigner.full_name,
                     description="Seeded dev task.",
                     priority=priority,
-                    deadline=(self.now + timedelta(days=days)).date(),
+                    department=dept(assignee_code),
+                    deadline=(self.now + D(days=days)).date(),
+                    is_done=done,
+                    completed_at=self.now - D(days=1) if done else None,
                 ),
             )
             count += int(created)
-        self.stdout.write(f"  {count} tasks.")
+        self.stdout.write(f"  {count} tasks (mix of open, done and overdue).")
+
+    # ------------------------------------------------------------------ #
+    # 6b. CX security history + impersonation                            #
+    # ------------------------------------------------------------------ #
+    def _cx_security(self, schools):
+        import uuid as _uuid
+
+        from vs_admin_console.models import ImpersonationSession
+        from vs_user.models import AuthAttempt, AuthEventLog, LoginSession, User
+
+        self.stdout.write(self.style.MIGRATE_HEADING("CX security history..."))
+        staff = list(
+            User.objects.filter(user_type="CX_STAFF", email__endswith="@vision.edu")
+            .order_by("email")[:6]
+        )
+        devices = [
+            ("197.210.54.11", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", "Mac · Chrome"),
+            ("105.112.99.34", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "Windows · Edge"),
+            ("41.184.122.7", "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)", "iPhone · Safari"),
+        ]
+        sessions = attempts = 0
+        for i, user in enumerate(staff):
+            ip, ua, label = devices[i % len(devices)]
+            if not LoginSession.objects.filter(user=user).exists():
+                LoginSession.objects.create(
+                    user=user, school=None, ip_address=ip, user_agent=ua,
+                    device_label=label, refresh_jti=str(_uuid.uuid4()),
+                    last_seen_at=self.now, is_active=True,
+                )
+                sessions += 1
+            if not AuthAttempt.objects.filter(user=user).exists():
+                AuthAttempt.objects.create(
+                    email_entered=user.email, user=user, school=None,
+                    result="SUCCESS", failure_code="", ip_address=ip, user_agent=ua,
+                )
+                if i % 2 == 0:
+                    AuthAttempt.objects.create(
+                        email_entered=user.email, user=user, school=None,
+                        result="FAIL", failure_code="INVALID_CREDENTIALS",
+                        ip_address=ip, user_agent=ua,
+                    )
+                AuthEventLog.objects.create(
+                    actor=user, subject=user, school=None,
+                    event="LOGIN_SUCCESS", ip_address=ip, user_agent=ua,
+                )
+                attempts += 1
+
+        # One impersonation session: CS lead investigating a school issue.
+        imp = 0
+        cs_lead = staff[2] if len(staff) > 2 else staff[0]
+        target_school = schools[0] if schools else None
+        if target_school is not None:
+            target_user = User.objects.filter(
+                school=target_school, user_type="SCHOOL_ADMIN"
+            ).first()
+            if target_user and not ImpersonationSession.objects.filter(
+                staff_user=cs_lead, school=target_school
+            ).exists():
+                ImpersonationSession.objects.create(
+                    staff_user=cs_lead, school=target_school, target_user=target_user,
+                    justification="Investigating reported import failure (seeded).",
+                    started_at=self.now - timedelta(hours=2),
+                    ends_at=self.now + timedelta(hours=1),
+                )
+                imp += 1
+        self.stdout.write(f"  {sessions} login sessions, {attempts} staff with auth history, {imp} impersonation session.")
 
     # ------------------------------------------------------------------ #
     # 7. Audit events                                                    #
