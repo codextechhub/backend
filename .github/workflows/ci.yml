@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main, staging]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: cx_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DJANGO_SETTINGS_MODULE: apps.settings.ci
+      # Dummy values — base.py refuses to start without them; CI never talks
+      # to Render/Zoho, and the email backend is in-memory.
+      SECRET_KEY: ci-only-not-a-real-secret
+      RENDER_API_KEY: ci-dummy
+      TEMP_PASSWORD_PEPPER: ci-only-pepper
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Django system check
+        working-directory: apps
+        run: python manage.py check
+
+      - name: Migration drift check
+        working-directory: apps
+        run: python manage.py makemigrations --check --dry-run
+
+      - name: Run migrations (fresh-install replay on PostgreSQL)
+        working-directory: apps
+        run: python manage.py migrate
+
+      - name: Run test suite
+        working-directory: apps
+        run: python manage.py test --noinput
