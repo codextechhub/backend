@@ -43,7 +43,10 @@ def _build_milestones(contract, items):
 
 
 class ContractListCreateView(_ProcBase):
-    """GET (list) / POST (create a DRAFT contract + optional milestones)."""
+    """GET (list) / POST (create a DRAFT contract + optional milestones).
+
+    docstring-name: Contracts
+    """
 
     @property
     def rbac_permission(self):
@@ -89,7 +92,10 @@ class ContractListCreateView(_ProcBase):
 
 
 class ContractDetailView(_ProcBase):
-    """GET (retrieve) / PATCH (update header fields) one contract."""
+    """GET (retrieve) / PATCH (update header fields) one contract.
+
+    docstring-name: Contracts
+    """
 
     @property
     def rbac_permission(self):
@@ -141,6 +147,7 @@ class _ContractActionBase(_ProcBase):
 
 
 class ContractActivateView(_ContractActionBase):
+    """docstring-name: Activate a contract"""
     rbac_permission = "procurement.contract.activate"
 
     def post(self, request, pk):
@@ -150,6 +157,7 @@ class ContractActivateView(_ContractActionBase):
 
 
 class ContractTerminateView(_ContractActionBase):
+    """docstring-name: Terminate a contract"""
     rbac_permission = "procurement.contract.terminate"
 
     def post(self, request, pk):
@@ -160,7 +168,10 @@ class ContractTerminateView(_ContractActionBase):
 
 
 class ContractRenewView(_ContractActionBase):
-    """POST — create a successor contract that renews this one (marks this RENEWED)."""
+    """POST — create a successor contract that renews this one (marks this RENEWED).
+
+    docstring-name: Renew a contract
+    """
 
     rbac_permission = "procurement.contract.renew"
 
@@ -187,7 +198,10 @@ class ContractRenewView(_ContractActionBase):
 
 
 class ContractMilestoneCompleteView(_ProcBase):
-    """POST — mark a milestone COMPLETED."""
+    """POST — mark a milestone COMPLETED.
+
+    docstring-name: Complete a contract milestone
+    """
 
     rbac_permission = "procurement.contract.update"
 
@@ -208,7 +222,10 @@ class ContractMilestoneCompleteView(_ProcBase):
 
 
 class ContractRenewalsView(_ProcBase):
-    """GET — contracts due for renewal (inside their notice window or a ``within_days`` horizon)."""
+    """GET — contracts due for renewal (inside their notice window or a ``within_days`` horizon).
+
+    docstring-name: Contracts due for renewal
+    """
 
     rbac_permission = "procurement.contract.view"
 

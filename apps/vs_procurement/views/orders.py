@@ -42,7 +42,10 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 class PurchaseOrderListCreateView(_ProcBase):
-    """GET (list) / POST (create from an approved requisition)."""
+    """GET (list) / POST (create from an approved requisition).
+
+    docstring-name: Purchase orders
+    """
 
     @property
     def rbac_permission(self):
@@ -81,6 +84,7 @@ class PurchaseOrderListCreateView(_ProcBase):
 
 
 class PurchaseOrderDetailView(_ProcBase):
+    """docstring-name: Purchase orders"""
     rbac_permission = "procurement.purchase_order.view"
 
     def get(self, request, pk):
@@ -96,7 +100,10 @@ class PurchaseOrderDetailView(_ProcBase):
 # --------------------------------------------------------------------------- #
 
 class RfqListCreateView(_ProcBase):
-    """GET (list) / POST (create draft RFQ + lines)."""
+    """GET (list) / POST (create draft RFQ + lines).
+
+    docstring-name: RFQs
+    """
 
     @property
     def rbac_permission(self):
@@ -153,6 +160,7 @@ class RfqListCreateView(_ProcBase):
 
 
 class RfqDetailView(_ProcBase):
+    """docstring-name: RFQs"""
     rbac_permission = "procurement.rfq.view"
 
     def get(self, request, pk):
@@ -164,6 +172,7 @@ class RfqDetailView(_ProcBase):
 
 
 class RfqIssueView(_ProcBase):
+    """docstring-name: Issue an RFQ"""
     rbac_permission = "procurement.rfq.issue"
 
     def post(self, request, pk):
@@ -176,6 +185,7 @@ class RfqIssueView(_ProcBase):
 
 
 class RfqCancelView(_ProcBase):
+    """docstring-name: Cancel an RFQ"""
     rbac_permission = "procurement.rfq.issue"
 
     def post(self, request, pk):
@@ -192,7 +202,10 @@ class RfqCancelView(_ProcBase):
 # --------------------------------------------------------------------------- #
 
 class QuotationListCreateView(_ProcBase):
-    """GET (list) / POST (create draft quotation + priced lines) against an RFQ."""
+    """GET (list) / POST (create draft quotation + priced lines) against an RFQ.
+
+    docstring-name: Quotations
+    """
 
     @property
     def rbac_permission(self):
@@ -254,6 +267,7 @@ class QuotationListCreateView(_ProcBase):
 
 
 class QuotationDetailView(_ProcBase):
+    """docstring-name: Quotations"""
     rbac_permission = "procurement.quotation.view"
 
     def get(self, request, pk):
@@ -265,6 +279,7 @@ class QuotationDetailView(_ProcBase):
 
 
 class QuotationSubmitView(_ProcBase):
+    """docstring-name: Submit a quotation"""
     rbac_permission = "procurement.quotation.submit"
 
     def post(self, request, pk):
@@ -280,7 +295,10 @@ class QuotationSubmitView(_ProcBase):
 
 
 class QuotationAwardView(_ProcBase):
-    """POST — award the quotation: build a DRAFT PO and reject the losing quotes."""
+    """POST — award the quotation: build a DRAFT PO and reject the losing quotes.
+
+    docstring-name: Award a quotation
+    """
 
     rbac_permission = "procurement.quotation.award"
 

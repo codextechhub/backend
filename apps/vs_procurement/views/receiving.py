@@ -39,7 +39,10 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 class GoodsReceiptListCreateView(_ProcBase):
-    """GET (list) / POST (create draft GRN + lines)."""
+    """GET (list) / POST (create draft GRN + lines).
+
+    docstring-name: Goods receipts
+    """
 
     @property
     def rbac_permission(self):
@@ -99,6 +102,7 @@ class GoodsReceiptListCreateView(_ProcBase):
 
 
 class GoodsReceiptDetailView(_ProcBase):
+    """docstring-name: Goods receipts"""
     rbac_permission = "procurement.goods_receipt.view"
 
     def get(self, request, pk):
@@ -110,7 +114,10 @@ class GoodsReceiptDetailView(_ProcBase):
 
 
 class GoodsReceiptPostView(_ProcBase):
-    """POST — post the GRN (Dr expense, Cr GR/IR clearing)."""
+    """POST — post the GRN (Dr expense, Cr GR/IR clearing).
+
+    docstring-name: Post a goods receipt
+    """
 
     rbac_permission = "procurement.goods_receipt.post"
 
@@ -132,7 +139,10 @@ class GoodsReceiptPostView(_ProcBase):
 # --------------------------------------------------------------------------- #
 
 class VendorInvoiceListCreateView(_ProcBase):
-    """GET (list) / POST (create draft bill + lines)."""
+    """GET (list) / POST (create draft bill + lines).
+
+    docstring-name: Vendor invoices
+    """
 
     @property
     def rbac_permission(self):
@@ -201,6 +211,7 @@ class VendorInvoiceListCreateView(_ProcBase):
 
 
 class VendorInvoiceDetailView(_ProcBase):
+    """docstring-name: Vendor invoices"""
     rbac_permission = "procurement.vendor_invoice.view"
 
     def get(self, request, pk):
@@ -212,7 +223,10 @@ class VendorInvoiceDetailView(_ProcBase):
 
 
 class VendorInvoiceMatchView(_ProcBase):
-    """POST — run the three-way match (PO ↔ GRN ↔ bill) and return the status."""
+    """POST — run the three-way match (PO ↔ GRN ↔ bill) and return the status.
+
+    docstring-name: Match a vendor invoice (3-way)
+    """
 
     rbac_permission = "procurement.vendor_invoice.match"
 
@@ -231,7 +245,10 @@ class VendorInvoiceMatchView(_ProcBase):
 
 
 class VendorInvoicePostView(_ProcBase):
-    """POST — post the bill (Dr GR/IR + input VAT, Cr AP). ``allow_variance`` overrides a flag."""
+    """POST — post the bill (Dr GR/IR + input VAT, Cr AP). ``allow_variance`` overrides a flag.
+
+    docstring-name: Post a vendor invoice
+    """
 
     rbac_permission = "procurement.vendor_invoice.post"
 

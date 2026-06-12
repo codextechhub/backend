@@ -48,6 +48,8 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     RBAC (list own):    system.session.view
     RBAC (list all):    system.session.view (Vision Staff only)
     RBAC (force-logout): system.session.force_logout + identity.user_logout.force
+
+    docstring-name: Login sessions
     """
     serializer_class = LoginSessionReadSerializer
     pagination_class = XVSPagination
@@ -128,6 +130,8 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     Permission: IsAuthenticatedAndActive, IsVisionStaff
     RBAC: identity.authentication_events.log + system.audit.view
+
+    docstring-name: Auth attempts
     """
     serializer_class   = AuthAttemptReadSerializer
     permission_classes = [IsAuthenticatedAndActive, IsVisionStaff]
@@ -168,6 +172,8 @@ class PasswordResetListView(APIView):
     """
     GET /user/password-resets/
     Vision Staff only. Lists active (unused, unexpired) reset tokens.
+
+    docstring-name: Password reset requests
     """
     permission_classes = [IsAuthenticatedAndActive, IsVisionStaff]
 
@@ -184,6 +190,8 @@ class RevokePasswordResetView(APIView):
     """
     POST /user/password-resets/{pk}/revoke/
     Vision Staff only. Marks the token as used, invalidating it immediately.
+
+    docstring-name: Revoke a password reset
     """
     permission_classes = [IsAuthenticatedAndActive, IsVisionStaff]
 
@@ -213,6 +221,8 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     RBAC (list):         identity.user_account.lock + system.audit.view
     Permission (unlock): IsAuthenticatedAndActive, HasRBACPermission
     RBAC (unlock):       identity.user_account.unlock
+
+    docstring-name: Account lockouts
     """
     serializer_class = AccountLockoutReadSerializer
     pagination_class = XVSPagination
@@ -299,6 +309,8 @@ class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     Returns identity/auth AuditEvents from the central vs_audit store.
     Filters: actor_id, subject_id (entity_id), school_id, event (action_type),
              ip_address, date_from, date_to.
+
+    docstring-name: Auth event log
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
     pagination_class   = XVSPagination

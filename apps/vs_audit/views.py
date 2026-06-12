@@ -47,6 +47,8 @@ class AuditEventListView(generics.ListAPIView):
 
     Returns paginated audit events.
     Supports filtering with query params.
+
+    docstring-name: Audit events
     """
 
     serializer_class = AuditEventListSerializer
@@ -151,6 +153,8 @@ class AuditEventDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     GET /audit/events/<uuid:id>/
 
     Returns one audit event in full detail.
+
+    docstring-name: Audit events
     """
 
     queryset = AuditEvent.objects.select_related(
@@ -171,6 +175,8 @@ class EntityAuditTrailListView(generics.ListAPIView):
     GET /audit/entity-trails/
 
     Paginated catalogue of every audited entity.
+
+    docstring-name: Entity audit trails
     """
 
     serializer_class = EntityAuditTrailSerializer
@@ -195,6 +201,8 @@ class MyActivityView(generics.ListAPIView):
 
     Audit events where the signed-in user is the actor — used by the
     /me/security/activity self-service page.
+
+    docstring-name: My activity
     """
 
     serializer_class = AuditEventListSerializer
@@ -222,6 +230,8 @@ class MyActivitySubjectView(generics.ListAPIView):
     Audit events where the signed-in user is the target entity
     (entity_type="User", entity_id=<user.id>) and someone else performed the
     action. Powers the "Things done to your account" tab.
+
+    docstring-name: Actions performed on me
     """
 
     serializer_class = AuditEventListSerializer
@@ -249,6 +259,8 @@ class MyActivitySubjectView(generics.ListAPIView):
 class EntityAuditTrailDetailView(APIView):
     """
     GET /audit/entity-trails/<str:entity_type>/<str:entity_id>/
+
+    docstring-name: Entity audit trails
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
@@ -296,6 +308,8 @@ class AuditExportJobListView(generics.ListCreateAPIView):
     """
     GET /audit/exports/   - paginated export history
     POST /audit/exports/  - queue a new CSV export job
+
+    docstring-name: Audit export jobs
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
@@ -415,6 +429,8 @@ class AuditDashboardSummaryView(APIView):
       - module_breakdown: per-module event counts in the last 24h
       - signin_series: SUCCESS vs FAIL login attempt counts per day for the last 30 days
       - critical_heatmap: hour-of-day x day-of-week grid for the last 30 days
+
+    docstring-name: Audit dashboard summary
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
@@ -515,6 +531,8 @@ class AuditDashboardSummaryView(APIView):
 class AuditExportJobDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     """
     GET /audit/exports/<uuid:id>/
+
+    docstring-name: Audit export jobs
     """
 
     queryset = AuditExportJob.objects.select_related(
@@ -536,6 +554,8 @@ class ComplianceRuleListCreateView(CreateModelMixin, generics.ListCreateAPIView)
     POST /audit/compliance-rules/
 
     List all rules or create a new one.
+
+    docstring-name: Compliance rules
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
@@ -578,6 +598,8 @@ class ComplianceRuleDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMode
     PUT /audit/compliance-rules/<uuid:id>/
     PATCH /audit/compliance-rules/<uuid:id>/
     DELETE /audit/compliance-rules/<uuid:id>/
+
+    docstring-name: Compliance rules
     """
 
     queryset = ComplianceRule.objects.select_related("school").all()

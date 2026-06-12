@@ -28,6 +28,7 @@ class ActorContextMixin:
 
 
 class BranchListView(ActorContextMixin, generics.ListAPIView):
+    """docstring-name: List branches"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.branches.view"
     serializer_class = BranchListSerializer
@@ -104,6 +105,8 @@ class BranchStatsView(generics.GenericAPIView):
         }
 
     One DB query using conditional aggregation — no N+1.
+
+    docstring-name: Branch statistics
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.branches.view"
@@ -129,6 +132,7 @@ class BranchStatsView(generics.GenericAPIView):
     
 
 class BranchCreateView(CreateModelMixin, ActorContextMixin, generics.CreateAPIView):
+    """docstring-name: Create a branch"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.branches.create"
     serializer_class = BranchCreateSerializer
@@ -148,6 +152,7 @@ class BranchCreateView(CreateModelMixin, ActorContextMixin, generics.CreateAPIVi
 
 
 class BranchDetailView(RetrieveModelMixin, ActorContextMixin, generics.RetrieveAPIView):
+    """docstring-name: Branch detail"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.branches.view"
     serializer_class = BranchDetailSerializer
@@ -168,6 +173,8 @@ class BranchDetailView(RetrieveModelMixin, ActorContextMixin, generics.RetrieveA
 class BranchUpdateView(ActorContextMixin, generics.UpdateAPIView):
     """
     Returns a full detail payload after update so the UI doesn't need to refetch.
+
+    docstring-name: Update a branch
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.branches.update"

@@ -35,7 +35,10 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 class BankAccountListCreateView(_FinanceBase):
-    """GET (list) / POST (create) bank accounts for an entity."""
+    """GET (list) / POST (create) bank accounts for an entity.
+
+    docstring-name: Bank accounts
+    """
 
     @property
     def rbac_permission(self):
@@ -73,7 +76,10 @@ class BankAccountListCreateView(_FinanceBase):
 
 
 class BankAccountDetailView(_FinanceBase):
-    """GET one bank account."""
+    """GET one bank account.
+
+    docstring-name: Bank accounts
+    """
 
     rbac_permission = "finance.bankaccount.view"
 
@@ -88,7 +94,10 @@ class BankAccountDetailView(_FinanceBase):
 
 
 class BankStatementLineView(_FinanceBase):
-    """GET (list) statement lines / POST import a batch of statement lines."""
+    """GET (list) statement lines / POST import a batch of statement lines.
+
+    docstring-name: Bank statement lines
+    """
 
     @property
     def rbac_permission(self):
@@ -134,7 +143,10 @@ class BankStatementLineView(_FinanceBase):
 
 
 class BankAutoReconcileView(_FinanceBase):
-    """POST — auto-match unmatched statement lines to posted cash journal lines."""
+    """POST — auto-match unmatched statement lines to posted cash journal lines.
+
+    docstring-name: Auto-reconcile a bank statement
+    """
 
     rbac_permission = "finance.bankaccount.reconcile"
 
@@ -168,7 +180,10 @@ class _StatementLineActionBase(_FinanceBase):
 
 
 class BankStatementLineMatchView(_StatementLineActionBase):
-    """POST {journal_line} — manually pair a statement line to a cash journal line."""
+    """POST {journal_line} — manually pair a statement line to a cash journal line.
+
+    docstring-name: Match a bank statement line
+    """
 
     rbac_permission = "finance.bankaccount.reconcile"
 
@@ -190,7 +205,10 @@ class BankStatementLineMatchView(_StatementLineActionBase):
 
 
 class BankStatementLineAdjustView(_StatementLineActionBase):
-    """POST {counter_account?, counter_code?, narration?} — book + match an unrecorded line."""
+    """POST {counter_account?, counter_code?, narration?} — book + match an unrecorded line.
+
+    docstring-name: Post an adjustment from a statement line
+    """
 
     rbac_permission = "finance.bankaccount.reconcile"
 

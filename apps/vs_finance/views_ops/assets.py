@@ -30,7 +30,10 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 class FixedAssetListCreateView(_FinanceBase):
-    """GET (list) / POST (create draft) fixed assets for an entity."""
+    """GET (list) / POST (create draft) fixed assets for an entity.
+
+    docstring-name: Fixed assets
+    """
 
     @property
     def rbac_permission(self):
@@ -89,6 +92,7 @@ class _FixedAssetActionBase(_FinanceBase):
 
 
 class FixedAssetDetailView(_FixedAssetActionBase):
+    """docstring-name: Fixed assets"""
     rbac_permission = "finance.fixedasset.view"
 
     def get(self, request, pk):
@@ -99,7 +103,10 @@ class FixedAssetDetailView(_FixedAssetActionBase):
 
 
 class FixedAssetAcquireView(_FixedAssetActionBase):
-    """POST {bank_account?, credit_account?} — capitalise + build the schedule."""
+    """POST {bank_account?, credit_account?} — capitalise + build the schedule.
+
+    docstring-name: Acquire a fixed asset
+    """
 
     rbac_permission = "finance.fixedasset.acquire"
 
@@ -121,7 +128,10 @@ class FixedAssetAcquireView(_FixedAssetActionBase):
 
 
 class FixedAssetDepreciateView(_FixedAssetActionBase):
-    """POST {up_to_date} — post every due depreciation charge up to a date."""
+    """POST {up_to_date} — post every due depreciation charge up to a date.
+
+    docstring-name: Run depreciation
+    """
 
     rbac_permission = "finance.fixedasset.depreciate"
 

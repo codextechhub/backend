@@ -36,7 +36,10 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 class ExpenseClaimListCreateView(_FinanceBase):
-    """GET (list) / POST (create draft) expense claims for an entity."""
+    """GET (list) / POST (create draft) expense claims for an entity.
+
+    docstring-name: Expense claims
+    """
 
     @property
     def rbac_permission(self):
@@ -102,6 +105,7 @@ class _ExpenseClaimActionBase(_FinanceBase):
 
 
 class ExpenseClaimDetailView(_ExpenseClaimActionBase):
+    """docstring-name: Expense claims"""
     rbac_permission = "finance.expenseclaim.view"
 
     def get(self, request, pk):
@@ -112,6 +116,7 @@ class ExpenseClaimDetailView(_ExpenseClaimActionBase):
 
 
 class ExpenseClaimPostView(_ExpenseClaimActionBase):
+    """docstring-name: Post an expense claim"""
     rbac_permission = "finance.expenseclaim.post"
 
     def post(self, request, pk):
@@ -127,6 +132,7 @@ class ExpenseClaimPostView(_ExpenseClaimActionBase):
 
 
 class ExpenseClaimSettleView(_ExpenseClaimActionBase):
+    """docstring-name: Settle an expense claim"""
     rbac_permission = "finance.expenseclaim.settle"
 
     def post(self, request, pk):

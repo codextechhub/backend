@@ -38,7 +38,10 @@ from .catalog import _resolve_catalog_item
 # --------------------------------------------------------------------------- #
 
 class RequisitionListCreateView(_ProcBase):
-    """GET (list) / POST (create draft + lines) purchase requisitions."""
+    """GET (list) / POST (create draft + lines) purchase requisitions.
+
+    docstring-name: Requisitions
+    """
 
     @property
     def rbac_permission(self):
@@ -90,6 +93,7 @@ class RequisitionListCreateView(_ProcBase):
 
 
 class RequisitionDetailView(_ProcBase):
+    """docstring-name: Requisitions"""
     rbac_permission = "procurement.requisition.view"
 
     def get(self, request, pk):
@@ -106,6 +110,8 @@ class RequisitionSubmitView(_ProcBase):
     Approval is no longer a direct endpoint — submitting hands the document to its
     threshold-gated workflow template; approvers then vote through the ``vs_workflow``
     API, and the engine's callback drives the requisition to APPROVED.
+
+    docstring-name: Submit a requisition
     """
     rbac_permission = "procurement.requisition.submit"
 
@@ -139,6 +145,7 @@ def _approval_response(message, document, instance, serializer_cls):
 
 
 class PurchaseOrderSubmitApprovalView(_ProcBase):
+    """docstring-name: Submit a purchase order for approval"""
     rbac_permission = "procurement.purchase_order.submit"
 
     def post(self, request, pk):
@@ -152,6 +159,7 @@ class PurchaseOrderSubmitApprovalView(_ProcBase):
 
 
 class VendorInvoiceSubmitApprovalView(_ProcBase):
+    """docstring-name: Submit a vendor invoice for approval"""
     rbac_permission = "procurement.vendor_invoice.submit"
 
     def post(self, request, pk):
@@ -169,6 +177,8 @@ class ApprovalTemplateSetupView(_ProcBase):
 
     POST body (all optional): ``threshold`` (kobo), ``manager_permission``,
     ``senior_permission``. Idempotent — re-running upserts the templates in place.
+
+    docstring-name: Set up approval templates
     """
     rbac_permission = "procurement.approval.manage"
 

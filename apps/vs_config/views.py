@@ -80,6 +80,8 @@ class ConfigurationKeyListCreateView(APIView):
 
     POST /api/v1/config/keys/
          Create a new global config key. Super Admin only.
+
+    docstring-name: Configuration keys
     """
     permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.SYSTEM_MANAGE
@@ -117,6 +119,8 @@ class ConfigurationKeyDetailView(APIView):
     GET   /api/v1/config/keys/{key}/   Retrieve a single key by dot-notation name.
     PATCH /api/v1/config/keys/{key}/   Update value and/or description.
     DELETE /api/v1/config/keys/{key}/  Soft-delete. Blocked if referenced by overrides.
+
+    docstring-name: Configuration keys
     """
     permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.SYSTEM_MANAGE
@@ -153,6 +157,8 @@ class ConfigurationKeyRestoreView(APIView):
     """
     POST /api/v1/config/keys/{key}/restore/
     Restore a soft-deleted configuration key.
+
+    docstring-name: Restore a configuration key
     """
     permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.SYSTEM_MANAGE
@@ -172,6 +178,8 @@ class BranchFlagListView(APIView):
     GET /api/v1/config/branches/{branch_id}/flags/
     Returns all flags in FLAG_REGISTRY annotated with branch state.
     Never-set flags appear with is_enabled=False.
+
+    docstring-name: Branch feature flags
     """
     permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.FLAGS_MANAGE
@@ -188,6 +196,8 @@ class BranchFlagToggleView(APIView):
     """
     PATCH /api/v1/config/branches/{branch_id}/flags/{flag_key}/
     Toggle a specific flag on or off for a branch.
+
+    docstring-name: Toggle a branch feature flag
     """
     permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.FLAGS_MANAGE
@@ -221,6 +231,8 @@ class BranchFlagHistoryView(APIView):
     GET /api/v1/config/branches/{branch_id}/flags/history/
     Returns paginated flag change history for a branch.
     Optional ?flag_key= to filter by a specific flag.
+
+    docstring-name: Branch flag history
     """
     permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.FLAGS_MANAGE
@@ -250,6 +262,8 @@ class BranchOverrideView(APIView):
     PATCH /api/v1/config/my-branch/overrides/
           Update one or more permitted override keys.
           Only keys in PERMITTED_SELF_SERVICE_KEYS are accepted.
+
+    docstring-name: Branch configuration overrides
     """
     permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.SELF_MANAGE
@@ -285,6 +299,8 @@ class BranchOverrideHistoryView(APIView):
     """
     GET /api/v1/config/my-branch/overrides/history/
     Returns paginated change history for the authenticated Branch Admin's overrides.
+
+    docstring-name: Branch override history
     """
     permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.SELF_MANAGE
@@ -308,6 +324,8 @@ class ConfigExportView(APIView):
     GET /api/v1/config/export/
     Export all active global config keys and all branch flag states.
     Super Admin only. Action is logged to platform audit trail.
+
+    docstring-name: Export configuration
     """
     permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
     rbac_permission    = ConfigPermissions.SYSTEM_MANAGE

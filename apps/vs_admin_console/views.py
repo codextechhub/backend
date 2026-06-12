@@ -31,6 +31,8 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
       - start (create)
       - end (custom action)
     But leaving ModelViewSet keeps it simple for now.
+
+    docstring-name: Impersonation sessions
     """
     permission_classes = [IsVisionStaff]
     queryset = ImpersonationSession.objects.select_related("staff_user", "target_user")
@@ -114,6 +116,8 @@ class DashboardViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
       - latest ProvisioningEvent
       - latest ImportJobLog
       - suspension state from School model
+
+    docstring-name: Admin dashboard
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.dashboard.view"

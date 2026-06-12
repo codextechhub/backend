@@ -40,7 +40,10 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 class CurrencyListCreateView(_FinanceBase):
-    """GET (list) / POST (create) currencies — **global** reference data (no entity)."""
+    """GET (list) / POST (create) currencies — **global** reference data (no entity).
+
+    docstring-name: Currencies
+    """
 
     @property
     def rbac_permission(self):
@@ -76,7 +79,10 @@ class CurrencyListCreateView(_FinanceBase):
 
 
 class FxRateListCreateView(_FinanceBase):
-    """GET (list) / POST (create) FX rates — **global** reference data (no entity)."""
+    """GET (list) / POST (create) FX rates — **global** reference data (no entity).
+
+    docstring-name: FX rates
+    """
 
     @property
     def rbac_permission(self):
@@ -115,7 +121,10 @@ class FxRateListCreateView(_FinanceBase):
 
 
 class TaxCodeListCreateView(_FinanceBase):
-    """GET (list) / POST (create) tax codes for an entity."""
+    """GET (list) / POST (create) tax codes for an entity.
+
+    docstring-name: Tax codes
+    """
 
     @property
     def rbac_permission(self):
@@ -158,7 +167,10 @@ class TaxCodeListCreateView(_FinanceBase):
 
 
 class CostCenterListCreateView(_FinanceBase):
-    """GET (list) / POST (create) cost centres for an entity."""
+    """GET (list) / POST (create) cost centres for an entity.
+
+    docstring-name: Cost centers
+    """
 
     @property
     def rbac_permission(self):
@@ -198,7 +210,10 @@ class CostCenterListCreateView(_FinanceBase):
 
 
 class DimensionListCreateView(_FinanceBase):
-    """GET (list) / POST (create) analytical dimensions for an entity."""
+    """GET (list) / POST (create) analytical dimensions for an entity.
+
+    docstring-name: Dimensions
+    """
 
     @property
     def rbac_permission(self):

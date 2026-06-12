@@ -29,7 +29,10 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 class VendorCategoryListCreateView(_ProcBase):
-    """GET (list) / POST (create) vendor categories for an entity."""
+    """GET (list) / POST (create) vendor categories for an entity.
+
+    docstring-name: Vendor categories
+    """
 
     @property
     def rbac_permission(self):
@@ -61,7 +64,10 @@ class VendorCategoryListCreateView(_ProcBase):
 
 
 class VendorListCreateView(_ProcBase):
-    """GET (list) / POST (create) vendors for an entity."""
+    """GET (list) / POST (create) vendors for an entity.
+
+    docstring-name: Vendors
+    """
 
     @property
     def rbac_permission(self):
@@ -113,6 +119,7 @@ class VendorListCreateView(_ProcBase):
 
 
 class VendorDetailView(_ProcBase):
+    """docstring-name: Vendors"""
     rbac_permission = "procurement.vendor.view"
 
     def get(self, request, pk):

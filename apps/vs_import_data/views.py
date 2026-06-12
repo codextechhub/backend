@@ -171,6 +171,8 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
     """
     GET  -> list available official system templates (all authenticated staff).
     POST -> create a new system template with columns (CX_STAFF only).
+
+    docstring-name: Import templates
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
@@ -231,6 +233,8 @@ class SystemImportTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, gener
     """
     GET   -> retrieve one official system template.
     PATCH -> update template metadata and/or columns (CX_STAFF + TEMPLATE_MANAGE only).
+
+    docstring-name: Import templates
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     lookup_url_kwarg = "template_id"
@@ -285,6 +289,8 @@ class SystemImportTemplateDownloadView(APIView):
     Query param:
         ?file_format=csv
         ?file_format=xlsx
+
+    docstring-name: Download an import template
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.TEMPLATE_VIEW
@@ -321,6 +327,8 @@ class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.L
     """
     GET  -> list import batches for an school
     POST -> upload a new import batch using a selected system template
+
+    docstring-name: Import batches
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
@@ -385,6 +393,8 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
     GET    -> full import batch details
     PATCH  -> update simple metadata only
     DELETE -> delete batch
+
+    docstring-name: Import batches
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     lookup_url_kwarg = "batch_id"
@@ -460,6 +470,8 @@ class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
     Works in both DEBUG and non-DEBUG environments because it reads
     the file from MEDIA_ROOT and serves it directly rather than
     redirecting to a media URL.
+
+    docstring-name: Download an import file
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.BATCH_VIEW
@@ -496,6 +508,8 @@ class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
 class ValidateImportBatchView(ImportBatchContextMixin, APIView):
     """
     POST -> validate an import batch against its selected template.
+
+    docstring-name: Validate an import batch
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.BATCH_VALIDATE
@@ -535,6 +549,8 @@ class ImportValidationIssueListView(ImportBatchContextMixin, generics.ListAPIVie
     Optional query params:
         ?severity=error
         ?is_resolved=true
+
+    docstring-name: Validation issues
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_VIEW
@@ -563,6 +579,8 @@ class ImportValidationIssueListView(ImportBatchContextMixin, generics.ListAPIVie
 class ImportValidationIssueDetailView(RetrieveModelMixin, ImportBatchContextMixin, generics.RetrieveAPIView):
     """
     GET -> retrieve one validation issue.
+
+    docstring-name: Validation issues
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_VIEW
@@ -576,6 +594,8 @@ class ImportValidationIssueDetailView(RetrieveModelMixin, ImportBatchContextMixi
 class ResolveImportValidationIssueView(UpdateModelMixin, ImportBatchContextMixin, generics.UpdateAPIView):
     """
     PATCH -> mark a validation issue as resolved.
+
+    docstring-name: Resolve a validation issue
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_RESOLVE
@@ -606,6 +626,8 @@ class ResolveImportValidationIssueView(UpdateModelMixin, ImportBatchContextMixin
 class ImportValidationIssueExportView(ImportBatchContextMixin, APIView):
     """
     GET -> download all validation issues for a batch as a CSV file.
+
+    docstring-name: Export validation issues
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_VIEW
@@ -625,6 +647,8 @@ class ImportValidationIssueExportView(ImportBatchContextMixin, APIView):
 class StartImportBatchView(ImportBatchContextMixin, APIView):
     """
     POST -> start actual import execution.
+
+    docstring-name: Start an import run
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.BATCH_IMPORT
@@ -702,6 +726,8 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
 class ImportJobListView(ImportBatchContextMixin, generics.ListAPIView):
     """
     GET -> list jobs for one batch.
+
+    docstring-name: Import jobs
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.JOB_VIEW
@@ -718,6 +744,8 @@ class ImportJobListView(ImportBatchContextMixin, generics.ListAPIView):
 class ImportJobDetailView(RetrieveModelMixin, ImportJobContextMixin, generics.RetrieveAPIView):
     """
     GET -> retrieve one import job with row results.
+
+    docstring-name: Import jobs
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.JOB_VIEW
@@ -735,6 +763,8 @@ class ImportJobDetailView(RetrieveModelMixin, ImportJobContextMixin, generics.Re
 class RollbackImportJobView(ImportJobContextMixin, APIView):
     """
     POST -> rollback an import job.
+
+    docstring-name: Roll back an import job
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.ROLLBACK_RUN
@@ -766,6 +796,8 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
 class ImportRollbackRecordListView(ImportJobContextMixin, generics.ListAPIView):
     """
     GET -> list rollback history for one job.
+
+    docstring-name: Import rollback records
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.ROLLBACK_VIEW
@@ -783,6 +815,8 @@ class ImportRollbackRecordListView(ImportJobContextMixin, generics.ListAPIView):
 class ImportAuditLogListView(ImportBatchContextMixin, generics.ListAPIView):
     """
     GET -> list AuditEvents for one import batch, scoped by batch pk in metadata.
+
+    docstring-name: Import audit log
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.AUDIT_VIEW
@@ -807,6 +841,8 @@ class ImportAuditLogListView(ImportBatchContextMixin, generics.ListAPIView):
 class ImportNotificationListView(ImportBatchContextMixin, generics.ListAPIView):
     """
     GET -> list notifications for one import batch.
+
+    docstring-name: Import notifications
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = ImportPermission.NOTIFICATION_VIEW

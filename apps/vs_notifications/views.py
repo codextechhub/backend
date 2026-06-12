@@ -66,6 +66,8 @@ class NotificationViewSet(viewsets.GenericViewSet):
         POST /notifications/mark-read/    — mark list of IDs as read
         POST /notifications/mark-all-read/— mark all unread as read
         GET  /notifications/{id}/         — single record detail
+
+    docstring-name: My notifications
     """
     permission_classes = [IsAuthenticated]
     pagination_class   = XVSPagination
@@ -216,6 +218,8 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
     Routes:
         GET /notifications/history/      — paginated log
         GET /notifications/history/{id}/ — full detail record
+
+    docstring-name: Notification history
     """
     permission_classes = [IsAuthenticated, HasRBACPermission]
     rbac_permission = NotificationPermission.AUDIT_ACTIVITY
@@ -316,6 +320,8 @@ class SchoolNotificationSettingViewSet(viewsets.GenericViewSet):
 
     Permission: communication.communication_permissions.enforce (RBAC).
     Queryset: strictly scoped to the requesting user's school.
+
+    docstring-name: School notification settings
     """
     permission_classes = [IsAuthenticated, HasRBACPermission]
     rbac_permission    = NotificationPermission.ENFORCE_PERMISSIONS
@@ -398,6 +404,8 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
     POST  /notifications/templates/{id}/preview/— render preview
 
     Permission: communication.notification_templates.configure (RBAC).
+
+    docstring-name: Notification templates
     """
     permission_classes = [IsAuthenticated, HasRBACPermission]
     rbac_permission    = NotificationPermission.TEMPLATE_CONFIGURE
@@ -533,6 +541,8 @@ class NotificationEventTypeViewSet(viewsets.GenericViewSet):
 
     GET /notifications/event-types/      — list all active event types
     GET /notifications/event-types/{id}/ — retrieve single event type
+
+    docstring-name: Notification event types
     """
     permission_classes = [IsAuthenticated]
 

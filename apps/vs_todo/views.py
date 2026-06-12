@@ -55,6 +55,8 @@ class TaskViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                 tasks via ?assignee=<id> (must be within the viewer's area).
                 Filter by ?status=COMPLETED|IN_PROGRESS|OVERDUE.
     create    → self-set, or an assignment when assignee_id targets a report.
+
+    docstring-name: ToDo tasks
     """
     serializer_class = TaskSerializer
     permission_classes = TODO_PERMISSIONS
@@ -146,7 +148,10 @@ class TaskViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 # ── Dashboards ────────────────────────────────────────────────────────────────
 
 class MineView(APIView):
-    """The "My Tasks" screen: the viewer's own tasks and their headline."""
+    """The "My Tasks" screen: the viewer's own tasks and their headline.
+
+    docstring-name: My dashboard
+    """
     permission_classes = TODO_PERMISSIONS
 
     def get(self, request):
@@ -163,7 +168,10 @@ class MineView(APIView):
 
 
 class TeamView(APIView):
-    """The "My Team" screen, with optional ?focus=<user_id> drill-down."""
+    """The "My Team" screen, with optional ?focus=<user_id> drill-down.
+
+    docstring-name: Team dashboard
+    """
     permission_classes = TODO_PERMISSIONS
 
     def get(self, request):
@@ -176,7 +184,10 @@ class TeamView(APIView):
 
 
 class OrgView(APIView):
-    """The "Organogram" screen: the viewer's tree with per-node roll-up stats."""
+    """The "Organogram" screen: the viewer's tree with per-node roll-up stats.
+
+    docstring-name: Organisation rollup
+    """
     permission_classes = TODO_PERMISSIONS
 
     def get(self, request):
@@ -191,6 +202,8 @@ class AssignableView(APIView):
     """Who the viewer may assign a task to — everyone in their area below them.
 
     Powers the assignee picker in the assign modal (design: descendantsOf).
+
+    docstring-name: Assignable staff
     """
     permission_classes = TODO_PERMISSIONS
 

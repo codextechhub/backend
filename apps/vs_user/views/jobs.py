@@ -87,6 +87,7 @@ def _scoped_queryset(request):
 
 
 class MyTasksView(generics.ListAPIView):
+    """docstring-name: My background tasks"""
     permission_classes = [IsAuthenticatedAndActive]
     serializer_class = BackgroundJobSerializer
     pagination_class = XVSPagination
@@ -96,6 +97,7 @@ class MyTasksView(generics.ListAPIView):
 
 
 class MyTasksSummaryView(APIView):
+    """docstring-name: My queue summary"""
     permission_classes = [IsAuthenticatedAndActive]
 
     def get(self, request):

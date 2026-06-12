@@ -62,6 +62,8 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                       RBAC: identity.user_account.create
                       + must not deactivate self (already enforced in service)
                       + tenant boundary check
+
+    docstring-name: User accounts
     """
 
     pagination_class = XVSPagination
@@ -189,6 +191,8 @@ class UserEmailChangeView(APIView):
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.email_address.verify
+
+    docstring-name: Change a user's email
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
     rbac_permission = "platform.team.update"
@@ -235,6 +239,8 @@ class UserSuspendView(APIView):
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.user_account.lock
+
+    docstring-name: Suspend a user
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
     rbac_permission = "platform.team.suspend"
@@ -264,6 +270,8 @@ class UserReactivateView(APIView):
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.user_account.unlock
+
+    docstring-name: Reactivate a user
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
     rbac_permission = "platform.team.reactivate"
@@ -293,6 +301,8 @@ class UserUnlockView(APIView):
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.user_account.unlock
+
+    docstring-name: Unlock a user
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
     rbac_permission = "platform.team.reactivate"

@@ -49,6 +49,8 @@ class LoginView(APIView):
 
     Permission: AllowAny (public endpoint).
     RBAC: identity.school_aware_login.enforce
+
+    docstring-name: Log in
     """
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -103,6 +105,8 @@ class SpecialLoginPreviewView(APIView):
     400  email query param missing
 
     Permission: AllowAny — the barcode scanner carries no credentials.
+
+    docstring-name: Barcode login preview
     """
 
     permission_classes    = [AllowAny]
@@ -149,6 +153,8 @@ class LogoutView(APIView):
 
     Permission: IsAuthenticated (any logged-in user can log themselves out).
     RBAC: system.session.access.authenticate
+
+    docstring-name: Log out
     """
     permission_classes = [IsAuthenticated]
 
@@ -201,6 +207,8 @@ class TokenRefreshView(APIView):
 
     Permission: AllowAny (public endpoint — token validity is the gate).
     RBAC: identity.access_token.refresh
+
+    docstring-name: Refresh access token
     """
     permission_classes = [AllowAny]
 
@@ -302,6 +310,8 @@ class ActivationPreviewView(APIView):
     them as read-only fields — the user only needs to set a password.
 
     Permission: AllowAny (public — user hasn't logged in yet).
+
+    docstring-name: Activation preview
     """
     authentication_classes = []
     permission_classes = [AllowAny]
@@ -329,6 +339,8 @@ class ActivationView(APIView):
 
     Permission: AllowAny (public — user hasn't logged in yet).
     RBAC: identity.user_account.activate
+
+    docstring-name: Activate account
     """
     authentication_classes = []
     permission_classes = [AllowAny]
@@ -369,6 +381,8 @@ class InvitationResendView(APIView):
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.user_email.invite
+
+    docstring-name: Resend an invitation
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
     rbac_permission = "platform.team.create"

@@ -100,7 +100,10 @@ def _allocation_plan(entity, raw_allocations):
 # --------------------------------------------------------------------------- #
 
 class CreditNoteListCreateView(_FinanceBase):
-    """GET (list) / POST (create draft) credit or debit notes for an entity."""
+    """GET (list) / POST (create draft) credit or debit notes for an entity.
+
+    docstring-name: Credit notes
+    """
 
     @property
     def rbac_permission(self):
@@ -170,6 +173,7 @@ class _CreditNoteActionBase(_FinanceBase):
 
 
 class CreditNoteDetailView(_CreditNoteActionBase):
+    """docstring-name: Credit notes"""
     rbac_permission = "finance.creditnote.view"
 
     def get(self, request, pk):
@@ -180,6 +184,7 @@ class CreditNoteDetailView(_CreditNoteActionBase):
 
 
 class CreditNotePostView(_CreditNoteActionBase):
+    """docstring-name: Post a credit note"""
     rbac_permission = "finance.creditnote.post"
 
     def post(self, request, pk):
@@ -201,6 +206,7 @@ class CreditNotePostView(_CreditNoteActionBase):
 
 
 class CreditNoteAllocateView(_CreditNoteActionBase):
+    """docstring-name: Allocate a credit note"""
     rbac_permission = "finance.creditnote.allocate"
 
     def post(self, request, pk):
@@ -222,7 +228,10 @@ class CreditNoteAllocateView(_CreditNoteActionBase):
 # --------------------------------------------------------------------------- #
 
 class RefundListCreateView(_FinanceBase):
-    """GET (list) / POST (create draft) customer refunds for an entity."""
+    """GET (list) / POST (create draft) customer refunds for an entity.
+
+    docstring-name: Refunds
+    """
 
     @property
     def rbac_permission(self):
@@ -273,6 +282,7 @@ class _RefundActionBase(_FinanceBase):
 
 
 class RefundDetailView(_RefundActionBase):
+    """docstring-name: Refunds"""
     rbac_permission = "finance.refund.view"
 
     def get(self, request, pk):
@@ -281,6 +291,7 @@ class RefundDetailView(_RefundActionBase):
 
 
 class RefundPostView(_RefundActionBase):
+    """docstring-name: Post a refund"""
     rbac_permission = "finance.refund.post"
 
     def post(self, request, pk):
@@ -300,7 +311,10 @@ class RefundPostView(_RefundActionBase):
 # --------------------------------------------------------------------------- #
 
 class InvoiceWriteOffView(_FinanceBase):
-    """POST /invoices/<pk>/write-off/ — write off an uncollectable balance as bad debt."""
+    """POST /invoices/<pk>/write-off/ — write off an uncollectable balance as bad debt.
+
+    docstring-name: Write off an invoice
+    """
 
     rbac_permission = "finance.invoice.writeoff"
 
@@ -334,7 +348,10 @@ class InvoiceWriteOffView(_FinanceBase):
 # --------------------------------------------------------------------------- #
 
 class ConcessionListCreateView(_FinanceBase):
-    """GET (list) / POST (create draft) concessions for an entity."""
+    """GET (list) / POST (create draft) concessions for an entity.
+
+    docstring-name: Concessions
+    """
 
     @property
     def rbac_permission(self):
@@ -387,6 +404,7 @@ class _ConcessionActionBase(_FinanceBase):
 
 
 class ConcessionDetailView(_ConcessionActionBase):
+    """docstring-name: Concessions"""
     rbac_permission = "finance.concession.view"
 
     def get(self, request, pk):
@@ -397,6 +415,7 @@ class ConcessionDetailView(_ConcessionActionBase):
 
 
 class ConcessionPostView(_ConcessionActionBase):
+    """docstring-name: Post a concession"""
     rbac_permission = "finance.concession.post"
 
     def post(self, request, pk):
@@ -416,7 +435,10 @@ class ConcessionPostView(_ConcessionActionBase):
 # --------------------------------------------------------------------------- #
 
 class PaymentPlanListCreateView(_FinanceBase):
-    """GET (list) / POST (create draft + build schedule) payment plans for an entity."""
+    """GET (list) / POST (create draft + build schedule) payment plans for an entity.
+
+    docstring-name: Payment plans
+    """
 
     @property
     def rbac_permission(self):
@@ -483,6 +505,7 @@ class _PaymentPlanActionBase(_FinanceBase):
 
 
 class PaymentPlanDetailView(_PaymentPlanActionBase):
+    """docstring-name: Payment plans"""
     rbac_permission = "finance.paymentplan.view"
 
     def get(self, request, pk):
@@ -491,6 +514,7 @@ class PaymentPlanDetailView(_PaymentPlanActionBase):
 
 
 class PaymentPlanActivateView(_PaymentPlanActionBase):
+    """docstring-name: Activate a payment plan"""
     rbac_permission = "finance.paymentplan.activate"
 
     def post(self, request, pk):
@@ -506,6 +530,7 @@ class PaymentPlanActivateView(_PaymentPlanActionBase):
 
 
 class PaymentPlanRefreshView(_PaymentPlanActionBase):
+    """docstring-name: Refresh payment plan status"""
     rbac_permission = "finance.paymentplan.activate"
 
     def post(self, request, pk):
@@ -526,6 +551,7 @@ class PaymentPlanRefreshView(_PaymentPlanActionBase):
 
 
 class PaymentPlanCancelView(_PaymentPlanActionBase):
+    """docstring-name: Cancel a payment plan"""
     rbac_permission = "finance.paymentplan.cancel"
 
     def post(self, request, pk):
@@ -550,6 +576,8 @@ class CustomerStatementView(_FinanceBase):
     Optional ``?start=`` / ``?end=`` ISO dates bound the period (``end`` defaults to
     today; an absent ``start`` runs from inception with a zero opening balance).
     Supports ``?export=csv|xlsx|pdf``. All money is reported in kobo + naira.
+
+    docstring-name: Customer statement
     """
 
     rbac_permission = "finance.report.view"
@@ -625,7 +653,10 @@ class CustomerStatementView(_FinanceBase):
 # --------------------------------------------------------------------------- #
 
 class DunningPolicyListCreateView(_FinanceBase):
-    """GET (list) dunning policies, or POST to create one (optionally with stages)."""
+    """GET (list) dunning policies, or POST to create one (optionally with stages).
+
+    docstring-name: Dunning policies
+    """
 
     @property
     def rbac_permission(self):
@@ -681,6 +712,7 @@ class DunningPolicyListCreateView(_FinanceBase):
 
 
 class DunningPolicyDetailView(_FinanceBase):
+    """docstring-name: Dunning policies"""
     rbac_permission = "finance.dunning.view"
 
     def get(self, request, pk):
@@ -694,7 +726,10 @@ class DunningPolicyDetailView(_FinanceBase):
 
 
 class DunningGenerateView(_FinanceBase):
-    """POST: run a dunning policy over the entity's overdue invoices, raising notices."""
+    """POST: run a dunning policy over the entity's overdue invoices, raising notices.
+
+    docstring-name: Generate dunning notices
+    """
 
     rbac_permission = "finance.dunning.generate"
 
@@ -728,7 +763,10 @@ class DunningGenerateView(_FinanceBase):
 
 
 class DunningNoticeListCreateView(_FinanceBase):
-    """GET dunning notices for an entity (filterable by status / customer / invoice)."""
+    """GET dunning notices for an entity (filterable by status / customer / invoice).
+
+    docstring-name: Dunning notices
+    """
 
     rbac_permission = "finance.dunning.view"
 
@@ -757,6 +795,7 @@ class _DunningNoticeActionBase(_FinanceBase):
 
 
 class DunningNoticeDetailView(_DunningNoticeActionBase):
+    """docstring-name: Dunning notices"""
     rbac_permission = "finance.dunning.view"
 
     def get(self, request, pk):
@@ -767,6 +806,7 @@ class DunningNoticeDetailView(_DunningNoticeActionBase):
 
 
 class DunningNoticeSendView(_DunningNoticeActionBase):
+    """docstring-name: Send a dunning notice"""
     rbac_permission = "finance.dunning.send"
 
     def post(self, request, pk):
@@ -782,6 +822,7 @@ class DunningNoticeSendView(_DunningNoticeActionBase):
 
 
 class DunningNoticeCancelView(_DunningNoticeActionBase):
+    """docstring-name: Cancel a dunning notice"""
     rbac_permission = "finance.dunning.send"
 
     def post(self, request, pk):

@@ -56,7 +56,10 @@ class AdminJobSerializer(serializers.ModelSerializer):
 
 
 class TaskMonitorViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
-    """Read-only window onto the full task history."""
+    """Read-only window onto the full task history.
+
+    docstring-name: Task monitor
+    """
 
     permission_classes = [IsVisionStaff]
     serializer_class = AdminJobSerializer

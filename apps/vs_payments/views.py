@@ -52,7 +52,10 @@ def _entity_obj(entity, model, pk, field):
 # --------------------------------------------------------------------------- #
 
 class CollectionListCreateView(APIView):
-    """GET (list) / POST (initiate) collections for an entity."""
+    """GET (list) / POST (initiate) collections for an entity.
+
+    docstring-name: Collections
+    """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
@@ -94,7 +97,10 @@ class CollectionListCreateView(APIView):
 
 
 class CollectionDetailView(APIView):
-    """GET a collection; ``?verify=1`` polls the provider and confirms if settled."""
+    """GET a collection; ``?verify=1`` polls the provider and confirms if settled.
+
+    docstring-name: Collections
+    """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "payments.collection.view"
@@ -110,7 +116,10 @@ class CollectionDetailView(APIView):
 
 
 class VirtualAccountCreateView(APIView):
-    """POST to provision a dedicated virtual account for a customer."""
+    """POST to provision a dedicated virtual account for a customer.
+
+    docstring-name: Create a virtual account
+    """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "payments.virtual_account.create"
@@ -136,7 +145,10 @@ class VirtualAccountCreateView(APIView):
 # --------------------------------------------------------------------------- #
 
 class PayoutListCreateView(APIView):
-    """GET (list) / POST (initiate) payouts for an entity."""
+    """GET (list) / POST (initiate) payouts for an entity.
+
+    docstring-name: Payouts
+    """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
@@ -188,6 +200,8 @@ class PayoutBatchListCreateView(APIView):
 
     POST creates the batch and its child instructions in ``DRAFT`` — it does **not**
     submit. Pass ``{"submit": true}`` to dispatch immediately after assembly.
+
+    docstring-name: Payout batches
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
@@ -249,7 +263,10 @@ class PayoutBatchListCreateView(APIView):
 
 
 class PayoutBatchDetailView(APIView):
-    """GET a batch with its items; POST submits the batch's pending instructions."""
+    """GET a batch with its items; POST submits the batch's pending instructions.
+
+    docstring-name: Payout batches
+    """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
@@ -287,6 +304,8 @@ class SettlementReconciliationView(APIView):
 
     Query: ``?entity=``, optional ``?start_date=&end_date=`` (YYYY-MM-DD, inclusive) and
     ``?provider=``.
+
+    docstring-name: Settlement reconciliation
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
@@ -354,7 +373,10 @@ class SettlementReconciliationView(APIView):
 # --------------------------------------------------------------------------- #
 
 class WebhookView(APIView):
-    """POST /webhooks/<provider>/ — raw signed PSP event. No JWT; signature is the auth."""
+    """POST /webhooks/<provider>/ — raw signed PSP event. No JWT; signature is the auth.
+
+    docstring-name: PSP webhook receiver
+    """
 
     authentication_classes: list = []
     permission_classes = [AllowAny]

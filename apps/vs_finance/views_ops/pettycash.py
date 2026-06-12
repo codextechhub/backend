@@ -53,7 +53,10 @@ def _resolve_user(ref, field):
 
 
 class PettyCashFundListCreateView(_FinanceBase):
-    """GET (list) / POST (create) petty-cash funds for an entity."""
+    """GET (list) / POST (create) petty-cash funds for an entity.
+
+    docstring-name: Petty cash funds
+    """
 
     @property
     def rbac_permission(self):
@@ -100,6 +103,7 @@ class _PettyCashFundActionBase(_FinanceBase):
 
 
 class PettyCashFundDetailView(_PettyCashFundActionBase):
+    """docstring-name: Petty cash funds"""
     @property
     def rbac_permission(self):
         return "finance.pettycash.manage" if self.request.method == "PATCH" \
@@ -131,7 +135,10 @@ class PettyCashFundDetailView(_PettyCashFundActionBase):
 
 
 class PettyCashFundEstablishView(_PettyCashFundActionBase):
-    """POST — move cash from a bank account into the tin (Dr petty cash, Cr bank)."""
+    """POST — move cash from a bank account into the tin (Dr petty cash, Cr bank).
+
+    docstring-name: Establish a petty cash fund
+    """
 
     rbac_permission = "finance.pettycash.replenish"
 
@@ -155,7 +162,10 @@ class PettyCashFundEstablishView(_PettyCashFundActionBase):
 
 
 class PettyCashFundReplenishView(_PettyCashFundActionBase):
-    """POST — top the tin back up to its float (Dr petty cash, Cr bank)."""
+    """POST — top the tin back up to its float (Dr petty cash, Cr bank).
+
+    docstring-name: Replenish a petty cash fund
+    """
 
     rbac_permission = "finance.pettycash.replenish"
 
@@ -179,7 +189,10 @@ class PettyCashFundReplenishView(_PettyCashFundActionBase):
 
 
 class PettyCashStatusView(_FinanceBase):
-    """GET — per-fund cash position + low-balance flags (replenishment alerts)."""
+    """GET — per-fund cash position + low-balance flags (replenishment alerts).
+
+    docstring-name: Petty cash status
+    """
 
     rbac_permission = "finance.pettycash.view"
 
@@ -210,7 +223,10 @@ class PettyCashStatusView(_FinanceBase):
 
 
 class PettyCashVoucherListCreateView(_FinanceBase):
-    """GET (list) / POST (create draft + lines) petty-cash vouchers."""
+    """GET (list) / POST (create draft + lines) petty-cash vouchers.
+
+    docstring-name: Petty cash vouchers
+    """
 
     @property
     def rbac_permission(self):
@@ -284,6 +300,7 @@ class _PettyCashVoucherActionBase(_FinanceBase):
 
 
 class PettyCashVoucherDetailView(_PettyCashVoucherActionBase):
+    """docstring-name: Petty cash vouchers"""
     rbac_permission = "finance.pettycash.view"
 
     def get(self, request, pk):
@@ -295,6 +312,7 @@ class PettyCashVoucherDetailView(_PettyCashVoucherActionBase):
 
 
 class PettyCashVoucherPostView(_PettyCashVoucherActionBase):
+    """docstring-name: Post a petty cash voucher"""
     rbac_permission = "finance.pettycash.post"
 
     def post(self, request, pk):

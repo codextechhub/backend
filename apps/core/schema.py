@@ -79,20 +79,68 @@ class EnvelopeAutoSchema(AutoSchema):
         return super().get_tags()
 
     def get_summary(self):
-        """Use the first meaningful docstring line as the endpoint's name."""
+        """Endpoint display name from the explicit ``docstring-name:`` tag.
+
+        Convention: every view docstring ends with a paragraph like
+        ``docstring-name: School roles`` — that value (plus an operation
+        verb for multi-operation views) becomes the name shown in the API
+        docs / Apidog. The tag is deliberate so doc names are always chosen,
+        never leaked from implementation prose.
+        """
         docstring = (
             getattr(self.view, "__doc__", None)
             or getattr(type(self.view), "__doc__", None)
             or ""
         )
-        for line in docstring.strip().splitlines():
+        title = None
+        for line in docstring.splitlines():
             line = line.strip()
-            # Skip pure route lines like "POST /auth/login/" — Apidog already
-            # shows the path; the sentence after it names the behaviour.
-            if not line or (line.split(" ")[0].isupper() and "/" in line):
-                continue
-            return line.rstrip(".")[:120]
-        return None
+            if line.lower().startswith("docstring-name:"):
+                title = line.split(":", 1)[1].strip()
+                break
+        if not title:
+            # Fallback (core app only after the sweep): first meaningful line.
+            for line in docstring.strip().splitlines():
+                line = line.strip()
+                if not line or (line.split(" ")[0].isupper() and "/" in line):
+                    continue
+                title = line.rstrip(".")[:120]
+                break
+        if not title:
+            return None
+
+        verb = self._operation_verb()
+        return f"{title} — {verb}" if verb else title
+
+    def _operation_verb(self):
+        """A short verb suffix so multi-operation views get distinct names."""
+        view = self.view
+        methods = [
+            m for m in getattr(view, "allowed_methods", [])
+            if m not in ("HEAD", "OPTIONS")
+        ]
+        if len(methods) <= 1 and not getattr(view, "action", None):
+            return None  # single-operation view: the tag IS the full name
+
+        action = getattr(view, "action", None)
+        if action:
+            return {
+                "list": "List",
+                "create": "Create",
+                "retrieve": "Get",
+                "update": "Update",
+                "partial_update": "Partial update",
+                "destroy": "Delete",
+            }.get(action, action.replace("_", " ").capitalize())
+
+        is_detail = self.path.rstrip("/").endswith("}")
+        return {
+            "GET": "Get" if is_detail else "List",
+            "POST": "Create",
+            "PUT": "Update",
+            "PATCH": "Partial update",
+            "DELETE": "Delete",
+        }.get(self.method)
 
     def _get_response_for_code(self, serializer, status_code, media_types=None, direction="response"):
         response = super()._get_response_for_code(serializer, status_code, media_types, direction)

@@ -116,6 +116,8 @@ class EntityListCreateView(generics.ListCreateAPIView):
     structural, platform-level operation (a new entity becomes the tenant of its own
     documents and numbering), so it is gated on the dedicated ``finance.entity.create``
     key, which is granted only to the platform admin roles.
+
+    docstring-name: Ledger entities
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
@@ -150,7 +152,10 @@ class EntityListCreateView(generics.ListCreateAPIView):
 
 
 class AccountListView(EntityScopedListMixin, generics.ListAPIView):
-    """GET /finance/accounts/?entity= — the entity's chart of accounts."""
+    """GET /finance/accounts/?entity= — the entity's chart of accounts.
+
+    docstring-name: Chart of accounts
+    """
 
     serializer_class = AccountSerializer
     rbac_permission = "finance.account.view"
@@ -167,7 +172,10 @@ class AccountListView(EntityScopedListMixin, generics.ListAPIView):
 
 
 class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
-    """GET /finance/periods/?entity= — the entity's fiscal periods."""
+    """GET /finance/periods/?entity= — the entity's fiscal periods.
+
+    docstring-name: Fiscal periods
+    """
 
     serializer_class = FiscalPeriodSerializer
     rbac_permission = "finance.period.view"
@@ -182,7 +190,10 @@ class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
 
 
 class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
-    """GET /finance/journals/?entity= — posted/draft journal entries for the entity."""
+    """GET /finance/journals/?entity= — posted/draft journal entries for the entity.
+
+    docstring-name: Journal entries
+    """
 
     serializer_class = JournalEntryListSerializer
     rbac_permission = "finance.journal.view"
@@ -202,7 +213,10 @@ class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
 
 
 class JournalEntryDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
-    """GET /finance/journals/<id>/?entity= — one journal entry with its lines."""
+    """GET /finance/journals/<id>/?entity= — one journal entry with its lines.
+
+    docstring-name: Journal entries
+    """
 
     serializer_class = JournalEntryDetailSerializer
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
@@ -219,7 +233,10 @@ class JournalEntryDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
 
 
 class InvoiceListView(EntityScopedListMixin, generics.ListAPIView):
-    """GET /finance/invoices/?entity= — sales invoices for the entity."""
+    """GET /finance/invoices/?entity= — sales invoices for the entity.
+
+    docstring-name: Customer invoices
+    """
 
     serializer_class = InvoiceSerializer
     rbac_permission = "finance.invoice.view"
@@ -239,7 +256,10 @@ class InvoiceListView(EntityScopedListMixin, generics.ListAPIView):
 # --------------------------------------------------------------------------- #
 
 class JournalPostView(APIView):
-    """POST /finance/journals/<id>/post/?entity= — post a draft journal."""
+    """POST /finance/journals/<id>/post/?entity= — post a draft journal.
+
+    docstring-name: Post a journal entry
+    """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.journal.post"
@@ -260,7 +280,10 @@ class JournalPostView(APIView):
 
 
 class JournalReverseView(APIView):
-    """POST /finance/journals/<id>/reverse/?entity= — reverse a posted journal."""
+    """POST /finance/journals/<id>/reverse/?entity= — reverse a posted journal.
+
+    docstring-name: Reverse a journal entry
+    """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.journal.reverse"
@@ -284,6 +307,8 @@ class PeriodCloseView(APIView):
     """POST /finance/periods/<id>/close/?entity= — run the checklist and close a period.
 
     Body (all optional): ``{"soft": bool, "force": bool, "run_depreciation": bool}``.
+
+    docstring-name: Close a fiscal period
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
@@ -363,6 +388,7 @@ def _maybe_export(request, table, *, filename):
 
 
 class TrialBalanceView(APIView):
+    """docstring-name: Trial balance"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
@@ -406,6 +432,7 @@ class TrialBalanceView(APIView):
 
 
 class IncomeStatementView(APIView):
+    """docstring-name: Income statement"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
@@ -449,6 +476,7 @@ class IncomeStatementView(APIView):
 
 
 class BalanceSheetView(APIView):
+    """docstring-name: Balance sheet"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
@@ -497,6 +525,7 @@ class BalanceSheetView(APIView):
 
 
 class CashFlowView(APIView):
+    """docstring-name: Cash flow statement"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
@@ -542,6 +571,7 @@ class CashFlowView(APIView):
 
 
 class ChangesInEquityView(APIView):
+    """docstring-name: Statement of changes in equity"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
@@ -597,6 +627,7 @@ class ChangesInEquityView(APIView):
 
 
 class StatutoryPackView(APIView):
+    """docstring-name: Statutory reporting pack"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
@@ -699,6 +730,7 @@ class StatutoryPackView(APIView):
 
 
 class ARAgingView(APIView):
+    """docstring-name: AR aging report"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 
@@ -752,6 +784,7 @@ class ARAgingView(APIView):
 
 
 class ARReconciliationView(APIView):
+    """docstring-name: AR reconciliation report"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.report.view"
 

@@ -33,7 +33,10 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 class VendorPaymentListCreateView(_ProcBase):
-    """GET (list) / POST (create a draft payment ready to post)."""
+    """GET (list) / POST (create a draft payment ready to post).
+
+    docstring-name: Vendor payments
+    """
 
     @property
     def rbac_permission(self):
@@ -78,6 +81,7 @@ class VendorPaymentListCreateView(_ProcBase):
 
 
 class VendorPaymentDetailView(_ProcBase):
+    """docstring-name: Vendor payments"""
     rbac_permission = "procurement.vendor_payment.view"
 
     def get(self, request, pk):
@@ -94,6 +98,8 @@ class VendorPaymentPostView(_ProcBase):
     Body (optional): ``auto_allocate`` (default true) settles oldest bills first;
     ``allocations`` = ``[{"vendor_invoice": <id>, "amount": <kobo>}, ...]`` for an
     explicit split.
+
+    docstring-name: Post a vendor payment
     """
 
     rbac_permission = "procurement.vendor_payment.post"

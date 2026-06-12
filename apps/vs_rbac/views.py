@@ -55,6 +55,7 @@ from .permissions import (
 # -----------------------------------------------------------------------------
 
 class PermissionModuleListCreateView(CreateModelMixin, generics.ListCreateAPIView):
+    """docstring-name: Permission modules"""
     queryset = PermissionModule.objects.all()
     serializer_class = PermissionModuleSerializer
     pagination_class = XVSPagination
@@ -81,6 +82,7 @@ class PermissionModuleListCreateView(CreateModelMixin, generics.ListCreateAPIVie
 
 
 class PermissionModuleDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
+    """docstring-name: Permission modules"""
     queryset = PermissionModule.objects.all()
     serializer_class = PermissionModuleSerializer
     lookup_field = "name"
@@ -96,6 +98,7 @@ class PermissionModuleDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMo
 
 
 class PermissionResourceListCreateView(CreateModelMixin, generics.ListCreateAPIView):
+    """docstring-name: Permission resources"""
     queryset = PermissionResource.objects.select_related("module").all()
     serializer_class = PermissionResourceSerializer
     pagination_class = XVSPagination
@@ -124,6 +127,7 @@ class PermissionResourceListCreateView(CreateModelMixin, generics.ListCreateAPIV
 
 
 class PermissionResourceDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
+    """docstring-name: Permission resources"""
     queryset = PermissionResource.objects.select_related("module").annotate(permissions_count=Count("permissions", distinct=True))
     serializer_class = PermissionResourceSerializer
 
@@ -138,6 +142,7 @@ class PermissionResourceDetailView(RetrieveModelMixin, UpdateModelMixin, Destroy
 
 
 class PermissionActionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
+    """docstring-name: Permission actions"""
     queryset = PermissionAction.objects.all()
     serializer_class = PermissionActionSerializer
     pagination_class = XVSPagination
@@ -164,6 +169,7 @@ class PermissionActionListCreateView(CreateModelMixin, generics.ListCreateAPIVie
 
 
 class PermissionActionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
+    """docstring-name: Permission actions"""
     queryset = PermissionAction.objects.annotate(permissions_count=Count("permissions", distinct=True))
     serializer_class = PermissionActionSerializer
     lookup_field = "name"
@@ -182,6 +188,7 @@ class PermissionActionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMo
 # Global Permission Registry (Vision-owned)
 # -----------------------------------------------------------------------------
 class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
+    """docstring-name: Permissions"""
     queryset = Permission.objects.select_related("module", "resource", "action").order_by("-updated_at", "module", "action", "key")
     serializer_class = PermissionSerializer
     pagination_class = XVSPagination
@@ -222,6 +229,7 @@ class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
 
 
 class PermissionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
+    """docstring-name: Permissions"""
     queryset = Permission.objects.prefetch_related(
         "groups", "dependencies__depends_on", "required_by__permission"
     ).all()
@@ -308,6 +316,7 @@ class PermissionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMix
 
 
 class PermissionDependencyListCreateView(CreateModelMixin, generics.ListCreateAPIView):
+    """docstring-name: Permission dependencies"""
     queryset = PermissionDependency.objects.select_related("permission", "depends_on").all()
     serializer_class = PermissionDependencySerializer
     pagination_class = XVSPagination
@@ -321,6 +330,7 @@ class PermissionDependencyListCreateView(CreateModelMixin, generics.ListCreateAP
 
 
 class PermissionDependencyDetailView(RetrieveModelMixin, DestroyModelMixin, generics.RetrieveDestroyAPIView):
+    """docstring-name: Permission dependencies"""
     queryset = PermissionDependency.objects.select_related("permission", "depends_on").all()
     serializer_class = PermissionDependencySerializer
     lookup_field = "id"
@@ -341,6 +351,8 @@ class PermissionGroupListCreateView(CreateModelMixin, generics.ListCreateAPIView
     Vision-facing:
     - GET: list all permission groups
     - POST: create a new permission group with optional permission_keys
+
+    docstring-name: Permission groups
     """
     pagination_class = XVSPagination
 
@@ -391,6 +403,8 @@ class PermissionGroupDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMod
     - GET: group detail with expanded permissions
     - PATCH/PUT: update group fields and optionally replace permission_keys
     - DELETE: blocked for system groups
+
+    docstring-name: Permission groups
     """
     serializer_class = PermissionGroupDetailSerializer
     lookup_field = "id"
@@ -423,6 +437,8 @@ class SchoolRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIV
     School-facing:
     - GET: list role templates in a school
     - POST: create a role template in a school
+
+    docstring-name: School roles
     """
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
     pagination_class = XVSPagination
@@ -469,6 +485,8 @@ class SchoolRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, Destroy
     - GET: role detail
     - PATCH/PUT: update role fields and optionally replace permission_keys
     - DELETE: blocked for system or locked roles
+
+    docstring-name: School roles
     """
     serializer_class = SchoolRoleTemplateDetailSerializer
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
@@ -522,6 +540,8 @@ class SchoolUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCrea
     School-facing:
     - GET: list assignments in a school
     - POST: assign a role to a user inside a school
+
+    docstring-name: School role assignments
     """
     serializer_class = SchoolUserRoleAssignmentSerializer
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
@@ -558,6 +578,8 @@ class SchoolUserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin, g
     School-facing:
     - GET: one assignment
     - PATCH: often used for revoke flow
+
+    docstring-name: School role assignments
     """
     serializer_class = SchoolUserRoleAssignmentSerializer
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
@@ -579,6 +601,8 @@ class SchoolRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCreat
     School-facing:
     - GET: list requests for a school
     - POST: create a change request for a role in that school
+
+    docstring-name: School role change requests
     """
     serializer_class = SchoolRoleChangeRequestSerializer
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
@@ -611,6 +635,8 @@ class SchoolRoleChangeRequestApprovalQueueView(generics.ListAPIView):
     """
     School-admin-facing:
     - GET: pending role change requests for a school
+
+    docstring-name: Role change approval queue
     """
     serializer_class = SchoolRoleChangeRequestSerializer
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
@@ -640,6 +666,8 @@ class SchoolRoleChangeRequestApprovalDetailView(RetrieveModelMixin, generics.Ret
     """
     School-admin-facing:
     - GET: single role change request within the school
+
+    docstring-name: Role change approval queue
     """
     serializer_class = SchoolRoleChangeRequestSerializer
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
@@ -663,6 +691,8 @@ class SchoolRoleChangeRequestDecisionView(APIView):
         "action": "APPROVE" | "DENY",
         "notes": "optional approval notes / required denial reason"
     }
+
+    docstring-name: Decide a school role change request
     """
     permission_classes = [IsAuthenticatedAndActive & IsSchoolAdmin]
 
@@ -755,6 +785,8 @@ class PlatformRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAP
     Vision-facing:
     - GET: list platform roles
     - POST: create platform role
+
+    docstring-name: Platform roles
     """
     pagination_class = XVSPagination
 
@@ -821,6 +853,8 @@ class PlatformRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, Destr
     - GET: detail of a platform role
     - PATCH/PUT: blocked for locked or system roles
     - DELETE: blocked for system or locked roles
+
+    docstring-name: Platform roles
     """
     serializer_class = PlatformRoleTemplateDetailSerializer
     lookup_field = "id"
@@ -883,6 +917,8 @@ class PlatformUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCr
     Vision-facing:
     - GET: list platform user role assignments
     - POST: assign platform role to internal user
+
+    docstring-name: Platform role assignments
     """
     serializer_class = PlatformUserRoleAssignmentSerializer
     pagination_class = XVSPagination
@@ -931,6 +967,8 @@ class PlatformUserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin,
     Vision-facing:
     - GET: one platform assignment
     - PATCH: often used to revoke
+
+    docstring-name: Platform role assignments
     """
     serializer_class = PlatformUserRoleAssignmentSerializer
     lookup_field = "id"
@@ -955,6 +993,8 @@ class PlatformUserRoleAssignmentRevokeView(APIView):
 
     POST /rbac/platform/role-assignments/<id>/revoke/
     Body: { "reason_note": "Required justification for the audit trail." }
+
+    docstring-name: Revoke a platform role assignment
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.roles.assign"
@@ -1010,6 +1050,8 @@ class PlatformRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCre
     Vision-facing:
     - GET: list platform role change requests
     - POST: create platform role change request
+
+    docstring-name: Platform role change requests
     """
     serializer_class = PlatformRoleChangeRequestSerializer
     pagination_class = XVSPagination
@@ -1041,6 +1083,7 @@ class PlatformRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCre
 
 
 class PlatformRoleChangeRequestDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
+    """docstring-name: Platform role change requests"""
     serializer_class = PlatformRoleChangeRequestSerializer
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.roles.view"
@@ -1063,6 +1106,8 @@ class PlatformRoleChangeRequestDecisionView(APIView):
         "action": "APPROVE" | "DENY",
         "notes": "optional approval notes / required denial reason"
     }
+
+    docstring-name: Decide a platform role change request
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.roles.update"
@@ -1157,6 +1202,8 @@ class TransferSuperAdminView(APIView):
     Vision Staff member. The caller is demoted to Vision Platform Admin.
 
     Body: { "new_super_admin_id": "<uuid>" }
+
+    docstring-name: Transfer super admin
     """
     permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin, HasRBACPermission]
     rbac_permission = "platform.roles.transfer"

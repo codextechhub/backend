@@ -24,7 +24,10 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 class FinanceAuditLogListView(_FinanceBase):
-    """GET — the append-only finance audit trail for an entity (filter action/status)."""
+    """GET — the append-only finance audit trail for an entity (filter action/status).
+
+    docstring-name: Finance audit log
+    """
 
     rbac_permission = "finance.audit.view"
 

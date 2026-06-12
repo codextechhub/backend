@@ -35,7 +35,10 @@ from .catalog import _resolve_catalog_item
 # --------------------------------------------------------------------------- #
 
 class StockItemListCreateView(_ProcBase):
-    """GET (list) / POST (create) stock items — perpetual-inventory masters."""
+    """GET (list) / POST (create) stock items — perpetual-inventory masters.
+
+    docstring-name: Stock items
+    """
 
     @property
     def rbac_permission(self):
@@ -87,7 +90,10 @@ class StockItemListCreateView(_ProcBase):
 
 
 class StockItemDetailView(_ProcBase):
-    """GET (retrieve) / PATCH (update master fields, not balances) one stock item."""
+    """GET (retrieve) / PATCH (update master fields, not balances) one stock item.
+
+    docstring-name: Stock items
+    """
 
     @property
     def rbac_permission(self):
@@ -135,7 +141,10 @@ class StockItemDetailView(_ProcBase):
 
 
 class StockIssueView(_ProcBase):
-    """POST — issue stock out at moving-average cost (Dr expense, Cr inventory)."""
+    """POST — issue stock out at moving-average cost (Dr expense, Cr inventory).
+
+    docstring-name: Issue stock
+    """
 
     rbac_permission = "procurement.stock.issue"
 
@@ -168,7 +177,10 @@ class StockIssueView(_ProcBase):
 
 
 class StockAdjustView(_ProcBase):
-    """POST — apply a signed stock-count correction (write-up or shrinkage)."""
+    """POST — apply a signed stock-count correction (write-up or shrinkage).
+
+    docstring-name: Adjust stock
+    """
 
     rbac_permission = "procurement.stock.adjust"
 
@@ -203,7 +215,10 @@ class StockAdjustView(_ProcBase):
 
 
 class StockMovementListView(_ProcBase):
-    """GET — the stock ledger (movements), optionally filtered to one item."""
+    """GET — the stock ledger (movements), optionally filtered to one item.
+
+    docstring-name: Stock movements
+    """
 
     rbac_permission = "procurement.stock.view"
 
@@ -222,6 +237,7 @@ class StockMovementListView(_ProcBase):
 
 
 class StockReorderReportView(_ProcBase):
+    """docstring-name: Stock reorder report"""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
@@ -246,6 +262,7 @@ class StockReorderReportView(_ProcBase):
 
 
 class StockValuationReportView(_ProcBase):
+    """docstring-name: Stock valuation report"""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):

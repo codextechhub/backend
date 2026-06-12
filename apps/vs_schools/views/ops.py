@@ -41,6 +41,7 @@ class _SchoolOpBaseView(ActorContextMixin, generics.GenericAPIView):
 
 
 class SchoolResetConfigView(_SchoolOpBaseView):
+    """docstring-name: Reset school configuration"""
     permission_classes = [IsVisionSuperAdmin]
 
     def post(self, request, *args, **kwargs):

@@ -65,6 +65,7 @@ class SchoolScopedMixin:
 class WorkflowTemplateViewSet(
     SchoolScopedMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, GenericViewSet,
 ):
+    """docstring-name: Workflow templates"""
     serializer_class = WorkflowTemplateReadSerializer
 
     def get_permissions(self):
@@ -157,6 +158,7 @@ class WorkflowTemplateViewSet(
 class WorkflowInstanceViewSet(
     SchoolScopedMixin, mixins.ListModelMixin, mixins.RetrieveModelMixin, GenericViewSet,
 ):
+    """docstring-name: Workflow instances"""
     def get_permissions(self):
         if self.action == "create":
             self.rbac_permission = PERM_INSTANCE_SUBMIT
@@ -235,6 +237,7 @@ class WorkflowInstanceViewSet(
 
 
 class ReverseActionView(SchoolScopedMixin, APIView):
+    """docstring-name: Reverse an approval action"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = PERM_ACTION_REVERSE
 
@@ -256,7 +259,10 @@ class ReverseActionView(SchoolScopedMixin, APIView):
 # ── Dashboards ────────────────────────────────────────────────────────────────
 
 class PendingApprovalsView(SchoolScopedMixin, APIView):
-    """GET /workflow/dashboard/pending/ — instances where the user is eligible to act."""
+    """GET /workflow/dashboard/pending/ — instances where the user is eligible to act.
+
+    docstring-name: My pending approvals
+    """
     permission_classes = [IsAuthenticatedAndActive]
 
     def get(self, request):
@@ -292,7 +298,10 @@ class PendingApprovalsView(SchoolScopedMixin, APIView):
 
 
 class MySubmissionsView(SchoolScopedMixin, APIView):
-    """GET /workflow/dashboard/submitted/ — instances the user has submitted."""
+    """GET /workflow/dashboard/submitted/ — instances the user has submitted.
+
+    docstring-name: My submissions
+    """
     permission_classes = [IsAuthenticatedAndActive]
 
     def get(self, request):
@@ -306,7 +315,10 @@ class MySubmissionsView(SchoolScopedMixin, APIView):
 
 
 class TeamLoadView(SchoolScopedMixin, APIView):
-    """GET /workflow/dashboard/team-load/ — active instance counts by stage."""
+    """GET /workflow/dashboard/team-load/ — active instance counts by stage.
+
+    docstring-name: Team approval load
+    """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = PERM_INSTANCE_VIEW
 
@@ -333,6 +345,7 @@ class TeamLoadView(SchoolScopedMixin, APIView):
 # ── Delegations ───────────────────────────────────────────────────────────────
 
 class ApprovalDelegationViewSet(SchoolScopedMixin, ModelViewSet):
+    """docstring-name: Approval delegations"""
     serializer_class = ApprovalDelegationSerializer
     permission_classes = [IsAuthenticatedAndActive]
 

@@ -35,7 +35,10 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 class TaxObligationListCreateView(_FinanceBase):
-    """GET (list) / POST (create) statutory tax obligations for an entity."""
+    """GET (list) / POST (create) statutory tax obligations for an entity.
+
+    docstring-name: Tax obligations
+    """
 
     @property
     def rbac_permission(self):
@@ -79,6 +82,7 @@ class TaxObligationListCreateView(_FinanceBase):
 
 
 class TaxObligationDetailView(_FinanceBase):
+    """docstring-name: Tax obligations"""
     @property
     def rbac_permission(self):
         return "finance.tax.manage" if self.request.method == "PATCH" \
@@ -123,7 +127,10 @@ class TaxObligationDetailView(_FinanceBase):
 
 
 class TaxObligationOutstandingView(_FinanceBase):
-    """GET — per-obligation unremitted balance sitting in each control account."""
+    """GET — per-obligation unremitted balance sitting in each control account.
+
+    docstring-name: Outstanding tax obligations
+    """
 
     rbac_permission = "finance.tax.view"
 
@@ -150,7 +157,10 @@ class TaxObligationOutstandingView(_FinanceBase):
 
 
 class TaxFilingListCreateView(_FinanceBase):
-    """GET (list) / POST (prepare from GL) tax filings for an entity."""
+    """GET (list) / POST (prepare from GL) tax filings for an entity.
+
+    docstring-name: Tax filings
+    """
 
     @property
     def rbac_permission(self):
@@ -206,6 +216,7 @@ class _TaxFilingActionBase(_FinanceBase):
 
 
 class TaxFilingDetailView(_TaxFilingActionBase):
+    """docstring-name: Tax filings"""
     rbac_permission = "finance.tax.view"
 
     def get(self, request, pk):
@@ -216,7 +227,10 @@ class TaxFilingDetailView(_TaxFilingActionBase):
 
 
 class TaxFilingFileView(_TaxFilingActionBase):
-    """POST — submit a draft return (net input VAT, book any penalty)."""
+    """POST — submit a draft return (net input VAT, book any penalty).
+
+    docstring-name: File a tax return
+    """
 
     rbac_permission = "finance.tax.file"
 
@@ -243,7 +257,10 @@ class TaxFilingFileView(_TaxFilingActionBase):
 
 
 class TaxFilingPayView(_TaxFilingActionBase):
-    """POST — remit a filed return (Dr liability, Cr bank)."""
+    """POST — remit a filed return (Dr liability, Cr bank).
+
+    docstring-name: Pay a tax filing
+    """
 
     rbac_permission = "finance.tax.pay"
 

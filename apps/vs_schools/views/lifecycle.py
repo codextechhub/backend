@@ -18,6 +18,7 @@ class ActorContextMixin:
 
 
 class BranchTransitionView(ActorContextMixin, generics.GenericAPIView):
+    """docstring-name: Transition branch lifecycle"""
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = BranchStateTransitionSerializer
     queryset = Branch.objects.all()

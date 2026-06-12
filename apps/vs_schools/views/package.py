@@ -10,6 +10,8 @@ class PackagePlanListView(generics.ListAPIView):
     """
     Returns all active PackagePlans.
     Powers the 'Select package plan' dropdown on the UI.
+
+    docstring-name: Package plans
     """
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = PackagePlanSerializer
@@ -20,6 +22,8 @@ class XVSModuleListView(generics.ListAPIView):
     """
     Returns all active platform modules.
     Powers the 'Select modules' multi-select dropdown on the UI.
+
+    docstring-name: XVS modules
     """
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = XVSModuleSerializer

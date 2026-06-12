@@ -34,6 +34,8 @@ class CurrentUserView(APIView):
     Returns the currently authenticated user's profile and their effective
     permissions. Called by the frontend after a token refresh to keep the
     client-side permission cache in sync with the backend RBAC state.
+
+    docstring-name: Current user profile
     """
     permission_classes = [IsAuthenticatedAndActive]
 
@@ -56,6 +58,8 @@ class MySecurityStatsView(APIView):
     GET /user/auth/me/stats/
     Returns security stats scoped to the requesting user — accessible by any
     authenticated user without staff permissions.
+
+    docstring-name: My security stats
     """
     permission_classes = [IsAuthenticatedAndActive]
 
@@ -78,6 +82,8 @@ class MyPasswordResetsView(APIView):
     newest first. Includes used, expired, and pending requests.
 
     Permission: IsAuthenticatedAndActive (no RBAC required)
+
+    docstring-name: My password reset history
     """
     permission_classes = [IsAuthenticatedAndActive]
 

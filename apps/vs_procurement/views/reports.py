@@ -20,6 +20,7 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 class APAgingView(_ProcBase):
+    """docstring-name: AP aging report"""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
@@ -50,6 +51,7 @@ class APAgingView(_ProcBase):
 
 
 class APReconciliationView(_ProcBase):
+    """docstring-name: AP reconciliation report"""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
@@ -71,6 +73,7 @@ class APReconciliationView(_ProcBase):
 
 
 class GRIRBalanceView(_ProcBase):
+    """docstring-name: GR/IR balance"""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
@@ -89,6 +92,7 @@ class GRIRBalanceView(_ProcBase):
 
 
 class APCashRequirementsView(_ProcBase):
+    """docstring-name: AP cash requirements"""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
@@ -117,6 +121,7 @@ class APCashRequirementsView(_ProcBase):
 
 
 class GRIRAgingView(_ProcBase):
+    """docstring-name: GR/IR aging report"""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
@@ -155,6 +160,7 @@ class GRIRAgingView(_ProcBase):
 # --------------------------------------------------------------------------- #
 
 class SpendAnalysisView(_ProcBase):
+    """docstring-name: Spend analysis"""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
@@ -192,6 +198,7 @@ class SpendAnalysisView(_ProcBase):
 
 
 class VendorPerformanceView(_ProcBase):
+    """docstring-name: Vendor performance"""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
@@ -228,6 +235,7 @@ class VendorPerformanceView(_ProcBase):
 
 
 class ProcurementCycleTimeView(_ProcBase):
+    """docstring-name: Procurement cycle time"""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):

@@ -31,7 +31,10 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 class BudgetListCreateView(_FinanceBase):
-    """GET (list) / POST (create draft) budgets for an entity."""
+    """GET (list) / POST (create draft) budgets for an entity.
+
+    docstring-name: Budgets
+    """
 
     @property
     def rbac_permission(self):
@@ -74,6 +77,7 @@ class _BudgetActionBase(_FinanceBase):
 
 
 class BudgetDetailView(_BudgetActionBase):
+    """docstring-name: Budgets"""
     rbac_permission = "finance.budget.view"
 
     def get(self, request, pk):
@@ -82,7 +86,10 @@ class BudgetDetailView(_BudgetActionBase):
 
 
 class BudgetLineCreateView(_BudgetActionBase):
-    """POST {account, period_no, amount, cost_center?} — add/update one budget cell."""
+    """POST {account, period_no, amount, cost_center?} — add/update one budget cell.
+
+    docstring-name: Add a budget line
+    """
 
     rbac_permission = "finance.budget.edit"
 
@@ -105,6 +112,7 @@ class BudgetLineCreateView(_BudgetActionBase):
 
 
 class BudgetApproveView(_BudgetActionBase):
+    """docstring-name: Approve a budget"""
     rbac_permission = "finance.budget.approve"
 
     def post(self, request, pk):
@@ -120,7 +128,10 @@ class BudgetApproveView(_BudgetActionBase):
 
 
 class BudgetVarianceView(_BudgetActionBase):
-    """GET ?period_no — budget-vs-actual variance for the budget."""
+    """GET ?period_no — budget-vs-actual variance for the budget.
+
+    docstring-name: Budget vs actual variance
+    """
 
     rbac_permission = "finance.budget.view"
 

@@ -63,6 +63,8 @@ class PlatformStaffProfileViewSet(
       create:                 platform.staff_profile.create
       update / partial_update: platform.staff_profile.update
       me:                     IsAuthenticatedAndActive (self-service)
+
+    docstring-name: Staff profiles
     """
 
     pagination_class = XVSPagination
@@ -158,6 +160,8 @@ class OrgNodeViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     Read endpoints require platform.organogram.view; writes require
     platform.organogram.manage.
+
+    docstring-name: Org nodes
     """
 
     serializer_class = OrgNodeSerializer
@@ -194,6 +198,8 @@ class PositionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     Read endpoints require platform.organogram.view; writes require
     platform.organogram.manage.
+
+    docstring-name: Positions
     """
 
     serializer_class = PositionSerializer
@@ -256,6 +262,8 @@ class PositionAssignmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     Creating / closing assignments routes through OrganogramService so the
     "one current primary per user" invariant and department sync are honoured.
+
+    docstring-name: Position assignments
     """
 
     serializer_class = PositionAssignmentSerializer
@@ -323,7 +331,10 @@ class PositionAssignmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
 
 class MatrixReportViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
-    """Dotted-line (matrix) reporting between positions."""
+    """Dotted-line (matrix) reporting between positions.
+
+    docstring-name: Matrix reports
+    """
 
     serializer_class = MatrixReportSerializer
     pagination_class = XVSPagination

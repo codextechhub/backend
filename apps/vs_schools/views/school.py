@@ -29,6 +29,7 @@ class ActorContextMixin:
 
 
 class SchoolListView(ActorContextMixin, generics.ListAPIView):
+    """docstring-name: List schools"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.schools.view"
     serializer_class = SchoolListSerializer
@@ -87,6 +88,8 @@ class SchoolStatsView(generics.GenericAPIView):
         }
 
     One DB query using conditional aggregation — no N+1.
+
+    docstring-name: School statistics
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.schools.view"
@@ -105,12 +108,14 @@ class SchoolStatsView(generics.GenericAPIView):
     
 
 class SchoolCreateView(CreateModelMixin, ActorContextMixin, generics.CreateAPIView):
+    """docstring-name: Create a school"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.schools.create"
     serializer_class = SchoolCreateSerializer
 
 
 class SchoolDetailView(ActorContextMixin, generics.RetrieveAPIView):
+    """docstring-name: School detail"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.schools.view"
     serializer_class = SchoolDetailSerializer
@@ -155,6 +160,8 @@ class SchoolUpdateView(ActorContextMixin, generics.UpdateAPIView):
     """
     Separate update endpoint. Returns a full detail payload after update
     so the UI doesn't need to refetch.
+
+    docstring-name: Update a school
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.schools.update"

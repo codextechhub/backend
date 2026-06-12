@@ -54,7 +54,10 @@ def _resolve_optional_vendor(entity, ref, field="preferred_vendor"):
 
 
 class CatalogItemListCreateView(_ProcBase):
-    """GET (list) / POST (create) catalog items — reusable buying defaults."""
+    """GET (list) / POST (create) catalog items — reusable buying defaults.
+
+    docstring-name: Catalog items
+    """
 
     @property
     def rbac_permission(self):
@@ -101,7 +104,10 @@ class CatalogItemListCreateView(_ProcBase):
 
 
 class CatalogItemDetailView(_ProcBase):
-    """GET (retrieve) / PATCH (update buying defaults) one catalog item."""
+    """GET (retrieve) / PATCH (update buying defaults) one catalog item.
+
+    docstring-name: Catalog items
+    """
 
     @property
     def rbac_permission(self):

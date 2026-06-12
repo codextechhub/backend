@@ -33,7 +33,10 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 class PayrollRunListCreateView(_FinanceBase):
-    """GET (list) / POST (create draft) payroll runs for an entity."""
+    """GET (list) / POST (create draft) payroll runs for an entity.
+
+    docstring-name: Payroll runs
+    """
 
     @property
     def rbac_permission(self):
@@ -95,6 +98,7 @@ class _PayrollActionBase(_FinanceBase):
 
 
 class PayrollRunDetailView(_PayrollActionBase):
+    """docstring-name: Payroll runs"""
     rbac_permission = "finance.payrollrun.view"
 
     def get(self, request, pk):
@@ -105,6 +109,7 @@ class PayrollRunDetailView(_PayrollActionBase):
 
 
 class PayrollRunPostView(_PayrollActionBase):
+    """docstring-name: Post a payroll run"""
     rbac_permission = "finance.payrollrun.post"
 
     def post(self, request, pk):
@@ -120,6 +125,7 @@ class PayrollRunPostView(_PayrollActionBase):
 
 
 class PayrollRunPayView(_PayrollActionBase):
+    """docstring-name: Pay a payroll run"""
     rbac_permission = "finance.payrollrun.pay"
 
     def post(self, request, pk):

@@ -40,6 +40,8 @@ class PasswordChangeView(APIView):
     Permission: IsAuthenticatedAndActive (any active user can change their own password).
     RBAC: identity.password_policy.enforce
     TODO: Wire up → [IsAuthenticatedAndActive]
+
+    docstring-name: Change password
     """
     permission_classes = [IsAuthenticatedAndActive]
 
@@ -76,6 +78,8 @@ class PasswordResetRequestView(APIView):
 
     Permission: AllowAny (public — user may be locked out or forgot password).
     RBAC: identity.user_password.reset
+
+    docstring-name: Request password reset
     """
     permission_classes = [AllowAny]
     throttle_scope = 'password_reset'
@@ -103,6 +107,8 @@ class PasswordResetPreviewView(APIView):
 
     Permission: AllowAny (public — user hasn't logged in yet).
     RBAC: identity.user_password.reset
+
+    docstring-name: Password reset preview
     """
     authentication_classes = []
     permission_classes = [AllowAny]
@@ -134,6 +140,8 @@ class PasswordResetConfirmView(APIView):
 
     Permission: AllowAny (public — token validity is the gate).
     RBAC: identity.user_password.reset
+
+    docstring-name: Confirm password reset
     """
     authentication_classes = []
     permission_classes = [AllowAny]
@@ -169,6 +177,8 @@ class AdminPasswordResetView(APIView):
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission
     RBAC: identity.user_password.reset
+
+    docstring-name: Admin-initiated password reset
     """
     permission_classes = [IsAuthenticatedAndActive, HasRBACPermission]
     rbac_permission = "platform.team.update"
