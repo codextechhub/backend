@@ -15,38 +15,32 @@ already applied — the schema is identical, only the bookkeeping changes.
 
 ## Steps (run on staging, IN THIS ORDER)
 
+⚠️ Do NOT use the Render Shell for the adoption: the shell runs the
+PREVIOUSLY-deployed build, which still carries the OLD migration files —
+faking there records the wrong names (we learned this the hard way). The
+adoption must execute with the NEW code, and the only place that's guaranteed
+pre-deploy is the build itself.
+
 1. **Back up the staging database first.** Render → the Postgres instance →
    create a manual backup (or `pg_dump` via the external connection string).
 
-2. Deploy the commit containing the new migrations to staging as usual
-   (`./deploy-staging.sh`). **The build will fail at the migrate step — that
-   is expected.** (Or temporarily comment the `migrate` line out of build.sh
-   for this one deploy.)
-
-3. Open a shell on the staging service (Render → Shell tab) and run:
-
-   Paste ONE line at a time (multi-line pastes trip the shell's quote
-   continuation). This form needs no psql client in the container:
+2. **Temporary commit:** in build.sh, replace `python manage.py migrate` with:
 
    ```bash
-   cd apps
-   python manage.py shell -c "from django.db import connection; cur = connection.cursor(); cur.execute('TRUNCATE django_migrations'); print('truncated OK')"
+   python manage.py shell -c "from django.db import connection; cur = connection.cursor(); cur.execute('TRUNCATE django_migrations'); print('django_migrations truncated')"
    python manage.py migrate --fake
    ```
 
    `--fake` records every new migration as applied WITHOUT executing any SQL.
-   This includes the two finance seeds — correct, because staging already has
-   the currencies and the CODEX entity in its data.
+   That includes the data-seed migrations — correct, because staging already
+   holds the currencies and the CODEX entity.
 
-4. Verify:
+3. Deploy (`./deploy-staging.sh`). The build log shows the truncate line and
+   the full FAKED list; the deploy goes green on the new code.
 
-   ```bash
-   python manage.py migrate          # → "No migrations to apply."
-   python manage.py makemigrations --check --dry-run   # → "No changes detected"
-   ```
-
-5. Re-deploy (or restore the migrate line in build.sh). From now on,
-   migrations behave completely normally on staging.
+4. **Revert build.sh to the plain `migrate` immediately** (leaving the
+   truncate in would re-fake on every deploy) and deploy once more. That
+   build's migrate prints "No migrations to apply." — done forever.
 
 ## Colleagues' local databases
 
