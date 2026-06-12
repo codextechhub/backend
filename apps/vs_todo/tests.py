@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
+from django.core.management import call_command
 from django.test import TestCase
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
@@ -202,3 +203,60 @@ class DashboardTests(OrganogramFixtureMixin, TestCase):
         head_node = tree["direct_reports"][0]
         self.assertEqual(head_node["person"].pk, self.head.pk)
         self.assertEqual(head_node["area_stats"]["total"], 3)
+
+
+class PermissionSeedTests(TestCase):
+    """The seed flow must capture every permission wired into views — the
+    organogram gap (platform.* defined only in create_superuser, missing from
+    seed_all_permissions) is what this guards against, plus the new todo keys."""
+
+    def _platform_roles(self):
+        from vs_rbac.models import PlatformRoleTemplate
+        for role_id, name in (("xvs_super_admin", "XVS Super Admin"),
+                              ("xvs_platform_admin", "XVS Platform Admin")):
+            PlatformRoleTemplate.objects.get_or_create(
+                id=role_id,
+                defaults={"name": name, "is_system_role": True, "is_locked": True},
+            )
+
+    def setUp(self):
+        call_command("seed_actions", verbosity=0)
+        self._platform_roles()
+
+    def test_platform_seed_captures_organogram(self):
+        from vs_rbac.models import Permission
+        call_command("seed_platform_permissions", verbosity=0)
+        for key in (
+            "platform.organogram.view", "platform.organogram.manage",
+            "platform.staff_profile.view", "platform.audit.export",
+        ):
+            self.assertTrue(Permission.objects.filter(key=key).exists(), key)
+
+    def test_platform_grants_respect_transfer_boundary(self):
+        from vs_rbac.models import PlatformRolePermission
+        call_command("seed_platform_permissions", verbosity=0)
+        # Super admin gets the handoff key; platform admin must not.
+        self.assertTrue(PlatformRolePermission.objects.filter(
+            role_id="xvs_super_admin", permission_id="platform.roles.transfer").exists())
+        self.assertFalse(PlatformRolePermission.objects.filter(
+            role_id="xvs_platform_admin", permission_id="platform.roles.transfer").exists())
+        # Organogram manage IS granted to both.
+        for role_id in ("xvs_super_admin", "xvs_platform_admin"):
+            self.assertTrue(PlatformRolePermission.objects.filter(
+                role_id=role_id, permission_id="platform.organogram.manage").exists(), role_id)
+
+    def test_todo_seed_captures_and_grants_task_keys(self):
+        from vs_rbac.models import Permission, PlatformRolePermission
+        call_command("seed_todo_permissions", verbosity=0)
+        for key in ("todo.task.view", "todo.task.manage", "todo.task.assign"):
+            self.assertTrue(Permission.objects.filter(key=key).exists(), key)
+            for role_id in ("xvs_super_admin", "xvs_platform_admin"):
+                self.assertTrue(PlatformRolePermission.objects.filter(
+                    role_id=role_id, permission_id=key).exists(), f"{role_id}:{key}")
+
+    def test_seed_all_permissions_runs_clean(self):
+        from vs_rbac.models import Permission
+        call_command("seed_all_permissions", verbosity=0)
+        # Spot-check one key from the previously-missing organogram set and one todo key.
+        self.assertTrue(Permission.objects.filter(key="platform.organogram.view").exists())
+        self.assertTrue(Permission.objects.filter(key="todo.task.assign").exists())

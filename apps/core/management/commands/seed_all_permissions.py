@@ -16,11 +16,15 @@ Seed order
 ----------
 1. seed_actions              — global PermissionAction vocabulary (verbs)
 2. seed_prebuilt_role_templates — school_admin / branch_admin prebuilt roles
-3. seed_import_permissions   — import pipeline permissions → xvs_super_admin
-4. seed_workflow_permissions — workflow engine permissions → both platform roles
-5. seed_finance_permissions  — vs_finance permissions → both platform roles
-6. seed_procurement_permissions — vs_procurement permissions → both platform roles
-7. seed_payments_permissions — vs_payments permissions → both platform roles
+3. seed_platform_permissions — platform module (registry, roles, team, staff,
+                               organogram, schools, branches, audit, dashboard)
+                               → both platform roles
+4. seed_import_permissions   — import pipeline permissions → xvs_super_admin
+5. seed_workflow_permissions — workflow engine permissions → both platform roles
+6. seed_finance_permissions  — vs_finance permissions → both platform roles
+7. seed_procurement_permissions — vs_procurement permissions → both platform roles
+8. seed_payments_permissions — vs_payments permissions → both platform roles
+9. seed_todo_permissions     — vs_todo permissions → both platform roles
 """
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
@@ -30,11 +34,13 @@ SEED_STEPS: list[tuple[str, list]] = [
     # (management_command_name, extra_args)
     ("seed_actions",                 []),
     ("seed_prebuilt_role_templates", []),
+    ("seed_platform_permissions",    []),
     ("seed_import_permissions",      []),
     ("seed_workflow_permissions",    []),
     ("seed_finance_permissions",     []),
     ("seed_procurement_permissions", []),
     ("seed_payments_permissions",    []),
+    ("seed_todo_permissions",        []),
 ]
 
 

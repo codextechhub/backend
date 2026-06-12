@@ -15,6 +15,8 @@
 
 ## Done
 
+# Permission seed completeness (2026-06-12): the platform permission keys (platform.organogram.*, platform.staff_profile.*, staff_payroll, team, schools, branches, audit, dashboard, permissions, roles) were defined ONLY inside create_superuser and were NOT run by seed_all_permissions — so organogram (and friends) were missing from the canonical seed. Fixed by extracting a single source of truth: NEW core command seed_platform_permissions (creates the platform module/resources/permissions + grants all to xvs_super_admin and all-except-platform.roles.transfer to xvs_platform_admin; idempotent, graceful if roles/actions absent). create_superuser now creates the two platform roles then delegates to it (removed the duplicated inline PLATFORM_RESOURCES spec + SUPERUSER_PERMISSION_KEYS + grant loops, eliminating the drift that caused the gap). Also NEW vs_todo command seed_todo_permissions (todo.task.view/manage/assign → both platform roles). Both registered in seed_all_permissions SEED_STEPS (now 9 steps; platform at #3, todo at #9). 4 new tests in vs_todo (organogram captured, transfer-boundary grants, todo keys granted, full seed_all runs clean) → 19 vs_todo tests pass (--settings=apps.settings.local), check clean.
+
 # B7 COMPLETE (2026-06-12): Render worker live — existing Oregon Key Value (Valkey 8.1.4,
 # volatile-ttl) reused as broker; Background Worker runs celery -A apps worker -B. First beat
 # tick verified in production logs: dispatch-pending-import-notifications found and sent 2 REAL
