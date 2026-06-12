@@ -1,0 +1,26 @@
+# Dependabot — keeps requirements.txt current without surprise breakage.
+#
+# Every Monday it checks PyPI and opens one PR per outdated package (grouped
+# for minor/patch bumps). Each PR runs the full CI suite on PostgreSQL; merge
+# the green ones and the pin moves forward. Majors arrive as their own PRs so
+# they get deliberate attention.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    labels: ["dependencies"]
+
+  # Keep the CI workflow's actions (checkout, setup-python) current too.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    labels: ["dependencies"]
