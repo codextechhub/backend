@@ -38,9 +38,14 @@ normalised by `core.exceptions.custom_exception_handler`.
 
 | Settings module          | DB         | Use                                    |
 |--------------------------|------------|----------------------------------------|
-| `apps.settings.local`    | MySQL      | day-to-day development (DB `cx_db`)     |
+| `apps.settings.local`    | PostgreSQL | day-to-day development (DB `cx_db`, Homebrew postgresql@16) |
+| `apps.settings.ci`       | PostgreSQL | GitHub Actions (service container)      |
 | `apps.settings.staging`  | PostgreSQL | deployed staging (env-var driven)       |
 | `apps.settings.test`     | SQLite     | lightweight tests only — the full migration chain does NOT run on SQLite (vendor-specific raw-SQL migrations); use `local` for full suites |
+
+PostgreSQL is the only supported engine (MariaDB retired 2026-06-12; the old
+local data lives in `~/cx_db_mariadb_final_backup.sql.gz`). Rebuild the local
+database any time with `./reseed-dev.sh`.
 
 Required environment variables (server refuses to start without them):
 `SECRET_KEY`, `RENDER_API_KEY`, `TEMP_PASSWORD_PEPPER`. See
