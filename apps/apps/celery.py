@@ -32,4 +32,8 @@ app.conf.beat_schedule = {
         "task": "vs_import_data.tasks.cleanup_old_import_batches_task",
         "schedule": crontab(hour=2, minute=0),
     },
+    "prune-background-jobs": {
+        "task": "core.tasks.prune_background_jobs_task",
+        "schedule": crontab(hour=2, minute=30),
+    },
 }

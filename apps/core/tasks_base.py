@@ -95,7 +95,8 @@ class TrackedTask(Task):
             )
             job.status = BackgroundJob.Status.RUNNING
             job.started_at = timezone.now()
-            job.save(update_fields=["status", "started_at"])
+            job.worker = str(getattr(self.request, "hostname", "") or "")
+            job.save(update_fields=["status", "started_at", "worker"])
         except Exception:  # pragma: no cover
             logger.warning("BackgroundJob start-record failed for %s", task_id, exc_info=True)
         super().before_start(task_id, args, kwargs)
@@ -109,7 +110,11 @@ class TrackedTask(Task):
             # so the worker path (where on_failure also runs) won't double-write.
             request = self.request
             if request is not None and getattr(request, "is_eager", False):
-                self._finish(request.id, succeeded=False, error=str(exc))
+                import traceback as tb
+                self._finish(
+                    request.id, succeeded=False,
+                    error=str(exc), traceback_text=tb.format_exc(),
+                )
             raise
 
     def on_success(self, retval, task_id, args, kwargs):
@@ -117,10 +122,13 @@ class TrackedTask(Task):
         super().on_success(retval, task_id, args, kwargs)
 
     def on_failure(self, exc, task_id, args, kwargs, einfo):
-        self._finish(task_id, succeeded=False, error=str(exc))
+        self._finish(
+            task_id, succeeded=False,
+            error=str(exc), traceback_text=str(einfo) if einfo else "",
+        )
         super().on_failure(exc, task_id, args, kwargs, einfo)
 
-    def _finish(self, task_id, *, succeeded, retval=None, error=""):
+    def _finish(self, task_id, *, succeeded, retval=None, error="", traceback_text=""):
         try:
             from django.utils import timezone
 
@@ -142,7 +150,10 @@ class TrackedTask(Task):
                     job.result = retval
             else:
                 job.error = error[:2000]
-            job.save(update_fields=["status", "finished_at", "progress", "result", "error"])
+                job.traceback = traceback_text[:10000]
+            job.save(update_fields=[
+                "status", "finished_at", "progress", "result", "error", "traceback",
+            ])
             self._notify_owner(job, succeeded)
         except Exception:  # pragma: no cover
             logger.warning("BackgroundJob finish-record failed for %s", task_id, exc_info=True)

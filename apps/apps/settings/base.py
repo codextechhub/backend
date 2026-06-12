@@ -78,7 +78,6 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
-    "django_celery_results",
 
     # apps
     "vs_schools",
@@ -119,14 +118,7 @@ ROOT_URLCONF = "apps.urls"
 # Celery
 # ---------------------------------------------------------------------------
 CELERY_BROKER_URL        = config("REDIS_URL", default="redis://localhost:6379/0")
-# Results go to PostgreSQL (django-celery-results) so the admin console can
-# show task history — Redis only transports, the database remembers.
-CELERY_RESULT_BACKEND    = "django-db"
-CELERY_RESULT_EXTENDED   = True   # store task name, args, worker on each row
-CELERY_TASK_TRACK_STARTED = True  # rows appear as STARTED, not only at the end
-# Eager mode (local dev / staging fallback) also records results, so the
-# monitoring UI has data everywhere.
-CELERY_TASK_STORE_EAGER_RESULT = True
+CELERY_TASK_IGNORE_RESULT = True
 CELERY_ACCEPT_CONTENT    = ["json"]
 CELERY_TASK_SERIALIZER   = "json"
 CELERY_RESULT_SERIALIZER = "json"

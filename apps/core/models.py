@@ -71,6 +71,8 @@ class BackgroundJob(models.Model):
     )
     result = models.JSONField(null=True, blank=True)
     error = models.TextField(blank=True, default="")
+    traceback = models.TextField(blank=True, default="")
+    worker = models.CharField(max_length=255, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)

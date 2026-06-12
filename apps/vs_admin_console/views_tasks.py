@@ -1,18 +1,19 @@
 """
-Background-task monitoring for the admin console.
+Background-task monitoring for the admin console (engine-room view).
 
-Task results are persisted to PostgreSQL by django-celery-results
-(CELERY_RESULT_BACKEND = "django-db"), so the intranet frontend can show
-what the Celery worker is doing without anyone reading Render logs.
+Reads core.BackgroundJob — the single source of truth for every Celery run
+(written by core.tasks_base.TrackedTask). The owner-facing slice of the same
+table lives at /v1/user/me/tasks/.
 
-Endpoints (all CX-staff only):
-    GET /v1/admin/tasks/            list task runs (filters below)
+Endpoints (CX-staff only):
+    GET /v1/admin/tasks/            all task runs (filters below)
     GET /v1/admin/tasks/stats/      counts by status + per-task breakdown
     GET /v1/admin/tasks/schedule/   the beat schedule + execution mode
 
 List filters:
-    ?status=SUCCESS|FAILURE|STARTED|PENDING|RETRY|REVOKED
+    ?status=QUEUED|RUNNING|SUCCEEDED|FAILED|CANCELLED
     ?task=<substring of the task name>     e.g. ?task=import
+    ?kind=import|export|email|system
     ?since=YYYY-MM-DD                      created on/after this date
 """
 from __future__ import annotations
@@ -22,42 +23,47 @@ from datetime import timedelta
 from django.conf import settings
 from django.db.models import Count
 from django.utils import timezone
-from django_celery_results.models import TaskResult
 from rest_framework import mixins, serializers, viewsets
 from rest_framework.decorators import action
 
+from core.models import BackgroundJob
 from core.pagination import XVSPagination
 from core.response import success_response
 
 from .permissions import IsVisionStaff
 
 
-class TaskResultSerializer(serializers.ModelSerializer):
+class AdminJobSerializer(serializers.ModelSerializer):
+    owner_name = serializers.SerializerMethodField()
     runtime_seconds = serializers.SerializerMethodField()
 
     class Meta:
-        model = TaskResult
+        model = BackgroundJob
         fields = [
-            "id", "task_id", "task_name", "periodic_task_name", "status",
-            "worker", "date_created", "date_started", "date_done",
-            "runtime_seconds", "result", "traceback",
+            "id", "celery_task_id", "task_name", "kind", "label",
+            "owner", "owner_name", "school", "status", "progress", "worker",
+            "created_at", "started_at", "finished_at", "runtime_seconds",
+            "result", "error", "traceback",
         ]
 
+    def get_owner_name(self, obj):
+        return obj.owner.full_name if obj.owner_id and obj.owner else None
+
     def get_runtime_seconds(self, obj):
-        if obj.date_started and obj.date_done:
-            return round((obj.date_done - obj.date_started).total_seconds(), 3)
+        if obj.started_at and obj.finished_at:
+            return round((obj.finished_at - obj.started_at).total_seconds(), 3)
         return None
 
 
 class TaskMonitorViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
-    """Read-only window onto Celery task history."""
+    """Read-only window onto the full task history."""
 
     permission_classes = [IsVisionStaff]
-    serializer_class = TaskResultSerializer
+    serializer_class = AdminJobSerializer
     pagination_class = XVSPagination
 
     def get_queryset(self):
-        qs = TaskResult.objects.order_by("-date_created")
+        qs = BackgroundJob.objects.select_related("owner").order_by("-created_at")
         params = self.request.query_params
 
         status_param = (params.get("status") or "").strip().upper()
@@ -68,9 +74,13 @@ class TaskMonitorViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         if task:
             qs = qs.filter(task_name__icontains=task)
 
+        kind = (params.get("kind") or "").strip().lower()
+        if kind:
+            qs = qs.filter(kind=kind)
+
         since = (params.get("since") or "").strip()
         if since:
-            qs = qs.filter(date_created__date__gte=since)
+            qs = qs.filter(created_at__date__gte=since)
 
         return qs
 
@@ -80,23 +90,21 @@ class TaskMonitorViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         day_ago = timezone.now() - timedelta(hours=24)
 
         by_status = dict(
-            TaskResult.objects.values_list("status").annotate(n=Count("id"))
+            BackgroundJob.objects.values_list("status").annotate(n=Count("id"))
         )
         last_24h = dict(
-            TaskResult.objects.filter(date_created__gte=day_ago)
+            BackgroundJob.objects.filter(created_at__gte=day_ago)
             .values_list("status").annotate(n=Count("id"))
         )
         by_task = list(
-            TaskResult.objects.values("task_name")
-            .annotate(
-                runs=Count("id"),
-            )
+            BackgroundJob.objects.values("task_name")
+            .annotate(runs=Count("id"))
             .order_by("-runs")[:20]
         )
         failures = list(
-            TaskResult.objects.filter(status="FAILURE")
-            .order_by("-date_done")
-            .values("task_name", "date_done", "task_id")[:5]
+            BackgroundJob.objects.filter(status=BackgroundJob.Status.FAILED)
+            .order_by("-finished_at")
+            .values("task_name", "label", "finished_at", "celery_task_id")[:5]
         )
         return success_response(
             message="Task statistics retrieved.",
@@ -105,7 +113,7 @@ class TaskMonitorViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
                 "last_24h": last_24h,
                 "by_task": by_task,
                 "recent_failures": failures,
-                "total": TaskResult.objects.count(),
+                "total": BackgroundJob.objects.count(),
             },
         )
 
