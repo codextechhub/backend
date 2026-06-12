@@ -181,6 +181,21 @@ def _flip_school_pk(apps, schema_editor):
             if vendor == "mysql":
                 cur.execute(f"ALTER TABLE {q(table)} MODIFY {q(col)} BIGINT {nullable}")
             else:
+                # Django pairs every varchar FK column with a `_like`
+                # (varchar_pattern_ops) index on PostgreSQL; that operator
+                # class can't hold a bigint, so drop those indexes before
+                # the type conversion rebuilds dependents.
+                cur.execute(
+                    "SELECT indexname, indexdef FROM pg_indexes WHERE tablename = %s "
+                    "AND indexdef LIKE '%%varchar_pattern_ops%%'",
+                    [table],
+                )
+                for idx_name, idx_def in cur.fetchall():
+                    if (
+                        f"({col} varchar_pattern_ops" in idx_def
+                        or f'("{col}" varchar_pattern_ops' in idx_def
+                    ):
+                        cur.execute(f"DROP INDEX IF EXISTS {q(idx_name)}")
                 cur.execute(
                     f"ALTER TABLE {q(table)} ALTER COLUMN {q(col)} TYPE bigint "
                     f"USING {q(col)}::bigint"

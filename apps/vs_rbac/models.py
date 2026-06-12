@@ -472,6 +472,18 @@ class SchoolRoleTemplate(TimeStampedModel):
     def save(self, *args, **kwargs):
         if not self.id:
             self.id = _unique_slug(SchoolRoleTemplate, self.name)
+        # Case-insensitive name uniqueness per school
+        if self.name:
+            clash = (
+                type(self).all_objects.filter(school=self.school, name__iexact=self.name)
+                .exclude(pk=self.pk)
+                .exists()
+            )
+            if clash:
+                from django.db import IntegrityError
+                raise IntegrityError(
+                    "A role with this name already exists in this school."
+                )
         super().save(*args, **kwargs)
 
 
@@ -905,6 +917,18 @@ class PlatformRoleTemplate(TimeStampedModel):
     def save(self, *args, **kwargs):
         if not self.id:
             self.id = _unique_slug(PlatformRoleTemplate, self.name, slug_field="id")
+        # Case-insensitive global name uniqueness — app-level for the same
+        # portability reason as SchoolRoleTemplate (ci collation vs functional
+        # index support differs across MySQL/MariaDB/PostgreSQL).
+        if self.name:
+            clash = (
+                type(self).objects.filter(name__iexact=self.name)
+                .exclude(pk=self.pk)
+                .exists()
+            )
+            if clash:
+                from django.db import IntegrityError
+                raise IntegrityError("A platform role with this name already exists.")
         super().save(*args, **kwargs)
 
 

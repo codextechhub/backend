@@ -55,8 +55,7 @@ def _lock_instance(instance_id) -> WorkflowInstance:
     serialize safely instead of producing duplicate state transitions or split
     advance_rule counts.
     """
-    return (WorkflowInstance.objects.select_for_update()
-            .select_related("template", "current_stage").get(pk=instance_id))
+    return WorkflowInstance.objects.select_for_update().get(pk=instance_id)
 
 
 def _active_stage_instance(instance: WorkflowInstance) -> WorkflowStageInstance:
@@ -219,9 +218,7 @@ def reverse_action(action_id, admin, reason: str) -> WorkflowStageAction:
     if not reason.strip():
         raise ReversalNotAllowedError("Reversal reason is required.")
     with transaction.atomic():
-        original = (WorkflowStageAction.objects.select_for_update()
-                    .select_related("stage_instance", "stage_instance__instance")
-                    .get(pk=action_id))
+        original = WorkflowStageAction.objects.select_for_update().get(pk=action_id)
         if original.is_reversal_of_id is not None:
             raise ReversalNotAllowedError("Cannot reverse a reversal row.")
         if original.reversed_at is not None:
