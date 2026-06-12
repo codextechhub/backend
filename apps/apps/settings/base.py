@@ -38,6 +38,7 @@ REST_FRAMEWORK = {
         "rest_framework.permissions.IsAuthenticated",
     ],
     "EXCEPTION_HANDLER": "core.exceptions.custom_exception_handler",
+    "DEFAULT_SCHEMA_CLASS": "core.schema.EnvelopeAutoSchema",
     "DEFAULT_PAGINATION_CLASS": "core.pagination.XVSPagination",
     "PAGE_SIZE": 25,
     "DEFAULT_THROTTLE_CLASSES": [
@@ -78,6 +79,7 @@ INSTALLED_APPS = [
     "rest_framework",
     "rest_framework_simplejwt.token_blacklist",
     "corsheaders",
+    "drf_spectacular",
 
     # apps
     "vs_schools",
@@ -279,3 +281,43 @@ STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
 # https://docs.djangoproject.com/en/5.0/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+
+# --------------------------------------------------------------------------- #
+# API documentation (drf-spectacular)                                          #
+# --------------------------------------------------------------------------- #
+# The schema is generated from the code, so it can never go stale. Serve URLs
+# are mounted only when API_DOCS_ENABLED (default: on in DEBUG, off otherwise).
+API_DOCS_ENABLED = config("API_DOCS_ENABLED", default=None)
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "XVS API (Backend)",
+    "VERSION": "2.0.0",
+    "DESCRIPTION": (
+        "The XVS API is the complete backend API for the X Vision Systems "
+        "platform — the single API layer through which all platform "
+        "functionality is exposed, consumed by frontend collaborators "
+        "building against defined contracts and by backend engineers "
+        "extending the platform.\n\n"
+        "**Authentication** — all endpoints require a JWT Bearer token issued "
+        "at login (`/v1/user/auth/login/`). Unauthenticated requests receive "
+        "401; authenticated requests without sufficient permission receive "
+        "403. Use the Authorize button with `Bearer <access token>`.\n\n"
+        "**Permission model** — access is governed by the two-layer RBAC "
+        "system (platform roles for CX staff, school roles for school "
+        "users); the required permission is enforced per endpoint.\n\n"
+        "**Response envelope** — every response is wrapped in "
+        "`{success, message, data}`; list endpoints add a `pagination` "
+        "block (`currentPage`, `pageSize`, `totalItems`, `totalPages`, "
+        "`next`, `previous`). Errors use `{success: false, message, error}`.\n\n"
+        "**School references** — schools are addressed by numeric `id`; "
+        "write fields and URL segments that accept a school also accept the "
+        "slug, and responses render the slug for backward compatibility."
+    ),
+    "SCHEMA_PATH_PREFIX": r"/v1",
+    "SERVE_INCLUDE_SCHEMA": False,
+    "COMPONENT_SPLIT_REQUEST": True,
+    # Hide noisy warnings for plain APIViews without declared serializers —
+    # they are still listed, just without typed bodies (annotate over time).
+    "DISABLE_ERRORS_AND_WARNINGS": False,
+}

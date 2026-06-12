@@ -55,6 +55,10 @@ jobs:
         working-directory: apps
         run: python manage.py migrate
 
+      - name: API schema generates cleanly
+        working-directory: apps
+        run: python manage.py spectacular --file /dev/null
+
       - name: Run test suite
         working-directory: apps
         run: python manage.py test --noinput

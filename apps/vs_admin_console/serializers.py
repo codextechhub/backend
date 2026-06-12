@@ -20,8 +20,6 @@ class ImpersonationSessionSerializer(serializers.ModelSerializer):
         model = ImpersonationSession
         fields = [
             "id",
-            "created_at",
-            "updated_at",
             "staff_user",
             "staff_email",
             "school",
@@ -33,7 +31,7 @@ class ImpersonationSessionSerializer(serializers.ModelSerializer):
             "ends_at",
             "ended_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at", "staff_email", "target_email", "ended_at"]
+        read_only_fields = ["id", "staff_email", "target_email", "ended_at"]
         
 class ImpersonationStartSerializer(serializers.Serializer):
     """
