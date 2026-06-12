@@ -11,6 +11,5 @@ python manage.py collectstatic --no-input
 python manage.py migrate
 
 # Run seeding commands AFTER migrate succeeds
-python manage.py seed_all_permissions
 # python manage.py reset_db --yes
 # python manage.py create_superuser --assign-role --email admin@codexng.com
