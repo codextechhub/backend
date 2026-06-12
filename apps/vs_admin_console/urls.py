@@ -7,9 +7,11 @@ from .views import (
     DashboardViewSet,
     ImpersonationSessionViewSet,
 )
+from .views_tasks import TaskMonitorViewSet
 
 router = DefaultRouter()
 router.register(r"impersonations", ImpersonationSessionViewSet, basename="impersonations")
 router.register(r"dashboard", DashboardViewSet, basename="dashboard")
+router.register(r"tasks", TaskMonitorViewSet, basename="tasks")
 
 urlpatterns = router.urls
