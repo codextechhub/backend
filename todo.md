@@ -1,8 +1,7 @@
 ## Undone
 
 ## Deferred from the deep-review fixes (2026-06-11; B-numbers from ~/Downloads/XVision-Backend-Deep-Review.docx)
-- B7: add a real Celery worker (+ beat) to staging and remove CELERY_TASK_ALWAYS_EAGER — large imports currently run inside the web request; periodic tasks (mark_stuck_import_jobs, retry_failed_import_notifications) never fire without beat.
-- B17: standardise on PostgreSQL across local/staging/tests (staging already PG); regenerate or guard the MySQL-only raw-SQL migrations (vs_import_data 0003/0004/0006, vs_user 0003/0004); add CI running migrations + tests on PG.
+- B7 (code DONE 2026-06-12; dashboard steps pending): create on Render — (1) Key Value 'xvs-redis' (free, internal-only), (2) Background Worker 'xvs-worker' (cd apps && celery -A apps worker -B --loglevel=info --concurrency=2, same env group as web), then set REDIS_URL + CELERY_EAGER=false on BOTH services. render.yaml at repo root documents the full shape; staging stays safely eager until the flip.
 
 
 
@@ -14,6 +13,21 @@
 # - Open-banking statement feed (Mono/Okra) — optional, automates bank rec  [SKIP — user deferred "skip for now"]
 
 ## Done
+
+# B17 (2026-06-12): PostgreSQL standardised across local/CI/staging. Local dev now runs PG 16
+# (brew postgresql@16, db cx_db; DB_ENGINE=mysql falls back to the untouched MariaDB). New
+# apps/settings/ci.py + .github/workflows/ci.yml (postgres:16 service; check, migration-drift,
+# fresh-migrate, full suite on every push/PR to main/staging). PG portability bugs found & fixed:
+# (1) B23 migration — Django's `_like` varchar_pattern_ops indexes must be dropped before the
+# BIGINT FK conversion; (2) vs_workflow locking — select_for_update + select_related over nullable
+# FKs = FOR UPDATE on an outer join, rejected by PG → lock only the target row; (3) role-name
+# case-insensitive uniqueness moved to model save() (MySQL ci collation gave it free; PG functional
+# index isn't portable to MariaDB). Full suite (520 tests incl. vs_todo) green on PG.
+
+# B7 code side (2026-06-12): beat schedule in apps/celery.py (dispatch notifications */5, retry
+# failed */15, mark stuck */30, cleanup batches daily 02:00 — all idempotent); staging eager mode
+# env-gated (CELERY_EAGER, default true = safe without worker); render.yaml blueprint (web + worker
+# with embedded beat + free Key Value). Worker creation + env flip = user dashboard steps above.
 
 # vs_todo (2026-06-11): NEW app "ToDo — Org Accountability" (mounted /v1/todo/), built from the offline HTML design (~/Downloads/ToDo Accountability (offline).html). CX-staff intranet tool: every Task belongs to one person, a manager rolls up their whole area (self + all reports), and assignment only flows DOWN the organogram. The reporting tree is NOT stored — it is derived live from the existing vs_user organogram (Position.reports_to / PositionAssignment) via services/hierarchy.py (descendant_users / direct_report_users / area_user_ids / is_manager / can_assign / chain_to), mirroring the design's tree helpers. Model Task (assignee, assigned_by[+name snapshot], title/description/metric/target, deadline, priority, department snapshot, is_done + completed_at); status (Completed/In Progress/Overdue) is a derived property, never stored. Services: tasks.py (create_task enforces assign-down + dept snapshot, set_done, can_view/can_modify), stats.py (stats_for + own/area task querysets), dashboards.py (node_dashboard + efficient single-fetch org_rollup tree). REST: TaskViewSet (CRUD + /toggle/, area-scoped get_queryset, ?assignee/?status filters) + dashboards GET /v1/todo/dashboard/{mine,team(?focus=),org}/ + /assignable/. Gated by IsAuthenticatedAndActive & IsVisionStaff; envelope via core mixins/success_response. Migration vs_todo 0001. 15 tests pass (--settings=apps.settings.local), check clean. NOTE: sqlite test path stays broken by the MySQL-only raw-SQL migrations (see B17) — unrelated to vs_todo.
 
