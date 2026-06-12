@@ -1,4 +1,5 @@
 ## Undone
+- Remove the rotted pop_db_insti management command (imports SchoolLifecycleEvent/ProvisioningRecord etc. that no longer exist) — superseded by seed_dev_data (2026-06-12).
 
 ## Deferred from the deep-review fixes (2026-06-11; B-numbers from ~/Downloads/XVision-Backend-Deep-Review.docx)
 - B7 (code DONE 2026-06-12; dashboard steps pending): create on Render — (1) Key Value 'xvs-redis' (free, internal-only), (2) Background Worker 'xvs-worker' (cd apps && celery -A apps worker -B --loglevel=info --concurrency=2, same env group as web), then set REDIS_URL + CELERY_EAGER=false on BOTH services. render.yaml at repo root documents the full shape; staging stays safely eager until the flip.
