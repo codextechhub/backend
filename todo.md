@@ -2,7 +2,7 @@
 - Remove the rotted pop_db_insti management command (imports SchoolLifecycleEvent/ProvisioningRecord etc. that no longer exist) — superseded by seed_dev_data (2026-06-12).
 
 ## Deferred from the deep-review fixes (2026-06-11; B-numbers from ~/Downloads/XVision-Backend-Deep-Review.docx)
-- B7 (code DONE 2026-06-12; dashboard steps pending): create on Render — (1) Key Value 'xvs-redis' (free, internal-only), (2) Background Worker 'xvs-worker' (cd apps && celery -A apps worker -B --loglevel=info --concurrency=2, same env group as web), then set REDIS_URL + CELERY_EAGER=false on BOTH services. render.yaml at repo root documents the full shape; staging stays safely eager until the flip.
+- B7 follow-ups: set PYTHON_VERSION=3.11.9 on the Render worker (built on 3.14 — works but drifts from the backend) and confirm the backend flip (REDIS_URL + CELERY_EAGER=false) + password-reset end-to-end test.
 
 
 
@@ -14,6 +14,13 @@
 # - Open-banking statement feed (Mono/Okra) — optional, automates bank rec  [SKIP — user deferred "skip for now"]
 
 ## Done
+
+# B7 COMPLETE (2026-06-12): Render worker live — existing Oregon Key Value (Valkey 8.1.4,
+# volatile-ttl) reused as broker; Background Worker runs celery -A apps worker -B. First beat
+# tick verified in production logs: dispatch-pending-import-notifications found and sent 2 REAL
+# import notifications that had been stuck in staging since before any scheduler existed —
+# the exact B7 failure mode, observed clearing itself. Emergency lever: CELERY_EAGER=true on
+# the backend reverts to in-process execution without a redeploy.
 
 # B17 (2026-06-12): PostgreSQL standardised across local/CI/staging. Local dev now runs PG 16
 # (brew postgresql@16, db cx_db; DB_ENGINE=mysql falls back to the untouched MariaDB). New
