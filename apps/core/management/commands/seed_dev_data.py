@@ -553,13 +553,17 @@ class Command(BaseCommand):
         from vs_audit.services import emit_audit_event
 
         self.stdout.write(self.style.MIGRATE_HEADING("Audit events..."))
+        emitted = 0
         for school in schools:
-            emit_audit_event(
-                module_key="SCHOOLS",
+            event = emit_audit_event(
+                module_key="SCHOOL",
                 action_type="CREATE",
                 entity_type="School",
                 entity_id=str(school.pk),
                 entity_label=school.name,
                 summary=f"Seeded school {school.name}.",
             )
-        self.stdout.write(f"  {len(schools)} events emitted (best-effort).")
+            # emit_audit_event is best-effort and returns None on failure —
+            # count real successes so this line can't overstate.
+            emitted += int(event is not None)
+        self.stdout.write(f"  {emitted}/{len(schools)} events emitted.")
