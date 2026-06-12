@@ -1,0 +1,64 @@
+# Render Blueprint (B7) — web + Celery worker + Key Value (Redis).
+#
+# Two ways to use this:
+#   a) Blueprint adoption: Render Dashboard → New → Blueprint → point at this
+#      repo. Render creates/links the services below.
+#   b) Manual (if you keep the existing hand-created web service): create only
+#      the "xvs-worker" Background Worker and "xvs-redis" Key Value instance in
+#      the dashboard with the same commands/values shown here.
+#
+# After the worker and Redis are live, set on BOTH web and worker:
+#   REDIS_URL     = <the Key Value internal connection string>
+#   CELERY_EAGER  = false
+# Until then the web service keeps running tasks eagerly (safe default).
+
+services:
+  - type: web
+    name: xvs-backend
+    runtime: python
+    plan: starter
+    buildCommand: "./build.sh"
+    startCommand: "cd apps && gunicorn apps.wsgi:application"
+    envVars:
+      - key: DJANGO_SETTINGS_MODULE
+        value: apps.settings.staging
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: CELERY_EAGER
+        value: "true"   # flip to "false" once the worker is live
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: xvs-redis
+          property: connectionString
+      # SECRET_KEY, RENDER_API_KEY, TEMP_PASSWORD_PEPPER, DB_*, EMAIL_*,
+      # ALLOWED_HOSTS, CORS_ALLOWED_ORIGINS come from the dashboard env group.
+
+  - type: worker
+    name: xvs-worker
+    runtime: python
+    plan: starter
+    buildCommand: "pip install -r requirements.txt"
+    # -B embeds the beat scheduler in the worker (single-service shape).
+    # If you ever scale to multiple workers, move beat to its own service —
+    # two embedded beats would double-fire every periodic task.
+    startCommand: "cd apps && celery -A apps worker -B --loglevel=info --concurrency=2"
+    envVars:
+      - key: DJANGO_SETTINGS_MODULE
+        value: apps.settings.staging
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+      - key: CELERY_EAGER
+        value: "false"  # the worker itself always runs real tasks
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: xvs-redis
+          property: connectionString
+      # Share the same dashboard env group as the web service — the worker
+      # needs the DB and email credentials too.
+
+  - type: keyvalue
+    name: xvs-redis
+    plan: free          # 25 MB — plenty for a task broker at this volume
+    ipAllowList: []     # internal-only access
