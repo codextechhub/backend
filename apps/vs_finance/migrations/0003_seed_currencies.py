@@ -3,6 +3,9 @@
 Reference data shared by every entity; idempotent and reversible. The Chart of
 Accounts is intentionally *not* seeded here — it is per-entity and created on demand
 via ``manage.py seed_finance`` so tenants opt in to a starter chart explicitly.
+
+Must run BEFORE 0004_seed_platform_entity: LedgerEntity.base_currency is a
+protected FK onto Currency, so the NGN row has to exist first.
 """
 from django.db import migrations
 
@@ -27,10 +30,7 @@ def remove_currencies(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        (
-            "vs_finance",
-            "0003_currency_alter_ledgerentity_kind_account_costcenter_and_more",
-        ),
+        ("vs_finance", "0002_initial"),
     ]
 
     operations = [

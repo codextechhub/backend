@@ -2,7 +2,8 @@
 
 Creates the single ``CODEX`` platform :class:`LedgerEntity` so internal CX_STAFF
 finance staff have real, isolated books from day one — entirely separate from any
-tenant's ledger. Idempotent and reversible.
+tenant's ledger. Idempotent and reversible. Depends on 0003 because
+``base_currency`` is a protected FK onto the seeded NGN currency.
 """
 from django.db import migrations
 
@@ -17,7 +18,7 @@ def create_platform_entity(apps, schema_editor):
             "name": "CodeX",
             "kind": "PLATFORM",
             "source_school": None,
-            "base_currency": "NGN",
+            "base_currency_id": "NGN",
             "is_active": True,
         },
     )
@@ -31,7 +32,7 @@ def remove_platform_entity(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("vs_finance", "0001_initial"),
+        ("vs_finance", "0003_seed_currencies"),
     ]
 
     operations = [
