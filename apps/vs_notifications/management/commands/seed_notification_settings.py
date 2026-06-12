@@ -40,7 +40,7 @@ class Command(BaseCommand):
         from vs_schools.models import School  # Late import — avoids coupling at module load
 
         if options["all_schools"]:
-            schools = School.objects.filter(is_active=True)
+            schools = School.objects.filter(status="ACTIVE")
             self.stdout.write(f"Seeding notification settings for {schools.count()} school(s)...")
             total_created = 0
             total_skipped = 0
