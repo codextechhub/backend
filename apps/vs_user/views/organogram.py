@@ -96,6 +96,11 @@ class PlatformStaffProfileViewSet(
             .order_by('-created_at')
         )
 
+        if user := params.get('user'):
+            # Look a profile up by its owner — powers Team Management's
+            # "View Details", which knows the user id but not the profile id.
+            qs = qs.filter(user_id=user)
+
         if org_node := params.get('org_node'):
             # The org node the person's seat belongs to. Accept PK or code.
             if str(org_node).isdigit():
