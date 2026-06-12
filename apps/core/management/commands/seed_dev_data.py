@@ -3,10 +3,11 @@ seed_dev_data — one command that fills a fresh dev database with a connected
 world covering every module EXCEPT finance/procurement/payments.
 
 FOCUS: CX (Codex) staff are the main subjects — the platform currently runs
-as the Codex staff intranet. The seeder builds a complete 25-seat company
-(5 departments, 3-level reporting lines, rich HR profiles, platform roles,
-todo board, login/security history, impersonation sessions). The schools
-exist as the CUSTOMER BASE those staff manage, not as the protagonists.
+as the Codex staff intranet. The seeder builds a complete 40-seat company
+(7-level classic corporate hierarchy: MD → C-Suite → Directors → Managers →
+Team Leads → Seniors → ICs; rich HR profiles, platform roles, todo board,
+login/security history, impersonation sessions). The schools exist as the
+CUSTOMER BASE those staff manage, not as the protagonists.
 
 What it creates (idempotent — safe to re-run):
   1. Codex organogram: Division → Departments → Team, positions with
@@ -104,12 +105,20 @@ class Command(BaseCommand):
     # ------------------------------------------------------------------ #
     # 1. Codex organogram                                                #
     # ------------------------------------------------------------------ #
+
+    # Varied Nigerian cities so HR profiles look realistic.
+    _STAFF_CITIES = [
+        ("Lagos", "Lagos"), ("Abuja", "FCT"), ("Port Harcourt", "Rivers"),
+        ("Ibadan", "Oyo"), ("Enugu", "Enugu"), ("Kano", "Kano"),
+        ("Benin City", "Edo"), ("Owerri", "Imo"),
+    ]
+
     def _organogram(self):
         from vs_user.models import (
             OrgNode, PlatformStaffProfile, Position, PositionAssignment, User,
         )
 
-        self.stdout.write(self.style.MIGRATE_HEADING("Organogram (Codex internal, 25 seats)..."))
+        self.stdout.write(self.style.MIGRATE_HEADING("Organogram (Codex internal, 40 seats / 7 levels)..."))
         staff = list(
             User.objects.filter(user_type="CX_STAFF", email__endswith="@vision.edu")
             .order_by("email")
@@ -125,15 +134,18 @@ class Command(BaseCommand):
             return n
 
         K = OrgNode.Kind
-        exec_office = node("CX-EXEC", "Executive Office", K.DIVISION)
-        eng = node("CX-ENG", "Engineering", K.DEPARTMENT, exec_office)
-        cs = node("CX-CS", "Customer Success", K.DEPARTMENT, exec_office)
-        growth = node("CX-GROWTH", "Growth & Partnerships", K.DEPARTMENT, exec_office)
-        people = node("CX-PEOPLE", "People & Operations", K.DEPARTMENT, exec_office)
-        platform_team = node("CX-ENG-PLAT", "Platform Team", K.TEAM, eng)
-        product_team = node("CX-ENG-PROD", "Product Team", K.TEAM, eng)
-        onboarding_team = node("CX-CS-ONB", "Onboarding Team", K.TEAM, cs)
-        support_team = node("CX-CS-SUP", "Support Team", K.TEAM, cs)
+
+        # ---------- Org nodes (10 total: 1 division, 4 departments, 5 teams) ----------
+        exec_office     = node("CX-EXEC",       "Executive Office",      K.DIVISION)
+        technology      = node("CX-TECH",       "Technology",            K.DEPARTMENT, exec_office)
+        cs_dept         = node("CX-CS",         "Customer Success",      K.DEPARTMENT, exec_office)
+        growth_dept     = node("CX-GROWTH",     "Growth & Partnerships", K.DEPARTMENT, exec_office)
+        people_dept     = node("CX-PEOPLE",     "People & Finance",      K.DEPARTMENT, exec_office)
+        platform_team   = node("CX-TECH-PLAT",  "Platform Engineering",  K.TEAM, technology)
+        product_team    = node("CX-TECH-PROD",  "Product & Design",      K.TEAM, technology)
+        onboarding_team = node("CX-CS-ONB",     "Onboarding",            K.TEAM, cs_dept)
+        support_team    = node("CX-CS-SUP",     "Support",               K.TEAM, cs_dept)
+        growth_team     = node("CX-GROWTH-ANA", "Growth Analytics",      K.TEAM, growth_dept)
 
         def seat(code, title, org_node, reports_to=None):
             pos, _ = Position.objects.get_or_create(
@@ -142,28 +154,97 @@ class Command(BaseCommand):
             )
             return pos
 
+        # L1
         md = seat("CX-MD", "Managing Director", exec_office)
-        eng_lead = seat("CX-ENG-LEAD", "Engineering Lead", eng, md)
-        cs_lead = seat("CX-CS-LEAD", "Customer Success Lead", cs, md)
-        growth_lead = seat("CX-GROWTH-LEAD", "Growth Lead", growth, md)
-        people_lead = seat("CX-PEOPLE-LEAD", "People & Ops Lead", people, md)
 
-        seats = [md, eng_lead, cs_lead, growth_lead, people_lead]
-        seats += [seat(f"CX-ENG-PLAT-{i}", f"Software Engineer {i}", platform_team, eng_lead) for i in (1, 2, 3, 4)]
-        seats += [seat(f"CX-ENG-PROD-{i}", t, product_team, eng_lead)
-                  for i, t in ((1, "Product Designer"), (2, "Product Manager"), (3, "QA Engineer"))]
-        seats += [seat(f"CX-CS-ONB-{i}", f"Onboarding Specialist {i}", onboarding_team, cs_lead) for i in (1, 2, 3)]
-        seats += [seat(f"CX-CS-SUP-{i}", f"Support Officer {i}", support_team, cs_lead) for i in (1, 2, 3)]
-        seats += [seat(f"CX-GROWTH-{i}", f"Partnerships Officer {i}", growth, growth_lead) for i in (1, 2, 3)]
-        seats += [seat(f"CX-PEOPLE-{i}", t, people, people_lead)
-                  for i, t in ((1, "HR Officer"), (2, "Operations Officer"),
-                               (3, "Internal Accounts Officer"), (4, "Facilities Officer"))]
+        # L2 — C-Suite (report to MD)
+        cto = seat("CX-CTO", "Chief Technology Officer",   exec_office, md)
+        coo = seat("CX-COO", "Chief Operating Officer",    exec_office, md)
+        cfo = seat("CX-CFO", "Chief Financial Officer",    exec_office, md)
+        cpo = seat("CX-CPO", "Chief Partnerships Officer", exec_office, md)
 
-        for n, pos in ((exec_office, md), (eng, eng_lead), (cs, cs_lead),
-                       (growth, growth_lead), (people, people_lead)):
+        # L3 — Directors (report to respective C-Suite)
+        dir_eng    = seat("CX-DIR-ENG",    "Director of Engineering",      technology,  cto)
+        dir_cs     = seat("CX-DIR-CS",     "Director of Customer Success", cs_dept,     coo)
+        dir_growth = seat("CX-DIR-GROWTH", "Director of Growth",           growth_dept, cpo)
+        dir_people = seat("CX-DIR-PEOPLE", "Director of People",           people_dept, cfo)
+
+        # L4 — Managers (report to respective Directors)
+        mgr_eng    = seat("CX-MGR-ENG",    "Engineering Manager",      technology,  dir_eng)
+        mgr_cs     = seat("CX-MGR-CS",     "CS Manager",               cs_dept,     dir_cs)
+        mgr_growth = seat("CX-MGR-GROWTH", "Growth Manager",           growth_dept, dir_growth)
+        mgr_people = seat("CX-MGR-PEOPLE", "People Manager",           people_dept, dir_people)
+
+        # L5 — Team Leads (report to respective Managers)
+        lead_plat   = seat("CX-LEAD-PLAT",   "Platform Team Lead",   platform_team,   mgr_eng)
+        lead_prod   = seat("CX-LEAD-PROD",   "Product Team Lead",    product_team,    mgr_eng)
+        lead_onb    = seat("CX-LEAD-ONB",    "Onboarding Team Lead", onboarding_team, mgr_cs)
+        lead_sup    = seat("CX-LEAD-SUP",    "Support Team Lead",    support_team,    mgr_cs)
+        lead_growth = seat("CX-LEAD-GROWTH", "Growth Team Lead",     growth_team,     mgr_growth)
+
+        # L6 — Seniors (report to respective Team Leads or People Manager)
+        sr_plat1   = seat("CX-SR-PLAT-1",   "Senior Platform Engineer I",      platform_team,   lead_plat)
+        sr_plat2   = seat("CX-SR-PLAT-2",   "Senior Platform Engineer II",     platform_team,   lead_plat)
+        sr_prod1   = seat("CX-SR-PROD-1",   "Senior Product Designer",         product_team,    lead_prod)
+        sr_onb1    = seat("CX-SR-ONB-1",    "Senior Onboarding Specialist I",  onboarding_team, lead_onb)
+        sr_onb2    = seat("CX-SR-ONB-2",    "Senior Onboarding Specialist II", onboarding_team, lead_onb)
+        sr_sup1    = seat("CX-SR-SUP-1",    "Senior Support Officer",          support_team,    lead_sup)
+        sr_growth1 = seat("CX-SR-GROWTH-1", "Senior Growth Analyst I",         growth_team,     lead_growth)
+        sr_growth2 = seat("CX-SR-GROWTH-2", "Senior Growth Analyst II",        growth_team,     lead_growth)
+        sr_hr1     = seat("CX-SR-HR-1",     "Senior HR Officer",               people_dept,     mgr_people)
+        sr_ops1    = seat("CX-SR-OPS-1",    "Senior Operations Officer",       people_dept,     mgr_people)
+
+        # L7 — Individual Contributors (report to their respective Senior)
+        plat1   = seat("CX-PLAT-1",   "Platform Engineer I",      platform_team,   sr_plat1)
+        plat2   = seat("CX-PLAT-2",   "Platform Engineer II",     platform_team,   sr_plat1)
+        plat3   = seat("CX-PLAT-3",   "Platform Engineer III",    platform_team,   sr_plat2)
+        prod1   = seat("CX-PROD-1",   "Product Manager",          product_team,    sr_prod1)
+        prod2   = seat("CX-PROD-2",   "QA Engineer",              product_team,    sr_prod1)
+        onb1    = seat("CX-ONB-1",    "Onboarding Specialist I",  onboarding_team, sr_onb1)
+        onb2    = seat("CX-ONB-2",    "Onboarding Specialist II", onboarding_team, sr_onb2)
+        sup1    = seat("CX-SUP-1",    "Support Officer I",        support_team,    sr_sup1)
+        sup2    = seat("CX-SUP-2",    "Support Officer II",       support_team,    sr_sup1)
+        growth1 = seat("CX-GROWTH-1", "Partnerships Officer I",  growth_team,     sr_growth1)
+        growth2 = seat("CX-GROWTH-2", "Partnerships Officer II", growth_team,     sr_growth2)
+        hr1     = seat("CX-HR-1",     "HR Officer",               people_dept,     sr_hr1)
+
+        # Ordered L1 → L7 so staff[0] (seniority by email sort) gets the MD seat.
+        seats = [
+            md,
+            cto, coo, cfo, cpo,
+            dir_eng, dir_cs, dir_growth, dir_people,
+            mgr_eng, mgr_cs, mgr_growth, mgr_people,
+            lead_plat, lead_prod, lead_onb, lead_sup, lead_growth,
+            sr_plat1, sr_plat2, sr_prod1, sr_onb1, sr_onb2,
+            sr_sup1, sr_growth1, sr_growth2, sr_hr1, sr_ops1,
+            plat1, plat2, plat3, prod1, prod2,
+            onb1, onb2, sup1, sup2, growth1, growth2, hr1,
+        ]  # 1+4+4+4+5+10+12 = 40
+
+        for n, pos in (
+            (exec_office, md),
+            (technology, dir_eng),
+            (cs_dept, dir_cs),
+            (growth_dept, dir_growth),
+            (people_dept, dir_people),
+            (platform_team, lead_plat),
+            (product_team, lead_prod),
+            (onboarding_team, lead_onb),
+            (support_team, lead_sup),
+            (growth_team, lead_growth),
+        ):
             if n.head_position_id is None:
                 n.head_position = pos
                 n.save(update_fields=["head_position"])
+
+        # Find max existing CX#### so re-runs never collide with old profiles.
+        import re as _re
+        existing_ids = PlatformStaffProfile.objects.values_list("employee_id", flat=True)
+        max_num = max(
+            (int(m.group(1)) for eid in existing_ids if (m := _re.match(r"CX(\d+)$", eid or ""))),
+            default=0,
+        )
+        next_emp_num = max_num + 1
 
         joined = self.now - timedelta(days=400)
         for idx, (user, pos) in enumerate(zip(staff, seats)):
@@ -171,24 +252,32 @@ class Command(BaseCommand):
                 user=user, position=pos,
                 defaults=dict(is_primary=True, start_date=joined.date()),
             )
-            PlatformStaffProfile.objects.get_or_create(
+            city, state = self._STAFF_CITIES[idx % len(self._STAFF_CITIES)]
+            profile, created = PlatformStaffProfile.objects.get_or_create(
                 user=user,
                 defaults=dict(
-                    employee_id=f"CX{idx + 1:04d}",
+                    employee_id=f"CX{next_emp_num:04d}",
                     job_title=pos.title,
+                    position=pos,
                     employment_type="FULL_TIME",
                     employment_status="ACTIVE",
                     date_joined=(joined + timedelta(days=idx * 9)).date(),
                     nationality="Nigerian",
-                    city="Lagos",
-                    state="Lagos",
+                    city=city,
+                    state=state,
                 ),
             )
+            if created:
+                next_emp_num += 1
+            elif profile.position_id is None:
+                # Backfill profiles created by the old seeder without position set.
+                profile.position = pos
+                profile.save(update_fields=["position", "updated_at"])
 
-        # Platform roles: department leads run the backoffice day-to-day.
         self._platform_roles(staff, seats)
+        seated = min(len(staff), len(seats))
         self.stdout.write(
-            f"  9 org nodes, {len(seats)} positions, {min(len(staff), len(seats))} seated staff with HR profiles."
+            f"  10 org nodes, {len(seats)} positions (7 levels), {seated} seated staff with HR profiles."
         )
 
     def _platform_roles(self, staff, seats):
@@ -197,7 +286,8 @@ class Command(BaseCommand):
         role = PlatformRoleTemplate.objects.filter(id="xvs_platform_admin").first()
         if role is None:
             return
-        lead_codes = {"CX-MD", "CX-ENG-LEAD", "CX-CS-LEAD", "CX-GROWTH-LEAD", "CX-PEOPLE-LEAD"}
+        # Grant platform-admin access to the MD and all C-Suite (L1–L2).
+        lead_codes = {"CX-MD", "CX-CTO", "CX-COO", "CX-CFO", "CX-CPO"}
         granted = 0
         for user, pos in zip(staff, seats):
             if pos.code in lead_codes:
@@ -206,7 +296,7 @@ class Command(BaseCommand):
                     defaults=dict(assignment_status="ACTIVE"),
                 )
                 granted += int(created)
-        self.stdout.write(f"  xvs_platform_admin granted to {granted} new lead(s).")
+        self.stdout.write(f"  xvs_platform_admin granted to {granted} new C-Suite member(s).")
 
     # ------------------------------------------------------------------ #
     # 2. Schools, branches, package, primary admins                      #
@@ -427,7 +517,7 @@ class Command(BaseCommand):
         from vs_todo.models import Task
         from vs_user.models import PositionAssignment
 
-        self.stdout.write(self.style.MIGRATE_HEADING("ToDo board (CX staff)..."))
+        self.stdout.write(self.style.MIGRATE_HEADING("ToDo board (CX staff — all 7 levels)..."))
         seats = {
             pa.position.code: (pa.user, pa.position)
             for pa in PositionAssignment.objects.select_related("user", "position__org_node")
@@ -442,31 +532,59 @@ class Command(BaseCommand):
             return entry[1].org_node.name if entry else ""
 
         D = timedelta
-        # (assigner, assignee, title, priority, deadline-offset-days, done)
+        # (assigner_code, assignee_code, title, priority, deadline-offset-days, done)
+        # Spans all 7 levels — every manager assigns at least one task to each direct report.
         specs = [
-            ("CX-MD", "CX-ENG-LEAD", "Ship the academic core MVP", "HIGH", 21, False),
-            ("CX-MD", "CX-CS-LEAD", "Prepare the pilot-school onboarding pack", "HIGH", 14, False),
-            ("CX-MD", "CX-GROWTH-LEAD", "Close two pilot-school partnerships", "HIGH", 30, False),
-            ("CX-MD", "CX-PEOPLE-LEAD", "Run Q3 performance reviews", "MEDIUM", 28, False),
-            ("CX-ENG-LEAD", "CX-ENG-PLAT-1", "Profile slow dashboard endpoints", "MEDIUM", 7, False),
-            ("CX-ENG-LEAD", "CX-ENG-PLAT-2", "Add OpenAPI schema generation", "LOW", 30, False),
-            ("CX-ENG-LEAD", "CX-ENG-PLAT-3", "Rotate staging credentials", "HIGH", -3, False),
-            ("CX-ENG-LEAD", "CX-ENG-PLAT-4", "Write the deploy runbook", "MEDIUM", -1, True),
-            ("CX-ENG-LEAD", "CX-ENG-PROD-1", "Design the parent portal flows", "MEDIUM", 18, False),
-            ("CX-ENG-LEAD", "CX-ENG-PROD-3", "Regression-test the import pipeline", "HIGH", 5, True),
-            ("CX-CS-LEAD", "CX-CS-ONB-1", "Draft the onboarding checklist", "HIGH", 10, False),
-            ("CX-CS-LEAD", "CX-CS-ONB-2", "Verify Greenfield data import", "MEDIUM", -2, False),
-            ("CX-CS-LEAD", "CX-CS-SUP-1", "Triage open support threads", "HIGH", 2, False),
-            ("CX-GROWTH-LEAD", "CX-GROWTH-1", "Prepare the Royal Crest demo", "MEDIUM", 6, True),
-            ("CX-PEOPLE-LEAD", "CX-PEOPLE-1", "Collect updated staff documents", "LOW", 20, False),
-            ("CX-PEOPLE-LEAD", "CX-PEOPLE-3", "Reconcile office running costs", "MEDIUM", 9, False),
+            # L1 → L2 (MD assigns to C-Suite)
+            ("CX-MD",  "CX-CTO", "Finalise the Q3 product and engineering roadmap",   "HIGH",   21, False),
+            ("CX-MD",  "CX-COO", "Set up the pilot school operations playbook",        "HIGH",   14, False),
+            ("CX-MD",  "CX-CFO", "Prepare the Q2 financial performance summary",       "HIGH",   10, False),
+            ("CX-MD",  "CX-CPO", "Identify five new school partnership leads",         "MEDIUM", 30, False),
+            # L2 → L3 (C-Suite assigns to Directors)
+            ("CX-CTO", "CX-DIR-ENG",    "Review and approve the platform architecture",  "HIGH",   14, False),
+            ("CX-COO", "CX-DIR-CS",     "Review Q2 NPS scores and produce action plan",  "MEDIUM", 10, False),
+            ("CX-CPO", "CX-DIR-GROWTH", "Prepare partnership deck for regional schools", "MEDIUM", 20, False),
+            ("CX-CFO", "CX-DIR-PEOPLE", "Finalise the staff handbook first draft",       "MEDIUM", 28, False),
+            # L3 → L4 (Directors assign to Managers)
+            ("CX-DIR-ENG",    "CX-MGR-ENG",    "Complete the engineering Q3 hiring plan",  "HIGH",   7,  False),
+            ("CX-DIR-CS",     "CX-MGR-CS",     "Map the end-to-end school onboarding journey", "HIGH", 12, False),
+            ("CX-DIR-GROWTH", "CX-MGR-GROWTH", "Score the top 10 partnership prospects",  "MEDIUM", 15, False),
+            ("CX-DIR-PEOPLE", "CX-MGR-PEOPLE", "Audit current staff leave balances",       "LOW",    20, False),
+            # L4 → L5 (Managers assign to Team Leads)
+            ("CX-MGR-ENG",    "CX-LEAD-PLAT",   "Plan the microservices migration sprint",  "HIGH",   10, False),
+            ("CX-MGR-ENG",    "CX-LEAD-PROD",   "Run user research interviews at schools",  "MEDIUM", 18, False),
+            ("CX-MGR-CS",     "CX-LEAD-ONB",    "Write the school onboarding SOP document", "HIGH",   7,  False),
+            ("CX-MGR-CS",     "CX-LEAD-SUP",    "Analyse support ticket backlog by type",   "MEDIUM", 5,  False),
+            ("CX-MGR-GROWTH", "CX-LEAD-GROWTH", "Run the Q2 partnership pipeline review",   "HIGH",   6,  True),
+            # L5 → L6 (Team Leads assign to Seniors)
+            ("CX-LEAD-PLAT",   "CX-SR-PLAT-1",   "Refactor the authentication middleware",       "HIGH",   5,  False),
+            ("CX-LEAD-PLAT",   "CX-SR-PLAT-2",   "Optimise slow dashboard DB queries",           "MEDIUM", 7,  False),
+            ("CX-LEAD-PROD",   "CX-SR-PROD-1",   "Design the parent portal wireframes",          "MEDIUM", 18, False),
+            ("CX-LEAD-ONB",    "CX-SR-ONB-1",    "Conduct Greenfield Academy training session",  "HIGH",   3,  True),
+            ("CX-LEAD-ONB",    "CX-SR-ONB-2",    "Build the school onboarding template pack",    "MEDIUM", 12, False),
+            ("CX-LEAD-SUP",    "CX-SR-SUP-1",    "Write the support escalation playbook",        "HIGH",   4,  False),
+            ("CX-LEAD-GROWTH", "CX-SR-GROWTH-1", "Profile the top three partnership prospects",  "MEDIUM", 9,  False),
+            ("CX-LEAD-GROWTH", "CX-SR-GROWTH-2", "Prepare the demo deck for Royal Crest",        "HIGH",   3,  True),
+            # L6 → L7 (Seniors assign to Individual Contributors)
+            ("CX-SR-PLAT-1",   "CX-PLAT-1",   "Fix pagination bug in the reports API",         "MEDIUM", 3,  False),
+            ("CX-SR-PLAT-1",   "CX-PLAT-2",   "Add unit tests for the import pipeline",        "MEDIUM", 7,  False),
+            ("CX-SR-PLAT-2",   "CX-PLAT-3",   "Rotate staging environment credentials",        "HIGH",   -3, False),
+            ("CX-SR-PROD-1",   "CX-PROD-1",   "Write product spec for the school fee module",  "MEDIUM", 14, False),
+            ("CX-SR-PROD-1",   "CX-PROD-2",   "Regression-test the student import flow",       "HIGH",   5,  True),
+            ("CX-SR-ONB-1",    "CX-ONB-1",    "Upload Unity Heights student bulk data",         "HIGH",   2,  False),
+            ("CX-SR-ONB-2",    "CX-ONB-2",    "Send welcome emails to Royal Crest admins",     "LOW",    4,  False),
+            ("CX-SR-SUP-1",    "CX-SUP-1",    "Resolve open school admin support ticket",      "HIGH",   1,  False),
+            ("CX-SR-SUP-1",    "CX-SUP-2",    "Update help-centre FAQ articles",               "LOW",    10, False),
+            ("CX-SR-GROWTH-1", "CX-GROWTH-1", "Draft intro email for new partnership lead",    "MEDIUM", 5,  False),
+            ("CX-SR-GROWTH-2", "CX-GROWTH-2", "Research school fees data for pitch deck",      "LOW",    8,  False),
+            ("CX-SR-HR-1",     "CX-HR-1",     "Collect updated staff identification docs",     "LOW",    15, False),
         ]
         count = 0
         for assigner_code, assignee_code, title, priority, days, done in specs:
             assigner, assignee = u(assigner_code), u(assignee_code)
             if assigner is None or assignee is None:
                 continue
-            task, created = Task.objects.get_or_create(
+            _, created = Task.objects.get_or_create(
                 assignee=assignee, title=title,
                 defaults=dict(
                     assigned_by=assigner,
@@ -480,7 +598,7 @@ class Command(BaseCommand):
                 ),
             )
             count += int(created)
-        self.stdout.write(f"  {count} tasks (mix of open, done and overdue).")
+        self.stdout.write(f"  {count} tasks across 7 levels (mix of open, done, and overdue).")
 
     # ------------------------------------------------------------------ #
     # 6b. CX security history + impersonation                            #

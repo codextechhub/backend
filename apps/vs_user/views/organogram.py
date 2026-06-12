@@ -182,7 +182,12 @@ class OrgNodeViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         params = self.request.query_params
-        qs = OrgNode.objects.select_related('parent', 'head_position').order_by('name')
+        qs = (
+            OrgNode.objects
+            .select_related('parent', 'head_position')
+            .prefetch_related('head_position__assignments__user')
+            .order_by('-updated_at')
+        )
 
         if (is_active := params.get('is_active')) is not None:
             qs = qs.filter(is_active=str(is_active).lower() in ('1', 'true', 'yes'))
