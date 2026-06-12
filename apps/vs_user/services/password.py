@@ -144,6 +144,10 @@ class PasswordService:
                 activation_key=str(user.activation_key),
                 origin=origin,
                 sender_name=sender_name,
+                _job_owner_id=str(user.id),
+                _job_school_id=user.school_id,
+                _job_label="Password reset email",
+                _job_kind="email",
             )
         except Exception:
             # Broker unavailable — run synchronously so the email still goes out

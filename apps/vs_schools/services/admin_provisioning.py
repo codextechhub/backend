@@ -112,7 +112,13 @@ def provision_admin_user(
             # Invitation record — expiry gate for the activation link.
             InvitationService.create(user=user, invited_by=invited_by or user)
 
-            send_invitation_email_task.delay(str(user.activation_key))
+            send_invitation_email_task.delay(
+                str(user.activation_key),
+                _job_owner_id=str(user.id),
+                _job_school_id=user.school_id,
+                _job_label=f"Invitation email to {user.email}",
+                _job_kind="email",
+            )
 
             # Mark the admin link record so it is not re-processed.
             admin_link.invite_status = InviteStatus.SENT

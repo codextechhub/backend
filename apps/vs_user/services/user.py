@@ -101,7 +101,13 @@ class UserCreationService:
 
         InvitationService.create(user=user, invited_by=requested_by)
         try:
-            send_invitation_email_task.delay(str(user.activation_key))
+            send_invitation_email_task.delay(
+                str(user.activation_key),
+                _job_owner_id=str(user.id),
+                _job_school_id=user.school_id,
+                _job_label=f"Invitation email to {user.email}",
+                _job_kind="email",
+            )
         except Exception:
             logger.error(
                 'Failed to dispatch invitation email for user %s — email will need to be resent manually.',

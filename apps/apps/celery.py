@@ -5,7 +5,9 @@ from celery.schedules import crontab
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "apps.settings.local")
 
-app = Celery("apps")
+# task_cls makes TrackedTask the base of EVERY task (including @shared_task),
+# so each run is recorded in core.BackgroundJob — the user-facing queue.
+app = Celery("apps", task_cls="core.tasks_base:TrackedTask")
 app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
 

@@ -192,7 +192,13 @@ class InvitationService:
             )
 
         from ..tasks import send_invitation_email_task
-        send_invitation_email_task.delay(str(user.activation_key))
+        send_invitation_email_task.delay(
+                str(user.activation_key),
+                _job_owner_id=str(user.id),
+                _job_school_id=user.school_id,
+                _job_label=f"Invitation email to {user.email}",
+                _job_kind="email",
+            )
 
         log_auth_event(
             actor=requested_by,

@@ -13,6 +13,7 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 
+from .views.jobs import MyTasksSummaryView, MyTasksView
 from .views import (
     # Auth
     LoginView,
@@ -74,6 +75,8 @@ urlpatterns = [
     path('auth/logout/',                        LogoutView.as_view(),               name='auth-logout'),
     path('auth/token/refresh/',                 TokenRefreshView.as_view(),         name='auth-token-refresh'),
     path('auth/me/',                            CurrentUserView.as_view(),          name='auth-me'),
+    path('me/tasks/',                           MyTasksView.as_view(),              name='me-tasks'),
+    path('me/tasks/summary/',                   MyTasksSummaryView.as_view(),       name='me-tasks-summary'),
     path('auth/me/stats/',                      MySecurityStatsView.as_view(),      name='auth-me-stats'),
     path('auth/me/password-resets/',            MyPasswordResetsView.as_view(),     name='auth-me-password-resets'),
     path('auth/special_login/preview/',         SpecialLoginPreviewView.as_view(),  name='special-login-preview'),

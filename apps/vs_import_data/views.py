@@ -658,6 +658,10 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
                 execute_import_batch_task.delay(
                     import_batch_id=str(import_batch.id),
                     queued_by_id=str(request.user.id),
+                    _job_owner_id=str(request.user.id),
+                    _job_school_id=import_batch.school_id,
+                    _job_label=f"Import: {import_batch.original_filename or import_batch.dataset_type}",
+                    _job_kind="import",
                 )
             except Exception as exc:
                 # With CELERY_TASK_ALWAYS_EAGER + CELERY_TASK_EAGER_PROPAGATES,

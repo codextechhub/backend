@@ -299,7 +299,13 @@ class Notification(models.Model):
         "vs_schools.School",
         on_delete=models.PROTECT,
         related_name="notifications",
-        help_text="School of the recipient. Scoping anchor — never null.",
+        null=True,
+        blank=True,
+        help_text=(
+            "School of the recipient — the tenant scoping anchor. "
+            "Null only for platform-level notifications to CX staff "
+            "(e.g. background-task completion alerts)."
+        ),
     )
     recipient = models.ForeignKey(
         settings.AUTH_USER_MODEL,
