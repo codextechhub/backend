@@ -882,6 +882,20 @@ class OrgNode(TimeStampedModel):
             models.Index(fields=['kind']),
             models.Index(fields=['code']),
         ]
+        constraints = [
+            # No two sibling nodes may share the same name under the same parent.
+            models.UniqueConstraint(
+                fields=['name', 'parent'],
+                condition=models.Q(parent__isnull=False),
+                name='unique_org_node_name_per_parent',
+            ),
+            # No two top-level nodes (Divisions) may share the same name.
+            models.UniqueConstraint(
+                fields=['name'],
+                condition=models.Q(parent__isnull=True),
+                name='unique_org_node_name_top_level',
+            ),
+        ]
 
     def clean(self):
         super().clean()
@@ -893,6 +907,16 @@ class OrgNode(TimeStampedModel):
             if ancestor.pk == self.pk:
                 raise ValidationError('Org node parent chain cannot contain a cycle.')
             ancestor = ancestor.parent
+
+        # Uniqueness: name must be unique within the same parent tier.
+        qs = OrgNode.objects.filter(name=self.name, parent=self.parent)
+        if self.pk:
+            qs = qs.exclude(pk=self.pk)
+        if qs.exists():
+            scope = f'under "{self.parent.name}"' if self.parent_id else 'at the top level'
+            raise ValidationError(
+                {'name': f'An org node named "{self.name}" already exists {scope}.'}
+            )
 
         # Enforce the DIVISION → DEPARTMENT → TEAM tiering.
         required_parent = self._REQUIRED_PARENT_KIND.get(self.kind)
