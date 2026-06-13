@@ -47,11 +47,22 @@ class SchoolSlimSerializer(serializers.ModelSerializer):
 class UserInlineSerializer(serializers.ModelSerializer):
     """Minimal nested user representation for related objects (sessions, lockouts, etc.)."""
     full_name = serializers.CharField(read_only=True)
+    profile_photo = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ('id', 'email', 'first_name', 'last_name', 'full_name')
+        fields = ('id', 'email', 'first_name', 'last_name', 'full_name', 'profile_photo')
         read_only_fields = fields
+
+    def get_profile_photo(self, obj):
+        try:
+            profile = obj.platform_staff_profile.filter(profile_photo__isnull=False).exclude(profile_photo='').first()
+            if not profile:
+                return None
+            request = self.context.get('request')
+            return request.build_absolute_uri(profile.profile_photo.url) if request else profile.profile_photo.url
+        except Exception:
+            return None
 
 
 def _raise_password_error(exc: DjangoValidationError):
