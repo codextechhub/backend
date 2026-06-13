@@ -5,7 +5,7 @@ import hashlib
 from datetime import timedelta
 
 from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ObjectDoesNotExist, ValidationError as DjangoValidationError
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import RegexValidator
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -47,26 +47,11 @@ class SchoolSlimSerializer(serializers.ModelSerializer):
 class UserInlineSerializer(serializers.ModelSerializer):
     """Minimal nested user representation for related objects (sessions, lockouts, etc.)."""
     full_name = serializers.CharField(read_only=True)
-    profile_photo = serializers.SerializerMethodField()
 
     class Meta:
         model = User
-        fields = ('id', 'email', 'first_name', 'last_name', 'full_name', 'profile_photo')
+        fields = ('id', 'email', 'first_name', 'last_name', 'full_name')
         read_only_fields = fields
-
-    def get_profile_photo(self, obj):
-        # user → platform_staff_profile is a OneToOne; the reverse accessor
-        # raises RelatedObjectDoesNotExist (not AttributeError) when no profile
-        # row exists — the common case for non-CX users — so catch it.
-        try:
-            profile = obj.platform_staff_profile
-        except ObjectDoesNotExist:
-            return None
-        if not profile.profile_photo:
-            return None
-        request = self.context.get('request')
-        url = profile.profile_photo.url
-        return request.build_absolute_uri(url) if request else url
 
 
 def _raise_password_error(exc: DjangoValidationError):

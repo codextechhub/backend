@@ -75,7 +75,7 @@ class PlatformStaffProfileViewSet(
         return PlatformStaffProfileSerializer
 
     def get_permissions(self):
-        if self.action == 'me':
+        if self.action in ('me', 'photos'):
             return [IsAuthenticatedAndActive()]
         action_permissions = {
             'list':           'platform.staff_profile.view',
@@ -153,6 +153,29 @@ class PlatformStaffProfileViewSet(
 
         ser = PlatformStaffProfileSerializer(profile, context={'request': request})
         return success_response(message="Profile retrieved successfully.", data=ser.data)
+
+    @action(detail=False, methods=['get'], url_path='photos')
+    def photos(self, request):
+        """Map of user_id → absolute profile-photo URL for staff who have one.
+
+        The single source of truth for avatars across the whole console: the
+        client fetches this once, caches it, and resolves any user's photo by
+        id — so individual serializers don't each need to carry the photo.
+        Any authenticated user may read it (avatars are low-sensitivity; the
+        image bytes themselves stay auth-gated by MediaView). Absolute URLs are
+        required because /media/ sits outside the API's /v1 prefix.
+        """
+        rows = (
+            PlatformStaffProfile.objects
+            .filter(profile_photo__isnull=False)
+            .exclude(profile_photo='')
+            .only('user_id', 'profile_photo')
+        )
+        mapping = {
+            str(p.user_id): request.build_absolute_uri(p.profile_photo.url)
+            for p in rows
+        }
+        return success_response(message="Staff photos retrieved successfully.", data=mapping)
 
 
 # =============================================================================
