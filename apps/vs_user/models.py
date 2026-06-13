@@ -853,6 +853,12 @@ class OrgNode(TimeStampedModel):
         Kind.TEAM:       Kind.DEPARTMENT,
     }
 
+    _KIND_PREFIX = {
+        Kind.DIVISION:   'DV-',
+        Kind.DEPARTMENT: 'DT-',
+        Kind.TEAM:       'TM-',
+    }
+
     name        = models.CharField(max_length=150)
     code        = models.CharField(max_length=40, unique=True)
     kind        = models.CharField(
@@ -961,6 +967,17 @@ class OrgNode(TimeStampedModel):
                 return node
             node = node.parent
         return None
+
+    def save(self, *args, **kwargs):
+        prefix = self._KIND_PREFIX.get(self.kind, '')
+        # Strip any existing tier prefix so re-saves and kind changes stay clean.
+        bare = self.code
+        for p in self._KIND_PREFIX.values():
+            if bare.upper().startswith(p):
+                bare = bare[len(p):]
+                break
+        self.code = f'{prefix}{bare}'
+        super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f'OrgNode<{self.kind}:{self.code}>'

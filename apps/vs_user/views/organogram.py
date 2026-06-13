@@ -240,6 +240,15 @@ class PositionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             qs = qs.filter(is_active=str(is_active).lower() in ('1', 'true', 'yes'))
         if search := params.get('search'):
             qs = qs.filter(Q(title__icontains=search) | Q(code__icontains=search))
+
+        _SAFE_ORDERINGS = {
+            'title', '-title',
+            'created_at', '-created_at',
+            'updated_at', '-updated_at',
+        }
+        if (ordering := params.get('ordering')) and ordering in _SAFE_ORDERINGS:
+            qs = qs.order_by(ordering)
+
         return qs
 
     @action(detail=False, methods=['get'], url_path='tree')
