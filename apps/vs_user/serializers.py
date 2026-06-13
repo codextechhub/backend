@@ -5,7 +5,7 @@ import hashlib
 from datetime import timedelta
 
 from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.exceptions import ObjectDoesNotExist, ValidationError as DjangoValidationError
 from django.core.validators import RegexValidator
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -55,14 +55,18 @@ class UserInlineSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
     def get_profile_photo(self, obj):
+        # user → platform_staff_profile is a OneToOne; the reverse accessor
+        # raises RelatedObjectDoesNotExist (not AttributeError) when no profile
+        # row exists — the common case for non-CX users — so catch it.
         try:
-            profile = obj.platform_staff_profile.filter(profile_photo__isnull=False).exclude(profile_photo='').first()
-            if not profile:
-                return None
-            request = self.context.get('request')
-            return request.build_absolute_uri(profile.profile_photo.url) if request else profile.profile_photo.url
-        except Exception:
+            profile = obj.platform_staff_profile
+        except ObjectDoesNotExist:
             return None
+        if not profile.profile_photo:
+            return None
+        request = self.context.get('request')
+        url = profile.profile_photo.url
+        return request.build_absolute_uri(url) if request else url
 
 
 def _raise_password_error(exc: DjangoValidationError):
