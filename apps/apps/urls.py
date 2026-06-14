@@ -34,6 +34,7 @@ urlpatterns = [
     path("v1/procurement/", include("vs_procurement.urls")),
     path("v1/payments/", include("vs_payments.urls")),
     path("v1/todo/", include("vs_todo.urls")),
+    path("v1/health/", include("vs_health.urls")),
     # path("admin/", admin.site.urls),
 ]
 

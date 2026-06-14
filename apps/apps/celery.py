@@ -36,4 +36,28 @@ app.conf.beat_schedule = {
         "task": "core.tasks.prune_background_jobs_task",
         "schedule": crontab(hour=2, minute=30),
     },
+
+    # --- vs_health (VIGIL observability) ---------------------------------
+    # Synthetic probes, queue snapshots, and alert evaluation. All idempotent
+    # and safe to miss in eager environments.
+    "health-run-uptime-checks": {
+        "task": "vs_health.tasks.run_uptime_checks_task",
+        "schedule": crontab(minute="*/5"),
+    },
+    "health-capture-queue-snapshot": {
+        "task": "vs_health.tasks.capture_queue_snapshot_task",
+        "schedule": crontab(minute="*"),
+    },
+    "health-evaluate-alert-rules": {
+        "task": "vs_health.tasks.evaluate_alert_rules_task",
+        "schedule": crontab(minute="*"),
+    },
+    "health-rollup-uptime-daily": {
+        "task": "vs_health.tasks.rollup_uptime_daily_task",
+        "schedule": crontab(minute=15),  # hourly at :15
+    },
+    "health-prune-metrics": {
+        "task": "vs_health.tasks.prune_health_metrics_task",
+        "schedule": crontab(hour=3, minute=0),
+    },
 }

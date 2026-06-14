@@ -95,6 +95,7 @@ INSTALLED_APPS = [
     'vs_procurement',
     'vs_payments',
     'vs_todo',
+    'vs_health',
 ]
 
 MIDDLEWARE = [
@@ -108,8 +109,12 @@ MIDDLEWARE = [
     # --- Custom middleware for school context and tenant isolation ---
     'vs_rbac.middleware.TenantContextMiddleware',
     'vs_rbac.middleware.TenantBoundaryEnforcementMiddleware',
+    # Observability: record per-request metrics AFTER tenant context is
+    # resolved so the school dimension is available. Self-instrumentation is
+    # best-effort and never blocks a request (see vs_health.middleware).
+    'vs_health.middleware.RequestMetricsMiddleware',
     # --- End of custom middleware ---
-    
+
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
