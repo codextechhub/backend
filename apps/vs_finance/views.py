@@ -33,9 +33,9 @@ from .serializers import (
     InvoiceSerializer,
     JournalEntryDetailSerializer,
     JournalEntryListSerializer,
+    DirectEntryCreateSerializer,
     LedgerEntityCreateSerializer,
     LedgerEntitySerializer,
-    OpeningBalanceCreateSerializer,
 )
 
 
@@ -304,35 +304,35 @@ class JournalReverseView(APIView):
         )
 
 
-class OpeningBalanceCreateView(APIView):
-    """POST /finance/opening-balances/?entity= — seat opening balances as a posted journal.
+class DirectEntryCreateView(APIView):
+    """POST /finance/direct-entries/?entity= — post a direct journal entry.
 
     Body: ``{"date"?, "narration"?, "reference"?, "lines": [{"account", "debit"|"credit"}]}``
-    with amounts in kobo. This is the one sanctioned way to record a set of books' day-one
-    starting positions (share capital, opening cash, opening AR/AP) into the read-only GL —
-    every other journal is a side-effect of a sub-ledger action.
+    with amounts in kobo. The one sanctioned way to book money/balances that have no sub-ledger
+    document behind them — capital injections, equity contributions, loan drawdowns, grants,
+    opening balances and manual adjustments. Every other journal is a side-effect of an action.
 
-    docstring-name: Post opening balances
+    docstring-name: Post a direct entry
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
-    rbac_permission = "finance.openingbalance.post"
+    rbac_permission = "finance.directentry.post"
 
     def post(self, request):
-        from .posting import post_opening_balance
+        from .posting import post_direct_entry
 
         entity = resolve_entity(request)
-        serializer = OpeningBalanceCreateSerializer(data=request.data)
+        serializer = DirectEntryCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        entry = post_opening_balance(
+        entry = post_direct_entry(
             entity,
             lines=[(ln["account"], ln["debit"], ln["credit"]) for ln in data["lines"]],
             date=data.get("date"), narration=data.get("narration", ""),
             reference=data.get("reference", ""), actor_user=request.user,
         )
         return success_response(
-            message=f"Opening balances posted as {entry.document_number}.",
+            message=f"Direct entry posted as {entry.document_number}.",
             data=JournalEntryDetailSerializer(entry).data, status=201,
         )
 

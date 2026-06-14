@@ -290,15 +290,15 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
 
 
 @transaction.atomic
-def post_opening_balance(entity, *, lines, date=None, narration="", reference="",
-                         actor_user=None):
-    """Seat opening balances into the ledger as a single posted OPENING journal.
+def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
+                      actor_user=None):
+    """Post a direct journal entry — money/balances seated into the books with no source doc.
 
-    This is the *sanctioned* way to record a set of books' starting positions — share
-    capital, opening cash, opening AR/AP — into the otherwise read-only General Ledger.
-    Unlike sub-ledger postings (which derive their journal from an invoice/payment/etc.),
-    an opening balance has no source document; it is the entity's day-one snapshot, so it
-    posts with ``source=OPENING`` and is the one place a caller supplies raw lines.
+    This is the *sanctioned* way to record anything that has no sub-ledger document behind
+    it: capital injections and equity contributions, loan drawdowns, grants, opening cash,
+    opening AR/AP, and manual adjustments. Unlike sub-ledger postings (which derive their
+    journal from an invoice/payment/etc.), a direct entry is the one place a caller supplies
+    raw lines. It posts with ``source=OPENING`` (the catch-all for sourceless entries).
 
     ``lines`` is a list of ``(account, debit_kobo, credit_kobo)`` where ``account`` is a
     code string (resolved within ``entity``) or an :class:`~vs_finance.models.Account`.
@@ -314,7 +314,7 @@ def post_opening_balance(entity, *, lines, date=None, narration="", reference=""
 
     rows = list(lines or [])
     if not rows:
-        raise PostingError("An opening-balance entry needs at least one line.")
+        raise PostingError("A direct entry needs at least one line.")
 
     if date is None:
         date = (

@@ -14,6 +14,7 @@ from .views import (
     BalanceSheetView,
     CashFlowView,
     ChangesInEquityView,
+    DirectEntryCreateView,
     EntityListCreateView,
     FiscalPeriodListView,
     IncomeStatementView,
@@ -22,7 +23,6 @@ from .views import (
     JournalEntryListView,
     JournalPostView,
     JournalReverseView,
-    OpeningBalanceCreateView,
     PeriodCloseView,
     StatutoryPackView,
     TrialBalanceView,
@@ -151,7 +151,7 @@ urlpatterns = [
     # Actions
     path("journals/<int:id>/post/", JournalPostView.as_view(), name="finance-journal-post"),
     path("journals/<int:id>/reverse/", JournalReverseView.as_view(), name="finance-journal-reverse"),
-    path("opening-balances/", OpeningBalanceCreateView.as_view(), name="finance-opening-balance-create"),
+    path("direct-entries/", DirectEntryCreateView.as_view(), name="finance-direct-entry-create"),
     path("periods/<int:id>/close/", PeriodCloseView.as_view(), name="finance-period-close"),
 
     # Reports / financial statements

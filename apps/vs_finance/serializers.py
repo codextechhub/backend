@@ -206,8 +206,8 @@ class JournalEntryDetailSerializer(JournalEntryListSerializer):
         return self._totals(obj)[1]
 
 
-class OpeningBalanceLineSerializer(serializers.Serializer):
-    """One line of an opening-balance entry: an account and a one-sided amount (kobo)."""
+class DirectEntryLineSerializer(serializers.Serializer):
+    """One line of a direct entry: an account and a one-sided amount (kobo)."""
 
     account = serializers.CharField(help_text="Account code within the entity, e.g. '1100'.")
     debit = serializers.IntegerField(required=False, default=0, min_value=0)
@@ -220,8 +220,8 @@ class OpeningBalanceLineSerializer(serializers.Serializer):
         return attrs
 
 
-class OpeningBalanceCreateSerializer(serializers.Serializer):
-    """Write serializer for seating opening balances as a posted OPENING journal.
+class DirectEntryCreateSerializer(serializers.Serializer):
+    """Write serializer for a direct journal entry (capital, loans, openings, adjustments).
 
     All amounts are integer minor units (kobo). The lines must balance.
     """
@@ -229,7 +229,7 @@ class OpeningBalanceCreateSerializer(serializers.Serializer):
     date = serializers.DateField(required=False)
     narration = serializers.CharField(required=False, allow_blank=True, default="")
     reference = serializers.CharField(required=False, allow_blank=True, default="")
-    lines = OpeningBalanceLineSerializer(many=True)
+    lines = DirectEntryLineSerializer(many=True)
 
     def validate_lines(self, value):
         if not value:
@@ -240,7 +240,7 @@ class OpeningBalanceCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 f"Entry must balance: debits {debit} ≠ credits {credit} (kobo).")
         if debit == 0:
-            raise serializers.ValidationError("Opening balance total cannot be zero.")
+            raise serializers.ValidationError("Direct entry total cannot be zero.")
         return value
 
 

@@ -2169,12 +2169,12 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         types = {a["account_type"] for a in resp.json()["data"]}
         self.assertEqual(types, {"ASSET"})
 
-    def test_opening_balance_endpoint_posts_capital_journal(self):
-        # The honest way share capital enters: a posted OPENING journal, not magic.
+    def test_direct_entry_endpoint_posts_capital_journal(self):
+        # The honest way capital/equity enters: a posted journal, not magic.
         entity, _, _ = self.build_books()
         resp = self.client.post(
-            f"/v1/finance/opening-balances/?entity={entity.code}",
-            {"narration": "Day-one share capital",
+            f"/v1/finance/direct-entries/?entity={entity.code}",
+            {"narration": "Capital injection",
              "lines": [{"account": "1100", "debit": 5000000000},   # Dr Cash ₦50,000,000
                        {"account": "3100", "credit": 5000000000}]},  # Cr Share Capital
             format="json",
@@ -2195,10 +2195,10 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
             f"/v1/finance/reports/trial-balance/?entity={entity.code}").json()["data"]
         self.assertTrue(tb["is_balanced"])
 
-    def test_opening_balance_rejects_unbalanced(self):
+    def test_direct_entry_rejects_unbalanced(self):
         entity, _, _ = self.build_books()
         resp = self.client.post(
-            f"/v1/finance/opening-balances/?entity={entity.code}",
+            f"/v1/finance/direct-entries/?entity={entity.code}",
             {"lines": [{"account": "1100", "debit": 5000000000},
                        {"account": "3100", "credit": 4000000000}]},
             format="json",
@@ -2429,10 +2429,10 @@ class EntityCreatePermissionTests(TestCase):
         resp = self.client.get("/v1/finance/entities/")
         self.assertEqual(resp.status_code, 403)
 
-    def test_opening_balance_denied_without_grant(self):
-        # Seating opening balances is gated on finance.openingbalance.post (CRITICAL).
+    def test_direct_entry_denied_without_grant(self):
+        # Posting a direct entry is gated on finance.directentry.post (CRITICAL).
         resp = self.client.post(
-            "/v1/finance/opening-balances/?entity=TBOOK",
+            "/v1/finance/direct-entries/?entity=TBOOK",
             {"lines": [{"account": "1100", "debit": 100}, {"account": "3100", "credit": 100}]},
             format="json",
         )
