@@ -287,3 +287,55 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
         reversal_id=reversal.pk, reversal_number=reversal.document_number,
     )
     return reversal
+
+
+@transaction.atomic
+def post_opening_balance(entity, *, lines, date=None, narration="", reference="",
+                         actor_user=None):
+    """Seat opening balances into the ledger as a single posted OPENING journal.
+
+    This is the *sanctioned* way to record a set of books' starting positions — share
+    capital, opening cash, opening AR/AP — into the otherwise read-only General Ledger.
+    Unlike sub-ledger postings (which derive their journal from an invoice/payment/etc.),
+    an opening balance has no source document; it is the entity's day-one snapshot, so it
+    posts with ``source=OPENING`` and is the one place a caller supplies raw lines.
+
+    ``lines`` is a list of ``(account, debit_kobo, credit_kobo)`` where ``account`` is a
+    code string (resolved within ``entity``) or an :class:`~vs_finance.models.Account`.
+    The entry must balance (Σdebits == Σcredits); it posts into ``date``'s open period —
+    ``date`` defaults to the entity's earliest period start, else today. The normal
+    :func:`post_journal` guards apply (period open, balanced, accounts active/postable),
+    and it is reversible like any journal. Returns the posted entry.
+    """
+    from django.utils import timezone
+
+    from .accounts import resolve_account
+    from .models import FiscalPeriod, JournalEntry, JournalLine
+
+    rows = list(lines or [])
+    if not rows:
+        raise PostingError("An opening-balance entry needs at least one line.")
+
+    if date is None:
+        date = (
+            FiscalPeriod.objects.filter(entity=entity)
+            .order_by("start_date").values_list("start_date", flat=True).first()
+            or timezone.now().date()
+        )
+
+    entry = JournalEntry.objects.create(
+        entity=entity, date=date, period=resolve_period(entity, date),
+        source=JournalSource.OPENING,
+        narration=narration or "Opening balances",
+        reference=reference, created_by=actor_user,
+    )
+    for i, (account, debit, credit) in enumerate(rows, start=1):
+        acct = account if not isinstance(account, str) else resolve_account(entity, account)
+        JournalLine.objects.create(
+            entry=entry, account=acct,
+            debit=int(debit or 0), credit=int(credit or 0), line_no=i,
+        )
+
+    post_journal(entry, actor_user=actor_user)
+    entry.refresh_from_db()
+    return entry

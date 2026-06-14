@@ -35,6 +35,7 @@ from .serializers import (
     JournalEntryListSerializer,
     LedgerEntityCreateSerializer,
     LedgerEntitySerializer,
+    OpeningBalanceCreateSerializer,
 )
 
 
@@ -300,6 +301,39 @@ class JournalReverseView(APIView):
             message=f"Journal {entry.document_number} reversed.",
             data=JournalEntryDetailSerializer(reversal).data,
             status=201,
+        )
+
+
+class OpeningBalanceCreateView(APIView):
+    """POST /finance/opening-balances/?entity= — seat opening balances as a posted journal.
+
+    Body: ``{"date"?, "narration"?, "reference"?, "lines": [{"account", "debit"|"credit"}]}``
+    with amounts in kobo. This is the one sanctioned way to record a set of books' day-one
+    starting positions (share capital, opening cash, opening AR/AP) into the read-only GL —
+    every other journal is a side-effect of a sub-ledger action.
+
+    docstring-name: Post opening balances
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.openingbalance.post"
+
+    def post(self, request):
+        from .posting import post_opening_balance
+
+        entity = resolve_entity(request)
+        serializer = OpeningBalanceCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        entry = post_opening_balance(
+            entity,
+            lines=[(ln["account"], ln["debit"], ln["credit"]) for ln in data["lines"]],
+            date=data.get("date"), narration=data.get("narration", ""),
+            reference=data.get("reference", ""), actor_user=request.user,
+        )
+        return success_response(
+            message=f"Opening balances posted as {entry.document_number}.",
+            data=JournalEntryDetailSerializer(entry).data, status=201,
         )
 
 

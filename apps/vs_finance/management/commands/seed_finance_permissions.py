@@ -34,6 +34,7 @@ FINANCE_RESOURCES = [
     ("taxcode",      "tax codes",              [("view", "NORMAL"), ("create", "NORMAL")]),
     ("period",       "accounting periods",     [("view", "NORMAL"), ("close", "CRITICAL")]),
     ("journal",      "journal entries",        [("view", "NORMAL"), ("post", "CRITICAL"), ("reverse", "CRITICAL")]),
+    ("openingbalance", "opening balances",     [("view", "NORMAL"), ("post", "CRITICAL")]),
     ("invoice",      "customer invoices",      [("view", "NORMAL"), ("writeoff", "SENSITIVE")]),
     ("report",       "financial reports",      [("view", "NORMAL")]),
     ("audit",        "finance audit logs",     [("view", "SENSITIVE")]),

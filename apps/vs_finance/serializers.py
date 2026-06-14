@@ -206,6 +206,44 @@ class JournalEntryDetailSerializer(JournalEntryListSerializer):
         return self._totals(obj)[1]
 
 
+class OpeningBalanceLineSerializer(serializers.Serializer):
+    """One line of an opening-balance entry: an account and a one-sided amount (kobo)."""
+
+    account = serializers.CharField(help_text="Account code within the entity, e.g. '1100'.")
+    debit = serializers.IntegerField(required=False, default=0, min_value=0)
+    credit = serializers.IntegerField(required=False, default=0, min_value=0)
+
+    def validate(self, attrs):
+        if attrs.get("debit") and attrs.get("credit"):
+            raise serializers.ValidationError(
+                "A line is one-sided: set either debit or credit, not both.")
+        return attrs
+
+
+class OpeningBalanceCreateSerializer(serializers.Serializer):
+    """Write serializer for seating opening balances as a posted OPENING journal.
+
+    All amounts are integer minor units (kobo). The lines must balance.
+    """
+
+    date = serializers.DateField(required=False)
+    narration = serializers.CharField(required=False, allow_blank=True, default="")
+    reference = serializers.CharField(required=False, allow_blank=True, default="")
+    lines = OpeningBalanceLineSerializer(many=True)
+
+    def validate_lines(self, value):
+        if not value:
+            raise serializers.ValidationError("At least one line is required.")
+        debit = sum(line["debit"] for line in value)
+        credit = sum(line["credit"] for line in value)
+        if debit != credit:
+            raise serializers.ValidationError(
+                f"Entry must balance: debits {debit} ≠ credits {credit} (kobo).")
+        if debit == 0:
+            raise serializers.ValidationError("Opening balance total cannot be zero.")
+        return value
+
+
 class InvoiceSerializer(serializers.ModelSerializer):
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)

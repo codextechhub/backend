@@ -2169,6 +2169,42 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         types = {a["account_type"] for a in resp.json()["data"]}
         self.assertEqual(types, {"ASSET"})
 
+    def test_opening_balance_endpoint_posts_capital_journal(self):
+        # The honest way share capital enters: a posted OPENING journal, not magic.
+        entity, _, _ = self.build_books()
+        resp = self.client.post(
+            f"/v1/finance/opening-balances/?entity={entity.code}",
+            {"narration": "Day-one share capital",
+             "lines": [{"account": "1100", "debit": 5000000000},   # Dr Cash ₦50,000,000
+                       {"account": "3100", "credit": 5000000000}]},  # Cr Share Capital
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        data = resp.json()["data"]
+        self.assertEqual(data["source"], "OPENING")
+        self.assertEqual(data["status"], "POSTED")
+        self.assertEqual(data["total_debit"], 5000000000)
+        self.assertEqual(data["total_credit"], 5000000000)
+
+        # It is a real journal: it shows in the read-only journals list…
+        journals = self.client.get(
+            f"/v1/finance/journals/?entity={entity.code}").json()["data"]
+        self.assertIn(data["document_number"], {j["document_number"] for j in journals})
+        # …and it moved the trial balance (which still balances).
+        tb = self.client.get(
+            f"/v1/finance/reports/trial-balance/?entity={entity.code}").json()["data"]
+        self.assertTrue(tb["is_balanced"])
+
+    def test_opening_balance_rejects_unbalanced(self):
+        entity, _, _ = self.build_books()
+        resp = self.client.post(
+            f"/v1/finance/opening-balances/?entity={entity.code}",
+            {"lines": [{"account": "1100", "debit": 5000000000},
+                       {"account": "3100", "credit": 4000000000}]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400, resp.content)
+
     def test_entity_create_provisions_new_books(self):
         # Seed first so the NGN currency exists for the default base_currency.
         self._seed()
@@ -2391,4 +2427,13 @@ class EntityCreatePermissionTests(TestCase):
     def test_list_still_denied_without_view_grant(self):
         # The GET side is gated on finance.entity.view; same ungranted user is denied.
         resp = self.client.get("/v1/finance/entities/")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_opening_balance_denied_without_grant(self):
+        # Seating opening balances is gated on finance.openingbalance.post (CRITICAL).
+        resp = self.client.post(
+            "/v1/finance/opening-balances/?entity=TBOOK",
+            {"lines": [{"account": "1100", "debit": 100}, {"account": "3100", "credit": 100}]},
+            format="json",
+        )
         self.assertEqual(resp.status_code, 403)
