@@ -2209,6 +2209,26 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(len(periods), 12)
         self.assertTrue(all(p["name"].startswith("2027-") for p in periods))
 
+    def test_entity_create_supports_school_year_start_month(self):
+        # A school running Sept 2026 → Aug 2027: twelve periods roll over the
+        # calendar boundary, labelled by the actual calendar month.
+        self._seed()
+        resp = self.client.post(
+            "/v1/finance/entities/",
+            {"code": "STMARY", "name": "St Mary's", "fiscal_year": 2026,
+             "fiscal_start_month": 9},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        periods = self.client.get("/v1/finance/periods/?entity=STMARY").json()["data"]
+        names = [p["name"] for p in periods]
+        self.assertEqual(len(names), 12)
+        self.assertEqual(names[0], "2026-09")    # first period: September 2026
+        self.assertEqual(names[-1], "2027-08")   # last period: August 2027
+        self.assertEqual(periods[0]["start_date"], "2026-09-01")
+        self.assertEqual(periods[-1]["end_date"], "2027-08-31")
+        self.assertTrue(all(p["status"] == "OPEN" for p in periods))
+
     def test_entity_create_rejects_duplicate_code(self):
         self._seed()
         first = self.client.post(

@@ -78,10 +78,16 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
     )
     # Optional: which fiscal year to open. Defaults to the current calendar year.
     fiscal_year = serializers.IntegerField(required=False, write_only=True, min_value=2000)
+    # Optional opening month (1–12). 1 = calendar Jan–Dec; 9 = a Sept–Aug school year
+    # whose twelve periods roll into the next calendar year.
+    fiscal_start_month = serializers.IntegerField(
+        required=False, write_only=True, min_value=1, max_value=12,
+    )
 
     class Meta:
         model = LedgerEntity
-        fields = ["id", "code", "name", "kind", "base_currency", "source_school", "fiscal_year"]
+        fields = ["id", "code", "name", "kind", "base_currency", "source_school",
+                  "fiscal_year", "fiscal_start_month"]
         extra_kwargs = {
             "kind": {"required": False},
             "source_school": {"required": False, "allow_null": True},
@@ -102,18 +108,20 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
         from .seed import seed_chart_of_accounts, seed_currencies, seed_fiscal_year
 
         fiscal_year = validated_data.pop("fiscal_year", None)
+        start_month = validated_data.pop("fiscal_start_month", 1)
         validated_data.setdefault("kind", LedgerEntity.Kind.TENANT)
 
         # Provision a fully usable set of books in one call: the entity, the default
         # currencies, a starter chart of accounts, and twelve open monthly periods.
         # This keeps the bootstrap API-driven (no CLI seed_finance step required).
+        # fiscal_start_month lets a school open e.g. a Sept–Aug year.
         with transaction.atomic():
             entity = LedgerEntity.objects.create(
                 is_active=True, activated_at=timezone.now(), **validated_data,
             )
             seed_currencies()
             seed_chart_of_accounts(entity)
-            seed_fiscal_year(entity, year=fiscal_year)
+            seed_fiscal_year(entity, year=fiscal_year, start_month=start_month)
         return entity
 
     def to_representation(self, instance):

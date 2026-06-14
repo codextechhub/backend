@@ -164,12 +164,17 @@ def seed_chart_of_accounts(entity):
     return list(Account.objects.filter(entity=entity).order_by("code"))
 
 
-def seed_fiscal_year(entity, year=None):
+def seed_fiscal_year(entity, year=None, start_month=1):
     """Open a fiscal year for ``entity`` with twelve monthly OPEN periods (idempotent).
 
-    Defaults to the current calendar year. Returns ``(fiscal_year, [periods])``. Safe
-    to re-run: the year is keyed by ``(entity, year)`` and each period by
-    ``(fiscal_year, period_no)``, so an existing set of books is left untouched.
+    ``year`` is the label used in document numbers (defaults to the current calendar
+    year). ``start_month`` (1–12) is the opening month: ``1`` gives a calendar-year
+    Jan–Dec book, while e.g. ``9`` gives a school year that runs Sept of ``year``
+    through Aug of ``year + 1`` — the twelve periods roll across the calendar boundary.
+
+    Returns ``(fiscal_year, [periods])``. Safe to re-run: the year is keyed by
+    ``(entity, year)`` and each period by ``(fiscal_year, period_no)``, so an existing
+    set of books is left untouched.
     """
     import datetime
 
@@ -179,25 +184,38 @@ def seed_fiscal_year(entity, year=None):
 
     if year is None:
         year = timezone.now().year
+    if not 1 <= start_month <= 12:
+        raise ValueError("start_month must be between 1 and 12.")
+
+    def _month(offset):
+        """Calendar (year, month) for the period ``offset`` months after the start."""
+        index = (start_month - 1) + offset           # 0-based month index from the epoch
+        return year + index // 12, index % 12 + 1
+
+    first_y, first_m = _month(0)
+    last_y, last_m = _month(11)
+    # End of the last period = day before the first of the month after it.
+    after_y, after_m = _month(12)
 
     fiscal_year, _ = FiscalYear.objects.get_or_create(
         entity=entity, year=year,
         defaults={
-            "start_date": datetime.date(year, 1, 1),
-            "end_date": datetime.date(year, 12, 31),
+            "start_date": datetime.date(first_y, first_m, 1),
+            "end_date": datetime.date(after_y, after_m, 1) - datetime.timedelta(days=1),
         },
     )
 
     periods = []
-    for m in range(1, 13):
-        start = datetime.date(year, m, 1)
-        end = (datetime.date(year, m + 1, 1) if m < 12 else datetime.date(year + 1, 1, 1))
-        end = end - datetime.timedelta(days=1)
+    for i in range(12):
+        py, pm = _month(i)
+        ny, nm = _month(i + 1)
+        start = datetime.date(py, pm, 1)
+        end = datetime.date(ny, nm, 1) - datetime.timedelta(days=1)
         period, _ = FiscalPeriod.objects.get_or_create(
-            fiscal_year=fiscal_year, period_no=m,
+            fiscal_year=fiscal_year, period_no=i + 1,
             defaults={
                 "entity": entity,
-                "name": f"{year}-{m:02d}",
+                "name": f"{py}-{pm:02d}",
                 "start_date": start,
                 "end_date": end,
             },
