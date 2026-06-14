@@ -34,3 +34,8 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_CLASSES": [],
     "DEFAULT_THROTTLE_RATES": {},
 }
+
+# vs_health: never spawn the background metric-flush thread under tests. It
+# would hold a DB connection open and block test-database teardown, and it
+# would race the explicit flush() the collector tests assert on.
+HEALTH_METRICS_BACKGROUND_FLUSH = False

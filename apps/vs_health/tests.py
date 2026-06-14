@@ -91,6 +91,12 @@ class GoldenSignalsTests(TestCase):
 
 
 class CollectorFlushTests(TestCase):
+    def setUp(self):
+        # The collector buffer is process-global and the request middleware
+        # feeds it during the whole suite — drain it so this test sees only
+        # its own records.
+        collectors._drain()
+
     def test_record_then_flush_upserts_and_merges(self):
         collectors.record(route="/v1/x/", method="GET", status_code=200, latency_ms=42, throttled=False)
         collectors.record(route="/v1/x/", method="GET", status_code=500, latency_ms=120, throttled=False)

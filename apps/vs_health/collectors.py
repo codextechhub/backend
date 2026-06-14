@@ -12,6 +12,7 @@ instrumentation can never degrade the application it observes.
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from collections import defaultdict
@@ -158,10 +159,22 @@ def _flush_loop(interval: float):
             logger.debug("vs_health flush loop error", exc_info=True)
 
 
+def _running_tests() -> bool:
+    """True when invoked under the Django test runner.
+
+    A background thread holding a DB connection blocks test-database teardown
+    ("database is being accessed by other users"), so never start one in tests
+    regardless of the settings flag.
+    """
+    return "test" in sys.argv
+
+
 def _ensure_flusher():
     """Start the background flush thread once per process (lazy, opt-out)."""
     global _thread_started
     if _thread_started:
+        return
+    if _running_tests():
         return
     if not getattr(settings, "HEALTH_METRICS_BACKGROUND_FLUSH", True):
         return

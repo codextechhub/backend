@@ -24,3 +24,6 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_CLASSES": [],
     "DEFAULT_THROTTLE_RATES": {},
 }
+
+# vs_health: no background metric-flush thread under tests (see ci.py).
+HEALTH_METRICS_BACKGROUND_FLUSH = False
