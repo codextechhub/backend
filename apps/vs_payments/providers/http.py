@@ -27,6 +27,7 @@ def request_json(method: str, url: str, *, headers: dict | None = None,
     req = urllib.request.Request(url, data=data, method=method.upper())
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "application/json")
+    req.add_header("User-Agent", "CodeX-Finance/1.0 (+https://codexng.com)")
     for key, value in (headers or {}).items():
         req.add_header(key, value)
     try:
