@@ -2,6 +2,7 @@
 """
 from __future__ import annotations
 
+from django.conf import settings
 from django.db import models
 
 from ..constants import (
@@ -295,3 +296,75 @@ class PaymentAllocation(TimeStampedModel):
         return f"{self.payment_id}→{self.invoice_id}: {self.amount}"
 
 
+
+
+class FeeStructure(TimeStampedModel):
+    """A named, reusable billing template for an entity (e.g. 'JSS1 — Term 1 2026').
+
+    A fee structure is a catalogue of charges; it holds no money itself. Calling
+    :func:`vs_finance.fees.generate_invoices` materialises one posted :class:`Invoice`
+    per selected customer from this structure's :class:`FeeItem` lines — the only place
+    billing turns a template into real AR. ``term`` / ``branch`` are free applicability
+    tags (which session/term and which campus the structure is meant for).
+    """
+
+    entity = models.ForeignKey(
+        LedgerEntity, on_delete=models.PROTECT, related_name="fee_structures",
+    )
+    branch = models.ForeignKey(
+        "vs_schools.Branch", on_delete=models.PROTECT,
+        related_name="finance_fee_structures", null=True, blank=True,
+    )
+    code = models.CharField(max_length=32, help_text="Unique within the entity.")
+    name = models.CharField(max_length=200)
+    term = models.CharField(max_length=64, blank=True, default="",
+                            help_text="Applicability tag, e.g. '2026/T1'.")
+    description = models.TextField(blank=True, default="")
+    is_active = models.BooleanField(default=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_fee_structures_created", null=True, blank=True,
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "code"], name="uniq_finance_feestructure_entity_code",
+            ),
+        ]
+        indexes = [models.Index(fields=["entity", "is_active"])]
+        ordering = ["entity", "code"]
+
+    def __str__(self) -> str:
+        return f"{self.code} · {self.name}"
+
+    @property
+    def total(self) -> int:
+        """Sum of the item amounts in kobo (net of tax; tax is added at generation)."""
+        return self.items.aggregate(t=models.Sum("amount"))["t"] or 0
+
+
+class FeeItem(TimeStampedModel):
+    """One charge line of a :class:`FeeStructure` → a GL revenue account (+ optional tax)."""
+
+    structure = models.ForeignKey(
+        FeeStructure, on_delete=models.CASCADE, related_name="items",
+    )
+    description = models.CharField(max_length=255)
+    revenue_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="fee_items",
+        help_text="GL revenue account this fee credits when billed.",
+    )
+    amount = MoneyField(help_text="Charge amount per customer, in kobo (net of tax).")
+    tax_code = models.ForeignKey(
+        TaxCode, on_delete=models.PROTECT, related_name="fee_items",
+        null=True, blank=True,
+    )
+    line_no = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["structure", "line_no", "id"]
+        indexes = [models.Index(fields=["structure"])]
+
+    def __str__(self) -> str:
+        return f"{self.description}: {self.amount}"

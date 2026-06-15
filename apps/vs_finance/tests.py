@@ -2233,6 +2233,79 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(len(periods), 12)
         self.assertTrue(all(p["status"] == "OPEN" for p in periods))
 
+    def test_customer_crud_and_invoice_filter(self):
+        entity, _, _ = self.build_books()
+        # Create — receivable account defaults to 1200.
+        resp = self.client.post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"code": "cust1", "name": "Acme Ltd", "billing_email": "a@acme.test"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        data = resp.json()["data"]
+        self.assertEqual(data["code"], "CUST1")               # normalised
+        self.assertEqual(data["receivable_account_code"], "1200")
+
+        # Duplicate code rejected.
+        dup = self.client.post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"code": "CUST1", "name": "Dupe"}, format="json")
+        self.assertEqual(dup.status_code, 400)
+
+        # List + search.
+        listed = self.client.get(
+            f"/v1/finance/customers/?entity={entity.code}&search=acme").json()["data"]
+        self.assertEqual({c["code"] for c in listed}, {"CUST1"})
+
+        # Detail by code + PATCH.
+        det = self.client.get(f"/v1/finance/customers/CUST1/?entity={entity.code}")
+        self.assertEqual(det.status_code, 200)
+        patched = self.client.patch(
+            f"/v1/finance/customers/CUST1/?entity={entity.code}",
+            {"name": "Acme Renamed"}, format="json")
+        self.assertEqual(patched.json()["data"]["name"], "Acme Renamed")
+
+    def test_fee_structure_generates_posted_invoices(self):
+        entity, _, _ = self.build_books()
+        self.client.post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"code": "stu1", "name": "Student One"}, format="json")
+
+        # A fee structure with one ₦100,000 tuition line.
+        created = self.client.post(
+            f"/v1/finance/fee-structures/?entity={entity.code}",
+            {"code": "jss1t1", "name": "JSS1 Term 1",
+             "items": [{"description": "Tuition", "revenue_account": "4100", "amount": 10000000}]},
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.content)
+        self.assertEqual(created.json()["data"]["total"], 10000000)
+
+        # Generate → one posted invoice for the customer.
+        gen = self.client.post(
+            f"/v1/finance/fee-structures/JSS1T1/generate/?entity={entity.code}",
+            {"customers": ["STU1"], "invoice_date": "2026-01-10"}, format="json")
+        self.assertEqual(gen.status_code, 201, gen.content)
+        gdata = gen.json()["data"]
+        self.assertEqual(gdata["generated"], 1)
+        self.assertEqual(gdata["invoices"][0]["status"], "POSTED")
+        self.assertEqual(gdata["invoices"][0]["total"], 10000000)
+
+        # It shows under the customer filter on the invoices list…
+        inv = self.client.get(
+            f"/v1/finance/invoices/?entity={entity.code}&customer=STU1").json()["data"]
+        self.assertEqual(len(inv), 1)
+        # …and the trial balance still balances (AR raised).
+        tb = self.client.get(
+            f"/v1/finance/reports/trial-balance/?entity={entity.code}").json()["data"]
+        self.assertTrue(tb["is_balanced"])
+
+        # Re-running is idempotent — no second invoice for the same customer/structure.
+        again = self.client.post(
+            f"/v1/finance/fee-structures/JSS1T1/generate/?entity={entity.code}",
+            {"customers": ["STU1"]}, format="json")
+        self.assertEqual(again.json()["data"]["generated"], 0)
+
     def test_entity_create_accepts_explicit_fiscal_year(self):
         self._seed()
         resp = self.client.post(

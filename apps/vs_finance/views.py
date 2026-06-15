@@ -249,6 +249,10 @@ class InvoiceListView(EntityScopedListMixin, generics.ListAPIView):
             qs = qs.filter(status=status_val)
         if (pay := params.get("payment_status")):
             qs = qs.filter(payment_status=pay)
+        if (customer := params.get("customer")):
+            # Filter by customer code or id (feeds the receipts & allocation screen).
+            qs = (qs.filter(customer__code=str(customer).upper()) if not str(customer).isdigit()
+                  else qs.filter(customer_id=int(customer)))
         return qs.order_by("-invoice_date", "-id")
 
 

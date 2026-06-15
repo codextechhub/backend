@@ -24,6 +24,8 @@ from .models import (
     DunningNotice,
     DunningPolicy,
     DunningStage,
+    FeeItem,
+    FeeStructure,
     Invoice,
     PaymentPlan,
     Refund,
@@ -31,8 +33,10 @@ from .models import (
 from .serializers import (
     ConcessionSerializer,
     CreditNoteSerializer,
+    CustomerSerializer,
     DunningNoticeSerializer,
     DunningPolicySerializer,
+    FeeStructureSerializer,
     InvoiceSerializer,
     PaymentPlanSerializer,
     RefundSerializer,
@@ -93,6 +97,276 @@ def _allocation_plan(entity, raw_allocations):
         invoice = _resolve_invoice(entity, item.get("invoice"), f"allocations[{i}].invoice")
         plan.append((invoice, _money(item.get("amount"), f"allocations[{i}].amount")))
     return plan
+
+
+# --------------------------------------------------------------------------- #
+# Customers / payers                                                          #
+# --------------------------------------------------------------------------- #
+
+class CustomerListCreateView(_FinanceBase):
+    """GET (list) / POST (create) customers / payers for an entity.
+
+    List filters: ``?search=`` (code or name), ``?is_active=true|false``.
+
+    docstring-name: Customers
+    """
+
+    @property
+    def rbac_permission(self):
+        return "finance.customer.create" if self.request.method == "POST" \
+            else "finance.customer.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = Customer.objects.filter(entity=entity).select_related("receivable_account")
+        if (search := request.query_params.get("search")):
+            from django.db.models import Q
+            qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
+        if (active := request.query_params.get("is_active")) in ("true", "false"):
+            qs = qs.filter(is_active=active == "true")
+        return success_response(
+            "Customers retrieved.",
+            data=CustomerSerializer(qs.order_by("code")[:500], many=True).data,
+        )
+
+    @transaction.atomic
+    def post(self, request):
+        entity = resolve_entity(request)
+        body = request.data or {}
+        code = str(body.get("code", "")).strip().upper()
+        if not code:
+            raise ValidationError({"code": "A customer code is required."})
+        if Customer.objects.filter(entity=entity, code=code).exists():
+            raise ValidationError({"code": f"A customer with code '{code}' already exists."})
+        name = str(body.get("name", "")).strip()
+        if not name:
+            raise ValidationError({"name": "A customer name is required."})
+        # Default the AR control to the entity's 1200 Accounts Receivable if not given.
+        receivable = _resolve_account(
+            entity, body.get("receivable_account") or "1200",
+            "receivable_account", required=True)
+        customer = Customer.objects.create(
+            entity=entity, code=code, name=name,
+            billing_email=body.get("billing_email", ""),
+            billing_phone=body.get("billing_phone", ""),
+            billing_address=body.get("billing_address", ""),
+            receivable_account=receivable,
+            opening_balance=_money(body.get("opening_balance", 0), "opening_balance"),
+            source_type=body.get("source_type", ""),
+            source_id=str(body.get("source_id", "")),
+            is_active=bool(body.get("is_active", True)),
+        )
+        return success_response(
+            f"Customer {customer.code} created.",
+            data=CustomerSerializer(customer).data, status=201,
+        )
+
+
+class CustomerDetailView(_FinanceBase):
+    """GET / PATCH one customer (by **code or id**).
+
+    docstring-name: Customers
+    """
+
+    @property
+    def rbac_permission(self):
+        return "finance.customer.update" if self.request.method == "PATCH" \
+            else "finance.customer.view"
+
+    def get(self, request, pk):
+        entity = resolve_entity(request)
+        customer = _resolve_customer(entity, pk)
+        return success_response(
+            "Customer retrieved.", data=CustomerSerializer(customer).data,
+        )
+
+    @transaction.atomic
+    def patch(self, request, pk):
+        entity = resolve_entity(request)
+        customer = _resolve_customer(entity, pk)
+        body = request.data or {}
+        for field in ("name", "billing_email", "billing_phone", "billing_address",
+                      "source_type", "source_id"):
+            if field in body:
+                setattr(customer, field, body[field])
+        if "receivable_account" in body:
+            customer.receivable_account = _resolve_account(
+                entity, body.get("receivable_account"), "receivable_account", required=True)
+        if "opening_balance" in body:
+            customer.opening_balance = _money(body.get("opening_balance"), "opening_balance")
+        if "is_active" in body:
+            customer.is_active = bool(body.get("is_active"))
+        customer.save()
+        return success_response(
+            f"Customer {customer.code} updated.", data=CustomerSerializer(customer).data,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Fee structures (billing catalogue → invoices)                               #
+# --------------------------------------------------------------------------- #
+
+def _build_fee_items(structure, entity, raw_items):
+    """(Re)create a structure's fee items from a request ``items`` list."""
+    if not raw_items:
+        raise ValidationError({"items": "At least one fee item is required."})
+    for i, item in enumerate(raw_items, start=1):
+        amount = _money(item.get("amount"), f"items[{i}].amount")
+        if amount <= 0:
+            raise ValidationError({f"items[{i}].amount": "A positive amount is required."})
+        FeeItem.objects.create(
+            structure=structure, line_no=item.get("line_no", i),
+            description=str(item.get("description", "")).strip() or f"Fee {i}",
+            revenue_account=_resolve_account(
+                entity, item.get("revenue_account"), f"items[{i}].revenue_account", required=True),
+            amount=amount,
+            tax_code=_resolve_tax(entity, item.get("tax_code"), f"items[{i}].tax_code"),
+        )
+
+
+def _resolve_fee_structure(entity, ref):
+    qs = FeeStructure.objects.filter(entity=entity)
+    structure = (
+        qs.filter(pk=int(ref)).first() if str(ref).isdigit()
+        else qs.filter(code=str(ref).upper()).first()
+    )
+    if structure is None:
+        raise NotFound(f"No fee structure matches '{ref}' for this entity.")
+    return structure
+
+
+class FeeStructureListCreateView(_FinanceBase):
+    """GET (list) / POST (create) fee structures for an entity.
+
+    POST body: ``{code, name, term?, description?, is_active?, items:[{description,
+    revenue_account, amount, tax_code?}]}``.
+
+    docstring-name: Fee structures
+    """
+
+    @property
+    def rbac_permission(self):
+        return "finance.feestructure.create" if self.request.method == "POST" \
+            else "finance.feestructure.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = FeeStructure.objects.filter(entity=entity).prefetch_related("items__revenue_account")
+        if (active := request.query_params.get("is_active")) in ("true", "false"):
+            qs = qs.filter(is_active=active == "true")
+        if (search := request.query_params.get("search")):
+            from django.db.models import Q
+            qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
+        return success_response(
+            "Fee structures retrieved.",
+            data=FeeStructureSerializer(qs.order_by("code"), many=True).data,
+        )
+
+    @transaction.atomic
+    def post(self, request):
+        entity = resolve_entity(request)
+        body = request.data or {}
+        code = str(body.get("code", "")).strip().upper()
+        if not code:
+            raise ValidationError({"code": "A fee structure code is required."})
+        if FeeStructure.objects.filter(entity=entity, code=code).exists():
+            raise ValidationError({"code": f"A fee structure with code '{code}' already exists."})
+        name = str(body.get("name", "")).strip()
+        if not name:
+            raise ValidationError({"name": "A fee structure name is required."})
+        structure = FeeStructure.objects.create(
+            entity=entity, code=code, name=name,
+            term=body.get("term", ""), description=body.get("description", ""),
+            is_active=bool(body.get("is_active", True)), created_by=request.user,
+        )
+        _build_fee_items(structure, entity, body.get("items"))
+        structure.refresh_from_db()
+        return success_response(
+            f"Fee structure {structure.code} created.",
+            data=FeeStructureSerializer(structure).data, status=201,
+        )
+
+
+class FeeStructureDetailView(_FinanceBase):
+    """GET / PATCH one fee structure (by **code or id**). PATCH may replace ``items``.
+
+    docstring-name: Fee structures
+    """
+
+    @property
+    def rbac_permission(self):
+        return "finance.feestructure.edit" if self.request.method == "PATCH" \
+            else "finance.feestructure.view"
+
+    def get(self, request, pk):
+        entity = resolve_entity(request)
+        structure = _resolve_fee_structure(entity, pk)
+        return success_response(
+            "Fee structure retrieved.", data=FeeStructureSerializer(structure).data,
+        )
+
+    @transaction.atomic
+    def patch(self, request, pk):
+        entity = resolve_entity(request)
+        structure = _resolve_fee_structure(entity, pk)
+        body = request.data or {}
+        for field in ("name", "term", "description"):
+            if field in body:
+                setattr(structure, field, body[field])
+        if "is_active" in body:
+            structure.is_active = bool(body.get("is_active"))
+        structure.save()
+        if "items" in body:  # full replace
+            structure.items.all().delete()
+            _build_fee_items(structure, entity, body.get("items"))
+        structure.refresh_from_db()
+        return success_response(
+            f"Fee structure {structure.code} updated.",
+            data=FeeStructureSerializer(structure).data,
+        )
+
+
+class FeeStructureGenerateView(_FinanceBase):
+    """POST — raise a posted invoice per customer from this fee structure.
+
+    Body: ``{customers:[code|id, ...]}`` or ``{all_active:true}``; optional
+    ``invoice_date``, ``due_date`` (ISO). Returns the invoices created.
+
+    docstring-name: Generate invoices from a fee structure
+    """
+
+    rbac_permission = "finance.feestructure.generate"
+
+    @transaction.atomic
+    def post(self, request, pk):
+        from .fees import generate_invoices
+
+        entity = resolve_entity(request)
+        structure = _resolve_fee_structure(entity, pk)
+        body = request.data or {}
+        if body.get("all_active"):
+            customers = list(Customer.objects.filter(entity=entity, is_active=True))
+        else:
+            refs = body.get("customers") or []
+            if not refs:
+                raise ValidationError(
+                    {"customers": "Provide a customers list or all_active=true."})
+            customers = [_resolve_customer(entity, r, "customers") for r in refs]
+        invoices = generate_invoices(
+            structure, customers,
+            invoice_date=_date(body.get("invoice_date"), "invoice_date"),
+            due_date=_date(body.get("due_date"), "due_date"),
+            actor_user=request.user,
+        )
+        return success_response(
+            f"{len(invoices)} invoice(s) generated from {structure.code}.",
+            data={
+                "structure": structure.code,
+                "generated": len(invoices),
+                "invoices": InvoiceSerializer(invoices, many=True).data,
+            },
+            status=201,
+        )
 
 
 # --------------------------------------------------------------------------- #

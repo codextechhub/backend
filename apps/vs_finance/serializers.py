@@ -25,6 +25,7 @@ from .models import (
     CreditNote,
     CreditNoteLine,
     Currency,
+    Customer,
     Dimension,
     DepreciationSchedule,
     DunningNotice,
@@ -32,6 +33,8 @@ from .models import (
     DunningStage,
     ExpenseClaim,
     ExpenseClaimLine,
+    FeeItem,
+    FeeStructure,
     FinanceAuditLog,
     FixedAsset,
     FiscalPeriod,
@@ -242,6 +245,59 @@ class DirectEntryCreateSerializer(serializers.Serializer):
         if debit == 0:
             raise serializers.ValidationError("Direct entry total cannot be zero.")
         return value
+
+
+class CustomerSerializer(serializers.ModelSerializer):
+    """Read shape for a customer / payer (the AR sub-ledger party)."""
+
+    receivable_account_code = serializers.CharField(
+        source="receivable_account.code", read_only=True, default=None)
+    receivable_account_name = serializers.CharField(
+        source="receivable_account.name", read_only=True, default=None)
+    opening_balance_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Customer
+        fields = [
+            "id", "code", "name", "billing_email", "billing_phone", "billing_address",
+            "receivable_account_code", "receivable_account_name", "opening_balance",
+            "opening_balance_naira", "source_type", "source_id", "is_active",
+        ]
+
+    def get_opening_balance_naira(self, obj) -> str:
+        return format_naira(obj.opening_balance)
+
+
+class FeeItemSerializer(serializers.ModelSerializer):
+    revenue_account_code = serializers.CharField(source="revenue_account.code", read_only=True)
+    tax_code_value = serializers.CharField(source="tax_code.code", read_only=True, default=None)
+    amount_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FeeItem
+        fields = [
+            "id", "line_no", "description", "revenue_account_code",
+            "amount", "amount_naira", "tax_code_value",
+        ]
+
+    def get_amount_naira(self, obj) -> str:
+        return format_naira(obj.amount)
+
+
+class FeeStructureSerializer(serializers.ModelSerializer):
+    items = FeeItemSerializer(many=True, read_only=True)
+    total = serializers.IntegerField(read_only=True)
+    total_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FeeStructure
+        fields = [
+            "id", "code", "name", "term", "description", "is_active",
+            "items", "total", "total_naira",
+        ]
+
+    def get_total_naira(self, obj) -> str:
+        return format_naira(obj.total)
 
 
 class InvoiceSerializer(serializers.ModelSerializer):
