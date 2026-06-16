@@ -167,6 +167,7 @@ urlpatterns = [
     path("journals/<int:id>/post/", JournalPostView.as_view(), name="finance-journal-post"),
     path("journals/<int:id>/reverse/", JournalReverseView.as_view(), name="finance-journal-reverse"),
     path("direct-entries/", DirectEntryCreateView.as_view(), name="finance-direct-entry-create"),
+    path("periods/<int:id>/checklist/", PeriodCloseView.as_view(), name="finance-period-checklist"),
     path("periods/<int:id>/close/", PeriodCloseView.as_view(), name="finance-period-close"),
 
     # Reports / financial statements

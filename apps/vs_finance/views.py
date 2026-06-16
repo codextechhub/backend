@@ -604,16 +604,40 @@ class PeriodCloseView(APIView):
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
-    rbac_permission = "finance.period.close"
 
-    def post(self, request, id):
-        from .close import close_period
+    @property
+    def rbac_permission(self):
+        return "finance.period.close" if self.request.method == "POST" else "finance.period.view"
 
+    def _period(self, request, id):
         entity = resolve_entity(request)
         period = FiscalPeriod.objects.filter(entity=entity, id=id).first()
         if period is None:
             raise NotFound("Fiscal period not found for this entity.")
+        return entity, period
 
+    def get(self, request, id):
+        """Preview the close checklist for a period (no side effects)."""
+        from .close import close_checklist
+
+        entity, period = self._period(request, id)
+        checklist = close_checklist(entity, period)
+        items = _serialize_checklist(checklist)["items"]
+        return success_response(
+            message=f"Close checklist for '{period}'.",
+            data={
+                "period": FiscalPeriodSerializer(period).data,
+                "passed": checklist.passed,
+                "done": sum(1 for i in items if i["passed"]),
+                "total": len(items),
+                "items": items,
+            },
+        )
+
+    def post(self, request, id):
+        from .close import close_period
+
+        entity, period = self._period(request, id)
         body = request.data or {}
         period, checklist = close_period(
             entity, period, actor_user=request.user,
