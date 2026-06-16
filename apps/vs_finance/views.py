@@ -767,6 +767,29 @@ class StatutoryPackView(APIView):
         )
 
 
+class FinanceDashboardView(APIView):
+    """Aggregated **Finance overview** — every dashboard block in one payload.
+
+    Computed live from the GL and entity-scoped. Optional ``?period=<period_no>``
+    pins the "as of" period; otherwise the latest open period is used.
+
+    docstring-name: Finance dashboard
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.report.view"
+
+    def get(self, request):
+        from .dashboard import finance_dashboard
+
+        entity = resolve_entity(request)
+        period = _resolve_period(entity, request)
+        return success_response(
+            message="Finance dashboard retrieved.",
+            data=finance_dashboard(entity, period=period),
+        )
+
+
 class ARAgingView(APIView):
     """docstring-name: AR aging report"""
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]

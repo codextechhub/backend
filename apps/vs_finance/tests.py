@@ -2510,3 +2510,89 @@ class EntityCreatePermissionTests(TestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, 403)
+
+
+class FinanceDashboardTests(_ARFixtureMixin, TestCase):
+    """The aggregated Finance-overview payload computes every block from the GL."""
+
+    def test_dashboard_payload_reflects_posted_invoice(self):
+        from django.contrib.auth import get_user_model
+
+        from vs_finance.dashboard import finance_dashboard
+
+        entity, period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
+        post_invoice(inv)  # Dr AR 100,000 ; Cr Revenue 100,000 (no tax)
+
+        # A journal with a real author guards the actor-label path (the custom User
+        # model has no get_full_name; recent_journals must compose first/last/email).
+        author = get_user_model().objects.create_user(
+            email="fin.officer@test.com", password="x",
+            user_type="CX_STAFF", status="ACTIVE",
+            first_name="Fin", last_name="Officer",
+        )
+        je = JournalEntry.objects.create(
+            entity=entity, date=datetime.date(2026, 1, 20), period=period,
+            narration="manual adj", created_by=author,
+        )
+        JournalLine.objects.create(
+            entry=je, account=Account.objects.get(entity=entity, code="1100"),
+            debit=5000, credit=0, line_no=1,
+        )
+        JournalLine.objects.create(
+            entry=je, account=Account.objects.get(entity=entity, code="4100"),
+            debit=0, credit=5000, line_no=2,
+        )
+
+        # A capital injection into 1100 Cash & Bank must surface as cash position —
+        # even with no operational BankAccount record (the reported glitch).
+        post_journal(self.make_entry(entity, period, [("1100", 8000000, 0), ("3100", 0, 8000000)]))
+
+        d = finance_dashboard(entity)
+
+        self.assertIn("Fin Officer", [j["created_by"] for j in d["recent_journals"]])
+
+        # Cash position reflects the 1100 posting and reconciles to the cash-flow stmt.
+        from vs_finance.reports import cash_flow_statement
+        self.assertEqual(d["kpis"]["cash_position"]["value"]["kobo"], 8000000)
+        self.assertEqual(
+            d["kpis"]["cash_position"]["value"]["kobo"], cash_flow_statement(entity).closing_cash,
+        )
+        self.assertEqual(d["fiscal_year"], "2026")
+
+        # As-of defaults to the present day; pinning a period moves it to period-end.
+        self.assertEqual(d["as_of"], datetime.date.today().isoformat())
+        pinned = finance_dashboard(entity, period=period)
+        self.assertEqual(pinned["as_of"], period.end_date.isoformat())
+
+        # Top-level blocks all present.
+        for key in (
+            "kpis", "revenue_vs_budget", "ar_aging", "trend", "top_overdue",
+            "vendor_due", "approvals", "close_progress", "recent_journals",
+        ):
+            self.assertIn(key, d)
+
+        # KPI envelope shape.
+        for kpi in d["kpis"].values():
+            self.assertIn("value", kpi)
+            self.assertIn("delta_pct", kpi)
+            self.assertIsInstance(kpi["spark"], list)
+
+        # Receivables + net income reflect the posted invoice.
+        self.assertEqual(d["kpis"]["receivables"]["value"]["kobo"], 100000)
+        self.assertEqual(d["kpis"]["net_income_ytd"]["value"]["kobo"], 100000)
+        self.assertEqual(d["ar_aging"]["total"]["kobo"], 100000)
+
+        # The overdue invoice (due 25 Jan, as-of 31 Jan) tops the overdue list.
+        self.assertTrue(d["top_overdue"])
+        self.assertEqual(d["top_overdue"][0]["reference"], inv.document_number)
+        self.assertEqual(d["top_overdue"][0]["amount"]["kobo"], 100000)
+
+        # Trend is a fixed 12-month window; recent journals include the AR entry.
+        self.assertEqual(len(d["trend"]["labels"]), 12)
+        self.assertEqual(len(d["trend"]["issued"]), 12)
+        self.assertTrue(d["recent_journals"])
+
+        # Period close progress runs the checklist for the open period.
+        self.assertIsNotNone(d["close_progress"])
+        self.assertEqual(d["close_progress"]["total"], len(d["close_progress"]["checks"]))

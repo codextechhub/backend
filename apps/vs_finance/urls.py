@@ -16,6 +16,7 @@ from .views import (
     ChangesInEquityView,
     DirectEntryCreateView,
     EntityListCreateView,
+    FinanceDashboardView,
     FiscalPeriodListView,
     IncomeStatementView,
     InvoiceListView,
@@ -165,6 +166,7 @@ urlpatterns = [
     path("periods/<int:id>/close/", PeriodCloseView.as_view(), name="finance-period-close"),
 
     # Reports / financial statements
+    path("reports/dashboard/", FinanceDashboardView.as_view(), name="finance-dashboard"),
     path("reports/trial-balance/", TrialBalanceView.as_view(), name="finance-trial-balance"),
     path("reports/income-statement/", IncomeStatementView.as_view(), name="finance-income-statement"),
     path("reports/balance-sheet/", BalanceSheetView.as_view(), name="finance-balance-sheet"),
