@@ -201,23 +201,37 @@ class JournalLineSerializer(serializers.ModelSerializer):
 
 class JournalEntryListSerializer(serializers.ModelSerializer):
     period = serializers.CharField(source="period.name", read_only=True, default=None)
+    total_debit = serializers.SerializerMethodField()
+    created_by = serializers.SerializerMethodField()
 
     class Meta:
         model = JournalEntry
         fields = [
             "id", "document_number", "date", "period", "source",
             "status", "narration", "reference", "posted_at",
+            "total_debit", "created_by",
         ]
+
+    def get_total_debit(self, obj) -> int:
+        # The list view annotates `_total_debit` (one query); detail falls back to totals().
+        val = getattr(obj, "_total_debit", None)
+        return int(val) if val is not None else obj.totals()[0]
+
+    def get_created_by(self, obj) -> str:
+        u = getattr(obj, "created_by", None)
+        if u is None:
+            return "system"
+        name = f"{getattr(u, 'first_name', '') or ''} {getattr(u, 'last_name', '') or ''}".strip()
+        return name or getattr(u, "email", "") or "system"
 
 
 class JournalEntryDetailSerializer(JournalEntryListSerializer):
     lines = JournalLineSerializer(many=True, read_only=True)
-    total_debit = serializers.SerializerMethodField()
     total_credit = serializers.SerializerMethodField()
 
     class Meta(JournalEntryListSerializer.Meta):
         fields = JournalEntryListSerializer.Meta.fields + [
-            "lines", "total_debit", "total_credit", "reverses_id",
+            "lines", "total_credit", "reverses_id",
         ]
 
     def _totals(self, obj):
@@ -226,9 +240,6 @@ class JournalEntryDetailSerializer(JournalEntryListSerializer):
             cache[obj.id] = obj.totals()
             self._totals_cache = cache
         return cache[obj.id]
-
-    def get_total_debit(self, obj) -> int:
-        return self._totals(obj)[0]
 
     def get_total_credit(self, obj) -> int:
         return self._totals(obj)[1]

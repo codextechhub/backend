@@ -394,7 +394,14 @@ class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
     rbac_permission = "finance.journal.view"
 
     def entity_qs(self, entity):
-        qs = JournalEntry.objects.filter(entity=entity).select_related("period")
+        from django.db.models import Q, Sum
+        from django.db.models.functions import Coalesce
+
+        qs = (
+            JournalEntry.objects.filter(entity=entity)
+            .select_related("period", "created_by")
+            .annotate(_total_debit=Coalesce(Sum("lines__debit"), 0))
+        )
         params = self.request.query_params
         if (status_val := params.get("status")):
             qs = qs.filter(status=status_val)
@@ -404,7 +411,60 @@ class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
             qs = qs.filter(date__gte=date_from)
         if (date_to := params.get("date_to")):
             qs = qs.filter(date__lte=date_to)
+        if (search := params.get("search")):
+            qs = qs.filter(
+                Q(document_number__icontains=search)
+                | Q(narration__icontains=search)
+                | Q(reference__icontains=search)
+            )
         return qs.order_by("-date", "-id")
+
+
+class JournalSummaryView(APIView):
+    """GET /finance/journals/summary/?entity= — status counts + posted total.
+
+    Powers the Journal Entries status tabs and footer (one cheap aggregate, honours
+    the same source/date/search filters as the list).
+
+    docstring-name: Journal summary
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.journal.view"
+
+    def get(self, request):
+        from django.db.models import Count, Q, Sum
+        from django.db.models.functions import Coalesce
+        from .constants import DocumentStatus
+
+        entity = resolve_entity(request)
+        qs = JournalEntry.objects.filter(entity=entity)
+        params = request.query_params
+        if (source := params.get("source")):
+            qs = qs.filter(source=source)
+        if (date_from := params.get("date_from")):
+            qs = qs.filter(date__gte=date_from)
+        if (date_to := params.get("date_to")):
+            qs = qs.filter(date__lte=date_to)
+        if (search := params.get("search")):
+            qs = qs.filter(
+                Q(document_number__icontains=search)
+                | Q(narration__icontains=search)
+                | Q(reference__icontains=search)
+            )
+        by_status = {row["status"]: row["n"] for row in qs.values("status").annotate(n=Count("id"))}
+        posted_total = (
+            qs.filter(status=DocumentStatus.POSTED)
+            .aggregate(t=Coalesce(Sum("lines__debit"), 0))["t"]
+        )
+        return success_response(
+            "Journal summary retrieved.",
+            data={
+                "total": sum(by_status.values()),
+                "by_status": by_status,
+                "posted_total": _money(posted_total),
+            },
+        )
 
 
 class JournalEntryDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
