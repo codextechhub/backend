@@ -21,6 +21,7 @@ from .views import (
     FiscalPeriodListView,
     IncomeStatementView,
     InvoiceListView,
+    InvoiceSummaryView,
     JournalEntryDetailView,
     JournalEntryListView,
     JournalSummaryView,
@@ -123,6 +124,7 @@ urlpatterns = [
     path("fee-structures/<str:pk>/", FeeStructureDetailView.as_view(), name="finance-fee-structure-detail"),
     path("fee-structures/<str:pk>/generate/", FeeStructureGenerateView.as_view(), name="finance-fee-structure-generate"),
     path("invoices/", InvoiceListView.as_view(), name="finance-invoice-list"),
+    path("invoices/summary/", InvoiceSummaryView.as_view(), name="finance-invoice-summary"),
 
     # AR adjustments — credit/debit notes, refunds, write-offs
     path("credit-notes/", CreditNoteListCreateView.as_view(), name="finance-creditnote-list"),

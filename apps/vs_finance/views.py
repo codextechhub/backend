@@ -497,17 +497,129 @@ class InvoiceListView(EntityScopedListMixin, generics.ListAPIView):
     rbac_permission = "finance.invoice.view"
 
     def entity_qs(self, entity):
+        from django.db.models import Q
+
         qs = Invoice.objects.filter(entity=entity).select_related("customer")
         params = self.request.query_params
         if (status_val := params.get("status")):
             qs = qs.filter(status=status_val)
         if (pay := params.get("payment_status")):
             qs = qs.filter(payment_status=pay)
+        if (bucket := params.get("bucket")):
+            qs = _invoice_bucket(qs, bucket)
+        if (search := params.get("search")):
+            qs = qs.filter(
+                Q(document_number__icontains=search)
+                | Q(customer__name__icontains=search)
+                | Q(customer__code__icontains=search)
+            )
         if (customer := params.get("customer")):
             # Filter by customer code or id (feeds the receipts & allocation screen).
             qs = (qs.filter(customer__code=str(customer).upper()) if not str(customer).isdigit()
                   else qs.filter(customer_id=int(customer)))
         return qs.order_by("-invoice_date", "-id")
+
+
+def _invoice_bucket(qs, bucket):
+    """Filter invoices to a derived status bucket (the design's status tabs)."""
+    import datetime
+    from django.db.models import Q
+    from .constants import DocumentStatus, InvoicePaymentStatus
+
+    today = datetime.date.today()
+    not_overdue = Q(due_date__gte=today) | Q(due_date__isnull=True)
+    posted = qs.filter(status=DocumentStatus.POSTED)
+    if bucket == "draft":
+        return qs.filter(status=DocumentStatus.DRAFT)
+    if bucket == "paid":
+        return posted.filter(payment_status=InvoicePaymentStatus.PAID)
+    if bucket == "overdue":
+        return posted.exclude(payment_status=InvoicePaymentStatus.PAID).filter(due_date__lt=today)
+    if bucket == "partial":
+        return posted.filter(payment_status=InvoicePaymentStatus.PARTIAL).filter(not_overdue)
+    if bucket == "issued":
+        return posted.filter(payment_status=InvoicePaymentStatus.UNPAID).filter(not_overdue)
+    return qs
+
+
+class InvoiceSummaryView(APIView):
+    """GET /finance/invoices/summary/?entity= — AR KPIs, status counts, totals.
+
+    Powers the Student-Invoices KPI cards (total invoiced/collected, collection
+    rate, overdue balance + a 12-month series for the sparklines), the status tabs
+    and the footer totals. Honours the same ``?search=`` as the list.
+
+    docstring-name: Invoice summary
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.invoice.view"
+
+    def get(self, request):
+        import datetime
+        from django.db.models import F, Q, Sum
+        from django.db.models.functions import Coalesce, TruncMonth
+        from .constants import DocumentStatus, InvoicePaymentStatus
+        from .models import Invoice, Payment
+
+        entity = resolve_entity(request)
+        today = datetime.date.today()
+        base = Invoice.objects.filter(entity=entity)
+        if (search := request.query_params.get("search")):
+            base = base.filter(
+                Q(document_number__icontains=search)
+                | Q(customer__name__icontains=search)
+                | Q(customer__code__icontains=search)
+            )
+        posted = base.filter(status=DocumentStatus.POSTED)
+        unpaid_posted = posted.exclude(payment_status=InvoicePaymentStatus.PAID)
+        bal = F("total") - F("amount_paid") - F("amount_credited")
+
+        invoiced = posted.aggregate(t=Coalesce(Sum("total"), 0))["t"]
+        collected = Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED).aggregate(
+            t=Coalesce(Sum("amount"), 0))["t"]
+        overdue_balance = unpaid_posted.filter(due_date__lt=today).aggregate(t=Coalesce(Sum(bal), 0))["t"]
+        outstanding = unpaid_posted.aggregate(t=Coalesce(Sum(bal), 0))["t"]
+        total_all = base.aggregate(t=Coalesce(Sum("total"), 0))["t"]
+        rate = round(collected * 100 / invoiced, 1) if invoiced else 0.0
+
+        by_status = {
+            b: _invoice_bucket(base, b).count()
+            for b in ("draft", "issued", "partial", "paid", "overdue")
+        }
+        total_count = base.count()
+
+        first = today.replace(day=1)
+        y, mo = first.year, first.month - 11
+        while mo <= 0:
+            mo += 12
+            y -= 1
+        start = datetime.date(y, mo, 1)
+        inv_m = {r["m"]: int(r["s"] or 0) for r in posted.filter(invoice_date__gte=start)
+                 .annotate(m=TruncMonth("invoice_date")).values("m").annotate(s=Sum("total"))}
+        col_m = {r["m"]: int(r["s"] or 0) for r in Payment.objects
+                 .filter(entity=entity, status=DocumentStatus.POSTED, payment_date__gte=start)
+                 .annotate(m=TruncMonth("payment_date")).values("m").annotate(s=Sum("amount"))}
+        monthly, cur = [], start
+        for _ in range(12):
+            key = datetime.date(cur.year, cur.month, 1)
+            monthly.append({"label": cur.strftime("%b %y"), "invoiced": inv_m.get(key, 0), "collected": col_m.get(key, 0)})
+            cur = datetime.date(cur.year + (cur.month // 12), (cur.month % 12) + 1, 1)
+
+        return success_response(
+            "Invoice summary retrieved.",
+            data={
+                "kpis": {
+                    "total_invoiced": _money(invoiced),
+                    "total_collected": _money(collected),
+                    "collection_rate": rate,
+                    "overdue_balance": _money(overdue_balance),
+                },
+                "by_status": {**by_status, "total": total_count},
+                "totals": {"count": total_count, "total": _money(total_all), "outstanding": _money(outstanding)},
+                "monthly": monthly,
+            },
+        )
 
 
 # --------------------------------------------------------------------------- #
