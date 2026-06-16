@@ -155,21 +155,69 @@ class EntityListCreateView(generics.ListCreateAPIView):
 class AccountListView(EntityScopedListMixin, generics.ListAPIView):
     """GET /finance/accounts/?entity= — the entity's chart of accounts.
 
+    ``?with_balance=true`` returns the **whole tree** (un-paginated) with each
+    account's net GL ``balance`` and sub-ledger ``tag`` (CONTROL / CASH) — for the
+    Chart-of-Accounts screen. Without it, the plain paginated list is served (used
+    by the account pickers).
+
     docstring-name: Chart of accounts
     """
 
     serializer_class = AccountSerializer
     rbac_permission = "finance.account.view"
 
+    def _with_balance(self):
+        return self.request.query_params.get("with_balance") == "true"
+
     def entity_qs(self, entity):
         qs = Account.objects.filter(entity=entity).select_related("parent").order_by("code")
         params = self.request.query_params
+        if self._with_balance():
+            from django.db.models import F, Sum
+            from django.db.models.functions import Coalesce
+            qs = qs.annotate(
+                _bal_dr=Coalesce(Sum(F("balances__opening_debit") + F("balances__debit_total")), 0),
+                _bal_cr=Coalesce(Sum(F("balances__opening_credit") + F("balances__credit_total")), 0),
+            )
         if (atype := params.get("account_type")):
             qs = qs.filter(account_type=atype)
         if (postable := params.get("is_postable")) is not None:
             if postable.lower() in ("true", "false"):
                 qs = qs.filter(is_postable=postable.lower() == "true")
         return qs
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        if self._with_balance():
+            entity = getattr(self, "entity", None) or resolve_entity(self.request)
+            from .constants import CASH_BANK_CODE
+            from .models import Customer
+            control = set(
+                Customer.objects.filter(entity=entity).exclude(receivable_account=None)
+                .values_list("receivable_account_id", flat=True)
+            )
+            try:
+                from vs_procurement.models import Vendor
+                control |= set(
+                    Vendor.objects.filter(entity=entity).exclude(payable_account=None)
+                    .values_list("payable_account_id", flat=True)
+                )
+            except Exception:  # pragma: no cover - procurement optional
+                pass
+            ctx["control_ids"] = control
+            ctx["cash_ids"] = set(
+                Account.objects.filter(entity=entity, code=CASH_BANK_CODE).values_list("id", flat=True)
+            )
+        return ctx
+
+    def list(self, request, *args, **kwargs):
+        # Chart mode returns the full tree in one envelope (the tree needs every
+        # node); the picker mode keeps the standard paginated response.
+        if self._with_balance():
+            qs = self.filter_queryset(self.get_queryset())
+            data = self.get_serializer(qs, many=True).data
+            return success_response("Chart of accounts retrieved.", data=data)
+        return super().list(request, *args, **kwargs)
 
 
 class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):

@@ -134,13 +134,38 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
 
 class AccountSerializer(serializers.ModelSerializer):
     parent_code = serializers.CharField(source="parent.code", read_only=True, default=None)
+    # Net GL balance signed to the account's normal balance — populated from the
+    # ``_bal_dr``/``_bal_cr`` annotations the chart-of-accounts view adds.
+    balance = serializers.SerializerMethodField()
+    # Sub-ledger role: AR/AP control account, or the cash & bank account.
+    tag = serializers.SerializerMethodField()
 
     class Meta:
         model = Account
         fields = [
             "id", "code", "name", "account_type", "normal_balance",
             "is_contra", "is_postable", "is_active", "parent_id", "parent_code",
+            "balance", "tag",
         ]
+
+    def get_balance(self, obj):
+        from .constants import NormalBalance
+
+        dr = getattr(obj, "_bal_dr", None)
+        cr = getattr(obj, "_bal_cr", None)
+        if dr is None and cr is None:
+            return None  # not annotated (e.g. picker queries) — omit
+        net = (dr or 0) - (cr or 0)
+        if obj.normal_balance != NormalBalance.DEBIT:
+            net = -net
+        return {"kobo": int(net), "naira": format_naira(int(net))}
+
+    def get_tag(self, obj):
+        if obj.id in self.context.get("control_ids", set()):
+            return "CONTROL"
+        if obj.id in self.context.get("cash_ids", set()):
+            return "CASH"
+        return None
 
 
 class FiscalPeriodSerializer(serializers.ModelSerializer):
