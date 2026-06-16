@@ -2200,6 +2200,30 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         )
         self.assertEqual(dup.status_code, 400)
 
+    def test_account_detail_ledger_and_update(self):
+        entity, _ = self._seed()
+        from vs_finance.models import Account
+        cash = Account.objects.get(entity=entity, code="1100")
+
+        # Detail: summary + per-account posted activity (the _seed posts hit 1100).
+        resp = self.client.get(f"/v1/finance/accounts/{cash.pk}/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200)
+        d = resp.json()["data"]
+        self.assertEqual(d["account"]["code"], "1100")
+        self.assertTrue(d["summary"]["line_count"] > 0)
+        self.assertTrue(d["activity"])
+        self.assertIn("running_balance", d["activity"][0])
+
+        # Update is gated on finance.account.update; safe fields only.
+        patch = self.client.patch(
+            f"/v1/finance/accounts/{cash.pk}/?entity={entity.code}",
+            {"subtype": "Cash and cash equivalents", "name": "Cash & Bank (main)"}, format="json",
+        )
+        self.assertEqual(patch.status_code, 200)
+        self.assertEqual(patch.json()["data"]["subtype"], "Cash and cash equivalents")
+        cash.refresh_from_db()
+        self.assertEqual(cash.name, "Cash & Bank (main)")
+
     def test_direct_entry_endpoint_posts_capital_journal(self):
         # The honest way capital/equity enters: a posted journal, not magic.
         entity, _, _ = self.build_books()

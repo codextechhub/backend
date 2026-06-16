@@ -258,6 +258,114 @@ class AccountListView(EntityScopedListMixin, generics.ListAPIView):
         return super().list(request, *args, **kwargs)
 
 
+class AccountDetailView(APIView):
+    """GET an account's detail + ledger activity; PATCH to edit it.
+
+    GET returns the account, a balance summary (current, fiscal-year opening,
+    line/journal counts) and its posted journal-line activity (newest first, with
+    a running balance) — feeds the Chart-of-Accounts detail drawer.
+
+    docstring-name: Account detail & ledger
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+
+    @property
+    def rbac_permission(self):
+        return "finance.account.update" if self.request.method == "PATCH" else "finance.account.view"
+
+    def _get(self, entity, pk):
+        from .models import Account
+        acc = Account.objects.filter(entity=entity, pk=pk).select_related("parent").first()
+        if acc is None:
+            raise NotFound("No such account in this entity.")
+        return acc
+
+    def get(self, request, pk):
+        import datetime
+        from .constants import DocumentStatus, NormalBalance, AccountType
+        from .models import FiscalYear, JournalLine
+        from .reports import _account_gl_net
+
+        entity = resolve_entity(request)
+        acc = self._get(entity, pk)
+        sign = 1 if acc.normal_balance == NormalBalance.DEBIT else -1
+
+        # Posted lines hitting this account, oldest-first to accumulate a running balance.
+        lines = list(
+            JournalLine.objects.filter(account=acc, entry__status=DocumentStatus.POSTED)
+            .select_related("entry", "cost_center").order_by("entry__date", "entry__id", "line_no")
+        )
+        # Fiscal-year opening = net of everything posted before the current FY starts.
+        today = datetime.date.today()
+        fy = (
+            FiscalYear.objects.filter(entity=entity, start_date__lte=today, end_date__gte=today).first()
+            or FiscalYear.objects.filter(entity=entity).order_by("-year").first()
+        )
+        fy_start = fy.start_date if fy else None
+
+        opening = 0
+        running = 0
+        activity = []
+        journals = set()
+        for ln in lines:
+            net = sign * (ln.debit - ln.credit)
+            if fy_start and ln.entry.date < fy_start:
+                opening += net
+            running += net
+            journals.add(ln.entry_id)
+            activity.append({
+                "date": ln.entry.date.isoformat(),
+                "journal_no": ln.entry.document_number,
+                "source": getattr(ln.entry, "source", "") or "Manual",
+                "description": ln.description or ln.entry.narration or "",
+                "cost_center": ln.cost_center.code if ln.cost_center_id else "",
+                "debit": _money(ln.debit),
+                "credit": _money(ln.credit),
+                "running_balance": _money(running),
+            })
+        activity.reverse()  # newest first for display
+
+        # Headline balance uses the canonical denormalised GL net (same source as
+        # the chart's Balance column) so the two always agree; the activity list's
+        # running balance reflects the actual posted lines.
+        return success_response(
+            "Account detail retrieved.",
+            data={
+                "account": AccountSerializer(acc).data,
+                "type_label": AccountType(acc.account_type).label if acc.account_type else "",
+                "summary": {
+                    "current_balance": _money(_account_gl_net(acc)),
+                    "opening_balance": _money(opening),
+                    "line_count": len(lines),
+                    "journal_count": len(journals),
+                },
+                "activity": activity,
+            },
+        )
+
+    def patch(self, request, pk):
+        entity = resolve_entity(request)
+        acc = self._get(entity, pk)
+        body = request.data or {}
+        # Only safe, non-structural fields are editable (type/normal/parent are not,
+        # since changing them would rewrite how posted history is classified).
+        if "name" in body:
+            name = str(body["name"]).strip()
+            if not name:
+                raise ValidationError({"name": "A name is required."})
+            acc.name = name
+        for field in ("subtype", "description"):
+            if field in body:
+                setattr(acc, field, str(body[field]).strip())
+        if "is_active" in body:
+            acc.is_active = bool(body["is_active"])
+        if "is_postable" in body:
+            acc.is_postable = bool(body["is_postable"])
+        acc.save()
+        return success_response(f"Account {acc.code} updated.", data=AccountSerializer(acc).data)
+
+
 class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
     """GET /finance/periods/?entity= — the entity's fiscal periods.
 
