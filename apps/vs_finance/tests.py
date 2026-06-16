@@ -2169,6 +2169,37 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         types = {a["account_type"] for a in resp.json()["data"]}
         self.assertEqual(types, {"ASSET"})
 
+    def test_chart_with_balance_and_create_account(self):
+        entity, _ = self._seed()
+        # ?with_balance returns the full tree with balance + tag + subtype fields.
+        resp = self.client.get(f"/v1/finance/accounts/?entity={entity.code}&with_balance=true")
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.json()["data"]
+        cash = next(r for r in rows if r["code"] == "1100")
+        self.assertEqual(cash["tag"], "CASH")
+        self.assertIsNotNone(cash["balance"])
+        self.assertIn("subtype", cash)
+
+        # Create a new account with a subtype; normal balance is derived for INCOME.
+        resp = self.client.post(
+            f"/v1/finance/accounts/?entity={entity.code}",
+            {"code": "4150", "name": "Boarding Fees", "account_type": "INCOME",
+             "subtype": "Operating revenue"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        data = resp.json()["data"]
+        self.assertEqual(data["code"], "4150")
+        self.assertEqual(data["subtype"], "Operating revenue")
+        self.assertEqual(data["normal_balance"], "CREDIT")
+
+        # Duplicate code is rejected.
+        dup = self.client.post(
+            f"/v1/finance/accounts/?entity={entity.code}",
+            {"code": "4150", "name": "dup", "account_type": "INCOME"}, format="json",
+        )
+        self.assertEqual(dup.status_code, 400)
+
     def test_direct_entry_endpoint_posts_capital_journal(self):
         # The honest way capital/equity enters: a posted journal, not magic.
         entity, _, _ = self.build_books()

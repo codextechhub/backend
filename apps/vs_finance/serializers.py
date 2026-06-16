@@ -145,7 +145,7 @@ class AccountSerializer(serializers.ModelSerializer):
         fields = [
             "id", "code", "name", "account_type", "normal_balance",
             "is_contra", "is_postable", "is_active", "parent_id", "parent_code",
-            "balance", "tag",
+            "subtype", "balance", "tag",
         ]
 
     def get_balance(self, obj):

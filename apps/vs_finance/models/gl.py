@@ -136,6 +136,10 @@ class Account(TimeStampedModel):
         help_text="Leaf accounts accept postings; header accounts (False) only aggregate.",
     )
     is_active = models.BooleanField(default=True)
+    subtype = models.CharField(
+        max_length=40, blank=True, default="",
+        help_text="Optional sub-classification shown in the chart (e.g. 'Current asset', 'Operating revenue').",
+    )
     description = models.TextField(blank=True, default="")
     ifrs_line = models.CharField(
         max_length=32, choices=IFRSLine.choices, blank=True, default="",

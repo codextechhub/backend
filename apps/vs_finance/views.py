@@ -164,10 +164,48 @@ class AccountListView(EntityScopedListMixin, generics.ListAPIView):
     """
 
     serializer_class = AccountSerializer
-    rbac_permission = "finance.account.view"
+
+    @property
+    def rbac_permission(self):
+        return "finance.account.create" if self.request.method == "POST" else "finance.account.view"
 
     def _with_balance(self):
         return self.request.query_params.get("with_balance") == "true"
+
+    def post(self, request):
+        """Create a new chart-of-accounts node for the entity."""
+        from .constants import AccountType
+        from .models import Account
+
+        entity = resolve_entity(request)
+        body = request.data or {}
+        code = str(body.get("code", "")).strip()
+        if not code:
+            raise ValidationError({"code": "An account code is required."})
+        if Account.objects.filter(entity=entity, code=code).exists():
+            raise ValidationError({"code": f"Account '{code}' already exists in this entity."})
+        name = str(body.get("name", "")).strip()
+        if not name:
+            raise ValidationError({"name": "An account name is required."})
+        atype = body.get("account_type")
+        if atype not in AccountType.values:
+            raise ValidationError({"account_type": "Choose a valid account type."})
+        parent = None
+        if body.get("parent"):
+            parent = Account.objects.filter(entity=entity, pk=body.get("parent")).first()
+            if parent is None:
+                raise ValidationError({"parent": "No such parent account in this entity."})
+        # normal_balance is derived from type/contra by Account.save() when left blank.
+        account = Account.objects.create(
+            entity=entity, code=code, name=name, account_type=atype, parent=parent,
+            is_contra=bool(body.get("is_contra", False)),
+            is_postable=bool(body.get("is_postable", True)),
+            subtype=str(body.get("subtype", "")).strip(),
+            description=str(body.get("description", "")).strip(),
+        )
+        return success_response(
+            f"Account {account.code} created.", data=AccountSerializer(account).data, status=201,
+        )
 
     def entity_qs(self, entity):
         qs = Account.objects.filter(entity=entity).select_related("parent").order_by("code")
