@@ -27,9 +27,10 @@ from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 
 from . import reconciliation, services, webhooks
 from .exceptions import DuplicateWebhookError
-from .models import CollectionIntent, PayoutBatch, PayoutInstruction, VirtualAccount
+from .models import CollectionIntent, PaymentEvent, PayoutBatch, PayoutInstruction, VirtualAccount
 from .serializers import (
     CollectionIntentSerializer,
+    PaymentEventSerializer,
     PayoutBatchSerializer,
     PayoutBatchSummarySerializer,
     PayoutInstructionSerializer,
@@ -366,6 +367,36 @@ class SettlementReconciliationView(APIView):
             ],
         }
         return success_response("Settlement reconciliation retrieved.", data=data)
+
+
+class TransactionsLogView(APIView):
+    """GET the append-only gateway action log (the transactions log) for an entity.
+
+    Reads :class:`~vs_payments.models.PaymentEvent` — the immutable record of every
+    gateway action (collections, payouts, virtual accounts, webhooks) including failed
+    and rejected attempts. Filterable by ``?action=``, ``?provider=`` and
+    ``?succeeded=true|false``; capped at the most recent 200 rows.
+
+    docstring-name: Transactions log
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "payments.report.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = PaymentEvent.objects.filter(entity=entity).select_related("actor_user")
+        if (action := request.query_params.get("action")):
+            qs = qs.filter(action=action)
+        if (provider := request.query_params.get("provider")):
+            qs = qs.filter(provider=provider)
+        succeeded = request.query_params.get("succeeded")
+        if succeeded in ("true", "True", "1"):
+            qs = qs.filter(succeeded=True)
+        elif succeeded in ("false", "False", "0"):
+            qs = qs.filter(succeeded=False)
+        data = PaymentEventSerializer(qs[:200], many=True).data
+        return success_response("Transactions log retrieved.", data=data)
 
 
 # --------------------------------------------------------------------------- #

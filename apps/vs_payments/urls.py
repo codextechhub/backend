@@ -12,5 +12,6 @@ urlpatterns = [
     path("payout-batches/<int:pk>/", views.PayoutBatchDetailView.as_view(), name="payments-payout-batch-detail"),
     path("reports/settlement-reconciliation/", views.SettlementReconciliationView.as_view(),
          name="payments-settlement-reconciliation"),
+    path("transactions/", views.TransactionsLogView.as_view(), name="payments-transactions"),
     path("webhooks/<str:provider>/", views.WebhookView.as_view(), name="payments-webhook"),
 ]

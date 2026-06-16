@@ -6,7 +6,13 @@ from rest_framework import serializers
 from vs_finance.money import format_naira
 from vs_rbac.fls import FieldSecurityMixin
 
-from .models import CollectionIntent, PayoutBatch, PayoutInstruction, VirtualAccount
+from .models import (
+    CollectionIntent,
+    PaymentEvent,
+    PayoutBatch,
+    PayoutInstruction,
+    VirtualAccount,
+)
 
 
 class CollectionIntentSerializer(serializers.ModelSerializer):
@@ -86,6 +92,21 @@ class PayoutBatchSerializer(serializers.ModelSerializer):
 
     def get_total_amount_naira(self, obj):
         return format_naira(obj.total_amount)
+
+
+class PaymentEventSerializer(serializers.ModelSerializer):
+    """Read serializer for the append-only gateway action log (transactions log)."""
+
+    entity_code = serializers.CharField(source="entity.code", read_only=True, default=None)
+    action_display = serializers.CharField(source="get_action_display", read_only=True)
+    actor_email = serializers.CharField(source="actor_user.email", read_only=True, default=None)
+
+    class Meta:
+        model = PaymentEvent
+        fields = [
+            "id", "entity_code", "provider", "action", "action_display", "reference",
+            "succeeded", "message", "metadata", "actor_email", "created_at",
+        ]
 
 
 class PayoutBatchSummarySerializer(serializers.ModelSerializer):

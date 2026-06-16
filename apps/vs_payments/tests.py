@@ -551,3 +551,20 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
         data = resp.json()["data"]
         self.assertTrue(data["is_reconciled"])
         self.assertEqual(data["summary"]["settled_count"], 1)
+
+    def test_transactions_log_endpoint(self):
+        entity, customer, _ = self.build()
+        # Initiating a collection writes a COLLECTION_INITIATED PaymentEvent.
+        services.initiate_collection(entity=entity, amount=40000, customer=customer)
+        resp = self.client.get(f"/v1/payments/transactions/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.json()["data"]
+        self.assertTrue(any(r["action"] == "COLLECTION_INITIATED" for r in rows))
+        self.assertIn("action_display", rows[0])
+        # The ?action= filter narrows the log.
+        filtered = self.client.get(
+            f"/v1/payments/transactions/?entity={entity.code}&action=PAYOUT_FAILED"
+        )
+        self.assertEqual(filtered.status_code, 200)
+        # success_response coerces an empty list to {}, so assert it's falsy.
+        self.assertFalse(filtered.json()["data"])
