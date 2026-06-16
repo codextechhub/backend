@@ -182,6 +182,7 @@ class FiscalPeriodSerializer(serializers.ModelSerializer):
 class JournalLineSerializer(serializers.ModelSerializer):
     account_code = serializers.CharField(source="account.code", read_only=True)
     account_name = serializers.CharField(source="account.name", read_only=True)
+    cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
     debit_naira = serializers.SerializerMethodField()
     credit_naira = serializers.SerializerMethodField()
 
@@ -189,7 +190,7 @@ class JournalLineSerializer(serializers.ModelSerializer):
         model = JournalLine
         fields = [
             "id", "line_no", "account_id", "account_code", "account_name",
-            "debit", "credit", "debit_naira", "credit_naira", "description",
+            "cost_center", "debit", "credit", "debit_naira", "credit_naira", "description",
         ]
 
     def get_debit_naira(self, obj) -> str:
@@ -203,13 +204,14 @@ class JournalEntryListSerializer(serializers.ModelSerializer):
     period = serializers.CharField(source="period.name", read_only=True, default=None)
     total_debit = serializers.SerializerMethodField()
     created_by = serializers.SerializerMethodField()
+    created_by_id = serializers.IntegerField(read_only=True, default=None)
 
     class Meta:
         model = JournalEntry
         fields = [
             "id", "document_number", "date", "period", "source",
             "status", "narration", "reference", "posted_at",
-            "total_debit", "created_by",
+            "total_debit", "created_by", "created_by_id",
         ]
 
     def get_total_debit(self, obj) -> int:
