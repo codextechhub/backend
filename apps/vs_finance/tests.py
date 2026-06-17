@@ -2860,3 +2860,89 @@ class InvoicePayRemindEndpointTests(_ARFixtureMixin, TestCase):
         self._call(InvoiceRemindView, entity, u, inv.pk, {})
         # Same (invoice, level) → reused, never a duplicate row.
         self.assertEqual(DunningNotice.objects.filter(invoice=inv).count(), 1)
+
+
+class CustomerEndpointTests(_ARFixtureMixin, TestCase):
+    """Customer list balance/status, enriched detail/statement, and receipt."""
+
+    def _super_admin(self, email):
+        from django.contrib.auth import get_user_model
+        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        u = get_user_model().objects.create_user(
+            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Cust", last_name="Tester")
+        role, _ = PlatformRoleTemplate.objects.get_or_create(id="xvs_super_admin", defaults={"name": "Super Admin"})
+        PlatformUserRoleAssignment.objects.create(user=u, role=role, assignment_status="ACTIVE")
+        return u
+
+    def _fixture(self):
+        entity, _period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, vat)])  # total 107500
+        post_invoice(inv)
+        return entity, customer, inv
+
+    def test_list_includes_balance_and_status(self):
+        import json
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views_ar import CustomerListCreateView
+        entity, customer, inv = self._fixture()
+        u = self._super_admin("cust-list@test.com")
+        req = APIRequestFactory().get("/v1/finance/customers/", {"entity": entity.code})
+        force_authenticate(req, user=u)
+        resp = CustomerListCreateView.as_view()(req); resp.render()
+        self.assertEqual(resp.status_code, 200)
+        row = next(r for r in json.loads(resp.content)["data"] if r["code"] == customer.code)
+        self.assertEqual(row["balance"], inv.total)
+        self.assertEqual(row["account_status"], "OVERDUE")  # due 2026-01-25 is past
+
+    def test_detail_returns_statement_and_summary(self):
+        import json
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views_ar import CustomerDetailView
+        entity, customer, inv = self._fixture()
+        u = self._super_admin("cust-detail@test.com")
+        req = APIRequestFactory().get(f"/v1/finance/customers/{customer.pk}/", {"entity": entity.code})
+        force_authenticate(req, user=u)
+        resp = CustomerDetailView.as_view()(req, pk=str(customer.pk)); resp.render()
+        self.assertEqual(resp.status_code, 200)
+        d = json.loads(resp.content)["data"]
+        self.assertEqual(d["summary"]["current_balance"]["kobo"], inv.total)
+        self.assertEqual(d["summary"]["open_invoice_count"], 1)
+        self.assertTrue(d["statement"])
+        self.assertEqual(d["statement"][-1]["balance"]["kobo"], inv.total)
+
+    def test_receipt_settles_and_allocates(self):
+        import json
+        from vs_finance.constants import InvoicePaymentStatus
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views_ar import CustomerReceiptView
+        entity, customer, inv = self._fixture()
+        u = self._super_admin("cust-receipt@test.com")
+        req = APIRequestFactory().post(
+            f"/v1/finance/customers/{customer.pk}/receipt/?entity={entity.code}",
+            {"amount": inv.total, "payment_date": "2026-01-20", "deposit_account": "1100"},
+            format="json")
+        force_authenticate(req, user=u)
+        resp = CustomerReceiptView.as_view()(req, pk=str(customer.pk)); resp.render()
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(json.loads(resp.content)["data"]["allocated"], inv.total)
+        inv.refresh_from_db()
+        self.assertEqual(inv.payment_status, InvoicePaymentStatus.PAID)
+
+    def test_receipt_requires_permission(self):
+        from django.contrib.auth import get_user_model
+        from vs_finance.models import Payment
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views_ar import CustomerReceiptView
+        entity, customer, inv = self._fixture()
+        u = get_user_model().objects.create_user(
+            email="cust-noperm@test.com", password="x", user_type="CX_STAFF",
+            status="ACTIVE", first_name="No", last_name="Perm")
+        req = APIRequestFactory().post(
+            f"/v1/finance/customers/{customer.pk}/receipt/?entity={entity.code}",
+            {"amount": 5000, "payment_date": "2026-01-20", "deposit_account": "1100"},
+            format="json")
+        force_authenticate(req, user=u)
+        resp = CustomerReceiptView.as_view()(req, pk=str(customer.pk)); resp.render()
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(Payment.objects.filter(entity=entity).count(), 0)

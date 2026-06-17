@@ -103,6 +103,61 @@ def _allocation_plan(entity, raw_allocations):
 # Customers / payers                                                          #
 # --------------------------------------------------------------------------- #
 
+def _customer_ledger(entity, customer_ids=None):
+    """Net AR position per customer, in two aggregate queries (no per-row N+1).
+
+    Returns ``{customer_id: {"outstanding", "credit", "overdue", "lifetime_paid"}}``
+    where ``outstanding`` is the sum of open invoice balances, ``credit`` the
+    customer's unallocated receipts, and ``overdue`` whether any open invoice is
+    past due. Net balance = outstanding − credit (positive owes, negative in credit).
+    """
+    import datetime
+    from django.db.models import F, Q, Sum
+    from django.db.models.functions import Coalesce
+
+    from .constants import DocumentStatus
+    from .models import Invoice, Payment
+
+    today = datetime.date.today()
+    bal = F("total") - F("amount_paid") - F("amount_credited")
+    inv = Invoice.objects.filter(entity=entity, status=DocumentStatus.POSTED)
+    pay = Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED)
+    if customer_ids is not None:
+        inv = inv.filter(customer_id__in=customer_ids)
+        pay = pay.filter(customer_id__in=customer_ids)
+
+    out: dict[int, dict] = {}
+    for r in inv.values("customer_id").annotate(
+        outstanding=Coalesce(Sum(bal), 0),
+        overdue_bal=Coalesce(Sum(bal, filter=Q(due_date__lt=today)), 0),
+    ):
+        out.setdefault(r["customer_id"], {})
+        out[r["customer_id"]]["outstanding"] = int(r["outstanding"] or 0)
+        out[r["customer_id"]]["overdue"] = int(r["overdue_bal"] or 0) > 0
+    for r in pay.values("customer_id").annotate(
+        credit=Coalesce(Sum(F("amount") - F("allocated_amount")), 0),
+        lifetime=Coalesce(Sum("amount"), 0),
+    ):
+        d = out.setdefault(r["customer_id"], {})
+        d["credit"] = int(r["credit"] or 0)
+        d["lifetime_paid"] = int(r["lifetime"] or 0)
+    return out
+
+
+def _account_status(net: int, overdue: bool) -> str:
+    """Derive the customer's account status pill from net balance + aging."""
+    if net < 0:
+        return "CREDIT"
+    if overdue:
+        return "OVERDUE"
+    return "ACTIVE"
+
+
+def _money_obj(kobo) -> dict:
+    """Money payload {kobo, naira} — the AR drawer shape (mirrors views._money)."""
+    from .money import format_naira
+    return {"kobo": int(kobo), "naira": format_naira(int(kobo))}
+
 class CustomerListCreateView(_FinanceBase):
     """GET (list) / POST (create) customers / payers for an entity.
 
@@ -117,6 +172,8 @@ class CustomerListCreateView(_FinanceBase):
             else "finance.customer.view"
 
     def get(self, request):
+        from .money import format_naira
+
         entity = resolve_entity(request)
         qs = Customer.objects.filter(entity=entity).select_related("receivable_account")
         if (search := request.query_params.get("search")):
@@ -124,10 +181,19 @@ class CustomerListCreateView(_FinanceBase):
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
-        return success_response(
-            "Customers retrieved.",
-            data=CustomerSerializer(qs.order_by("code")[:500], many=True).data,
-        )
+
+        customers = list(qs.order_by("code")[:500])
+        ledger = _customer_ledger(entity, [c.id for c in customers])
+        rows = []
+        for c in customers:
+            row = CustomerSerializer(c).data
+            led = ledger.get(c.id, {})
+            net = led.get("outstanding", 0) - led.get("credit", 0)
+            row["balance"] = net                      # signed kobo: + owes, − in credit
+            row["balance_naira"] = format_naira(net)
+            row["account_status"] = _account_status(net, led.get("overdue", False))
+            rows.append(row)
+        return success_response("Customers retrieved.", data=rows)
 
     @transaction.atomic
     def post(self, request):
@@ -174,11 +240,84 @@ class CustomerDetailView(_FinanceBase):
             else "finance.customer.view"
 
     def get(self, request, pk):
+        import datetime
+
+        from .constants import DocumentStatus, InvoicePaymentStatus
+        from .models import Invoice, Payment
+
         entity = resolve_entity(request)
         customer = _resolve_customer(entity, pk)
-        return success_response(
-            "Customer retrieved.", data=CustomerSerializer(customer).data,
+        led = _customer_ledger(entity, [customer.id]).get(customer.id, {})
+        net = led.get("outstanding", 0) - led.get("credit", 0)
+        today = datetime.date.today()
+
+        invoices = list(Invoice.objects.filter(
+            entity=entity, customer=customer, status=DocumentStatus.POSTED,
+        ).order_by("invoice_date", "id")[:500])
+        payments = list(Payment.objects.filter(
+            entity=entity, customer=customer, status=DocumentStatus.POSTED,
+        ).order_by("payment_date", "id")[:500])
+
+        def inv_status(i):
+            if i.payment_status == InvoicePaymentStatus.PAID:
+                return "PAID"
+            if i.due_date and i.due_date < today and i.balance_due > 0:
+                return "OVERDUE"
+            if i.payment_status == InvoicePaymentStatus.PARTIAL:
+                return "PARTIAL"
+            return "ISSUED"
+
+        open_invoices = [
+            {
+                "document_number": i.document_number,
+                "invoice_date": i.invoice_date.isoformat(),
+                "due_date": i.due_date.isoformat() if i.due_date else None,
+                "total": _money_obj(i.total), "balance": _money_obj(i.balance_due),
+                "status": inv_status(i),
+            }
+            for i in invoices if i.balance_due > 0
+        ]
+
+        transactions = (
+            [{"date": i.invoice_date.isoformat(), "type": "INVOICE",
+              "reference": i.document_number, "amount": _money_obj(i.total),
+              "status": inv_status(i)} for i in invoices]
+            + [{"date": p.payment_date.isoformat(), "type": "PAYMENT",
+                "reference": p.document_number, "amount": _money_obj(p.amount),
+                "status": "POSTED"} for p in payments]
         )
+        transactions.sort(key=lambda t: t["date"], reverse=True)
+
+        # Statement: opening balance, then invoices (debit) and receipts (credit),
+        # chronological, with a running balance.
+        events = []
+        if customer.opening_balance:
+            events.append((datetime.date.min, "Opening balance", customer.opening_balance, 0))
+        events += [(i.invoice_date, f"Invoice {i.document_number}", i.total, 0) for i in invoices]
+        events += [(p.payment_date, f"Receipt {p.document_number}", 0, p.amount) for p in payments]
+        events.sort(key=lambda e: e[0])
+        running = 0
+        statement = []
+        for d, desc, debit, credit in events:
+            running += debit - credit
+            statement.append({
+                "date": None if d == datetime.date.min else d.isoformat(),
+                "description": desc, "debit": _money_obj(debit),
+                "credit": _money_obj(credit), "balance": _money_obj(running),
+            })
+
+        return success_response("Customer retrieved.", data={
+            "customer": CustomerSerializer(customer).data,
+            "summary": {
+                "current_balance": _money_obj(net),
+                "lifetime_paid": _money_obj(led.get("lifetime_paid", 0)),
+                "open_invoice_count": len(open_invoices),
+                "account_status": _account_status(net, led.get("overdue", False)),
+            },
+            "open_invoices": open_invoices,
+            "transactions": transactions,
+            "statement": statement,
+        })
 
     @transaction.atomic
     def patch(self, request, pk):
@@ -199,6 +338,48 @@ class CustomerDetailView(_FinanceBase):
         customer.save()
         return success_response(
             f"Customer {customer.code} updated.", data=CustomerSerializer(customer).data,
+        )
+
+
+class CustomerReceiptView(_FinanceBase):
+    """POST /customers/<pk>/receipt/ — record a receipt for a customer and auto-
+    allocate it across their open invoices (oldest first). Any excess stays as
+    unallocated credit on the customer.
+
+    docstring-name: Record a customer receipt
+    """
+
+    rbac_permission = "finance.payment.create"
+
+    @transaction.atomic
+    def post(self, request, pk):
+        from .models import Payment
+        from .receivables import post_payment
+
+        entity = resolve_entity(request)
+        customer = _resolve_customer(entity, pk)
+        body = request.data or {}
+        amount = _money(body.get("amount"), "amount")
+        if amount <= 0:
+            raise ValidationError({"amount": "A positive amount is required."})
+        payment = Payment.objects.create(
+            entity=entity, customer=customer,
+            payment_date=_date(body.get("payment_date"), "payment_date", required=True),
+            method=body.get("method") or "BANK_TRANSFER", amount=amount,
+            deposit_account=_resolve_account(
+                entity, body.get("deposit_account"), "deposit_account", required=True),
+            reference=body.get("reference", ""), narration=body.get("narration", ""),
+            created_by=request.user,
+        )
+        post_payment(payment, actor_user=request.user, auto_allocate=True)
+        return success_response(
+            f"Receipt {payment.document_number} recorded for {customer.code}.",
+            data={
+                "payment": payment.document_number,
+                "allocated": payment.allocated_amount,
+                "unallocated": payment.unallocated_amount,
+            },
+            status=201,
         )
 
 
