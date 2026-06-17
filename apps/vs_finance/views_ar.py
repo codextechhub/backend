@@ -700,7 +700,8 @@ class CreditNoteListCreateView(_FinanceBase):
 
     def get(self, request):
         entity = resolve_entity(request)
-        qs = CreditNote.objects.filter(entity=entity).prefetch_related("lines")
+        qs = (CreditNote.objects.filter(entity=entity)
+              .select_related("customer", "invoice").prefetch_related("lines"))
         if (kind := request.query_params.get("kind")):
             qs = qs.filter(kind=kind)
         if (status_val := request.query_params.get("status")):

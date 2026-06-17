@@ -373,6 +373,7 @@ class CreditNoteLineSerializer(serializers.ModelSerializer):
 class CreditNoteSerializer(serializers.ModelSerializer):
     customer_code = serializers.CharField(source="customer.code", read_only=True)
     customer_name = serializers.CharField(source="customer.name", read_only=True)
+    invoice_number = serializers.CharField(source="invoice.document_number", read_only=True, default=None)
     unallocated_amount = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
     lines = CreditNoteLineSerializer(many=True, read_only=True)
@@ -381,7 +382,7 @@ class CreditNoteSerializer(serializers.ModelSerializer):
         model = CreditNote
         fields = [
             "id", "document_number", "kind", "customer_id", "customer_code",
-            "customer_name", "invoice_id", "note_date", "status",
+            "customer_name", "invoice_id", "invoice_number", "note_date", "status",
             "subtotal", "tax_total", "total", "total_naira",
             "allocated_amount", "unallocated_amount", "reason", "reference", "lines",
         ]
