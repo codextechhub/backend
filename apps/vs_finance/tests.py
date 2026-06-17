@@ -2946,3 +2946,24 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         resp = CustomerReceiptView.as_view()(req, pk=str(customer.pk)); resp.render()
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(Payment.objects.filter(entity=entity).count(), 0)
+
+    def test_receipt_allocates_oldest_first_partially(self):
+        # Owe ₦79 (older) + ₦56; pay ₦90 → ₦79 fully + ₦11, leaving ₦45 on the 2nd.
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views_ar import CustomerReceiptView
+        entity, _period, customer, _vat = self.build_ar()
+        a = self.make_invoice(entity, customer, lines=[("4100", 1, 7900, None)])  # ₦79, older
+        post_invoice(a)
+        b = self.make_invoice(entity, customer, lines=[("4100", 1, 5600, None)])  # ₦56
+        post_invoice(b)
+        u = self._super_admin("cust-alloc@test.com")
+        req = APIRequestFactory().post(
+            f"/v1/finance/customers/{customer.pk}/receipt/?entity={entity.code}",
+            {"amount": 9000, "payment_date": "2026-01-20", "deposit_account": "1100"},
+            format="json")
+        force_authenticate(req, user=u)
+        resp = CustomerReceiptView.as_view()(req, pk=str(customer.pk)); resp.render()
+        self.assertEqual(resp.status_code, 201)
+        a.refresh_from_db(); b.refresh_from_db()
+        self.assertEqual(a.balance_due, 0)       # ₦79 fully settled
+        self.assertEqual(b.balance_due, 4500)    # ₦56 − ₦11 = ₦45 remaining
