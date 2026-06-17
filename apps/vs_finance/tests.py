@@ -2651,3 +2651,212 @@ class FinanceDashboardTests(_ARFixtureMixin, TestCase):
         # Period close progress runs the checklist for the open period.
         self.assertIsNotNone(d["close_progress"])
         self.assertEqual(d["close_progress"]["total"], len(d["close_progress"]["checks"]))
+
+
+class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
+    """The invoice detail drawer endpoint returns lines + GL postings."""
+
+    def test_detail_returns_lines_and_postings(self):
+        import json
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        from vs_finance.views import InvoiceDetailView
+
+        entity, period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, vat)])
+        post_invoice(inv)
+
+        u = get_user_model().objects.create_user(
+            email="inv-detail@test.com", password="x", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Inv", last_name="Detail")
+        role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
+        PlatformUserRoleAssignment.objects.create(user=u, role=role, assignment_status="ACTIVE")
+
+        req = APIRequestFactory().get(f"/v1/finance/invoices/{inv.pk}/", {"entity": entity.code})
+        force_authenticate(req, user=u)
+        resp = InvoiceDetailView.as_view()(req, pk=inv.pk)
+        resp.render()
+        self.assertEqual(resp.status_code, 200)
+        d = json.loads(resp.content)["data"]
+        self.assertEqual(d["invoice"]["document_number"], inv.document_number)
+        self.assertTrue(d["lines"])
+        self.assertEqual(d["lines"][0]["account_code"], "4100")
+        self.assertTrue(d["gl_postings"])
+        self.assertEqual(d["summary"]["total"]["kobo"], inv.total)
+
+
+class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
+    """POST /finance/invoices/ raises (and posts) a manual invoice, gated on create."""
+
+    def _super_admin(self, email):
+        from django.contrib.auth import get_user_model
+        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        u = get_user_model().objects.create_user(
+            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Inv", last_name="Maker")
+        role, _ = PlatformRoleTemplate.objects.get_or_create(id="xvs_super_admin", defaults={"name": "Super Admin"})
+        PlatformUserRoleAssignment.objects.create(user=u, role=role, assignment_status="ACTIVE")
+        return u
+
+    def _post(self, entity, user, body):
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views import InvoiceListView
+        req = APIRequestFactory().post(
+            f"/v1/finance/invoices/?entity={entity.code}", body, format="json")
+        force_authenticate(req, user=user)
+        resp = InvoiceListView.as_view()(req)
+        resp.render()
+        return resp
+
+    def test_create_posts_invoice_with_tax(self):
+        import json
+        from vs_finance.constants import DocumentStatus
+        entity, _period, _customer, vat = self.build_ar()
+        u = self._super_admin("inv-create@test.com")
+        resp = self._post(entity, u, {
+            "customer": "CUST1", "invoice_date": "2026-01-10", "due_date": "2026-01-25",
+            "lines": [{"revenue_account": "4100", "description": "Consulting",
+                       "quantity": 2, "unit_price": 50000, "tax_code": "VAT"}],
+        })
+        self.assertEqual(resp.status_code, 201)
+        d = json.loads(resp.content)["data"]
+        self.assertEqual(d["status"], DocumentStatus.POSTED)
+        self.assertEqual(d["subtotal"], 100000)
+        self.assertEqual(d["tax_total"], 7500)
+        self.assertEqual(d["total"], 107500)
+        inv = Invoice.objects.get(pk=d["id"])
+        self.assertIsNotNone(inv.journal_id)   # AR journal raised
+
+    def test_create_draft_when_post_false(self):
+        import json
+        from vs_finance.constants import DocumentStatus
+        entity, _p, _c, _vat = self.build_ar()
+        u = self._super_admin("inv-draft@test.com")
+        resp = self._post(entity, u, {
+            "customer": "CUST1", "invoice_date": "2026-01-10", "post": False,
+            "lines": [{"revenue_account": "4100", "quantity": 1, "unit_price": 30000}],
+        })
+        self.assertEqual(resp.status_code, 201)
+        d = json.loads(resp.content)["data"]
+        self.assertEqual(d["status"], DocumentStatus.DRAFT)
+        self.assertEqual(d["total"], 30000)
+        self.assertIsNone(Invoice.objects.get(pk=d["id"]).journal_id)
+
+    def test_create_requires_permission(self):
+        from django.contrib.auth import get_user_model
+        entity, _p, _c, _vat = self.build_ar()
+        # A plain active user with no super-admin role lacks finance.invoice.create.
+        u = get_user_model().objects.create_user(
+            email="inv-nobody@test.com", password="x", user_type="CX_STAFF",
+            status="ACTIVE", first_name="No", last_name="Perm")
+        resp = self._post(entity, u, {
+            "customer": "CUST1", "invoice_date": "2026-01-10",
+            "lines": [{"revenue_account": "4100", "quantity": 1, "unit_price": 30000}],
+        })
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(Invoice.objects.filter(entity=entity).count(), 0)
+
+    def test_create_rejects_empty_lines(self):
+        entity, _p, _c, _vat = self.build_ar()
+        u = self._super_admin("inv-empty@test.com")
+        resp = self._post(entity, u, {"customer": "CUST1", "invoice_date": "2026-01-10", "lines": []})
+        self.assertEqual(resp.status_code, 400)
+
+
+class InvoicePayRemindEndpointTests(_ARFixtureMixin, TestCase):
+    """POST /invoices/<id>/pay/ records a receipt; /remind/ raises a dunning notice."""
+
+    def _super_admin(self, email):
+        from django.contrib.auth import get_user_model
+        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        u = get_user_model().objects.create_user(
+            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Pay", last_name="Tester")
+        role, _ = PlatformRoleTemplate.objects.get_or_create(id="xvs_super_admin", defaults={"name": "Super Admin"})
+        PlatformUserRoleAssignment.objects.create(user=u, role=role, assignment_status="ACTIVE")
+        return u
+
+    def _call(self, view, entity, user, pk, body):
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        req = APIRequestFactory().post(f"/v1/finance/invoices/{pk}/x/?entity={entity.code}", body, format="json")
+        force_authenticate(req, user=user)
+        resp = view.as_view()(req, pk=pk)
+        resp.render()
+        return resp
+
+    def _posted_invoice(self):
+        entity, _period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, vat)])
+        post_invoice(inv)
+        return entity, inv
+
+    def test_pay_settles_invoice(self):
+        import json
+        from vs_finance.constants import InvoicePaymentStatus
+        from vs_finance.views_ar import InvoicePayView
+        entity, inv = self._posted_invoice()
+        u = self._super_admin("pay-ok@test.com")
+        resp = self._call(InvoicePayView, entity, u, inv.pk, {
+            "amount": inv.total, "payment_date": "2026-01-20",
+            "method": "BANK_TRANSFER", "deposit_account": "1100",
+        })
+        self.assertEqual(resp.status_code, 201)
+        d = json.loads(resp.content)["data"]
+        self.assertEqual(d["payment_status"], InvoicePaymentStatus.PAID)
+        self.assertEqual(d["balance_due"], 0)
+        inv.refresh_from_db()
+        self.assertEqual(inv.amount_paid, inv.total)
+
+    def test_partial_payment_leaves_balance(self):
+        import json
+        from vs_finance.constants import InvoicePaymentStatus
+        from vs_finance.views_ar import InvoicePayView
+        entity, inv = self._posted_invoice()
+        u = self._super_admin("pay-part@test.com")
+        resp = self._call(InvoicePayView, entity, u, inv.pk, {
+            "amount": 40000, "payment_date": "2026-01-20", "deposit_account": "1100",
+        })
+        self.assertEqual(resp.status_code, 201)
+        d = json.loads(resp.content)["data"]
+        self.assertEqual(d["payment_status"], InvoicePaymentStatus.PARTIAL)
+        self.assertEqual(d["balance_due"], inv.total - 40000)
+
+    def test_pay_requires_permission(self):
+        from django.contrib.auth import get_user_model
+        from vs_finance.models import Payment
+        from vs_finance.views_ar import InvoicePayView
+        entity, inv = self._posted_invoice()
+        u = get_user_model().objects.create_user(
+            email="pay-nobody@test.com", password="x", user_type="CX_STAFF",
+            status="ACTIVE", first_name="No", last_name="Perm")
+        resp = self._call(InvoicePayView, entity, u, inv.pk, {
+            "amount": inv.total, "payment_date": "2026-01-20", "deposit_account": "1100",
+        })
+        self.assertEqual(resp.status_code, 403)
+        self.assertEqual(Payment.objects.filter(entity=entity).count(), 0)
+
+    def test_remind_raises_and_sends_notice(self):
+        import json
+        from vs_finance.constants import DunningNoticeStatus
+        from vs_finance.models import DunningNotice
+        from vs_finance.views_ar import InvoiceRemindView
+        entity, inv = self._posted_invoice()   # due 2026-01-25 → overdue today
+        u = self._super_admin("remind-ok@test.com")
+        resp = self._call(InvoiceRemindView, entity, u, inv.pk, {})
+        self.assertEqual(resp.status_code, 200)
+        d = json.loads(resp.content)["data"]
+        self.assertEqual(d["notice_status"], DunningNoticeStatus.SENT)
+        notice = DunningNotice.objects.get(invoice=inv)
+        self.assertEqual(notice.notice_status, DunningNoticeStatus.SENT)
+        self.assertGreaterEqual(notice.level, 1)
+
+    def test_remind_is_idempotent_on_level(self):
+        from vs_finance.models import DunningNotice
+        from vs_finance.views_ar import InvoiceRemindView
+        entity, inv = self._posted_invoice()
+        u = self._super_admin("remind-twice@test.com")
+        self._call(InvoiceRemindView, entity, u, inv.pk, {})
+        self._call(InvoiceRemindView, entity, u, inv.pk, {})
+        # Same (invoice, level) → reused, never a duplicate row.
+        self.assertEqual(DunningNotice.objects.filter(invoice=inv).count(), 1)

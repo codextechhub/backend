@@ -617,6 +617,80 @@ class InvoiceWriteOffView(_FinanceBase):
         )
 
 
+class InvoicePayView(_FinanceBase):
+    """POST /invoices/<pk>/pay/ — record a customer receipt and settle this invoice.
+
+    Body: ``{amount(kobo), payment_date, method?, deposit_account, reference?,
+    narration?}``. Posts the receipt (Dr bank/cash, Cr AR) and allocates it to this
+    invoice; any excess remains as unallocated credit on the customer.
+
+    docstring-name: Record a payment
+    """
+
+    rbac_permission = "finance.payment.create"
+
+    @transaction.atomic
+    def post(self, request, pk):
+        from .models import Payment
+        from .receivables import post_payment
+
+        entity = resolve_entity(request)
+        invoice = Invoice.objects.filter(entity=entity, pk=pk).first()
+        if invoice is None:
+            raise NotFound("Invoice not found for this entity.")
+        if invoice.status != "POSTED":
+            raise ValidationError({"invoice": "Only a posted invoice can be paid."})
+
+        body = request.data or {}
+        amount = _money(body.get("amount"), "amount")
+        if amount <= 0:
+            raise ValidationError({"amount": "A positive amount is required."})
+
+        payment = Payment.objects.create(
+            entity=entity, customer=invoice.customer,
+            payment_date=_date(body.get("payment_date"), "payment_date", required=True),
+            method=body.get("method") or "BANK_TRANSFER",
+            amount=amount,
+            deposit_account=_resolve_account(
+                entity, body.get("deposit_account"), "deposit_account", required=True),
+            currency=invoice.currency,
+            reference=body.get("reference", ""),
+            narration=body.get("narration", ""),
+            created_by=request.user,
+        )
+        post_payment(payment, actor_user=request.user, allocations=[(invoice, amount)])
+        invoice.refresh_from_db()
+        return success_response(
+            f"Receipt {payment.document_number} recorded against {invoice.document_number}.",
+            data=InvoiceSerializer(invoice).data, status=201,
+        )
+
+
+class InvoiceRemindView(_FinanceBase):
+    """POST /invoices/<pk>/remind/ — raise & send a dunning reminder for this invoice.
+
+    docstring-name: Send an invoice reminder
+    """
+
+    rbac_permission = "finance.dunning.send"
+
+    def post(self, request, pk):
+        from .dunning import remind_invoice
+
+        entity = resolve_entity(request)
+        invoice = Invoice.objects.filter(entity=entity, pk=pk).first()
+        if invoice is None:
+            raise NotFound("Invoice not found for this entity.")
+        notice = remind_invoice(
+            invoice, actor_user=request.user,
+            message=(request.data or {}).get("message", ""),
+        )
+        return success_response(
+            f"Reminder {notice.document_number} sent for {invoice.document_number}.",
+            data=DunningNoticeSerializer(notice).data,
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Concessions — discounts / waivers / scholarships                            #
 # --------------------------------------------------------------------------- #

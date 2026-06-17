@@ -489,12 +489,76 @@ class JournalEntryDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
 
 class InvoiceListView(EntityScopedListMixin, generics.ListAPIView):
     """GET /finance/invoices/?entity= — sales invoices for the entity.
+    POST /finance/invoices/?entity= — raise a manual invoice (and post it).
 
     docstring-name: Customer invoices
     """
 
     serializer_class = InvoiceSerializer
-    rbac_permission = "finance.invoice.view"
+
+    @property
+    def rbac_permission(self):
+        return "finance.invoice.create" if self.request.method == "POST" \
+            else "finance.invoice.view"
+
+    def post(self, request, *args, **kwargs):
+        """Create a manual invoice from ``{customer, invoice_date, lines:[...]}``.
+
+        Each line: ``{revenue_account, description?, quantity?, unit_price, tax_code?,
+        cost_center?}`` (unit_price in kobo). Posts the AR journal unless
+        ``post=false`` (saved as a priced draft). Mirrors the fee-run path.
+        """
+        from django.db import transaction
+        from .models import InvoiceLine
+        from .receivables import post_invoice, price_invoice
+        from .views_ar import _resolve_customer
+        from .views_ops import (
+            _date, _dec, _money, _require_lines, _resolve_account,
+            _resolve_cost_center, _resolve_currency, _resolve_tax,
+        )
+
+        entity = resolve_entity(request)
+        body = request.data or {}
+        lines = _require_lines(body)
+        should_post = body.get("post", True)
+        if isinstance(should_post, str):
+            should_post = should_post.lower() not in ("false", "0", "no")
+
+        with transaction.atomic():
+            invoice = Invoice.objects.create(
+                entity=entity,
+                customer=_resolve_customer(entity, body.get("customer")),
+                invoice_date=_date(body.get("invoice_date"), "invoice_date", required=True),
+                due_date=_date(body.get("due_date"), "due_date"),
+                currency=_resolve_currency(body.get("currency")),
+                source="MANUAL",
+                reference=body.get("reference", ""),
+                narration=body.get("narration", ""),
+                created_by=request.user,
+            )
+            for i, ln in enumerate(lines, start=1):
+                InvoiceLine.objects.create(
+                    invoice=invoice, line_no=i,
+                    description=ln.get("description", ""),
+                    revenue_account=_resolve_account(
+                        entity, ln.get("revenue_account"),
+                        f"lines[{i}].revenue_account", required=True),
+                    quantity=_dec(ln.get("quantity", 1), f"lines[{i}].quantity"),
+                    unit_price=_money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),
+                    tax_code=_resolve_tax(entity, ln.get("tax_code"), f"lines[{i}].tax_code"),
+                    cost_center=_resolve_cost_center(
+                        entity, ln.get("cost_center"), f"lines[{i}].cost_center"),
+                )
+            if should_post:
+                post_invoice(invoice, actor_user=request.user)
+            else:
+                price_invoice(invoice)
+
+        invoice.refresh_from_db()
+        return success_response(
+            f"Invoice {invoice.document_number} {'posted' if should_post else 'saved as draft'}.",
+            data=InvoiceSerializer(invoice).data, status=201,
+        )
 
     def entity_qs(self, entity):
         from django.db.models import Q
@@ -618,6 +682,101 @@ class InvoiceSummaryView(APIView):
                 "by_status": {**by_status, "total": total_count},
                 "totals": {"count": total_count, "total": _money(total_all), "outstanding": _money(outstanding)},
                 "monthly": monthly,
+            },
+        )
+
+
+class InvoiceDetailView(APIView):
+    """GET /finance/invoices/<id>/ — the full invoice for the detail drawer:
+    lines, allocated payments, GL postings (from its journal), reminders, and a
+    derived activity timeline.
+
+    docstring-name: Invoice detail
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.invoice.view"
+
+    def get(self, request, pk):
+        from .models import Invoice
+
+        entity = resolve_entity(request)
+        inv = (
+            Invoice.objects.filter(entity=entity, pk=pk)
+            .select_related("customer", "journal")
+            .prefetch_related(
+                "lines__revenue_account", "lines__tax_code",
+                "allocations__payment", "dunning_notices", "journal__lines__account",
+            )
+            .first()
+        )
+        if inv is None:
+            raise NotFound("No such invoice in this entity.")
+
+        lines = [
+            {
+                "description": ln.description or "—",
+                "account_code": ln.revenue_account.code,
+                "account_name": ln.revenue_account.name,
+                "quantity": str(ln.quantity),
+                "unit_price": _money(ln.unit_price),
+                "tax_code": ln.tax_code.code if ln.tax_code_id else None,
+                "tax_amount": _money(ln.tax_amount),
+                "line_total": _money(ln.net_amount + ln.tax_amount),
+            }
+            for ln in inv.lines.all()
+        ]
+        payments = [
+            {
+                "date": a.payment.payment_date.isoformat(),
+                "reference": a.payment.document_number,
+                "method": a.payment.method,
+                "amount": _money(a.amount),
+            }
+            for a in inv.allocations.all()
+        ]
+        gl_postings = []
+        if inv.journal_id:
+            for gl in inv.journal.lines.all():
+                gl_postings.append({
+                    "account_code": gl.account.code, "account_name": gl.account.name,
+                    "debit": _money(gl.debit), "credit": _money(gl.credit),
+                })
+        reminders = [
+            {
+                "date": (d.notice_date or d.created_at.date()).isoformat(),
+                "level": d.level,
+                "channel": d.channel or "",
+                "status": d.notice_status,
+            }
+            for d in inv.dunning_notices.all()
+        ]
+
+        activity = [{"date": inv.invoice_date.isoformat(), "label": "Invoice created"}]
+        for a in inv.allocations.all():
+            activity.append({
+                "date": a.payment.payment_date.isoformat(),
+                "label": f"Payment {a.payment.document_number} ({format_naira(a.amount)})",
+            })
+        for r in reminders:
+            activity.append({"date": r["date"], "label": f"Reminder level {r['level']} — {r['status']}"})
+        activity.sort(key=lambda x: x["date"])
+
+        return success_response(
+            "Invoice retrieved.",
+            data={
+                "invoice": InvoiceSerializer(inv).data,
+                "summary": {
+                    "subtotal": _money(inv.subtotal), "tax": _money(inv.tax_total),
+                    "total": _money(inv.total), "paid": _money(inv.amount_paid),
+                    "balance": _money(inv.balance_due),
+                    "due_date": inv.due_date.isoformat() if inv.due_date else None,
+                },
+                "lines": lines,
+                "payments": payments,
+                "gl_postings": gl_postings,
+                "reminders": reminders,
+                "activity": activity,
             },
         )
 

@@ -152,6 +152,59 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
     return created
 
 
+@transaction.atomic
+def remind_invoice(invoice, *, actor_user=None, send=True, message=""):
+    """Raise (and, by default, send) a dunning reminder for a single invoice.
+
+    The per-invoice counterpart to :func:`generate_dunning` — used by the invoice
+    drawer's *Send reminder* action. Picks the highest dunning stage the invoice's
+    days-overdue qualifies for (or the gentlest stage if it isn't overdue yet), and
+    reuses the existing notice for that ``(invoice, level)`` so the unique pair is
+    never violated; a previously cancelled/resolved notice is reactivated to PENDING.
+    Returns the notice. Raises :class:`PostingError` if there is nothing to remind.
+    """
+    from .models import DunningNotice
+
+    if invoice.status != DocumentStatus.POSTED:
+        raise PostingError("Only a posted invoice can be reminded.")
+    if invoice.balance_due <= 0:
+        raise PostingError("This invoice has no outstanding balance to remind on.")
+
+    policy = ensure_default_policy(invoice.entity)
+    stages = list(policy.stages.order_by("min_days_overdue", "level"))
+    if not stages:
+        raise PostingError(f"Dunning policy '{policy.name}' has no stages defined.")
+
+    as_of = timezone.now().date()
+    due = invoice.due_date or invoice.invoice_date
+    days_overdue = max((as_of - due).days, 0)
+    stage = _stage_for(stages, days_overdue) or stages[0]
+
+    notice, created = DunningNotice.objects.get_or_create(
+        invoice=invoice, level=stage.level,
+        defaults={
+            "entity": invoice.entity, "branch": invoice.branch,
+            "customer": invoice.customer, "policy": policy, "stage": stage,
+            "notice_date": as_of, "days_overdue": days_overdue,
+            "amount_due": invoice.balance_due, "channel": stage.channel,
+            "message": message or stage.message,
+            "notice_status": DunningNoticeStatus.PENDING, "created_by": actor_user,
+        },
+    )
+    if not created:
+        notice.days_overdue = days_overdue
+        notice.amount_due = invoice.balance_due
+        if notice.notice_status in (DunningNoticeStatus.CANCELLED, DunningNoticeStatus.RESOLVED):
+            notice.notice_status = DunningNoticeStatus.PENDING
+            notice.sent_at = None
+        notice.save(update_fields=["days_overdue", "amount_due", "notice_status", "sent_at", "updated_at"])
+
+    if send:
+        mark_notice_sent(notice, actor_user=actor_user)
+    notice.refresh_from_db()
+    return notice
+
+
 def _resolve_settled(entity, *, actor_user=None):
     """Flip any PENDING/SENT notice whose invoice is now fully paid to RESOLVED."""
     from .models import DunningNotice

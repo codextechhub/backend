@@ -20,6 +20,7 @@ from .views import (
     FinanceDashboardView,
     FiscalPeriodListView,
     IncomeStatementView,
+    InvoiceDetailView,
     InvoiceListView,
     InvoiceSummaryView,
     JournalEntryDetailView,
@@ -52,6 +53,8 @@ from .views_ar import (
     DunningNoticeSendView,
     DunningPolicyDetailView,
     DunningPolicyListCreateView,
+    InvoicePayView,
+    InvoiceRemindView,
     InvoiceWriteOffView,
     PaymentPlanActivateView,
     PaymentPlanCancelView,
@@ -125,6 +128,9 @@ urlpatterns = [
     path("fee-structures/<str:pk>/generate/", FeeStructureGenerateView.as_view(), name="finance-fee-structure-generate"),
     path("invoices/", InvoiceListView.as_view(), name="finance-invoice-list"),
     path("invoices/summary/", InvoiceSummaryView.as_view(), name="finance-invoice-summary"),
+    path("invoices/<int:pk>/", InvoiceDetailView.as_view(), name="finance-invoice-detail"),
+    path("invoices/<int:pk>/pay/", InvoicePayView.as_view(), name="finance-invoice-pay"),
+    path("invoices/<int:pk>/remind/", InvoiceRemindView.as_view(), name="finance-invoice-remind"),
 
     # AR adjustments — credit/debit notes, refunds, write-offs
     path("credit-notes/", CreditNoteListCreateView.as_view(), name="finance-creditnote-list"),
