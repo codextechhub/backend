@@ -33,10 +33,12 @@ from vs_finance.models import (
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies
 
 DEMO_CUSTOMERS = [
-    ("CUST-001", "Adeyemi & Sons Ltd", "billing@adeyemi.example"),
-    ("CUST-002", "Brightline Logistics", "accounts@brightline.example"),
-    ("CUST-003", "Crystal Foods Plc", "finance@crystalfoods.example"),
-    ("CUST-004", "Dunamis Consulting", "ar@dunamis.example"),
+    # @example.com is the RFC-2606 reserved demo domain — well-formed, so the
+    # payment gateway accepts it (a bare ".example" TLD is rejected by PSPs).
+    ("CUST-001", "Adeyemi & Sons Ltd", "billing.adeyemi@example.com"),
+    ("CUST-002", "Brightline Logistics", "brightline.billing@example.com"),
+    ("CUST-003", "Crystal Foods Plc", "crystalfoods.finance@example.com"),
+    ("CUST-004", "Dunamis Consulting", "dunamis.ar@example.com"),
 ]
 
 # (line_no, description, revenue_code, amount_kobo, tax_code_or_None)
