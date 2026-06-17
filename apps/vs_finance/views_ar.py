@@ -379,6 +379,7 @@ class CustomerReceiptView(_FinanceBase):
         return success_response(
             f"Receipt {payment.document_number} recorded for {customer.code}.",
             data={
+                "id": payment.id,
                 "payment": payment.document_number,
                 "allocated": payment.allocated_amount,
                 "unallocated": payment.unallocated_amount,
