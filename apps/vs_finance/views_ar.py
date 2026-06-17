@@ -39,6 +39,7 @@ from .serializers import (
     FeeStructureSerializer,
     InvoiceSerializer,
     PaymentPlanSerializer,
+    PaymentSerializer,
     RefundSerializer,
 )
 from .views import resolve_entity
@@ -371,7 +372,10 @@ class CustomerReceiptView(_FinanceBase):
             reference=body.get("reference", ""), narration=body.get("narration", ""),
             created_by=request.user,
         )
-        post_payment(payment, actor_user=request.user, auto_allocate=True)
+        auto = body.get("auto_allocate", True)
+        if isinstance(auto, str):
+            auto = auto.lower() not in ("false", "0", "no")
+        post_payment(payment, actor_user=request.user, auto_allocate=bool(auto))
         return success_response(
             f"Receipt {payment.document_number} recorded for {customer.code}.",
             data={
@@ -380,6 +384,134 @@ class CustomerReceiptView(_FinanceBase):
                 "unallocated": payment.unallocated_amount,
             },
             status=201,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Receipts & allocation                                                       #
+# --------------------------------------------------------------------------- #
+
+class PaymentListView(_FinanceBase):
+    """GET /finance/payments/ — customer receipts and their allocation state.
+
+    Filters: ``?status=`` (ALLOCATED|PARTIAL|UNALLOCATED), ``?method=``,
+    ``?customer=`` (code/id), ``?search=`` (doc no / customer / reference).
+
+    docstring-name: Customer receipts
+    """
+
+    rbac_permission = "finance.payment.view"
+
+    def get(self, request):
+        from django.db.models import Q
+
+        from .constants import DocumentStatus
+        from .models import Payment
+
+        entity = resolve_entity(request)
+        qs = (Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED)
+              .select_related("customer", "deposit_account"))
+        if (method := request.query_params.get("method")):
+            qs = qs.filter(method=method)
+        if (customer := request.query_params.get("customer")):
+            qs = qs.filter(customer=_resolve_customer(entity, customer))
+        if (search := request.query_params.get("search")):
+            qs = qs.filter(
+                Q(document_number__icontains=search) | Q(customer__name__icontains=search)
+                | Q(customer__code__icontains=search) | Q(reference__icontains=search))
+
+        status_f = request.query_params.get("status")
+        rows = []
+        for p in qs.order_by("-payment_date", "-id")[:500]:
+            row = PaymentSerializer(p).data
+            if status_f and row["allocation_status"] != status_f:
+                continue
+            rows.append(row)
+        return success_response("Receipts retrieved.", data=rows)
+
+
+class PaymentDetailView(_FinanceBase):
+    """GET /finance/payments/<id>/ — a receipt, its current allocations, the
+    customer's open invoices (allocation candidates) and the receipt's GL posting.
+
+    docstring-name: Customer receipts
+    """
+
+    rbac_permission = "finance.payment.view"
+
+    def get(self, request, pk):
+        from .constants import DocumentStatus, InvoicePaymentStatus
+        from .models import Invoice, Payment
+
+        entity = resolve_entity(request)
+        p = (Payment.objects.filter(entity=entity, pk=pk)
+             .select_related("customer", "deposit_account", "journal")
+             .prefetch_related("allocations__invoice", "journal__lines__account").first())
+        if p is None:
+            raise NotFound("Receipt not found for this entity.")
+
+        allocations = [
+            {"invoice": a.invoice.document_number, "invoice_id": a.invoice_id,
+             "amount": _money_obj(a.amount)}
+            for a in p.allocations.all()
+        ]
+        open_invoices = [
+            {"id": i.id, "document_number": i.document_number,
+             "due_date": i.due_date.isoformat() if i.due_date else None,
+             "balance": _money_obj(i.balance_due)}
+            for i in Invoice.objects.filter(
+                entity=entity, customer=p.customer, status=DocumentStatus.POSTED,
+            ).exclude(payment_status=InvoicePaymentStatus.PAID).order_by("due_date", "invoice_date", "id")
+            if i.balance_due > 0
+        ]
+        gl_postings = []
+        if p.journal_id:
+            for gl in p.journal.lines.all():
+                gl_postings.append({
+                    "account_code": gl.account.code, "account_name": gl.account.name,
+                    "debit": _money_obj(gl.debit), "credit": _money_obj(gl.credit),
+                })
+        return success_response("Receipt retrieved.", data={
+            "payment": PaymentSerializer(p).data,
+            "allocations": allocations,
+            "open_invoices": open_invoices,
+            "gl_postings": gl_postings,
+        })
+
+
+class PaymentAllocateView(_FinanceBase):
+    """POST /finance/payments/<id>/allocate/ — apply a receipt to open invoices.
+
+    Body ``{allocations:[{invoice, amount}]}`` for an explicit split, or
+    ``{auto_allocate:true}`` to settle oldest-first. Each amount is capped at the
+    invoice balance and the receipt's remaining cash; excess stays as credit.
+
+    docstring-name: Allocate a receipt
+    """
+
+    rbac_permission = "finance.payment.allocate"
+
+    @transaction.atomic
+    def post(self, request, pk):
+        from .models import Payment
+        from .receivables import allocate_payment
+
+        entity = resolve_entity(request)
+        p = Payment.objects.filter(entity=entity, pk=pk).first()
+        if p is None:
+            raise NotFound("Receipt not found for this entity.")
+        body = request.data or {}
+        plan = _allocation_plan(entity, body.get("allocations"))
+        if plan:
+            allocate_payment(p, allocations=plan, actor_user=request.user)
+        elif body.get("auto_allocate"):
+            allocate_payment(p, actor_user=request.user)
+        else:
+            raise ValidationError({"allocations": "Provide allocations or auto_allocate=true."})
+        p.refresh_from_db()
+        return success_response(
+            f"Receipt {p.document_number} allocated.",
+            data=PaymentSerializer(p).data,
         )
 
 

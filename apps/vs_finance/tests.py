@@ -2967,3 +2967,94 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         a.refresh_from_db(); b.refresh_from_db()
         self.assertEqual(a.balance_due, 0)       # ₦79 fully settled
         self.assertEqual(b.balance_due, 4500)    # ₦56 − ₦11 = ₦45 remaining
+
+
+class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
+    """Receipts list/detail and explicit (and auto) allocation to open invoices."""
+
+    def _super_admin(self, email):
+        from django.contrib.auth import get_user_model
+        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        u = get_user_model().objects.create_user(
+            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Rcpt", last_name="Tester")
+        role, _ = PlatformRoleTemplate.objects.get_or_create(id="xvs_super_admin", defaults={"name": "Super Admin"})
+        PlatformUserRoleAssignment.objects.create(user=u, role=role, assignment_status="ACTIVE")
+        return u
+
+    def _unallocated_receipt(self, entity, customer, amount):
+        import datetime
+        from vs_finance.models import Account, Payment
+        from vs_finance.receivables import post_payment
+        p = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 20),
+            method="BANK_TRANSFER", amount=amount,
+            deposit_account=Account.objects.get(entity=entity, code="1100"))
+        post_payment(p, auto_allocate=False)   # posts Dr bank, Cr AR — left unallocated
+        return p
+
+    def test_list_returns_unallocated_status(self):
+        import json
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views_ar import PaymentListView
+        entity, _p, customer, _v = self.build_ar()
+        self._unallocated_receipt(entity, customer, 9000)
+        u = self._super_admin("rcpt-list@test.com")
+        req = APIRequestFactory().get("/v1/finance/payments/", {"entity": entity.code})
+        force_authenticate(req, user=u)
+        resp = PaymentListView.as_view()(req); resp.render()
+        self.assertEqual(resp.status_code, 200)
+        row = json.loads(resp.content)["data"][0]
+        self.assertEqual(row["allocation_status"], "UNALLOCATED")
+        self.assertEqual(row["unallocated_amount"], 9000)
+
+    def test_detail_has_open_invoices_and_postings(self):
+        import json
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views_ar import PaymentDetailView
+        entity, _p, customer, _v = self.build_ar()
+        a = self.make_invoice(entity, customer, lines=[("4100", 1, 7900, None)]); post_invoice(a)
+        p = self._unallocated_receipt(entity, customer, 9000)
+        u = self._super_admin("rcpt-detail@test.com")
+        req = APIRequestFactory().get(f"/v1/finance/payments/{p.pk}/", {"entity": entity.code})
+        force_authenticate(req, user=u)
+        resp = PaymentDetailView.as_view()(req, pk=p.pk); resp.render()
+        d = json.loads(resp.content)["data"]
+        self.assertTrue(d["open_invoices"])
+        self.assertTrue(d["gl_postings"])   # the receipt's Dr bank / Cr AR
+
+    def test_explicit_allocation_splits_across_invoices(self):
+        import json
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views_ar import PaymentAllocateView
+        entity, _p, customer, _v = self.build_ar()
+        a = self.make_invoice(entity, customer, lines=[("4100", 1, 7900, None)]); post_invoice(a)
+        b = self.make_invoice(entity, customer, lines=[("4100", 1, 5600, None)]); post_invoice(b)
+        p = self._unallocated_receipt(entity, customer, 9000)
+        u = self._super_admin("rcpt-alloc@test.com")
+        body = {"allocations": [{"invoice": a.id, "amount": 7900}, {"invoice": b.id, "amount": 1100}]}
+        req = APIRequestFactory().post(f"/v1/finance/payments/{p.pk}/allocate/?entity={entity.code}", body, format="json")
+        force_authenticate(req, user=u)
+        resp = PaymentAllocateView.as_view()(req, pk=p.pk); resp.render()
+        self.assertEqual(resp.status_code, 200)
+        a.refresh_from_db(); b.refresh_from_db(); p.refresh_from_db()
+        self.assertEqual(a.balance_due, 0)
+        self.assertEqual(b.balance_due, 4500)
+        self.assertEqual(p.unallocated_amount, 0)
+
+    def test_allocate_requires_permission(self):
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views_ar import PaymentAllocateView
+        entity, _p, customer, _v = self.build_ar()
+        a = self.make_invoice(entity, customer, lines=[("4100", 1, 7900, None)]); post_invoice(a)
+        p = self._unallocated_receipt(entity, customer, 9000)
+        u = get_user_model().objects.create_user(
+            email="rcpt-noperm@test.com", password="x", user_type="CX_STAFF",
+            status="ACTIVE", first_name="No", last_name="Perm")
+        req = APIRequestFactory().post(f"/v1/finance/payments/{p.pk}/allocate/?entity={entity.code}", {"auto_allocate": True}, format="json")
+        force_authenticate(req, user=u)
+        resp = PaymentAllocateView.as_view()(req, pk=p.pk); resp.render()
+        self.assertEqual(resp.status_code, 403)
+        p.refresh_from_db()
+        self.assertEqual(p.unallocated_amount, 9000)

@@ -43,6 +43,7 @@ from .models import (
     JournalEntry,
     JournalLine,
     LedgerEntity,
+    Payment,
     PaymentPlan,
     PaymentPlanInstallment,
     PayrollLine,
@@ -404,6 +405,37 @@ class RefundSerializer(serializers.ModelSerializer):
 
     def get_amount_naira(self, obj) -> str:
         return format_naira(obj.amount)
+
+
+class PaymentSerializer(serializers.ModelSerializer):
+    """A customer receipt + its allocation state (for Receipts & Allocation)."""
+
+    customer_code = serializers.CharField(source="customer.code", read_only=True)
+    customer_name = serializers.CharField(source="customer.name", read_only=True)
+    deposit_account_code = serializers.CharField(source="deposit_account.code", read_only=True, default=None)
+    deposit_account_name = serializers.CharField(source="deposit_account.name", read_only=True, default=None)
+    amount_naira = serializers.SerializerMethodField()
+    unallocated_amount = serializers.IntegerField(read_only=True)
+    allocation_status = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Payment
+        fields = [
+            "id", "document_number", "customer_id", "customer_code", "customer_name",
+            "payment_date", "method", "amount", "amount_naira", "allocated_amount",
+            "unallocated_amount", "allocation_status", "deposit_account_code",
+            "deposit_account_name", "reference", "narration", "journal_id", "status",
+        ]
+
+    def get_amount_naira(self, obj) -> str:
+        return format_naira(obj.amount)
+
+    def get_allocation_status(self, obj) -> str:
+        if obj.unallocated_amount <= 0:
+            return "ALLOCATED"
+        if obj.allocated_amount <= 0:
+            return "UNALLOCATED"
+        return "PARTIAL"
 
 
 class ConcessionSerializer(serializers.ModelSerializer):
