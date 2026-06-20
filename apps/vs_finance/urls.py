@@ -61,6 +61,7 @@ from .views_ar import (
     InvoiceRemindView,
     InvoiceWriteOffView,
     WriteOffListView,
+    ARAdjustmentListView,
     PaymentPlanActivateView,
     PaymentPlanCancelView,
     PaymentPlanDetailView,
@@ -152,6 +153,7 @@ urlpatterns = [
     path("refunds/<int:pk>/post/", RefundPostView.as_view(), name="finance-refund-post"),
     path("invoices/<int:pk>/write-off/", InvoiceWriteOffView.as_view(), name="finance-invoice-writeoff"),
     path("write-offs/", WriteOffListView.as_view(), name="finance-writeoff-list"),
+    path("ar-adjustments/", ARAdjustmentListView.as_view(), name="finance-ar-adjustments"),
 
     # Concessions — discounts / waivers / scholarships
     path("concessions/", ConcessionListCreateView.as_view(), name="finance-concession-list"),

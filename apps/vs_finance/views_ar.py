@@ -12,11 +12,13 @@ which own every posting. Money is integer kobo.
 from __future__ import annotations
 
 from django.db import transaction
+from django.db.models import F, Q
 from rest_framework.exceptions import NotFound, ValidationError
 
+from core.pagination import XVSPagination
 from core.response import success_response
 
-from .constants import FinanceAuditAction, FinanceAuditStatus
+from .constants import DocumentStatus, FinanceAuditAction, FinanceAuditStatus
 from .money import format_naira
 from .models import (
     Concession,
@@ -707,14 +709,27 @@ class CreditNoteListCreateView(_FinanceBase):
               .select_related("customer", "invoice").prefetch_related("lines"))
         if (kind := request.query_params.get("kind")):
             qs = qs.filter(kind=kind)
-        if (status_val := request.query_params.get("status")):
-            qs = qs.filter(status=status_val)
         if (customer := request.query_params.get("customer")):
             qs = qs.filter(customer=_resolve_customer(entity, customer))
-        return success_response(
-            "Credit notes retrieved.",
-            data=CreditNoteSerializer(qs.order_by("-note_date", "-id")[:200], many=True).data,
-        )
+        if (search := (request.query_params.get("search") or "").strip()):
+            qs = qs.filter(
+                Q(document_number__icontains=search) | Q(reason__icontains=search)
+                | Q(customer__name__icontains=search) | Q(customer__code__icontains=search)
+            )
+        # Derived status: applied = a fully-allocated credit note; issued = any other
+        # posted note; draft = not yet posted.
+        applied_q = Q(kind="CREDIT", allocated_amount__gt=0) & Q(allocated_amount__gte=F("total"))
+        status_val = (request.query_params.get("status") or "").lower()
+        if status_val == "draft":
+            qs = qs.exclude(status=DocumentStatus.POSTED)
+        elif status_val == "applied":
+            qs = qs.filter(status=DocumentStatus.POSTED).filter(applied_q)
+        elif status_val == "issued":
+            qs = qs.filter(status=DocumentStatus.POSTED).exclude(applied_q)
+        # Plain APIView ignores `pagination_class`, so drive the paginator directly.
+        paginator = XVSPagination()
+        page = paginator.paginate_queryset(qs.order_by("-note_date", "-id"), request, view=self)
+        return paginator.get_paginated_response(CreditNoteSerializer(page, many=True).data)
 
     @transaction.atomic
     def post(self, request):
@@ -978,6 +993,99 @@ class WriteOffListView(_FinanceBase):
                 "status": "POSTED",
             })
         return success_response("Write-offs retrieved.", data=data)
+
+
+def _writeoff_rows(entity, *, limit=1000):
+    """Normalised bad-debt write-off rows from the finance audit log."""
+    logs = list(
+        FinanceAuditLog.objects.filter(
+            entity=entity, action=FinanceAuditAction.INVOICE_WRITTEN_OFF,
+            status=FinanceAuditStatus.SUCCESS,
+        ).order_by("-created_at", "-id")[:limit]
+    )
+    need_ids = [int(l.target_id) for l in logs
+                if not l.metadata.get("customer_code") and str(l.target_id).isdigit()]
+    invs = {i.id: i for i in Invoice.objects.filter(id__in=need_ids).select_related("customer")} \
+        if need_ids else {}
+    rows = []
+    for l in logs:
+        inv = invs.get(int(l.target_id)) if str(l.target_id).isdigit() else None
+        rows.append({
+            "key": f"W{l.id}", "kind": "WRITEOFF", "reference": l.document_number,
+            "date": l.created_at.date().isoformat(),
+            "customer_code": l.metadata.get("customer_code") or (inv.customer.code if inv else ""),
+            "customer_name": l.metadata.get("customer_name") or (inv.customer.name if inv else "—"),
+            "reason": l.metadata.get("narration") or "Bad-debt write-off",
+            "amount": int(l.metadata.get("amount") or 0), "amount_naira": format_naira(int(l.metadata.get("amount") or 0)),
+            "status": "POSTED", "refund_id": None,
+        })
+    return rows
+
+
+class ARAdjustmentListView(_FinanceBase):
+    """GET /finance/ar-adjustments/ — unified customer refunds + bad-debt write-offs.
+
+    Filters: ``?type=(refund|writeoff)`` and ``?search=``. The merged list is sorted
+    by date and paginated; KPI totals (written-off YTD, pending refund count) ride
+    in the response so they stay accurate across pages.
+
+    docstring-name: Refunds & write-offs
+    """
+
+    rbac_permission = "finance.refund.view"
+
+    def get(self, request):
+        import math
+        from rest_framework.response import Response
+        from django.utils import timezone
+
+        entity = resolve_entity(request)
+        type_f = (request.query_params.get("type") or "").lower()
+        search = (request.query_params.get("search") or "").strip().lower()
+
+        refund_rows = []
+        for r in (Refund.objects.filter(entity=entity).select_related("customer")
+                  .order_by("-refund_date", "-id")[:1000]):
+            refund_rows.append({
+                "key": f"R{r.id}", "kind": "REFUND", "reference": r.document_number,
+                "date": r.refund_date.isoformat() if r.refund_date else "",
+                "customer_code": r.customer.code, "customer_name": r.customer.name,
+                "reason": r.narration or "Customer refund", "amount": r.amount,
+                "amount_naira": format_naira(r.amount), "status": r.status, "refund_id": r.id,
+            })
+        writeoff_rows = _writeoff_rows(entity)
+
+        # KPI totals — from the full sets, independent of the type filter / page.
+        year = timezone.now().year
+        written_off_ytd = sum(w["amount"] for w in writeoff_rows if w["date"][:4] == str(year))
+        pending = Refund.objects.filter(entity=entity).exclude(status=DocumentStatus.POSTED).count()
+
+        rows = []
+        if type_f in ("", "refund"):
+            rows += refund_rows
+        if type_f in ("", "writeoff"):
+            rows += writeoff_rows
+        if search:
+            rows = [x for x in rows if any(
+                search in (x.get(k) or "").lower()
+                for k in ("reference", "customer_name", "customer_code", "reason"))]
+        rows.sort(key=lambda x: x["date"], reverse=True)
+
+        page = max(int(request.query_params.get("page", 1) or 1), 1)
+        page_size = min(max(int(request.query_params.get("page_size", 20) or 20), 1), 100)
+        total = len(rows)
+        total_pages = math.ceil(total / page_size) if total else 1
+        start = (page - 1) * page_size
+        return Response({
+            "success": True,
+            "message": "AR adjustments retrieved.",
+            "pagination": {
+                "currentPage": page, "pageSize": page_size, "totalItems": total,
+                "totalPages": total_pages, "next": None, "previous": None,
+            },
+            "kpis": {"written_off_ytd": written_off_ytd, "pending": pending},
+            "data": rows[start:start + page_size],
+        })
 
 
 class InvoicePayView(_FinanceBase):
