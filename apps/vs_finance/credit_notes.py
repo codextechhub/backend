@@ -423,5 +423,6 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
         message=f"Wrote off {amount} kobo of invoice {invoice.document_number} "
                 f"for {customer.code}.",
         journal_id=entry.pk, amount=amount, balance_after=invoice.balance_due,
+        narration=narration or "", customer_code=customer.code, customer_name=customer.name,
     )
     return entry
