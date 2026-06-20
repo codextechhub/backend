@@ -18,6 +18,17 @@ from rest_framework.exceptions import NotFound, ValidationError
 from core.pagination import XVSPagination
 from core.response import success_response
 
+
+def _paginate(request, qs, serializer_cls, view, **ser_kwargs):
+    """Paginate a queryset through the platform's XVSPagination envelope.
+
+    ``_FinanceBase`` is a plain ``APIView`` (which ignores ``pagination_class``), so
+    list views call this to get the standard ``{pagination, data}`` response.
+    """
+    paginator = XVSPagination()
+    page = paginator.paginate_queryset(qs, request, view=view)
+    return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)
+
 from .constants import DocumentStatus, FinanceAuditAction, FinanceAuditStatus
 from .money import format_naira
 from .models import (
@@ -726,10 +737,7 @@ class CreditNoteListCreateView(_FinanceBase):
             qs = qs.filter(status=DocumentStatus.POSTED).filter(applied_q)
         elif status_val == "issued":
             qs = qs.filter(status=DocumentStatus.POSTED).exclude(applied_q)
-        # Plain APIView ignores `pagination_class`, so drive the paginator directly.
-        paginator = XVSPagination()
-        page = paginator.paginate_queryset(qs.order_by("-note_date", "-id"), request, view=self)
-        return paginator.get_paginated_response(CreditNoteSerializer(page, many=True).data)
+        return _paginate(request, qs.order_by("-note_date", "-id"), CreditNoteSerializer, self)
 
     @transaction.atomic
     def post(self, request):
@@ -948,51 +956,6 @@ class InvoiceWriteOffView(_FinanceBase):
             f"Invoice {invoice.document_number} written off.",
             data=InvoiceSerializer(invoice).data,
         )
-
-
-class WriteOffListView(_FinanceBase):
-    """GET /finance/write-offs/ — bad-debt write-offs for an entity.
-
-    Write-offs are not a document of their own (they post a Dr bad-debt / Cr AR
-    journal against an invoice), so this reads the authoritative finance audit log
-    (``INVOICE_WRITTEN_OFF``) and presents one row per write-off. Read-only.
-
-    docstring-name: Write-offs
-    """
-
-    rbac_permission = "finance.invoice.view"
-
-    def get(self, request):
-        entity = resolve_entity(request)
-        logs = list(
-            FinanceAuditLog.objects.filter(
-                entity=entity,
-                action=FinanceAuditAction.INVOICE_WRITTEN_OFF,
-                status=FinanceAuditStatus.SUCCESS,
-            ).order_by("-created_at", "-id")[:200]
-        )
-        # Resolve customer from metadata (new rows) or by joining the invoice (old rows).
-        need_ids = [int(l.target_id) for l in logs
-                    if not l.metadata.get("customer_code") and str(l.target_id).isdigit()]
-        invs = {i.id: i for i in Invoice.objects.filter(id__in=need_ids).select_related("customer")} \
-            if need_ids else {}
-        data = []
-        for l in logs:
-            inv = invs.get(int(l.target_id)) if str(l.target_id).isdigit() else None
-            amount = int(l.metadata.get("amount") or 0)
-            data.append({
-                "id": l.id,
-                "reference": l.document_number,            # the written-off invoice no.
-                "invoice_id": int(l.target_id) if str(l.target_id).isdigit() else None,
-                "date": l.created_at.date().isoformat(),
-                "customer_code": l.metadata.get("customer_code") or (inv.customer.code if inv else ""),
-                "customer_name": l.metadata.get("customer_name") or (inv.customer.name if inv else "—"),
-                "amount": amount,
-                "amount_naira": format_naira(amount),
-                "reason": l.metadata.get("narration") or "Bad-debt write-off",
-                "status": "POSTED",
-            })
-        return success_response("Write-offs retrieved.", data=data)
 
 
 def _writeoff_rows(entity, *, limit=1000):
