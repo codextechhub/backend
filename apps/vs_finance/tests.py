@@ -86,7 +86,7 @@ from vs_finance.models import (
 from vs_finance.money import format_naira, to_kobo, to_naira
 from vs_finance.numbering import next_document_number
 from vs_finance.posting import ensure_balanced, ensure_period_open, post_journal, reverse_journal
-from vs_finance.receivables import post_invoice, post_payment
+from vs_finance.receivables import allocate_payment, customer_credit_balance, post_invoice, post_payment
 from vs_finance.credit_notes import (
     allocate_credit_note,
     post_credit_note,
@@ -708,9 +708,59 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
         with self.assertRaises(PostingError):
             allocate_credit_note(note)
 
-    def test_refund_pays_out_credit_balance(self):
+    def test_overpayment_books_excess_as_customer_credit(self):
+        # A receipt larger than the invoice settles AR and books the excess as a
+        # customer-credit liability (2140) — AR never carries a credit balance.
         entity, period, customer, vat = self.build_ar()
         bank = Account.objects.get(entity=entity, code="1100")
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
+        post_invoice(inv)
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 15),
+            amount=150000, deposit_account=bank,
+        )
+        post_payment(pay)  # auto-allocates oldest-first
+        inv.refresh_from_db()
+        pay.refresh_from_db()
+        self.assertEqual(inv.balance_due, 0)
+        self.assertEqual(pay.allocated_amount, 100000)
+        self.assertEqual(pay.unallocated_amount, 50000)
+        ar_bal = AccountBalance.objects.get(account__code="1200", period=period)
+        cc_bal = AccountBalance.objects.get(account__code="2140", period=period)
+        self.assertEqual(ar_bal.debit_total, 100000)   # invoice
+        self.assertEqual(ar_bal.credit_total, 100000)  # applied portion of the receipt
+        self.assertEqual(cc_bal.credit_total, 50000)   # excess → customer-credit liability
+        self.assertEqual(customer_credit_balance(customer), 50000)
+
+    def test_apply_stored_credit_reclasses_to_ar(self):
+        # Stored customer credit applied to a later invoice moves 2140 → AR.
+        entity, period, customer, vat = self.build_ar()
+        bank = Account.objects.get(entity=entity, code="1100")
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 15),
+            amount=50000, deposit_account=bank,
+        )
+        post_payment(pay)  # no invoices yet → all 50,000 → 2140
+        self.assertEqual(customer_credit_balance(customer), 50000)
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)])
+        post_invoice(inv)
+        allocate_payment(pay)  # apply the stored credit to the new invoice
+        inv.refresh_from_db()
+        self.assertEqual(inv.balance_due, 0)
+        self.assertEqual(customer_credit_balance(customer), 0)
+        cc_bal = AccountBalance.objects.get(account__code="2140", period=period)
+        self.assertEqual(cc_bal.credit_total, 50000)   # booked on receipt
+        self.assertEqual(cc_bal.debit_total, 50000)    # reclassed out on apply → net 0
+
+    def test_refund_draws_down_customer_credit(self):
+        # A refund pays out a credit balance: Dr 2140 (customer credit), Cr bank.
+        entity, period, customer, vat = self.build_ar()
+        bank = Account.objects.get(entity=entity, code="1100")
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 15),
+            amount=30000, deposit_account=bank,
+        )
+        post_payment(pay)  # → 30,000 customer credit
         refund = Refund.objects.create(
             entity=entity, customer=customer, refund_date=datetime.date(2026, 1, 18),
             amount=30000, deposit_account=bank,
@@ -721,11 +771,21 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
         self.assertTrue(refund.document_number.startswith("CFX-TBOOK-RFD-"))
         debit, credit = refund.journal.totals()
         self.assertEqual(debit, credit)
-        # Dr AR, Cr bank.
-        ar_bal = AccountBalance.objects.get(account__code="1200", period=period)
+        cc_bal = AccountBalance.objects.get(account__code="2140", period=period)
         bank_bal = AccountBalance.objects.get(account__code="1100", period=period)
-        self.assertEqual(ar_bal.debit_total, 30000)
-        self.assertEqual(bank_bal.credit_total, 30000)
+        self.assertEqual(cc_bal.debit_total, 30000)    # refund draws down the liability
+        self.assertEqual(bank_bal.credit_total, 30000)  # cash out
+        self.assertEqual(customer_credit_balance(customer), 0)
+
+    def test_refund_capped_at_available_credit(self):
+        entity, period, customer, vat = self.build_ar()
+        bank = Account.objects.get(entity=entity, code="1100")
+        refund = Refund.objects.create(
+            entity=entity, customer=customer, refund_date=datetime.date(2026, 1, 18),
+            amount=30000, deposit_account=bank,
+        )
+        with self.assertRaises(PostingError):
+            post_refund(refund)  # no credit available
 
     def test_write_off_clears_balance_as_bad_debt(self):
         entity, period, customer, vat = self.build_ar()

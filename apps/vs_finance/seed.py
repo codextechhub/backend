@@ -33,6 +33,7 @@ DEFAULT_CHART = [
     # Liabilities
     ("2000", "Liabilities", AccountType.LIABILITY, False, False),
     ("2100", "Accounts Payable", AccountType.LIABILITY, True, False),
+    ("2140", "Customer Credit Balances", AccountType.LIABILITY, True, False),
     ("2150", "GR/IR Clearing", AccountType.LIABILITY, True, False),
     ("2200", "Output VAT (Payable)", AccountType.LIABILITY, True, False),
     ("2300", "WHT Payable", AccountType.LIABILITY, True, False),
@@ -85,7 +86,7 @@ DEFAULT_IFRS_LINE_BY_CODE = {
     "1400": IFRSLine.INVENTORIES,
     "1500": IFRSLine.PPE, "1900": IFRSLine.PPE,
     # Liabilities
-    "2100": IFRSLine.TRADE_PAYABLES, "2150": IFRSLine.TRADE_PAYABLES,
+    "2100": IFRSLine.TRADE_PAYABLES, "2140": IFRSLine.TRADE_PAYABLES, "2150": IFRSLine.TRADE_PAYABLES,
     "2200": IFRSLine.CURRENT_TAX_PAYABLE, "2300": IFRSLine.CURRENT_TAX_PAYABLE,
     "2310": IFRSLine.EMPLOYEE_PAYABLES, "2320": IFRSLine.EMPLOYEE_PAYABLES,
     "2330": IFRSLine.EMPLOYEE_PAYABLES, "2400": IFRSLine.TRADE_PAYABLES,
@@ -103,7 +104,7 @@ DEFAULT_IFRS_LINE_BY_CODE = {
 _PARENTS = {
     "1100": "1000", "1110": "1000", "1200": "1000", "1300": "1000", "1400": "1000",
     "1500": "1000", "1900": "1000",
-    "2100": "2000", "2150": "2000", "2200": "2000", "2300": "2000",
+    "2100": "2000", "2140": "2000", "2150": "2000", "2200": "2000", "2300": "2000",
     "2310": "2000", "2320": "2000", "2330": "2000", "2400": "2000",
     "3100": "3000", "3200": "3000",
     "4100": "4000", "4900": "4000", "4910": "4000",

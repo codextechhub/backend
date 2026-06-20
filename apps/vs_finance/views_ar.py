@@ -124,40 +124,58 @@ def _customer_ledger(entity, customer_ids=None):
     """Net AR position per customer, in two aggregate queries (no per-row N+1).
 
     Returns ``{customer_id: {"outstanding", "credit", "overdue", "lifetime_paid"}}``
-    where ``outstanding`` is the sum of open invoice balances, ``credit`` the
-    customer's unallocated receipts, and ``overdue`` whether any open invoice is
-    past due. Net balance = outstanding − credit (positive owes, negative in credit).
+    where ``outstanding`` is the sum of open invoice balances and ``credit`` the
+    customer's available credit (their 2140 liability position: unapplied receipts +
+    unapplied CREDIT notes − refunds already paid). Net = outstanding − credit
+    (positive owes, negative in credit). Computed in a few aggregate queries (no N+1).
     """
     import datetime
     from django.db.models import F, Q, Sum
     from django.db.models.functions import Coalesce
 
-    from .constants import DocumentStatus
-    from .models import Invoice, Payment
+    from .constants import CreditNoteKind, DocumentStatus
+    from .models import CreditNote, Invoice, Payment, Refund
 
     today = datetime.date.today()
     bal = F("total") - F("amount_paid") - F("amount_credited")
     inv = Invoice.objects.filter(entity=entity, status=DocumentStatus.POSTED)
     pay = Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED)
+    note = CreditNote.objects.filter(entity=entity, status=DocumentStatus.POSTED, kind=CreditNoteKind.CREDIT)
+    ref = Refund.objects.filter(entity=entity, status=DocumentStatus.POSTED)
     if customer_ids is not None:
         inv = inv.filter(customer_id__in=customer_ids)
         pay = pay.filter(customer_id__in=customer_ids)
+        note = note.filter(customer_id__in=customer_ids)
+        ref = ref.filter(customer_id__in=customer_ids)
 
     out: dict[int, dict] = {}
+
+    def slot(cid):
+        return out.setdefault(cid, {"outstanding": 0, "overdue": False, "lifetime_paid": 0,
+                                    "_receipts": 0, "_notes": 0, "_refunded": 0})
+
     for r in inv.values("customer_id").annotate(
         outstanding=Coalesce(Sum(bal), 0),
         overdue_bal=Coalesce(Sum(bal, filter=Q(due_date__lt=today)), 0),
     ):
-        out.setdefault(r["customer_id"], {})
-        out[r["customer_id"]]["outstanding"] = int(r["outstanding"] or 0)
-        out[r["customer_id"]]["overdue"] = int(r["overdue_bal"] or 0) > 0
+        d = slot(r["customer_id"])
+        d["outstanding"] = int(r["outstanding"] or 0)
+        d["overdue"] = int(r["overdue_bal"] or 0) > 0
     for r in pay.values("customer_id").annotate(
         credit=Coalesce(Sum(F("amount") - F("allocated_amount")), 0),
         lifetime=Coalesce(Sum("amount"), 0),
     ):
-        d = out.setdefault(r["customer_id"], {})
-        d["credit"] = int(r["credit"] or 0)
+        d = slot(r["customer_id"])
+        d["_receipts"] = int(r["credit"] or 0)
         d["lifetime_paid"] = int(r["lifetime"] or 0)
+    for r in note.values("customer_id").annotate(
+        c=Coalesce(Sum(F("total") - F("allocated_amount")), 0)):
+        slot(r["customer_id"])["_notes"] = int(r["c"] or 0)
+    for r in ref.values("customer_id").annotate(c=Coalesce(Sum("amount"), 0)):
+        slot(r["customer_id"])["_refunded"] = int(r["c"] or 0)
+
+    for d in out.values():
+        d["credit"] = max(0, d["_receipts"] + d["_notes"] - d["_refunded"])
     return out
 
 

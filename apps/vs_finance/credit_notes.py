@@ -29,6 +29,7 @@ from .accounts import resolve_account
 from .audit import record, record_rejection
 from .constants import (
     BAD_DEBT_EXPENSE_CODE,
+    CUSTOMER_CREDIT_CODE,
     CreditNoteKind,
     DocumentStatus,
     FinanceAuditAction,
@@ -37,7 +38,7 @@ from .constants import (
 )
 from .exceptions import FinanceError, PostingError
 from .posting import post_journal, resolve_period
-from .receivables import compute_line_net, compute_tax
+from .receivables import _build_invoice_plan, compute_line_net, compute_tax
 
 
 # --------------------------------------------------------------------------- #
@@ -160,8 +161,11 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
                 entry=entry, account=tax_objs[acc_id], debit=0, credit=amount,
                 description="Output tax", line_no=line_no,
             )
+        applied = 0
     else:
-        # Dr revenue/returns + Dr output tax, Cr AR (gross) — give value back.
+        # Dr revenue/returns + Dr output tax — give value back. The credit settles
+        # invoices (Cr AR) for the applied portion; the unapplied remainder becomes a
+        # customer-credit liability (Cr 2140) so AR never carries a credit balance.
         for acc_id, amount in revenue_by_account.items():
             if amount == 0:
                 continue
@@ -176,17 +180,31 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
                 entry=entry, account=tax_objs[acc_id], debit=amount, credit=0,
                 description="Output tax reversal", line_no=line_no,
             )
-        line_no += 1
-        JournalLine.objects.create(
-            entry=entry, account=ar_account, debit=0, credit=note.total,
-            description=f"AR: {customer.code}", line_no=line_no,
-        )
+        plan = _build_invoice_plan(customer, allocations) if (allocations is not None or auto_allocate) else []
+        applied, _created = _apply_creditnote_subledger(note, plan, remaining=note.total)
+        excess = note.total - applied
+        if applied > 0:
+            line_no += 1
+            JournalLine.objects.create(
+                entry=entry, account=ar_account, debit=0, credit=applied,
+                description=f"AR: {customer.code}", line_no=line_no,
+            )
+        if excess > 0:
+            line_no += 1
+            JournalLine.objects.create(
+                entry=entry, account=resolve_account(note.entity, CUSTOMER_CREDIT_CODE, label="customer credit"),
+                debit=0, credit=excess, description=f"Customer credit: {customer.code}", line_no=line_no,
+            )
 
     post_journal(entry, actor_user=actor_user)
 
     note.journal = entry
     note.status = DocumentStatus.POSTED
-    note.save(update_fields=["journal", "status", "updated_at"])
+    if not is_debit:
+        note.allocated_amount = applied
+        note.save(update_fields=["journal", "status", "allocated_amount", "updated_at"])
+    else:
+        note.save(update_fields=["journal", "status", "updated_at"])
 
     record(
         entity=note.entity,
@@ -196,49 +214,23 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
         message=f"Posted {label.lower()} for {customer.code} ({note.total} kobo).",
         journal_id=entry.pk, total=note.total, note_kind=note.kind,
     )
-
-    if not is_debit and (allocations or auto_allocate):
-        allocate_credit_note(note, allocations=allocations, actor_user=actor_user)
     return note
 
 
-@transaction.atomic
-def allocate_credit_note(note, *, allocations=None, actor_user=None):
-    """Apply a posted CREDIT note's unallocated credit to invoices.
+def _apply_creditnote_subledger(note, plan, *, remaining):
+    """Create/extend CreditNoteAllocation rows + bump invoice ``amount_credited`` for
+    the plan, capped at each invoice balance and ``remaining``. GL-agnostic — the
+    caller posts the journal. Returns ``(applied_total, created_rows)``."""
+    from .models import CreditNoteAllocation
 
-    ``allocations`` is an optional list of ``(invoice, amount_kobo)``; without it the
-    customer's open posted invoices are settled oldest-first. Never allocates past an
-    invoice's balance due or the note's remaining credit. Bumps each invoice's
-    ``amount_credited``. Returns the created allocation rows.
-    """
-    from .models import CreditNoteAllocation, Invoice
-
-    if note.kind == CreditNoteKind.DEBIT:
-        raise PostingError("A debit note increases the receivable; it cannot be allocated.")
-    if note.status != DocumentStatus.POSTED:
-        raise PostingError("Only a posted credit note can be allocated.")
-
-    remaining = note.unallocated_amount
-    created = []
-
-    if allocations is None:
-        open_invoices = (
-            Invoice.objects
-            .filter(customer=note.customer, status=DocumentStatus.POSTED)
-            .exclude(payment_status=InvoicePaymentStatus.PAID)
-            .order_by("due_date", "invoice_date", "id")
-        )
-        plan = [(inv, inv.balance_due) for inv in open_invoices]
-    else:
-        plan = list(allocations)
-
+    applied, created = 0, []
     for invoice, requested in plan:
         if remaining <= 0:
             break
         apply_amount = min(int(requested), invoice.balance_due, remaining)
         if apply_amount <= 0:
             continue
-        alloc, _ = CreditNoteAllocation.objects.get_or_create(
+        alloc, _was = CreditNoteAllocation.objects.get_or_create(
             note=note, invoice=invoice, defaults={"amount": 0},
         )
         alloc.amount += apply_amount
@@ -249,18 +241,64 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
         invoice.save(update_fields=["amount_credited", "payment_status", "updated_at"])
 
         remaining -= apply_amount
+        applied += apply_amount
         created.append(alloc)
+    return applied, created
 
-    note.allocated_amount = note.total - remaining
+
+@transaction.atomic
+def allocate_credit_note(note, *, allocations=None, actor_user=None):
+    """Apply a posted CREDIT note's **stored customer credit** to invoices.
+
+    Any unapplied portion of the note sits in the customer-credit liability (2140);
+    applying it reclassifies it back to AR (``Dr customer-credit · Cr AR``) and
+    settles the invoices. ``allocations`` is an optional ``[(invoice, amount)]`` plan;
+    without it, open invoices are settled oldest-first.
+    """
+    from .models import JournalEntry, JournalLine
+
+    if note.kind == CreditNoteKind.DEBIT:
+        raise PostingError("A debit note increases the receivable; it cannot be allocated.")
+    if note.status != DocumentStatus.POSTED:
+        raise PostingError("Only a posted credit note can be allocated.")
+
+    remaining = note.unallocated_amount
+    if remaining <= 0:
+        return []
+
+    plan = _build_invoice_plan(note.customer, allocations)
+    applied, created = _apply_creditnote_subledger(note, plan, remaining=remaining)
+    if applied <= 0:
+        return []
+
+    customer = note.customer
+    period = resolve_period(note.entity, note.note_date)
+    entry = JournalEntry.objects.create(
+        entity=note.entity, branch=note.branch,
+        date=note.note_date, period=period,
+        source=JournalSource.SALES, currency=note.currency,
+        narration=f"Apply customer credit: {customer.code}",
+        reference=note.reference, created_by=actor_user,
+    )
+    JournalLine.objects.create(
+        entry=entry, account=resolve_account(note.entity, CUSTOMER_CREDIT_CODE, label="customer credit"),
+        debit=applied, credit=0, description=f"Customer credit applied: {customer.code}", line_no=1,
+    )
+    JournalLine.objects.create(
+        entry=entry, account=customer.receivable_account, debit=0, credit=applied,
+        description=f"AR: {customer.code}", line_no=2,
+    )
+    post_journal(entry, actor_user=actor_user)
+
+    note.allocated_amount += applied
     note.save(update_fields=["allocated_amount", "updated_at"])
 
-    if created:
-        record(
-            entity=note.entity, action=FinanceAuditAction.CREDIT_NOTE_ALLOCATED,
-            actor_user=actor_user, target=note,
-            message=f"Applied {note.allocated_amount} kobo across {len(created)} invoice(s).",
-            allocated=note.allocated_amount, unallocated=note.unallocated_amount,
-        )
+    record(
+        entity=note.entity, action=FinanceAuditAction.CREDIT_NOTE_ALLOCATED,
+        actor_user=actor_user, target=note,
+        message=f"Applied {applied} kobo customer credit across {len(created)} invoice(s).",
+        journal_id=entry.pk, allocated=note.allocated_amount, unallocated=note.unallocated_amount,
+    )
     return created
 
 
@@ -269,8 +307,10 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
 # --------------------------------------------------------------------------- #
 
 def post_refund(refund, *, actor_user=None):
-    """Post a customer :class:`Refund` (``Dr AR control, Cr bank``).
+    """Post a customer :class:`Refund` (``Dr customer-credit (2140), Cr bank``).
 
+    A refund pays out a customer's credit balance — so it draws down the
+    customer-credit liability, not AR. Capped at the customer's available credit.
     Records a durable rejection audit on any :class:`FinanceError`, then re-raises.
     """
     try:
@@ -296,9 +336,14 @@ def _post_refund_atomic(refund, *, actor_user=None):
         raise PostingError("A refund must have a positive amount to post.")
 
     customer = refund.customer
-    ar_account = customer.receivable_account
-    if ar_account is None:
-        raise PostingError(f"Customer {customer.code} has no receivable (AR control) account set.")
+
+    from .receivables import customer_credit_balance
+    available = customer_credit_balance(customer)
+    if refund.amount > available:
+        raise PostingError(
+            f"Refund of {refund.amount} kobo exceeds {customer.code}'s available "
+            f"credit ({available} kobo).",
+        )
 
     deposit = refund.deposit_account or (
         refund.bank_account.gl_account if refund.bank_account_id else None
@@ -315,8 +360,8 @@ def _post_refund_atomic(refund, *, actor_user=None):
         reference=refund.reference, created_by=actor_user,
     )
     JournalLine.objects.create(
-        entry=entry, account=ar_account, debit=refund.amount, credit=0,
-        description=f"Refund: {customer.code}", line_no=1,
+        entry=entry, account=resolve_account(refund.entity, CUSTOMER_CREDIT_CODE, label="customer credit"),
+        debit=refund.amount, credit=0, description=f"Refund: {customer.code}", line_no=1,
     )
     JournalLine.objects.create(
         entry=entry, account=deposit, debit=0, credit=refund.amount,

@@ -485,6 +485,7 @@ CASH_BANK_CODE = "1100"                  # Cash & bank (the cash-flow statement'
 SALES_RETURNS_CODE = "4900"              # Sales returns (contra-revenue) — credit notes default here
 DISCOUNTS_ALLOWED_CODE = "4910"          # Discounts & allowances (contra-revenue) — concessions default here
 BAD_DEBT_EXPENSE_CODE = "5300"           # Bad-debt / general expense — write-offs default here
+CUSTOMER_CREDIT_CODE = "2140"            # Customer credit balances (liability) — overpayments / unapplied credit / refundable
 
 #: Document-number prefix for the whole platform's finance documents (Code X Finance).
 DOC_NUMBER_PREFIX = "CFX"
