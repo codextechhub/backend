@@ -2224,6 +2224,47 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 
+    def _create_claim(self, entity):
+        return self.client.post(
+            f"/v1/finance/expense-claims/?entity={entity.code}",
+            {"claimant_name": "Jane Staff", "claim_date": "2026-01-10", "title": "Trip",
+             "lines": [{"description": "Diesel", "expense_account": "5300",
+                        "quantity": 1, "unit_price": 100000}]}, format="json")
+
+    def test_expense_claim_reject_only_from_draft(self):
+        entity, _, _ = self.build_books()
+        created = self._create_claim(entity)
+        self.assertEqual(created.status_code, 201, created.content)
+        cid = created.json()["data"]["id"]
+        rej = self.client.post(f"/v1/finance/expense-claims/{cid}/reject/?entity={entity.code}", {}, format="json")
+        self.assertEqual(rej.status_code, 200, rej.content)
+        self.assertEqual(rej.json()["data"]["status"], "CANCELLED")
+        # A cancelled claim can't be rejected again.
+        again = self.client.post(f"/v1/finance/expense-claims/{cid}/reject/?entity={entity.code}", {}, format="json")
+        self.assertEqual(again.status_code, 400, again.content)
+
+    def test_expense_line_receipt_upload_and_remove(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        entity, _, _ = self.build_books()
+        created = self._create_claim(entity)
+        cid = created.json()["data"]["id"]
+        line_id = created.json()["data"]["lines"][0]["id"]
+        self.assertIsNone(created.json()["data"]["lines"][0]["receipt_url"])
+
+        up = self.client.post(
+            f"/v1/finance/expense-claims/{cid}/lines/{line_id}/receipt/?entity={entity.code}",
+            {"file": SimpleUploadedFile("receipt.pdf", b"%PDF-1.4 fake", content_type="application/pdf")},
+            format="multipart")
+        self.assertEqual(up.status_code, 201, up.content)
+        line = up.json()["data"]["lines"][0]
+        self.assertTrue(line["receipt_name"].startswith("receipt"))
+        self.assertTrue(line["receipt_url"])
+
+        rm = self.client.delete(f"/v1/finance/expense-claims/{cid}/lines/{line_id}/receipt/?entity={entity.code}")
+        self.assertEqual(rm.status_code, 200, rm.content)
+        self.assertIsNone(rm.json()["data"]["lines"][0]["receipt_url"])
+
     def test_bank_account_detail_reports_metrics_and_transactions(self):
         entity, _, periods = self.build_books()
         bank = self.make_bank(entity)

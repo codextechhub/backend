@@ -27,6 +27,7 @@ from django.utils.deconstruct import deconstructible
 ALLOWED_EXTENSIONS = {
     ".csv", ".xlsx", ".xls",
     ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".pdf",  # supporting documents (e.g. expense receipts)
 }
 
 # 25 MB default ceiling — far above any sane logo/photo/import sheet.
@@ -63,7 +64,7 @@ class DatabaseStorage(Storage):
         if ext not in ALLOWED_EXTENSIONS:
             raise ValidationError(
                 f"File type '{ext or 'unknown'}' is not accepted — only "
-                f"spreadsheets (csv/xlsx) and images are stored."
+                f"spreadsheets (csv/xlsx), images and PDFs are stored."
             )
         data = content.read()
         max_bytes = getattr(settings, "MEDIA_DB_MAX_BYTES", MAX_BYTES_DEFAULT)

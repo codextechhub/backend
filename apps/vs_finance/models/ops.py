@@ -316,6 +316,10 @@ class ExpenseClaimLine(TimeStampedModel):
         CostCenter, on_delete=models.PROTECT, related_name="expense_claim_lines",
         null=True, blank=True,
     )
+    receipt = models.FileField(
+        upload_to="expense-receipts/", null=True, blank=True,
+        help_text="Supporting receipt (DB-backed storage). PDF or image.",
+    )
     line_no = models.PositiveSmallIntegerField(default=0)
 
     class Meta:

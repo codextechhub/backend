@@ -94,6 +94,8 @@ from .views_ops import (
     ExpenseClaimDetailView,
     ExpenseClaimListCreateView,
     ExpenseClaimPostView,
+    ExpenseClaimReceiptView,
+    ExpenseClaimRejectView,
     ExpenseClaimSettleView,
     FinanceAuditLogListView,
     FixedAssetAcquireView,
@@ -238,7 +240,10 @@ urlpatterns = [
     path("expense-claims/", ExpenseClaimListCreateView.as_view(), name="finance-expense-list"),
     path("expense-claims/<int:pk>/", ExpenseClaimDetailView.as_view(), name="finance-expense-detail"),
     path("expense-claims/<int:pk>/post/", ExpenseClaimPostView.as_view(), name="finance-expense-post"),
+    path("expense-claims/<int:pk>/reject/", ExpenseClaimRejectView.as_view(), name="finance-expense-reject"),
     path("expense-claims/<int:pk>/settle/", ExpenseClaimSettleView.as_view(), name="finance-expense-settle"),
+    path("expense-claims/<int:pk>/lines/<int:line_id>/receipt/", ExpenseClaimReceiptView.as_view(),
+         name="finance-expense-line-receipt"),
 
     # Petty cash — funds, vouchers, replenishment
     path("petty-cash-funds/", PettyCashFundListCreateView.as_view(), name="finance-pettycash-fund-list"),

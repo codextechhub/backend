@@ -757,14 +757,28 @@ class ExpenseClaimLineSerializer(serializers.ModelSerializer):
     tax_code = serializers.CharField(source="tax_code.code", read_only=True, default=None)
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
     line_total = serializers.IntegerField(read_only=True)
+    receipt_name = serializers.SerializerMethodField()
+    receipt_url = serializers.SerializerMethodField()
 
     class Meta:
         model = ExpenseClaimLine
         fields = [
             "id", "line_no", "description", "expense_account", "quantity",
             "unit_price", "tax_code", "net_amount", "tax_amount", "line_total",
-            "cost_center",
+            "cost_center", "receipt_name", "receipt_url",
         ]
+
+    def get_receipt_name(self, obj):
+        if not obj.receipt:
+            return None
+        return obj.receipt.name.rsplit("/", 1)[-1]
+
+    def get_receipt_url(self, obj):
+        if not obj.receipt:
+            return None
+        request = self.context.get("request")
+        url = obj.receipt.url
+        return request.build_absolute_uri(url) if request else url
 
 
 class ExpenseClaimSerializer(serializers.ModelSerializer):

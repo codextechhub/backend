@@ -111,7 +111,8 @@ class ExpenseClaimDetailView(_ExpenseClaimActionBase):
     def get(self, request, pk):
         _, claim = self._claim(request, pk)
         return success_response(
-            "Expense claim retrieved.", data=ExpenseClaimSerializer(claim).data,
+            "Expense claim retrieved.",
+            data=ExpenseClaimSerializer(claim, context={"request": request}).data,
         )
 
 
@@ -127,7 +128,67 @@ class ExpenseClaimPostView(_ExpenseClaimActionBase):
         claim.refresh_from_db()
         return success_response(
             f"Expense claim {claim.document_number} posted.",
-            data=ExpenseClaimSerializer(claim).data,
+            data=ExpenseClaimSerializer(claim, context={"request": request}).data,
+        )
+
+
+class ExpenseClaimRejectView(_ExpenseClaimActionBase):
+    """POST — reject (cancel) a draft expense claim. docstring-name: Reject an expense claim"""
+    rbac_permission = "finance.expenseclaim.post"  # the approver decides approve OR reject
+
+    def post(self, request, pk):
+        from ..constants import DocumentStatus
+        from rest_framework.exceptions import ValidationError
+
+        _, claim = self._claim(request, pk)
+        if claim.status != DocumentStatus.DRAFT:
+            raise ValidationError(
+                {"status": f"Only a draft claim can be rejected (this is '{claim.status}')."})
+        claim.status = DocumentStatus.CANCELLED
+        claim.save(update_fields=["status", "updated_at"])
+        return success_response(
+            f"Expense claim {claim.document_number} rejected.",
+            data=ExpenseClaimSerializer(claim, context={"request": request}).data,
+        )
+
+
+class ExpenseClaimReceiptView(_ExpenseClaimActionBase):
+    """POST (multipart ``file``) attach / DELETE a receipt on a claim line.
+
+    docstring-name: Expense line receipt
+    """
+
+    rbac_permission = "finance.expenseclaim.create"
+
+    def _line(self, request, pk, line_id):
+        _, claim = self._claim(request, pk)
+        line = claim.lines.filter(pk=line_id).first()
+        if line is None:
+            raise NotFound("Line not found on this claim.")
+        return claim, line
+
+    def post(self, request, pk, line_id):
+        from rest_framework.exceptions import ValidationError
+
+        claim, line = self._line(request, pk, line_id)
+        upload = request.FILES.get("file")
+        if upload is None:
+            raise ValidationError({"file": "A receipt file is required."})
+        line.receipt.save(upload.name, upload, save=True)
+        claim.refresh_from_db()
+        return success_response(
+            "Receipt attached.",
+            data=ExpenseClaimSerializer(claim, context={"request": request}).data, status=201,
+        )
+
+    def delete(self, request, pk, line_id):
+        claim, line = self._line(request, pk, line_id)
+        if line.receipt:
+            line.receipt.delete(save=True)
+        claim.refresh_from_db()
+        return success_response(
+            "Receipt removed.",
+            data=ExpenseClaimSerializer(claim, context={"request": request}).data,
         )
 
 
@@ -150,7 +211,7 @@ class ExpenseClaimSettleView(_ExpenseClaimActionBase):
         claim.refresh_from_db()
         return success_response(
             f"Expense claim {claim.document_number} reimbursed.",
-            data=ExpenseClaimSerializer(claim).data,
+            data=ExpenseClaimSerializer(claim, context={"request": request}).data,
         )
 
 
