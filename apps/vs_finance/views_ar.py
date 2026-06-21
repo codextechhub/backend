@@ -1547,15 +1547,50 @@ class DunningPolicyListCreateView(_FinanceBase):
 
 class DunningPolicyDetailView(_FinanceBase):
     """docstring-name: Dunning policies"""
-    rbac_permission = "finance.dunning.view"
 
-    def get(self, request, pk):
-        entity = resolve_entity(request)
-        policy = DunningPolicy.objects.filter(entity=entity, pk=pk).first()
+    @property
+    def rbac_permission(self):
+        return "finance.dunning.manage" if self.request.method == "PATCH" \
+            else "finance.dunning.view"
+
+    def _policy(self, request, pk):
+        policy = DunningPolicy.objects.filter(entity=resolve_entity(request), pk=pk).first()
         if policy is None:
             raise NotFound("Dunning policy not found for this entity.")
+        return policy
+
+    def get(self, request, pk):
         return success_response(
-            "Dunning policy retrieved.", data=DunningPolicySerializer(policy).data,
+            "Dunning policy retrieved.", data=DunningPolicySerializer(self._policy(request, pk)).data,
+        )
+
+    @transaction.atomic
+    def patch(self, request, pk):
+        """Update a policy's name / active / default; pass ``stages`` to replace the ladder."""
+        policy = self._policy(request, pk)
+        body = request.data or {}
+        if (name := (body.get("name") or "").strip()):
+            policy.name = name
+        if "is_active" in body:
+            policy.is_active = bool(body["is_active"])
+        if body.get("is_default"):
+            DunningPolicy.objects.filter(entity=policy.entity, is_default=True).exclude(pk=policy.pk).update(is_default=False)
+            policy.is_default = True
+        elif "is_default" in body:
+            policy.is_default = False
+        policy.save()
+        if "stages" in body:
+            policy.stages.all().delete()
+            for i, raw in enumerate(body.get("stages") or [], start=1):
+                DunningStage.objects.create(
+                    policy=policy, level=int(raw.get("level", i)),
+                    name=raw.get("name") or f"Stage {i}",
+                    min_days_overdue=int(raw.get("min_days_overdue", 0)),
+                    channel=raw.get("channel") or "EMAIL", message=raw.get("message") or "",
+                )
+        policy.refresh_from_db()
+        return success_response(
+            f"Dunning policy '{policy.name}' updated.", data=DunningPolicySerializer(policy).data,
         )
 
 
@@ -1594,6 +1629,44 @@ class DunningGenerateView(_FinanceBase):
                 "notices": DunningNoticeSerializer(notices, many=True).data,
             },
         )
+
+
+class DunningSummaryView(_FinanceBase):
+    """GET /finance/dunning/summary/ — open-receivable aging buckets for the header.
+
+    ``due_soon`` is the next 7 days (not yet overdue); the rest are days past due.
+
+    docstring-name: Dunning summary
+    """
+
+    rbac_permission = "finance.dunning.view"
+
+    def get(self, request):
+        import datetime
+
+        entity = resolve_entity(request)
+        today = datetime.date.today()
+        buckets = {k: {"amount": 0, "count": 0} for k in
+                   ("due_soon", "overdue_1_30", "overdue_31_60", "overdue_60_plus")}
+        for inv in (Invoice.objects.filter(entity=entity, status=DocumentStatus.POSTED)
+                    .exclude(due_date__isnull=True).only("due_date", "total", "amount_paid", "amount_credited")):
+            bal = inv.balance_due
+            if bal <= 0:
+                continue
+            d = (today - inv.due_date).days  # >0 overdue, <=0 upcoming
+            if -7 <= d <= 0:
+                key = "due_soon"
+            elif 1 <= d <= 30:
+                key = "overdue_1_30"
+            elif 31 <= d <= 60:
+                key = "overdue_31_60"
+            elif d > 60:
+                key = "overdue_60_plus"
+            else:
+                continue
+            buckets[key]["amount"] += bal
+            buckets[key]["count"] += 1
+        return success_response("Dunning summary retrieved.", data=buckets)
 
 
 class DunningNoticeListCreateView(_FinanceBase):
