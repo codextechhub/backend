@@ -8,9 +8,11 @@ from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
 
+from ..constants import DocumentStatus
 from ..money import format_naira
 from ..views import resolve_entity
 from ..models import (
+    JournalLine,
     PettyCashFund,
     PettyCashVoucher,
     PettyCashVoucherLine,
@@ -109,11 +111,51 @@ class PettyCashFundDetailView(_PettyCashFundActionBase):
         return "finance.pettycash.manage" if self.request.method == "PATCH" \
             else "finance.pettycash.view"
 
-    def get(self, request, pk):
-        _, fund = self._fund(request, pk)
-        return success_response(
-            "Petty cash fund retrieved.", data=PettyCashFundSerializer(fund).data,
+    def _register(self, fund, *, limit=80):
+        """The fund's GL ledger as a movement register, newest first, running balance.
+
+        ``in``/``out`` are the petty-cash debit/credit. ``category`` is derived from
+        the journal's counter line: 'Top-up' for cash coming in, else the expense
+        account's name for a spend.
+        """
+        lines = list(
+            JournalLine.objects
+            .filter(account=fund.gl_account, entry__status=DocumentStatus.POSTED)
+            .select_related("entry")
+            .prefetch_related("entry__lines__account")
+            .order_by("-entry__date", "-id")[:limit]
         )
+        running = fund.current_balance
+        out = []
+        for ln in lines:
+            inflow, outflow = int(ln.debit or 0), int(ln.credit or 0)
+            if inflow:
+                category = "Top-up"
+            else:
+                counter = next((l for l in ln.entry.lines.all()
+                                if l.account_id != fund.gl_account_id and (l.debit or 0)), None)
+                category = counter.account.name if counter else "—"
+            out.append({
+                "id": ln.id, "date": ln.entry.date,
+                "description": ln.description or ln.entry.narration or "—",
+                "category": category, "in": inflow, "out": outflow,
+                "balance": int(running),
+            })
+            running -= (inflow - outflow)
+        return out
+
+    def get(self, request, pk):
+        import datetime
+
+        _, fund = self._fund(request, pk)
+        week_ago = datetime.date.today() - datetime.timedelta(days=7)
+        spent_week = sum(
+            v.total for v in PettyCashVoucher.objects.filter(
+                fund=fund, status=DocumentStatus.POSTED, voucher_date__gte=week_ago))
+        data = PettyCashFundSerializer(fund).data
+        data["spent_this_week"] = int(spent_week)
+        data["register"] = self._register(fund)
+        return success_response("Petty cash fund retrieved.", data=data)
 
     def patch(self, request, pk):
         entity, fund = self._fund(request, pk)

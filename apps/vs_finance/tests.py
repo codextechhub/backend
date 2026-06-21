@@ -2265,6 +2265,32 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(rm.status_code, 200, rm.content)
         self.assertIsNone(rm.json()["data"]["lines"][0]["receipt_url"])
 
+    def test_petty_cash_register_and_spent_week(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        fund = PettyCashFund.objects.create(
+            entity=entity, name="Front Desk", custodian_name="Lola",
+            gl_account=Account.objects.get(entity=entity, code="1110"), float_amount=5000000)
+        establish_fund(fund, bank_account=bank, amount=5000000, date=datetime.date.today())
+        v = PettyCashVoucher.objects.create(
+            entity=entity, fund=fund, voucher_date=datetime.date.today(), payee="Shop")
+        PettyCashVoucherLine.objects.create(
+            voucher=v, expense_account=Account.objects.get(entity=entity, code="5300"),
+            quantity=1, unit_price=120000, line_no=1)
+        post_voucher(v)
+
+        resp = self.client.get(f"/v1/finance/petty-cash-funds/{fund.id}/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        data = resp.json()["data"]
+        self.assertEqual(data["spent_this_week"], 120000)
+        reg = data["register"]
+        # Newest first: the spend (out), then the establish top-up (in).
+        self.assertEqual(reg[0]["out"], 120000)
+        self.assertEqual(reg[0]["category"], Account.objects.get(entity=entity, code="5300").name)
+        self.assertEqual(reg[0]["balance"], 4880000)  # 5,000,000 − 120,000
+        self.assertEqual(reg[-1]["in"], 5000000)
+        self.assertEqual(reg[-1]["category"], "Top-up")
+
     def test_bank_account_detail_reports_metrics_and_transactions(self):
         entity, _, periods = self.build_books()
         bank = self.make_bank(entity)
