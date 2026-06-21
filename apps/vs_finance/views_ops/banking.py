@@ -188,7 +188,8 @@ class BankStatementLineView(_FinanceBase):
 
     def get(self, request, pk):
         bank = self._bank(request, pk)
-        qs = BankStatementLine.objects.filter(bank_account=bank)
+        qs = (BankStatementLine.objects.filter(bank_account=bank)
+              .select_related("matched_line__entry", "adjusting_journal"))
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
         return success_response(
@@ -361,6 +362,25 @@ class BankStatementLineAdjustView(_StatementLineActionBase):
         return success_response(
             "Bank adjustment booked and line matched.",
             data=BankStatementLineSerializer(line).data, status=201,
+        )
+
+
+class BankStatementLineUnmatchView(_StatementLineActionBase):
+    """POST — undo a match (reverses the adjusting journal if the match created one).
+
+    docstring-name: Unmatch a bank statement line
+    """
+
+    rbac_permission = "finance.bankaccount.reconcile"
+
+    def post(self, request, pk):
+        from ..banking import unmatch_line
+
+        _, line = self._line(request, pk)
+        unmatch_line(line, actor_user=request.user)
+        line.refresh_from_db()
+        return success_response(
+            "Statement line unmatched.", data=BankStatementLineSerializer(line).data,
         )
 
 

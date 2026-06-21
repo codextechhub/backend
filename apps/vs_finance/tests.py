@@ -2283,6 +2283,41 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(done.json()["data"]["matched_count"], 1)
         self.assertIn(done.json()["data"]["status"], ("BALANCED", "OUT_OF_BALANCE"))
 
+    def test_unmatch_drops_pairing_and_reverses_adjustment(self):
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        # 1) A plain match: post a +50,000 cash line, import + auto-match it.
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)],
+            date=datetime.date(2026, 1, 15)))
+        imp = self.client.post(
+            f"/v1/finance/bank-accounts/{bank.id}/statement-lines/?entity={entity.code}",
+            {"lines": [{"txn_date": "2026-01-15", "amount": 50000}]}, format="json")
+        line_id = imp.json()["data"][0]["id"]
+        self.client.post(
+            f"/v1/finance/bank-accounts/{bank.id}/auto-reconcile/?entity={entity.code}",
+            {"tolerance_days": 5}, format="json")
+        # Unmatch → back to UNMATCHED, no ledger effect.
+        un = self.client.post(
+            f"/v1/finance/statement-lines/{line_id}/unmatch/?entity={entity.code}", {}, format="json")
+        self.assertEqual(un.status_code, 200, un.content)
+        self.assertEqual(un.json()["data"]["status"], "UNMATCHED")
+
+        # 2) An adjustment: a -1,500 charge → adjust (books a journal), then unmatch reverses it.
+        from vs_finance.constants import DocumentStatus
+        adj_imp = self.client.post(
+            f"/v1/finance/bank-accounts/{bank.id}/statement-lines/?entity={entity.code}",
+            {"lines": [{"txn_date": "2026-01-20", "amount": -1500, "description": "Fee"}]}, format="json")
+        adj_line = adj_imp.json()["data"][0]["id"]
+        adj = self.client.post(
+            f"/v1/finance/statement-lines/{adj_line}/adjust/?entity={entity.code}", {}, format="json")
+        self.assertEqual(adj.json()["data"]["match_source"], "ADJUSTMENT")
+        je_id = adj.json()["data"]["adjusting_journal_id"]
+        self.client.post(
+            f"/v1/finance/statement-lines/{adj_line}/unmatch/?entity={entity.code}", {}, format="json")
+        from vs_finance.models import JournalEntry
+        self.assertTrue(JournalEntry.objects.filter(reverses_id=je_id, status=DocumentStatus.POSTED).exists())
+
     def test_bank_account_patch_updates_settings_and_primary(self):
         entity, _, _ = self.build_books()
         a = self.make_bank(entity)

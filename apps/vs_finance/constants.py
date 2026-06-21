@@ -284,6 +284,13 @@ class BankLineStatus(models.TextChoices):
     IGNORED = "IGNORED", "Ignored"
 
 
+class BankMatchSource(models.TextChoices):
+    """How a statement line came to be matched."""
+    AUTO = "AUTO", "Auto"
+    MANUAL = "MANUAL", "Manual"
+    ADJUSTMENT = "ADJUSTMENT", "Adjustment"
+
+
 class BankStatementStatus(models.TextChoices):
     """Lifecycle of an imported bank statement (a batch of lines for a period)."""
     UPLOADED = "UPLOADED", "Uploaded"

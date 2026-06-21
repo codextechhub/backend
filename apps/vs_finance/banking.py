@@ -20,6 +20,7 @@ from .accounts import resolve_account
 from .audit import record
 from .constants import (
     BankLineStatus,
+    BankMatchSource,
     BankReconStatus,
     BankStatementStatus,
     DocumentStatus,
@@ -28,7 +29,7 @@ from .constants import (
     NormalBalance,
 )
 from .exceptions import BankReconciliationError
-from .posting import post_journal, resolve_period
+from .posting import post_journal, resolve_period, reverse_journal
 
 
 # --------------------------------------------------------------------------- #
@@ -156,8 +157,9 @@ def auto_reconcile(bank_account, *, tolerance_days=4, actor_user=None):
                 continue
             sline.matched_line = gl
             sline.status = BankLineStatus.MATCHED
+            sline.match_source = BankMatchSource.AUTO
             sline.reconciled_at = timezone.now()
-            sline.save(update_fields=["matched_line", "status", "reconciled_at", "updated_at"])
+            sline.save(update_fields=["matched_line", "status", "match_source", "reconciled_at", "updated_at"])
             consumed.add(gl.id)
             matched.append(sline)
             break
@@ -236,9 +238,43 @@ def match_line(statement_line, journal_line, *, actor_user=None):
         )
     statement_line.matched_line = journal_line
     statement_line.status = BankLineStatus.MATCHED
+    statement_line.match_source = BankMatchSource.MANUAL
     statement_line.reconciled_at = timezone.now()
     statement_line.save(
-        update_fields=["matched_line", "status", "reconciled_at", "updated_at"],
+        update_fields=["matched_line", "status", "match_source", "reconciled_at", "updated_at"],
+    )
+    return statement_line
+
+
+@transaction.atomic
+def unmatch_line(statement_line, *, actor_user=None):
+    """Undo a match — and reverse the adjusting journal if the match created one.
+
+    A plain match just drops the pairing (no ledger effect). A match that booked
+    an adjusting journal reverses that journal (a mirror entry that nets to zero),
+    so unmatching never silently leaves the ledger out of step.
+    """
+    if statement_line.status != BankLineStatus.MATCHED:
+        raise BankReconciliationError("Only a matched line can be unmatched.")
+    bank_account = statement_line.bank_account
+    adj = statement_line.adjusting_journal
+    if adj is not None:
+        reverse_journal(adj, actor_user=actor_user)
+    statement_line.matched_line = None
+    statement_line.adjusting_journal = None
+    statement_line.status = BankLineStatus.UNMATCHED
+    statement_line.match_source = ""
+    statement_line.reconciled_at = None
+    statement_line.save(update_fields=[
+        "matched_line", "adjusting_journal", "status", "match_source",
+        "reconciled_at", "updated_at",
+    ])
+    record(
+        entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
+        actor_user=actor_user, target=bank_account,
+        message=f"Unmatched a statement line on {bank_account.name}"
+                + (f" and reversed adjusting journal {adj.pk}." if adj else "."),
+        bank_account_id=bank_account.id,
     )
     return statement_line
 
@@ -314,9 +350,11 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
     statement_line.adjusting_journal = entry
     statement_line.matched_line = cash_line
     statement_line.status = BankLineStatus.MATCHED
+    statement_line.match_source = BankMatchSource.ADJUSTMENT
     statement_line.reconciled_at = timezone.now()
     statement_line.save(update_fields=[
-        "adjusting_journal", "matched_line", "status", "reconciled_at", "updated_at",
+        "adjusting_journal", "matched_line", "status", "match_source",
+        "reconciled_at", "updated_at",
     ])
 
     record(

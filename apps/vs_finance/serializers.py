@@ -669,17 +669,28 @@ class BankAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
 
 class BankStatementLineSerializer(serializers.ModelSerializer):
     amount_naira = serializers.SerializerMethodField()
+    match_source_display = serializers.CharField(source="get_match_source_display", read_only=True)
+    matched_reference = serializers.SerializerMethodField()
 
     class Meta:
         model = BankStatementLine
         fields = [
             "id", "bank_account_id", "statement_id", "txn_date", "description",
             "reference", "amount", "amount_naira", "status", "matched_line_id",
-            "adjusting_journal_id", "external_id", "reconciled_at",
+            "adjusting_journal_id", "match_source", "match_source_display",
+            "matched_reference", "external_id", "reconciled_at",
         ]
 
     def get_amount_naira(self, obj) -> str:
         return format_naira(obj.amount)
+
+    def get_matched_reference(self, obj):
+        """The document number of the matched journal entry (or adjusting entry)."""
+        if obj.adjusting_journal_id:
+            return obj.adjusting_journal.document_number
+        if obj.matched_line_id and obj.matched_line.entry_id:
+            return obj.matched_line.entry.document_number
+        return None
 
 
 class BankStatementSerializer(serializers.ModelSerializer):

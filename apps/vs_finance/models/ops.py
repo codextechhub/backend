@@ -8,6 +8,7 @@ from django.db import models
 from ..constants import (
     AssetStatus,
     BankLineStatus,
+    BankMatchSource,
     BankReconStatus,
     BankStatementStatus,
     BudgetStatus,
@@ -107,6 +108,10 @@ class BankStatementLine(TimeStampedModel):
         "JournalLine", on_delete=models.SET_NULL, related_name="bank_statement_lines",
         null=True, blank=True,
         help_text="The cash-account journal line this statement line reconciles to.",
+    )
+    match_source = models.CharField(
+        max_length=12, choices=BankMatchSource.choices, blank=True, default="",
+        help_text="How it was matched: auto, manual, or via an adjusting entry.",
     )
     adjusting_journal = models.ForeignKey(
         "JournalEntry", on_delete=models.SET_NULL, related_name="bank_adjustments",
