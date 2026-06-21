@@ -347,6 +347,19 @@ class FeeStructure(TimeStampedModel):
         """Sum of the item amounts in kobo (net of tax; tax is added at generation)."""
         return self.items.aggregate(t=models.Sum("amount"))["t"] or 0
 
+    @property
+    def tax_total(self) -> int:
+        """Tax that would be added at generation, in kobo (per line: net × rate_bps)."""
+        return sum(
+            (it.amount * it.tax_code.rate_bps) // 10000
+            for it in self.items.all() if it.tax_code_id
+        )
+
+    @property
+    def total_with_tax(self) -> int:
+        """Gross total per customer in kobo (net subtotal + tax)."""
+        return self.total + self.tax_total
+
 
 class FeeItem(TimeStampedModel):
     """One charge line of a :class:`FeeStructure` → a GL revenue account (+ optional tax)."""
@@ -354,6 +367,9 @@ class FeeItem(TimeStampedModel):
     structure = models.ForeignKey(
         FeeStructure, on_delete=models.CASCADE, related_name="items",
     )
+    code = models.CharField(
+        max_length=32, blank=True, default="",
+        help_text="Optional short fee code/category, e.g. 'TUITION', 'BOARDING'.")
     description = models.CharField(max_length=255)
     revenue_account = models.ForeignKey(
         Account, on_delete=models.PROTECT, related_name="fee_items",
@@ -364,6 +380,10 @@ class FeeItem(TimeStampedModel):
         TaxCode, on_delete=models.PROTECT, related_name="fee_items",
         null=True, blank=True,
     )
+    is_optional = models.BooleanField(
+        default=False,
+        help_text="An opt-in charge (vs a required line). Informational for now — "
+                  "generation bills every line.")
     line_no = models.PositiveSmallIntegerField(default=0)
 
     class Meta:

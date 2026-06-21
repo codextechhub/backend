@@ -2464,6 +2464,68 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(patched.status_code, 200, patched.content)
         self.assertEqual(patched.json()["data"]["applies_to"], "STAFF")
 
+    def test_fee_structure_lines_carry_code_optional_and_tax_breakdown(self):
+        entity, _, _ = self.build_books()
+        vat = TaxCode.objects.create(
+            entity=entity, code="VAT", name="VAT 7.5%", rate_bps=750,
+            collected_account=Account.objects.get(entity=entity, code="2200"))
+
+        created = self.client.post(
+            f"/v1/finance/fee-structures/?entity={entity.code}",
+            {"code": "fs-rich", "name": "Rich structure", "items": [
+                {"code": "TUITION", "description": "Tuition", "revenue_account": "4100",
+                 "amount": 10000000},
+                {"code": "TRANSPORT", "description": "Transport", "revenue_account": "4100",
+                 "amount": 2000000, "tax_code": "VAT", "is_optional": True},
+            ]}, format="json")
+        self.assertEqual(created.status_code, 201, created.content)
+        data = created.json()["data"]
+        # Subtotal (net) + tax (7.5% on the ₦20,000 transport line only) = gross.
+        self.assertEqual(data["total"], 12000000)
+        self.assertEqual(data["tax_total"], 150000)            # 2,000,000 × 750 / 10000
+        self.assertEqual(data["total_with_tax"], 12150000)
+        items = {it["code"]: it for it in data["items"]}
+        self.assertFalse(items["TUITION"]["is_optional"])
+        self.assertTrue(items["TRANSPORT"]["is_optional"])
+        self.assertEqual(items["TRANSPORT"]["tax_code_value"], "VAT")
+
+    def test_fee_structure_detail_reports_usage_and_can_be_duplicated(self):
+        entity, _, _ = self.build_books()
+        self.client.post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"code": "stu1", "name": "Student One"}, format="json")
+        self.client.post(
+            f"/v1/finance/fee-structures/?entity={entity.code}",
+            {"code": "fs-src", "name": "Source", "items": [
+                {"code": "TUITION", "description": "Tuition", "revenue_account": "4100",
+                 "amount": 5000000, "is_optional": False}]}, format="json")
+        # Generate one invoice → usage count should reflect it.
+        self.client.post(
+            f"/v1/finance/fee-structures/FS-SRC/generate/?entity={entity.code}",
+            {"all_active": True, "invoice_date": "2026-01-10"}, format="json")
+
+        detail = self.client.get(f"/v1/finance/fee-structures/FS-SRC/?entity={entity.code}")
+        self.assertEqual(detail.status_code, 200)
+        usage = detail.json()["data"]["usage"]
+        self.assertEqual(usage["invoices_generated"], 1)
+        self.assertIsNotNone(usage["last_generated_at"])
+
+        # Duplicate → a new INACTIVE clone carrying the same lines (incl. fee code).
+        dup = self.client.post(
+            f"/v1/finance/fee-structures/FS-SRC/duplicate/?entity={entity.code}",
+            {"code": "fs-copy", "name": "Copy"}, format="json")
+        self.assertEqual(dup.status_code, 201, dup.content)
+        clone = dup.json()["data"]
+        self.assertEqual(clone["code"], "FS-COPY")
+        self.assertFalse(clone["is_active"])
+        self.assertEqual(clone["items"][0]["code"], "TUITION")
+        self.assertEqual(clone["usage"]["invoices_generated"], 0)
+        # Duplicating onto an existing code is rejected.
+        clash = self.client.post(
+            f"/v1/finance/fee-structures/FS-SRC/duplicate/?entity={entity.code}",
+            {"code": "fs-copy"}, format="json")
+        self.assertEqual(clash.status_code, 400, clash.content)
+
     def test_fee_structure_generate_blocked_for_non_customer(self):
         """Only CUSTOMER structures can raise AR invoices."""
         entity, _, _ = self.build_books()

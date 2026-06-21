@@ -564,11 +564,13 @@ def _build_fee_items(structure, entity, raw_items):
             raise ValidationError({f"items[{i}].amount": "A positive amount is required."})
         FeeItem.objects.create(
             structure=structure, line_no=item.get("line_no", i),
+            code=str(item.get("code", "")).strip()[:32],
             description=str(item.get("description", "")).strip() or f"Fee {i}",
             revenue_account=_resolve_account(
                 entity, item.get("revenue_account"), f"items[{i}].revenue_account", required=True),
             amount=amount,
             tax_code=_resolve_tax(entity, item.get("tax_code"), f"items[{i}].tax_code"),
+            is_optional=bool(item.get("is_optional", False)),
         )
 
 
@@ -610,7 +612,8 @@ class FeeStructureListCreateView(_FinanceBase):
 
     def get(self, request):
         entity = resolve_entity(request)
-        qs = FeeStructure.objects.filter(entity=entity).prefetch_related("items__revenue_account")
+        qs = FeeStructure.objects.filter(entity=entity).prefetch_related(
+            "items__revenue_account", "items__tax_code")
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
         if (applies_to := request.query_params.get("applies_to")):
@@ -664,7 +667,8 @@ class FeeStructureDetailView(_FinanceBase):
         entity = resolve_entity(request)
         structure = _resolve_fee_structure(entity, pk)
         return success_response(
-            "Fee structure retrieved.", data=FeeStructureSerializer(structure).data,
+            "Fee structure retrieved.",
+            data=FeeStructureSerializer(structure, context={"with_usage": True}).data,
         )
 
     @transaction.atomic
@@ -686,7 +690,48 @@ class FeeStructureDetailView(_FinanceBase):
         structure.refresh_from_db()
         return success_response(
             f"Fee structure {structure.code} updated.",
-            data=FeeStructureSerializer(structure).data,
+            data=FeeStructureSerializer(structure, context={"with_usage": True}).data,
+        )
+
+
+class FeeStructureDuplicateView(_FinanceBase):
+    """POST — clone a fee structure (code + lines) into a new **draft** structure.
+
+    Body: ``{code, name?}`` — a new unique code is required; the clone copies
+    applies_to, description and every line (incl. fee code / optional flag) and is
+    created **inactive** so it can be reviewed before use.
+
+    docstring-name: Fee structures
+    """
+
+    rbac_permission = "finance.feestructure.create"
+
+    @transaction.atomic
+    def post(self, request, pk):
+        entity = resolve_entity(request)
+        source = _resolve_fee_structure(entity, pk)
+        body = request.data or {}
+        new_code = str(body.get("code", "")).strip().upper()
+        if not new_code:
+            raise ValidationError({"code": "A code for the new structure is required."})
+        if FeeStructure.objects.filter(entity=entity, code=new_code).exists():
+            raise ValidationError({"code": f"A fee structure with code '{new_code}' already exists."})
+        clone = FeeStructure.objects.create(
+            entity=entity, code=new_code,
+            name=str(body.get("name", "")).strip() or f"{source.name} (copy)",
+            applies_to=source.applies_to, description=source.description,
+            is_active=False, created_by=request.user,
+        )
+        for item in source.items.all():
+            FeeItem.objects.create(
+                structure=clone, line_no=item.line_no, code=item.code,
+                description=item.description, revenue_account=item.revenue_account,
+                amount=item.amount, tax_code=item.tax_code, is_optional=item.is_optional,
+            )
+        clone.refresh_from_db()
+        return success_response(
+            f"Fee structure {clone.code} created from {source.code}.",
+            data=FeeStructureSerializer(clone, context={"with_usage": True}).data, status=201,
         )
 
 

@@ -315,8 +315,8 @@ class FeeItemSerializer(serializers.ModelSerializer):
     class Meta:
         model = FeeItem
         fields = [
-            "id", "line_no", "description", "revenue_account_code",
-            "amount", "amount_naira", "tax_code_value",
+            "id", "line_no", "code", "description", "revenue_account_code",
+            "amount", "amount_naira", "tax_code_value", "is_optional",
         ]
 
     def get_amount_naira(self, obj) -> str:
@@ -327,18 +327,53 @@ class FeeStructureSerializer(serializers.ModelSerializer):
     items = FeeItemSerializer(many=True, read_only=True)
     total = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
+    tax_total = serializers.IntegerField(read_only=True)
+    tax_total_naira = serializers.SerializerMethodField()
+    total_with_tax = serializers.IntegerField(read_only=True)
+    total_with_tax_naira = serializers.SerializerMethodField()
     applies_to_display = serializers.CharField(
         source="get_applies_to_display", read_only=True)
+    # Usage/activity — only computed for the detail view (context with_usage=True),
+    # so the list endpoint stays a single query per page.
+    created_by_name = serializers.SerializerMethodField()
+    usage = serializers.SerializerMethodField()
 
     class Meta:
         model = FeeStructure
         fields = [
             "id", "code", "name", "applies_to", "applies_to_display",
-            "description", "is_active", "items", "total", "total_naira",
+            "description", "is_active", "items",
+            "total", "total_naira", "tax_total", "tax_total_naira",
+            "total_with_tax", "total_with_tax_naira",
+            "created_at", "created_by_name", "usage",
         ]
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
+
+    def get_tax_total_naira(self, obj) -> str:
+        return format_naira(obj.tax_total)
+
+    def get_total_with_tax_naira(self, obj) -> str:
+        return format_naira(obj.total_with_tax)
+
+    def get_created_by_name(self, obj):
+        u = obj.created_by
+        if not u:
+            return None
+        name = " ".join(filter(None, [
+            getattr(u, "first_name", ""), getattr(u, "last_name", "")])).strip()
+        return name or getattr(u, "email", None)
+
+    def get_usage(self, obj):
+        """Invoices raised from this structure (reference 'FEE:<code>'). Detail only."""
+        if not self.context.get("with_usage"):
+            return None
+        from .models import Invoice
+        qs = Invoice.objects.filter(
+            entity_id=obj.entity_id, reference=f"FEE:{obj.code}", status="POSTED")
+        last = qs.order_by("-created_at").values_list("created_at", flat=True).first()
+        return {"invoices_generated": qs.count(), "last_generated_at": last}
 
 
 class InvoiceSerializer(serializers.ModelSerializer):
