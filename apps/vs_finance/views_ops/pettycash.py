@@ -277,7 +277,7 @@ class PettyCashVoucherListCreateView(_FinanceBase):
 
     def get(self, request):
         entity = resolve_entity(request)
-        qs = PettyCashVoucher.objects.filter(entity=entity).prefetch_related("lines")
+        qs = PettyCashVoucher.objects.filter(entity=entity).prefetch_related("lines__expense_account")
         if (fund := request.query_params.get("fund")):
             qs = qs.filter(fund_id=fund)
         if (status_val := request.query_params.get("status")):

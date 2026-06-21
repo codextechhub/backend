@@ -851,6 +851,7 @@ class PettyCashVoucherLineSerializer(serializers.ModelSerializer):
 class PettyCashVoucherSerializer(serializers.ModelSerializer):
     lines = PettyCashVoucherLineSerializer(many=True, read_only=True)
     total_naira = serializers.SerializerMethodField()
+    expense_account = serializers.SerializerMethodField()
 
     class Meta:
         model = PettyCashVoucher
@@ -858,11 +859,20 @@ class PettyCashVoucherSerializer(serializers.ModelSerializer):
             "id", "document_number", "fund_id", "voucher_date", "payee",
             "spent_by_id", "narration", "reference", "status",
             "subtotal", "tax_total", "total", "total_naira",
-            "journal_id", "lines",
+            "journal_id", "lines", "expense_account",
         ]
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
+
+    def get_expense_account(self, obj):
+        """The voucher's expense category — the first line's account (code · name)."""
+        lines = list(obj.lines.all()[:2])
+        if not lines:
+            return None
+        acc = lines[0].expense_account
+        label = f"{acc.code} · {acc.name}"
+        return f"{label} +{len(lines) - 1}" if len(lines) > 1 else label
 
 
 # --------------------------------------------------------------------------- #
