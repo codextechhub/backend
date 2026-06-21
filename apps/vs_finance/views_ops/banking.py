@@ -264,15 +264,25 @@ class BankBookLinesView(_FinanceBase):
 
     def get(self, request, pk):
         from ..banking import _unmatched_gl_lines
+        from ..models import Customer
 
         entity = resolve_entity(request)
         bank = BankAccount.objects.filter(entity=entity, pk=pk).select_related("gl_account").first()
         if bank is None:
             raise NotFound("Bank account not found for this entity.")
+
+        # Posting bakes the customer *code* into line descriptions ("Receipt: CUST-002").
+        # Resolve it to the human name for the reconciliation view.
+        names = dict(Customer.objects.filter(entity=entity).values_list("code", "name"))
+
+        def humanize(desc: str) -> str:
+            label, sep, tail = (desc or "").partition(": ")
+            return f"{label}: {names[tail]}" if sep and tail in names else (desc or "—")
+
         rows = [{
             "id": ln.id,
             "date": ln.entry.date,
-            "description": ln.description or ln.entry.narration or "—",
+            "description": humanize(ln.description or ln.entry.narration or "—"),
             "reference": ln.entry.document_number or ln.entry.reference or "",
             "amount": int((ln.debit or 0) - (ln.credit or 0)),
         } for ln in _unmatched_gl_lines(bank)[:200]]
