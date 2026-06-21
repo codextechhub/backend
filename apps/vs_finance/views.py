@@ -152,7 +152,7 @@ class EntityListCreateView(generics.ListCreateAPIView):
         )
 
 
-class AccountListView(EntityScopedListMixin, generics.ListAPIView):
+class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
     """GET /finance/accounts/?entity= — the entity's chart of accounts.
 
     ``?with_balance=true`` returns the **whole tree** (un-paginated) with each
@@ -172,6 +172,7 @@ class AccountListView(EntityScopedListMixin, generics.ListAPIView):
     def _with_balance(self):
         return self.request.query_params.get("with_balance") == "true"
 
+    # POST added manually (not using CreateAPIView or ListCreateAPIView)
     def post(self, request):
         """Create a new chart-of-accounts node for the entity."""
         from .constants import AccountType
