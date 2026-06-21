@@ -1167,10 +1167,15 @@ class ConcessionListCreateView(_FinanceBase):
             qs = qs.filter(status=status_val)
         if (customer := request.query_params.get("customer")):
             qs = qs.filter(customer=_resolve_customer(entity, customer))
-        return success_response(
-            "Concessions retrieved.",
-            data=ConcessionSerializer(qs.order_by("-concession_date", "-id")[:200], many=True).data,
-        )
+        if (search := (request.query_params.get("search") or "").strip()):
+            qs = qs.filter(
+                Q(document_number__icontains=search) | Q(reason__icontains=search)
+                | Q(invoice__document_number__icontains=search)
+                | Q(customer__name__icontains=search) | Q(customer__code__icontains=search)
+            )
+        paginator = XVSPagination()
+        page = paginator.paginate_queryset(qs.order_by("-concession_date", "-id"), request, view=self)
+        return paginator.get_paginated_response(ConcessionSerializer(page, many=True).data)
 
     def post(self, request):
         entity = resolve_entity(request)
@@ -1228,6 +1233,31 @@ class ConcessionPostView(_ConcessionActionBase):
             f"{concession.get_kind_display()} {concession.document_number} posted.",
             data=ConcessionSerializer(concession).data,
         )
+
+
+class ConcessionSummaryView(_FinanceBase):
+    """GET /finance/concessions/summary/ — KPI totals (kobo) for the header cards.
+
+    docstring-name: Concession summary
+    """
+
+    rbac_permission = "finance.concession.view"
+
+    def get(self, request):
+        from django.db.models import Sum
+        from django.utils import timezone
+
+        entity = resolve_entity(request)
+        qs = Concession.objects.filter(entity=entity)
+        posted_ytd = qs.filter(
+            status=DocumentStatus.POSTED, concession_date__year=timezone.now().year,
+        ).aggregate(s=Sum("amount"))["s"] or 0
+        draft_pending = qs.filter(status=DocumentStatus.DRAFT).aggregate(s=Sum("amount"))["s"] or 0
+        return success_response("Concession summary retrieved.", data={
+            "posted_ytd": int(posted_ytd),
+            "draft_pending": int(draft_pending),
+            "active_count": qs.count(),
+        })
 
 
 # --------------------------------------------------------------------------- #

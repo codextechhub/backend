@@ -36,6 +36,7 @@ from .views_ar import (
     ConcessionDetailView,
     ConcessionListCreateView,
     ConcessionPostView,
+    ConcessionSummaryView,
     CreditNoteAllocateView,
     CreditNoteDetailView,
     CreditNoteListCreateView,
@@ -155,6 +156,7 @@ urlpatterns = [
 
     # Concessions — discounts / waivers / scholarships
     path("concessions/", ConcessionListCreateView.as_view(), name="finance-concession-list"),
+    path("concessions/summary/", ConcessionSummaryView.as_view(), name="finance-concession-summary"),
     path("concessions/<int:pk>/", ConcessionDetailView.as_view(), name="finance-concession-detail"),
     path("concessions/<int:pk>/post/", ConcessionPostView.as_view(), name="finance-concession-post"),
 
