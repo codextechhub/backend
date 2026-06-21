@@ -67,7 +67,8 @@ class DunningStage(TimeStampedModel):
         help_text="Days past due an invoice must be before this stage applies.",
     )
     channel = models.CharField(
-        max_length=8, choices=DunningChannel.choices, default=DunningChannel.EMAIL,
+        max_length=32, default=DunningChannel.EMAIL,
+        help_text="One or more DunningChannel values, comma-separated (e.g. 'EMAIL,IN_APP').",
     )
     message = models.TextField(
         blank=True, default="",
@@ -117,7 +118,8 @@ class DunningNotice(FinanceDocument):
     days_overdue = models.PositiveSmallIntegerField(default=0)
     amount_due = MoneyField(help_text="Invoice balance outstanding when generated, in kobo.")
     channel = models.CharField(
-        max_length=8, choices=DunningChannel.choices, default=DunningChannel.EMAIL,
+        max_length=32, default=DunningChannel.EMAIL,
+        help_text="Snapshot of the stage's channel(s), comma-separated.",
     )
     message = models.TextField(blank=True, default="")
     notice_status = models.CharField(

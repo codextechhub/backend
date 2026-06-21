@@ -1486,6 +1486,17 @@ class CustomerStatementView(_FinanceBase):
 # Dunning — policies, stages and automated reminder notices                   #
 # --------------------------------------------------------------------------- #
 
+def _normalize_channels(raw):
+    """Coerce a stage channel input (CSV string or list) into a normalised CSV of
+    valid DunningChannel values, in enum order, deduped; defaults to EMAIL."""
+    from .constants import DunningChannel
+
+    parts = ([str(x).strip().upper() for x in raw] if isinstance(raw, (list, tuple))
+             else [p.strip().upper() for p in str(raw or "").split(",")])
+    chosen = [c for c in DunningChannel.values if c in parts]
+    return ",".join(chosen) if chosen else DunningChannel.EMAIL
+
+
 class DunningPolicyListCreateView(_FinanceBase):
     """GET (list) dunning policies, or POST to create one (optionally with stages).
 
@@ -1536,7 +1547,7 @@ class DunningPolicyListCreateView(_FinanceBase):
                 level=int(raw.get("level", i)),
                 name=raw.get("name") or f"Stage {i}",
                 min_days_overdue=int(raw.get("min_days_overdue", 0)),
-                channel=raw.get("channel") or "EMAIL",
+                channel=_normalize_channels(raw.get("channel")),
                 message=raw.get("message") or "",
             )
         return success_response(
@@ -1586,7 +1597,7 @@ class DunningPolicyDetailView(_FinanceBase):
                     policy=policy, level=int(raw.get("level", i)),
                     name=raw.get("name") or f"Stage {i}",
                     min_days_overdue=int(raw.get("min_days_overdue", 0)),
-                    channel=raw.get("channel") or "EMAIL", message=raw.get("message") or "",
+                    channel=_normalize_channels(raw.get("channel")), message=raw.get("message") or "",
                 )
         policy.refresh_from_db()
         return success_response(
