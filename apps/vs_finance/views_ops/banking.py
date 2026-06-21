@@ -64,6 +64,7 @@ class BankAccountListCreateView(_FinanceBase):
         if not name:
             raise ValidationError({"name": "A bank account name is required."})
         gl_account = _resolve_account(entity, body.get("gl_account"), "gl_account", required=True)
+        is_primary = _bool(body.get("is_primary", False), default=False)
         bank = BankAccount.objects.create(
             entity=entity, name=name,
             bank_name=body.get("bank_name", ""),
@@ -71,7 +72,11 @@ class BankAccountListCreateView(_FinanceBase):
             gl_account=gl_account,
             currency=_resolve_currency(body.get("currency")),
             is_active=_bool(body.get("is_active", True), default=True),
+            is_primary=is_primary,
         )
+        if is_primary:  # at most one primary per entity
+            BankAccount.objects.filter(entity=entity, is_primary=True).exclude(
+                pk=bank.pk).update(is_primary=False)
         return success_response(
             f"Bank account '{name}' created.",
             data=BankAccountSerializer(bank).data, status=201,
