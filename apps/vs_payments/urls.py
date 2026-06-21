@@ -6,7 +6,8 @@ from . import views
 urlpatterns = [
     path("collections/", views.CollectionListCreateView.as_view(), name="payments-collections"),
     path("collections/<int:pk>/", views.CollectionDetailView.as_view(), name="payments-collection-detail"),
-    path("virtual-accounts/", views.VirtualAccountCreateView.as_view(), name="payments-virtual-accounts"),
+    path("virtual-accounts/", views.VirtualAccountListCreateView.as_view(), name="payments-virtual-accounts"),
+    path("virtual-accounts/<int:pk>/", views.VirtualAccountDetailView.as_view(), name="payments-virtual-account-detail"),
     path("payouts/", views.PayoutListCreateView.as_view(), name="payments-payouts"),
     path("payout-batches/", views.PayoutBatchListCreateView.as_view(), name="payments-payout-batches"),
     path("payout-batches/<int:pk>/", views.PayoutBatchDetailView.as_view(), name="payments-payout-batch-detail"),

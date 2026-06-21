@@ -28,7 +28,8 @@ PAYMENTS_RESOURCES = [
     ("payout",          "gateway payouts",     [("view", "NORMAL"), ("create", "CRITICAL"),
                                                ("view_sensitive", "SENSITIVE")]),
     ("report",          "settlement reports",  [("view", "NORMAL")]),
-    ("virtual_account", "virtual accounts",    [("create", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
+    ("virtual_account", "virtual accounts",    [("view", "NORMAL"), ("create", "SENSITIVE"),
+                                                ("manage", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
 ]
 
 

@@ -121,6 +121,7 @@ class PaymentAuditAction(models.TextChoices):
     COLLECTION_CONFIRMED = "COLLECTION_CONFIRMED", "Collection confirmed"
     COLLECTION_FAILED = "COLLECTION_FAILED", "Collection failed"
     VIRTUAL_ACCOUNT_CREATED = "VIRTUAL_ACCOUNT_CREATED", "Virtual account created"
+    VIRTUAL_ACCOUNT_STATUS_CHANGED = "VIRTUAL_ACCOUNT_STATUS_CHANGED", "Virtual account status changed"
     PAYOUT_INITIATED = "PAYOUT_INITIATED", "Payout initiated"
     PAYOUT_CONFIRMED = "PAYOUT_CONFIRMED", "Payout confirmed"
     PAYOUT_FAILED = "PAYOUT_FAILED", "Payout failed"

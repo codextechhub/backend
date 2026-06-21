@@ -15,9 +15,13 @@ handler, so the views stay thin.
 """
 from __future__ import annotations
 
+import math
+
+from django.db.models import Q
 from rest_framework import generics
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.response import success_response
@@ -26,6 +30,7 @@ from vs_finance.views import resolve_entity
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 
 from . import reconciliation, services, webhooks
+from .constants import VirtualAccountStatus
 from .exceptions import DuplicateWebhookError
 from .models import CollectionIntent, PaymentEvent, PayoutBatch, PayoutInstruction, VirtualAccount
 from .serializers import (
@@ -38,13 +43,21 @@ from .serializers import (
 )
 
 
-def _entity_obj(entity, model, pk, field):
-    """Fetch ``model`` by pk within ``entity`` or raise a 400 ValidationError."""
-    if pk in (None, ""):
+def _entity_obj(entity, model, ref, field):
+    """Fetch ``model`` within ``entity`` by numeric pk, or by ``code`` for models
+    that have one (so the UI pickers, which emit codes, resolve too). Raises a
+    400 ValidationError when nothing matches."""
+    if ref in (None, ""):
         return None
-    obj = model.objects.filter(entity=entity, pk=pk).first()
+    qs = model.objects.filter(entity=entity)
+    if str(ref).isdigit():
+        obj = qs.filter(pk=ref).first()
+    elif any(getattr(f, "name", None) == "code" for f in model._meta.get_fields()):
+        obj = qs.filter(code__iexact=str(ref)).first()
+    else:
+        obj = None
     if obj is None:
-        raise ValidationError({field: f"No {model.__name__.lower()} {pk} in this entity."})
+        raise ValidationError({field: f"No {model.__name__.lower()} '{ref}' in this entity."})
     return obj
 
 
@@ -73,6 +86,8 @@ class CollectionListCreateView(APIView):
         )
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
+        if (va := request.query_params.get("virtual_account")):
+            qs = qs.filter(virtual_account_id=va)
         data = CollectionIntentSerializer(qs[:200], many=True).data
         return success_response("Collections retrieved.", data=data)
 
@@ -116,14 +131,63 @@ class CollectionDetailView(APIView):
         return success_response("Collection retrieved.", data=CollectionIntentSerializer(intent).data)
 
 
-class VirtualAccountCreateView(APIView):
-    """POST to provision a dedicated virtual account for a customer.
+class VirtualAccountListCreateView(APIView):
+    """GET (list) / POST (provision) dedicated virtual accounts for an entity.
 
-    docstring-name: Create a virtual account
+    GET is paginated with filters (``status``, ``provider``, ``customer``,
+    ``search``) and rides KPI counts (active / inactive / providers in use) in
+    the envelope. The funding number/name stay FLS-stripped unless the caller
+    holds ``payments.virtual_account.view_sensitive``.
+
+    docstring-name: Virtual accounts
     """
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
-    rbac_permission = "payments.virtual_account.create"
+
+    @property
+    def rbac_permission(self):
+        return "payments.virtual_account.create" if self.request.method == "POST" \
+            else "payments.virtual_account.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        base = VirtualAccount.objects.filter(entity=entity)
+        kpis = {
+            "total": base.count(),
+            "active": base.filter(status=VirtualAccountStatus.ACTIVE).count(),
+            "inactive": base.filter(status=VirtualAccountStatus.INACTIVE).count(),
+            "providers": base.values("provider").distinct().count(),
+        }
+        qs = base.select_related("customer", "deposit_account", "currency")
+        if (status_ := request.query_params.get("status")):
+            qs = qs.filter(status=status_.upper())
+        if (provider := request.query_params.get("provider")):
+            qs = qs.filter(provider=provider.upper())
+        if (customer := request.query_params.get("customer")):
+            qs = qs.filter(customer__code__iexact=customer)
+        if (search := request.query_params.get("search")):
+            qs = qs.filter(
+                Q(customer__name__icontains=search) | Q(customer__code__icontains=search)
+                | Q(account_number__icontains=search) | Q(bank_name__icontains=search))
+        qs = qs.order_by("-created_at")
+
+        page = max(int(request.query_params.get("page", 1) or 1), 1)
+        page_size = min(max(int(request.query_params.get("page_size", 20) or 20), 1), 100)
+        total = qs.count()
+        total_pages = math.ceil(total / page_size) if total else 1
+        start = (page - 1) * page_size
+        rows = VirtualAccountSerializer(
+            qs[start:start + page_size], many=True, context={"request": request}).data
+        return Response({
+            "success": True,
+            "message": "Virtual accounts retrieved.",
+            "pagination": {
+                "currentPage": page, "pageSize": page_size, "totalItems": total,
+                "totalPages": total_pages, "next": None, "previous": None,
+            },
+            "kpis": kpis,
+            "data": rows,
+        })
 
     def post(self, request):
         entity = resolve_entity(request)
@@ -137,8 +201,46 @@ class VirtualAccountCreateView(APIView):
             actor_user=request.user,
         )
         return success_response(
-            "Virtual account created.", data=VirtualAccountSerializer(va).data, status=201,
+            "Virtual account created.",
+            data=VirtualAccountSerializer(va, context={"request": request}).data, status=201,
         )
+
+
+class VirtualAccountDetailView(APIView):
+    """GET one virtual account, or PATCH its status (activate / deactivate).
+
+    docstring-name: Virtual accounts
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+
+    @property
+    def rbac_permission(self):
+        return "payments.virtual_account.manage" if self.request.method == "PATCH" \
+            else "payments.virtual_account.view"
+
+    def _get(self, request, pk):
+        entity = resolve_entity(request)
+        va = (VirtualAccount.objects
+              .filter(entity=entity, pk=pk)
+              .select_related("customer", "deposit_account", "currency").first())
+        if va is None:
+            raise NotFound("No virtual account matches this id for the entity.")
+        return entity, va
+
+    def get(self, request, pk):
+        _, va = self._get(request, pk)
+        return success_response(
+            "Virtual account retrieved.",
+            data=VirtualAccountSerializer(va, context={"request": request}).data)
+
+    def patch(self, request, pk):
+        _, va = self._get(request, pk)
+        status_ = str(request.data.get("status", "")).upper()
+        services.set_virtual_account_status(va, status=status_, actor_user=request.user)
+        return success_response(
+            f"Virtual account {va.status.lower()}.",
+            data=VirtualAccountSerializer(va, context={"request": request}).data)
 
 
 # --------------------------------------------------------------------------- #

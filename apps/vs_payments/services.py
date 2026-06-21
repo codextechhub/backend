@@ -18,6 +18,7 @@ import uuid
 
 from django.db import transaction
 from django.utils import timezone
+from rest_framework.exceptions import ValidationError
 
 from vs_finance.accounts import resolve_account
 from vs_finance.constants import CASH_BANK_CODE, PaymentMethod
@@ -142,6 +143,28 @@ def create_virtual_account(*, entity, customer, provider=None, deposit_account=N
         action=PaymentAuditAction.VIRTUAL_ACCOUNT_CREATED, entity=entity,
         provider=provider_name, reference=reference, actor_user=actor_user,
         message=f"Virtual account {result.account_number} for {customer.code}.",
+    )
+    return va
+
+
+@transaction.atomic
+def set_virtual_account_status(va, *, status, actor_user=None):
+    """Activate or deactivate a virtual account on our side.
+
+    We flip the local status and record it. Provider-side teardown is **not**
+    wired (no provider method backs it), so a deactivated account stops being
+    offered for new transfers here while remaining whatever it is at the PSP.
+    """
+    if status not in VirtualAccountStatus.values:
+        raise ValidationError({"status": f"Must be one of {', '.join(VirtualAccountStatus.values)}."})
+    if va.status == status:
+        return va
+    va.status = status
+    va.save()
+    audit.record(
+        action=PaymentAuditAction.VIRTUAL_ACCOUNT_STATUS_CHANGED, entity=va.entity,
+        provider=va.provider, reference=va.provider_reference, actor_user=actor_user,
+        message=f"Virtual account {va.account_number} set to {status}.",
     )
     return va
 

@@ -37,6 +37,10 @@ class CollectionIntentSerializer(serializers.ModelSerializer):
 class VirtualAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     customer_code = serializers.CharField(source="customer.code", read_only=True, default=None)
+    customer_name = serializers.CharField(source="customer.name", read_only=True, default=None)
+    deposit_account_code = serializers.CharField(source="deposit_account.code", read_only=True, default=None)
+    deposit_account_name = serializers.CharField(source="deposit_account.name", read_only=True, default=None)
+    currency_code = serializers.CharField(source="currency.code", read_only=True, default=None)
 
     # FLS: the funding account number/name are only exposed to holders of the
     # sensitive grant; everyone else sees the record with these fields stripped.
@@ -48,8 +52,10 @@ class VirtualAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     class Meta:
         model = VirtualAccount
         fields = [
-            "id", "entity_code", "provider", "customer_code", "account_number",
-            "bank_name", "account_name", "provider_reference", "status", "created_at",
+            "id", "entity_code", "provider", "customer_code", "customer_name",
+            "account_number", "bank_name", "account_name", "provider_reference",
+            "deposit_account_code", "deposit_account_name", "currency_code",
+            "status", "created_at",
         ]
 
 

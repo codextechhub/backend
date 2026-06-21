@@ -568,3 +568,63 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(filtered.status_code, 200)
         # success_response coerces an empty list to {}, so assert it's falsy.
         self.assertFalse(filtered.json()["data"])
+
+    def test_virtual_account_provision_list_and_status(self):
+        entity, customer, _ = self.build()
+
+        # Provision via the Fake provider → mints a test NUBAN.
+        created = self.client.post(
+            f"/v1/payments/virtual-accounts/?entity={entity.code}",
+            {"customer": customer.pk, "provider": "FAKE"}, format="json")
+        self.assertEqual(created.status_code, 201, created.content)
+        va = created.json()["data"]
+        self.assertEqual(va["status"], "ACTIVE")
+        self.assertEqual(va["customer_code"], "CUST1")
+        # super-admin holds view_sensitive → the funding number is visible.
+        self.assertTrue(va["account_number"])
+
+        # GET list is paginated and rides KPIs.
+        listed = self.client.get(f"/v1/payments/virtual-accounts/?entity={entity.code}")
+        self.assertEqual(listed.status_code, 200)
+        body = listed.json()
+        self.assertEqual(body["kpis"], {"total": 1, "active": 1, "inactive": 0, "providers": 1})
+        self.assertEqual(body["pagination"]["totalItems"], 1)
+        self.assertEqual(len(body["data"]), 1)
+
+        # Status filter excludes the active one.
+        inactive_list = self.client.get(
+            f"/v1/payments/virtual-accounts/?entity={entity.code}&status=INACTIVE")
+        self.assertFalse(inactive_list.json()["data"])
+
+        # PATCH deactivates it.
+        patched = self.client.patch(
+            f"/v1/payments/virtual-accounts/{va['id']}/?entity={entity.code}",
+            {"status": "INACTIVE"}, format="json")
+        self.assertEqual(patched.status_code, 200, patched.content)
+        self.assertEqual(patched.json()["data"]["status"], "INACTIVE")
+        # KPIs reflect it.
+        kpis = self.client.get(
+            f"/v1/payments/virtual-accounts/?entity={entity.code}").json()["kpis"]
+        self.assertEqual(kpis, {"total": 1, "active": 0, "inactive": 1, "providers": 1})
+
+        # A bogus status is rejected.
+        bad = self.client.patch(
+            f"/v1/payments/virtual-accounts/{va['id']}/?entity={entity.code}",
+            {"status": "SUSPENDED"}, format="json")
+        self.assertEqual(bad.status_code, 400, bad.content)
+
+    def test_collections_filter_by_virtual_account(self):
+        entity, customer, _ = self.build()
+        va = services.create_virtual_account(entity=entity, customer=customer, provider="FAKE")
+        # A collection that arrived through that VA.
+        intent = services.initiate_collection(entity=entity, amount=40000, customer=customer)
+        intent.virtual_account = va
+        intent.save(update_fields=["virtual_account"])
+        # Another, not linked to the VA.
+        services.initiate_collection(entity=entity, amount=10000, customer=customer)
+
+        scoped = self.client.get(
+            f"/v1/payments/collections/?entity={entity.code}&virtual_account={va.id}")
+        self.assertEqual(scoped.status_code, 200)
+        rows = scoped.json()["data"]
+        self.assertEqual([r["id"] for r in rows], [intent.id])
