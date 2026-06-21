@@ -7,6 +7,7 @@ from django.db import models
 
 from ..constants import (
     DocType,
+    FeeAppliesTo,
     InvoicePaymentStatus,
     InvoiceSource,
     PaymentMethod,
@@ -299,13 +300,14 @@ class PaymentAllocation(TimeStampedModel):
 
 
 class FeeStructure(TimeStampedModel):
-    """A named, reusable billing template for an entity (e.g. 'JSS1 — Term 1 2026').
+    """A named, reusable billing template for an entity.
 
     A fee structure is a catalogue of charges; it holds no money itself. Calling
     :func:`vs_finance.fees.generate_invoices` materialises one posted :class:`Invoice`
     per selected customer from this structure's :class:`FeeItem` lines — the only place
-    billing turns a template into real AR. ``term`` / ``branch`` are free applicability
-    tags (which session/term and which campus the structure is meant for).
+    billing turns a template into real AR. ``applies_to`` classifies the counterparty
+    type the template charges (customer / vendor / staff / general); this is a generic
+    platform, so a structure is not tied to any school term.
     """
 
     entity = models.ForeignKey(
@@ -317,8 +319,10 @@ class FeeStructure(TimeStampedModel):
     )
     code = models.CharField(max_length=32, help_text="Unique within the entity.")
     name = models.CharField(max_length=200)
-    term = models.CharField(max_length=64, blank=True, default="",
-                            help_text="Applicability tag, e.g. '2026/T1'.")
+    applies_to = models.CharField(
+        max_length=16, choices=FeeAppliesTo.choices, default=FeeAppliesTo.CUSTOMER,
+        help_text="Counterparty type this template bills (customer / vendor / staff / general).",
+    )
     description = models.TextField(blank=True, default="")
     is_active = models.BooleanField(default=True)
     created_by = models.ForeignKey(

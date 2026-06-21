@@ -29,7 +29,7 @@ def _paginate(request, qs, serializer_cls, view, **ser_kwargs):
     page = paginator.paginate_queryset(qs, request, view=view)
     return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)
 
-from .constants import DocumentStatus, FinanceAuditAction, FinanceAuditStatus
+from .constants import DocumentStatus, FeeAppliesTo, FinanceAuditAction, FinanceAuditStatus
 from .money import format_naira
 from .models import (
     Concession,
@@ -572,6 +572,17 @@ def _build_fee_items(structure, entity, raw_items):
         )
 
 
+def _resolve_applies_to(raw):
+    """Validate a fee-structure ``applies_to`` value, defaulting to CUSTOMER."""
+    if raw in (None, ""):
+        return FeeAppliesTo.CUSTOMER
+    value = str(raw).upper()
+    if value not in FeeAppliesTo.values:
+        raise ValidationError({"applies_to":
+            f"Must be one of {', '.join(FeeAppliesTo.values)}."})
+    return value
+
+
 def _resolve_fee_structure(entity, ref):
     qs = FeeStructure.objects.filter(entity=entity)
     structure = (
@@ -586,7 +597,7 @@ def _resolve_fee_structure(entity, ref):
 class FeeStructureListCreateView(_FinanceBase):
     """GET (list) / POST (create) fee structures for an entity.
 
-    POST body: ``{code, name, term?, description?, is_active?, items:[{description,
+    POST body: ``{code, name, applies_to?, description?, is_active?, items:[{description,
     revenue_account, amount, tax_code?}]}``.
 
     docstring-name: Fee structures
@@ -602,6 +613,8 @@ class FeeStructureListCreateView(_FinanceBase):
         qs = FeeStructure.objects.filter(entity=entity).prefetch_related("items__revenue_account")
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
+        if (applies_to := request.query_params.get("applies_to")):
+            qs = qs.filter(applies_to=applies_to.upper())
         if (search := request.query_params.get("search")):
             from django.db.models import Q
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
@@ -624,7 +637,8 @@ class FeeStructureListCreateView(_FinanceBase):
             raise ValidationError({"name": "A fee structure name is required."})
         structure = FeeStructure.objects.create(
             entity=entity, code=code, name=name,
-            term=body.get("term", ""), description=body.get("description", ""),
+            applies_to=_resolve_applies_to(body.get("applies_to")),
+            description=body.get("description", ""),
             is_active=bool(body.get("is_active", True)), created_by=request.user,
         )
         _build_fee_items(structure, entity, body.get("items"))
@@ -658,9 +672,11 @@ class FeeStructureDetailView(_FinanceBase):
         entity = resolve_entity(request)
         structure = _resolve_fee_structure(entity, pk)
         body = request.data or {}
-        for field in ("name", "term", "description"):
+        for field in ("name", "description"):
             if field in body:
                 setattr(structure, field, body[field])
+        if "applies_to" in body:
+            structure.applies_to = _resolve_applies_to(body.get("applies_to"))
         if "is_active" in body:
             structure.is_active = bool(body.get("is_active"))
         structure.save()
@@ -691,6 +707,9 @@ class FeeStructureGenerateView(_FinanceBase):
 
         entity = resolve_entity(request)
         structure = _resolve_fee_structure(entity, pk)
+        if structure.applies_to != FeeAppliesTo.CUSTOMER:
+            raise ValidationError({"applies_to":
+                "Only customer fee structures can generate AR invoices."})
         body = request.data or {}
         if body.get("all_active"):
             customers = list(Customer.objects.filter(entity=entity, is_active=True))

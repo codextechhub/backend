@@ -2421,6 +2421,65 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
             {"customers": ["STU1"]}, format="json")
         self.assertEqual(again.json()["data"]["generated"], 0)
 
+    def test_fee_structure_applies_to_defaults_filters_and_edits(self):
+        """`applies_to` defaults to CUSTOMER, is filterable, and PATCHable."""
+        entity, _, _ = self.build_books()
+
+        # Default when omitted = CUSTOMER.
+        cust = self.client.post(
+            f"/v1/finance/fee-structures/?entity={entity.code}",
+            {"code": "fs-cust", "name": "Client billing",
+             "items": [{"description": "Tuition", "revenue_account": "4100", "amount": 5000000}]},
+            format="json")
+        self.assertEqual(cust.status_code, 201, cust.content)
+        self.assertEqual(cust.json()["data"]["applies_to"], "CUSTOMER")
+        self.assertEqual(cust.json()["data"]["applies_to_display"], "Customer")
+
+        # Explicit non-customer type is accepted and case-insensitive.
+        vend = self.client.post(
+            f"/v1/finance/fee-structures/?entity={entity.code}",
+            {"code": "fs-vend", "name": "Vendor charges", "applies_to": "vendor",
+             "items": [{"description": "Service", "revenue_account": "4100", "amount": 3000000}]},
+            format="json")
+        self.assertEqual(vend.status_code, 201, vend.content)
+        self.assertEqual(vend.json()["data"]["applies_to"], "VENDOR")
+
+        # A bogus value is rejected.
+        bad = self.client.post(
+            f"/v1/finance/fee-structures/?entity={entity.code}",
+            {"code": "fs-bad", "name": "x", "applies_to": "PARTNER",
+             "items": [{"description": "x", "revenue_account": "4100", "amount": 100}]},
+            format="json")
+        self.assertEqual(bad.status_code, 400, bad.content)
+
+        # ?applies_to= filters the list.
+        only_vend = self.client.get(
+            f"/v1/finance/fee-structures/?entity={entity.code}&applies_to=VENDOR").json()["data"]
+        self.assertEqual([s["code"] for s in only_vend], ["FS-VEND"])
+
+        # PATCH can re-classify a structure.
+        patched = self.client.patch(
+            f"/v1/finance/fee-structures/FS-CUST/?entity={entity.code}",
+            {"applies_to": "STAFF"}, format="json")
+        self.assertEqual(patched.status_code, 200, patched.content)
+        self.assertEqual(patched.json()["data"]["applies_to"], "STAFF")
+
+    def test_fee_structure_generate_blocked_for_non_customer(self):
+        """Only CUSTOMER structures can raise AR invoices."""
+        entity, _, _ = self.build_books()
+        self.client.post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"code": "stu1", "name": "Student One"}, format="json")
+        self.client.post(
+            f"/v1/finance/fee-structures/?entity={entity.code}",
+            {"code": "fs-staff", "name": "Staff deductions", "applies_to": "STAFF",
+             "items": [{"description": "Levy", "revenue_account": "4100", "amount": 100000}]},
+            format="json")
+        gen = self.client.post(
+            f"/v1/finance/fee-structures/FS-STAFF/generate/?entity={entity.code}",
+            {"all_active": True}, format="json")
+        self.assertEqual(gen.status_code, 400, gen.content)
+
     def test_entity_create_accepts_explicit_fiscal_year(self):
         self._seed()
         resp = self.client.post(

@@ -107,6 +107,21 @@ class NormalBalance(models.TextChoices):
     CREDIT = "CREDIT", "Credit"
 
 
+class FeeAppliesTo(models.TextChoices):
+    """Who a :class:`vs_finance.models.FeeStructure` bills.
+
+    This is a *generic* platform — a fee structure is not tied to a school term.
+    It classifies the counterparty type the template charges: a client/customer
+    (e.g. a school's students/payers), a vendor, a staff member, or a general
+    template not bound to any counterparty type. Only ``CUSTOMER`` structures can
+    currently generate AR invoices.
+    """
+    CUSTOMER = "CUSTOMER", "Customer"
+    VENDOR = "VENDOR", "Vendor"
+    STAFF = "STAFF", "Staff"
+    GENERAL = "GENERAL", "General"
+
+
 #: Default natural balance for each account root (before any contra flip).
 NORMAL_BALANCE_BY_TYPE = {
     AccountType.ASSET: NormalBalance.DEBIT,

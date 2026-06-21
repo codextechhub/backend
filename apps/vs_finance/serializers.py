@@ -327,12 +327,14 @@ class FeeStructureSerializer(serializers.ModelSerializer):
     items = FeeItemSerializer(many=True, read_only=True)
     total = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
+    applies_to_display = serializers.CharField(
+        source="get_applies_to_display", read_only=True)
 
     class Meta:
         model = FeeStructure
         fields = [
-            "id", "code", "name", "term", "description", "is_active",
-            "items", "total", "total_naira",
+            "id", "code", "name", "applies_to", "applies_to_display",
+            "description", "is_active", "items", "total", "total_naira",
         ]
 
     def get_total_naira(self, obj) -> str:

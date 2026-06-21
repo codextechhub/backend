@@ -106,7 +106,7 @@ class Command(BaseCommand):
         # A starter fee structure with items (drives Batch generate).
         fs, fs_created = FeeStructure.objects.get_or_create(
             entity=entity, code="FS-TERM1",
-            defaults={"name": "Term 1 — Standard Fees", "term": "2026/T1", "is_active": True},
+            defaults={"name": "Standard Fees", "applies_to": "CUSTOMER", "is_active": True},
         )
         if fs_created or not fs.items.exists():
             for line_no, desc, rev_code, amount, tax_code in DEMO_FEE_ITEMS:
