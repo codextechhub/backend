@@ -8,6 +8,8 @@ from django.db import models
 from ..constants import (
     AssetStatus,
     BankLineStatus,
+    BankReconStatus,
+    BankStatementStatus,
     BudgetStatus,
     DepreciationMethod,
     DocType,
@@ -60,6 +62,8 @@ class BankAccount(TimeStampedModel):
         null=True, blank=True, help_text="Defaults to the entity base currency.",
     )
     is_active = models.BooleanField(default=True)
+    is_primary = models.BooleanField(
+        default=False, help_text="The entity's main operating account (at most one).")
 
     class Meta:
         constraints = [
@@ -86,6 +90,11 @@ class BankStatementLine(TimeStampedModel):
 
     bank_account = models.ForeignKey(
         BankAccount, on_delete=models.CASCADE, related_name="statement_lines",
+    )
+    statement = models.ForeignKey(
+        "BankStatement", on_delete=models.SET_NULL, related_name="lines",
+        null=True, blank=True,
+        help_text="The imported statement batch this line belongs to.",
     )
     txn_date = models.DateField(help_text="Value/transaction date on the statement.")
     description = models.CharField(max_length=255, blank=True, default="")
@@ -126,6 +135,79 @@ class BankStatementLine(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.txn_date} {self.amount} [{self.status}]"
+
+
+class BankStatement(TimeStampedModel):
+    """An imported bank statement — a batch of lines for a period, with opening/closing.
+
+    Grouping imported :class:`BankStatementLine`\\s under a statement gives the banking
+    screen a per-period view (opening → closing) and a reconciliation target. The book
+    side of truth is still the GL; this records what the *bank* reported.
+    """
+
+    bank_account = models.ForeignKey(
+        BankAccount, on_delete=models.CASCADE, related_name="statements",
+    )
+    statement_date = models.DateField(help_text="Closing date of the statement period.")
+    period_label = models.CharField(
+        max_length=120, blank=True, default="",
+        help_text="Human label for the period, e.g. 'Apr 2026' or 'May 1–15'.")
+    opening_balance = MoneyField(default=0, help_text="Bank-reported opening balance, kobo.")
+    closing_balance = MoneyField(default=0, help_text="Bank-reported closing balance, kobo.")
+    status = models.CharField(
+        max_length=12, choices=BankStatementStatus.choices,
+        default=BankStatementStatus.UPLOADED,
+    )
+    imported_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="bank_statements_imported", null=True, blank=True,
+    )
+
+    class Meta:
+        indexes = [models.Index(fields=["bank_account", "statement_date"])]
+        ordering = ["-statement_date", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.bank_account.name} statement {self.statement_date}"
+
+    @property
+    def line_count(self) -> int:
+        return self.lines.count()
+
+
+class BankReconciliation(TimeStampedModel):
+    """A reconciliation run snapshot — the book vs statement balances at a point in time.
+
+    Recorded each time auto/assisted reconciliation runs, so the screen can show a
+    history (and an out-of-balance trail) without recomputing the past.
+    """
+
+    bank_account = models.ForeignKey(
+        BankAccount, on_delete=models.CASCADE, related_name="reconciliations",
+    )
+    statement = models.ForeignKey(
+        BankStatement, on_delete=models.SET_NULL, related_name="reconciliations",
+        null=True, blank=True,
+    )
+    as_of_date = models.DateField()
+    book_balance = MoneyField(default=0, help_text="GL cash-account balance, kobo.")
+    statement_balance = MoneyField(default=0, help_text="Bank-reported balance, kobo.")
+    difference = MoneyField(default=0, help_text="book − statement (signed kobo).")
+    matched_count = models.PositiveIntegerField(default=0)
+    status = models.CharField(
+        max_length=16, choices=BankReconStatus.choices, default=BankReconStatus.BALANCED,
+    )
+    performed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="bank_reconciliations", null=True, blank=True,
+    )
+
+    class Meta:
+        indexes = [models.Index(fields=["bank_account", "created_at"])]
+        ordering = ["-created_at", "-id"]
+
+    def __str__(self) -> str:
+        return f"{self.bank_account.name} recon {self.as_of_date} [{self.status}]"
 
 
 class ExpenseClaim(FinanceDocument):

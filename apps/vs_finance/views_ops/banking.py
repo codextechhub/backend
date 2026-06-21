@@ -7,6 +7,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
 
+from ..constants import BankLineStatus, DocumentStatus
 from ..views import resolve_entity
 from ..models import (
     BankAccount,
@@ -15,7 +16,9 @@ from ..models import (
 )
 from ..serializers import (
     BankAccountSerializer,
+    BankReconciliationSerializer,
     BankStatementLineSerializer,
+    BankStatementSerializer,
 )
 
 
@@ -76,21 +79,89 @@ class BankAccountListCreateView(_FinanceBase):
 
 
 class BankAccountDetailView(_FinanceBase):
-    """GET one bank account.
+    """GET one bank account (with metrics, transactions, statements, reconciliations)
+    or PATCH its settings (name, bank, number, currency, active, primary).
 
     docstring-name: Bank accounts
     """
 
-    rbac_permission = "finance.bankaccount.view"
+    @property
+    def rbac_permission(self):
+        return "finance.bankaccount.update" if self.request.method == "PATCH" \
+            else "finance.bankaccount.view"
 
-    def get(self, request, pk):
-        entity = resolve_entity(request)
-        bank = BankAccount.objects.filter(entity=entity, pk=pk).select_related("gl_account").first()
+    def _bank(self, request, pk):
+        bank = (BankAccount.objects.filter(entity=resolve_entity(request), pk=pk)
+                .select_related("gl_account").first())
         if bank is None:
             raise NotFound("Bank account not found for this entity.")
-        return success_response(
-            "Bank account retrieved.", data=BankAccountSerializer(bank).data,
+        return bank
+
+    def _transactions(self, bank, *, book_balance, limit=50):
+        """Recent posted GL cash lines, newest first, with a running balance."""
+        lines = list(
+            JournalLine.objects
+            .filter(account=bank.gl_account, entry__status=DocumentStatus.POSTED)
+            .select_related("entry")
+            .prefetch_related("bank_statement_lines")
+            .order_by("-entry__date", "-id")[:limit]
         )
+        running = book_balance
+        out = []
+        for ln in lines:
+            signed = (ln.debit or 0) - (ln.credit or 0)
+            out.append({
+                "id": ln.id,
+                "date": ln.entry.date,
+                "description": ln.description or ln.entry.narration or "—",
+                "reference": ln.entry.document_number or ln.entry.reference or "",
+                "debit": int(ln.debit or 0),
+                "credit": int(ln.credit or 0),
+                "running_balance": int(running),
+                "matched": bool(ln.bank_statement_lines.all()),
+            })
+            running -= signed
+        return out
+
+    def get(self, request, pk):
+        from ..banking import gl_account_balance, statement_balance
+
+        bank = self._bank(request, pk)
+        book = gl_account_balance(bank.gl_account)
+        stmt = statement_balance(bank)
+        stmt_val = stmt if stmt is not None else book
+        unreconciled = bank.statement_lines.filter(status=BankLineStatus.UNMATCHED).count()
+        data = BankAccountSerializer(bank).data
+        data["metrics"] = {
+            "book_balance": book, "statement_balance": stmt_val,
+            "unreconciled_diff": book - stmt_val, "unreconciled_count": unreconciled,
+        }
+        data["transactions"] = self._transactions(bank, book_balance=book)
+        data["statements"] = BankStatementSerializer(
+            bank.statements.all()[:50], many=True).data
+        data["reconciliations"] = BankReconciliationSerializer(
+            bank.reconciliations.all()[:50], many=True).data
+        return success_response("Bank account retrieved.", data=data)
+
+    def patch(self, request, pk):
+        bank = self._bank(request, pk)
+        body = request.data or {}
+        for field in ("name", "bank_name", "account_number"):
+            if field in body:
+                setattr(bank, field, str(body[field]).strip())
+        if "currency" in body:
+            bank.currency = _resolve_currency(body.get("currency"))
+        if "is_active" in body:
+            bank.is_active = _bool(body.get("is_active"), default=bank.is_active)
+        if "is_primary" in body:
+            make_primary = _bool(body.get("is_primary"), default=bank.is_primary)
+            bank.is_primary = make_primary
+            if make_primary:  # at most one primary per entity
+                BankAccount.objects.filter(entity=bank.entity, is_primary=True).exclude(
+                    pk=bank.pk).update(is_primary=False)
+        bank.save()
+        return success_response(
+            f"Bank account '{bank.name}' updated.", data=BankAccountSerializer(bank).data)
 
 
 class BankStatementLineView(_FinanceBase):
@@ -134,7 +205,15 @@ class BankStatementLineView(_FinanceBase):
                 "reference": row.get("reference", ""),
                 "external_id": row.get("external_id", ""),
             })
-        created = import_statement_lines(bank, parsed, actor_user=request.user)
+        body = request.data or {}
+        _, created = import_statement_lines(
+            bank, parsed, actor_user=request.user,
+            statement_date=_date(body.get("statement_date"), "statement_date"),
+            period_label=str(body.get("period_label", "")).strip(),
+            opening_balance=_signed_money(body.get("opening_balance", 0), "opening_balance"),
+            closing_balance=(_signed_money(body.get("closing_balance"), "closing_balance")
+                             if body.get("closing_balance") not in (None, "") else None),
+        )
         return success_response(
             f"Imported {len(created)} statement line(s) "
             f"({len(rows) - len(created)} skipped as duplicates).",

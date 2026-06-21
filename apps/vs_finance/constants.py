@@ -284,6 +284,18 @@ class BankLineStatus(models.TextChoices):
     IGNORED = "IGNORED", "Ignored"
 
 
+class BankStatementStatus(models.TextChoices):
+    """Lifecycle of an imported bank statement (a batch of lines for a period)."""
+    UPLOADED = "UPLOADED", "Uploaded"
+    RECONCILED = "RECONCILED", "Reconciled"
+
+
+class BankReconStatus(models.TextChoices):
+    """Outcome of a reconciliation run."""
+    BALANCED = "BALANCED", "Balanced"
+    OUT_OF_BALANCE = "OUT_OF_BALANCE", "Out of balance"
+
+
 class PayrollRunStatus(models.TextChoices):
     """Lifecycle of a payroll run (a batch of employee pay lines)."""
     DRAFT = "DRAFT", "Draft"

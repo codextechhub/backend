@@ -20,9 +20,12 @@ from .accounts import resolve_account
 from .audit import record
 from .constants import (
     BankLineStatus,
+    BankReconStatus,
+    BankStatementStatus,
     DocumentStatus,
     FinanceAuditAction,
     JournalSource,
+    NormalBalance,
 )
 from .exceptions import BankReconciliationError
 from .posting import post_journal, resolve_period
@@ -32,33 +35,69 @@ from .posting import post_journal, resolve_period
 # Statement import                                                            #
 # --------------------------------------------------------------------------- #
 
-def import_statement_lines(bank_account, rows, *, actor_user=None):
-    """Create :class:`BankStatementLine` rows from ``rows`` (idempotent on ``external_id``).
+def gl_account_balance(account) -> int:
+    """Net posted balance of a GL ``account`` in kobo, signed to its normal side."""
+    from django.db.models import Sum
+    from .models import AccountBalance
+
+    agg = AccountBalance.objects.filter(account=account).aggregate(
+        d=Sum("debit_total"), c=Sum("credit_total"))
+    net = (agg["d"] or 0) - (agg["c"] or 0)
+    if account.normal_balance != NormalBalance.DEBIT:
+        net = -net
+    return int(net)
+
+
+@transaction.atomic
+def import_statement_lines(bank_account, rows, *, statement_date=None, period_label="",
+                           opening_balance=0, closing_balance=None, actor_user=None):
+    """Import ``rows`` into a new :class:`BankStatement` (idempotent on ``external_id``).
 
     ``rows`` is an iterable of dicts: ``{txn_date, amount, description?, reference?,
-    external_id?}`` where ``amount`` is signed kobo. Lines carrying an ``external_id``
-    already present for this account are skipped, so re-importing the same export is
-    safe. Returns the list of newly-created lines.
+    external_id?}`` where ``amount`` is signed kobo. The batch is grouped under a
+    :class:`BankStatement` (period opening → closing); when ``closing_balance`` is not
+    given it is derived as ``opening + Σ amounts``. Lines whose ``external_id`` already
+    exists for this account are skipped. Returns ``(statement, created_lines)``.
     """
-    from .models import BankStatementLine
+    from .models import BankStatement, BankStatementLine
 
+    rows = list(rows)
     created = []
+    movement = 0
     for row in rows:
         external_id = (row.get("external_id") or "").strip()
         if external_id and BankStatementLine.objects.filter(
             bank_account=bank_account, external_id=external_id,
         ).exists():
             continue
-        line = BankStatementLine.objects.create(
+        amount = int(row["amount"])
+        created.append(BankStatementLine(
             bank_account=bank_account,
             txn_date=row["txn_date"],
-            amount=int(row["amount"]),
+            amount=amount,
             description=row.get("description", ""),
             reference=row.get("reference", ""),
             external_id=external_id,
-        )
-        created.append(line)
-    return created
+        ))
+        movement += amount
+
+    if not created:
+        return None, []
+
+    opening_balance = int(opening_balance or 0)
+    if closing_balance is None:
+        closing_balance = opening_balance + movement
+    statement = BankStatement.objects.create(
+        bank_account=bank_account,
+        statement_date=statement_date or max(l.txn_date for l in created),
+        period_label=period_label or "",
+        opening_balance=opening_balance, closing_balance=int(closing_balance),
+        status=BankStatementStatus.UPLOADED, imported_by=actor_user,
+    )
+    for line in created:
+        line.statement = statement
+    BankStatementLine.objects.bulk_create(created)
+    return statement, list(BankStatementLine.objects.filter(statement=statement))
 
 
 # --------------------------------------------------------------------------- #
@@ -130,7 +169,37 @@ def auto_reconcile(bank_account, *, tolerance_days=4, actor_user=None):
             message=f"Auto-matched {len(matched)} line(s) on {bank_account.name}.",
             matched=len(matched), bank_account_id=bank_account.id,
         )
+        _record_reconciliation(bank_account, matched_count=len(matched), actor_user=actor_user)
     return matched
+
+
+def statement_balance(bank_account) -> int | None:
+    """The most recent imported statement's closing balance (kobo), or None."""
+    latest = bank_account.statements.order_by("-statement_date", "-id").first()
+    return int(latest.closing_balance) if latest else None
+
+
+def _record_reconciliation(bank_account, *, matched_count, actor_user=None):
+    """Snapshot book vs statement balance after a reconcile, and close clean statements."""
+    from .models import BankReconciliation, BankStatementLine
+
+    book = gl_account_balance(bank_account.gl_account)
+    stmt = statement_balance(bank_account)
+    stmt_val = stmt if stmt is not None else book
+    difference = book - stmt_val
+    BankReconciliation.objects.create(
+        bank_account=bank_account, as_of_date=timezone.now().date(),
+        book_balance=book, statement_balance=stmt_val, difference=difference,
+        matched_count=matched_count,
+        status=BankReconStatus.BALANCED if difference == 0 else BankReconStatus.OUT_OF_BALANCE,
+        performed_by=actor_user,
+        statement=bank_account.statements.order_by("-statement_date", "-id").first(),
+    )
+    # A statement with no remaining unmatched lines is fully reconciled.
+    for st in bank_account.statements.filter(status=BankStatementStatus.UPLOADED):
+        if not st.lines.filter(status=BankLineStatus.UNMATCHED).exists() and st.lines.exists():
+            st.status = BankStatementStatus.RECONCILED
+            st.save(update_fields=["status", "updated_at"])
 
 
 @transaction.atomic

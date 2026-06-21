@@ -17,6 +17,8 @@ from vs_rbac.fls import FieldSecurityMixin
 from .models import (
     Account,
     BankAccount,
+    BankReconciliation,
+    BankStatement,
     BankStatementLine,
     Budget,
     BudgetLine,
@@ -624,7 +626,12 @@ class DimensionSerializer(serializers.ModelSerializer):
 
 class BankAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     gl_account = serializers.CharField(source="gl_account.code", read_only=True)
+    gl_account_name = serializers.CharField(source="gl_account.name", read_only=True)
     currency = serializers.CharField(source="currency_id", read_only=True, default=None)
+    book_balance = serializers.SerializerMethodField()
+    book_balance_naira = serializers.SerializerMethodField()
+    unreconciled_count = serializers.SerializerMethodField()
+    last_reconciled_at = serializers.SerializerMethodField()
 
     # FLS: the funding account number is sensitive — only holders of the
     # sensitive grant see it; everyone else gets the record with it stripped.
@@ -636,8 +643,28 @@ class BankAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         model = BankAccount
         fields = [
             "id", "name", "bank_name", "account_number",
-            "gl_account", "gl_account_id", "currency", "is_active",
+            "gl_account", "gl_account_name", "gl_account_id", "currency",
+            "is_active", "is_primary",
+            "book_balance", "book_balance_naira", "unreconciled_count",
+            "last_reconciled_at",
         ]
+
+    def get_book_balance(self, obj):
+        from .banking import gl_account_balance
+        return gl_account_balance(obj.gl_account)
+
+    def get_book_balance_naira(self, obj):
+        from .banking import gl_account_balance
+        return format_naira(gl_account_balance(obj.gl_account))
+
+    def get_unreconciled_count(self, obj):
+        from .constants import BankLineStatus
+        return obj.statement_lines.filter(status=BankLineStatus.UNMATCHED).count()
+
+    def get_last_reconciled_at(self, obj):
+        last = obj.reconciliations.order_by("-created_at").values_list(
+            "created_at", flat=True).first()
+        return last
 
 
 class BankStatementLineSerializer(serializers.ModelSerializer):
@@ -646,13 +673,68 @@ class BankStatementLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = BankStatementLine
         fields = [
-            "id", "bank_account_id", "txn_date", "description", "reference",
-            "amount", "amount_naira", "status", "matched_line_id",
+            "id", "bank_account_id", "statement_id", "txn_date", "description",
+            "reference", "amount", "amount_naira", "status", "matched_line_id",
             "adjusting_journal_id", "external_id", "reconciled_at",
         ]
 
     def get_amount_naira(self, obj) -> str:
         return format_naira(obj.amount)
+
+
+class BankStatementSerializer(serializers.ModelSerializer):
+    line_count = serializers.IntegerField(read_only=True)
+    opening_balance_naira = serializers.SerializerMethodField()
+    closing_balance_naira = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+
+    class Meta:
+        model = BankStatement
+        fields = [
+            "id", "statement_date", "period_label", "opening_balance",
+            "opening_balance_naira", "closing_balance", "closing_balance_naira",
+            "line_count", "status", "status_display",
+        ]
+
+    def get_opening_balance_naira(self, obj) -> str:
+        return format_naira(obj.opening_balance)
+
+    def get_closing_balance_naira(self, obj) -> str:
+        return format_naira(obj.closing_balance)
+
+
+class BankReconciliationSerializer(serializers.ModelSerializer):
+    book_balance_naira = serializers.SerializerMethodField()
+    statement_balance_naira = serializers.SerializerMethodField()
+    difference_naira = serializers.SerializerMethodField()
+    status_display = serializers.CharField(source="get_status_display", read_only=True)
+    performed_by_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BankReconciliation
+        fields = [
+            "id", "as_of_date", "book_balance", "book_balance_naira",
+            "statement_balance", "statement_balance_naira", "difference",
+            "difference_naira", "matched_count", "status", "status_display",
+            "performed_by_name", "created_at",
+        ]
+
+    def get_book_balance_naira(self, obj) -> str:
+        return format_naira(obj.book_balance)
+
+    def get_statement_balance_naira(self, obj) -> str:
+        return format_naira(obj.statement_balance)
+
+    def get_difference_naira(self, obj) -> str:
+        return format_naira(obj.difference)
+
+    def get_performed_by_name(self, obj):
+        u = obj.performed_by
+        if not u:
+            return None
+        name = " ".join(filter(None, [
+            getattr(u, "first_name", ""), getattr(u, "last_name", "")])).strip()
+        return name or getattr(u, "email", None)
 
 
 # --------------------------------------------------------------------------- #

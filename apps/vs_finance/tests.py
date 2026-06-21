@@ -1156,10 +1156,10 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
             {"txn_date": datetime.date(2026, 1, 5), "amount": 50000, "external_id": "A1"},
             {"txn_date": datetime.date(2026, 1, 6), "amount": -2000, "external_id": "A2"},
         ]
-        created = import_statement_lines(bank, rows)
+        _, created = import_statement_lines(bank, rows)
         self.assertEqual(len(created), 2)
         # Re-import the same export: nothing new.
-        again = import_statement_lines(bank, rows)
+        _, again = import_statement_lines(bank, rows)
         self.assertEqual(again, [])
         self.assertEqual(BankStatementLine.objects.filter(bank_account=bank).count(), 2)
 
@@ -1194,7 +1194,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         gl_line = entry.lines.get(account__code="1100")
         line = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 15), "amount": 31000},
-        ])[0]
+        ])[1][0]
         with self.assertRaises(BankReconciliationError):
             match_line(line, gl_line)
         # Correct amount matches cleanly.
@@ -1210,7 +1210,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         line = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 20), "amount": -1500,
              "description": "Monthly fee"},
-        ])[0]
+        ])[1][0]
         entry = post_bank_adjustment(line)
         line.refresh_from_db()
         self.assertEqual(line.status, BankLineStatus.MATCHED)
@@ -1226,10 +1226,46 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         bank = self.make_bank(entity)
         line = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 20), "amount": -1500},
-        ])[0]
+        ])[1][0]
         post_bank_adjustment(line)
         with self.assertRaises(BankReconciliationError):
             post_bank_adjustment(line)
+
+    def test_import_groups_lines_under_a_statement(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        statement, lines = import_statement_lines(
+            bank, [
+                {"txn_date": datetime.date(2026, 1, 5), "amount": 50000},
+                {"txn_date": datetime.date(2026, 1, 6), "amount": -2000},
+            ], period_label="Jan 2026", opening_balance=10000)
+        self.assertIsNotNone(statement)
+        self.assertEqual(statement.period_label, "Jan 2026")
+        self.assertEqual(statement.opening_balance, 10000)
+        # Closing derived = opening + Σ amounts = 10,000 + 48,000.
+        self.assertEqual(statement.closing_balance, 58000)
+        self.assertEqual(statement.line_count, 2)
+        self.assertTrue(all(l.statement_id == statement.id for l in lines))
+
+    def test_auto_reconcile_records_a_reconciliation_and_closes_statement(self):
+        from vs_finance.models import BankReconciliation
+        from vs_finance.constants import BankStatementStatus
+
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)],
+            date=datetime.date(2026, 1, 15)))
+        statement, _ = import_statement_lines(bank, [
+            {"txn_date": datetime.date(2026, 1, 16), "amount": 50000}])
+        auto_reconcile(bank, tolerance_days=4)
+
+        recon = BankReconciliation.objects.filter(bank_account=bank).first()
+        self.assertIsNotNone(recon)
+        self.assertEqual(recon.matched_count, 1)
+        self.assertEqual(recon.book_balance, 50000)
+        statement.refresh_from_db()
+        self.assertEqual(statement.status, BankStatementStatus.RECONCILED)
 
 
 class ExpenseClaimTests(_Phase4FixtureMixin, TestCase):
@@ -2187,6 +2223,48 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         )
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
+
+    def test_bank_account_detail_reports_metrics_and_transactions(self):
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        # A +50,000 cash inflow on the cash account (book balance moves).
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)],
+            date=datetime.date(2026, 1, 15)))
+        self.client.post(
+            f"/v1/finance/bank-accounts/{bank.id}/statement-lines/?entity={entity.code}",
+            {"lines": [{"txn_date": "2026-01-16", "amount": 50000}],
+             "period_label": "Jan 2026", "opening_balance": 0}, format="json")
+
+        resp = self.client.get(
+            f"/v1/finance/bank-accounts/{bank.id}/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        data = resp.json()["data"]
+        self.assertEqual(data["book_balance"], 50000)
+        self.assertEqual(data["metrics"]["book_balance"], 50000)
+        self.assertEqual(data["metrics"]["statement_balance"], 50000)
+        self.assertEqual(data["metrics"]["unreconciled_diff"], 0)
+        self.assertEqual(data["metrics"]["unreconciled_count"], 1)
+        # Transactions carry a running balance; the latest equals the book balance.
+        self.assertEqual(data["transactions"][0]["running_balance"], 50000)
+        self.assertEqual(len(data["statements"]), 1)
+        self.assertEqual(data["statements"][0]["closing_balance"], 50000)
+
+    def test_bank_account_patch_updates_settings_and_primary(self):
+        entity, _, _ = self.build_books()
+        a = self.make_bank(entity)
+        b = BankAccount.objects.create(
+            entity=entity, name="Access Collections",
+            gl_account=Account.objects.get(entity=entity, code="1500"), is_primary=True)
+        # Make `a` primary → `b` is demoted (at most one primary).
+        resp = self.client.patch(
+            f"/v1/finance/bank-accounts/{a.id}/?entity={entity.code}",
+            {"is_primary": True, "bank_name": "GTBank"}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.json()["data"]["is_primary"])
+        self.assertEqual(resp.json()["data"]["bank_name"], "GTBank")
+        b.refresh_from_db()
+        self.assertFalse(b.is_primary)
 
     def _seed(self):
         entity, _, periods = self.build_books()
