@@ -250,6 +250,56 @@ class BankAutoReconcileView(_FinanceBase):
         )
 
 
+class BankBookLinesView(_FinanceBase):
+    """GET — posted cash-account journal lines not yet matched to a statement line.
+
+    The "book" side of the reconciliation workbench. ``amount`` is signed kobo
+    (debit − credit) so it lines up with a statement line's signed amount.
+
+    docstring-name: Unmatched book lines
+    """
+
+    rbac_permission = "finance.bankaccount.view"
+
+    def get(self, request, pk):
+        from ..banking import _unmatched_gl_lines
+
+        entity = resolve_entity(request)
+        bank = BankAccount.objects.filter(entity=entity, pk=pk).select_related("gl_account").first()
+        if bank is None:
+            raise NotFound("Bank account not found for this entity.")
+        rows = [{
+            "id": ln.id,
+            "date": ln.entry.date,
+            "description": ln.description or ln.entry.narration or "—",
+            "reference": ln.entry.document_number or ln.entry.reference or "",
+            "amount": int((ln.debit or 0) - (ln.credit or 0)),
+        } for ln in _unmatched_gl_lines(bank)[:200]]
+        return success_response("Unmatched book lines retrieved.", data=rows)
+
+
+class BankReconcileCompleteView(_FinanceBase):
+    """POST — finalise the reconciliation, recording a snapshot of the current state.
+
+    docstring-name: Complete a bank reconciliation
+    """
+
+    rbac_permission = "finance.bankaccount.reconcile"
+
+    def post(self, request, pk):
+        from ..banking import complete_reconciliation
+
+        entity = resolve_entity(request)
+        bank = BankAccount.objects.filter(entity=entity, pk=pk).select_related("gl_account").first()
+        if bank is None:
+            raise NotFound("Bank account not found for this entity.")
+        recon = complete_reconciliation(bank, actor_user=request.user)
+        return success_response(
+            "Reconciliation recorded.",
+            data=BankReconciliationSerializer(recon).data, status=201,
+        )
+
+
 class _StatementLineActionBase(_FinanceBase):
     def _line(self, request, pk):
         entity = resolve_entity(request)

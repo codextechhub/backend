@@ -2250,6 +2250,39 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(len(data["statements"]), 1)
         self.assertEqual(data["statements"][0]["closing_balance"], 50000)
 
+    def test_bank_book_lines_and_complete_reconciliation(self):
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        # Two posted cash movements (the "book" side).
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)],
+            date=datetime.date(2026, 1, 15)))
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 30000, 0), ("4100", 0, 30000)],
+            date=datetime.date(2026, 1, 16)))
+        # Import a statement line that matches the first; reconcile it.
+        self.client.post(
+            f"/v1/finance/bank-accounts/{bank.id}/statement-lines/?entity={entity.code}",
+            {"lines": [{"txn_date": "2026-01-15", "amount": 50000}]}, format="json")
+        self.client.post(
+            f"/v1/finance/bank-accounts/{bank.id}/auto-reconcile/?entity={entity.code}",
+            {"tolerance_days": 5}, format="json")
+
+        # Book-lines now lists only the still-unmatched ₦30,000 movement.
+        book = self.client.get(
+            f"/v1/finance/bank-accounts/{bank.id}/book-lines/?entity={entity.code}")
+        self.assertEqual(book.status_code, 200, book.content)
+        rows = book.json()["data"]
+        self.assertEqual([r["amount"] for r in rows], [30000])
+
+        # Complete records a reconciliation snapshot.
+        done = self.client.post(
+            f"/v1/finance/bank-accounts/{bank.id}/reconcile/complete/?entity={entity.code}",
+            {}, format="json")
+        self.assertEqual(done.status_code, 201, done.content)
+        self.assertEqual(done.json()["data"]["matched_count"], 1)
+        self.assertIn(done.json()["data"]["status"], ("BALANCED", "OUT_OF_BALANCE"))
+
     def test_bank_account_patch_updates_settings_and_primary(self):
         entity, _, _ = self.build_books()
         a = self.make_bank(entity)

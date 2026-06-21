@@ -181,13 +181,13 @@ def statement_balance(bank_account) -> int | None:
 
 def _record_reconciliation(bank_account, *, matched_count, actor_user=None):
     """Snapshot book vs statement balance after a reconcile, and close clean statements."""
-    from .models import BankReconciliation, BankStatementLine
+    from .models import BankReconciliation
 
     book = gl_account_balance(bank_account.gl_account)
     stmt = statement_balance(bank_account)
     stmt_val = stmt if stmt is not None else book
     difference = book - stmt_val
-    BankReconciliation.objects.create(
+    recon = BankReconciliation.objects.create(
         bank_account=bank_account, as_of_date=timezone.now().date(),
         book_balance=book, statement_balance=stmt_val, difference=difference,
         matched_count=matched_count,
@@ -200,6 +200,25 @@ def _record_reconciliation(bank_account, *, matched_count, actor_user=None):
         if not st.lines.filter(status=BankLineStatus.UNMATCHED).exists() and st.lines.exists():
             st.status = BankStatementStatus.RECONCILED
             st.save(update_fields=["status", "updated_at"])
+    return recon
+
+
+@transaction.atomic
+def complete_reconciliation(bank_account, *, actor_user=None):
+    """Finalise a reconciliation — record a snapshot of the account's current state."""
+    from .models import BankStatementLine
+
+    matched = BankStatementLine.objects.filter(
+        bank_account=bank_account, status=BankLineStatus.MATCHED).count()
+    recon = _record_reconciliation(bank_account, matched_count=matched, actor_user=actor_user)
+    record(
+        entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
+        actor_user=actor_user, target=bank_account,
+        message=f"Reconciliation completed on {bank_account.name} "
+                f"(diff {recon.difference} kobo).",
+        bank_account_id=bank_account.id, difference=recon.difference,
+    )
+    return recon
 
 
 @transaction.atomic
