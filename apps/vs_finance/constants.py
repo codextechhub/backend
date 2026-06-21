@@ -226,8 +226,6 @@ class DunningChannel(models.TextChoices):
     outer service (notifications) reads PENDING notices and dispatches them.
     """
     EMAIL = "EMAIL", "Email"
-    SMS = "SMS", "SMS"
-    LETTER = "LETTER", "Letter"
     IN_APP = "IN_APP", "In-app"
 
 
