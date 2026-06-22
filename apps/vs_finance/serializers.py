@@ -954,6 +954,10 @@ class PayrollLineSerializer(FieldSecurityMixin, serializers.ModelSerializer):
 class PayrollRunSerializer(serializers.ModelSerializer):
     lines = PayrollLineSerializer(many=True, read_only=True)
     net_total_naira = serializers.SerializerMethodField()
+    # Statutory liability accounts the run credited (set on post) — let the FE match the
+    # real outstanding balance (trial balance) to show remittance status honestly.
+    paye_payable_account = serializers.CharField(source="paye_payable_account.code", read_only=True, default=None)
+    pension_payable_account = serializers.CharField(source="pension_payable_account.code", read_only=True, default=None)
 
     class Meta:
         model = PayrollRun
@@ -961,6 +965,8 @@ class PayrollRunSerializer(serializers.ModelSerializer):
             "id", "document_number", "pay_date", "period_label", "narration",
             "run_status", "status", "gross_total", "paye_total", "pension_total",
             "net_total", "net_total_naira", "bank_account_id",
+            "paye_payable_account", "paye_payable_account_id",
+            "pension_payable_account", "pension_payable_account_id",
             "journal_id", "disbursement_journal_id", "lines",
         ]
 
