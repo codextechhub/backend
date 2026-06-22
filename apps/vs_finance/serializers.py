@@ -51,6 +51,8 @@ from .models import (
     EmployeeSalary,
     PayrollLine,
     PayrollRun,
+    SalaryComponent,
+    SalaryStructure,
     PettyCashFund,
     PettyCashVoucher,
     PettyCashVoucherLine,
@@ -937,6 +939,7 @@ class PayrollLineSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         "paye_amount": "finance.payrollrun.view_sensitive",
         "pension_amount": "finance.payrollrun.view_sensitive",
         "net_amount": "finance.payrollrun.view_sensitive",
+        "components": "finance.payrollrun.view_sensitive",
     }
 
     class Meta:
@@ -944,7 +947,7 @@ class PayrollLineSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         fields = [
             "id", "line_no", "employee_id", "employee_name",
             "gross_amount", "paye_amount", "pension_amount", "net_amount",
-            "cost_center",
+            "components", "cost_center",
         ]
 
 
@@ -965,9 +968,43 @@ class PayrollRunSerializer(serializers.ModelSerializer):
         return format_naira(obj.net_total)
 
 
+class SalaryComponentSerializer(serializers.ModelSerializer):
+    """A structure line. Not FLS-stripped — a structure is configuration (e.g. 'Basic =
+    40% of gross'), not any one person's pay."""
+
+    class Meta:
+        model = SalaryComponent
+        fields = [
+            "id", "name", "kind", "calc_method", "rate_bps", "amount",
+            "is_basic", "statutory_type", "sequence",
+        ]
+
+
+class SalaryStructureSerializer(serializers.ModelSerializer):
+    components = SalaryComponentSerializer(many=True, read_only=True)
+    employee_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SalaryStructure
+        fields = [
+            "id", "name", "description", "is_active", "components", "employee_count",
+        ]
+
+    def get_employee_count(self, obj) -> int:
+        # annotated by the list view; fall back to a count for the detail view.
+        cached = getattr(obj, "employee_count_annot", None)
+        return cached if cached is not None else obj.employee_salaries.count()
+
+
 class EmployeeSalarySerializer(FieldSecurityMixin, serializers.ModelSerializer):
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
-    net_amount = serializers.IntegerField(read_only=True)
+    structure_name = serializers.CharField(source="structure.name", read_only=True, default=None)
+    # PAYE/pension/net/components are derived when a structure is assigned, else the stored
+    # flat figures. Computed once per row (memoised) to avoid re-walking the components.
+    paye_amount = serializers.SerializerMethodField()
+    pension_amount = serializers.SerializerMethodField()
+    net_amount = serializers.SerializerMethodField()
+    components = serializers.SerializerMethodField()
 
     # FLS: the pay figures are sensitive — names stay visible (the roster), but the
     # amounts are stripped unless the caller holds the sensitive grant.
@@ -976,14 +1013,42 @@ class EmployeeSalarySerializer(FieldSecurityMixin, serializers.ModelSerializer):
         "paye_amount": "finance.payrollrun.view_sensitive",
         "pension_amount": "finance.payrollrun.view_sensitive",
         "net_amount": "finance.payrollrun.view_sensitive",
+        "components": "finance.payrollrun.view_sensitive",
     }
 
     class Meta:
         model = EmployeeSalary
         fields = [
-            "id", "name", "gross_amount", "paye_amount", "pension_amount",
-            "net_amount", "cost_center", "is_active",
+            "id", "name", "structure_id", "structure_name", "gross_amount",
+            "paye_amount", "pension_amount", "net_amount", "components",
+            "cost_center", "is_active",
         ]
+
+    def _derived(self, obj) -> dict:
+        cache = getattr(obj, "_derived_cache", None)
+        if cache is None:
+            from .payroll import apply_structure
+            if obj.structure_id:
+                cache = apply_structure(obj.gross_amount, obj.structure)
+            else:
+                cache = {
+                    "paye": obj.paye_amount, "pension": obj.pension_amount,
+                    "net": obj.net_amount, "components": [],
+                }
+            obj._derived_cache = cache
+        return cache
+
+    def get_paye_amount(self, obj) -> int:
+        return self._derived(obj)["paye"]
+
+    def get_pension_amount(self, obj) -> int:
+        return self._derived(obj)["pension"]
+
+    def get_net_amount(self, obj) -> int:
+        return self._derived(obj)["net"]
+
+    def get_components(self, obj) -> list:
+        return self._derived(obj)["components"]
 
 
 # --------------------------------------------------------------------------- #

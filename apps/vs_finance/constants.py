@@ -311,6 +311,30 @@ class PayrollRunStatus(models.TextChoices):
     CANCELLED = "CANCELLED", "Cancelled"
 
 
+class SalaryComponentKind(models.TextChoices):
+    """Whether a salary-structure component adds to pay or is withheld from it."""
+    EARNING = "EARNING", "Earning"
+    DEDUCTION = "DEDUCTION", "Deduction"
+
+
+class SalaryCalcMethod(models.TextChoices):
+    """How a salary component's amount is derived from an employee's gross."""
+    FIXED = "FIXED", "Fixed amount"
+    PERCENT_OF_GROSS = "PERCENT_OF_GROSS", "Percent of gross"
+    PERCENT_OF_BASIC = "PERCENT_OF_BASIC", "Percent of basic"
+
+
+class StatutoryType(models.TextChoices):
+    """Which statutory liability a deduction feeds — routes the GL credit and the return.
+
+    Earnings are always ``NONE``; deductions must be ``PAYE`` or ``PENSION`` so the
+    accrual journal stays balanced (``net = gross - paye - pension``).
+    """
+    NONE = "NONE", "None"
+    PAYE = "PAYE", "PAYE"
+    PENSION = "PENSION", "Pension"
+
+
 class BudgetStatus(models.TextChoices):
     """Lifecycle of a budget; locked on approval so actuals can't be re-planned."""
     DRAFT = "DRAFT", "Draft"

@@ -2315,6 +2315,62 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(data["net_total"], 80000000 - 12000000 - 6400000)
         self.assertEqual(data["run_status"], "DRAFT")
 
+    def test_salary_structure_derives_paye_pension_and_net_from_gross(self):
+        entity, _, _ = self.build_books()
+        # A structure: Basic 40% of gross, Housing 30%, Transport 30% (earnings);
+        # PAYE 7% of gross, Pension 8% of basic (deductions).
+        struct = self.client.post(
+            f"/v1/finance/salary-structures/?entity={entity.code}",
+            {"name": "Senior staff", "components": [
+                {"name": "Basic", "kind": "EARNING", "calc_method": "PERCENT_OF_GROSS",
+                 "rate_bps": 4000, "is_basic": True},
+                {"name": "Housing", "kind": "EARNING", "calc_method": "PERCENT_OF_GROSS",
+                 "rate_bps": 3000},
+                {"name": "Transport", "kind": "EARNING", "calc_method": "PERCENT_OF_GROSS",
+                 "rate_bps": 3000},
+                {"name": "PAYE", "kind": "DEDUCTION", "calc_method": "PERCENT_OF_GROSS",
+                 "rate_bps": 700, "statutory_type": "PAYE"},
+                {"name": "Pension", "kind": "DEDUCTION", "calc_method": "PERCENT_OF_BASIC",
+                 "rate_bps": 800, "statutory_type": "PENSION"},
+            ]}, format="json")
+        self.assertEqual(struct.status_code, 201, struct.content)
+        sid = struct.json()["data"]["id"]
+
+        # A deduction tagged NONE is rejected (keeps the journal balanced).
+        bad = self.client.post(
+            f"/v1/finance/salary-structures/?entity={entity.code}",
+            {"name": "Bad", "components": [
+                {"name": "Loan", "kind": "DEDUCTION", "calc_method": "FIXED", "amount": 100},
+            ]}, format="json")
+        self.assertEqual(bad.status_code, 400, bad.content)
+
+        # Assign it to an employee on a ₦500,000 gross; PAYE/pension/net are derived.
+        emp = self.client.post(
+            f"/v1/finance/employee-salaries/?entity={entity.code}",
+            {"name": "Ada Obi", "gross_amount": 50000000, "structure": sid}, format="json")
+        self.assertEqual(emp.status_code, 201, emp.content)
+        row = self.client.get(
+            f"/v1/finance/employee-salaries/?entity={entity.code}").json()["data"][0]
+        self.assertEqual(row["paye_amount"], 3500000)            # 7% of 50,000,000
+        self.assertEqual(row["pension_amount"], 1600000)         # 8% of basic (20,000,000)
+        self.assertEqual(row["net_amount"], 50000000 - 3500000 - 1600000)
+        self.assertEqual(len(row["components"]), 5)
+        self.assertEqual(row["structure_name"], "Senior staff")
+
+        # A generated run copies the derived figures + the payslip breakdown snapshot.
+        gen = self.client.post(
+            f"/v1/finance/payroll-runs/generate/?entity={entity.code}",
+            {"pay_date": "2026-01-25", "period_label": "Jan 2026"}, format="json")
+        self.assertEqual(gen.status_code, 201, gen.content)
+        line = gen.json()["data"]["lines"][0]
+        self.assertEqual(line["paye_amount"], 3500000)
+        self.assertEqual(line["pension_amount"], 1600000)
+        self.assertEqual(len(line["components"]), 5)
+
+        # Can't delete a structure that's assigned to someone.
+        rm = self.client.delete(f"/v1/finance/salary-structures/{sid}/?entity={entity.code}")
+        self.assertEqual(rm.status_code, 400, rm.content)
+
     def test_bank_account_detail_reports_metrics_and_transactions(self):
         entity, _, periods = self.build_books()
         bank = self.make_bank(entity)

@@ -16,6 +16,9 @@ from ..constants import (
     DocType,
     InvoicePaymentStatus,
     PayrollRunStatus,
+    SalaryCalcMethod,
+    SalaryComponentKind,
+    StatutoryType,
     TaxFilingFrequency,
     TaxFilingStatus,
     TaxObligationType,
@@ -738,6 +741,11 @@ class PayrollLine(TimeStampedModel):
     paye_amount = MoneyField(help_text="PAYE (employee income tax) withheld, in kobo.")
     pension_amount = MoneyField(help_text="Employee pension contribution withheld, in kobo.")
     net_amount = MoneyField(help_text="Take-home: gross - paye - pension, in kobo.")
+    components = models.JSONField(
+        default=list, blank=True,
+        help_text="Payslip breakdown snapshot copied from the salary structure at "
+                  "generation: [{name, kind, statutory_type, amount}]. Empty in flat mode.",
+    )
     cost_center = models.ForeignKey(
         CostCenter, on_delete=models.PROTECT, related_name="payroll_lines",
         null=True, blank=True,
@@ -750,6 +758,77 @@ class PayrollLine(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.employee_name or self.employee_id}: net {self.net_amount}"
+
+
+class SalaryStructure(TimeStampedModel):
+    """A reusable named pay template — the earning/deduction components that define how
+    an employee's gross is split into tranches and what's withheld.
+
+    Assigning a structure to an :class:`EmployeeSalary` *derives* that employee's PAYE,
+    pension and net from their gross, instead of typing each figure by hand. A structure
+    never posts; it only shapes the numbers a :class:`PayrollRun` copies into its lines.
+    """
+
+    entity = models.ForeignKey(
+        LedgerEntity, on_delete=models.PROTECT, related_name="salary_structures",
+    )
+    name = models.CharField(max_length=120, help_text="e.g. 'Senior staff'.")
+    description = models.CharField(max_length=255, blank=True, default="")
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ["entity", "name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "name"],
+                name="uniq_salary_structure_name_per_entity",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class SalaryComponent(TimeStampedModel):
+    """One line of a :class:`SalaryStructure`: an earning tranche or a deduction, plus the
+    rule (fixed kobo, % of gross, or % of basic) that derives its amount.
+
+    Earnings are an informational split of the gross (Basic/Housing/…); deductions tagged
+    PAYE or pension are what actually reduce gross to net and route the GL credit.
+    """
+
+    structure = models.ForeignKey(
+        SalaryStructure, on_delete=models.CASCADE, related_name="components",
+    )
+    name = models.CharField(max_length=80, help_text="e.g. 'Basic', 'Housing', 'PAYE'.")
+    kind = models.CharField(
+        max_length=10, choices=SalaryComponentKind.choices,
+        default=SalaryComponentKind.EARNING,
+    )
+    calc_method = models.CharField(
+        max_length=20, choices=SalaryCalcMethod.choices,
+        default=SalaryCalcMethod.PERCENT_OF_GROSS,
+    )
+    rate_bps = models.PositiveIntegerField(
+        default=0, help_text="Rate in basis points for the percent methods (4000 = 40%).",
+    )
+    amount = MoneyField(default=0, help_text="Fixed amount in kobo, for the FIXED method.")
+    is_basic = models.BooleanField(
+        default=False,
+        help_text="Earnings flagged basic form the base for '% of basic' components.",
+    )
+    statutory_type = models.CharField(
+        max_length=10, choices=StatutoryType.choices, default=StatutoryType.NONE,
+        help_text="For deductions: routes the amount to PAYE/pension payable + the return.",
+    )
+    sequence = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ["structure", "sequence", "id"]
+        indexes = [models.Index(fields=["structure"])]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.kind})"
 
 
 class EmployeeSalary(TimeStampedModel):
@@ -769,9 +848,15 @@ class EmployeeSalary(TimeStampedModel):
         related_name="finance_employee_salaries", null=True, blank=True,
     )
     name = models.CharField(max_length=160, help_text="Employee name.")
+    structure = models.ForeignKey(
+        SalaryStructure, on_delete=models.PROTECT, related_name="employee_salaries",
+        null=True, blank=True,
+        help_text="If set, PAYE/pension/net are derived from the structure applied to gross; "
+                  "the manual paye/pension fields below are then ignored.",
+    )
     gross_amount = MoneyField(help_text="Standard monthly gross pay, in kobo.")
-    paye_amount = MoneyField(default=0, help_text="Standard PAYE withheld, in kobo.")
-    pension_amount = MoneyField(default=0, help_text="Standard pension withheld, in kobo.")
+    paye_amount = MoneyField(default=0, help_text="Manual PAYE withheld (flat mode, no structure), in kobo.")
+    pension_amount = MoneyField(default=0, help_text="Manual pension withheld (flat mode, no structure), in kobo.")
     cost_center = models.ForeignKey(
         CostCenter, on_delete=models.PROTECT, related_name="employee_salaries",
         null=True, blank=True,

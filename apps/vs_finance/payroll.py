@@ -28,9 +28,55 @@ from .constants import (
     PENSION_PAYABLE_CODE,
     PayrollRunStatus,
     SALARIES_EXPENSE_CODE,
+    SalaryCalcMethod,
+    SalaryComponentKind,
+    StatutoryType,
 )
 from .exceptions import FinanceError, PayrollError
 from .posting import post_journal, resolve_period
+
+
+def apply_structure(gross_amount, structure) -> dict:
+    """Derive an employee's pay breakdown from a salary structure applied to a gross.
+
+    Earnings are an informational split of the gross; deductions tagged PAYE/pension are
+    what reduce it to net. Returns integer-kobo ``gross``/``basic``/``paye``/``pension``/
+    ``net`` plus a ``components`` snapshot ``[{name, kind, statutory_type, amount}]`` for
+    the payslip. ``net = gross - paye - pension`` always, so the accrual journal balances.
+    """
+    gross = int(gross_amount or 0)
+    components = list(structure.components.all()) if structure is not None else []
+
+    def value_of(component, basic):
+        if component.calc_method == SalaryCalcMethod.FIXED:
+            return int(component.amount or 0)
+        base = basic if component.calc_method == SalaryCalcMethod.PERCENT_OF_BASIC else gross
+        return base * int(component.rate_bps or 0) // 10000
+
+    # Basic first — the base for any '% of basic' component (which must not itself be one).
+    basic = sum(
+        value_of(c, 0) for c in components
+        if c.kind == SalaryComponentKind.EARNING and c.is_basic
+    )
+
+    paye = pension = 0
+    snapshot = []
+    for c in components:
+        amt = value_of(c, basic)
+        snapshot.append({
+            "name": c.name, "kind": c.kind,
+            "statutory_type": c.statutory_type, "amount": amt,
+        })
+        if c.kind == SalaryComponentKind.DEDUCTION:
+            if c.statutory_type == StatutoryType.PAYE:
+                paye += amt
+            elif c.statutory_type == StatutoryType.PENSION:
+                pension += amt
+
+    return {
+        "gross": gross, "basic": basic, "paye": paye, "pension": pension,
+        "net": gross - paye - pension, "components": snapshot,
+    }
 
 
 def compute_payroll(run) -> None:
@@ -54,7 +100,12 @@ def generate_run_from_roster(entity, *, pay_date, period_label="", narration="",
     """
     from .models import EmployeeSalary, PayrollLine, PayrollRun
 
-    roster = list(EmployeeSalary.objects.filter(entity=entity, is_active=True).order_by("name"))
+    roster = list(
+        EmployeeSalary.objects.filter(entity=entity, is_active=True)
+        .select_related("cost_center")
+        .prefetch_related("structure__components")
+        .order_by("name")
+    )
     if not roster:
         raise PayrollError("No active employees on the salary roster to generate a run from.")
 
@@ -63,10 +114,15 @@ def generate_run_from_roster(entity, *, pay_date, period_label="", narration="",
         narration=narration, currency=currency, created_by=actor_user,
     )
     for i, emp in enumerate(roster, start=1):
+        if emp.structure_id:
+            d = apply_structure(emp.gross_amount, emp.structure)
+            paye, pension, components = d["paye"], d["pension"], d["components"]
+        else:
+            paye, pension, components = emp.paye_amount, emp.pension_amount, []
         PayrollLine.objects.create(
             run=run, line_no=i, employee=emp.employee, employee_name=emp.name,
-            gross_amount=emp.gross_amount, paye_amount=emp.paye_amount,
-            pension_amount=emp.pension_amount, cost_center=emp.cost_center,
+            gross_amount=emp.gross_amount, paye_amount=paye,
+            pension_amount=pension, cost_center=emp.cost_center, components=components,
         )
     compute_payroll(run)
     run.refresh_from_db()
