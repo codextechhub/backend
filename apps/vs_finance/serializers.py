@@ -48,6 +48,7 @@ from .models import (
     Payment,
     PaymentPlan,
     PaymentPlanInstallment,
+    EmployeeSalary,
     PayrollLine,
     PayrollRun,
     PettyCashFund,
@@ -962,6 +963,27 @@ class PayrollRunSerializer(serializers.ModelSerializer):
 
     def get_net_total_naira(self, obj) -> str:
         return format_naira(obj.net_total)
+
+
+class EmployeeSalarySerializer(FieldSecurityMixin, serializers.ModelSerializer):
+    cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
+    net_amount = serializers.IntegerField(read_only=True)
+
+    # FLS: the pay figures are sensitive — names stay visible (the roster), but the
+    # amounts are stripped unless the caller holds the sensitive grant.
+    read_permissions = {
+        "gross_amount": "finance.payrollrun.view_sensitive",
+        "paye_amount": "finance.payrollrun.view_sensitive",
+        "pension_amount": "finance.payrollrun.view_sensitive",
+        "net_amount": "finance.payrollrun.view_sensitive",
+    }
+
+    class Meta:
+        model = EmployeeSalary
+        fields = [
+            "id", "name", "gross_amount", "paye_amount", "pension_amount",
+            "net_amount", "cost_center", "is_active",
+        ]
 
 
 # --------------------------------------------------------------------------- #

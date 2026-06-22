@@ -44,6 +44,35 @@ def compute_payroll(run) -> None:
     run.recompute_totals(save=True)
 
 
+@transaction.atomic
+def generate_run_from_roster(entity, *, pay_date, period_label="", narration="",
+                             currency=None, actor_user=None):
+    """Raise a draft :class:`PayrollRun` with one line per active employee salary.
+
+    Copies the recurring gross/PAYE/pension (and cost centre) from the
+    :class:`EmployeeSalary` roster. Raises :class:`PayrollError` if the roster is empty.
+    """
+    from .models import EmployeeSalary, PayrollLine, PayrollRun
+
+    roster = list(EmployeeSalary.objects.filter(entity=entity, is_active=True).order_by("name"))
+    if not roster:
+        raise PayrollError("No active employees on the salary roster to generate a run from.")
+
+    run = PayrollRun.objects.create(
+        entity=entity, pay_date=pay_date, period_label=period_label,
+        narration=narration, currency=currency, created_by=actor_user,
+    )
+    for i, emp in enumerate(roster, start=1):
+        PayrollLine.objects.create(
+            run=run, line_no=i, employee=emp.employee, employee_name=emp.name,
+            gross_amount=emp.gross_amount, paye_amount=emp.paye_amount,
+            pension_amount=emp.pension_amount, cost_center=emp.cost_center,
+        )
+    compute_payroll(run)
+    run.refresh_from_db()
+    return run
+
+
 def _accounts_for(run):
     """Resolve the four posting accounts for a run, falling back to the seeded defaults."""
     entity = run.entity

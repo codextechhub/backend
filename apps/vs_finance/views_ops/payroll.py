@@ -8,18 +8,23 @@ from rest_framework.exceptions import NotFound
 
 from core.response import success_response
 
+from rest_framework.exceptions import ValidationError
+
 from ..views import resolve_entity
 from ..models import (
+    EmployeeSalary,
     PayrollLine,
     PayrollRun,
 )
 from ..serializers import (
+    EmployeeSalarySerializer,
     PayrollRunSerializer,
 )
 
 
 from .base import (
     _FinanceBase,
+    _bool,
     _date,
     _money,
     _require_lines,
@@ -146,3 +151,116 @@ class PayrollRunPayView(_PayrollActionBase):
         )
 
 
+
+
+# --------------------------------------------------------------------------- #
+# Employee salary roster                                                      #
+# --------------------------------------------------------------------------- #
+
+def _resolve_salary(entity, pk):
+    sal = EmployeeSalary.objects.filter(entity=entity, pk=pk).first()
+    if sal is None:
+        raise NotFound("Employee salary not found for this entity.")
+    return sal
+
+
+class EmployeeSalaryListCreateView(_FinanceBase):
+    """GET (list) / POST (add) employee salaries — the roster a run is generated from.
+
+    docstring-name: Employee salaries
+    """
+
+    @property
+    def rbac_permission(self):
+        return "finance.payrollrun.create" if self.request.method == "POST" \
+            else "finance.payrollrun.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = EmployeeSalary.objects.filter(entity=entity).select_related("cost_center")
+        if (active := request.query_params.get("is_active")) in ("true", "false"):
+            qs = qs.filter(is_active=active == "true")
+        if (search := request.query_params.get("search")):
+            qs = qs.filter(name__icontains=search)
+        return success_response(
+            "Employee salaries retrieved.",
+            data=EmployeeSalarySerializer(qs.order_by("name"), many=True,
+                                          context={"request": request}).data,
+        )
+
+    def post(self, request):
+        entity = resolve_entity(request)
+        body = request.data or {}
+        name = str(body.get("name", "")).strip()
+        if not name:
+            raise ValidationError({"name": "An employee name is required."})
+        sal = EmployeeSalary.objects.create(
+            entity=entity, name=name,
+            gross_amount=_money(body.get("gross_amount", 0), "gross_amount"),
+            paye_amount=_money(body.get("paye_amount", 0), "paye_amount"),
+            pension_amount=_money(body.get("pension_amount", 0), "pension_amount"),
+            cost_center=_resolve_cost_center(entity, body.get("cost_center"), "cost_center"),
+            is_active=_bool(body.get("is_active", True), default=True),
+        )
+        return success_response(
+            f"Employee salary for {name} added.",
+            data=EmployeeSalarySerializer(sal, context={"request": request}).data, status=201,
+        )
+
+
+class EmployeeSalaryDetailView(_FinanceBase):
+    """PATCH / DELETE one employee salary. docstring-name: Employee salaries"""
+
+    @property
+    def rbac_permission(self):
+        return "finance.payrollrun.view" if self.request.method == "GET" \
+            else "finance.payrollrun.create"
+
+    def patch(self, request, pk):
+        entity = resolve_entity(request)
+        sal = _resolve_salary(entity, pk)
+        body = request.data or {}
+        if "name" in body:
+            sal.name = str(body["name"]).strip()
+        for field in ("gross_amount", "paye_amount", "pension_amount"):
+            if field in body:
+                setattr(sal, field, _money(body.get(field), field))
+        if "cost_center" in body:
+            sal.cost_center = _resolve_cost_center(entity, body.get("cost_center"), "cost_center")
+        if "is_active" in body:
+            sal.is_active = _bool(body.get("is_active"), default=sal.is_active)
+        sal.save()
+        return success_response(
+            "Employee salary updated.",
+            data=EmployeeSalarySerializer(sal, context={"request": request}).data,
+        )
+
+    def delete(self, request, pk):
+        entity = resolve_entity(request)
+        _resolve_salary(entity, pk).delete()
+        return success_response("Employee salary removed.", data={})
+
+
+class PayrollRunGenerateView(_FinanceBase):
+    """POST — raise a draft payroll run from the active employee-salary roster.
+
+    docstring-name: Generate a payroll run
+    """
+
+    rbac_permission = "finance.payrollrun.create"
+
+    @transaction.atomic
+    def post(self, request):
+        from ..payroll import generate_run_from_roster
+
+        entity = resolve_entity(request)
+        body = request.data or {}
+        run = generate_run_from_roster(
+            entity, pay_date=_date(body.get("pay_date"), "pay_date", required=True),
+            period_label=body.get("period_label", ""), narration=body.get("narration", ""),
+            currency=_resolve_currency(body.get("currency")), actor_user=request.user,
+        )
+        return success_response(
+            f"Payroll run {run.document_number} generated from {run.lines.count()} employee(s).",
+            data=PayrollRunSerializer(run).data, status=201,
+        )

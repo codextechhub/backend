@@ -2291,6 +2291,30 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(reg[-1]["in"], 5000000)
         self.assertEqual(reg[-1]["category"], "Top-up")
 
+    def test_employee_salary_roster_generates_a_run(self):
+        entity, _, _ = self.build_books()
+        for nm, g, p, pe in [("Ada Obi", 50000000, 7500000, 4000000),
+                             ("Bola Lawal", 30000000, 4500000, 2400000)]:
+            r = self.client.post(
+                f"/v1/finance/employee-salaries/?entity={entity.code}",
+                {"name": nm, "gross_amount": g, "paye_amount": p, "pension_amount": pe},
+                format="json")
+            self.assertEqual(r.status_code, 201, r.content)
+        # Roster lists both, net is gross − paye − pension.
+        roster = self.client.get(f"/v1/finance/employee-salaries/?entity={entity.code}").json()["data"]
+        self.assertEqual([s["name"] for s in roster], ["Ada Obi", "Bola Lawal"])
+        self.assertEqual(roster[0]["net_amount"], 50000000 - 7500000 - 4000000)
+
+        gen = self.client.post(
+            f"/v1/finance/payroll-runs/generate/?entity={entity.code}",
+            {"pay_date": "2026-01-25", "period_label": "Jan 2026"}, format="json")
+        self.assertEqual(gen.status_code, 201, gen.content)
+        data = gen.json()["data"]
+        self.assertEqual(len(data["lines"]), 2)
+        self.assertEqual(data["gross_total"], 80000000)
+        self.assertEqual(data["net_total"], 80000000 - 12000000 - 6400000)
+        self.assertEqual(data["run_status"], "DRAFT")
+
     def test_bank_account_detail_reports_metrics_and_transactions(self):
         entity, _, periods = self.build_books()
         bank = self.make_bank(entity)

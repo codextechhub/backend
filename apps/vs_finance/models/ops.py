@@ -752,6 +752,44 @@ class PayrollLine(TimeStampedModel):
         return f"{self.employee_name or self.employee_id}: net {self.net_amount}"
 
 
+class EmployeeSalary(TimeStampedModel):
+    """An employee's standard monthly pay — the roster a payroll run is generated from.
+
+    Holds the recurring gross/PAYE/pension for each employee so a run can be raised
+    for the whole active roster in one click, instead of typing every line. It never
+    posts on its own; :func:`vs_finance.payroll.generate_run_from_roster` copies the
+    active rows into a draft :class:`PayrollRun`.
+    """
+
+    entity = models.ForeignKey(
+        LedgerEntity, on_delete=models.PROTECT, related_name="employee_salaries",
+    )
+    employee = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_employee_salaries", null=True, blank=True,
+    )
+    name = models.CharField(max_length=160, help_text="Employee name.")
+    gross_amount = MoneyField(help_text="Standard monthly gross pay, in kobo.")
+    paye_amount = MoneyField(default=0, help_text="Standard PAYE withheld, in kobo.")
+    pension_amount = MoneyField(default=0, help_text="Standard pension withheld, in kobo.")
+    cost_center = models.ForeignKey(
+        CostCenter, on_delete=models.PROTECT, related_name="employee_salaries",
+        null=True, blank=True,
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["entity", "is_active"])]
+        ordering = ["entity", "name"]
+
+    @property
+    def net_amount(self) -> int:
+        return self.gross_amount - self.paye_amount - self.pension_amount
+
+    def __str__(self) -> str:
+        return f"{self.name}: gross {self.gross_amount}"
+
+
 class Budget(TimeStampedModel):
     """An entity's plan of GL amounts for a fiscal year, by account/cost-centre/period.
 

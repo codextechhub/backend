@@ -103,7 +103,10 @@ from .views_ops import (
     FixedAssetDetailView,
     FixedAssetListCreateView,
     FxRateListCreateView,
+    EmployeeSalaryDetailView,
+    EmployeeSalaryListCreateView,
     PayrollRunDetailView,
+    PayrollRunGenerateView,
     PayrollRunListCreateView,
     PayrollRunPayView,
     PayrollRunPostView,
@@ -274,6 +277,9 @@ urlpatterns = [
 
     # Payroll
     path("payroll-runs/", PayrollRunListCreateView.as_view(), name="finance-payroll-list"),
+    path("payroll-runs/generate/", PayrollRunGenerateView.as_view(), name="finance-payroll-generate"),
+    path("employee-salaries/", EmployeeSalaryListCreateView.as_view(), name="finance-employee-salary-list"),
+    path("employee-salaries/<int:pk>/", EmployeeSalaryDetailView.as_view(), name="finance-employee-salary-detail"),
     path("payroll-runs/<int:pk>/", PayrollRunDetailView.as_view(), name="finance-payroll-detail"),
     path("payroll-runs/<int:pk>/post/", PayrollRunPostView.as_view(), name="finance-payroll-post"),
     path("payroll-runs/<int:pk>/pay/", PayrollRunPayView.as_view(), name="finance-payroll-pay"),
