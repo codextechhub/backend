@@ -110,6 +110,7 @@ from vs_finance.dunning import (
 from vs_finance.reports import (
     ar_aging,
     balance_sheet,
+    budget_monthly_matrix,
     budget_vs_actual,
     cash_flow_statement,
     customer_statement,
@@ -1790,6 +1791,30 @@ class BudgetTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(row.actual, 70000)
         self.assertEqual(row.variance, 10000)         # over budget
 
+    def test_budget_monthly_matrix_builds_per_account_cells(self):
+        entity, year, periods = self.build_books()
+        budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Plan")
+        salaries = Account.objects.get(entity=entity, code="5200")
+        add_budget_line(budget, account=salaries, period_no=1, amount=60000)
+        add_budget_line(budget, account=salaries, period_no=2, amount=60000)
+        # Actual: 50,000 in Jan (period 1), 70,000 in Feb (period 2).
+        post_journal(self.make_entry(
+            entity, periods[0], [("5200", 50000, 0), ("1100", 0, 50000)],
+            date=datetime.date(2026, 1, 15)))
+        post_journal(self.make_entry(
+            entity, periods[1], [("5200", 70000, 0), ("1100", 0, 70000)],
+            date=datetime.date(2026, 2, 15)))
+        matrix = budget_monthly_matrix(budget)
+        self.assertEqual(len(matrix.periods), 12)
+        row = next(r for r in matrix.rows if r.code == "5200")
+        self.assertEqual(len(row.cells), 12)
+        self.assertEqual(row.budget_total, 120000)
+        self.assertEqual(row.actual_total, 120000)
+        c1 = next(c for c in row.cells if c["period_no"] == 1)
+        c2 = next(c for c in row.cells if c["period_no"] == 2)
+        self.assertEqual((c1["budget"], c1["actual"]), (60000, 50000))
+        self.assertEqual((c2["budget"], c2["actual"]), (60000, 70000))
+
 
 class FixedAssetTests(_Phase4FixtureMixin, TestCase):
     def _make_asset(self, entity, *, cost=1100000, salvage=0, life=11,
@@ -2370,6 +2395,29 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         # Can't delete a structure that's assigned to someone.
         rm = self.client.delete(f"/v1/finance/salary-structures/{sid}/?entity={entity.code}")
         self.assertEqual(rm.status_code, 400, rm.content)
+
+    def test_budget_list_enriched_and_heatmap_endpoint(self):
+        entity, year, periods = self.build_books()
+        budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Plan")
+        salaries = Account.objects.get(entity=entity, code="5200")
+        add_budget_line(budget, account=salaries, period_no=1, amount=60000)
+        post_journal(self.make_entry(
+            entity, periods[0], [("5200", 30000, 0), ("1100", 0, 30000)],
+            date=datetime.date(2026, 1, 15)))
+
+        # List carries headline budget/actual/consumed so the table needs no extra call.
+        lst = self.client.get(f"/v1/finance/budgets/?entity={entity.code}").json()["data"]
+        b = next(x for x in lst if x["id"] == budget.id)
+        self.assertEqual(b["budgeted_total"], 60000)
+        self.assertEqual(b["actual_ytd"], 30000)
+        self.assertEqual(b["consumed_pct"], 50.0)
+
+        # Heatmap: 12 periods, the Jan cell carries budget 60,000 / actual 30,000.
+        hm = self.client.get(f"/v1/finance/budgets/{budget.id}/heatmap/?entity={entity.code}").json()["data"]
+        self.assertEqual(len(hm["periods"]), 12)
+        r = next(x for x in hm["rows"] if x["code"] == "5200")
+        c1 = next(c for c in r["cells"] if c["period_no"] == 1)
+        self.assertEqual((c1["budget"], c1["actual"]), (60000, 30000))
 
     def test_bank_account_detail_reports_metrics_and_transactions(self):
         entity, _, periods = self.build_books()

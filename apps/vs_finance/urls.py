@@ -85,6 +85,7 @@ from .views_ops import (
     BankStatementLineView,
     BudgetApproveView,
     BudgetDetailView,
+    BudgetHeatmapView,
     BudgetLineCreateView,
     BudgetListCreateView,
     BudgetVarianceView,
@@ -294,6 +295,7 @@ urlpatterns = [
     path("budgets/<int:pk>/lines/", BudgetLineCreateView.as_view(), name="finance-budget-line"),
     path("budgets/<int:pk>/approve/", BudgetApproveView.as_view(), name="finance-budget-approve"),
     path("budgets/<int:pk>/variance/", BudgetVarianceView.as_view(), name="finance-budget-variance"),
+    path("budgets/<int:pk>/heatmap/", BudgetHeatmapView.as_view(), name="finance-budget-heatmap"),
 
     # Fixed assets
     path("fixed-assets/", FixedAssetListCreateView.as_view(), name="finance-asset-list"),

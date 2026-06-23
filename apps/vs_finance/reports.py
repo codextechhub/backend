@@ -551,6 +551,116 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
     )
 
 
+@dataclass
+class BudgetMatrixRow:
+    """One account's budget-vs-actual across the 12 periods (the heatmap row).
+
+    ``cells`` is always 12 entries keyed ``budget_<n>`` / ``actual_<n>`` for period
+    ``n`` (1–12), signed to the account's normal balance like :func:`budget_vs_actual`.
+    """
+
+    account_id: int
+    code: str
+    name: str
+    account_type: str
+    cells: list  # [{period_no, budget, actual}] × 12
+    budget_total: int = 0
+    actual_total: int = 0
+
+
+@dataclass
+class BudgetMatrix:
+    budget_id: int
+    fiscal_year_id: int
+    periods: list = field(default_factory=list)  # [{period_no, label}]
+    rows: list = field(default_factory=list)
+    total_budget: int = 0
+    total_actual: int = 0
+
+
+def budget_monthly_matrix(budget) -> BudgetMatrix:
+    """Per-account, per-period budget vs actual for a budget — the variance heatmap.
+
+    One row per account (budgeted accounts + unbudgeted P&L activity), each with 12
+    period cells. Built in two passes (budget lines, then period balances) — no
+    per-cell query — so the whole grid is one cheap read.
+    """
+    from .constants import AccountType, NormalBalance
+    from .models import AccountBalance, BudgetLine, FiscalPeriod
+
+    _PL_TYPES = {AccountType.INCOME, AccountType.EXPENSE}
+    fiscal_year = budget.fiscal_year
+
+    periods = list(
+        FiscalPeriod.objects.filter(fiscal_year=fiscal_year, period_no__lte=12)
+        .order_by("period_no")
+    )
+    period_nos = [p.period_no for p in periods]
+
+    slots: dict[int, dict] = {}
+
+    def slot_for(account):
+        s = slots.get(account.id)
+        if s is None:
+            s = {
+                "code": account.code, "name": account.name,
+                "account_type": account.account_type,
+                "normal_balance": account.normal_balance,
+                "budget": {n: 0 for n in period_nos},
+                "actual": {n: 0 for n in period_nos},
+            }
+            slots[account.id] = s
+        return s
+
+    for line in BudgetLine.objects.filter(budget=budget).select_related("account"):
+        if line.period_no in period_nos:
+            slot_for(line.account)["budget"][line.period_no] += line.amount
+
+    balances = (
+        AccountBalance.objects
+        .filter(period__fiscal_year=fiscal_year, period__period_no__lte=12)
+        .select_related("account", "period")
+    )
+    for bal in balances:
+        acc = bal.account
+        if acc.id not in slots and acc.account_type not in _PL_TYPES:
+            continue
+        movement = bal.debit_total - bal.credit_total
+        if acc.normal_balance != NormalBalance.DEBIT:
+            movement = -movement
+        if movement == 0 and acc.id not in slots:
+            continue
+        slot_for(acc)["actual"][bal.period.period_no] += movement
+
+    rows: list[BudgetMatrixRow] = []
+    grand_budget = grand_actual = 0
+    for account_id, slot in sorted(slots.items(), key=lambda kv: kv[1]["code"]):
+        cells = [
+            {"period_no": n, "budget": slot["budget"][n], "actual": slot["actual"][n]}
+            for n in period_nos
+        ]
+        b_total = sum(slot["budget"].values())
+        a_total = sum(slot["actual"].values())
+        if b_total == 0 and a_total == 0:
+            continue
+        grand_budget += b_total
+        grand_actual += a_total
+        rows.append(BudgetMatrixRow(
+            account_id=account_id, code=slot["code"], name=slot["name"],
+            account_type=slot["account_type"], cells=cells,
+            budget_total=b_total, actual_total=a_total,
+        ))
+
+    return BudgetMatrix(
+        budget_id=budget.id,
+        fiscal_year_id=fiscal_year.id,
+        periods=[{"period_no": p.period_no, "label": p.name} for p in periods],
+        rows=rows,
+        total_budget=grand_budget,
+        total_actual=grand_actual,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Financial statements — Income Statement, Balance Sheet, Cash Flow            #
 # --------------------------------------------------------------------------- #

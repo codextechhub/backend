@@ -42,13 +42,27 @@ class BudgetListCreateView(_FinanceBase):
             else "finance.budget.view"
 
     def get(self, request):
+        from ..reports import budget_vs_actual
+
         entity = resolve_entity(request)
         qs = Budget.objects.filter(entity=entity).select_related("fiscal_year").prefetch_related("lines")
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
-        return success_response(
-            "Budgets retrieved.", data=BudgetSerializer(qs[:200], many=True).data,
-        )
+        budgets = list(qs[:200])
+
+        # Enrich each budget with its actual-vs-budget headline figures so the list can
+        # show ACTUAL YTD / CONSUMED without the FE fanning out a variance call per row.
+        data = BudgetSerializer(budgets, many=True).data
+        by_id = {b.id: b for b in budgets}
+        for row in data:
+            budget = by_id[row["id"]]
+            report = budget_vs_actual(budget)
+            budgeted = report.total_budget
+            actual = report.total_actual
+            row["budgeted_total"] = budgeted
+            row["actual_ytd"] = actual
+            row["consumed_pct"] = round(actual * 100 / budgeted, 1) if budgeted else None
+        return success_response("Budgets retrieved.", data=data)
 
     def post(self, request):
         entity = resolve_entity(request)
@@ -164,6 +178,42 @@ class BudgetVarianceView(_BudgetActionBase):
                 "total_budget": _money_pair(report.total_budget),
                 "total_actual": _money_pair(report.total_actual),
                 "total_variance": _money_pair(report.total_variance),
+            },
+        )
+
+
+class BudgetHeatmapView(_BudgetActionBase):
+    """GET — per-account, per-period budget-vs-actual matrix (the variance heatmap).
+
+    Cells are bare kobo (budget/actual) to keep the 12×N grid small; the FE colours
+    each by its actual/budget ratio and formats locally.
+
+    docstring-name: Budget variance heatmap
+    """
+
+    rbac_permission = "finance.budget.view"
+
+    def get(self, request, pk):
+        from ..reports import budget_monthly_matrix
+
+        _, budget = self._budget(request, pk)
+        matrix = budget_monthly_matrix(budget)
+        return success_response(
+            "Budget heatmap retrieved.",
+            data={
+                "budget_id": matrix.budget_id,
+                "fiscal_year_id": matrix.fiscal_year_id,
+                "periods": matrix.periods,
+                "rows": [
+                    {
+                        "account_id": r.account_id, "code": r.code, "name": r.name,
+                        "account_type": r.account_type, "cells": r.cells,
+                        "budget_total": r.budget_total, "actual_total": r.actual_total,
+                    }
+                    for r in matrix.rows
+                ],
+                "total_budget": matrix.total_budget,
+                "total_actual": matrix.total_actual,
             },
         )
 
