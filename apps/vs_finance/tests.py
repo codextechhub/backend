@@ -2419,6 +2419,58 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         c1 = next(c for c in r["cells"] if c["period_no"] == 1)
         self.assertEqual((c1["budget"], c1["actual"]), (60000, 30000))
 
+    def test_budget_create_with_lines_autocode_and_draft_edit(self):
+        entity, year, _ = self.build_books()
+        # Create a budget WITH lines in one call; it gets an auto code.
+        resp = self.client.post(
+            f"/v1/finance/budgets/?entity={entity.code}",
+            {"name": "FY26 Operating", "fiscal_year": year.year, "lines": [
+                {"account": "5200", "period_no": 1, "amount": 60000},
+                {"account": "5200", "period_no": 2, "amount": 60000},
+                {"account": "5100", "period_no": 1, "amount": 20000},
+            ]}, format="json")
+        self.assertEqual(resp.status_code, 201, resp.content)
+        b = resp.json()["data"]
+        self.assertTrue(b["code"].startswith(f"CFX-{entity.code}-BDG-{year.year}-"))
+        self.assertEqual(len(b["lines"]), 3)
+        bid = b["id"]
+
+        # Budgets reject non-P&L accounts (variance is against income/expense only).
+        bad = self.client.put(
+            f"/v1/finance/budgets/{bid}/lines/?entity={entity.code}",
+            {"lines": [{"account": "1100", "period_no": 1, "amount": 5000}]}, format="json")
+        self.assertEqual(bad.status_code, 422, bad.content)
+
+        # PUT replaces all lines wholesale.
+        rep = self.client.put(
+            f"/v1/finance/budgets/{bid}/lines/?entity={entity.code}",
+            {"lines": [{"account": "5200", "period_no": 1, "amount": 99000}]}, format="json")
+        self.assertEqual(rep.status_code, 200, rep.content)
+        self.assertEqual(len(rep.json()["data"]["lines"]), 1)
+        line_id = rep.json()["data"]["lines"][0]["id"]
+
+        # PATCH renames a draft.
+        pat = self.client.patch(
+            f"/v1/finance/budgets/{bid}/?entity={entity.code}", {"name": "FY26 Opex"}, format="json")
+        self.assertEqual(pat.status_code, 200, pat.content)
+        self.assertEqual(pat.json()["data"]["name"], "FY26 Opex")
+
+        # DELETE one line.
+        d = self.client.delete(f"/v1/finance/budgets/{bid}/lines/{line_id}/?entity={entity.code}")
+        self.assertEqual(d.status_code, 200, d.content)
+        self.assertEqual(len(d.json()["data"]["lines"]), 0)
+
+        # Once approved, edits are refused (the lock).
+        self.client.post(f"/v1/finance/budgets/{bid}/approve/?entity={entity.code}")
+        locked = self.client.patch(
+            f"/v1/finance/budgets/{bid}/?entity={entity.code}", {"name": "nope"}, format="json")
+        self.assertEqual(locked.status_code, 422, locked.content)
+
+        # Fiscal-years endpoint lists the open year for the dropdown.
+        fy = self.client.get(f"/v1/finance/fiscal-years/?entity={entity.code}").json()["data"]
+        fy = fy if isinstance(fy, list) else fy.get("results", [])
+        self.assertTrue(any(y["year"] == year.year for y in fy))
+
     def test_bank_account_detail_reports_metrics_and_transactions(self):
         entity, _, periods = self.build_books()
         bank = self.make_bank(entity)

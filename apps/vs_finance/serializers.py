@@ -40,6 +40,7 @@ from .models import (
     FinanceAuditLog,
     FixedAsset,
     FiscalPeriod,
+    FiscalYear,
     FxRate,
     Invoice,
     JournalEntry,
@@ -183,6 +184,12 @@ class FiscalPeriodSerializer(serializers.ModelSerializer):
             "id", "period_no", "name", "fiscal_year",
             "start_date", "end_date", "status", "closed_at",
         ]
+
+
+class FiscalYearSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FiscalYear
+        fields = ["id", "year", "start_date", "end_date", "status"]
 
 
 class JournalLineSerializer(serializers.ModelSerializer):
@@ -1078,7 +1085,7 @@ class BudgetSerializer(serializers.ModelSerializer):
     class Meta:
         model = Budget
         fields = [
-            "id", "name", "fiscal_year", "fiscal_year_id", "status",
+            "id", "code", "name", "fiscal_year", "fiscal_year_id", "status",
             "is_locked", "approved_at", "lines",
         ]
 

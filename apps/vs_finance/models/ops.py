@@ -887,6 +887,10 @@ class Budget(TimeStampedModel):
     entity = models.ForeignKey(
         LedgerEntity, on_delete=models.PROTECT, related_name="budgets",
     )
+    code = models.CharField(
+        max_length=48, blank=True, db_index=True,
+        help_text="Auto-allocated reference, e.g. CFX-CODEX-BDG-2026-00001.",
+    )
     fiscal_year = models.ForeignKey(
         FiscalYear, on_delete=models.PROTECT, related_name="budgets",
     )

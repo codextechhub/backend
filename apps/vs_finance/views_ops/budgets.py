@@ -65,20 +65,41 @@ class BudgetListCreateView(_FinanceBase):
         return success_response("Budgets retrieved.", data=data)
 
     def post(self, request):
+        from ..budgets import create_budget
+
         entity = resolve_entity(request)
         body = request.data or {}
         name = str(body.get("name", "")).strip()
         if not name:
             raise ValidationError({"name": "A budget name is required."})
-        budget = Budget.objects.create(
-            entity=entity,
-            fiscal_year=_resolve_fiscal_year(entity, body.get("fiscal_year")),
+        budget = create_budget(
+            entity,
             name=name,
+            fiscal_year=_resolve_fiscal_year(entity, body.get("fiscal_year")),
+            lines=_resolve_lines(entity, body.get("lines")),
+            actor_user=request.user,
         )
         return success_response(
-            f"Budget '{name}' created.",
+            f"Budget {budget.code} created.",
             data=BudgetSerializer(budget).data, status=201,
         )
+
+
+def _resolve_lines(entity, raw):
+    """Resolve a body ``lines`` list into service dicts (account/cost_center resolved)."""
+    if not raw:
+        return []
+    if not isinstance(raw, list):
+        raise ValidationError({"lines": "Expected a list of budget lines."})
+    out = []
+    for i, ln in enumerate(raw):
+        out.append({
+            "account": _resolve_account(entity, ln.get("account"), f"lines[{i}].account", required=True),
+            "cost_center": _resolve_cost_center(entity, ln.get("cost_center"), f"lines[{i}].cost_center"),
+            "period_no": _int(ln.get("period_no"), f"lines[{i}].period_no", required=True, minimum=1),
+            "amount": _money(ln.get("amount", 0), f"lines[{i}].amount"),
+        })
+    return out
 
 
 class _BudgetActionBase(_FinanceBase):
@@ -91,18 +112,33 @@ class _BudgetActionBase(_FinanceBase):
 
 
 class BudgetDetailView(_BudgetActionBase):
-    """docstring-name: Budgets"""
-    rbac_permission = "finance.budget.view"
+    """GET one budget; PATCH to rename a draft. docstring-name: Budgets"""
+
+    @property
+    def rbac_permission(self):
+        return "finance.budget.edit" if self.request.method == "PATCH" else "finance.budget.view"
 
     def get(self, request, pk):
         _, budget = self._budget(request, pk)
         return success_response("Budget retrieved.", data=BudgetSerializer(budget).data)
 
+    def patch(self, request, pk):
+        from ..budgets import update_budget
+
+        _, budget = self._budget(request, pk)
+        body = request.data or {}
+        name = body.get("name")
+        if name is not None and not str(name).strip():
+            raise ValidationError({"name": "A budget name is required."})
+        update_budget(budget, name=str(name).strip() if name is not None else None, actor_user=request.user)
+        budget.refresh_from_db()
+        return success_response("Budget updated.", data=BudgetSerializer(budget).data)
+
 
 class BudgetLineCreateView(_BudgetActionBase):
-    """POST {account, period_no, amount, cost_center?} — add/update one budget cell.
+    """POST one cell (upsert); PUT to replace all of a draft budget's lines.
 
-    docstring-name: Add a budget line
+    docstring-name: Budget lines
     """
 
     rbac_permission = "finance.budget.edit"
@@ -123,6 +159,29 @@ class BudgetLineCreateView(_BudgetActionBase):
         return success_response(
             "Budget line saved.", data=BudgetSerializer(budget).data, status=201,
         )
+
+    def put(self, request, pk):
+        from ..budgets import set_budget_lines
+
+        entity, budget = self._budget(request, pk)
+        body = request.data or {}
+        set_budget_lines(budget, _resolve_lines(entity, body.get("lines")))
+        budget.refresh_from_db()
+        return success_response("Budget lines saved.", data=BudgetSerializer(budget).data)
+
+
+class BudgetLineDetailView(_BudgetActionBase):
+    """DELETE one line from a draft budget. docstring-name: Budget lines"""
+
+    rbac_permission = "finance.budget.edit"
+
+    def delete(self, request, pk, line_id):
+        from ..budgets import delete_budget_line
+
+        _, budget = self._budget(request, pk)
+        delete_budget_line(budget, line_id)
+        budget.refresh_from_db()
+        return success_response("Budget line removed.", data=BudgetSerializer(budget).data)
 
 
 class BudgetApproveView(_BudgetActionBase):

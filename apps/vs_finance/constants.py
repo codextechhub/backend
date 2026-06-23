@@ -78,6 +78,7 @@ class DocType(models.TextChoices):
     PAYROLL_RUN = "PYR", "Payroll Run"
     FIXED_ASSET = "FA", "Fixed Asset"
     TAX_FILING = "TXF", "Tax Filing / Remittance"
+    BUDGET = "BDG", "Budget"
 
 class AccountType(models.TextChoices):
     """The five roots of double-entry accounting.

@@ -30,6 +30,7 @@ from .money import format_naira
 from .serializers import (
     AccountSerializer,
     FiscalPeriodSerializer,
+    FiscalYearSerializer,
     InvoiceSerializer,
     JournalEntryDetailSerializer,
     JournalEntryListSerializer,
@@ -219,7 +220,9 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
                 _bal_cr=Coalesce(Sum(F("balances__opening_credit") + F("balances__credit_total")), 0),
             )
         if (atype := params.get("account_type")):
-            qs = qs.filter(account_type=atype)
+            # accepts a single type or a comma list (e.g. INCOME,EXPENSE for budgets)
+            types = [t.strip() for t in atype.split(",") if t.strip()]
+            qs = qs.filter(account_type__in=types) if len(types) > 1 else qs.filter(account_type=types[0])
         if (postable := params.get("is_postable")) is not None:
             if postable.lower() in ("true", "false"):
                 qs = qs.filter(is_postable=postable.lower() == "true")
@@ -383,6 +386,26 @@ class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
         if (year := self.request.query_params.get("year")):
             qs = qs.filter(fiscal_year__year=year)
         return qs.order_by("fiscal_year__year", "period_no")
+
+
+class FiscalYearListView(EntityScopedListMixin, generics.ListAPIView):
+    """GET /finance/fiscal-years/?entity= — the entity's fiscal years.
+
+    ``?status=OPEN`` narrows to open years (the ones a new budget can target).
+
+    docstring-name: Fiscal years
+    """
+
+    serializer_class = FiscalYearSerializer
+    rbac_permission = "finance.period.view"
+
+    def entity_qs(self, entity):
+        from .models import FiscalYear
+
+        qs = FiscalYear.objects.filter(entity=entity)
+        if (status_val := self.request.query_params.get("status")):
+            qs = qs.filter(status=status_val)
+        return qs.order_by("-year")
 
 
 class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
