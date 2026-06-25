@@ -1841,6 +1841,27 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(len(rows), 11)
         self.assertEqual(sum(r.amount for r in rows), asset.depreciable_base)
 
+    def test_declining_balance_schedule_front_loads_and_lands_on_salvage(self):
+        from vs_finance.constants import DepreciationMethod
+        entity, _, _ = self.build_books()
+        asset = self._make_asset(entity, cost=1200000, salvage=200000, life=12)
+        asset.method = DepreciationMethod.DECLINING_BALANCE
+        asset.save(update_fields=["method"])
+        build_depreciation_schedule(asset)
+        amounts = [r.amount for r in asset.schedule.all()]
+        self.assertEqual(len(amounts), 12)
+        # Sums to the depreciable base exactly (cost − salvage).
+        self.assertEqual(sum(amounts), 1000000)
+        # Front-loaded: first DB charge (2/12 of 1,200,000 = 200,000) beats straight-line.
+        self.assertEqual(amounts[0], 200000)
+        self.assertGreater(amounts[0], amounts[-1])
+        # Never drives book value below salvage (every charge non-negative, monotone bv).
+        bv = asset.cost
+        for a in amounts:
+            self.assertGreaterEqual(a, 0)
+            bv -= a
+        self.assertEqual(bv, asset.salvage_value)
+
     def test_schedule_remainder_lands_on_last_period(self):
         entity, _, _ = self.build_books()
         asset = self._make_asset(entity, cost=1000000, salvage=0, life=3)

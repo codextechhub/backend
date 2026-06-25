@@ -26,6 +26,7 @@ from .constants import (
     ACCUM_DEPRECIATION_CODE,
     AssetStatus,
     DEPRECIATION_EXPENSE_CODE,
+    DepreciationMethod,
     DocumentStatus,
     FinanceAuditAction,
     JournalSource,
@@ -61,13 +62,51 @@ def _asset_accounts(asset):
     return ppe, accum, expense
 
 
+def _straight_line_amounts(base: int, months: int) -> list[int]:
+    """Equal monthly charges; the final month absorbs the rounding remainder."""
+    per_month = base // months
+    remainder = base - per_month * months
+    return [per_month + (remainder if seq == months else 0) for seq in range(1, months + 1)]
+
+
+def _declining_balance_amounts(cost: int, salvage: int, months: int) -> list[int]:
+    """Double-declining balance with a switch to straight-line of the remaining base.
+
+    Each month charges the greater of the declining-balance rate (``2 / months`` of the
+    opening book value) and straight-lining the remaining depreciable amount over the
+    months left — the textbook switch that still lands exactly on ``salvage``. Charges
+    never take book value below salvage; the final month absorbs the remainder.
+    """
+    base = cost - salvage
+    amounts: list[int] = []
+    book_value = cost
+    for seq in range(1, months + 1):
+        remaining_months = months - seq + 1
+        if seq == months:
+            charge = book_value - salvage  # land exactly on salvage
+        else:
+            declining = book_value * 2 // months
+            straight = (book_value - salvage) // remaining_months
+            charge = max(declining, straight)
+            charge = min(charge, book_value - salvage)  # never below salvage
+        charge = max(charge, 0)
+        amounts.append(charge)
+        book_value -= charge
+    # Guard: rounding can leave a kobo or two — pile any remainder on the last charge.
+    drift = base - sum(amounts)
+    if drift and amounts:
+        amounts[-1] += drift
+    return amounts
+
+
 @transaction.atomic
 def build_depreciation_schedule(asset):
-    """(Re)build the straight-line :class:`DepreciationSchedule` for ``asset``.
+    """(Re)build the :class:`DepreciationSchedule` for ``asset`` (straight-line or
+    declining-balance, per ``asset.method``).
 
     Rebuilds only while no row has posted yet (so a part-depreciated asset is never
-    silently re-planned). Returns the list of schedule rows. The last row absorbs the
-    integer-rounding remainder so the rows sum to ``depreciable_base`` exactly.
+    silently re-planned). Returns the list of schedule rows. The rows always sum to
+    ``depreciable_base`` exactly (the final month absorbs the rounding remainder).
     """
     from .models import DepreciationSchedule
 
@@ -81,19 +120,19 @@ def build_depreciation_schedule(asset):
     if months <= 0:
         raise DepreciationError("Useful life must be a positive number of months.")
 
-    base = asset.depreciable_base
-    per_month = base // months
-    remainder = base - per_month * months  # piled onto the final month
+    if asset.method == DepreciationMethod.DECLINING_BALANCE:
+        amounts = _declining_balance_amounts(asset.cost, asset.salvage_value, months)
+    else:
+        amounts = _straight_line_amounts(asset.depreciable_base, months)
 
-    rows = []
-    # First charge in the month following acquisition.
-    for seq in range(1, months + 1):
-        amount = per_month + (remainder if seq == months else 0)
-        rows.append(DepreciationSchedule(
+    rows = [
+        DepreciationSchedule(
             asset=asset, seq=seq,
             depreciation_date=_add_months(asset.acquisition_date, seq),
             amount=amount,
-        ))
+        )
+        for seq, amount in enumerate(amounts, start=1)
+    ]
     DepreciationSchedule.objects.bulk_create(rows)
     return list(asset.schedule.all())
 

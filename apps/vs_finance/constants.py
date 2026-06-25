@@ -344,8 +344,9 @@ class BudgetStatus(models.TextChoices):
 
 
 class DepreciationMethod(models.TextChoices):
-    """Depreciation method for a fixed asset. Straight-line only for now."""
+    """Depreciation method for a fixed asset."""
     STRAIGHT_LINE = "STRAIGHT_LINE", "Straight line"
+    DECLINING_BALANCE = "DECLINING_BALANCE", "Declining balance"
 
 
 class AssetStatus(models.TextChoices):

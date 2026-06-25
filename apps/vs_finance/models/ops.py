@@ -987,7 +987,7 @@ class FixedAsset(FinanceDocument):
     salvage_value = MoneyField(help_text="Residual value at end of life, in kobo.")
     useful_life_months = models.PositiveIntegerField(help_text="Depreciable life in months.")
     method = models.CharField(
-        max_length=16, choices=DepreciationMethod.choices,
+        max_length=20, choices=DepreciationMethod.choices,
         default=DepreciationMethod.STRAIGHT_LINE,
     )
     asset_status = models.CharField(

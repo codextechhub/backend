@@ -63,6 +63,9 @@ class FixedAssetListCreateView(_FinanceBase):
         category = body.get("category") or AssetCategory.OTHER
         if category not in AssetCategory.values:
             raise ValidationError({"category": "Choose a valid asset category."})
+        method = body.get("method") or DepreciationMethod.STRAIGHT_LINE
+        if method not in DepreciationMethod.values:
+            raise ValidationError({"method": "Choose a valid depreciation method."})
         asset = FixedAsset.objects.create(
             entity=entity, name=name,
             asset_code=body.get("asset_code", ""),
@@ -72,7 +75,7 @@ class FixedAssetListCreateView(_FinanceBase):
             salvage_value=_money(body.get("salvage_value", 0), "salvage_value"),
             useful_life_months=_int(
                 body.get("useful_life_months"), "useful_life_months", required=True, minimum=1),
-            method=body.get("method") or DepreciationMethod.STRAIGHT_LINE,
+            method=method,
             asset_account=_resolve_account(entity, body.get("asset_account"), "asset_account"),
             accumulated_depreciation_account=_resolve_account(
                 entity, body.get("accumulated_depreciation_account"),
