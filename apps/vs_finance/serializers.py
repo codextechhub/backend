@@ -909,6 +909,8 @@ class TaxFilingSerializer(serializers.ModelSerializer):
     obligation_code = serializers.CharField(source="obligation.code", read_only=True)
     obligation_type = serializers.CharField(source="obligation.obligation_type", read_only=True)
     authority_name = serializers.CharField(source="obligation.authority_name", read_only=True)
+    liability_account = serializers.CharField(source="obligation.liability_account.code", read_only=True, default=None)
+    liability_account_name = serializers.CharField(source="obligation.liability_account.name", read_only=True, default=None)
     balance_due = serializers.IntegerField(read_only=True)
     amount_due_naira = serializers.SerializerMethodField()
 
@@ -916,7 +918,7 @@ class TaxFilingSerializer(serializers.ModelSerializer):
         model = TaxFiling
         fields = [
             "id", "document_number", "obligation_id", "obligation_code",
-            "obligation_type", "authority_name",
+            "obligation_type", "authority_name", "liability_account", "liability_account_name",
             "period_start", "period_end", "due_date",
             "filing_status", "status",
             "gross_liability", "recoverable_amount", "adjustment_amount",
