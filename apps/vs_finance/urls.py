@@ -104,7 +104,9 @@ from .views_ops import (
     FixedAssetAcquireView,
     FixedAssetDepreciateView,
     FixedAssetDetailView,
+    FixedAssetDisposeView,
     FixedAssetListCreateView,
+    FixedAssetRunDepreciationView,
     FxRateListCreateView,
     EmployeeSalaryDetailView,
     EmployeeSalaryListCreateView,
@@ -303,10 +305,12 @@ urlpatterns = [
 
     # Fixed assets
     path("fixed-assets/", FixedAssetListCreateView.as_view(), name="finance-asset-list"),
+    path("fixed-assets/run-depreciation/", FixedAssetRunDepreciationView.as_view(), name="finance-asset-run-depreciation"),
     path("fixed-assets/<int:pk>/", FixedAssetDetailView.as_view(), name="finance-asset-detail"),
     path("fixed-assets/<int:pk>/acquire/", FixedAssetAcquireView.as_view(), name="finance-asset-acquire"),
     path("fixed-assets/<int:pk>/depreciate/", FixedAssetDepreciateView.as_view(),
          name="finance-asset-depreciate"),
+    path("fixed-assets/<int:pk>/dispose/", FixedAssetDisposeView.as_view(), name="finance-asset-dispose"),
 
     # Audit trail
     path("audit-logs/", FinanceAuditLogListView.as_view(), name="finance-audit-list"),

@@ -1106,14 +1106,16 @@ class FixedAssetSerializer(serializers.ModelSerializer):
     net_book_value = serializers.IntegerField(read_only=True)
     depreciable_base = serializers.IntegerField(read_only=True)
     cost_naira = serializers.SerializerMethodField()
+    category_display = serializers.CharField(source="get_category_display", read_only=True)
 
     class Meta:
         model = FixedAsset
         fields = [
-            "id", "document_number", "name", "asset_code", "acquisition_date",
-            "cost", "cost_naira", "salvage_value", "useful_life_months", "method",
-            "asset_status", "status", "accumulated_depreciation", "net_book_value",
-            "depreciable_base", "acquisition_journal_id", "schedule",
+            "id", "document_number", "name", "asset_code", "category", "category_display",
+            "acquisition_date", "cost", "cost_naira", "salvage_value", "useful_life_months",
+            "method", "asset_status", "status", "accumulated_depreciation", "net_book_value",
+            "depreciable_base", "acquisition_journal_id", "disposal_date",
+            "disposal_journal_id", "schedule",
         ]
 
     def get_cost_naira(self, obj) -> str:

@@ -45,22 +45,28 @@ class FixedAssetListCreateView(_FinanceBase):
         qs = FixedAsset.objects.filter(entity=entity).prefetch_related("schedule")
         if (status_val := request.query_params.get("asset_status")):
             qs = qs.filter(asset_status=status_val)
+        if (category := request.query_params.get("category")):
+            qs = qs.filter(category=category)
         return success_response(
             "Fixed assets retrieved.",
             data=FixedAssetSerializer(qs.order_by("-acquisition_date", "-id")[:200], many=True).data,
         )
 
     def post(self, request):
-        from ..constants import DepreciationMethod
+        from ..constants import AssetCategory, DepreciationMethod
 
         entity = resolve_entity(request)
         body = request.data or {}
         name = str(body.get("name", "")).strip()
         if not name:
             raise ValidationError({"name": "An asset name is required."})
+        category = body.get("category") or AssetCategory.OTHER
+        if category not in AssetCategory.values:
+            raise ValidationError({"category": "Choose a valid asset category."})
         asset = FixedAsset.objects.create(
             entity=entity, name=name,
             asset_code=body.get("asset_code", ""),
+            category=category,
             acquisition_date=_date(body.get("acquisition_date"), "acquisition_date", required=True),
             cost=_money(body.get("cost", 0), "cost"),
             salvage_value=_money(body.get("salvage_value", 0), "salvage_value"),
@@ -148,6 +154,72 @@ class FixedAssetDepreciateView(_FixedAssetActionBase):
         asset.refresh_from_db()
         return success_response(
             f"Posted {len(posted)} depreciation charge(s) for {asset.name}.",
+            data=FixedAssetSerializer(asset).data,
+        )
+
+
+class FixedAssetRunDepreciationView(_FinanceBase):
+    """GET ?up_to_date — preview the period's depreciation posting; POST to run it.
+
+    The run posts ONE compound journal covering every due charge across active assets.
+
+    docstring-name: Run period depreciation
+    """
+
+    @property
+    def rbac_permission(self):
+        return "finance.fixedasset.depreciate" if self.request.method == "POST" \
+            else "finance.fixedasset.view"
+
+    def get(self, request):
+        from ..assets import preview_period_depreciation
+
+        entity = resolve_entity(request)
+        up_to = _date(request.query_params.get("up_to_date"), "up_to_date", required=True)
+        return success_response(
+            "Depreciation preview retrieved.",
+            data=preview_period_depreciation(entity, up_to_date=up_to),
+        )
+
+    def post(self, request):
+        from ..assets import run_period_depreciation
+
+        entity = resolve_entity(request)
+        body = request.data or {}
+        result = run_period_depreciation(
+            entity,
+            up_to_date=_date(body.get("up_to_date"), "up_to_date", required=True),
+            actor_user=request.user,
+        )
+        return success_response(
+            f"Posted depreciation across {result['asset_count']} asset(s).", data=result,
+        )
+
+
+class FixedAssetDisposeView(_FixedAssetActionBase):
+    """POST {disposal_date, proceeds?, bank_account?, gain_loss_account?} — retire/sell.
+
+    docstring-name: Dispose a fixed asset
+    """
+
+    rbac_permission = "finance.fixedasset.dispose"
+
+    def post(self, request, pk):
+        from ..assets import dispose_asset
+
+        entity, asset = self._asset(request, pk)
+        body = request.data or {}
+        dispose_asset(
+            asset,
+            disposal_date=_date(body.get("disposal_date"), "disposal_date", required=True),
+            proceeds=_money(body.get("proceeds", 0), "proceeds"),
+            bank_account=_resolve_bank_account(entity, body.get("bank_account"), required=False),
+            gain_loss_account=_resolve_account(entity, body.get("gain_loss_account"), "gain_loss_account"),
+            actor_user=request.user,
+        )
+        asset.refresh_from_db()
+        return success_response(
+            f"Fixed asset {asset.document_number} disposed.",
             data=FixedAssetSerializer(asset).data,
         )
 

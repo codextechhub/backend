@@ -142,7 +142,10 @@ from vs_finance.tax_filing import (
 from vs_finance.constants import TaxFilingStatus, TaxObligationType
 from vs_finance.payroll import pay_payroll, post_payroll
 from vs_finance.budgets import add_budget_line, approve_budget
-from vs_finance.assets import acquire_asset, build_depreciation_schedule, post_depreciation
+from vs_finance.assets import (
+    acquire_asset, build_depreciation_schedule, dispose_asset, post_depreciation,
+    run_period_depreciation,
+)
 from vs_finance.close import (
     close_checklist,
     close_period,
@@ -1863,6 +1866,44 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
         one = posted[0].journal
         self.assertEqual(one.lines.get(account__code="5400").debit, 100000)
         self.assertEqual(one.lines.get(account__code="1900").credit, 100000)
+
+    def test_run_period_depreciation_posts_one_compound_journal(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        a1 = self._make_asset(entity, cost=1100000, salvage=0, life=11)
+        a2 = self._make_asset(entity, cost=2200000, salvage=0, life=11)
+        acquire_asset(a1, bank_account=bank)
+        acquire_asset(a2, bank_account=bank)
+        # Run everything due to Feb 2026: one charge each (100,000 + 200,000).
+        result = run_period_depreciation(entity, up_to_date=datetime.date(2026, 2, 28))
+        self.assertEqual(result["asset_count"], 2)
+        self.assertEqual(result["total"], 300000)
+        # One compound journal: Dr 5400 = 300,000, Cr 1900 = 300,000.
+        from vs_finance.models import JournalEntry
+        entry = JournalEntry.objects.get(id=result["journal_id"])
+        self.assertEqual(entry.lines.get(account__code="5400").debit, 300000)
+        self.assertEqual(entry.lines.get(account__code="1900").credit, 300000)
+        a1.refresh_from_db()
+        self.assertEqual(a1.accumulated_depreciation, 100000)
+
+    def test_dispose_asset_books_proceeds_and_gain_loss(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        asset = self._make_asset(entity, cost=1100000, salvage=0, life=11)
+        acquire_asset(asset, bank_account=bank)
+        post_depreciation(asset, up_to_date=datetime.date(2026, 3, 31))  # 2 charges = 200,000
+        asset.refresh_from_db()
+        nbv = asset.net_book_value  # 900,000
+        # Sell for 950,000 → 50,000 gain; gain to 4100 income.
+        entry = dispose_asset(
+            asset, disposal_date=datetime.date(2026, 4, 1), proceeds=950000,
+            bank_account=bank, gain_loss_account=Account.objects.get(entity=entity, code="4100"))
+        asset.refresh_from_db()
+        self.assertEqual(asset.asset_status, AssetStatus.DISPOSED)
+        # Dr 1900 accum (200,000) + Dr cash 950,000; Cr 1500 cost 1,100,000; Cr 4100 gain 50,000.
+        self.assertEqual(entry.lines.get(account__code="1900").debit, 200000)
+        self.assertEqual(entry.lines.get(account__code="1500").credit, 1100000)
+        self.assertEqual(entry.lines.get(account__code="4100").credit, 950000 - nbv)
 
     def test_cannot_rebuild_schedule_after_posting(self):
         entity, _, _ = self.build_books()

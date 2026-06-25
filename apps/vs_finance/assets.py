@@ -256,3 +256,187 @@ def _post_depreciation_atomic(asset, *, up_to_date, actor_user=None, allow_restr
             accumulated=asset.accumulated_depreciation,
         )
     return posted
+
+
+def _due_depreciation(entity, up_to_date):
+    """The unposted, due schedule rows across the entity's active assets."""
+    from .models import DepreciationSchedule
+
+    return list(
+        DepreciationSchedule.objects
+        .filter(
+            asset__entity=entity, is_posted=False, depreciation_date__lte=up_to_date,
+            asset__asset_status__in=(AssetStatus.ACTIVE, AssetStatus.DRAFT),
+        )
+        .select_related("asset", "asset__depreciation_expense_account",
+                        "asset__accumulated_depreciation_account")
+        .order_by("asset_id", "seq")
+    )
+
+
+def preview_period_depreciation(entity, *, up_to_date):
+    """Summarise depreciation due up to ``up_to_date``, grouped by expense/accum account.
+
+    The Run-depreciation preview: one compound journal will Dr each expense account and
+    Cr each accumulated-depreciation account by the totals here.
+    """
+    expense, accum = {}, {}
+    asset_ids, total = set(), 0
+    for row in _due_depreciation(entity, up_to_date):
+        if row.amount <= 0:
+            continue
+        _, accum_acct, expense_acct = _asset_accounts(row.asset)
+        expense[expense_acct] = expense.get(expense_acct, 0) + row.amount
+        accum[accum_acct] = accum.get(accum_acct, 0) + row.amount
+        asset_ids.add(row.asset_id)
+        total += row.amount
+    debits = [{"account": a.code, "name": a.name, "amount": v} for a, v in expense.items()]
+    credits = [{"account": a.code, "name": a.name, "amount": v} for a, v in accum.items()]
+    return {"debits": debits, "credits": credits, "total": total,
+            "asset_count": len(asset_ids)}
+
+
+def run_period_depreciation(entity, *, up_to_date, actor_user=None):
+    """Post one compound journal for every depreciation charge due up to ``up_to_date``."""
+    try:
+        return _run_period_depreciation_atomic(entity, up_to_date=up_to_date, actor_user=actor_user)
+    except FinanceError as exc:
+        record_rejection(
+            entity=entity, action=FinanceAuditAction.DEPRECIATION_POSTED,
+            exc=exc, actor_user=actor_user, target=None,
+        )
+        raise
+
+
+@transaction.atomic
+def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
+    from .models import JournalEntry, JournalLine
+
+    rows = _due_depreciation(entity, up_to_date)
+    charges = [r for r in rows if r.amount > 0]
+    if not charges:
+        raise DepreciationError("No depreciation is due up to that date.")
+
+    expense, accum = {}, {}
+    for row in charges:
+        _, accum_acct, expense_acct = _asset_accounts(row.asset)
+        expense[expense_acct] = expense.get(expense_acct, 0) + row.amount
+        accum[accum_acct] = accum.get(accum_acct, 0) + row.amount
+
+    period = resolve_period(entity, up_to_date)
+    entry = JournalEntry.objects.create(
+        entity=entity, date=up_to_date, period=period, source=JournalSource.CLOSING,
+        narration=f"Depreciation run to {up_to_date}", created_by=actor_user,
+    )
+    line_no = 0
+    for acct, amount in expense.items():
+        line_no += 1
+        JournalLine.objects.create(entry=entry, account=acct, debit=amount, credit=0,
+                                   description="Depreciation", line_no=line_no)
+    for acct, amount in accum.items():
+        line_no += 1
+        JournalLine.objects.create(entry=entry, account=acct, debit=0, credit=amount,
+                                   description="Accumulated depreciation", line_no=line_no)
+    post_journal(entry, actor_user=actor_user)
+
+    # Mark every due row posted (zero-amount rows too) and roll up per asset.
+    by_asset: dict = {}
+    for row in rows:
+        row.is_posted = True
+        row.journal = entry if row.amount > 0 else None
+        row.posted_at = timezone.now()
+        row.save(update_fields=["is_posted", "journal", "posted_at", "updated_at"])
+        by_asset[row.asset] = by_asset.get(row.asset, 0) + row.amount
+    for asset, amount in by_asset.items():
+        asset.accumulated_depreciation += amount
+        if not asset.schedule.filter(is_posted=False).exists():
+            asset.asset_status = AssetStatus.FULLY_DEPRECIATED
+        asset.save(update_fields=["accumulated_depreciation", "asset_status", "updated_at"])
+
+    total = sum(r.amount for r in charges)
+    record(
+        entity=entity, action=FinanceAuditAction.DEPRECIATION_POSTED,
+        actor_user=actor_user, target=entry,
+        message=f"Posted a {total} kobo depreciation run across {len(by_asset)} asset(s).",
+        journal_id=entry.pk, charges=len(charges), total=total, assets=len(by_asset),
+    )
+    return {"journal_id": entry.pk, "total": total, "charge_count": len(charges),
+            "asset_count": len(by_asset)}
+
+
+def dispose_asset(asset, *, disposal_date, proceeds=0, bank_account=None,
+                  gain_loss_account=None, actor_user=None):
+    """Retire/sell an asset: clear its cost + accumulated depreciation, book proceeds and
+    the gain/loss. ``Dr accum dep, Dr bank (proceeds), Dr loss | Cr gain, Cr asset cost``."""
+    try:
+        return _dispose_asset_atomic(
+            asset, disposal_date=disposal_date, proceeds=proceeds,
+            bank_account=bank_account, gain_loss_account=gain_loss_account, actor_user=actor_user,
+        )
+    except FinanceError as exc:
+        record_rejection(
+            entity=asset.entity, action=FinanceAuditAction.ASSET_DISPOSED,
+            exc=exc, actor_user=actor_user, target=asset,
+        )
+        raise
+
+
+@transaction.atomic
+def _dispose_asset_atomic(asset, *, disposal_date, proceeds=0, bank_account=None,
+                          gain_loss_account=None, actor_user=None):
+    from .models import JournalEntry, JournalLine
+
+    if asset.asset_status not in (AssetStatus.ACTIVE, AssetStatus.FULLY_DEPRECIATED):
+        raise DepreciationError(
+            f"Asset {asset.document_number or asset.pk} is '{asset.asset_status}'; "
+            f"only an active or fully-depreciated asset can be disposed.",
+        )
+    proceeds = int(proceeds or 0)
+    nbv = asset.cost - asset.accumulated_depreciation
+    gain_loss = proceeds - nbv  # >0 gain, <0 loss
+    if proceeds > 0 and bank_account is None:
+        raise DepreciationError("A bank account is required to record disposal proceeds.")
+    if gain_loss != 0 and gain_loss_account is None:
+        raise DepreciationError("A gain/loss account is required to record the disposal result.")
+
+    ppe, accum, _ = _asset_accounts(asset)
+    period = resolve_period(asset.entity, disposal_date)
+    entry = JournalEntry.objects.create(
+        entity=asset.entity, branch=asset.branch, date=disposal_date,
+        period=period, source=JournalSource.BANK,
+        narration=f"Disposal of {asset.name}", created_by=actor_user,
+    )
+    line_no = 0
+    if asset.accumulated_depreciation > 0:
+        line_no += 1
+        JournalLine.objects.create(entry=entry, account=accum, debit=asset.accumulated_depreciation,
+                                   credit=0, description="Accumulated depreciation written back", line_no=line_no)
+    if proceeds > 0:
+        line_no += 1
+        JournalLine.objects.create(entry=entry, account=bank_account.gl_account, debit=proceeds,
+                                   credit=0, description="Disposal proceeds", line_no=line_no)
+    if gain_loss < 0:
+        line_no += 1
+        JournalLine.objects.create(entry=entry, account=gain_loss_account, debit=-gain_loss,
+                                   credit=0, description="Loss on disposal", line_no=line_no)
+    elif gain_loss > 0:
+        line_no += 1
+        JournalLine.objects.create(entry=entry, account=gain_loss_account, debit=0,
+                                   credit=gain_loss, description="Gain on disposal", line_no=line_no)
+    line_no += 1
+    JournalLine.objects.create(entry=entry, account=ppe, debit=0, credit=asset.cost,
+                               description="Asset cost removed", line_no=line_no)
+    post_journal(entry, actor_user=actor_user)
+
+    asset.disposal_journal = entry
+    asset.disposal_date = disposal_date
+    asset.asset_status = AssetStatus.DISPOSED
+    asset.save(update_fields=["disposal_journal", "disposal_date", "asset_status", "updated_at"])
+
+    record(
+        entity=asset.entity, action=FinanceAuditAction.ASSET_DISPOSED,
+        actor_user=actor_user, target=asset,
+        message=f"Disposed {asset.name}: proceeds {proceeds}, {'gain' if gain_loss >= 0 else 'loss'} {abs(gain_loss)} kobo.",
+        journal_id=entry.pk, proceeds=proceeds, gain_loss=gain_loss, nbv=nbv,
+    )
+    return entry

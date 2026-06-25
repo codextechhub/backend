@@ -356,6 +356,17 @@ class AssetStatus(models.TextChoices):
     DISPOSED = "DISPOSED", "Disposed"
 
 
+class AssetCategory(models.TextChoices):
+    """Broad register category for a fixed asset (drives the list filter/column)."""
+    VEHICLES = "VEHICLES", "Vehicles"
+    BUILDINGS = "BUILDINGS", "Buildings"
+    PLANT_MACHINERY = "PLANT_MACHINERY", "Plant & machinery"
+    IT_EQUIPMENT = "IT_EQUIPMENT", "IT equipment"
+    FURNITURE = "FURNITURE", "Furniture & fittings"
+    EQUIPMENT = "EQUIPMENT", "Equipment"
+    OTHER = "OTHER", "Other"
+
+
 class FinanceAuditAction(models.TextChoices):
     """Auditable finance actions recorded in the in-app, append-only audit log.
 
@@ -430,6 +441,7 @@ class FinanceAuditAction(models.TextChoices):
     BUDGET_APPROVED = "BUDGET_APPROVED", "Budget approved"
     ASSET_ACQUIRED = "ASSET_ACQUIRED", "Fixed asset acquired"
     DEPRECIATION_POSTED = "DEPRECIATION_POSTED", "Depreciation posted"
+    ASSET_DISPOSED = "ASSET_DISPOSED", "Fixed asset disposed"
     PERIOD_LOCKED = "PERIOD_LOCKED", "Period locked"
     TAX_FILING_PREPARED = "TAX_FILING_PREPARED", "Tax filing prepared"
     TAX_FILING_FILED = "TAX_FILING_FILED", "Tax filing submitted to authority"

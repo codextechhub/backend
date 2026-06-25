@@ -6,6 +6,7 @@ from django.conf import settings
 from django.db import models
 
 from ..constants import (
+    AssetCategory,
     AssetStatus,
     BankLineStatus,
     BankMatchSource,
@@ -965,6 +966,10 @@ class FixedAsset(FinanceDocument):
 
     name = models.CharField(max_length=200)
     asset_code = models.CharField(max_length=40, blank=True, default="", help_text="Optional tag/serial.")
+    category = models.CharField(
+        max_length=20, choices=AssetCategory.choices, default=AssetCategory.OTHER,
+        help_text="Register category (Vehicles, Buildings, IT equipment…).",
+    )
     asset_account = models.ForeignKey(
         Account, on_delete=models.PROTECT, related_name="fixed_assets",
         null=True, blank=True, help_text="Capitalised cost account. Defaults to 1500 PP&E.",
@@ -991,6 +996,11 @@ class FixedAsset(FinanceDocument):
     accumulated_depreciation = MoneyField(help_text="Total depreciation booked to date, in kobo.")
     acquisition_journal = models.ForeignKey(
         "JournalEntry", on_delete=models.PROTECT, related_name="asset_acquisitions",
+        null=True, blank=True,
+    )
+    disposal_date = models.DateField(null=True, blank=True)
+    disposal_journal = models.ForeignKey(
+        "JournalEntry", on_delete=models.PROTECT, related_name="asset_disposals",
         null=True, blank=True,
     )
 
