@@ -112,6 +112,7 @@ linked to a School via `source_school`). Finance/procurement endpoints take
 ## Conventions
 
 - Money is integer **kobo** (`MoneyField`) — never float.
+- Cost centers split accounts by department/project without changing the chart of accounts; see `xvs_infos/finance_cost_centers.md` for API and ORM examples.
 - Posted journals are immutable; corrections are mirror-image reversals.
 - Finance writes its own transactional audit (`FinanceAuditLog`) and mirrors
   best-effort to the central `vs_audit`.
