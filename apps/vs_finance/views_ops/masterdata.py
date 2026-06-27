@@ -190,6 +190,7 @@ class CostCenterListCreateView(_FinanceBase):
         entity = resolve_entity(request)
         body = request.data or {}
         code = str(body.get("code", "")).strip()
+        # TODO: code should be automated when a user didn't provide it
         if not code:
             raise ValidationError({"code": "A cost centre code is required."})
         parent = None
@@ -233,6 +234,7 @@ class DimensionListCreateView(_FinanceBase):
         entity = resolve_entity(request)
         body = request.data or {}
         code = str(body.get("code", "")).strip()
+        # TODO: code should be automated when a user didn't provide it
         if not code:
             raise ValidationError({"code": "A dimension code is required."})
         dim, created = Dimension.objects.update_or_create(

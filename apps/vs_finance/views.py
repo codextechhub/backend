@@ -297,7 +297,7 @@ class AccountDetailView(APIView):
 
         # Posted lines hitting this account, oldest-first to accumulate a running balance.
         lines = list(
-            JournalLine.objects.filter(account=acc, entry__status=DocumentStatus.POSTED)
+            JournalLine.objects.filter(account=acc, entry__status__in=[DocumentStatus.POSTED, DocumentStatus.REVERSED])
             .select_related("entry", "cost_center").order_by("entry__date", "entry__id", "line_no")
         )
         # Fiscal-year opening = net of everything posted before the current FY starts.
@@ -322,6 +322,7 @@ class AccountDetailView(APIView):
                 "date": ln.entry.date.isoformat(),
                 "journal_no": ln.entry.document_number,
                 "source": getattr(ln.entry, "source", "") or "Manual",
+                "status": ln.entry.status,
                 "description": ln.description or ln.entry.narration or "",
                 "cost_center": ln.cost_center.code if ln.cost_center_id else "",
                 "debit": _money(ln.debit),
@@ -445,7 +446,7 @@ class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
 
 
 class JournalSummaryView(APIView):
-    """GET /finance/journals/summary/?entity= — status counts + posted total.
+    """Status counts + posted total.
 
     Powers the Journal Entries status tabs and footer (one cheap aggregate, honours
     the same source/date/search filters as the list).
@@ -481,12 +482,17 @@ class JournalSummaryView(APIView):
             qs.filter(status=DocumentStatus.POSTED)
             .aggregate(t=Coalesce(Sum("lines__debit"), 0))["t"]
         )
+        reversed_total = (
+            qs.filter(status=DocumentStatus.REVERSED)
+            .aggregate(t=Coalesce(Sum("lines__debit"), 0))["t"]
+        )
         return success_response(
             "Journal summary retrieved.",
             data={
                 "total": sum(by_status.values()),
                 "by_status": by_status,
                 "posted_total": _money(posted_total),
+                "reversed_total": _money(reversed_total),
             },
         )
 
