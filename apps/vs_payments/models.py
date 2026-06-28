@@ -104,8 +104,8 @@ class CollectionIntent(TimeStampedModel):
     reference = models.CharField(
         max_length=64, unique=True,
         help_text="Our merchant reference / idempotency key for this collection.",
-    )
-    provider_reference = models.CharField(max_length=128, blank=True, default="")
+    )  # Reference is unique so we can idempotently retry the same collection without double-charging.
+    provider_reference = models.CharField(max_length=128, blank=True, default="")  # The provider's transaction id for this collection (e.g. Paystack transaction reference).
     amount = MoneyField(help_text="Amount to collect, in kobo.")
     currency = models.ForeignKey(
         "vs_finance.Currency", on_delete=models.PROTECT,
@@ -128,20 +128,20 @@ class CollectionIntent(TimeStampedModel):
     virtual_account = models.ForeignKey(
         VirtualAccount, on_delete=models.PROTECT,
         related_name="collection_intents", null=True, blank=True,
-    )
+    )  # The virtual account this collection was paid into (if any, for self-reconciling collections).
     status = models.CharField(
         max_length=12, choices=CollectionStatus.choices, default=CollectionStatus.PENDING,
     )
     payer_email = models.EmailField(blank=True, default="")
     payer_name = models.CharField(max_length=200, blank=True, default="")
     narration = models.CharField(max_length=255, blank=True, default="")
-    checkout_url = models.URLField(blank=True, default="", max_length=600)
-    authorization_code = models.CharField(max_length=128, blank=True, default="")
+    checkout_url = models.URLField(blank=True, default="", max_length=600)  # The provider's hosted checkout URL for this collection (if any, for redirect flows).
+    authorization_code = models.CharField(max_length=128, blank=True, default="")  # The provider's authorization code for this collection (e.g. Paystack authorization_code).
     payment = models.ForeignKey(
         "vs_finance.Payment", on_delete=models.PROTECT,
         related_name="collection_intents", null=True, blank=True,
         help_text="The customer receipt booked when this collection settled.",
-    )
+    )  # The FK to the booked receipt (if any, when the collection is confirmed).
     metadata = models.JSONField(default=dict, blank=True)
     raw_response = models.JSONField(default=dict, blank=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
