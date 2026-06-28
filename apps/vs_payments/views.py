@@ -50,12 +50,14 @@ def _entity_obj(entity, model, ref, field):
     if ref in (None, ""):
         return None
     qs = model.objects.filter(entity=entity)
+    has_code = any(getattr(f, "name", None) == "code" for f in model._meta.get_fields())
+    obj = None
     if str(ref).isdigit():
         obj = qs.filter(pk=ref).first()
-    elif any(getattr(f, "name", None) == "code" for f in model._meta.get_fields()):
+    # Account (and other) codes are themselves numeric strings, so a digit ref may
+    # be a *code*, not a pk — fall back to a code match before giving up.
+    if obj is None and has_code:
         obj = qs.filter(code__iexact=str(ref)).first()
-    else:
-        obj = None
     if obj is None:
         raise ValidationError({field: f"No {model.__name__.lower()} '{ref}' in this entity."})
     return obj
@@ -280,16 +282,27 @@ class PayoutListCreateView(APIView):
                 raise ValidationError({field: "This field is required."})
         vendor = None
         if body.get("vendor"):
+            from django.db.models import Q
             from vs_procurement.models import Vendor
-            vendor = Vendor.objects.filter(entity=entity, pk=body.get("vendor")).first()
+            raw = str(body.get("vendor"))
+            lookup = Q(code=raw) | Q(pk=raw) if raw.isdigit() else Q(code=raw)
+            vendor = Vendor.objects.filter(entity=entity).filter(lookup).first()
             if vendor is None:
                 raise ValidationError({"vendor": "No such vendor in this entity."})
         source = _entity_obj(entity, Account, body.get("source_account"), "source_account")
+        # Free-form (non-vendor) payouts have no payable to settle, so they need a
+        # debit GL to post against on confirmation; vendor payouts use the AP control.
+        debit = _entity_obj(entity, Account, body.get("debit_account"), "debit_account")
+        if vendor is None and debit is None:
+            raise ValidationError({
+                "debit_account": "A free-form payout (no vendor) needs a debit "
+                "(expense/clearing) account so it can post on settlement.",
+            })
         payout = services.initiate_payout(
             entity=entity, amount=amount, beneficiary_name=body["beneficiary_name"],
             beneficiary_account_number=body["beneficiary_account_number"],
             beneficiary_bank_code=body.get("beneficiary_bank_code", ""), vendor=vendor,
-            source_account=source, provider=body.get("provider"),
+            source_account=source, debit_account=debit, provider=body.get("provider"),
             narration=body.get("narration", ""), wht_amount=int(body.get("wht_amount") or 0),
             metadata=body.get("metadata") or {}, actor_user=request.user,
         )

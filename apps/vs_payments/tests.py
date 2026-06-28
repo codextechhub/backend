@@ -255,6 +255,42 @@ class PayoutTests(_PaymentsFixtureMixin, TestCase):
         self.assertIsNone(payout.vendor_payment_id)
         self.assertFalse(VendorPayment.objects.filter(entity=entity).exists())
 
+    def test_free_form_payout_books_a_bank_disbursement(self):
+        """A vendor-less payout with a debit account books Dr debit / Cr bank — and
+        no VendorPayment — so an ad-hoc disbursement still hits the ledger."""
+        from vs_finance.models import JournalEntry
+        entity, _, _ = self.build()
+        debit = Account.objects.get(entity=entity, code="5300")  # an expense GL
+        bank = resolve_account(entity, "1100", label="bank")  # cash & bank
+        payout = services.initiate_payout(
+            entity=entity, amount=42000, beneficiary_name="Jane Contractor",
+            beneficiary_account_number="0987654321", beneficiary_bank_code="058",
+            debit_account=debit, source_account=bank, narration="Ad-hoc payout",
+        )
+        payout = services.confirm_payout(payout, status=PayoutStatus.PAID)
+        self.assertEqual(payout.status, PayoutStatus.PAID)
+        self.assertIsNone(payout.vendor_payment_id)  # no vendor → no VendorPayment
+        self.assertFalse(VendorPayment.objects.filter(entity=entity).exists())
+        entry = JournalEntry.objects.get(pk=payout.metadata["journal_entry_id"])
+        self.assertEqual(entry.status, "POSTED")
+        lines = {l.account.code: (l.debit, l.credit) for l in entry.lines.all()}
+        self.assertEqual(lines["5300"], (42000, 0))
+        self.assertEqual(lines[bank.code], (0, 42000))
+
+    def test_free_form_payout_without_debit_account_cannot_book(self):
+        """No vendor and no debit account → confirmation must refuse to book (it has
+        nothing to debit), leaving the payout un-settled rather than half-posted."""
+        from .exceptions import PaymentStateError
+        entity, _, _ = self.build()
+        payout = services.initiate_payout(
+            entity=entity, amount=5000, beneficiary_name="Nobody",
+            beneficiary_account_number="0000000000", beneficiary_bank_code="058",
+        )
+        with self.assertRaises(PaymentStateError):
+            services.confirm_payout(payout, status=PayoutStatus.PAID)
+        payout.refresh_from_db()
+        self.assertNotEqual(payout.status, PayoutStatus.PAID)
+
 
 class _FlakyProvider(FakeProvider):
     """A FakeProvider that refuses to transfer a sentinel amount (to fail one item)."""

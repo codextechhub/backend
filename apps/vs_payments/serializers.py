@@ -66,6 +66,10 @@ class VirtualAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
 class PayoutInstructionSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     amount_naira = serializers.SerializerMethodField()
+    # The bank/cash GL the booked payout credits — lets the console recap the
+    # real settlement journal (Dr Accounts payable / Cr this account).
+    source_account_code = serializers.CharField(source="source_account.code", read_only=True, default=None)
+    source_account_name = serializers.CharField(source="source_account.name", read_only=True, default=None)
 
     # FLS: beneficiary bank details are PII — only holders of the sensitive grant
     # see them.
@@ -80,6 +84,7 @@ class PayoutInstructionSerializer(FieldSecurityMixin, serializers.ModelSerialize
             "id", "entity_code", "batch_id", "provider", "reference", "provider_reference",
             "amount", "amount_naira", "status", "beneficiary_name",
             "beneficiary_account_number", "beneficiary_bank_code", "narration",
+            "source_account_code", "source_account_name",
             "vendor_payment_id", "failure_reason", "confirmed_at", "created_at",
         ]
 

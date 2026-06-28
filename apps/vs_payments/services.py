@@ -246,13 +246,18 @@ def _book_receipt(intent, *, actor_user=None):
 
 def initiate_payout(*, entity, amount, beneficiary_name, beneficiary_account_number,
                     beneficiary_bank_code, vendor=None, source_account=None,
-                    provider=None, narration="", currency=None, wht_amount=0,
-                    metadata=None, actor_user=None):
+                    debit_account=None, provider=None, narration="", currency=None,
+                    wht_amount=0, metadata=None, actor_user=None):
     """Create a :class:`PayoutInstruction` and ask the provider to transfer funds out.
 
-    The ledger entry (a vendor payment) is booked only on *confirmation*. If ``vendor``
-    is given it is recorded as a loose reference so confirm can re-resolve and book a
-    ``VendorPayment``; the WHT split (``wht_amount``) flows through to that posting.
+    The ledger entry is booked only on *confirmation*, in one of two shapes:
+
+    * **Vendor payout** — ``vendor`` is recorded as a loose reference so confirm can
+      re-resolve and book a ``VendorPayment`` (Dr the vendor's AP control / Cr bank);
+      the WHT split (``wht_amount``) flows through to that posting.
+    * **Free-form payout** — no vendor, so there is no payable to settle; the operator
+      nominates ``debit_account`` (an expense/clearing GL) and confirm books a direct
+      bank disbursement (Dr that account / Cr the source bank). It is kept on metadata.
     """
     from django.conf import settings
 
@@ -260,6 +265,10 @@ def initiate_payout(*, entity, amount, beneficiary_name, beneficiary_account_num
     client = get_provider(provider_name)
     reference = _new_reference()
     currency = currency or _entity_currency(entity)
+
+    extra_meta = {"wht_amount": int(wht_amount)}
+    if vendor is None and debit_account is not None:
+        extra_meta["debit_account_id"] = debit_account.pk
 
     payout = PayoutInstruction.objects.create(
         entity=entity, provider=provider_name, reference=reference, amount=amount,
@@ -269,7 +278,7 @@ def initiate_payout(*, entity, amount, beneficiary_name, beneficiary_account_num
         narration=narration, status=PayoutStatus.PENDING,
         vendor_source_type="vs_procurement.Vendor" if vendor else "",
         vendor_source_id=str(vendor.pk) if vendor else "",
-        metadata={**(metadata or {}), "wht_amount": int(wht_amount)},
+        metadata={**(metadata or {}), **extra_meta},
         created_by=actor_user,
     )
     return _dispatch_transfer(payout, client=client, metadata=metadata, actor_user=actor_user)
@@ -470,17 +479,26 @@ def confirm_payout(payout, *, status=None, actor_user=None):
         _refresh_batch(payout)
         return payout
 
-    _book_vendor_payment(payout, actor_user=actor_user)
+    # A payout settles either a vendor's payable (Dr AP / Cr bank) or — for a
+    # free-form recipient with no vendor — a direct bank disbursement against the
+    # operator-nominated GL account (Dr that account / Cr bank).
+    if payout.vendor_source_id:
+        _book_vendor_payment(payout, actor_user=actor_user)
+        booked_msg = f"Booked vendor payment for {payout.amount} kobo."
+        booked_meta = {"vendor_payment_id": payout.vendor_payment_id}
+    else:
+        _book_generic_disbursement(payout, actor_user=actor_user)
+        booked_msg = f"Booked bank disbursement for {payout.amount} kobo."
+        booked_meta = {"journal_entry_id": (payout.metadata or {}).get("journal_entry_id")}
     payout.status = PayoutStatus.PAID
     payout.confirmed_at = timezone.now()
     payout.save(update_fields=[
-        "status", "vendor_payment_id", "confirmed_at", "raw_response", "updated_at",
+        "status", "vendor_payment_id", "confirmed_at", "raw_response", "metadata", "updated_at",
     ])
     audit.record(
         action=PaymentAuditAction.PAYOUT_CONFIRMED, entity=payout.entity,
         provider=payout.provider, reference=payout.reference, actor_user=actor_user,
-        message=f"Booked vendor payment for {payout.amount} kobo.",
-        metadata={"vendor_payment_id": payout.vendor_payment_id},
+        message=booked_msg, metadata=booked_meta,
     )
     _refresh_batch(payout)
     return payout
@@ -518,3 +536,44 @@ def _book_vendor_payment(payout, *, actor_user=None):
     )
     post_vendor_payment(vp, actor_user=actor_user)
     payout.vendor_payment_id = vp.pk
+
+
+def _book_generic_disbursement(payout, *, actor_user=None):
+    """Book a free-form (non-vendor) payout as a direct bank disbursement.
+
+    No vendor payable exists, so the operator nominates the GL account to debit
+    (an expense or clearing account) when creating the payout. We post
+    Dr <debit account> / Cr <source bank>; the journal id is kept on metadata so
+    the gateway record links back to the ledger.
+    """
+    from vs_finance.constants import JournalSource
+    from vs_finance.models import Account, JournalEntry, JournalLine
+    from vs_finance.posting import post_journal, resolve_period
+
+    debit_id = (payout.metadata or {}).get("debit_account_id")
+    debit = Account.objects.filter(entity=payout.entity, pk=debit_id).first() if debit_id else None
+    if debit is None:
+        raise PaymentStateError(
+            "Cannot book this payout: a free-form (non-vendor) payout needs a debit "
+            "(expense/clearing) account to post against.",
+        )
+    source = payout.source_account or resolve_account(
+        payout.entity, CASH_BANK_CODE, label="Cash & bank",
+    )
+    today = datetime.date.today()
+    entry = JournalEntry.objects.create(
+        entity=payout.entity, date=today, period=resolve_period(payout.entity, today),
+        source=JournalSource.BANK, currency=payout.currency,
+        narration=payout.narration or f"Payout {payout.reference}",
+        reference=payout.reference, created_by=actor_user,
+    )
+    JournalLine.objects.create(
+        entry=entry, account=debit, debit=payout.amount, credit=0,
+        description=f"Payout: {payout.beneficiary_name}"[:255], line_no=1,
+    )
+    JournalLine.objects.create(
+        entry=entry, account=source, debit=0, credit=payout.amount,
+        description=f"Disbursement {payout.reference}", line_no=2,
+    )
+    post_journal(entry, actor_user=actor_user)
+    payout.metadata = {**(payout.metadata or {}), "journal_entry_id": entry.pk}
