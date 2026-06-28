@@ -163,6 +163,7 @@ class CollectionIntent(TimeStampedModel):
 
     @property
     def is_terminal(self) -> bool:
+        """Whether the collection is in a terminal state (no further updates expected)."""
         from .constants import COLLECTION_TERMINAL
         return self.status in COLLECTION_TERMINAL
 
