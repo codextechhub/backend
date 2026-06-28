@@ -194,7 +194,7 @@ def _money_obj(kobo) -> dict:
     return {"kobo": int(kobo), "naira": format_naira(int(kobo))}
 
 class CustomerListCreateView(_FinanceBase):
-    """GET (list) / POST (create) customers / payers for an entity.
+    """Customers / payers for an entity.
 
     List filters: ``?search=`` (code or name), ``?is_active=true|false``.
 
@@ -235,6 +235,7 @@ class CustomerListCreateView(_FinanceBase):
         entity = resolve_entity(request)
         body = request.data or {}
         code = str(body.get("code", "")).strip().upper()
+        # TODO: code should be created automatically if it wasn't provided.
         if not code:
             raise ValidationError({"code": "A customer code is required."})
         if Customer.objects.filter(entity=entity, code=code).exists():
@@ -264,7 +265,7 @@ class CustomerListCreateView(_FinanceBase):
 
 
 class CustomerDetailView(_FinanceBase):
-    """GET / PATCH one customer (by **code or id**).
+    """Get the details of one customer (by **code or id**).
 
     docstring-name: Customers
     """
@@ -313,6 +314,7 @@ class CustomerDetailView(_FinanceBase):
             for i in invoices if i.balance_due > 0
         ]
 
+        # Transactions: invoices (debit) and receipts (credit), reverse-chronological (newest first).
         transactions = (
             [{"date": i.invoice_date.isoformat(), "type": "INVOICE",
               "reference": i.document_number, "amount": _money_obj(i.total),
@@ -324,7 +326,7 @@ class CustomerDetailView(_FinanceBase):
         transactions.sort(key=lambda t: t["date"], reverse=True)
 
         # Statement: opening balance, then invoices (debit) and receipts (credit),
-        # chronological, with a running balance.
+        # chronological (oldest first), with a running balance.
         events = []
         if customer.opening_balance:
             events.append((datetime.date.min, "Opening balance", customer.opening_balance, 0))
@@ -597,7 +599,10 @@ def _resolve_fee_structure(entity, ref):
 
 
 class FeeStructureListCreateView(_FinanceBase):
-    """GET (list) / POST (create) fee structures for an entity.
+    """Fee structures for an entity. Invoices can only be created from **active** structures. 
+    The structure's ``applies_to`` determines whether it can be used for a customer, a vendor, etc. 
+    Multiple structures can be active at once, but each must have a unique code. Each structure has one 
+    or more fee items (lines) with a description, revenue account, amount and optional tax code.
 
     POST body: ``{code, name, applies_to?, description?, is_active?, items:[{description,
     revenue_account, amount, tax_code?}]}``.
@@ -623,7 +628,7 @@ class FeeStructureListCreateView(_FinanceBase):
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
         return success_response(
             "Fee structures retrieved.",
-            data=FeeStructureSerializer(qs.order_by("code"), many=True).data,
+            data=FeeStructureSerializer(qs.order_by("-created_at", "code"), many=True).data,
         )
 
     @transaction.atomic
@@ -695,7 +700,7 @@ class FeeStructureDetailView(_FinanceBase):
 
 
 class FeeStructureDuplicateView(_FinanceBase):
-    """POST — clone a fee structure (code + lines) into a new **draft** structure.
+    """Clone a fee structure (code + lines) into a new **draft** structure.
 
     Body: ``{code, name?}`` — a new unique code is required; the clone copies
     applies_to, description and every line (incl. fee code / optional flag) and is

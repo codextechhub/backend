@@ -517,9 +517,8 @@ class JournalEntryDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
         )
 
 
-class InvoiceListView(EntityScopedListMixin, generics.ListAPIView):
-    """GET /finance/invoices/?entity= — sales invoices for the entity.
-    POST /finance/invoices/?entity= — raise a manual invoice (and post it).
+class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
+    """Sales invoices for the entity. Also, raise a manual invoice (and post it).
 
     docstring-name: Customer invoices
     """
@@ -637,7 +636,7 @@ def _invoice_bucket(qs, bucket):
 
 
 class InvoiceSummaryView(APIView):
-    """GET /finance/invoices/summary/?entity= — AR KPIs, status counts, totals.
+    """AR KPIs, status counts, totals.
 
     Powers the Student-Invoices KPI cards (total invoiced/collected, collection
     rate, overdue balance + a 12-month series for the sparklines), the status tabs

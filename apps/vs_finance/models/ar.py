@@ -109,8 +109,8 @@ class Invoice(FinanceDocument):
     source = models.CharField(
         max_length=16, choices=InvoiceSource.choices, default=InvoiceSource.MANUAL,
     )
-    reference = models.CharField(max_length=64, blank=True, default="")
-    narration = models.CharField(max_length=255, blank=True, default="")
+    reference = models.CharField(max_length=64, blank=True, default="")  # e.g. a fee structure code, a payment plan code, or an external reference
+    narration = models.CharField(max_length=255, blank=True, default="")  # e.g. "Tuition for Term 1, 2024"
 
     subtotal = MoneyField(help_text="Net of tax, in kobo.")
     tax_total = MoneyField(help_text="Total tax, in kobo.")
@@ -307,7 +307,7 @@ class FeeStructure(TimeStampedModel):
     per selected customer from this structure's :class:`FeeItem` lines — the only place
     billing turns a template into real AR. ``applies_to`` classifies the counterparty
     type the template charges (customer / vendor / staff / general); this is a generic
-    platform, so a structure is not tied to any school term.
+    platform, so a structure is not tied to any entity type.
     """
 
     entity = models.ForeignKey(

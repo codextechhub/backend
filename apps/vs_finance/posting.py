@@ -125,7 +125,9 @@ def resolve_period(entity, date):
 
 
 def _apply_to_balances(entry, *, sign: int) -> None:
-    """Add (sign=+1) or remove (sign=-1) an entry's line amounts to per-period balances.
+    """Add (sign=+1) or remove (sign=-1) an entry's line amounts to per-period balances. 
+    So the journal lines are the source of truth, and the denormalised balances are kept in step.
+    The ``sign`` argument allows this to be used for both posting and unposting (reversing) journals.
 
     Maintains one :class:`AccountBalance` row per ``(account, period)``, the fast
     aggregate behind trial balances. Truth still lives in the immutable lines; this is
@@ -133,7 +135,7 @@ def _apply_to_balances(entry, *, sign: int) -> None:
     """
     from .models import AccountBalance
 
-    period = entry.period
+    period = entry.period  # already guarded to exist and be open
     for line in entry.lines.select_related("account").all():
         balance, _ = AccountBalance.objects.select_for_update().get_or_create(
             account=line.account, period=period,
