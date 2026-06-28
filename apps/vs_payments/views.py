@@ -280,29 +280,23 @@ class PayoutListCreateView(APIView):
         for field in ("beneficiary_name", "beneficiary_account_number"):
             if not body.get(field):
                 raise ValidationError({field: "This field is required."})
-        vendor = None
-        if body.get("vendor"):
-            from django.db.models import Q
-            from vs_procurement.models import Vendor
-            raw = str(body.get("vendor"))
-            lookup = Q(code=raw) | Q(pk=raw) if raw.isdigit() else Q(code=raw)
-            vendor = Vendor.objects.filter(entity=entity).filter(lookup).first()
-            if vendor is None:
-                raise ValidationError({"vendor": "No such vendor in this entity."})
+        # A payout settles a vendor's payable, so a vendor is required (it is what
+        # confirmation books — Dr the vendor's AP control / Cr bank).
+        if not body.get("vendor"):
+            raise ValidationError({"vendor": "A payout must be linked to a vendor."})
+        from django.db.models import Q
+        from vs_procurement.models import Vendor
+        raw = str(body.get("vendor"))
+        lookup = Q(code=raw) | Q(pk=raw) if raw.isdigit() else Q(code=raw)
+        vendor = Vendor.objects.filter(entity=entity).filter(lookup).first()
+        if vendor is None:
+            raise ValidationError({"vendor": "No such vendor in this entity."})
         source = _entity_obj(entity, Account, body.get("source_account"), "source_account")
-        # Free-form (non-vendor) payouts have no payable to settle, so they need a
-        # debit GL to post against on confirmation; vendor payouts use the AP control.
-        debit = _entity_obj(entity, Account, body.get("debit_account"), "debit_account")
-        if vendor is None and debit is None:
-            raise ValidationError({
-                "debit_account": "A free-form payout (no vendor) needs a debit "
-                "(expense/clearing) account so it can post on settlement.",
-            })
         payout = services.initiate_payout(
             entity=entity, amount=amount, beneficiary_name=body["beneficiary_name"],
             beneficiary_account_number=body["beneficiary_account_number"],
             beneficiary_bank_code=body.get("beneficiary_bank_code", ""), vendor=vendor,
-            source_account=source, debit_account=debit, provider=body.get("provider"),
+            source_account=source, provider=body.get("provider"),
             narration=body.get("narration", ""), wht_amount=int(body.get("wht_amount") or 0),
             metadata=body.get("metadata") or {}, actor_user=request.user,
         )
