@@ -18,6 +18,9 @@ from .models import (
 class CollectionIntentSerializer(serializers.ModelSerializer):
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     customer_code = serializers.CharField(source="customer.code", read_only=True, default=None)
+    customer_name = serializers.CharField(source="customer.name", read_only=True, default=None)
+    deposit_account_code = serializers.CharField(source="deposit_account.code", read_only=True, default=None)
+    deposit_account_name = serializers.CharField(source="deposit_account.name", read_only=True, default=None)
     amount_naira = serializers.SerializerMethodField()
     payment_id = serializers.IntegerField(read_only=True)
 
@@ -25,7 +28,8 @@ class CollectionIntentSerializer(serializers.ModelSerializer):
         model = CollectionIntent
         fields = [
             "id", "entity_code", "provider", "channel", "reference", "provider_reference",
-            "amount", "amount_naira", "status", "customer_code", "invoice_id",
+            "amount", "amount_naira", "status", "customer_code", "customer_name", "invoice_id",
+            "deposit_account_code", "deposit_account_name",
             "payer_email", "payer_name", "narration", "checkout_url", "payment_id",
             "confirmed_at", "created_at",
         ]
