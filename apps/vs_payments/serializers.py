@@ -66,6 +66,9 @@ class VirtualAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
 class PayoutInstructionSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     amount_naira = serializers.SerializerMethodField()
+    # WHT withheld on this line (carried on metadata) — net = amount − wht, and the
+    # settlement journal credits a WHT payable for it.
+    wht_amount = serializers.SerializerMethodField()
     # The bank/cash GL the booked payout credits — lets the console recap the
     # real settlement journal (Dr Accounts payable / Cr this account).
     source_account_code = serializers.CharField(source="source_account.code", read_only=True, default=None)
@@ -84,12 +87,15 @@ class PayoutInstructionSerializer(FieldSecurityMixin, serializers.ModelSerialize
             "id", "entity_code", "batch_id", "provider", "reference", "provider_reference",
             "amount", "amount_naira", "status", "beneficiary_name",
             "beneficiary_account_number", "beneficiary_bank_code", "narration",
-            "source_account_code", "source_account_name",
+            "source_account_code", "source_account_name", "wht_amount",
             "vendor_payment_id", "failure_reason", "confirmed_at", "created_at",
         ]
 
     def get_amount_naira(self, obj):
         return format_naira(obj.amount)
+
+    def get_wht_amount(self, obj):
+        return int((obj.metadata or {}).get("wht_amount", 0))
 
 
 class PayoutBatchSerializer(serializers.ModelSerializer):

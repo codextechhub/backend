@@ -528,6 +528,28 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(data["total_amount"], 33000)
         self.assertEqual(len(data["instructions"]), 2)
 
+    def test_batch_endpoint_resolves_vendor_by_code_and_requires_one(self):
+        entity, _, vendor = self.build()
+        # vendor by CODE (the picker emits codes) + per-line WHT
+        ok = self.client.post(
+            f"/v1/payments/payout-batches/?entity={entity.code}",
+            {"title": "By code", "items": [
+                {"amount": 40000, "wht_amount": 4000, "beneficiary_name": "Supplier Ltd",
+                 "beneficiary_account_number": "0123456789", "vendor": vendor.code},
+            ]},
+            format="json",
+        )
+        self.assertEqual(ok.status_code, 201, ok.content)
+        self.assertEqual(ok.json()["data"]["instructions"][0]["wht_amount"], 4000)
+        # a line with no vendor is rejected (it could never book)
+        bad = self.client.post(
+            f"/v1/payments/payout-batches/?entity={entity.code}",
+            {"items": [{"amount": 40000, "beneficiary_name": "X",
+                        "beneficiary_account_number": "0123456789"}]},
+            format="json",
+        )
+        self.assertEqual(bad.status_code, 400, bad.content)
+
     def test_settlement_reconciliation_endpoint(self):
         from vs_finance.models import BankAccount, BankStatementLine
 

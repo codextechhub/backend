@@ -346,12 +346,17 @@ class PayoutBatchListCreateView(APIView):
             for field in ("beneficiary_name", "beneficiary_account_number"):
                 if not raw.get(field):
                     raise ValidationError({f"items[{idx}].{field}": "This field is required."})
-            vendor = None
-            if raw.get("vendor"):
-                from vs_procurement.models import Vendor
-                vendor = Vendor.objects.filter(entity=entity, pk=raw.get("vendor")).first()
-                if vendor is None:
-                    raise ValidationError({f"items[{idx}].vendor": "No such vendor in this entity."})
+            # Each line settles a vendor's payable on confirmation, so a vendor is
+            # required (resolved by code or id — the picker emits codes).
+            if not raw.get("vendor"):
+                raise ValidationError({f"items[{idx}].vendor": "Each line must be linked to a vendor."})
+            from django.db.models import Q
+            from vs_procurement.models import Vendor
+            vref = str(raw.get("vendor"))
+            vlookup = Q(code=vref) | Q(pk=vref) if vref.isdigit() else Q(code=vref)
+            vendor = Vendor.objects.filter(entity=entity).filter(vlookup).first()
+            if vendor is None:
+                raise ValidationError({f"items[{idx}].vendor": "No such vendor in this entity."})
             items.append({
                 "amount": amount, "beneficiary_name": raw["beneficiary_name"],
                 "beneficiary_account_number": raw["beneficiary_account_number"],
