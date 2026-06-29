@@ -41,10 +41,19 @@ class SettlementRow:
     matched_bank_line_id: int | None = None
     match_basis: str = ""           # "reference" | "amount" | ""
     settled: bool = False
+    settled_amount: int | None = None    # the matched bank line's signed amount (net of fees)
+    settlement_reference: str = ""       # the matched bank line's reference
 
     @property
     def amount_naira(self) -> str:
         return format_naira(self.amount)
+
+    @property
+    def fee_amount(self) -> int:
+        """Gross (gateway) minus net (bank) — the PSP fee, in absolute kobo."""
+        if self.settled_amount is None:
+            return 0
+        return abs(self.amount) - abs(self.settled_amount)
 
 
 @dataclass
@@ -182,6 +191,8 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
                 row.matched_bank_line_id = cand.id
                 row.match_basis = "reference"
                 row.settled = True
+                row.settled_amount = int(cand.amount)
+                row.settlement_reference = cand.reference
                 break
 
     # Pass 2: exact signed-amount match for anything still open.
@@ -193,6 +204,8 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
             row.matched_bank_line_id = cand.id
             row.match_basis = "amount"
             row.settled = True
+            row.settled_amount = int(cand.amount)
+            row.settlement_reference = cand.reference
 
     unmatched = [
         UnmatchedBankLine(

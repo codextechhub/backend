@@ -369,6 +369,23 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(recon.rows[0].match_basis, "reference")
         self.assertTrue(recon.is_reconciled)
 
+    def test_matched_row_carries_net_and_fee_from_the_bank_line(self):
+        """A collection booked at gross that settles to the bank net-of-fee exposes the
+        PSP fee (gross − net) and the bank settlement reference on the matched row."""
+        entity, customer, _ = self.build()
+        intent = services.initiate_collection(entity=entity, amount=40000, customer=customer)
+        services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+        intent.refresh_from_db()
+        ba = self._bank_account(entity)
+        # Bank received 39,100 net of a 900 PSP fee, under a settlement reference.
+        self._bank_line(ba, amount=39100, reference=intent.reference, description="STL-PSK-0001")
+
+        row = reconciliation.settlement_reconciliation(entity).rows[0]
+        self.assertEqual(row.amount, 40000)         # gross (gateway)
+        self.assertEqual(row.settled_amount, 39100)  # net (bank)
+        self.assertEqual(row.fee_amount, 900)        # PSP fee
+        self.assertEqual(row.settlement_reference, intent.reference)
+
     def test_amount_fallback_match_for_a_payout(self):
         entity, _, vendor = self.build()
         payout = services.initiate_payout(
