@@ -1,18 +1,6 @@
 ## Undone
-- Remove the rotted pop_db_insti management command (imports SchoolLifecycleEvent/ProvisioningRecord etc. that no longer exist) — superseded by seed_dev_data (2026-06-12).
 - Cost centers never reach the General Ledger (2026-06-29): every sub-ledger posting (post_invoice receivables.py:134/151, expense claims expenses.py:95/111, payroll) aggregates lines by account and creates GL JournalLines WITHOUT cost_center; direct-entries can't set one either; only reverse_journal copies it. Net effect: JournalLine.cost_center is effectively always empty, AccountDetailView shows an always-blank cost_center column, and "spend by cost center" off the GL doesn't work. Decide: either propagate cost_center through postings (don't aggregate across differing cost centers) or stop exposing the empty field. See docs/finance/finance_cost_centers.md §6/§8.
 
-## Deferred from the deep-review fixes (2026-06-11; B-numbers from ~/Downloads/XVision-Backend-Deep-Review.docx)
-- B7 follow-ups: set PYTHON_VERSION=3.11.9 on the Render worker (built on 3.14 — works but drifts from the backend) and confirm the backend flip (REDIS_URL + CELERY_EAGER=false) + password-reset end-to-end test.
-
-
-
-
-## AR cycle (vs_finance receivables)
-# - School-fee billing adapter (fee categories + structures → emit generic invoices, behind a module flag)  [SKIP — user deferred]
-
-## Payments (vs_payments)
-# - Open-banking statement feed (Mono/Okra) — optional, automates bank rec  [SKIP — user deferred "skip for now"]
 
 ## Done
 
