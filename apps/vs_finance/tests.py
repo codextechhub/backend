@@ -1335,6 +1335,62 @@ class ExpenseClaimTests(_Phase4FixtureMixin, TestCase):
             post_expense_claim(claim)
 
 
+class CostCenterPropagationTests(_Phase4FixtureMixin, _ARFixtureMixin, TestCase):
+    """Cost centres set on document lines must survive into the General Ledger.
+
+    Regression for the gap where every sub-ledger posting aggregated lines by account
+    only and dropped the cost centre. P&L lines (revenue/expense) now split by
+    (account, cost centre); balance-sheet control and tax lines stay aggregated.
+    """
+
+    def test_invoice_revenue_splits_by_cost_centre_in_gl(self):
+        from .models import CostCenter
+
+        entity, period, customer, _ = self.build_ar()
+        pri = CostCenter.objects.create(entity=entity, code="PRI", name="Primary")
+        sec = CostCenter.objects.create(entity=entity, code="SEC", name="Secondary")
+        inv = Invoice.objects.create(
+            entity=entity, customer=customer,
+            invoice_date=datetime.date(2026, 1, 10), due_date=datetime.date(2026, 1, 25),
+        )
+        rev = Account.objects.get(entity=entity, code="4100")
+        # Same revenue account, two cost centres → two GL lines, not one merged line.
+        InvoiceLine.objects.create(invoice=inv, revenue_account=rev, quantity=1,
+                                   unit_price=100000, cost_center=pri, line_no=1)
+        InvoiceLine.objects.create(invoice=inv, revenue_account=rev, quantity=1,
+                                   unit_price=50000, cost_center=sec, line_no=2)
+        post_invoice(inv)
+        inv.refresh_from_db()
+
+        rev_lines = inv.journal.lines.filter(account__code="4100")
+        by_cc = {ln.cost_center.code: ln.credit for ln in rev_lines}
+        self.assertEqual(by_cc, {"PRI": 100000, "SEC": 50000})
+        # AR control line stays unallocated (balance-sheet account).
+        ar_line = inv.journal.lines.get(account__code="1200")
+        self.assertIsNone(ar_line.cost_center_id)
+        debit, credit = inv.journal.totals()
+        self.assertEqual(debit, credit)
+
+    def test_expense_claim_expense_line_carries_cost_centre_to_gl(self):
+        from .models import CostCenter
+
+        entity, _, _ = self.build_books()
+        pri = CostCenter.objects.create(entity=entity, code="PRI", name="Primary")
+        claim = ExpenseClaim.objects.create(
+            entity=entity, claimant_name="Jane Staff",
+            claim_date=datetime.date(2026, 1, 10), title="Trip",
+        )
+        ExpenseClaimLine.objects.create(
+            claim=claim, expense_account=Account.objects.get(entity=entity, code="5500"),
+            quantity=1, unit_price=100000, cost_center=pri, line_no=1,
+        )
+        post_expense_claim(claim)
+        claim.refresh_from_db()
+        exp_line = claim.journal.lines.get(account__code="5500")
+        self.assertEqual(exp_line.cost_center.code, "PRI")
+        self.assertEqual(exp_line.debit, 100000)
+
+
 class PettyCashTests(_Phase4FixtureMixin, TestCase):
     def _make_fund(self, entity, *, name="Front Desk", float_amount=5000000, gl_code="1110"):
         return PettyCashFund.objects.create(
@@ -1710,6 +1766,29 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(debit, credit)
         self.assertEqual(run.journal.lines.get(account__code="5200").debit, 500000)
         self.assertEqual(run.journal.lines.get(account__code="2330").credit, 425000)
+
+    def test_accrual_splits_gross_salary_by_cost_centre(self):
+        from .models import CostCenter
+
+        entity, _, _ = self.build_books()
+        pri = CostCenter.objects.create(entity=entity, code="PRI", name="Primary")
+        sec = CostCenter.objects.create(entity=entity, code="SEC", name="Secondary")
+        run = PayrollRun.objects.create(
+            entity=entity, pay_date=datetime.date(2026, 1, 28), period_label="Jan 2026",
+        )
+        PayrollLine.objects.create(run=run, employee_name="Ada", gross_amount=300000,
+                                   paye_amount=30000, pension_amount=15000, cost_center=pri, line_no=1)
+        PayrollLine.objects.create(run=run, employee_name="Bola", gross_amount=200000,
+                                   paye_amount=20000, pension_amount=10000, cost_center=sec, line_no=2)
+        post_payroll(run)
+        run.refresh_from_db()
+        # Gross salary expense (5200) splits by cost centre; liabilities stay aggregated.
+        salary_lines = run.journal.lines.filter(account__code="5200")
+        by_cc = {ln.cost_center.code: ln.debit for ln in salary_lines}
+        self.assertEqual(by_cc, {"PRI": 300000, "SEC": 200000})
+        self.assertIsNone(run.journal.lines.get(account__code="2330").cost_center_id)
+        debit, credit = run.journal.totals()
+        self.assertEqual(debit, credit)
 
     def test_disburse_clears_net_payable(self):
         entity, _, _ = self.build_books()
@@ -3337,7 +3416,7 @@ class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
 
     def _post(self, entity, user, body):
         from rest_framework.test import APIRequestFactory, force_authenticate
-        from vs_finance.views import InvoiceListView
+        from vs_finance.views import InvoiceListCreateView as InvoiceListView
         req = APIRequestFactory().post(
             f"/v1/finance/invoices/?entity={entity.code}", body, format="json")
         force_authenticate(req, user=user)

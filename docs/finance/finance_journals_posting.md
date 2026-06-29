@@ -147,9 +147,9 @@ on the record even though the posting itself rolled back.
 
 **Reversal** (`reverse_journal`, `posting.py:229`) carries **everything** to the
 mirror line — account, swapped debit/credit, `cost_center`, `dimensions`,
-`line_no` (`posting.py:265`) — so it is a true inverse including analytics. (This
-is the opposite of `post_invoice`, which *drops* cost centers — see the
-`finance_cost_centers` slice.) The reversal posts with `source=SYSTEM` into the
+`line_no` (`posting.py:265`) — so it is a true inverse including analytics. Sub-
+ledger postings likewise carry `cost_center` onto their P&L lines (see the
+`finance_cost_centers` slice §6). The reversal posts with `source=SYSTEM` into the
 original's period unless a `date` is given.
 
 ## 7. Worked example

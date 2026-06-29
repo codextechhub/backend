@@ -87,13 +87,19 @@ def _post_expense_claim_atomic(claim, *, actor_user=None):
     )
 
     line_no = 0
-    expense_by_account: dict[int, int] = defaultdict(int)
-    expense_objs: dict[int, object] = {}
+    # Dr expense, grouped by (account, cost centre) so the cost-centre split survives into
+    # the GL. Expense is P&L, so it carries the analytics; the input-tax and reimbursement
+    # liability lines (below) do not.
+    expense_by_key: dict[tuple[int, int | None], int] = defaultdict(int)
+    expense_objs: dict[tuple[int, int | None], tuple] = {}
     tax_by_account: dict[int, int] = defaultdict(int)
     tax_objs: dict[int, object] = {}
-    for line in claim.lines.select_related("expense_account", "tax_code__paid_account"):
-        expense_by_account[line.expense_account_id] += line.net_amount
-        expense_objs[line.expense_account_id] = line.expense_account
+    for line in claim.lines.select_related(
+        "expense_account", "tax_code__paid_account", "cost_center",
+    ):
+        key = (line.expense_account_id, line.cost_center_id)
+        expense_by_key[key] += line.net_amount
+        expense_objs[key] = (line.expense_account, line.cost_center)
         if line.tax_amount:
             tax_acc = line.tax_code.paid_account if line.tax_code_id else None
             if tax_acc is None:
@@ -104,13 +110,14 @@ def _post_expense_claim_atomic(claim, *, actor_user=None):
             tax_by_account[tax_acc.id] += line.tax_amount
             tax_objs[tax_acc.id] = tax_acc
 
-    for acc_id, amount in expense_by_account.items():
+    for (acc_id, cc_id), amount in expense_by_key.items():
         if amount == 0:
             continue
         line_no += 1
+        expense_account, cost_center = expense_objs[(acc_id, cc_id)]
         JournalLine.objects.create(
-            entry=entry, account=expense_objs[acc_id], debit=amount, credit=0,
-            description="Expense", line_no=line_no,
+            entry=entry, account=expense_account, debit=amount, credit=0,
+            description="Expense", cost_center=cost_center, line_no=line_no,
         )
     for acc_id, amount in tax_by_account.items():
         line_no += 1

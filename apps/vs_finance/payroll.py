@@ -15,6 +15,8 @@ pension`` per employee; all amounts are integer kobo.
 """
 from __future__ import annotations
 
+from collections import defaultdict
+
 from django.db import transaction
 
 from .accounts import resolve_account
@@ -195,11 +197,25 @@ def _post_payroll_atomic(run, *, actor_user=None):
         narration=run.narration or f"Payroll {run.period_label or run.document_number or ''}".strip(),
         created_by=actor_user,
     )
-    line_no = 1
-    JournalLine.objects.create(
-        entry=entry, account=salary, debit=run.gross_total, credit=0,
-        description="Gross salaries", line_no=line_no,
-    )
+    # Dr salary expense (gross), split by cost centre so the GL slices by department.
+    # Salary is P&L, so it carries the cost centre; the PAYE/pension/net liabilities
+    # below are balance-sheet control accounts and stay aggregated. Σ(gross by cost
+    # centre) == run.gross_total (both sum the lines' gross_amount), so it stays balanced.
+    gross_by_cc: dict[int | None, int] = defaultdict(int)
+    cc_objs: dict[int | None, object] = {}
+    for line in run.lines.select_related("cost_center"):
+        gross_by_cc[line.cost_center_id] += line.gross_amount
+        cc_objs[line.cost_center_id] = line.cost_center
+
+    line_no = 0
+    for cc_id, amount in gross_by_cc.items():
+        if amount == 0:
+            continue
+        line_no += 1
+        JournalLine.objects.create(
+            entry=entry, account=salary, debit=amount, credit=0,
+            description="Gross salaries", cost_center=cc_objs[cc_id], line_no=line_no,
+        )
     for account, amount, label in (
         (paye, run.paye_total, "PAYE payable"),
         (pension, run.pension_total, "Pension payable"),

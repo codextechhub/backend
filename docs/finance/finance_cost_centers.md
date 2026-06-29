@@ -23,20 +23,18 @@ Route covered (mounted at `/v1/finance/`): `cost-centers/`.
   `cost_center` FK: `InvoiceLine`, `ExpenseClaimLine`, `PayrollLine`,
   `BudgetLine`, and the GL `JournalLine` itself.
 
-**This does NOT (corrections to the old draft):**
-- ❌ **It is NOT a replacement for the chart of accounts.** (This part of the old
-  draft was right — keep it.)
-- ❌ **Invoice cost centers do NOT survive posting.** The old draft claimed "the
-  generated journal line keeps the same cost center". It does not — see §6.
-  `post_invoice` aggregates invoice lines **by `revenue_account` only** and
-  creates revenue GL lines with **no** cost center (`receivables.py:134`,
-  `:151`). Two invoice lines on the same account but different cost centers are
-  merged and the split is discarded.
-- ❌ **More broadly, NO sub-ledger posting propagates the cost center to the
-  General Ledger.** Expense claims, payroll, depreciation and adjustments all
-  aggregate by account and drop the cost center too (§6). So a cost center set on
-  a document is **document-level analytics only** today; it does not slice the
-  posted ledger.
+**This does NOT:**
+- ❌ **It is NOT a replacement for the chart of accounts.** Keep accounts generic
+  and split them with cost centers, not by minting per-department accounts.
+
+> **History — what the old draft got wrong, and the fix.** The earlier write-up
+> claimed an invoice's cost center "keeps the same cost center" on the posted
+> journal. At the time that was *false in the other direction*: `post_invoice`
+> (and every other sub-ledger posting) aggregated lines **by account only** and
+> **dropped** the cost center, so cost centers never reached the GL at all. That
+> gap has since been **fixed** — P&L lines now split by `(account, cost center)`
+> and carry the tag into the ledger (§6). Balance-sheet control and tax lines
+> still (correctly) do not.
 
 ## 2. Domain model
 
@@ -78,35 +76,36 @@ only via the upsert POST.
 
 ## 5. Calculations
 
-None. A cost center carries no amount; it's a tag. The arithmetic that *would*
-slice by cost center lives in reports — but those read GL lines, which don't carry
-one (§6), so cost-center P&L slicing is not currently functional through posting.
+None. A cost center carries no amount; it's a tag. The arithmetic that slices by
+cost center lives in reports, which read GL lines — and those GL lines now carry
+the cost center (§6), so cost-center P&L slicing works.
 
-## 6. What posting does to the ledger  ← the corrected core
+## 6. What posting does to the ledger  ← the core behavior (now fixed)
 
-**Cost centers attached to documents are dropped when the document posts to the
-GL.** Every sub-ledger posting service aggregates lines by *account* and creates
-GL `JournalLine`s **without** a `cost_center`:
+**P&L lines carry the cost center into the GL; balance-sheet control and tax lines
+do not.** Each sub-ledger posting groups its P&L lines by `(account, cost_center)`
+and emits one GL line per group, passing `cost_center=` through. Two source lines
+on the same account but different cost centers produce **two** GL lines, so the
+split survives.
 
-| Posting | Aggregation key | Carries cost center to GL? | Evidence |
-|---|---|---|---|
-| Invoice (`post_invoice`) | `revenue_account_id` (+ tax account) | **No** | `receivables.py:134`, `:151` |
-| Expense claim | `expense_account_id` (+ tax) | **No** | `expenses.py:95`, `:111` |
-| Payroll run | control accounts | **No** (cost center stays on `PayrollLine` only) | `payroll.py:125` sets it on the *sub-ledger* line, not the GL line |
-| Reversal (`reverse_journal`) | mirrors original lines | **Yes — copies `cost_center`** | `posting.py:272` |
+| Posting | P&L line | Grouping key | Carries cost center to GL? | Evidence |
+|---|---|---|---|---|
+| Invoice (`post_invoice`) | revenue (Cr) | `(revenue_account, cost_center)` | **Yes** | `receivables.py:133` |
+| Expense claim (`post_expense_claim`) | expense (Dr) | `(expense_account, cost_center)` | **Yes** | `expenses.py:89` |
+| Petty-cash voucher | expense (Dr) | `(expense_account, cost_center)` | **Yes** | `petty_cash.py:170` |
+| Payroll accrual (`post_payroll`) | gross salary (Dr) | `cost_center` (single salary account) | **Yes** | `payroll.py:198` |
+| Reversal (`reverse_journal`) | mirrors original | per original line | **Yes — copies it** | `posting.py:272` |
 
-The **only** code path in `vs_finance` that writes `cost_center` onto a GL
-`JournalLine` is `reverse_journal` (`posting.py:272`), and it merely copies
-whatever the original line had. Since no forward posting sets one, in practice GL
-lines have no cost center. `direct-entries` can't set one either — its line
-serializer accepts only `account/debit/credit` (`serializers.py:263`).
+What stays **un**-allocated (by design — these are not P&L analytics): the AR/AP
+control line, output/input **tax** liability lines, the accrued-reimbursement
+liability, and the PAYE/pension/net-wages payables. `direct-entries` still don't
+take a cost center — their line serializer accepts only `account/debit/credit`
+(`serializers.py:263`); set one via a manual journal if needed.
 
-**Consequence:** `AccountDetailView` activity shows a `cost_center` column
-(`views.py:325`), but it will be empty for posted activity. Any "spend by cost
-center" report built off journal lines returns nothing meaningful today. Where
-cost centers *are* genuinely used is the **budget** sub-system (BudgetLine carries
-one and budget variance/heatmap read budgeted vs actual at the document level) and
-as descriptive metadata on the source documents themselves.
+**Consequence:** the `cost_center` column on `AccountDetailView` activity
+(`views.py:325`) and any "spend by cost center" report off journal lines now
+returns real values for postings made after the fix. (Journals posted *before* the
+fix have no cost center on their GL lines — historical only.)
 
 ## 7. Worked examples (corrected)
 
@@ -149,15 +148,16 @@ recorded a **0-kobo** line. Same drop on posting applies.
 
 ## 8. Gotchas / known limitations
 
-- 🔴 **Cost centers don't reach the General Ledger** (§6). Document-level only.
-  "Spend by cost center" off the GL doesn't work. This is an architectural gap,
-  not a doc nuance — flagged for the backlog.
-- The GL `JournalLine` and `AccountDetailView` expose a `cost_center` field that
-  is effectively always empty for posted activity → misleading to readers/clients.
+- ✅ **Cost centers reach the GL as of the §6 fix** — but only on the **P&L**
+  lines. Don't expect them on AR/AP/tax/payable lines (intentional).
+- **Pre-fix history is unallocated.** Journals posted before the fix have no cost
+  center on their GL lines; reports spanning that boundary will show a gap.
 - POST is an **upsert**, not strict create — a typo'd re-POST silently mutates an
   existing center rather than 409-ing.
 - `is_active=false` is a soft filter only; nothing stops a service resolving an
   inactive center if a caller passes its code.
+- `direct-entries` can't tag a cost center (serializer limitation) — a possible
+  follow-up if manual P&L entries need slicing.
 
 ## 9. Permissions & tenant isolation
 
@@ -177,8 +177,8 @@ recorded a **0-kobo** line. Same drop on posting applies.
 | `views_ops/masterdata.py` | `CostCenterListCreateView` (upsert) |
 | `views_ops/base.py` | `_resolve_cost_center` (code-then-pk, entity-scoped) |
 | `serializers.py` | `CostCenterSerializer` |
-| `receivables.py` / `expenses.py` / `payroll.py` | postings that **drop** the cost center at the GL |
-| `posting.py` | `reverse_journal` — only path that carries it onto a GL line |
+| `receivables.py` / `expenses.py` / `petty_cash.py` / `payroll.py` | postings that **split P&L lines** by `(account, cost_center)` and carry it to the GL |
+| `posting.py` | `reverse_journal` — mirrors the cost center on a reversal |
 
 ## 11. Test coverage & gaps
 
@@ -187,8 +187,9 @@ recorded a **0-kobo** line. Same drop on posting applies.
   in entity B → rejected.
 - Upsert semantics: second POST of same `code` returns `200` and updates.
 - `parent` resolves by code and by pk.
-- **Regression lock for the corrected behavior:** a test asserting that after
-  `post_invoice` the revenue GL line's `cost_center` is `None` (documents the
-  current drop) — and a separate failing/xfail test if/when the gap is fixed to
-  propagate it.
+- **Regression locks for the §6 fix** (in `CostCenterPropagationTests` +
+  `PayrollTests`): invoice revenue splits by cost center into two GL lines while
+  the AR control line stays unallocated; expense-claim and petty-cash expense
+  lines carry it; payroll gross salary splits by cost center while PAYE/pension/
+  net payables stay aggregated; every journal still balances.
 - Empty-list shape on a fresh entity.

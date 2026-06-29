@@ -130,14 +130,19 @@ def _post_invoice_atomic(invoice, *, actor_user=None):
         entry=entry, account=ar_account, debit=invoice.total, credit=0,
         description=f"AR: {customer.code}", line_no=line_no,
     )
-    # Cr revenue, grouped by account so the journal is tidy.
-    revenue_by_account: dict[int, int] = defaultdict(int)
-    revenue_objs: dict[int, object] = {}
+    # Cr revenue, grouped by (account, cost centre) so the journal stays tidy while the
+    # cost-centre split survives into the GL. Revenue is P&L, so it carries the analytics;
+    # the AR control (above) and the output-tax liability (below) do not.
+    revenue_by_key: dict[tuple[int, int | None], int] = defaultdict(int)
+    revenue_objs: dict[tuple[int, int | None], tuple] = {}
     tax_by_account: dict[int, int] = defaultdict(int)
     tax_objs: dict[int, object] = {}
-    for line in invoice.lines.select_related("revenue_account", "tax_code__collected_account"):
-        revenue_by_account[line.revenue_account_id] += line.net_amount
-        revenue_objs[line.revenue_account_id] = line.revenue_account
+    for line in invoice.lines.select_related(
+        "revenue_account", "tax_code__collected_account", "cost_center",
+    ):
+        key = (line.revenue_account_id, line.cost_center_id)
+        revenue_by_key[key] += line.net_amount
+        revenue_objs[key] = (line.revenue_account, line.cost_center)
         if line.tax_amount:
             tax_acc = line.tax_code.collected_account if line.tax_code_id else None
             if tax_acc is None:
@@ -148,13 +153,14 @@ def _post_invoice_atomic(invoice, *, actor_user=None):
             tax_by_account[tax_acc.id] += line.tax_amount
             tax_objs[tax_acc.id] = tax_acc
 
-    for acc_id, amount in revenue_by_account.items():
+    for (acc_id, cc_id), amount in revenue_by_key.items():
         if amount == 0:
             continue
         line_no += 1
+        revenue_account, cost_center = revenue_objs[(acc_id, cc_id)]
         JournalLine.objects.create(
-            entry=entry, account=revenue_objs[acc_id], debit=0, credit=amount,
-            description="Revenue", line_no=line_no,
+            entry=entry, account=revenue_account, debit=0, credit=amount,
+            description="Revenue", cost_center=cost_center, line_no=line_no,
         )
     for acc_id, amount in tax_by_account.items():
         line_no += 1
