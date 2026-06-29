@@ -98,9 +98,10 @@ split survives.
 
 What stays **un**-allocated (by design — these are not P&L analytics): the AR/AP
 control line, output/input **tax** liability lines, the accrued-reimbursement
-liability, and the PAYE/pension/net-wages payables. `direct-entries` still don't
-take a cost center — their line serializer accepts only `account/debit/credit`
-(`serializers.py:263`); set one via a manual journal if needed.
+liability, and the PAYE/pension/net-wages payables. **`direct-entries` accept an
+optional per-line `cost_center`** (code or id), resolved within the entity and
+carried onto the GL line (`serializers.py:263` field → `views.py:879` resolves →
+`posting.py:334` writes it); an unknown code is a `400`.
 
 **Consequence:** the `cost_center` column on `AccountDetailView` activity
 (`views.py:325`) and any "spend by cost center" report off journal lines now
@@ -156,8 +157,8 @@ recorded a **0-kobo** line. Same drop on posting applies.
   existing center rather than 409-ing.
 - `is_active=false` is a soft filter only; nothing stops a service resolving an
   inactive center if a caller passes its code.
-- `direct-entries` can't tag a cost center (serializer limitation) — a possible
-  follow-up if manual P&L entries need slicing.
+- `direct-entries` now tag a cost center per line (optional); the balancing
+  contra leg (e.g. cash) is typically left unallocated by the caller.
 
 ## 9. Permissions & tenant isolation
 

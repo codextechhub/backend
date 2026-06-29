@@ -266,6 +266,11 @@ class DirectEntryLineSerializer(serializers.Serializer):
     account = serializers.CharField(help_text="Account code within the entity, e.g. '1100'.")
     debit = serializers.IntegerField(required=False, default=0, min_value=0)
     credit = serializers.IntegerField(required=False, default=0, min_value=0)
+    cost_center = serializers.CharField(
+        required=False, allow_blank=True, default="",
+        help_text="Optional cost-centre code (or id) to slice this line by; resolved "
+                  "within the entity. Carried onto the GL line.",
+    )
 
     def validate(self, attrs):
         if attrs.get("debit") and attrs.get("credit"):

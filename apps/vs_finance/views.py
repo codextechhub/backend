@@ -878,14 +878,23 @@ class DirectEntryCreateView(APIView):
 
     def post(self, request):
         from .posting import post_direct_entry
+        from .views_ops import _resolve_cost_center
 
         entity = resolve_entity(request)
         serializer = DirectEntryCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+        # Resolve each line's optional cost centre against this entity (raises a
+        # ValidationError on an unknown code) and carry it through to the GL line.
+        lines = [
+            (
+                ln["account"], ln["debit"], ln["credit"],
+                _resolve_cost_center(entity, ln.get("cost_center"), "lines.cost_center"),
+            )
+            for ln in data["lines"]
+        ]
         entry = post_direct_entry(
-            entity,
-            lines=[(ln["account"], ln["debit"], ln["credit"]) for ln in data["lines"]],
+            entity, lines=lines,
             date=data.get("date"), narration=data.get("narration", ""),
             reference=data.get("reference", ""), actor_user=request.user,
         )

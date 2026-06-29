@@ -2854,6 +2854,33 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         )
         self.assertEqual(resp.status_code, 400, resp.content)
 
+    def test_direct_entry_carries_cost_centre_to_gl(self):
+        from .models import CostCenter
+
+        entity, _, _ = self.build_books()
+        CostCenter.objects.create(entity=entity, code="PRI", name="Primary")
+        resp = self.client.post(
+            f"/v1/finance/direct-entries/?entity={entity.code}",
+            {"narration": "Dept adjustment",
+             "lines": [{"account": "5300", "debit": 100000, "cost_center": "PRI"},
+                       {"account": "1100", "credit": 100000}]},  # cash leg unallocated
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        by_acc = {ln["account_code"]: ln["cost_center"] for ln in resp.json()["data"]["lines"]}
+        self.assertEqual(by_acc["5300"], "PRI")
+        self.assertIsNone(by_acc["1100"])
+
+    def test_direct_entry_rejects_unknown_cost_centre(self):
+        entity, _, _ = self.build_books()
+        resp = self.client.post(
+            f"/v1/finance/direct-entries/?entity={entity.code}",
+            {"lines": [{"account": "5300", "debit": 100000, "cost_center": "NOPE"},
+                       {"account": "1100", "credit": 100000}]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400, resp.content)
+
     def test_entity_create_provisions_new_books(self):
         # Seed first so the NGN currency exists for the default base_currency.
         self._seed()

@@ -67,7 +67,7 @@ All require `?entity=<id|code>`. Gate: `IsAuthenticatedAndActive & HasRBACPermis
 | `GET /journals/<id>/?entity=` | `finance.journal.view` | One entry **with its lines** | — | `JournalEntryDetailSerializer` |
 | `POST /journals/<id>/post/?entity=` | `finance.journal.post` | Post an existing **draft** | — | posted `JournalEntryDetailSerializer` |
 | `POST /journals/<id>/reverse/?entity=` | `finance.journal.reverse` | Reverse a **posted** entry | — | `201` the **reversing** entry |
-| `POST /direct-entries/?entity=` | `finance.directentry.post` | Create **and post** a journal from raw lines | `date?`, `narration?`, `reference?`, `lines:[{account (code), debit?, credit?}]` (kobo) | `201` posted `JournalEntryDetailSerializer` |
+| `POST /direct-entries/?entity=` | `finance.directentry.post` | Create **and post** a journal from raw lines | `date?`, `narration?`, `reference?`, `lines:[{account (code), debit?, credit?, cost_center? (code/id)}]` (kobo) | `201` posted `JournalEntryDetailSerializer` |
 
 > **Field notes (verified against the serializers):**
 > - Direct-entry `lines[].account` is an **account code string** resolved within
