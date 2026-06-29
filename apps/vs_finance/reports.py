@@ -69,9 +69,15 @@ def trial_balance(entity, *, period=None) -> TrialBalance:
 
     qs = AccountBalance.objects.filter(account__entity=entity).select_related("account")
     if period is not None:
-        qs = qs.filter(period=period)
+        # Cumulative balance AS OF the selected period — every movement up to and
+        # including it. A trial balance is a point-in-time statement of balances,
+        # not one period's activity, so "Jun 2026" means the running balance through
+        # June, not June's movement alone. (Openings aren't rolled forward in this
+        # ledger — each row carries only its period's movement — so a straight sum
+        # of movements through the period is the running balance.)
+        qs = qs.filter(period__start_date__lte=period.start_date)
 
-    # Aggregate across periods (when not period-scoped) per account.
+    # Sum each account's movement across the in-scope periods.
     by_account: dict[int, dict] = {}
     for bal in qs:
         acc = bal.account

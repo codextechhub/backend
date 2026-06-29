@@ -443,6 +443,27 @@ class TrialBalanceTests(_GLFixtureMixin, TestCase):
         self.assertTrue(tb.is_balanced)
         self.assertEqual(tb.rows, [])
 
+    def test_period_scope_is_cumulative_and_all_periods_is_not_double_counted(self):
+        """A period-scoped TB is the running balance *through* that period; the
+        all-periods TB is the cumulative all-time balance — never a sum that
+        double-counts across periods."""
+        entity, jan = self.build_ledger()
+        feb = FiscalPeriod.objects.create(
+            entity=entity, fiscal_year=jan.fiscal_year, period_no=2, name="Feb 2026",
+            start_date=datetime.date(2026, 2, 1), end_date=datetime.date(2026, 2, 28),
+            status=PeriodStatus.OPEN,
+        )
+        post_journal(self.make_entry(entity, jan, [("1100", 100000, 0), ("4100", 0, 100000)],
+                                     date=datetime.date(2026, 1, 15)))
+        post_journal(self.make_entry(entity, feb, [("1100", 40000, 0), ("4100", 0, 40000)],
+                                     date=datetime.date(2026, 2, 15)))
+
+        cash = lambda tb: next(r for r in tb.rows if r.code == "1100").debit
+        self.assertEqual(cash(trial_balance(entity, period=jan)), 100000)   # through Jan
+        self.assertEqual(cash(trial_balance(entity, period=feb)), 140000)   # cumulative through Feb
+        self.assertEqual(cash(trial_balance(entity)), 140000)              # all-time, not 240000
+        self.assertTrue(trial_balance(entity).is_balanced)
+
 
 class FinanceAuditTests(_GLFixtureMixin, TestCase):
     def test_post_writes_authoritative_audit_row(self):
