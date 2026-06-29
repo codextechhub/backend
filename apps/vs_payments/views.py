@@ -469,6 +469,8 @@ class SettlementReconciliationView(APIView):
                     "matched_bank_line_id": r.matched_bank_line_id,
                     "settled_amount": r.settled_amount, "fee_amount": r.fee_amount,
                     "settlement_reference": r.settlement_reference,
+                    "settlement_date": r.settlement_date.isoformat() if r.settlement_date else None,
+                    "settlement_description": r.settlement_description,
                 }
                 for r in recon.rows
             ],

@@ -43,6 +43,8 @@ class SettlementRow:
     settled: bool = False
     settled_amount: int | None = None    # the matched bank line's signed amount (net of fees)
     settlement_reference: str = ""       # the matched bank line's reference
+    settlement_date: datetime.date | None = None   # the matched bank line's txn date
+    settlement_description: str = ""               # the matched bank line's description
 
     @property
     def amount_naira(self) -> str:
@@ -193,6 +195,8 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
                 row.settled = True
                 row.settled_amount = int(cand.amount)
                 row.settlement_reference = cand.reference
+                row.settlement_date = cand.txn_date
+                row.settlement_description = cand.description
                 break
 
     # Pass 2: exact signed-amount match for anything still open.
@@ -206,6 +210,8 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
             row.settled = True
             row.settled_amount = int(cand.amount)
             row.settlement_reference = cand.reference
+            row.settlement_date = cand.txn_date
+            row.settlement_description = cand.description
 
     unmatched = [
         UnmatchedBankLine(
