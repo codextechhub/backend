@@ -1065,25 +1065,66 @@ class IncomeStatementView(APIView):
     rbac_permission = "finance.report.view"
 
     def get(self, request):
-        from .reports import income_statement
+        from .reports import income_statement_compare
 
         from .exports import ReportTable
 
         entity = resolve_entity(request)
         period = _resolve_period(entity, request)
-        pnl = income_statement(entity, period=period)
+        rep = income_statement_compare(entity, period=period)
 
-        rows = [["Income", r.code, r.name, r.amount_naira] for r in pnl.income_rows]
-        rows += [["Expense", r.code, r.name, r.amount_naira] for r in pnl.expense_rows]
+        def _mon(v):
+            return _money(v) if v is not None else None
+
+        def _isline(line):
+            return {
+                "account_id": line.account_id, "code": line.code, "name": line.name,
+                "account_type": line.account_type, "amount": _money(line.amount),
+                "budget": _mon(line.budget), "variance": _mon(line.variance),
+                "prior_year": _mon(line.prior_year),
+            }
+
+        def _istot(t):
+            return {
+                "amount": _money(t.amount), "budget": _mon(t.budget),
+                "variance": _mon(t.variance), "prior_year": _mon(t.prior_year),
+            }
+
+        # Export columns mirror the comparison the data supports.
+        cols = ["Section", "Code", "Account", "This period"]
+        if rep.has_budget:
+            cols += ["Budget", "Variance"]
+        if rep.has_prior_year:
+            cols += ["Prior year"]
+
+        def _xrow(section, line):
+            row = [section, line.code, line.name, format_naira(line.amount)]
+            if rep.has_budget:
+                row += [format_naira(line.budget or 0), format_naira(line.variance or 0)]
+            if rep.has_prior_year:
+                row += [format_naira(line.prior_year or 0)]
+            return row
+
+        def _xtot(label, t):
+            row = ["", "", label, format_naira(t.amount)]
+            if rep.has_budget:
+                row += [format_naira(t.budget or 0), format_naira(t.variance or 0)]
+            if rep.has_prior_year:
+                row += [format_naira(t.prior_year or 0)]
+            return row
+
+        rows = [_xrow("Revenue", r) for r in rep.income_rows]
+        rows += [_xrow("Expense", r) for r in rep.expense_rows]
+        scope = rep.period_name or (f"FY{rep.fiscal_year}" if rep.fiscal_year else "Year to date")
         export = _maybe_export(request, ReportTable(
             title="Income Statement",
-            subtitle=f"{entity.code} · {getattr(period, 'name', None) or 'Year to date'}",
-            columns=["Section", "Code", "Account", "Amount"],
+            subtitle=f"{entity.code} · {scope}",
+            columns=cols,
             rows=rows,
             summary_rows=[
-                ["", "", "Total income", format_naira(pnl.total_income)],
-                ["", "", "Total expense", format_naira(pnl.total_expense)],
-                ["", "", "Net income", format_naira(pnl.net_income)],
+                _xtot("Total revenue", rep.income_totals),
+                _xtot("Total expenses", rep.expense_totals),
+                _xtot("Net income", rep.net_totals),
             ],
         ), filename=f"income_statement_{entity.code}")
         if export is not None:
@@ -1093,12 +1134,18 @@ class IncomeStatementView(APIView):
             message="Income statement retrieved.",
             data={
                 "entity": entity.code,
-                "period": getattr(period, "name", None),
-                "income": [_line(r) for r in pnl.income_rows],
-                "expense": [_line(r) for r in pnl.expense_rows],
-                "total_income": _money(pnl.total_income),
-                "total_expense": _money(pnl.total_expense),
-                "net_income": _money(pnl.net_income),
+                "period": rep.period_name,
+                "fiscal_year": rep.fiscal_year,
+                "prior_fiscal_year": rep.prior_fiscal_year,
+                "has_budget": rep.has_budget,
+                "has_prior_year": rep.has_prior_year,
+                "income": [_isline(r) for r in rep.income_rows],
+                "expense": [_isline(r) for r in rep.expense_rows],
+                "totals": {
+                    "income": _istot(rep.income_totals),
+                    "expense": _istot(rep.expense_totals),
+                    "net": _istot(rep.net_totals),
+                },
             },
         )
 

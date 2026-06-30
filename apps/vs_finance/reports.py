@@ -905,6 +905,166 @@ def income_statement(entity, *, period=None) -> IncomeStatement:
 
 
 @dataclass
+class ISCompareLine:
+    """One P&L account row with its comparison figures (all kobo; None = not available)."""
+    account_id: int
+    code: str
+    name: str
+    account_type: str
+    amount: int = 0
+    budget: int | None = None
+    variance: int | None = None
+    prior_year: int | None = None
+
+
+@dataclass
+class ISCompareTotals:
+    amount: int = 0
+    budget: int | None = None
+    variance: int | None = None
+    prior_year: int | None = None
+
+
+@dataclass
+class IncomeStatementCompare:
+    """The income statement with optional Budget and Prior-year columns.
+
+    Unlike :func:`income_statement` (which sums income/expense across *all* periods),
+    this is **fiscal-year scoped**: "this period" is the current fiscal year (or one
+    period of it), so the Prior-year column — the same scope in the previous fiscal
+    year — is a like-for-like comparison. Budget comes from the entity's budget for the
+    current fiscal year. Variance is signed *favourable* (revenue: actual − budget;
+    expense: budget − actual; net income: actual − budget).
+    """
+    entity_id: int
+    period_id: int | None
+    period_name: str | None
+    fiscal_year: int | None
+    prior_fiscal_year: int | None
+    has_budget: bool
+    has_prior_year: bool
+    income_rows: list = field(default_factory=list)
+    expense_rows: list = field(default_factory=list)
+    income_totals: ISCompareTotals = field(default_factory=ISCompareTotals)
+    expense_totals: ISCompareTotals = field(default_factory=ISCompareTotals)
+    net_totals: ISCompareTotals = field(default_factory=ISCompareTotals)
+
+
+def income_statement_compare(entity, *, period=None) -> IncomeStatementCompare:
+    """Build the income statement with Budget + Prior-year comparison columns.
+
+    Scope is a **fiscal year**: ``period`` (a :class:`FiscalPeriod`) narrows both this
+    year and the prior year to that single period number; otherwise the whole current
+    fiscal year (the latest) is used. See :class:`IncomeStatementCompare`.
+    """
+    from .constants import AccountType, BudgetStatus
+    from .models import AccountBalance, Budget, BudgetLine, FiscalYear
+
+    fy = period.fiscal_year if period is not None else (
+        FiscalYear.objects.filter(entity=entity).order_by("-year").first())
+    if fy is None:
+        return IncomeStatementCompare(
+            entity_id=entity.id, period_id=None, period_name=None,
+            fiscal_year=None, prior_fiscal_year=None,
+            has_budget=False, has_prior_year=False)
+
+    period_no = period.period_no if period is not None else None
+
+    def _actuals(fiscal_year):
+        qs = AccountBalance.objects.filter(
+            account__entity=entity, period__fiscal_year=fiscal_year,
+        ).select_related("account")
+        if period_no is not None:
+            qs = qs.filter(period__period_no=period_no)
+        return (_net_by_account(qs, account_types={AccountType.INCOME}),
+                _net_by_account(qs, account_types={AccountType.EXPENSE}))
+
+    cur_inc, cur_exp = _actuals(fy)
+
+    prior_fy = FiscalYear.objects.filter(entity=entity, year=fy.year - 1).first()
+    has_prior = prior_fy is not None
+    pri_inc, pri_exp = _actuals(prior_fy) if has_prior else ({}, {})
+
+    # Budget for the current fiscal year — prefer an approved/locked plan over a draft.
+    budget = (
+        Budget.objects.filter(
+            entity=entity, fiscal_year=fy,
+            status__in=[BudgetStatus.APPROVED, BudgetStatus.LOCKED]).order_by("-id").first()
+        or Budget.objects.filter(entity=entity, fiscal_year=fy).order_by("-id").first())
+    has_budget = budget is not None
+    budget_by_acc: dict[int, list] = {}
+    if has_budget:
+        blines = BudgetLine.objects.filter(budget=budget).select_related("account")
+        if period_no is not None:
+            blines = blines.filter(period_no=period_no)
+        for ln in blines:
+            slot = budget_by_acc.get(ln.account_id)
+            if slot is None:
+                budget_by_acc[ln.account_id] = [ln.account, ln.amount]
+            else:
+                slot[1] += ln.amount
+
+    def _build(cur_map, pri_map, atype, *, revenue):
+        accounts: dict[int, object] = {}
+        for aid, (acc, _net) in cur_map.items():
+            accounts[aid] = acc
+        for aid, (acc, _net) in pri_map.items():
+            accounts.setdefault(aid, acc)
+        for aid, (acc, _amt) in budget_by_acc.items():
+            if acc.account_type == atype:
+                accounts.setdefault(aid, acc)
+
+        rows, tot_amt, tot_bud, tot_pri = [], 0, 0, 0
+        for aid, acc in sorted(accounts.items(), key=lambda kv: kv[1].code):
+            amount = cur_map.get(aid, [None, 0])[1]
+            prior = pri_map.get(aid, [None, 0])[1] if has_prior else None
+            bud = budget_by_acc.get(aid, [None, 0])[1] if has_budget else None
+            if amount == 0 and not bud and not prior:
+                continue
+            var = None
+            if has_budget:
+                var = (amount - bud) if revenue else (bud - amount)
+                tot_bud += bud
+            if has_prior:
+                tot_pri += prior or 0
+            tot_amt += amount
+            rows.append(ISCompareLine(
+                account_id=aid, code=acc.code, name=acc.name,
+                account_type=acc.account_type, amount=amount,
+                budget=bud, variance=var, prior_year=prior))
+        totals = ISCompareTotals(
+            amount=tot_amt,
+            budget=tot_bud if has_budget else None,
+            prior_year=tot_pri if has_prior else None,
+        )
+        return rows, totals
+
+    income_rows, inc_tot = _build(cur_inc, pri_inc, AccountType.INCOME, revenue=True)
+    expense_rows, exp_tot = _build(cur_exp, pri_exp, AccountType.EXPENSE, revenue=False)
+    if has_budget:
+        inc_tot.variance = inc_tot.amount - inc_tot.budget
+        exp_tot.variance = exp_tot.budget - exp_tot.amount
+
+    net = ISCompareTotals(
+        amount=inc_tot.amount - exp_tot.amount,
+        budget=(inc_tot.budget - exp_tot.budget) if has_budget else None,
+        prior_year=((inc_tot.prior_year or 0) - (exp_tot.prior_year or 0)) if has_prior else None,
+    )
+    if has_budget:
+        net.variance = net.amount - net.budget
+
+    return IncomeStatementCompare(
+        entity_id=entity.id,
+        period_id=getattr(period, "id", None),
+        period_name=getattr(period, "name", None),
+        fiscal_year=fy.year,
+        prior_fiscal_year=prior_fy.year if prior_fy else None,
+        has_budget=has_budget, has_prior_year=has_prior,
+        income_rows=income_rows, expense_rows=expense_rows,
+        income_totals=inc_tot, expense_totals=exp_tot, net_totals=net)
+
+
+@dataclass
 class BalanceSheet:
     """Assets, liabilities and equity at a point in time (kobo).
 

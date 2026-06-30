@@ -115,6 +115,7 @@ from vs_finance.reports import (
     cash_flow_statement,
     customer_statement,
     income_statement,
+    income_statement_compare,
     reconcile_ar,
     statement_of_changes_in_equity,
     statutory_pack,
@@ -2239,6 +2240,82 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(cf.closing_cash, 0)
         self.assertEqual(cf.net_change, 0)
         self.assertTrue(cf.is_reconciled)
+
+
+class IncomeStatementCompareTests(_Phase4FixtureMixin, TestCase):
+    """The P&L with Budget + Prior-year comparison columns (income_statement_compare)."""
+
+    def _activity(self, entity, period, *, revenue, expense):
+        post_journal(self.make_entry(
+            entity, period, [("1100", revenue, 0), ("4100", 0, revenue)]))  # cash revenue
+        post_journal(self.make_entry(
+            entity, period, [("5200", expense, 0), ("1100", 0, expense)]))  # cash expense
+
+    def test_no_comparison_without_budget_or_prior_year(self):
+        entity, _, periods = self.build_books()
+        self._activity(entity, periods[0], revenue=300000, expense=120000)
+
+        rep = income_statement_compare(entity, period=periods[0])
+        self.assertFalse(rep.has_budget)
+        self.assertFalse(rep.has_prior_year)
+        inc = {r.code: r for r in rep.income_rows}
+        exp = {r.code: r for r in rep.expense_rows}
+        self.assertEqual(inc["4100"].amount, 300000)
+        self.assertIsNone(inc["4100"].budget)
+        self.assertIsNone(inc["4100"].prior_year)
+        self.assertEqual(exp["5200"].amount, 120000)
+        self.assertEqual(rep.net_totals.amount, 180000)
+        self.assertIsNone(rep.net_totals.variance)
+
+    def test_budget_and_prior_year_columns_populate_with_favourable_variance(self):
+        from .constants import BudgetStatus
+        from .models import Account, Budget, BudgetLine, FiscalPeriod, FiscalYear
+
+        entity, year, periods = self.build_books()
+        # Current-year actuals.
+        self._activity(entity, periods[0], revenue=300000, expense=120000)
+
+        # A prior fiscal year (2025) with its own activity.
+        prior_year = FiscalYear.objects.create(
+            entity=entity, year=2025,
+            start_date=datetime.date(2025, 1, 1), end_date=datetime.date(2025, 12, 31))
+        prior_period = FiscalPeriod.objects.create(
+            entity=entity, fiscal_year=prior_year, period_no=1, name="2025-01",
+            start_date=datetime.date(2025, 1, 1), end_date=datetime.date(2025, 1, 31))
+        self._activity(entity, prior_period, revenue=200000, expense=80000)
+
+        # An approved budget for the current year.
+        budget = Budget.objects.create(
+            entity=entity, fiscal_year=year, name="Plan", status=BudgetStatus.APPROVED)
+        BudgetLine.objects.create(
+            budget=budget, account=Account.objects.get(entity=entity, code="4100"),
+            period_no=1, amount=250000)
+        BudgetLine.objects.create(
+            budget=budget, account=Account.objects.get(entity=entity, code="5200"),
+            period_no=1, amount=150000)
+
+        rep = income_statement_compare(entity)  # YTD → current FY = 2026 (latest)
+        self.assertTrue(rep.has_budget)
+        self.assertTrue(rep.has_prior_year)
+        self.assertEqual(rep.fiscal_year, 2026)
+        self.assertEqual(rep.prior_fiscal_year, 2025)
+
+        inc = {r.code: r for r in rep.income_rows}["4100"]
+        self.assertEqual(inc.amount, 300000)
+        self.assertEqual(inc.budget, 250000)
+        self.assertEqual(inc.variance, 50000)      # revenue: actual − budget (favourable)
+        self.assertEqual(inc.prior_year, 200000)
+
+        exp = {r.code: r for r in rep.expense_rows}["5200"]
+        self.assertEqual(exp.amount, 120000)
+        self.assertEqual(exp.budget, 150000)
+        self.assertEqual(exp.variance, 30000)      # expense: budget − actual (favourable)
+        self.assertEqual(exp.prior_year, 80000)
+
+        self.assertEqual(rep.net_totals.amount, 180000)
+        self.assertEqual(rep.net_totals.budget, 100000)
+        self.assertEqual(rep.net_totals.variance, 80000)
+        self.assertEqual(rep.net_totals.prior_year, 120000)
 
 
 class ChangesInEquityTests(_Phase4FixtureMixin, TestCase):
