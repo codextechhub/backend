@@ -18,16 +18,19 @@ from __future__ import annotations
 import math
 
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import generics
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.pagination import XVSPagination
 from core.response import success_response
+from vs_finance.money import format_naira
 from vs_finance.models import Account, Customer, Invoice
 from vs_finance.views import resolve_entity
-from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive, user_has_rbac_permission
 
 from . import reconciliation, services, webhooks
 from .constants import VirtualAccountStatus
@@ -41,6 +44,15 @@ from .serializers import (
     PayoutInstructionSerializer,
     VirtualAccountSerializer,
 )
+
+
+def _paginate(request, qs, serializer_cls, view, **ser_kwargs):
+    """Paginate a queryset through the platform's XVSPagination envelope ({pagination, data}).
+    Page size is a fixed 25 (override per-request with ?page_size=, capped at 100)."""
+    paginator = XVSPagination()
+    paginator.page_size = 25
+    page = paginator.paginate_queryset(qs, request, view=view)
+    return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)
 
 
 def _entity_obj(entity, model, ref, field):
@@ -67,6 +79,15 @@ def _entity_obj(entity, model, ref, field):
 # Collections                                                                 #
 # --------------------------------------------------------------------------- #
 
+# Console status groups → underlying CollectionStatus values (the UI filters by group).
+COLLECTION_GROUPS = {
+    "PENDING": ["PENDING", "PROCESSING"],
+    "PAID": ["SUCCEEDED"],
+    "FAILED": ["FAILED", "ABANDONED"],
+    "REFUNDED": ["REFUNDED"],
+}
+
+
 class CollectionListCreateView(APIView):
     """GET (list) / POST (initiate) collections for an entity.
 
@@ -86,12 +107,15 @@ class CollectionListCreateView(APIView):
         qs = CollectionIntent.objects.filter(entity=entity).select_related(
             "customer", "payment",
         )
-        if (status_ := request.query_params.get("status")):
+        if (group := request.query_params.get("group")) in COLLECTION_GROUPS:
+            qs = qs.filter(status__in=COLLECTION_GROUPS[group])
+        elif (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
+        if (provider := request.query_params.get("provider")):
+            qs = qs.filter(provider=provider)
         if (va := request.query_params.get("virtual_account")):
             qs = qs.filter(virtual_account_id=va)
-        data = CollectionIntentSerializer(qs[:200], many=True).data
-        return success_response("Collections retrieved.", data=data)
+        return _paginate(request, qs.order_by("-created_at", "-id"), CollectionIntentSerializer, self)
 
     def post(self, request):
         entity = resolve_entity(request)
@@ -112,6 +136,50 @@ class CollectionListCreateView(APIView):
         return success_response(
             "Collection initiated.", data=CollectionIntentSerializer(intent).data, status=201,
         )
+
+
+class CollectionSummaryView(APIView):
+    """GET /payments/collections/summary/ — KPI totals (kobo) + status-group counts over
+    ALL rows, so the header stays accurate while the list paginates. Honors ?provider.
+
+    docstring-name: Collections summary
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "payments.collection.view"
+
+    def get(self, request):
+        from django.db.models import Count, Q, Sum
+        from django.db.models.functions import Coalesce
+
+        entity = resolve_entity(request)
+        qs = CollectionIntent.objects.filter(entity=entity)
+        if (provider := request.query_params.get("provider")):
+            qs = qs.filter(provider=provider)
+        g = COLLECTION_GROUPS
+        agg = qs.aggregate(
+            total=Count("id"),
+            collected=Coalesce(Sum("amount", filter=Q(status__in=g["PAID"])), 0),
+            pending=Coalesce(Sum("amount", filter=Q(status__in=g["PENDING"])), 0),
+            failed=Coalesce(Sum("amount", filter=Q(status__in=g["FAILED"])), 0),
+            paid_c=Count("id", filter=Q(status__in=g["PAID"])),
+            pending_c=Count("id", filter=Q(status__in=g["PENDING"])),
+            failed_c=Count("id", filter=Q(status__in=g["FAILED"])),
+            refunded_c=Count("id", filter=Q(status__in=g["REFUNDED"])),
+        )
+        terminal = agg["paid_c"] + agg["failed_c"]
+        rate = round(agg["paid_c"] * 100 / terminal) if terminal else None
+        return success_response("Collections summary retrieved.", data={
+            "total": agg["total"],
+            "collected": {"kobo": agg["collected"], "naira": format_naira(agg["collected"])},
+            "pending": {"kobo": agg["pending"], "naira": format_naira(agg["pending"])},
+            "failed": {"kobo": agg["failed"], "naira": format_naira(agg["failed"])},
+            "success_rate": rate,
+            "group_counts": {
+                "PAID": agg["paid_c"], "PENDING": agg["pending_c"],
+                "FAILED": agg["failed_c"], "REFUNDED": agg["refunded_c"],
+            },
+        })
 
 
 class CollectionDetailView(APIView):
@@ -249,6 +317,14 @@ class VirtualAccountDetailView(APIView):
 # Payouts                                                                     #
 # --------------------------------------------------------------------------- #
 
+# Console status groups → underlying PayoutStatus values (PAID shows as "Settled").
+PAYOUT_GROUPS = {
+    "PENDING": ["PENDING", "PROCESSING"],
+    "PAID": ["PAID"],
+    "FAILED": ["FAILED", "REVERSED"],
+}
+
+
 class PayoutListCreateView(APIView):
     """GET (list) / POST (initiate) payouts for an entity.
 
@@ -265,11 +341,13 @@ class PayoutListCreateView(APIView):
     def get(self, request):
         entity = resolve_entity(request)
         qs = PayoutInstruction.objects.filter(entity=entity)
-        if (status_ := request.query_params.get("status")):
+        if (group := request.query_params.get("group")) in PAYOUT_GROUPS:
+            qs = qs.filter(status__in=PAYOUT_GROUPS[group])
+        elif (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
-        return success_response(
-            "Payouts retrieved.", data=PayoutInstructionSerializer(qs[:200], many=True).data,
-        )
+        if (provider := request.query_params.get("provider")):
+            qs = qs.filter(provider=provider)
+        return _paginate(request, qs.order_by("-created_at", "-id"), PayoutInstructionSerializer, self)
 
     def post(self, request):
         entity = resolve_entity(request)
@@ -305,6 +383,44 @@ class PayoutListCreateView(APIView):
         )
 
 
+class PayoutSummaryView(APIView):
+    """GET /payments/payouts/summary/ — KPI totals + status-group counts over ALL rows.
+    Honors ?provider.
+
+    docstring-name: Payouts summary
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "payments.payout.view"
+
+    def get(self, request):
+        import datetime
+
+        from django.db.models import Count, Q, Sum
+        from django.db.models.functions import Coalesce
+
+        entity = resolve_entity(request)
+        qs = PayoutInstruction.objects.filter(entity=entity)
+        if (provider := request.query_params.get("provider")):
+            qs = qs.filter(provider=provider)
+        cutoff = timezone.now() - datetime.timedelta(days=7)
+        agg = qs.aggregate(
+            total=Count("id"),
+            settled7d=Coalesce(Sum("amount", filter=Q(status="PAID", confirmed_at__gte=cutoff)), 0),
+            pending=Coalesce(Sum("amount", filter=Q(status__in=PAYOUT_GROUPS["PENDING"])), 0),
+            paid_c=Count("id", filter=Q(status__in=PAYOUT_GROUPS["PAID"])),
+            pending_c=Count("id", filter=Q(status__in=PAYOUT_GROUPS["PENDING"])),
+            failed_c=Count("id", filter=Q(status__in=PAYOUT_GROUPS["FAILED"])),
+        )
+        return success_response("Payouts summary retrieved.", data={
+            "total": agg["total"],
+            "settled7d": {"kobo": agg["settled7d"], "naira": format_naira(agg["settled7d"])},
+            "pending": {"kobo": agg["pending"], "naira": format_naira(agg["pending"])},
+            "failed": agg["failed_c"],
+            "group_counts": {"PAID": agg["paid_c"], "PENDING": agg["pending_c"], "FAILED": agg["failed_c"]},
+        })
+
+
 class PayoutBatchListCreateView(APIView):
     """GET (list) / POST (assemble a bulk batch of payouts) for an entity.
 
@@ -326,10 +442,7 @@ class PayoutBatchListCreateView(APIView):
         qs = PayoutBatch.objects.filter(entity=entity)
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
-        return success_response(
-            "Payout batches retrieved.",
-            data=PayoutBatchSummarySerializer(qs[:200], many=True).data,
-        )
+        return _paginate(request, qs.order_by("-created_at", "-id"), PayoutBatchSummarySerializer, self)
 
     def post(self, request):
         entity = resolve_entity(request)
@@ -375,6 +488,38 @@ class PayoutBatchListCreateView(APIView):
         return success_response(
             "Payout batch created.", data=PayoutBatchSerializer(batch).data, status=201,
         )
+
+
+class PayoutBatchSummaryView(APIView):
+    """GET /payments/payout-batches/summary/ — batch KPI totals over ALL rows.
+
+    docstring-name: Payout batches summary
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "payments.payout.view"
+
+    def get(self, request):
+        import datetime
+
+        from django.db.models import Count, Q, Sum
+        from django.db.models.functions import Coalesce
+
+        entity = resolve_entity(request)
+        qs = PayoutBatch.objects.filter(entity=entity)
+        cutoff = timezone.now() - datetime.timedelta(days=7)
+        agg = qs.aggregate(
+            total=Count("id"),
+            queued=Coalesce(Sum("total_amount", filter=Q(status__in=["DRAFT", "PROCESSING"])), 0),
+            completed7d=Count("id", filter=Q(status="COMPLETED", submitted_at__gte=cutoff)),
+            drafts=Count("id", filter=Q(status="DRAFT")),
+        )
+        return success_response("Payout batches summary retrieved.", data={
+            "total": agg["total"],
+            "queued": {"kobo": agg["queued"], "naira": format_naira(agg["queued"])},
+            "completed7d": agg["completed7d"],
+            "drafts": agg["drafts"],
+        })
 
 
 class PayoutBatchDetailView(APIView):
@@ -493,7 +638,7 @@ class TransactionsLogView(APIView):
     Reads :class:`~vs_payments.models.PaymentEvent` — the immutable record of every
     gateway action (collections, payouts, virtual accounts, webhooks) including failed
     and rejected attempts. Filterable by ``?action=``, ``?provider=`` and
-    ``?succeeded=true|false``; capped at the most recent 200 rows.
+    ``?succeeded=true|false``; paginated.
 
     docstring-name: Transactions log
     """
@@ -513,8 +658,143 @@ class TransactionsLogView(APIView):
             qs = qs.filter(succeeded=True)
         elif succeeded in ("false", "False", "0"):
             qs = qs.filter(succeeded=False)
-        data = PaymentEventSerializer(qs[:200], many=True).data
-        return success_response("Transactions log retrieved.", data=data)
+        return _paginate(request, qs.order_by("-created_at", "-id"), PaymentEventSerializer, self)
+
+
+# --------------------------------------------------------------------------- #
+# Movements — unified money-in (collections) + money-out (payouts) feed        #
+# --------------------------------------------------------------------------- #
+
+# Unified status groups across both gateways (collections + payouts).
+MOVEMENT_GROUPS = {
+    "SETTLED": (["SUCCEEDED"], ["PAID"]),
+    "PENDING": (["PENDING", "PROCESSING"], ["PENDING", "PROCESSING"]),
+    "FAILED": (["FAILED", "ABANDONED"], ["FAILED", "REVERSED"]),
+    "REFUNDED": (["REFUNDED"], []),
+}
+_MOVEMENT_COLS = [
+    "kind", "gateway_id", "reference", "created_at", "direction", "party", "provider",
+    "amount", "status", "narration", "provider_reference", "confirmed_at", "linked_id",
+    "email", "account_code", "account_name", "beneficiary_account",
+]
+
+
+def _movement_querysets(entity, *, provider=None, group=None):
+    """The collection (in) + payout (out) value-querysets projected to a common shape."""
+    from django.db.models import CharField, F, Value
+    from django.db.models.functions import Coalesce
+
+    cols = CollectionIntent.objects.filter(entity=entity)
+    pos = PayoutInstruction.objects.filter(entity=entity)
+    if provider:
+        cols = cols.filter(provider=provider)
+        pos = pos.filter(provider=provider)
+    if group in MOVEMENT_GROUPS:
+        c_st, p_st = MOVEMENT_GROUPS[group]
+        cols = cols.filter(status__in=c_st) if c_st else cols.none()
+        pos = pos.filter(status__in=p_st) if p_st else pos.none()
+
+    cv = cols.annotate(
+        kind=Value("collection", output_field=CharField()), gateway_id=F("id"),
+        direction=Value("in", output_field=CharField()),
+        party=Coalesce(F("customer__name"), F("payer_name"), Value(""), output_field=CharField()),
+        linked_id=F("payment_id"), email=F("payer_email"),
+        account_code=F("deposit_account__code"), account_name=F("deposit_account__name"),
+        beneficiary_account=Value("", output_field=CharField()),
+    ).values(*_MOVEMENT_COLS)
+    pv = pos.annotate(
+        kind=Value("payout", output_field=CharField()), gateway_id=F("id"),
+        direction=Value("out", output_field=CharField()), party=F("beneficiary_name"),
+        linked_id=F("vendor_payment_id"), email=Value("", output_field=CharField()),
+        account_code=F("source_account__code"), account_name=F("source_account__name"),
+        beneficiary_account=F("beneficiary_account_number"),
+    ).values(*_MOVEMENT_COLS)
+    return cv, pv
+
+
+class MovementsView(APIView):
+    """GET /payments/movements/ — unified, paginated money-movement feed: confirmed-or-
+    pending collections (in) + payouts (out), newest first. Filters: ``?direction=in|out``,
+    ``?group=SETTLED|PENDING|FAILED|REFUNDED``, ``?provider=``. Payout beneficiary
+    name/account are FLS-masked without payments.payout.view_sensitive.
+
+    docstring-name: Movements feed
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "payments.report.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        provider = request.query_params.get("provider")
+        group = request.query_params.get("group")
+        direction = request.query_params.get("direction")
+        cv, pv = _movement_querysets(entity, provider=provider, group=group)
+
+        parts = []
+        if direction != "out":
+            parts.append(cv)
+        if direction != "in":
+            parts.append(pv)
+        union = parts[0] if len(parts) == 1 else parts[0].union(parts[1], all=True)
+        union = union.order_by("-created_at")
+
+        paginator = XVSPagination()
+        page = paginator.paginate_queryset(union, request, view=self)
+        can_sensitive = user_has_rbac_permission(request.user, "payments.payout.view_sensitive")
+        rows = []
+        for m in page:
+            row = dict(m)
+            if row["kind"] == "payout" and not can_sensitive:
+                row["party"] = "••••"
+                row["beneficiary_account"] = "••••"
+            row["amount_naira"] = format_naira(row["amount"])
+            row["created_at"] = row["created_at"].isoformat() if row["created_at"] else None
+            row["confirmed_at"] = row["confirmed_at"].isoformat() if row["confirmed_at"] else None
+            rows.append(row)
+        return paginator.get_paginated_response(rows)
+
+
+class MovementsSummaryView(APIView):
+    """GET /payments/movements/summary/ — money-in (7d) / money-out (7d) / pending / failed
+    across both gateways, for the Transactions Log header.
+
+    docstring-name: Movements summary
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "payments.report.view"
+
+    def get(self, request):
+        import datetime
+
+        from django.db.models import Count, Q, Sum
+        from django.db.models.functions import Coalesce
+
+        entity = resolve_entity(request)
+        provider = request.query_params.get("provider")
+        cols = CollectionIntent.objects.filter(entity=entity)
+        pos = PayoutInstruction.objects.filter(entity=entity)
+        if provider:
+            cols = cols.filter(provider=provider)
+            pos = pos.filter(provider=provider)
+        cutoff = timezone.now() - datetime.timedelta(days=7)
+        c = cols.aggregate(
+            in7d=Coalesce(Sum("amount", filter=Q(status="SUCCEEDED", confirmed_at__gte=cutoff)), 0),
+            pending=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["PENDING"][0])),
+            failed=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["FAILED"][0])),
+        )
+        p = pos.aggregate(
+            out7d=Coalesce(Sum("amount", filter=Q(status="PAID", confirmed_at__gte=cutoff)), 0),
+            pending=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["PENDING"][1])),
+            failed=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["FAILED"][1])),
+        )
+        return success_response("Movements summary retrieved.", data={
+            "in7d": {"kobo": c["in7d"], "naira": format_naira(c["in7d"])},
+            "out7d": {"kobo": p["out7d"], "naira": format_naira(p["out7d"])},
+            "pending": c["pending"] + p["pending"],
+            "failed": c["failed"] + p["failed"],
+        })
 
 
 # --------------------------------------------------------------------------- #

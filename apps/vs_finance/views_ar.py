@@ -23,9 +23,11 @@ def _paginate(request, qs, serializer_cls, view, **ser_kwargs):
     """Paginate a queryset through the platform's XVSPagination envelope.
 
     ``_FinanceBase`` is a plain ``APIView`` (which ignores ``pagination_class``), so
-    list views call this to get the standard ``{pagination, data}`` response.
+    list views call this to get the standard ``{pagination, data}`` response. Page size
+    is a fixed 25 (override per-request with ?page_size=, capped at 100).
     """
     paginator = XVSPagination()
+    paginator.page_size = 25
     page = paginator.paginate_queryset(qs, request, view=view)
     return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)
 
@@ -247,6 +249,7 @@ class CustomerListCreateView(_FinanceBase):
             qs = qs.filter(id__in=keep)
 
         paginator = XVSPagination()
+        paginator.page_size = 25
         page = paginator.paginate_queryset(qs.order_by("code"), request, view=self)
         ledger = _customer_ledger(entity, [c.id for c in page])
         rows = []
