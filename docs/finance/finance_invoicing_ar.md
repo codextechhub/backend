@@ -147,10 +147,10 @@ Cr  receivable (AR control)        applied
 **Opening balance** — `post_opening_balance` (`receivables.py:188`) raises a posted
 opening invoice (`source=OPENING`) when a customer is created with
 `opening_balance>0`, so the figure shows in both the GL and the (invoice-derived)
-outstanding without hitting P&L revenue:
+outstanding:
 ```
 Dr  receivable (AR control 1200)   opening_balance
-Cr  retained earnings (3200)       opening_balance
+Cr  operating revenue (4100)       opening_balance
 ```
 
 **Auto-allocation order** — `_build_invoice_plan` (`receivables.py:232`) settles
@@ -178,7 +178,7 @@ the receipt shows `allocation_status:"PARTIAL"` (`unallocated_amount` 12500).
 ## 8. Gotchas / known limitations
 
 - **`opening_balance` posting is atomic with customer-create** — if no open period
-  covers today (or `3200` is missing), the opening invoice fails and the whole
+  covers today (or `4100` is missing), the opening invoice fails and the whole
   customer create rolls back with a clear error. Intended (loud > silent), but
   worth knowing.
 - **The opening invoice is dated `today`** (`receivables.py:188`) — opening AR
@@ -226,7 +226,7 @@ closed-period rejection), `PaymentAllocationTests`, `InvoiceCreateEndpointTests`
 `ReceiptAllocationEndpointTests`, `CustomerEndpointTests`, `InvoicePayRemindEndpointTests`.
 
 Added with the §8 fixes (in `FinanceAPITests`): opening-balance posts the
-`Dr 1200 / Cr 3200` opening invoice and surfaces in the paginated customer list;
+`Dr 1200 / Cr 4100` opening invoice and surfaces in the paginated customer list;
 largest-first receipt clears the bigger invoice first; an unknown
 `allocation_strategy` → 400.
 

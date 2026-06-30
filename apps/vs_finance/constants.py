@@ -552,6 +552,7 @@ SALARIES_EXPENSE_CODE = "5200"            # Salaries & wages expense
 DEPRECIATION_EXPENSE_CODE = "5400"        # Depreciation expense
 BANK_CHARGES_CODE = "5500"               # Bank charges expense
 RETAINED_EARNINGS_CODE = "3200"          # Retained earnings (equity) — net income closes here
+OPERATING_REVENUE_CODE = "4100"          # Operating revenue (income) — generic revenue line
 CASH_BANK_CODE = "1100"                  # Cash & bank (the cash-flow statement's cash line)
 SALES_RETURNS_CODE = "4900"              # Sales returns (contra-revenue) — credit notes default here
 DISCOUNTS_ALLOWED_CODE = "4910"          # Discounts & allowances (contra-revenue) — concessions default here

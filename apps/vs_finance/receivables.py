@@ -189,21 +189,21 @@ def post_opening_balance(customer, *, actor_user=None, date=None):
     """Seat a customer's ``opening_balance`` as a posted opening invoice.
 
     Raises an :class:`~vs_finance.models.Invoice` (``source=OPENING``) that posts
-    ``Dr AR control · Cr Retained Earnings`` — so the figure shows in the customer's
-    outstanding (which is invoice-derived) *and* in the GL, without touching P&L
-    revenue. No-op unless the opening balance is positive. Returns the invoice or
-    ``None``. Runs the normal :func:`post_invoice` guards (open period, etc.).
+    ``Dr AR control · Cr Operating Revenue`` — so the figure shows in the customer's
+    outstanding (which is invoice-derived) *and* in the GL. No-op unless the opening
+    balance is positive. Returns the invoice or ``None``. Runs the normal
+    :func:`post_invoice` guards (open period, etc.).
     """
     import datetime
 
-    from .constants import InvoiceSource, RETAINED_EARNINGS_CODE
+    from .constants import InvoiceSource, OPERATING_REVENUE_CODE
     from .models import Invoice, InvoiceLine
 
     amount = int(customer.opening_balance or 0)
     if amount <= 0:
         return None
 
-    equity = resolve_account(customer.entity, RETAINED_EARNINGS_CODE, label="opening balance equity")
+    revenue = resolve_account(customer.entity, OPERATING_REVENUE_CODE, label="opening balance revenue")
     invoice = Invoice.objects.create(
         entity=customer.entity, customer=customer,
         invoice_date=date or datetime.date.today(),
@@ -212,7 +212,7 @@ def post_opening_balance(customer, *, actor_user=None, date=None):
         created_by=actor_user,
     )
     InvoiceLine.objects.create(
-        invoice=invoice, revenue_account=equity,
+        invoice=invoice, revenue_account=revenue,
         quantity=1, unit_price=amount, line_no=1,
     )
     post_invoice(invoice, actor_user=actor_user)

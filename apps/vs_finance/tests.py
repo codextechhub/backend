@@ -2912,13 +2912,13 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
             format="json",
         )
         self.assertEqual(created.status_code, 201, created.content)
-        # An opening invoice (Dr 1200 AR / Cr 3200 Retained Earnings) was raised…
+        # An opening invoice (Dr 1200 AR / Cr 4100 Operating Revenue) was raised…
         inv = Invoice.objects.get(entity=entity, source="OPENING", customer__code="OPN1")
         self.assertEqual(inv.status, "POSTED")
         self.assertEqual(inv.total, 500000)
         gl = {ln.account.code: (ln.debit, ln.credit) for ln in inv.journal.lines.all()}
         self.assertEqual(gl["1200"], (500000, 0))
-        self.assertEqual(gl["3200"], (0, 500000))
+        self.assertEqual(gl["4100"], (0, 500000))
         # …and it surfaces in the customer's outstanding, now a paginated list.
         listed = self.client.get(f"/v1/finance/customers/?entity={entity.code}").json()
         self.assertIn("pagination", listed)
