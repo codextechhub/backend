@@ -4,8 +4,6 @@ from __future__ import annotations
 
 
 
-from core.response import success_response
-
 from ..views import resolve_entity
 from ..models import (
     FinanceAuditLog,
@@ -41,8 +39,5 @@ class FinanceAuditLogListView(_FinanceBase):
             qs = qs.filter(status=status_val)
         if (target_type := params.get("target_type")):
             qs = qs.filter(target_type=target_type)
-        return success_response(
-            "Audit log retrieved.",
-            data=FinanceAuditLogSerializer(qs[:500], many=True).data,
-        )
+        return self.paginate(request, qs.order_by("-id"), FinanceAuditLogSerializer)
 

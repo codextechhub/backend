@@ -96,9 +96,7 @@ class FxRateListCreateView(_FinanceBase):
             qs = qs.filter(base_id=base.upper())
         if (quote := request.query_params.get("quote")):
             qs = qs.filter(quote_id=quote.upper())
-        return success_response(
-            "FX rates retrieved.", data=FxRateSerializer(qs[:500], many=True).data,
-        )
+        return self.paginate(request, qs, FxRateSerializer)
 
     def post(self, request):
         body = request.data or {}

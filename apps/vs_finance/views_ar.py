@@ -1087,10 +1087,8 @@ class RefundListCreateView(_FinanceBase):
             qs = qs.filter(status=status_val)
         if (customer := request.query_params.get("customer")):
             qs = qs.filter(customer=_resolve_customer(entity, customer))
-        return success_response(
-            "Refunds retrieved.",
-            data=RefundSerializer(qs.order_by("-refund_date", "-id")[:200], many=True).data,
-        )
+        return _paginate(
+            request, qs.order_by("-refund_date", "-id"), RefundSerializer, self)
 
     def post(self, request):
         entity = resolve_entity(request)
@@ -1906,10 +1904,8 @@ class DunningNoticeListCreateView(_FinanceBase):
             qs = qs.filter(customer=_resolve_customer(entity, customer))
         if (invoice := request.query_params.get("invoice")):
             qs = qs.filter(invoice=_resolve_invoice(entity, invoice))
-        return success_response(
-            "Dunning notices retrieved.",
-            data=DunningNoticeSerializer(qs.order_by("-notice_date", "-id")[:300], many=True).data,
-        )
+        return _paginate(
+            request, qs.order_by("-notice_date", "-id"), DunningNoticeSerializer, self)
 
 
 class _DunningNoticeActionBase(_FinanceBase):

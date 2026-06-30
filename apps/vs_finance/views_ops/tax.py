@@ -156,6 +156,32 @@ class TaxObligationOutstandingView(_FinanceBase):
         )
 
 
+class TaxFilingSummaryView(_FinanceBase):
+    """GET — header KPIs over **all** tax filings (accurate under pagination).
+
+    docstring-name: Tax filings
+    """
+
+    rbac_permission = "finance.tax.view"
+
+    def get(self, request):
+        from django.db.models import Count, F, Q, Sum
+        from django.db.models.functions import Coalesce
+
+        from ..constants import TaxFilingStatus
+
+        entity = resolve_entity(request)
+        agg = TaxFiling.objects.filter(entity=entity).aggregate(
+            outstanding=Coalesce(
+                Sum(F("amount_due") - F("amount_paid"),
+                    filter=~Q(filing_status=TaxFilingStatus.PAID)), 0),
+            open=Count("id", filter=Q(filing_status=TaxFilingStatus.DRAFT)),
+            filed=Count("id", filter=Q(filing_status=TaxFilingStatus.FILED)),
+            paid=Count("id", filter=Q(filing_status=TaxFilingStatus.PAID)),
+        )
+        return success_response("Tax filing summary retrieved.", data=agg)
+
+
 class TaxFilingListCreateView(_FinanceBase):
     """GET (list) / POST (prepare from GL) tax filings for an entity.
 
@@ -174,11 +200,8 @@ class TaxFilingListCreateView(_FinanceBase):
             qs = qs.filter(obligation_id=ob)
         if (status_val := request.query_params.get("filing_status")):
             qs = qs.filter(filing_status=status_val)
-        return success_response(
-            "Tax filings retrieved.",
-            data=TaxFilingSerializer(
-                qs.order_by("-period_end", "-id")[:200], many=True).data,
-        )
+        return self.paginate(
+            request, qs.order_by("-period_end", "-id"), TaxFilingSerializer)
 
     def post(self, request):
         from ..tax_filing import prepare_filing

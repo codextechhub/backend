@@ -47,16 +47,36 @@ class ExpenseClaimListCreateView(_FinanceBase):
             else "finance.expenseclaim.view"
 
     def get(self, request):
+        from ..constants import DocumentStatus, InvoicePaymentStatus
+
         entity = resolve_entity(request)
         qs = ExpenseClaim.objects.filter(entity=entity).prefetch_related("lines")
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
         if (pay := request.query_params.get("payment_status")):
             qs = qs.filter(payment_status=pay)
-        return success_response(
-            "Expense claims retrieved.",
-            data=ExpenseClaimSerializer(qs.order_by("-claim_date", "-id")[:200], many=True).data,
-        )
+        # The UI collapses (status × payment_status) into display states; translate
+        # them to the underlying filters so the list stays filtered server-side.
+        disp = request.query_params.get("display_status")
+        if disp == "DRAFT":
+            qs = qs.filter(status=DocumentStatus.DRAFT)
+        elif disp == "REJECTED":
+            qs = qs.filter(status=DocumentStatus.CANCELLED)
+        elif disp == "PAID":
+            qs = qs.filter(status=DocumentStatus.POSTED,
+                           payment_status=InvoicePaymentStatus.PAID)
+        elif disp == "APPROVED":  # posted but not yet fully reimbursed
+            qs = qs.filter(status=DocumentStatus.POSTED).exclude(
+                payment_status=InvoicePaymentStatus.PAID)
+        if (search := request.query_params.get("q")):
+            from django.db.models import Q
+            qs = qs.filter(
+                Q(claimant_name__icontains=search)
+                | Q(title__icontains=search)
+                | Q(document_number__icontains=search)
+            )
+        return self.paginate(
+            request, qs.order_by("-claim_date", "-id"), ExpenseClaimSerializer)
 
     @transaction.atomic
     def post(self, request):
@@ -212,6 +232,48 @@ class ExpenseClaimSettleView(_ExpenseClaimActionBase):
         return success_response(
             f"Expense claim {claim.document_number} reimbursed.",
             data=ExpenseClaimSerializer(claim, context={"request": request}).data,
+        )
+
+
+class ExpenseClaimSummaryView(_FinanceBase):
+    """GET — header KPIs over **all** expense claims (accurate under pagination).
+
+    docstring-name: Expense claims
+    """
+
+    rbac_permission = "finance.expenseclaim.view"
+
+    def get(self, request):
+        from django.db.models import Count, Q, Sum
+        from django.db.models.functions import Coalesce
+        from django.utils import timezone
+
+        from ..constants import DocumentStatus, InvoicePaymentStatus
+
+        entity = resolve_entity(request)
+        today = timezone.now().date()
+        live = ~Q(status=DocumentStatus.CANCELLED)
+        awaiting_q = Q(status=DocumentStatus.POSTED) & ~Q(
+            payment_status=InvoicePaymentStatus.PAID)
+
+        agg = ExpenseClaim.objects.filter(entity=entity).aggregate(
+            open=Count("id", filter=Q(status=DocumentStatus.DRAFT) | awaiting_q),
+            month_total=Coalesce(Sum("total", filter=live & Q(
+                claim_date__year=today.year, claim_date__month=today.month)), 0),
+            live_total=Coalesce(Sum("total", filter=live), 0),
+            live_count=Count("id", filter=live),
+            awaiting_total=Coalesce(Sum("total", filter=awaiting_q), 0),
+            awaiting_paid=Coalesce(Sum("amount_paid", filter=awaiting_q), 0),
+        )
+        avg = agg["live_total"] // agg["live_count"] if agg["live_count"] else 0
+        return success_response(
+            "Expense claim summary retrieved.",
+            data={
+                "open": agg["open"],
+                "month_total": agg["month_total"],
+                "avg": avg,
+                "awaiting": agg["awaiting_total"] - agg["awaiting_paid"],
+            },
         )
 
 

@@ -103,6 +103,7 @@ from .views_ops import (
     ExpenseClaimReceiptView,
     ExpenseClaimRejectView,
     ExpenseClaimSettleView,
+    ExpenseClaimSummaryView,
     FinanceAuditLogListView,
     FixedAssetAcquireView,
     FixedAssetDepreciateView,
@@ -110,6 +111,7 @@ from .views_ops import (
     FixedAssetDisposeView,
     FixedAssetListCreateView,
     FixedAssetRunDepreciationView,
+    FixedAssetSummaryView,
     FxRateListCreateView,
     EmployeeSalaryDetailView,
     EmployeeSalaryListCreateView,
@@ -118,6 +120,7 @@ from .views_ops import (
     PayrollRunListCreateView,
     PayrollRunPayView,
     PayrollRunPostView,
+    PayrollRunSummaryView,
     SalaryStructureDetailView,
     SalaryStructureListCreateView,
     PettyCashFundDetailView,
@@ -133,6 +136,7 @@ from .views_ops import (
     TaxFilingFileView,
     TaxFilingListCreateView,
     TaxFilingPayView,
+    TaxFilingSummaryView,
     TaxObligationDetailView,
     TaxObligationListCreateView,
     TaxObligationOutstandingView,
@@ -255,6 +259,7 @@ urlpatterns = [
 
     # Expense claims
     path("expense-claims/", ExpenseClaimListCreateView.as_view(), name="finance-expense-list"),
+    path("expense-claims/summary/", ExpenseClaimSummaryView.as_view(), name="finance-expense-summary"),
     path("expense-claims/<int:pk>/", ExpenseClaimDetailView.as_view(), name="finance-expense-detail"),
     path("expense-claims/<int:pk>/post/", ExpenseClaimPostView.as_view(), name="finance-expense-post"),
     path("expense-claims/<int:pk>/reject/", ExpenseClaimRejectView.as_view(), name="finance-expense-reject"),
@@ -285,12 +290,14 @@ urlpatterns = [
     path("tax-obligations/outstanding/", TaxObligationOutstandingView.as_view(),
          name="finance-tax-outstanding"),
     path("tax-filings/", TaxFilingListCreateView.as_view(), name="finance-tax-filing-list"),
+    path("tax-filings/summary/", TaxFilingSummaryView.as_view(), name="finance-tax-filing-summary"),
     path("tax-filings/<int:pk>/", TaxFilingDetailView.as_view(), name="finance-tax-filing-detail"),
     path("tax-filings/<int:pk>/file/", TaxFilingFileView.as_view(), name="finance-tax-filing-file"),
     path("tax-filings/<int:pk>/pay/", TaxFilingPayView.as_view(), name="finance-tax-filing-pay"),
 
     # Payroll
     path("payroll-runs/", PayrollRunListCreateView.as_view(), name="finance-payroll-list"),
+    path("payroll-runs/summary/", PayrollRunSummaryView.as_view(), name="finance-payroll-summary"),
     path("payroll-runs/generate/", PayrollRunGenerateView.as_view(), name="finance-payroll-generate"),
     path("employee-salaries/", EmployeeSalaryListCreateView.as_view(), name="finance-employee-salary-list"),
     path("employee-salaries/<int:pk>/", EmployeeSalaryDetailView.as_view(), name="finance-employee-salary-detail"),
@@ -311,6 +318,7 @@ urlpatterns = [
 
     # Fixed assets
     path("fixed-assets/", FixedAssetListCreateView.as_view(), name="finance-asset-list"),
+    path("fixed-assets/summary/", FixedAssetSummaryView.as_view(), name="finance-asset-summary"),
     path("fixed-assets/run-depreciation/", FixedAssetRunDepreciationView.as_view(), name="finance-asset-run-depreciation"),
     path("fixed-assets/<int:pk>/", FixedAssetDetailView.as_view(), name="finance-asset-detail"),
     path("fixed-assets/<int:pk>/acquire/", FixedAssetAcquireView.as_view(), name="finance-asset-acquire"),

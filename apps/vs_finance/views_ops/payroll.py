@@ -59,10 +59,8 @@ class PayrollRunListCreateView(_FinanceBase):
         qs = PayrollRun.objects.filter(entity=entity).prefetch_related("lines")
         if (status_val := request.query_params.get("run_status")):
             qs = qs.filter(run_status=status_val)
-        return success_response(
-            "Payroll runs retrieved.",
-            data=PayrollRunSerializer(qs.order_by("-pay_date", "-id")[:200], many=True).data,
-        )
+        return self.paginate(
+            request, qs.order_by("-pay_date", "-id"), PayrollRunSerializer)
 
     @transaction.atomic
     def post(self, request):
@@ -96,6 +94,39 @@ class PayrollRunListCreateView(_FinanceBase):
         return success_response(
             f"Payroll run {run.document_number} created.",
             data=PayrollRunSerializer(run).data, status=201,
+        )
+
+
+class PayrollRunSummaryView(_FinanceBase):
+    """GET — header KPIs over **all** payroll runs (accurate under pagination).
+
+    docstring-name: Payroll runs
+    """
+
+    rbac_permission = "finance.payrollrun.view"
+
+    def get(self, request):
+        from django.db.models import Q, Sum
+        from django.db.models.functions import Coalesce
+
+        from ..constants import PayrollRunStatus
+
+        entity = resolve_entity(request)
+        runs = PayrollRun.objects.filter(entity=entity)
+        agg = runs.aggregate(
+            runs=Count("id"),
+            to_pay=Coalesce(
+                Sum("net_total", filter=Q(run_status=PayrollRunStatus.POSTED)), 0),
+        )
+        latest = runs.order_by("-pay_date", "-id").first()
+        return success_response(
+            "Payroll summary retrieved.",
+            data={
+                "runs": agg["runs"],
+                "employees": latest.lines.count() if latest else 0,
+                "net": latest.net_total if latest else 0,
+                "to_pay": agg["to_pay"],
+            },
         )
 
 

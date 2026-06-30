@@ -282,11 +282,8 @@ class PettyCashVoucherListCreateView(_FinanceBase):
             qs = qs.filter(fund_id=fund)
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
-        return success_response(
-            "Petty cash vouchers retrieved.",
-            data=PettyCashVoucherSerializer(
-                qs.order_by("-voucher_date", "-id")[:200], many=True).data,
-        )
+        return self.paginate(
+            request, qs.order_by("-voucher_date", "-id"), PettyCashVoucherSerializer)
 
     @transaction.atomic
     def post(self, request):

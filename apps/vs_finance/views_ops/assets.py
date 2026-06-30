@@ -47,10 +47,8 @@ class FixedAssetListCreateView(_FinanceBase):
             qs = qs.filter(asset_status=status_val)
         if (category := request.query_params.get("category")):
             qs = qs.filter(category=category)
-        return success_response(
-            "Fixed assets retrieved.",
-            data=FixedAssetSerializer(qs.order_by("-acquisition_date", "-id")[:200], many=True).data,
-        )
+        return self.paginate(
+            request, qs.order_by("-acquisition_date", "-id"), FixedAssetSerializer)
 
     def post(self, request):
         from ..constants import AssetCategory, DepreciationMethod
@@ -88,6 +86,45 @@ class FixedAssetListCreateView(_FinanceBase):
         return success_response(
             f"Fixed asset {asset.document_number} created.",
             data=FixedAssetSerializer(asset).data, status=201,
+        )
+
+
+class FixedAssetSummaryView(_FinanceBase):
+    """GET — register KPIs over **all** assets (accurate under pagination).
+
+    docstring-name: Fixed assets
+    """
+
+    rbac_permission = "finance.fixedasset.view"
+
+    def get(self, request):
+        from django.db.models import Q, Sum
+        from django.db.models.functions import Coalesce
+
+        from ..constants import AssetStatus
+
+        entity = resolve_entity(request)
+        assets = FixedAsset.objects.filter(entity=entity)
+        live = assets.exclude(asset_status=AssetStatus.DISPOSED).aggregate(
+            cost=Coalesce(Sum("cost"), 0),
+            accum=Coalesce(Sum("accumulated_depreciation"), 0),
+        )
+        # Straight-line monthly charge is a per-asset floor division, so sum it in
+        # Python over just the (bounded) active set rather than approximating in SQL.
+        monthly = 0
+        for a in assets.filter(
+            asset_status=AssetStatus.ACTIVE, useful_life_months__gt=0,
+        ).values("cost", "salvage_value", "useful_life_months"):
+            base = max(a["cost"] - a["salvage_value"], 0)
+            monthly += base // a["useful_life_months"]
+        return success_response(
+            "Fixed asset summary retrieved.",
+            data={
+                "cost": live["cost"],
+                "accum": live["accum"],
+                "nbv": live["cost"] - live["accum"],
+                "monthly": monthly,
+            },
         )
 
 

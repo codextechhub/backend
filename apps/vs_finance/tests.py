@@ -3406,6 +3406,68 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertFalse(resp.json()["success"])
 
 
+class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
+    """Finance-ops list endpoints paginate (page_size 25) and their /summary/
+    siblings aggregate over **all** rows so header KPIs stay accurate.
+    """
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIClient
+        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            email="ops-admin@test.com", password="testpass123",
+            user_type="CX_STAFF", status="ACTIVE", first_name="Ops", last_name="Admin",
+        )
+        role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
+        PlatformUserRoleAssignment.objects.create(
+            user=self.user, role=role, assignment_status="ACTIVE")
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _claim(self, entity, *, unit_price):
+        r = self.client.post(
+            f"/v1/finance/expense-claims/?entity={entity.code}",
+            {"claimant_name": "Jane Staff", "claim_date": "2026-01-10", "title": "Trip",
+             "lines": [{"description": "Diesel", "expense_account": "5300",
+                        "quantity": 1, "unit_price": unit_price}]}, format="json")
+        self.assertEqual(r.status_code, 201, r.content)
+        return r.json()["data"]["id"]
+
+    def test_expense_list_paginates_and_summary_aggregates_all_rows(self):
+        entity, _, _ = self.build_books()
+        self._claim(entity, unit_price=100000)
+        self._claim(entity, unit_price=300000)
+
+        lst = self.client.get(f"/v1/finance/expense-claims/?entity={entity.code}")
+        self.assertEqual(lst.status_code, 200, lst.content)
+        body = lst.json()
+        self.assertIn("pagination", body)
+        self.assertEqual(body["pagination"]["pageSize"], 25)
+        self.assertEqual(body["pagination"]["totalItems"], 2)
+
+        summ = self.client.get(f"/v1/finance/expense-claims/summary/?entity={entity.code}")
+        self.assertEqual(summ.status_code, 200, summ.content)
+        data = summ.json()["data"]
+        self.assertEqual(data["open"], 2)          # both drafts are open
+        self.assertEqual(data["avg"], 200000)      # (100000 + 300000) / 2
+        self.assertEqual(data["awaiting"], 0)      # none posted yet
+
+    def test_ops_summary_endpoints_handle_empty_books(self):
+        entity, _, _ = self.build_books()
+        for path, keys in (
+            ("expense-claims", {"open", "month_total", "avg", "awaiting"}),
+            ("payroll-runs", {"runs", "employees", "net", "to_pay"}),
+            ("fixed-assets", {"cost", "accum", "nbv", "monthly"}),
+            ("tax-filings", {"outstanding", "open", "filed", "paid"}),
+        ):
+            r = self.client.get(f"/v1/finance/{path}/summary/?entity={entity.code}")
+            self.assertEqual(r.status_code, 200, f"{path}: {r.content}")
+            self.assertEqual(set(r.json()["data"].keys()), keys, path)
+
+
 class EntityCreatePermissionTests(TestCase):
     """Provisioning a new entity must be gated on ``finance.entity.create``.
 

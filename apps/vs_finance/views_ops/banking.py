@@ -192,10 +192,7 @@ class BankStatementLineView(_FinanceBase):
               .select_related("matched_line__entry", "adjusting_journal"))
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
-        return success_response(
-            "Statement lines retrieved.",
-            data=BankStatementLineSerializer(qs[:500], many=True).data,
-        )
+        return self.paginate(request, qs, BankStatementLineSerializer)
 
     def post(self, request, pk):
         from ..banking import import_statement_lines
