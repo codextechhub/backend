@@ -228,6 +228,24 @@ class CustomerListCreateView(_FinanceBase):
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
 
+        # Derived account-status filter. INACTIVE is the is_active column; ACTIVE/CREDIT/
+        # OVERDUE come from the ledger (not a column), so resolve them for the active set
+        # and keep matching ids before paginating (a few aggregate queries, no N+1).
+        status_f = request.query_params.get("status")
+        if status_f == "INACTIVE":
+            qs = qs.filter(is_active=False)
+        elif status_f in ("ACTIVE", "CREDIT", "OVERDUE"):
+            base_ids = list(qs.filter(is_active=True).values_list("id", flat=True))
+            led_all = _customer_ledger(entity, base_ids)
+            keep = [
+                cid for cid in base_ids
+                if _account_status(
+                    (l := led_all.get(cid, {})).get("outstanding", 0) - l.get("credit", 0),
+                    l.get("overdue", False),
+                ) == status_f
+            ]
+            qs = qs.filter(id__in=keep)
+
         paginator = XVSPagination()
         page = paginator.paginate_queryset(qs.order_by("code"), request, view=self)
         ledger = _customer_ledger(entity, [c.id for c in page])
@@ -447,6 +465,49 @@ class CustomerReceiptView(_FinanceBase):
 # Receipts & allocation                                                       #
 # --------------------------------------------------------------------------- #
 
+class CustomerSummaryView(_FinanceBase):
+    """GET /finance/customers/summary/ — entity-wide KPI totals + status counts for the
+    Customers header cards (computed over ALL rows, so they stay accurate while the list
+    itself paginates). Honors the same ``?search=``/``?is_active=`` as the list.
+
+    docstring-name: Customer summary
+    """
+
+    rbac_permission = "finance.customer.view"
+
+    def get(self, request):
+        from django.db.models import Q
+
+        entity = resolve_entity(request)
+        qs = Customer.objects.filter(entity=entity)
+        if (search := request.query_params.get("search")):
+            qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
+        if (active := request.query_params.get("is_active")) in ("true", "false"):
+            qs = qs.filter(is_active=active == "true")
+
+        custs = list(qs.values("id", "is_active"))
+        ledger = _customer_ledger(entity, [c["id"] for c in custs])
+        receivable = 0
+        on_credit = 0
+        counts = {"ACTIVE": 0, "CREDIT": 0, "OVERDUE": 0, "INACTIVE": 0}
+        for c in custs:
+            led = ledger.get(c["id"], {})
+            net = led.get("outstanding", 0) - led.get("credit", 0)
+            status = "INACTIVE" if not c["is_active"] else _account_status(net, led.get("overdue", False))
+            counts[status] += 1
+            if net > 0:
+                receivable += net
+            elif net < 0:
+                on_credit += 1
+        return success_response("Customer summary retrieved.", data={
+            "total": len(custs),
+            "receivable": _money_obj(receivable),
+            "on_credit": on_credit,
+            "overdue": counts["OVERDUE"],
+            "status_counts": counts,
+        })
+
+
 class PaymentListView(_FinanceBase):
     """GET /finance/payments/ — customer receipts and their allocation state.
 
@@ -486,6 +547,60 @@ class PaymentListView(_FinanceBase):
         elif status_f == "PARTIAL":
             qs = qs.filter(allocated_amount__gt=0, allocated_amount__lt=F("amount"))
         return _paginate(request, qs.order_by("-payment_date", "-id"), PaymentSerializer, self)
+
+
+class PaymentSummaryView(_FinanceBase):
+    """GET /finance/payments/summary/ — receipts KPI totals + allocation-status counts
+    for the header cards, over ALL rows (accurate while the list paginates). Honors the
+    same ``?method=``/``?customer=``/``?search=`` as the list.
+
+    docstring-name: Receipts summary
+    """
+
+    rbac_permission = "finance.payment.view"
+
+    def get(self, request):
+        import datetime
+
+        from django.db.models import Count, F, Q, Sum
+        from django.db.models.functions import Coalesce
+
+        from .constants import DocumentStatus
+        from .models import Payment
+
+        entity = resolve_entity(request)
+        qs = (Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED))
+        if (method := request.query_params.get("method")):
+            qs = qs.filter(method=method)
+        if (customer := request.query_params.get("customer")):
+            qs = qs.filter(customer=_resolve_customer(entity, customer))
+        if (search := request.query_params.get("search")):
+            qs = qs.filter(
+                Q(document_number__icontains=search) | Q(customer__name__icontains=search)
+                | Q(customer__code__icontains=search) | Q(reference__icontains=search))
+
+        today = datetime.date.today()
+        week_start = today - datetime.timedelta(days=6)  # 7-day window incl. today
+        agg = qs.aggregate(
+            count=Count("id"),
+            today=Coalesce(Sum("amount", filter=Q(payment_date=today)), 0),
+            week=Coalesce(Sum("amount", filter=Q(payment_date__gte=week_start)), 0),
+            unallocated=Coalesce(Sum(F("amount") - F("allocated_amount")), 0),
+            allocated_c=Count("id", filter=Q(allocated_amount__gte=F("amount"))),
+            unallocated_c=Count("id", filter=Q(allocated_amount__lte=0)),
+            partial_c=Count("id", filter=Q(allocated_amount__gt=0, allocated_amount__lt=F("amount"))),
+        )
+        return success_response("Receipts summary retrieved.", data={
+            "count": agg["count"],
+            "today": _money_obj(agg["today"]),
+            "week": _money_obj(agg["week"]),
+            "unallocated": _money_obj(agg["unallocated"]),
+            "status_counts": {
+                "ALLOCATED": agg["allocated_c"],
+                "PARTIAL": agg["partial_c"],
+                "UNALLOCATED": agg["unallocated_c"],
+            },
+        })
 
 
 class PaymentDetailView(_FinanceBase):

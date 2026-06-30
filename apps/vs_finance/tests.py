@@ -2944,6 +2944,45 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         row = next(r for r in listed["data"] if r["code"] == "OPN1")
         self.assertEqual(row["balance"], 500000)
 
+    def test_customer_summary_and_status_filter(self):
+        """The summary aggregates over ALL customers (accurate while the list paginates),
+        and the list's derived-status filter narrows server-side to the matching rows."""
+        entity, _, _ = self.build_books()
+        # An opening balance makes this customer OVERDUE-or-ACTIVE with a receivable.
+        self.client.post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"code": "SUMA", "name": "Owes Money", "opening_balance": 300000}, format="json")
+        self.client.post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"code": "SUMB", "name": "Flat Co", "is_active": False}, format="json")  # INACTIVE
+
+        summ = self.client.get(f"/v1/finance/customers/summary/?entity={entity.code}").json()["data"]
+        self.assertEqual(summ["total"], 2)
+        self.assertEqual(summ["receivable"]["kobo"], 300000)  # SUMA owes; due today, so ACTIVE
+        self.assertEqual(summ["status_counts"]["ACTIVE"], 1)
+        self.assertEqual(summ["status_counts"]["INACTIVE"], 1)
+        self.assertEqual(sum(summ["status_counts"].values()), 2)
+
+        active = self.client.get(
+            f"/v1/finance/customers/?entity={entity.code}&status=ACTIVE").json()
+        self.assertIn("pagination", active)
+        self.assertEqual([r["code"] for r in active["data"]], ["SUMA"])
+
+    def test_payment_summary_totals_and_counts(self):
+        entity, _, _ = self.build_books()
+        c = self.client.post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"code": "PSUM", "name": "Payer"}, format="json").json()["data"]
+        # A receipt with no invoices → fully unallocated.
+        self.client.post(
+            f"/v1/finance/customers/{c['code']}/receipt/?entity={entity.code}",
+            {"amount": 90000, "payment_date": "2026-01-15", "deposit_account": "1100",
+             "auto_allocate": False}, format="json")
+        summ = self.client.get(f"/v1/finance/payments/summary/?entity={entity.code}").json()["data"]
+        self.assertEqual(summ["count"], 1)
+        self.assertEqual(summ["unallocated"]["kobo"], 90000)
+        self.assertEqual(summ["status_counts"]["UNALLOCATED"], 1)
+
     def test_receipt_largest_first_allocation(self):
         from .models import Invoice
 
