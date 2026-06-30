@@ -42,18 +42,22 @@ class BudgetListCreateView(_FinanceBase):
             else "finance.budget.view"
 
     def get(self, request):
+        from core.pagination import XVSPagination
+
         from ..reports import budget_vs_actual
 
         entity = resolve_entity(request)
         qs = Budget.objects.filter(entity=entity).select_related("fiscal_year").prefetch_related("lines")
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
-        budgets = list(qs[:200])
 
-        # Enrich each budget with its actual-vs-budget headline figures so the list can
-        # show ACTUAL YTD / CONSUMED without the FE fanning out a variance call per row.
-        data = BudgetSerializer(budgets, many=True).data
-        by_id = {b.id: b for b in budgets}
+        # Paginate first, then run the (per-row) variance enrichment over just the page
+        # so the actual-vs-budget figures cost one report per visible row, not per entity.
+        paginator = XVSPagination()
+        paginator.page_size = 25
+        page = paginator.paginate_queryset(qs.order_by("-id"), request, view=self)
+        data = BudgetSerializer(page, many=True).data
+        by_id = {b.id: b for b in page}
         for row in data:
             budget = by_id[row["id"]]
             report = budget_vs_actual(budget)
@@ -62,7 +66,7 @@ class BudgetListCreateView(_FinanceBase):
             row["budgeted_total"] = budgeted
             row["actual_ytd"] = actual
             row["consumed_pct"] = round(actual * 100 / budgeted, 1) if budgeted else None
-        return success_response("Budgets retrieved.", data=data)
+        return paginator.get_paginated_response(data)
 
     def post(self, request):
         from ..budgets import create_budget
