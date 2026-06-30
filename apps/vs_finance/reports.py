@@ -120,6 +120,120 @@ def trial_balance(entity, *, period=None) -> TrialBalance:
 
 
 # --------------------------------------------------------------------------- #
+# Analytical slice — net activity per account, bucketed by an axis            #
+# --------------------------------------------------------------------------- #
+
+#: Sentinel bucket for lines that carry no value on the requested axis.
+UNASSIGNED_BUCKET = "Unassigned"
+
+
+@dataclass
+class AnalyticsSliceRow:
+    """One account's net movement within a single analytical bucket (kobo)."""
+
+    bucket: str
+    account_id: int
+    code: str
+    name: str
+    account_type: str
+    debit: int
+    credit: int
+
+    @property
+    def net(self) -> int:
+        return self.debit - self.credit
+
+    @property
+    def net_naira(self) -> str:
+        return format_naira(self.net)
+
+
+@dataclass
+class AnalyticsSlice:
+    """Posted activity for an entity sliced by one axis (a cost centre or a dimension).
+
+    Unlike the trial balance this reads posted :class:`~vs_finance.models.JournalLine`
+    rows directly — the denormalised ``AccountBalance`` carries neither the cost centre
+    nor the dimensions map, so it cannot answer "per bucket" questions.
+    """
+
+    entity_id: int
+    period_id: int | None
+    axis: str
+    rows: list[AnalyticsSliceRow] = field(default_factory=list)
+    bucket_totals: dict[str, int] = field(default_factory=dict)
+    total_net: int = 0
+
+
+def analytics_slice(entity, *, axis, period=None, account_type=None) -> AnalyticsSlice:
+    """Net movement per account, bucketed by ``axis``, over posted journals.
+
+    ``axis`` is either the literal ``"cost_center"`` or a :class:`~vs_finance.models.Dimension`
+    code (e.g. ``"FUND"``). Lines with no value on the axis fall into
+    :data:`UNASSIGNED_BUCKET`. Optionally scope to one ``period`` and/or one
+    ``account_type``. Net is ``debit - credit`` (kobo) so it reads naturally for both
+    sides of the books.
+    """
+    from .constants import DocumentStatus
+    from .models import JournalLine
+
+    qs = (
+        JournalLine.objects
+        .filter(entry__entity=entity, entry__status=DocumentStatus.POSTED)
+        .select_related("account", "cost_center")
+    )
+    if period is not None:
+        qs = qs.filter(entry__period=period)
+    if account_type:
+        qs = qs.filter(account__account_type=account_type)
+
+    by_key: dict[tuple, dict] = {}
+    bucket_totals: dict[str, int] = {}
+    total_net = 0
+    for line in qs:
+        if axis == "cost_center":
+            bucket = line.cost_center.code if line.cost_center_id else UNASSIGNED_BUCKET
+        else:
+            bucket = (line.dimensions or {}).get(axis) or UNASSIGNED_BUCKET
+        acc = line.account
+        slot = by_key.setdefault(
+            (bucket, acc.id),
+            {
+                "bucket": bucket, "code": acc.code, "name": acc.name,
+                "account_type": acc.account_type, "debit": 0, "credit": 0,
+            },
+        )
+        slot["debit"] += line.debit
+        slot["credit"] += line.credit
+
+    rows: list[AnalyticsSliceRow] = []
+    for (bucket, account_id), slot in sorted(
+        by_key.items(), key=lambda kv: (kv[0][0], kv[1]["code"])
+    ):
+        net = slot["debit"] - slot["credit"]
+        if net == 0:
+            continue  # net-zero account/bucket pairs don't clutter the slice
+        rows.append(
+            AnalyticsSliceRow(
+                bucket=bucket, account_id=account_id,
+                code=slot["code"], name=slot["name"], account_type=slot["account_type"],
+                debit=slot["debit"], credit=slot["credit"],
+            )
+        )
+        bucket_totals[bucket] = bucket_totals.get(bucket, 0) + net
+        total_net += net
+
+    return AnalyticsSlice(
+        entity_id=entity.id,
+        period_id=getattr(period, "id", None),
+        axis=axis,
+        rows=rows,
+        bucket_totals=bucket_totals,
+        total_net=total_net,
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Accounts-Receivable aging + control reconciliation                          #
 # --------------------------------------------------------------------------- #
 

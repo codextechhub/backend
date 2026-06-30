@@ -33,6 +33,7 @@ from .base import (
     _resolve_account,
     _resolve_cost_center,
     _resolve_currency,
+    _str_list,
 )
 
 # --------------------------------------------------------------------------- #
@@ -241,6 +242,7 @@ class DimensionListCreateView(_FinanceBase):
             entity=entity, code=code,
             defaults={
                 "name": body.get("name", code),
+                "allowed_values": _str_list(body.get("allowed_values"), "allowed_values"),
                 "is_active": _bool(body.get("is_active", True), default=True),
             },
         )

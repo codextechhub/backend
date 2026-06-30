@@ -302,11 +302,12 @@ def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
     journal from an invoice/payment/etc.), a direct entry is the one place a caller supplies
     raw lines. It posts with ``source=OPENING`` (the catch-all for sourceless entries).
 
-    ``lines`` is a list of ``(account, debit_kobo, credit_kobo)`` — or
-    ``(account, debit_kobo, credit_kobo, cost_center)`` — where ``account`` is a code
-    string (resolved within ``entity``) or an :class:`~vs_finance.models.Account`, and the
-    optional ``cost_center`` is a :class:`~vs_finance.models.CostCenter` (or ``None``)
-    carried onto the GL line. The entry must balance (Σdebits == Σcredits); it posts into
+    ``lines`` is a list of ``(account, debit_kobo, credit_kobo)`` — optionally extended
+    with a 4th element ``cost_center`` and a 5th element ``dimensions`` — where ``account``
+    is a code string (resolved within ``entity``) or an :class:`~vs_finance.models.Account`,
+    the optional ``cost_center`` is a :class:`~vs_finance.models.CostCenter` (or ``None``)
+    and ``dimensions`` is a ``{axis_code: value}`` map, both carried onto the GL line. The
+    entry must balance (Σdebits == Σcredits); it posts into
     ``date``'s open period — ``date`` defaults to the entity's earliest period start, else
     today. The normal :func:`post_journal` guards apply (period open, balanced, accounts
     active/postable), and it is reversible like any journal. Returns the posted entry.
@@ -334,13 +335,15 @@ def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
         reference=reference, created_by=actor_user,
     )
     for i, row in enumerate(rows, start=1):
-        account, debit, credit, *rest = row  # optional 4th element: cost_center
+        # optional 4th element: cost_center, optional 5th: dimensions JSON map
+        account, debit, credit, *rest = row
         cost_center = rest[0] if rest else None
+        dimensions = rest[1] if len(rest) > 1 else {}
         acct = account if not isinstance(account, str) else resolve_account(entity, account)
         JournalLine.objects.create(
             entry=entry, account=acct,
             debit=int(debit or 0), credit=int(credit or 0),
-            cost_center=cost_center, line_no=i,
+            cost_center=cost_center, dimensions=dimensions or {}, line_no=i,
         )
 
     post_journal(entry, actor_user=actor_user)

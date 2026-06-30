@@ -342,6 +342,11 @@ class Dimension(TimeStampedModel):
     )
     code = models.CharField(max_length=32, help_text="Axis key used inside line ``dimensions`` JSON, e.g. FUND.")
     name = models.CharField(max_length=160)
+    allowed_values = models.JSONField(
+        default=list, blank=True,
+        help_text="Permitted values for this axis, e.g. ['GRANT-A', 'INTERNAL']. "
+                  "Empty means no values are defined yet (lines may not use the axis).",
+    )
     is_active = models.BooleanField(default=True)
 
     class Meta:

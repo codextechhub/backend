@@ -15,6 +15,7 @@ from .base import (  # noqa: F401  — underscore helpers used by views_ar.py
     _resolve_bank_account,
     _resolve_cost_center,
     _resolve_currency,
+    _resolve_dimensions,
     _resolve_fiscal_year,
     _resolve_tax,
     _signed_money,

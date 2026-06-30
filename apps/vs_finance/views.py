@@ -325,6 +325,7 @@ class AccountDetailView(APIView):
                 "status": ln.entry.status,
                 "description": ln.description or ln.entry.narration or "",
                 "cost_center": ln.cost_center.code if ln.cost_center_id else "",
+                "dimensions": ln.dimensions or {},
                 "debit": _money(ln.debit),
                 "credit": _money(ln.credit),
                 "running_balance": _money(running),
@@ -878,18 +879,20 @@ class DirectEntryCreateView(APIView):
 
     def post(self, request):
         from .posting import post_direct_entry
-        from .views_ops import _resolve_cost_center
+        from .views_ops import _resolve_cost_center, _resolve_dimensions
 
         entity = resolve_entity(request)
         serializer = DirectEntryCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
-        # Resolve each line's optional cost centre against this entity (raises a
-        # ValidationError on an unknown code) and carry it through to the GL line.
+        # Resolve each line's optional cost centre + analytical dimensions against this
+        # entity (raises a ValidationError on an unknown code/value) and carry both
+        # through to the GL line.
         lines = [
             (
                 ln["account"], ln["debit"], ln["credit"],
                 _resolve_cost_center(entity, ln.get("cost_center"), "lines.cost_center"),
+                _resolve_dimensions(entity, ln.get("dimensions"), "lines.dimensions"),
             )
             for ln in data["lines"]
         ]
@@ -1191,6 +1194,70 @@ class CashFlowView(APIView):
                 "by_activity": {k: _money(v) for k, v in cf.by_activity.items()},
                 "net_change": _money(cf.net_change),
                 "is_reconciled": cf.is_reconciled,
+            },
+        )
+
+
+class AnalyticsSliceView(APIView):
+    """GET /finance/reports/analytics-slice/?entity=&axis= — net activity per account,
+    bucketed by one analytical axis (a cost centre or a dimension).
+
+    ``axis`` is required: either ``cost_center`` or a registered Dimension code (e.g.
+    ``FUND``). Optional ``period`` and ``account_type`` narrow the slice.
+
+    docstring-name: Analytics slice
+    """
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.report.view"
+
+    def get(self, request):
+        from .models import Dimension
+        from .reports import analytics_slice
+
+        from .exports import ReportTable
+
+        entity = resolve_entity(request)
+        axis = (request.query_params.get("axis") or "").strip()
+        if not axis:
+            raise ValidationError({"axis": "An 'axis' query parameter is required "
+                                           "('cost_center' or a dimension code)."})
+        if axis != "cost_center" and not Dimension.objects.filter(
+            entity=entity, code=axis, is_active=True
+        ).exists():
+            raise ValidationError(
+                {"axis": f"'{axis}' is not 'cost_center' or an active dimension in this entity."})
+
+        period = _resolve_period(entity, request)
+        account_type = request.query_params.get("account_type") or None
+        sl = analytics_slice(entity, axis=axis, period=period, account_type=account_type)
+
+        export = _maybe_export(request, ReportTable(
+            title=f"Analytics Slice · {axis}",
+            subtitle=f"{entity.code} · {getattr(period, 'name', None) or 'All periods'}",
+            columns=["Bucket", "Code", "Account", "Type", "Net"],
+            rows=[[r.bucket, r.code, r.name, r.account_type, r.net_naira] for r in sl.rows],
+            summary_rows=[["", "", "TOTAL", "", format_naira(sl.total_net)]],
+        ), filename=f"analytics_slice_{axis}_{entity.code}")
+        if export is not None:
+            return export
+
+        return success_response(
+            message="Analytics slice retrieved.",
+            data={
+                "entity": entity.code,
+                "period": getattr(period, "name", None),
+                "axis": sl.axis,
+                "rows": [
+                    {
+                        "bucket": r.bucket, "account_id": r.account_id,
+                        "code": r.code, "name": r.name, "account_type": r.account_type,
+                        "debit": _money(r.debit), "credit": _money(r.credit),
+                        "net": _money(r.net),
+                    }
+                    for r in sl.rows
+                ],
+                "bucket_totals": {k: _money(v) for k, v in sl.bucket_totals.items()},
+                "total_net": _money(sl.total_net),
             },
         )
 

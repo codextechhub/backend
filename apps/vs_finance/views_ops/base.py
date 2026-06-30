@@ -15,6 +15,7 @@ from ..models import (
     BankAccount,
     CostCenter,
     Currency,
+    Dimension,
     FiscalYear,
     TaxCode,
 )
@@ -66,6 +67,66 @@ def _resolve_cost_center(entity, ref, field="cost_center"):
     if cc is None:
         raise ValidationError({field: f"No cost centre '{ref}' in this entity."})
     return cc
+
+
+def _str_list(raw, field):
+    """Coerce ``raw`` into a list of non-empty, stripped, de-duplicated strings.
+
+    Used for a :class:`~vs_finance.models.Dimension`'s ``allowed_values``. ``None``
+    yields ``[]``; anything that is not a list (or holds blank entries) is rejected.
+    Order is preserved so the first occurrence of each value wins.
+    """
+    if raw in (None, ""):
+        return []
+    if not isinstance(raw, (list, tuple)):
+        raise ValidationError({field: "Expected a list of values."})
+    seen, out = set(), []
+    for item in raw:
+        val = str(item).strip()
+        if not val:
+            raise ValidationError({field: "Values cannot be blank."})
+        if val not in seen:
+            seen.add(val)
+            out.append(val)
+    return out
+
+
+def _resolve_dimensions(entity, raw, field="dimensions"):
+    """Validate an analytical ``{axis_code: value}`` map for ``entity``.
+
+    Mirrors :func:`_resolve_cost_center`: ``None``/``""``/``{}`` yield an empty map.
+    Each key must be a registered, active :class:`~vs_finance.models.Dimension` code,
+    and each value must be a non-empty string listed in that axis's ``allowed_values``
+    (an axis with no values defined yet accepts none). Returns the cleaned map to
+    store verbatim on the journal line's ``dimensions`` JSON.
+    """
+    if raw in (None, ""):
+        return {}
+    if not isinstance(raw, dict):
+        raise ValidationError({field: "Expected a map of {axis: value}."})
+    if not raw:
+        return {}
+
+    allowed = {
+        d.code: set(d.allowed_values or [])
+        for d in Dimension.objects.filter(entity=entity, is_active=True)
+    }
+    cleaned = {}
+    for axis, value in raw.items():
+        axis = str(axis)
+        if axis not in allowed:
+            raise ValidationError(
+                {field: f"No active dimension '{axis}' in this entity."})
+        val = str(value).strip()
+        if not val:
+            raise ValidationError({field: f"Dimension '{axis}' needs a value."})
+        if val not in allowed[axis]:
+            permitted = ", ".join(sorted(allowed[axis])) or "(none defined)"
+            raise ValidationError(
+                {field: f"'{val}' is not an allowed value for '{axis}'. "
+                        f"Allowed: {permitted}."})
+        cleaned[axis] = val
+    return cleaned
 
 
 def _resolve_currency(ref, field="currency"):

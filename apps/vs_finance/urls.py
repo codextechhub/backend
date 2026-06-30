@@ -10,6 +10,7 @@ from django.urls import path
 from .views import (
     AccountDetailView,
     AccountListCreateView,
+    AnalyticsSliceView,
     ARAgingView,
     ARReconciliationView,
     BalanceSheetView,
@@ -216,6 +217,7 @@ urlpatterns = [
     path("reports/income-statement/", IncomeStatementView.as_view(), name="finance-income-statement"),
     path("reports/balance-sheet/", BalanceSheetView.as_view(), name="finance-balance-sheet"),
     path("reports/cash-flow/", CashFlowView.as_view(), name="finance-cash-flow"),
+    path("reports/analytics-slice/", AnalyticsSliceView.as_view(), name="finance-analytics-slice"),
     path("reports/changes-in-equity/", ChangesInEquityView.as_view(), name="finance-changes-in-equity"),
     path("reports/statutory-pack/", StatutoryPackView.as_view(), name="finance-statutory-pack"),
     path("reports/ar-aging/", ARAgingView.as_view(), name="finance-ar-aging"),

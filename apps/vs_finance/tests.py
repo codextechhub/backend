@@ -3880,3 +3880,231 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
         self.assertEqual(resp.status_code, 403)
         p.refresh_from_db()
         self.assertEqual(p.unallocated_amount, 9000)
+
+
+class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
+    """Analytical dimensions: constrained values, write-through to the GL, and the slice.
+
+    Mirrors :class:`CostCenterPropagationTests` but for the second axis — the
+    ``{axis: value}`` map carried on a journal line and the report that buckets by it.
+    """
+
+    def _axis(self, entity, *, code="FUND", values=("GRANT-A", "INTERNAL")):
+        from vs_finance.models import Dimension
+        return Dimension.objects.create(
+            entity=entity, code=code, name=code.title(), allowed_values=list(values),
+        )
+
+    def _spend(self, entity, *, amount, cost_center=None, dimensions=None,
+               date=datetime.date(2026, 1, 10)):
+        """Post a balanced direct entry: Dr 5500 expense / Cr 1100 bank."""
+        from vs_finance.posting import post_direct_entry
+        return post_direct_entry(
+            entity,
+            lines=[
+                ("5500", amount, 0, cost_center, dimensions or {}),
+                ("1100", 0, amount, None, {}),
+            ],
+            date=date,
+        )
+
+    # --- resolver validation -------------------------------------------------
+    def test_resolve_accepts_allowed_value(self):
+        from vs_finance.views_ops import _resolve_dimensions
+        entity, _, _ = self.build_books()
+        self._axis(entity)
+        self.assertEqual(
+            _resolve_dimensions(entity, {"FUND": "GRANT-A"}), {"FUND": "GRANT-A"})
+
+    def test_resolve_blank_yields_empty_map(self):
+        from vs_finance.views_ops import _resolve_dimensions
+        entity, _, _ = self.build_books()
+        self.assertEqual(_resolve_dimensions(entity, None), {})
+        self.assertEqual(_resolve_dimensions(entity, ""), {})
+        self.assertEqual(_resolve_dimensions(entity, {}), {})
+
+    def test_resolve_rejects_unknown_axis(self):
+        from rest_framework.exceptions import ValidationError
+        from vs_finance.views_ops import _resolve_dimensions
+        entity, _, _ = self.build_books()
+        self._axis(entity)
+        with self.assertRaises(ValidationError):
+            _resolve_dimensions(entity, {"NOPE": "GRANT-A"})
+
+    def test_resolve_rejects_value_not_in_allowlist(self):
+        from rest_framework.exceptions import ValidationError
+        from vs_finance.views_ops import _resolve_dimensions
+        entity, _, _ = self.build_books()
+        self._axis(entity)
+        with self.assertRaises(ValidationError):
+            _resolve_dimensions(entity, {"FUND": "GRANT-Z"})
+
+    def test_resolve_axis_with_no_values_rejects_all(self):
+        from rest_framework.exceptions import ValidationError
+        from vs_finance.views_ops import _resolve_dimensions
+        entity, _, _ = self.build_books()
+        self._axis(entity, code="EMPTY", values=())
+        with self.assertRaises(ValidationError):
+            _resolve_dimensions(entity, {"EMPTY": "anything"})
+
+    def test_resolve_is_tenant_scoped(self):
+        from rest_framework.exceptions import ValidationError
+        from vs_finance.views_ops import _resolve_dimensions
+        entity_a, _, _ = self.build_books()
+        # A second tenant with its own FUND axis must not leak into entity A.
+        entity_b = LedgerEntity.objects.create(
+            name="Other Books", code="OBOOK", kind=LedgerEntity.Kind.TENANT)
+        self._axis(entity_b)
+        with self.assertRaises(ValidationError):
+            _resolve_dimensions(entity_a, {"FUND": "GRANT-A"})
+
+    # --- write-through to the GL + reversal ----------------------------------
+    def test_direct_entry_carries_dimensions_into_gl_and_reversal(self):
+        from vs_finance.posting import reverse_journal
+        from vs_finance.views_ops import _resolve_dimensions
+        entity, _, _ = self.build_books()
+        self._axis(entity)
+        dims = _resolve_dimensions(entity, {"FUND": "GRANT-A"})
+        entry = self._spend(entity, amount=100000, dimensions=dims)
+
+        exp = entry.lines.get(account__code="5500")
+        self.assertEqual(exp.dimensions, {"FUND": "GRANT-A"})
+
+        rev = reverse_journal(entry)
+        self.assertEqual(rev.lines.get(account__code="5500").dimensions, {"FUND": "GRANT-A"})
+
+    # --- the slice report ----------------------------------------------------
+    def test_slice_groups_by_dimension_and_cost_centre(self):
+        from vs_finance.models import CostCenter
+        from vs_finance.reports import analytics_slice, UNASSIGNED_BUCKET
+        from vs_finance.views_ops import _resolve_dimensions
+        entity, _, _ = self.build_books()
+        self._axis(entity)
+        pri = CostCenter.objects.create(entity=entity, code="PRI", name="Primary")
+        self._spend(entity, amount=100000, cost_center=pri,
+                    dimensions=_resolve_dimensions(entity, {"FUND": "GRANT-A"}))
+        self._spend(entity, amount=40000,
+                    dimensions=_resolve_dimensions(entity, {"FUND": "INTERNAL"}),
+                    date=datetime.date(2026, 1, 11))
+
+        by_fund = analytics_slice(entity, axis="FUND")
+        self.assertEqual(
+            {r.bucket: r.net for r in by_fund.rows if r.code == "5500"},
+            {"GRANT-A": 100000, "INTERNAL": 40000})
+
+        by_cc = analytics_slice(entity, axis="cost_center")
+        self.assertEqual(
+            {r.bucket: r.net for r in by_cc.rows if r.code == "5500"},
+            {"PRI": 100000, UNASSIGNED_BUCKET: 40000})
+
+    def test_slice_period_scoping(self):
+        from vs_finance.reports import analytics_slice
+        from vs_finance.views_ops import _resolve_dimensions
+        entity, _, periods = self.build_books()
+        self._axis(entity)
+        self._spend(entity, amount=100000,
+                    dimensions=_resolve_dimensions(entity, {"FUND": "GRANT-A"}),
+                    date=datetime.date(2026, 1, 10))
+        self._spend(entity, amount=40000,
+                    dimensions=_resolve_dimensions(entity, {"FUND": "INTERNAL"}),
+                    date=datetime.date(2026, 2, 10))
+
+        jan = analytics_slice(entity, axis="FUND", period=periods[0])
+        self.assertEqual(
+            {r.bucket: r.net for r in jan.rows if r.code == "5500"}, {"GRANT-A": 100000})
+
+    def test_slice_empty_books_has_no_rows(self):
+        from vs_finance.reports import analytics_slice
+        entity, _, _ = self.build_books()
+        self._axis(entity)
+        sl = analytics_slice(entity, axis="FUND")
+        self.assertEqual(sl.rows, [])
+        self.assertEqual(sl.total_net, 0)
+
+
+class DimensionAnalyticsAPITests(_Phase4FixtureMixin, TestCase):
+    """The dimensions CRUD + analytics-slice REST surface."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIClient
+        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            email="dim-admin@test.com", password="testpass123",
+            user_type="CX_STAFF", status="ACTIVE", first_name="Dim", last_name="Admin",
+        )
+        role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
+        PlatformUserRoleAssignment.objects.create(
+            user=self.user, role=role, assignment_status="ACTIVE")
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_dimension_crud_persists_and_dedupes_values(self):
+        entity, _, _ = self.build_books()
+        r = self.client.post(
+            f"/v1/finance/dimensions/?entity={entity.code}",
+            {"code": "FUND", "name": "Fund",
+             "allowed_values": ["GRANT-A", "GRANT-A", "INTERNAL"]}, format="json")
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(r.json()["data"]["allowed_values"], ["GRANT-A", "INTERNAL"])
+        # Re-POST upserts the axis and replaces the value list.
+        r2 = self.client.post(
+            f"/v1/finance/dimensions/?entity={entity.code}",
+            {"code": "FUND", "name": "Fund", "allowed_values": ["GRANT-B"]}, format="json")
+        self.assertEqual(r2.status_code, 200)
+        self.assertEqual(r2.json()["data"]["allowed_values"], ["GRANT-B"])
+
+    def test_dimension_rejects_blank_value(self):
+        entity, _, _ = self.build_books()
+        r = self.client.post(
+            f"/v1/finance/dimensions/?entity={entity.code}",
+            {"code": "FUND", "allowed_values": ["GRANT-A", "  "]}, format="json")
+        self.assertEqual(r.status_code, 400)
+
+    def test_analytics_slice_endpoint_buckets_activity(self):
+        from vs_finance.posting import post_direct_entry
+        from vs_finance.views_ops import _resolve_dimensions
+        from vs_finance.models import Dimension
+        entity, _, _ = self.build_books()
+        Dimension.objects.create(
+            entity=entity, code="FUND", name="Fund", allowed_values=["GRANT-A"])
+        post_direct_entry(
+            entity,
+            lines=[("5500", 100000, 0, None,
+                    _resolve_dimensions(entity, {"FUND": "GRANT-A"})),
+                   ("1100", 0, 100000, None, {})],
+            date=datetime.date(2026, 1, 10))
+
+        resp = self.client.get(
+            f"/v1/finance/reports/analytics-slice/?entity={entity.code}&axis=FUND")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()["data"]
+        self.assertEqual(data["axis"], "FUND")
+        exp = next(r for r in data["rows"] if r["code"] == "5500")
+        self.assertEqual(exp["bucket"], "GRANT-A")
+        self.assertEqual(exp["net"]["kobo"], 100000)
+
+    def test_analytics_slice_requires_valid_axis(self):
+        entity, _, _ = self.build_books()
+        missing = self.client.get(
+            f"/v1/finance/reports/analytics-slice/?entity={entity.code}")
+        self.assertEqual(missing.status_code, 400)
+        unknown = self.client.get(
+            f"/v1/finance/reports/analytics-slice/?entity={entity.code}&axis=NOPE")
+        self.assertEqual(unknown.status_code, 400)
+
+    def test_analytics_slice_denied_without_report_permission(self):
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views import AnalyticsSliceView
+        entity, _, _ = self.build_books()
+        u = get_user_model().objects.create_user(
+            email="dim-noperm@test.com", password="x", user_type="CX_STAFF",
+            status="ACTIVE", first_name="No", last_name="Perm")
+        req = APIRequestFactory().get(
+            f"/v1/finance/reports/analytics-slice/?entity={entity.code}&axis=cost_center")
+        force_authenticate(req, user=u)
+        resp = AnalyticsSliceView.as_view()(req); resp.render()
+        self.assertEqual(resp.status_code, 403)

@@ -203,7 +203,8 @@ class JournalLineSerializer(serializers.ModelSerializer):
         model = JournalLine
         fields = [
             "id", "line_no", "account_id", "account_code", "account_name",
-            "cost_center", "debit", "credit", "debit_naira", "credit_naira", "description",
+            "cost_center", "dimensions", "debit", "credit", "debit_naira", "credit_naira",
+            "description",
         ]
 
     def get_debit_naira(self, obj) -> str:
@@ -270,6 +271,11 @@ class DirectEntryLineSerializer(serializers.Serializer):
         required=False, allow_blank=True, default="",
         help_text="Optional cost-centre code (or id) to slice this line by; resolved "
                   "within the entity. Carried onto the GL line.",
+    )
+    dimensions = serializers.DictField(
+        child=serializers.CharField(), required=False, default=dict,
+        help_text="Optional analytical values keyed by Dimension.code, e.g. "
+                  "{'FUND': 'GRANT-A'}. Each value must be an allowed value of that axis.",
     )
 
     def validate(self, attrs):
@@ -632,7 +638,7 @@ class CostCenterSerializer(serializers.ModelSerializer):
 class DimensionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Dimension
-        fields = ["id", "code", "name", "is_active"]
+        fields = ["id", "code", "name", "allowed_values", "is_active"]
 
 
 # --------------------------------------------------------------------------- #
