@@ -1,4 +1,5 @@
 ## Undone
+- Wire dunning notices to actually dispatch (2026-06-30): today vs_finance only records intent — mark_notice_sent (dunning.py:222) flips PENDING→SENT + audit but sends nothing; DunningChannel docstring says an external notifications service should read PENDING notices and dispatch per channel (EMAIL/IN_APP, no SMS). The notify app isn't wired for this yet. Build it: a worker/task that picks up PENDING DunningNotice rows, sends email + in-app via vs_notifications, and marks them SENT (or a failure state) — instead of the manual /dunning-notices/<pk>/send/ endpoint just flipping status. Decide PENDING-vs-SENT ownership (does the worker flip to SENT, or does send/ enqueue?). See docs/finance/finance_dunning.md §6/§8.
 
 
 ## Done
