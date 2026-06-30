@@ -164,6 +164,7 @@ seeded control codes those services expect include `1100` Cash & Bank, `1200` AR
     "activity": [
       { "date": "2026-06-20", "journal_no": "CFX-LEKKI-JNL-2026-00009", "source": "Manual",
         "status": "POSTED", "description": "Term-2 tuition receipt", "cost_center": "PRI",
+        "dimensions": {"FUND": "GRANT-A"},
         "debit": {"kobo": 2500000, "naira": "₦25,000.00"}, "credit": {"kobo": 0, "naira": "₦0.00"},
         "running_balance": {"kobo": 4500000, "naira": "₦45,000.00"} }
     ]

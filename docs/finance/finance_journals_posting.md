@@ -67,7 +67,7 @@ All require `?entity=<id|code>`. Gate: `IsAuthenticatedAndActive & HasRBACPermis
 | `GET /journals/<id>/?entity=` | `finance.journal.view` | One entry **with its lines** | — | `JournalEntryDetailSerializer` |
 | `POST /journals/<id>/post/?entity=` | `finance.journal.post` | Post an existing **draft** | — | posted `JournalEntryDetailSerializer` |
 | `POST /journals/<id>/reverse/?entity=` | `finance.journal.reverse` | Reverse a **posted** entry | — | `201` the **reversing** entry |
-| `POST /direct-entries/?entity=` | `finance.directentry.post` | Create **and post** a journal from raw lines | `date?`, `narration?`, `reference?`, `lines:[{account (code), debit?, credit?, cost_center? (code/id)}]` (kobo) | `201` posted `JournalEntryDetailSerializer` |
+| `POST /direct-entries/?entity=` | `finance.directentry.post` | Create **and post** a journal from raw lines | `date?`, `narration?`, `reference?`, `lines:[{account (code), debit?, credit?, cost_center? (code/id), dimensions? ({axis: value})}]` (kobo) | `201` posted `JournalEntryDetailSerializer` |
 
 > **Field notes (verified against the serializers):**
 > - Direct-entry `lines[].account` is an **account code string** resolved within
@@ -76,6 +76,10 @@ All require `?entity=<id|code>`. Gate: `IsAuthenticatedAndActive & HasRBACPermis
 >   serializer (`serializers.py:270`) *and* by a DB check constraint.
 > - The serializer pre-validates the entry **balances and is non-zero**
 >   (`serializers.py:285`) before the engine ever runs.
+> - A line may also carry **`cost_center`** (code/id) and **`dimensions`**
+>   (`{axis: value}`); both are validated against the entity (the dimension value
+>   must be in the axis's allow-list) and carried onto the GL line. See
+>   `finance_cost_centers` §6.
 
 ## 4. Lifecycle / state machine
 
@@ -178,9 +182,9 @@ original's period unless a `date` is given.
     "total_debit": 5000000, "total_credit": 5000000,
     "lines": [
       { "line_no": 1, "account_code": "1100", "account_name": "Cash & Bank",
-        "debit": 5000000, "credit": 0, "debit_naira": "₦50,000.00", "cost_center": null },
+        "debit": 5000000, "credit": 0, "debit_naira": "₦50,000.00", "cost_center": null, "dimensions": {} },
       { "line_no": 2, "account_code": "3000", "account_name": "Owner's Equity",
-        "debit": 0, "credit": 5000000, "credit_naira": "₦50,000.00", "cost_center": null }
+        "debit": 0, "credit": 5000000, "credit_naira": "₦50,000.00", "cost_center": null, "dimensions": {} }
     ]
   }
 }

@@ -47,8 +47,12 @@ Lines that *can* hold a `cost_center` FK (nullable): `JournalLine`
 `BudgetLine`. Setting it is optional; omitting it leaves the line unallocated.
 
 > Sibling concept: **`Dimension`** (`models/gl.py:331`) — user-defined extra axes
-> carried as a JSON map on journal lines. Same "captured on the line" idea; same
-> caveat about reaching the GL.
+> (FUND, PROGRAMME …) carried as a `{axis: value}` JSON map on `JournalLine.dimensions`.
+> Each axis has an `allowed_values` list (`models/gl.py:345`); a line's value must be
+> one of them. Like cost centres, dimensions are now wired end-to-end on **direct
+> entries** (validated by `_resolve_dimensions`, `views_ops/base.py:72`) and read by
+> the analytics-slice report (§6). Sub-ledger document lines don't accept dimension
+> input yet.
 
 ## 3. Endpoint map
 
@@ -99,14 +103,19 @@ split survives.
 What stays **un**-allocated (by design — these are not P&L analytics): the AR/AP
 control line, output/input **tax** liability lines, the accrued-reimbursement
 liability, and the PAYE/pension/net-wages payables. **`direct-entries` accept an
-optional per-line `cost_center`** (code or id), resolved within the entity and
-carried onto the GL line (`serializers.py:263` field → `views.py:879` resolves →
-`posting.py:334` writes it); an unknown code is a `400`.
+optional per-line `cost_center`** (code/id) **and `dimensions`** (`{axis: value}`),
+both resolved within the entity and carried onto the GL line (`serializers.py:263`
+fields → `views.py:879` resolves via `_resolve_cost_center`/`_resolve_dimensions` →
+`posting.py:334` writes them); an unknown cost-centre code or a dimension value not
+in the axis allow-list is a `400`.
 
-**Consequence:** the `cost_center` column on `AccountDetailView` activity
-(`views.py:325`) and any "spend by cost center" report off journal lines now
-returns real values for postings made after the fix. (Journals posted *before* the
-fix have no cost center on their GL lines — historical only.)
+**Consequence:** the `cost_center` (and `dimensions`) columns on `AccountDetailView`
+activity (`views.py:325`) carry real values for postings made after the fix, and the
+dedicated **analytics-slice report** (`GET /finance/reports/analytics-slice/?axis=`,
+`reports.py:analytics_slice`) answers "net per account, bucketed by cost centre or a
+dimension" — reading posted `JournalLine`s directly because `AccountBalance` carries
+neither axis. (Journals posted *before* the fix have no cost centre on their GL
+lines — historical only.)
 
 ## 7. Worked examples (corrected)
 
@@ -157,8 +166,12 @@ recorded a **0-kobo** line. Same drop on posting applies.
   existing center rather than 409-ing.
 - `is_active=false` is a soft filter only; nothing stops a service resolving an
   inactive center if a caller passes its code.
-- `direct-entries` now tag a cost center per line (optional); the balancing
-  contra leg (e.g. cash) is typically left unallocated by the caller.
+- `direct-entries` now tag a cost center **and dimensions** per line (optional);
+  the balancing contra leg (e.g. cash) is typically left unallocated by the caller.
+- **Dimensions are direct-entry-only so far** — sub-ledger document lines
+  (invoice/expense/etc.) accept `cost_center` but not `dimensions` input yet.
+- A dimension value must be in its axis's `allowed_values`; an axis with an empty
+  allow-list accepts **no** values (set them on the dimension upsert first).
 
 ## 9. Permissions & tenant isolation
 
@@ -174,8 +187,10 @@ recorded a **0-kobo** line. Same drop on posting applies.
 
 | File | Responsibility |
 |---|---|
-| `models/gl.py` | `CostCenter`, `Dimension`, `JournalLine.cost_center` |
-| `views_ops/masterdata.py` | `CostCenterListCreateView` (upsert) |
+| `models/gl.py` | `CostCenter`, `Dimension` (+ `allowed_values`), `JournalLine.cost_center`/`dimensions` |
+| `views_ops/base.py` | `_resolve_cost_center`, `_resolve_dimensions` |
+| `reports.py` | `analytics_slice` (net per account, bucketed by an axis) |
+| `views_ops/masterdata.py` | `CostCenterListCreateView` / `DimensionListCreateView` (upserts) |
 | `views_ops/base.py` | `_resolve_cost_center` (code-then-pk, entity-scoped) |
 | `serializers.py` | `CostCenterSerializer` |
 | `receivables.py` / `expenses.py` / `petty_cash.py` / `payroll.py` | postings that **split P&L lines** by `(account, cost_center)` and carry it to the GL |
