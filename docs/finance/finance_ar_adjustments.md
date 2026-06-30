@@ -34,10 +34,9 @@ Routes (mounted at `/v1/finance/`): `credit-notes/…`, `refunds/…`,
   invoice's revenue, use a CREDIT note.
 - **Edit posted invoices.** All four mechanisms post *new* journals; the invoice's
   `amount_credited` / `amount_paid` move, never its lines.
-- **Carry cost centres to the GL on these postings.** Credit/debit notes
-  aggregate revenue **by account only** (cost centre dropped, §6) — unlike the
-  invoice/expense/payroll/petty-cash path. Concessions/refunds/write-offs are
-  single-account and carry none by design.
+- **Carry cost centres on refunds/write-offs/concessions.** Those are
+  single-account postings with no analytics by design. (Credit/debit **notes** do
+  now carry the line's cost centre to the GL — §6.)
 
 ## 2. Domain model
 
@@ -136,11 +135,10 @@ Cr  receivable (AR control)        amount  + invoice.amount_credited += amount
 `Dr customer credit (2140) · Cr AR`. All paths run `post_journal` (the
 `finance_journals_posting` guards) and write a durable rejection audit on failure.
 
-> **Cost centres are dropped on credit/debit notes** — `_post_credit_note_atomic`
-> groups revenue `by_account` only (`credit_notes.py:128`), so a line's
-> `cost_center` does not reach the GL. This flow was **not** in the cost-centre
-> propagation fix (which covered invoice/expense/payroll/petty-cash). See
-> `finance_cost_centers` §6.
+> **Cost centres survive credit/debit-note posting** — `_post_credit_note_atomic`
+> groups revenue by `(account, cost_center)` (`credit_notes.py:125`), so a line's
+> `cost_center` reaches the GL on both the CREDIT (Dr revenue/returns) and DEBIT
+> (Cr revenue) lines. Tax stays aggregated by account. See `finance_cost_centers` §6.
 
 ## 7. Worked example
 
@@ -157,14 +155,8 @@ concession_date}` → draft; `post/` → `Dr 4910 500000 / Cr 1200 500000`, invo
 
 ## 8. Gotchas / known limitations
 
-- 🔴 **Stale model docstring:** `Refund` (`models/adjustments.py:182`) says posting
-  is "Dr AR control, Cr bank" — the code actually does **Dr customer-credit (2140),
-  Cr bank** (`credit_notes.py:327`). The 2140 version is correct (a refund returns
-  *credit*, not an open receivable). Docstring should be corrected.
 - **Refund list is un-paginated** (`[:200]`, `views_ar.py`) — unlike credit notes /
   concessions / ar-adjustments which paginate. Inconsistent; large entities truncate.
-- **Cost centres dropped on credit/debit notes** (§6) — a known gap vs the fixed
-  sub-ledger postings.
 - **A refund needs existing credit** — you can't refund a customer who only has open
   invoices; settle/credit first so `2140` holds the balance.
 - **Write-offs have no document** to list/detail — they're audit-log entries only;
@@ -206,4 +198,5 @@ Worth asserting if not already:
   "exceeds balance" guard; appears in `ar-adjustments/`.
 - Concession exceeding `balance_due` → 400; refreshes the invoice's payment plan.
 - Empty-list shape on a fresh entity.
-- (Regression) credit-note GL line carries **no** cost centre until that gap is fixed.
+- A credit-note line's cost centre reaches the GL
+  (`CreditNoteTests.test_credit_note_revenue_line_carries_cost_centre_to_gl`).

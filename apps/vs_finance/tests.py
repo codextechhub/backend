@@ -733,6 +733,25 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
         with self.assertRaises(PostingError):
             allocate_credit_note(note)
 
+    def test_credit_note_revenue_line_carries_cost_centre_to_gl(self):
+        from .models import CostCenter
+
+        entity, period, customer, _ = self.build_ar()
+        pri = CostCenter.objects.create(entity=entity, code="PRI", name="Primary")
+        note = CreditNote.objects.create(
+            entity=entity, customer=customer, kind=CreditNoteKind.CREDIT,
+            note_date=datetime.date(2026, 1, 15), reason="Returned goods",
+        )
+        CreditNoteLine.objects.create(
+            note=note, revenue_account=Account.objects.get(entity=entity, code="4900"),
+            quantity=1, unit_price=40000, tax_code=None, cost_center=pri, line_no=1,
+        )
+        post_credit_note(note)
+        # The revenue/returns GL line (Dr 4900) carries the cost centre.
+        returns_line = note.journal.lines.get(account__code="4900")
+        self.assertEqual(returns_line.cost_center.code, "PRI")
+        self.assertEqual(returns_line.debit, 40000)
+
     def test_overpayment_books_excess_as_customer_credit(self):
         # A receipt larger than the invoice settles AR and books the excess as a
         # customer-credit liability (2140) — AR never carries a credit balance.

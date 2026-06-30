@@ -98,6 +98,7 @@ split survives.
 | Expense claim (`post_expense_claim`) | expense (Dr) | `(expense_account, cost_center)` | **Yes** | `expenses.py:89` |
 | Petty-cash voucher | expense (Dr) | `(expense_account, cost_center)` | **Yes** | `petty_cash.py:170` |
 | Payroll accrual (`post_payroll`) | gross salary (Dr) | `cost_center` (single salary account) | **Yes** | `payroll.py:198` |
+| Credit/debit note (`post_credit_note`) | revenue/returns | `(revenue_account, cost_center)` | **Yes** | `credit_notes.py:125` |
 | Reversal (`reverse_journal`) | mirrors original | per original line | **Yes — copies it** | `posting.py:272` |
 
 What stays **un**-allocated (by design — these are not P&L analytics): the AR/AP

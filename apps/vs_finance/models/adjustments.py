@@ -182,8 +182,9 @@ class CreditNoteAllocation(TimeStampedModel):
 class Refund(FinanceDocument):
     """A cash refund paid back to a :class:`Customer` for an over-paid credit balance.
 
-    Posting (:func:`vs_finance.credit_notes.post_refund`) raises ``Dr AR control,
-    Cr bank`` — handing money back and restoring the customer's receivable to zero.
+    Posting (:func:`vs_finance.credit_notes.post_refund`) raises ``Dr customer credit
+    (2140), Cr bank`` — paying out the customer's stored credit balance (not an open
+    receivable), capped at their available credit.
     """
 
     DOC_TYPE = DocType.REFUND

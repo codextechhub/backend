@@ -122,13 +122,18 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
     )
 
     # Group revenue + tax by account so the journal stays tidy.
-    revenue_by_account: dict[int, int] = defaultdict(int)
-    revenue_objs: dict[int, object] = {}
+    # Revenue grouped by (account, cost centre) so the cost-centre split survives into
+    # the GL; tax stays aggregated by account (it's a liability, not P&L analytics).
+    revenue_by_key: dict[tuple[int, int | None], int] = defaultdict(int)
+    revenue_objs: dict[tuple[int, int | None], tuple] = {}
     tax_by_account: dict[int, int] = defaultdict(int)
     tax_objs: dict[int, object] = {}
-    for line in note.lines.select_related("revenue_account", "tax_code__collected_account"):
-        revenue_by_account[line.revenue_account_id] += line.net_amount
-        revenue_objs[line.revenue_account_id] = line.revenue_account
+    for line in note.lines.select_related(
+        "revenue_account", "tax_code__collected_account", "cost_center",
+    ):
+        key = (line.revenue_account_id, line.cost_center_id)
+        revenue_by_key[key] += line.net_amount
+        revenue_objs[key] = (line.revenue_account, line.cost_center)
         if line.tax_amount:
             tax_acc = line.tax_code.collected_account if line.tax_code_id else None
             if tax_acc is None:
@@ -147,13 +152,14 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
             entry=entry, account=ar_account, debit=note.total, credit=0,
             description=f"AR: {customer.code}", line_no=line_no,
         )
-        for acc_id, amount in revenue_by_account.items():
+        for (acc_id, cc_id), amount in revenue_by_key.items():
             if amount == 0:
                 continue
             line_no += 1
+            revenue_account, cost_center = revenue_objs[(acc_id, cc_id)]
             JournalLine.objects.create(
-                entry=entry, account=revenue_objs[acc_id], debit=0, credit=amount,
-                description="Revenue", line_no=line_no,
+                entry=entry, account=revenue_account, debit=0, credit=amount,
+                description="Revenue", cost_center=cost_center, line_no=line_no,
             )
         for acc_id, amount in tax_by_account.items():
             line_no += 1
@@ -166,13 +172,14 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
         # Dr revenue/returns + Dr output tax — give value back. The credit settles
         # invoices (Cr AR) for the applied portion; the unapplied remainder becomes a
         # customer-credit liability (Cr 2140) so AR never carries a credit balance.
-        for acc_id, amount in revenue_by_account.items():
+        for (acc_id, cc_id), amount in revenue_by_key.items():
             if amount == 0:
                 continue
             line_no += 1
+            revenue_account, cost_center = revenue_objs[(acc_id, cc_id)]
             JournalLine.objects.create(
-                entry=entry, account=revenue_objs[acc_id], debit=amount, credit=0,
-                description="Revenue / returns", line_no=line_no,
+                entry=entry, account=revenue_account, debit=amount, credit=0,
+                description="Revenue / returns", cost_center=cost_center, line_no=line_no,
             )
         for acc_id, amount in tax_by_account.items():
             line_no += 1
