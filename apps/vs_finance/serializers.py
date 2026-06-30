@@ -421,12 +421,14 @@ class InvoiceSerializer(serializers.ModelSerializer):
 class CreditNoteLineSerializer(serializers.ModelSerializer):
     revenue_account = serializers.CharField(source="revenue_account.code", read_only=True)
     tax_code = serializers.CharField(source="tax_code.code", read_only=True, default=None)
+    cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
 
     class Meta:
         model = CreditNoteLine
         fields = [
             "id", "line_no", "description", "revenue_account",
             "quantity", "unit_price", "tax_code", "net_amount", "tax_amount",
+            "cost_center",
         ]
 
 
