@@ -970,6 +970,31 @@ class PaymentPlanTests(_ARFixtureMixin, TestCase):
             all(i.status == "PAID" for i in plan.installments.all())
         )
 
+    def test_receipt_auto_refreshes_linked_plan(self):
+        # A receipt advances the plan on its own — no manual refresh_plan_progress call.
+        entity, period, customer, _ = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
+        post_invoice(inv)
+        plan = PaymentPlan.objects.create(
+            entity=entity, customer=customer, invoice=inv,
+            start_date=datetime.date(2026, 1, 10), frequency="MONTHLY",
+            installment_count=4, total_amount=inv.balance_due,
+        )
+        build_installments(plan)
+        activate_payment_plan(plan)
+
+        bank = Account.objects.get(entity=entity, code="1100")
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 12),
+            amount=50000, deposit_account=bank,
+        )
+        post_payment(pay)  # deliberately NO refresh_plan_progress(plan) here
+        plan.refresh_from_db()
+        statuses = [i.status for i in plan.installments.order_by("seq_no")]
+        self.assertEqual(statuses, ["PAID", "PAID", "PENDING", "PENDING"])
+        self.assertEqual(plan.settled_total, 50000)
+        self.assertEqual(plan.plan_status, "ACTIVE")
+
     def test_build_rejects_mismatched_explicit_amounts(self):
         entity, period, customer, vat = self.build_ar()
         plan = PaymentPlan.objects.create(

@@ -317,6 +317,9 @@ def _apply_payment_subledger(payment, plan, *, remaining):
         invoice.amount_paid += apply_amount
         invoice.refresh_payment_status(save=False)
         invoice.save(update_fields=["amount_paid", "payment_status", "updated_at"])
+        # Keep any installment plan on this invoice in step with the new settlement.
+        from .installments import refresh_plans_for_invoice
+        refresh_plans_for_invoice(invoice)
 
         remaining -= apply_amount
         applied += apply_amount

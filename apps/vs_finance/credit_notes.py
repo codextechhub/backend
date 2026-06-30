@@ -246,6 +246,9 @@ def _apply_creditnote_subledger(note, plan, *, remaining):
         invoice.amount_credited += apply_amount
         invoice.refresh_payment_status(save=False)
         invoice.save(update_fields=["amount_credited", "payment_status", "updated_at"])
+        # Keep any installment plan on this invoice in step with the new settlement.
+        from .installments import refresh_plans_for_invoice
+        refresh_plans_for_invoice(invoice)
 
         remaining -= apply_amount
         applied += apply_amount
@@ -468,6 +471,9 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
     invoice.amount_credited += amount
     invoice.refresh_payment_status(save=False)
     invoice.save(update_fields=["amount_credited", "payment_status", "updated_at"])
+    # A write-off reduces the outstanding balance, so any installment plan tracks it too.
+    from .installments import refresh_plans_for_invoice
+    refresh_plans_for_invoice(invoice, actor_user=actor_user)
 
     record(
         entity=invoice.entity, action=FinanceAuditAction.INVOICE_WRITTEN_OFF,

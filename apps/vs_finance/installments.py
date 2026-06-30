@@ -241,6 +241,27 @@ def refresh_plan_progress(plan, *, settled_amount=None, actor_user=None):
     return plan
 
 
+def refresh_plans_for_invoice(invoice, *, actor_user=None):
+    """Re-sync every live payment plan attached to ``invoice`` after its settled amount
+    moved (a receipt, credit-note allocation or write-off).
+
+    A plan tracks the invoice's ``settled_amount`` but does not observe it, so this is
+    the push that keeps an ACTIVE/COMPLETED plan in step when cash (or non-cash credit)
+    lands on the invoice. No GL effect. Safe to call when the invoice has no plan.
+    """
+    if invoice is None or invoice.pk is None:
+        return
+    from .constants import PaymentPlanStatus
+    from .models import PaymentPlan
+
+    plans = PaymentPlan.objects.filter(
+        invoice=invoice,
+        plan_status__in=(PaymentPlanStatus.ACTIVE, PaymentPlanStatus.COMPLETED),
+    )
+    for plan in plans:
+        refresh_plan_progress(plan, actor_user=actor_user)
+
+
 # --------------------------------------------------------------------------- #
 # Concessions — discounts / waivers / scholarships (Dr allowance, Cr AR)        #
 # --------------------------------------------------------------------------- #

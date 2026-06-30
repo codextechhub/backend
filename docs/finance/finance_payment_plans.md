@@ -31,9 +31,10 @@ Routes (mounted at `/v1/finance/`): `payment-plans/`, `payment-plans/<pk>/`,
 - **Move money or settle invoices.** Paying an installment is just paying the
   underlying invoice via a receipt (`finance_invoicing_ar`); the plan only
   *displays* that progress.
-- **Auto-update on payment.** Progress is **pull-based** — `refresh_plan_progress`
-  runs on activate, on concession posting, and on the explicit `refresh/`
-  endpoint, but **not** when a receipt posts (§8). Call `refresh/` after a payment.
+- **Cause settlement.** But it *does* now **track** it automatically: any change to
+  the linked invoice's settled amount — a receipt, credit-note allocation or
+  write-off — pushes a refresh of the plan (§4/§8). The manual `refresh/` endpoint
+  remains for standalone plans and explicit overrides.
 
 ## 2. Domain model
 
@@ -86,9 +87,13 @@ any non-terminal ──cancel──▶ CANCELLED
   `scheduled_total == total_amount`, else rejects; then runs `refresh_plan_progress`.
 - **Refresh** distributes settlement (below). **Cancel** is idempotent on
   COMPLETED/CANCELLED.
-- A linked **concession** posting also calls `refresh_plan_progress`
-  (`installments.py:342`), so a waiver/discount updates the plan automatically —
-  unlike a cash receipt.
+- **Settlement auto-syncs the plan.** Every sub-ledger path that moves the linked
+  invoice's settled amount calls `refresh_plans_for_invoice` (`installments.py:244`):
+  a cash receipt (`receivables.py:_apply_payment_subledger`), credit-note allocation
+  (`credit_notes.py:_apply_creditnote_subledger`), and a write-off
+  (`credit_notes.py`). A concession posting refreshes directly
+  (`installments.py:342`). So an ACTIVE plan advances on its own; `refresh/` is only
+  needed for standalone plans or explicit overrides.
 
 ## 5. Calculations
 
@@ -145,10 +150,10 @@ fully settled, a final `refresh/` flips the plan to COMPLETED.
 
 ## 8. Gotchas / known limitations
 
-- 🟠 **Progress is not pushed on receipt.** `post_payment` does **not** call
-  `refresh_plan_progress` (only activate / concession-post / the `refresh/`
-  endpoint do). After a cash payment the plan looks stale until something calls
-  `refresh/`. A signal/hook on receipt posting would close this.
+- ✅ **Progress now auto-syncs on settlement** (was a gotcha): receipts, credit-note
+  allocations and write-offs push `refresh_plans_for_invoice`; concession posting
+  refreshes directly. `refresh/` is no longer required after a normal payment — it
+  remains for standalone plans and explicit `settled_amount` overrides.
 - **`refresh/` is gated on `finance.paymentplan.activate`**, not a `refresh` verb —
   worth knowing when assigning permissions.
 - **Schedule edits are DRAFT-only** — `build_installments` rejects a non-DRAFT plan;
@@ -192,6 +197,6 @@ Worth asserting if not already:
 - Activate rejects when `scheduled_total != total_amount` or no installments built.
 - `refresh/` after a partial invoice settlement marks installments
   PAID/PARTIAL/PENDING oldest-first and flips COMPLETED at full settlement.
-- **The stale-after-receipt gap** (§8): document/assert that a receipt alone does
-  not advance the plan until `refresh/` is called.
+- **Auto-sync** (`PaymentPlanTests.test_receipt_auto_refreshes_linked_plan`): a
+  receipt advances the plan with no manual `refresh/` call.
 - Empty-list shape on a fresh entity.
