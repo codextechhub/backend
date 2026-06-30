@@ -24,7 +24,6 @@ from .constants import (
     DunningChannel,
     DunningNoticeStatus,
     FinanceAuditAction,
-    InvoicePaymentStatus,
 )
 from .exceptions import PostingError
 
@@ -96,13 +95,16 @@ def _stage_for(stages, days_overdue: int):
 def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_user=None):
     """Raise dunning notices for ``entity``'s overdue invoices as at ``as_of`` (today default).
 
-    For each posted, not-fully-paid invoice with an outstanding balance, the invoice's
-    days-overdue is measured from its due date (falling back to its invoice date) and the
-    highest qualifying :class:`~vs_finance.models.DunningStage` selected. A notice is
-    created **only** if one does not already exist for that ``(invoice, level)`` pair, so
-    repeated runs escalate rather than duplicate. Notices on invoices that have since been
-    settled are flipped to RESOLVED. Returns the list of newly created notices.
+    For each posted, not-fully-paid invoice with an outstanding balance, days-overdue is
+    measured from its due date (falling back to its invoice date) and the invoice is
+    advanced **one rung**: the *lowest-level* :class:`~vs_finance.models.DunningStage` it
+    qualifies for that has not been issued yet. So escalation never skips a rung — a
+    backlog climbs L1 → L2 → L3 over successive runs rather than jumping straight to the
+    final notice — and at most one new notice is raised per invoice **per run date**
+    (``as_of``), making same-day re-runs idempotent. Notices on invoices that have since
+    been settled are flipped to RESOLVED. Returns the list of newly created notices.
     """
+    from collections import defaultdict
     from .models import DunningNotice, Invoice
 
     as_of = as_of or timezone.now().date()
@@ -111,25 +113,52 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
     if not stages:
         raise PostingError(f"Dunning policy '{policy.name}' has no stages defined.")
 
-    invoices = Invoice.objects.filter(entity=entity, status=DocumentStatus.POSTED)
+    # Narrow to overdue, still-owing invoices in SQL (not in Python): balance_due is a
+    # property, so annotate it and the effective due date and filter on them — the loop
+    # then only loads invoices that can actually qualify for a stage.
+    from django.db.models import F
+    from django.db.models.functions import Coalesce
+
+    balance = F("total") - F("amount_paid") - F("amount_credited")
+    invoices = (
+        Invoice.objects.filter(entity=entity, status=DocumentStatus.POSTED)
+        .annotate(_balance=balance, _due=Coalesce("due_date", "invoice_date"))
+        .filter(_balance__gt=0, _due__lt=as_of)
+        .select_related("customer")
+    )
     if customer is not None:
         invoices = invoices.filter(customer=customer)
 
     # Resolve any outstanding reminders whose invoice is now fully settled.
     _resolve_settled(entity, actor_user=actor_user)
 
+    invoice_list = list(invoices)
+    # Pre-load (two queries, no per-invoice N+1): which levels each invoice has already
+    # been issued, and which invoices were already advanced on this run date.
+    issued_levels: dict[int, set] = defaultdict(set)
+    issued_today: set = set()
+    if invoice_list:
+        for inv_id, lvl, ndate in DunningNotice.objects.filter(
+            invoice_id__in=[i.id for i in invoice_list],
+        ).values_list("invoice_id", "level", "notice_date"):
+            issued_levels[inv_id].add(lvl)
+            if ndate == as_of:
+                issued_today.add(inv_id)
+
+    stages_by_level = sorted(stages, key=lambda s: s.level)
     created = []
-    for invoice in invoices.exclude(payment_status=InvoicePaymentStatus.PAID).select_related("customer"):
-        if invoice.balance_due <= 0:
-            continue
-        due = invoice.due_date or invoice.invoice_date
-        days_overdue = (as_of - due).days
-        if days_overdue <= 0:
-            continue
-        stage = _stage_for(stages, days_overdue)
+    for invoice in invoice_list:
+        if invoice.id in issued_today:
+            continue  # already advanced one rung on this run date
+        days_overdue = (as_of - (invoice.due_date or invoice.invoice_date)).days
+        already = issued_levels[invoice.id]
+        # Next rung: the lowest-level qualifying stage not yet issued for this invoice.
+        stage = next(
+            (s for s in stages_by_level
+             if s.min_days_overdue <= days_overdue and s.level not in already),
+            None,
+        )
         if stage is None:
-            continue
-        if DunningNotice.objects.filter(invoice=invoice, level=stage.level).exists():
             continue
 
         notice = DunningNotice.objects.create(

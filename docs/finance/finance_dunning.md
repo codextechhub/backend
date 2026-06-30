@@ -29,8 +29,10 @@ Routes (mounted at `/v1/finance/`): `dunning-policies/…`, `dunning/generate/`,
   notice) and the *outcome* (`SENT`); an **outer notifications service reads
   `PENDING` notices and dispatches them** (`dunning.py:11`, `DunningChannel`
   docstring `constants.py:240`). "Send" here = flip to `SENT` + audit (§6/§8).
-- **Hit every rung.** A run picks the **highest** qualifying stage, not each one in
-  turn — infrequent runs can skip levels (§8).
+- **Skip rungs.** A run advances an invoice **one step** — the *lowest* qualifying
+  rung it hasn't been issued yet — so a backlog climbs L1 → L2 → L3 over successive
+  runs instead of jumping straight to the final notice (§4/§5). At most one new
+  notice per invoice **per run date**, so same-day re-runs are idempotent.
 
 ## 2. Domain model
 
@@ -73,10 +75,10 @@ Notice:  (generate/remind) ─▶ PENDING ──send──▶ SENT
                                │  └── invoice settled ──▶ RESOLVED
                                └────── cancel ─────────▶ CANCELLED
 ```
-- **Run** (`generate_dunning`): for each posted, not-fully-paid invoice with a
-  positive balance, measure days-overdue and raise a `PENDING` notice at the
-  highest qualifying stage — **unless** a notice already exists for that
-  `(invoice, level)`.
+- **Run** (`generate_dunning`): for each posted, still-owing invoice, raise a
+  `PENDING` notice at the **lowest qualifying rung not yet issued** — advancing one
+  step per run date. `(invoice, level)` uniqueness still guards against duplicates;
+  an invoice already advanced on this `as_of` is left alone.
 - **Auto-resolve:** every run first flips any `PENDING`/`SENT` notice whose invoice
   is now settled to `RESOLVED` (`_resolve_settled`, `dunning.py:208`).
 - **Per-invoice reminder** (`remind_invoice`): reuses the `(invoice, level)` notice
@@ -88,10 +90,13 @@ Notice:  (generate/remind) ─▶ PENDING ──send──▶ SENT
 
 ```
 days_overdue = (as_of − (invoice.due_date or invoice.invoice_date)).days   # >0 = overdue
-stage        = highest stage with min_days_overdue ≤ days_overdue           # _stage_for, dunning.py:84
+run stage    = lowest-level stage with min_days_overdue ≤ days_overdue       # that the
+                                                                            # invoice hasn't been issued yet
 ```
-`generate_dunning` skips invoices with `days_overdue ≤ 0`; `remind_invoice` clamps
-to `0` and falls back to the **gentlest** stage (`stages[0]`) when not yet overdue.
+A **run** advances one rung (lowest unissued qualifying). `remind_invoice` (the
+manual per-invoice nudge) instead uses `_stage_for` — the **highest** qualifying
+stage, falling back to the gentlest (`stages[0]`) when not yet overdue — because
+it's a single deliberate reminder, not an escalation sequence.
 
 **Summary buckets** (`DunningSummaryView`), by days past `due_date`:
 `due_soon` (−7…0), `overdue_1_30`, `overdue_31_60`, `overdue_60_plus` — each
@@ -116,10 +121,11 @@ Seed + run:
 POST /v1/finance/dunning-policies/?entity=LEKKI   { "use_default": true }
 POST /v1/finance/dunning/generate/?entity=LEKKI   { "as_of": "2026-06-30" }
 ```
-An invoice 40 days overdue → one `PENDING` `DunningNotice` at **L3 Final notice**
-(highest rung ≥30d), `amount_due` = its balance, `channel:"EMAIL"`. Re-running the
-same day creates nothing (the `(invoice, L3)` notice exists). After the customer
-pays, the next run flips that notice to `RESOLVED`.
+An invoice 40 days overdue with no prior notices → one `PENDING` `DunningNotice` at
+**L1 Friendly reminder** (the lowest unissued qualifying rung), `amount_due` = its
+balance, `channel:"EMAIL"`. Re-running the **same day** creates nothing (already
+advanced today); the **next day's** run raises L2, the day after L3. After the
+customer pays, the next run flips the open notice to `RESOLVED`.
 
 `POST /dunning-notices/<id>/send/` → `SENT` + `sent_at`; the notifications worker
 then emails it.
@@ -128,13 +134,18 @@ then emails it.
 
 - ⚠️ **`send` doesn't email** (§6) — it records dispatch intent; an external service
   does the actual sending. Don't treat `SENT` as proof of delivery.
-- **Runs raise only the highest qualifying rung.** An invoice that goes 0 → 40 days
-  between runs jumps straight to L3; it never gets an L1/L2 notice. Frequent
-  (e.g. daily) runs avoid skips; the `(invoice, level)` uniqueness is what prevents
-  duplicates, not a "fire every rung" loop.
-- **`generate_dunning` and `dunning/summary/` iterate posted invoices in Python**
-  (`balance_due` is a property) — fine for typical AR, but O(open invoices) per
-  call; watch it on very large ledgers.
+- **Escalation is one rung per run date** (was "highest only"). A backlog climbs
+  L1 → L2 → L3 over successive run dates, never skipping; same-day re-runs don't
+  advance. So a severely overdue invoice that's never been dunned takes a few runs
+  to reach the final notice — by design (gentle-first). If you'd rather it reflect
+  current severity immediately, that's a one-line change to the stage-selection.
+- **`generate_dunning` / `dunning/summary/` now pre-filter in SQL** — `balance_due`
+  is a property, so both annotate it (`total − amount_paid − amount_credited`) and
+  filter `> 0` in the query; `generate` also filters `Coalesce(due_date,
+  invoice_date) < as_of` so only overdue, still-owing invoices are loaded. The
+  date-bucketing (summary) and stage selection (generate) stay in Python over that
+  reduced set — portable across Postgres/MariaDB. Heavy date math is deliberately
+  not pushed to SQL (date-diff dialects differ).
 - **Policy list is un-paginated** (few rows, acceptable); notices list **is**
   paginated.
 - **PATCH `stages` replaces the whole ladder** (delete + recreate) — not a merge;
@@ -171,8 +182,11 @@ and no new one is raised.
 
 Worth asserting if not already:
 - **403** per verb; **cross-tenant** policy/notice id → 404.
-- `_stage_for` picks the highest qualifying rung; the level-skip behaviour (§8) is
-  intended.
+- A run advances **one rung per run date**, lowest unissued first
+  (`test_generate_advances_one_rung_lowest_unissued_first`,
+  `test_generate_escalates_one_rung_per_run_date`); same-day re-runs are idempotent
+  (`test_generate_is_idempotent_per_run_date`). `remind_invoice` still uses the
+  highest qualifying rung.
 - `≤1 default policy/entity` enforced; `use_default` seeds the standard ladder
   idempotently.
 - `send` is idempotent once `SENT`; `cancel` idempotent on terminal; `remind_invoice`

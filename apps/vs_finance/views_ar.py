@@ -1862,15 +1862,21 @@ class DunningSummaryView(_FinanceBase):
     def get(self, request):
         import datetime
 
+        from django.db.models import F
+
         entity = resolve_entity(request)
         today = datetime.date.today()
         buckets = {k: {"amount": 0, "count": 0} for k in
                    ("due_soon", "overdue_1_30", "overdue_31_60", "overdue_60_plus")}
-        for inv in (Invoice.objects.filter(entity=entity, status=DocumentStatus.POSTED)
-                    .exclude(due_date__isnull=True).only("due_date", "total", "amount_paid", "amount_credited")):
+        # Drop fully-settled invoices in SQL (balance_due is a property); only the
+        # date-bucketing is left to Python, over the still-owing set.
+        balance = F("total") - F("amount_paid") - F("amount_credited")
+        owing = (Invoice.objects.filter(entity=entity, status=DocumentStatus.POSTED)
+                 .exclude(due_date__isnull=True)
+                 .annotate(_balance=balance).filter(_balance__gt=0)
+                 .only("due_date", "total", "amount_paid", "amount_credited"))
+        for inv in owing:
             bal = inv.balance_due
-            if bal <= 0:
-                continue
             d = (today - inv.due_date).days  # >0 overdue, <=0 upcoming
             if -7 <= d <= 0:
                 key = "due_soon"

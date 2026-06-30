@@ -1101,17 +1101,19 @@ class DunningTests(_ARFixtureMixin, TestCase):
             [s.min_days_overdue for s in p1.stages.order_by("level")], [1, 14, 30],
         )
 
-    def test_generate_raises_notice_at_highest_qualifying_stage(self):
+    def test_generate_advances_one_rung_lowest_unissued_first(self):
         entity, period, customer, vat = self.build_ar()
         ensure_default_policy(entity)
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)],
                                 due=datetime.date(2026, 1, 25))
         post_invoice(inv)  # 100,000 outstanding, due 25 Jan
 
+        # 35 days late qualifies for all three rungs, but a run advances ONE step —
+        # the lowest rung not yet issued (L1), not straight to the final notice.
         notices = generate_dunning(entity, as_of=datetime.date(2026, 3, 1))  # 35 days late
         self.assertEqual(len(notices), 1)
         notice = notices[0]
-        self.assertEqual(notice.level, 3)            # Final notice (min 30 days)
+        self.assertEqual(notice.level, 1)            # lowest unissued qualifying rung
         self.assertEqual(notice.notice_status, "PENDING")
         self.assertEqual(notice.amount_due, 100000)
         self.assertEqual(notice.days_overdue, 35)
@@ -1120,18 +1122,37 @@ class DunningTests(_ARFixtureMixin, TestCase):
             FinanceAuditLog.objects.filter(action="DUNNING_RUN_GENERATED").exists()
         )
 
-    def test_generate_is_idempotent_per_invoice_level(self):
+    def test_generate_escalates_one_rung_per_run_date(self):
+        entity, period, customer, vat = self.build_ar()
+        ensure_default_policy(entity)
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)],
+                                due=datetime.date(2026, 1, 25))
+        post_invoice(inv)
+        # Runs on three successive dates climb one rung each (never skipping).
+        for d, lvl in ((datetime.date(2026, 3, 1), 1),
+                       (datetime.date(2026, 3, 2), 2),
+                       (datetime.date(2026, 3, 3), 3)):
+            self.assertEqual([n.level for n in generate_dunning(entity, as_of=d)], [lvl])
+        # Nothing left to escalate after the final rung.
+        self.assertEqual(generate_dunning(entity, as_of=datetime.date(2026, 3, 4)), [])
+        self.assertEqual(
+            sorted(DunningNotice.objects.filter(invoice=inv).values_list("level", flat=True)),
+            [1, 2, 3],
+        )
+
+    def test_generate_is_idempotent_per_run_date(self):
         entity, period, customer, vat = self.build_ar()
         ensure_default_policy(entity)
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 80000, None)],
                                 due=datetime.date(2026, 1, 25))
         post_invoice(inv)
 
-        first = generate_dunning(entity, as_of=datetime.date(2026, 2, 20))  # ~26 days → level 2
+        # Two runs on the SAME date advance only one rung total (re-runs are no-ops).
+        first = generate_dunning(entity, as_of=datetime.date(2026, 2, 20))  # ~26 days
         second = generate_dunning(entity, as_of=datetime.date(2026, 2, 20))
         self.assertEqual(len(first), 1)
-        self.assertEqual(first[0].level, 2)
-        self.assertEqual(len(second), 0)  # same level already issued → no duplicate
+        self.assertEqual(first[0].level, 1)  # lowest unissued rung first
+        self.assertEqual(len(second), 0)     # same run date → no further escalation
         self.assertEqual(DunningNotice.objects.filter(invoice=inv).count(), 1)
 
     def test_not_yet_due_invoice_is_skipped(self):
