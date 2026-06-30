@@ -227,10 +227,7 @@ class StockMovementListView(_ProcBase):
                 else qs.filter(stock_item__code=item_ref)
         if (mtype := request.query_params.get("movement_type")):
             qs = qs.filter(movement_type=mtype)
-        return success_response(
-            "Stock movements retrieved.",
-            data=StockMovementSerializer(qs[:300], many=True).data,
-        )
+        return self.paginate(request, qs.order_by("-id"), StockMovementSerializer)
 
 
 class StockReorderReportView(_ProcBase):
