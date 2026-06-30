@@ -57,10 +57,7 @@ class StockItemListCreateView(_ProcBase):
         if request.query_params.get("needs_reorder") == "true":
             from django.db.models import F
             qs = qs.filter(is_active=True, on_hand_qty__lte=F("reorder_level"))
-        return success_response(
-            "Stock items retrieved.",
-            data=StockItemSerializer(qs.order_by("code")[:200], many=True).data,
-        )
+        return self.paginate(request, qs.order_by("code"), StockItemSerializer)
 
     def post(self, request):
         entity = resolve_entity(request)

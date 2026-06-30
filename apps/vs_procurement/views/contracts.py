@@ -62,10 +62,7 @@ class ContractListCreateView(_ProcBase):
         if (vendor := request.query_params.get("vendor")):
             qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() \
                 else qs.filter(vendor__code=vendor)
-        return success_response(
-            "Vendor contracts retrieved.",
-            data=VendorContractSerializer(qs.order_by("-id")[:200], many=True).data,
-        )
+        return self.paginate(request, qs.order_by("-id"), VendorContractSerializer)
 
     def post(self, request):
         entity = resolve_entity(request)

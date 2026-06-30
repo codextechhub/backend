@@ -123,4 +123,14 @@ def _require_lines(body):
 class _ProcBase(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
+    def paginate(self, request, qs, serializer_cls, **ser_kwargs):
+        """List response through the platform's XVSPagination envelope ({pagination, data}).
+        Fixed page size 25 (override per-request with ?page_size=, capped at 100)."""
+        from core.pagination import XVSPagination
+
+        paginator = XVSPagination()
+        paginator.page_size = 25
+        page = paginator.paginate_queryset(qs, request, view=self)
+        return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)
+
 

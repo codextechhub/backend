@@ -59,10 +59,7 @@ class PurchaseOrderListCreateView(_ProcBase):
             qs = qs.filter(status=status_)
         if (vendor := request.query_params.get("vendor")):
             qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
-        return success_response(
-            "Purchase orders retrieved.",
-            data=PurchaseOrderSerializer(qs.order_by("-id")[:200], many=True).data,
-        )
+        return self.paginate(request, qs.order_by("-id"), PurchaseOrderSerializer)
 
     def post(self, request):
         entity = resolve_entity(request)
@@ -115,10 +112,7 @@ class RfqListCreateView(_ProcBase):
         qs = RequestForQuotation.objects.filter(entity=entity).prefetch_related("lines")
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(rfq_status=status_)
-        return success_response(
-            "RFQs retrieved.",
-            data=RequestForQuotationSerializer(qs.order_by("-id")[:200], many=True).data,
-        )
+        return self.paginate(request, qs.order_by("-id"), RequestForQuotationSerializer)
 
     def post(self, request):
         entity = resolve_entity(request)
@@ -222,10 +216,7 @@ class QuotationListCreateView(_ProcBase):
             qs = qs.filter(rfq_id=rfq)
         if (vendor := request.query_params.get("vendor")):
             qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
-        return success_response(
-            "Quotations retrieved.",
-            data=VendorQuotationSerializer(qs.order_by("-id")[:200], many=True).data,
-        )
+        return self.paginate(request, qs.order_by("-id"), VendorQuotationSerializer)
 
     def post(self, request):
         entity = resolve_entity(request)

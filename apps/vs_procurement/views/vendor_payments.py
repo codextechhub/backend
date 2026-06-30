@@ -48,10 +48,7 @@ class VendorPaymentListCreateView(_ProcBase):
         qs = VendorPayment.objects.filter(entity=entity).select_related("vendor").prefetch_related("allocations")
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
-        return success_response(
-            "Vendor payments retrieved.",
-            data=VendorPaymentSerializer(qs.order_by("-id")[:200], many=True).data,
-        )
+        return self.paginate(request, qs.order_by("-id"), VendorPaymentSerializer)
 
     def post(self, request):
         entity = resolve_entity(request)

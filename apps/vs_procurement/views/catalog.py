@@ -76,10 +76,7 @@ class CatalogItemListCreateView(_ProcBase):
         if (search := request.query_params.get("q")):
             from django.db.models import Q
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
-        return success_response(
-            "Catalog items retrieved.",
-            data=CatalogItemSerializer(qs[:200], many=True).data,
-        )
+        return self.paginate(request, qs.order_by("code"), CatalogItemSerializer)
 
     def post(self, request):
         entity = resolve_entity(request)

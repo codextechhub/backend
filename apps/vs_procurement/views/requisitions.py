@@ -53,10 +53,7 @@ class RequisitionListCreateView(_ProcBase):
         qs = PurchaseRequisition.objects.filter(entity=entity).prefetch_related("lines")
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
-        return success_response(
-            "Requisitions retrieved.",
-            data=RequisitionSerializer(qs.order_by("-id")[:200], many=True).data,
-        )
+        return self.paginate(request, qs.order_by("-id"), RequisitionSerializer)
 
     def post(self, request):
         entity = resolve_entity(request)

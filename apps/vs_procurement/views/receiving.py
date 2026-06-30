@@ -54,10 +54,7 @@ class GoodsReceiptListCreateView(_ProcBase):
         qs = GoodsReceivedNote.objects.filter(entity=entity).select_related("vendor").prefetch_related("lines")
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
-        return success_response(
-            "Goods receipts retrieved.",
-            data=GoodsReceivedNoteSerializer(qs.order_by("-id")[:200], many=True).data,
-        )
+        return self.paginate(request, qs.order_by("-id"), GoodsReceivedNoteSerializer)
 
     def post(self, request):
         entity = resolve_entity(request)
@@ -155,10 +152,7 @@ class VendorInvoiceListCreateView(_ProcBase):
         for param in ("status", "payment_status", "match_status"):
             if (val := request.query_params.get(param)):
                 qs = qs.filter(**{param: val})
-        return success_response(
-            "Vendor invoices retrieved.",
-            data=VendorInvoiceSerializer(qs.order_by("-id")[:200], many=True).data,
-        )
+        return self.paginate(request, qs.order_by("-id"), VendorInvoiceSerializer)
 
     def post(self, request):
         entity = resolve_entity(request)

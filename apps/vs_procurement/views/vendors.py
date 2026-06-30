@@ -42,10 +42,7 @@ class VendorCategoryListCreateView(_ProcBase):
     def get(self, request):
         entity = resolve_entity(request)
         qs = VendorCategory.objects.filter(entity=entity).select_related("default_expense_account")
-        return success_response(
-            "Vendor categories retrieved.",
-            data=VendorCategorySerializer(qs[:200], many=True).data,
-        )
+        return self.paginate(request, qs.order_by("code"), VendorCategorySerializer)
 
     def post(self, request):
         entity = resolve_entity(request)
@@ -81,9 +78,7 @@ class VendorListCreateView(_ProcBase):
             qs = qs.filter(is_active=active == "true")
         if (hold := request.query_params.get("on_hold")) in ("true", "false"):
             qs = qs.filter(on_hold=hold == "true")
-        return success_response(
-            "Vendors retrieved.", data=VendorSerializer(qs[:200], many=True).data,
-        )
+        return self.paginate(request, qs.order_by("code"), VendorSerializer)
 
     def post(self, request):
         entity = resolve_entity(request)
