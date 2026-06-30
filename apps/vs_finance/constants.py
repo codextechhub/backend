@@ -163,6 +163,7 @@ class InvoiceSource(models.TextChoices):
     FEE_BILLING = "FEE_BILLING", "Fee Billing"
     SUBSCRIPTION = "SUBSCRIPTION", "Subscription"
     API = "API", "API"
+    OPENING = "OPENING", "Opening Balance"
 
 
 class InvoicePaymentStatus(models.TextChoices):

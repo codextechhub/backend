@@ -29,9 +29,6 @@ Routes covered (mounted at `/v1/finance/`): `customers/`, `customers/<pk>/`,
   settling one or more invoices; overflow becomes customer credit.
 
 **This does NOT:**
-- **Auto-post `opening_balance`.** A customer's `opening_balance` is informational
-  only (`models/ar.py:64`); seat real opening AR via a direct entry
-  (`finance_journals_posting`).
 - **Let AR carry a credit balance.** Overpayments are split at source into a
   **customer-credit liability** (`2140`), never left as a negative receivable
   (§6).
@@ -64,19 +61,19 @@ All require `?entity=<id|code>`. Gate: `IsAuthenticatedAndActive & HasRBACPermis
 
 | Method + path | permission key | what it does | request body | response |
 |---|---|---|---|---|
-| `GET /customers/` | `finance.customer.view` | List + computed `balance`/`account_status` (capped 500). Query: `search`, `is_active` | — | list of `CustomerSerializer` + balance |
-| `POST /customers/` | `finance.customer.create` | Create. AR control **defaults to `1200`** | `code`, `name`, `receivable_account?`, billing\_*?, `opening_balance?`, `source_type?/source_id?` | `201` `CustomerSerializer` |
+| `GET /customers/` | `finance.customer.view` | List + computed `balance`/`account_status` (**paginated**). Query: `search`, `is_active` | — | paginated `CustomerSerializer` + balance |
+| `POST /customers/` | `finance.customer.create` | Create. AR control **defaults to `1200`**; if `opening_balance>0`, posts an **opening invoice** (§6) | `code`, `name`, `receivable_account?`, billing\_*?, `opening_balance?`, `source_type?/source_id?` | `201` `CustomerSerializer` |
 | `GET /customers/<pk>/` | `finance.customer.view` | Customer detail + ledger | — | detail |
-| `POST /customers/<pk>/receipt/` | `finance.payment.create` | Record a receipt, auto-allocate oldest-first | `amount`, `payment_date`, `deposit_account`, `method?`, `auto_allocate?` | `201` `{allocated, unallocated}` |
+| `POST /customers/<pk>/receipt/` | `finance.payment.create` | Record a receipt, auto-allocate | `amount`, `payment_date`, `deposit_account`, `method?`, `auto_allocate?`, `allocation_strategy?` (`oldest`\|`largest`) | `201` `{allocated, unallocated}` |
 | `GET /invoices/` | `finance.invoice.view` | List. Query: `status`, `payment_status`, `bucket` (draft/issued/partial/paid/overdue), `search`, `customer` | — | paginated `InvoiceSerializer` |
 | `POST /invoices/` | `finance.invoice.create` | Manual invoice; **posts** unless `post=false` (priced draft) | `customer`, `invoice_date`, `lines:[{revenue_account, quantity?, unit_price, tax_code?, cost_center?}]`, `post?` | `201` `InvoiceSerializer` |
 | `GET /invoices/summary/` | `finance.invoice.view` | KPIs, status counts, 12-month series | — | `success_response` |
 | `GET /invoices/<pk>/` | `finance.invoice.view` | Full invoice: lines, allocations, GL, reminders | — | detail |
 | `POST /invoices/<pk>/pay/` | `finance.payment.create` | Receipt settling **this** invoice | `amount`, `payment_date`, `deposit_account`, `method?`, … | `201` `InvoiceSerializer` |
 | `POST /invoices/<pk>/remind/` | `finance.dunning.send` | Raise a dunning reminder → `finance_dunning` | `message?` | `DunningNoticeSerializer` |
-| `GET /payments/` | `finance.payment.view` | Posted receipts + allocation state. Query: `status` (ALLOCATED/PARTIAL/UNALLOCATED), `method`, `customer`, `search` | — | list of `PaymentSerializer` |
+| `GET /payments/` | `finance.payment.view` | Posted receipts + allocation state (**paginated**). Query: `status` (ALLOCATED/PARTIAL/UNALLOCATED, filtered in-DB), `method`, `customer`, `search` | — | paginated `PaymentSerializer` |
 | `GET /payments/<pk>/` | `finance.payment.view` | Receipt + allocations + open-invoice candidates + GL | — | detail |
-| `POST /payments/<pk>/allocate/` | `finance.payment.allocate` | Apply stored customer credit to invoices | `allocations:[{invoice, amount}]` **or** `auto_allocate:true` | `PaymentSerializer` |
+| `POST /payments/<pk>/allocate/` | `finance.payment.allocate` | Apply stored customer credit to invoices | `allocations:[{invoice, amount}]` **or** `auto_allocate:true` (+ `allocation_strategy?`) | `PaymentSerializer` |
 | `GET/POST /fee-structures/…` | `finance.feestructure.view`/`.create` | Billing catalogue CRUD | — | `FeeStructureSerializer` |
 | `POST /fee-structures/<pk>/generate/` | `finance.feestructure.generate` | One **posted** invoice per customer | `customers:[…]` or `all_active:true`, `invoice_date?`, `due_date?` | `201` invoices |
 
@@ -140,12 +137,26 @@ Cr  customer credit (2140)         excess             (only if overpaid)
 oldest-first open invoices); each `PaymentAllocation` row is written and the
 invoice's `amount_paid` bumped *before* the GL line, capped at balance/remaining.
 
-**Applying stored credit** — `allocate_payment` (`receivables.py:345`) on an
-already-posted receipt reclassifies, **no cash moves**:
+**Applying stored credit** — `allocate_payment` on an already-posted receipt
+reclassifies, **no cash moves**:
 ```
 Dr  customer credit (2140)         applied
 Cr  receivable (AR control)        applied
 ```
+
+**Opening balance** — `post_opening_balance` (`receivables.py:188`) raises a posted
+opening invoice (`source=OPENING`) when a customer is created with
+`opening_balance>0`, so the figure shows in both the GL and the (invoice-derived)
+outstanding without hitting P&L revenue:
+```
+Dr  receivable (AR control 1200)   opening_balance
+Cr  retained earnings (3200)       opening_balance
+```
+
+**Auto-allocation order** — `_build_invoice_plan` (`receivables.py:232`) settles
+either `oldest` (due date, default) or `largest` (biggest balance) first;
+`post_payment`/`allocate_payment` take a `strategy` arg, exposed as
+`allocation_strategy` on the receipt/allocate endpoints.
 
 ## 7. Worked example
 
@@ -166,16 +177,21 @@ the receipt shows `allocation_status:"PARTIAL"` (`unallocated_amount` 12500).
 
 ## 8. Gotchas / known limitations
 
-- **`opening_balance` is decorative** — never posts. Easy to assume it seeds AR.
-- **Customer list & receipts are capped at 500** (`views_ar.py:222`, `:474`) and
-  **un-paginated** (`success_response` list) — a large entity silently truncates.
+- **`opening_balance` posting is atomic with customer-create** — if no open period
+  covers today (or `3200` is missing), the opening invoice fails and the whole
+  customer create rolls back with a clear error. Intended (loud > silent), but
+  worth knowing.
+- **The opening invoice is dated `today`** (`receivables.py:188`) — opening AR
+  lands in the current period, not a historical one.
 - **Invoice create defaults `post=True`** — omitting `post` posts immediately;
   pass `post:false` for a draft.
-- **`pay/` requires a POSTED invoice** (`views_ar.py:1163`); paying a draft → 400.
+- **`pay/` requires a POSTED invoice** (`views_ar.py`); paying a draft → 400.
 - **AR control defaults to `1200`** on customer create if omitted — verify the
   chart has it (it's in the seeded `DEFAULT_CHART`).
-- Allocation order is `due_date, invoice_date, id` (oldest-first); no
-  "largest-first" option.
+
+_Fixed (were flagged here): customer/receipt lists now paginate via XVSPagination
+(no 500-cap truncation); `opening_balance` posts an opening invoice; auto-allocation
+supports `oldest`|`largest`._
 
 ## 9. Permissions & tenant isolation
 
@@ -209,11 +225,15 @@ Existing (see `tests.py`): `InvoicePostingTests` (balanced AR journal + tax,
 closed-period rejection), `PaymentAllocationTests`, `InvoiceCreateEndpointTests`,
 `ReceiptAllocationEndpointTests`, `CustomerEndpointTests`, `InvoicePayRemindEndpointTests`.
 
+Added with the §8 fixes (in `FinanceAPITests`): opening-balance posts the
+`Dr 1200 / Cr 3200` opening invoice and surfaces in the paginated customer list;
+largest-first receipt clears the bigger invoice first; an unknown
+`allocation_strategy` → 400.
+
 Worth asserting if not already:
 - **403** per verb; **cross-tenant** invoice/payment/customer id → 404.
 - Overpayment → customer-credit (`2140`) line + `allocation_status:"PARTIAL"`;
   later `allocate/` moves credit → AR with no cash line.
 - `post=false` saves a priced draft (no journal); paying a draft invoice → 400.
-- Empty-list shape on a fresh entity (`[]` → `{}`).
+- Empty-list shape on a fresh entity.
 - Fee-structure generate rejects non-`CUSTOMER` `applies_to`.
-- The 500-cap truncation on customer/receipt lists (document or paginate).

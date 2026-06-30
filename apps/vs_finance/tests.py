@@ -2902,6 +2902,65 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         )
         self.assertEqual(resp.status_code, 400, resp.content)
 
+    def test_customer_opening_balance_posts_opening_invoice(self):
+        from .models import Invoice
+
+        entity, _, _ = self.build_books()
+        created = self.client.post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"code": "OPN1", "name": "Opening Co", "opening_balance": 500000},
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.content)
+        # An opening invoice (Dr 1200 AR / Cr 3200 Retained Earnings) was raised…
+        inv = Invoice.objects.get(entity=entity, source="OPENING", customer__code="OPN1")
+        self.assertEqual(inv.status, "POSTED")
+        self.assertEqual(inv.total, 500000)
+        gl = {ln.account.code: (ln.debit, ln.credit) for ln in inv.journal.lines.all()}
+        self.assertEqual(gl["1200"], (500000, 0))
+        self.assertEqual(gl["3200"], (0, 500000))
+        # …and it surfaces in the customer's outstanding, now a paginated list.
+        listed = self.client.get(f"/v1/finance/customers/?entity={entity.code}").json()
+        self.assertIn("pagination", listed)
+        row = next(r for r in listed["data"] if r["code"] == "OPN1")
+        self.assertEqual(row["balance"], 500000)
+
+    def test_receipt_largest_first_allocation(self):
+        from .models import Invoice
+
+        entity, _, _ = self.build_books()
+        c = self.client.post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"code": "ALC", "name": "Alloc Co"}, format="json").json()["data"]
+
+        def mk_invoice(price, date):
+            return self.client.post(
+                f"/v1/finance/invoices/?entity={entity.code}",
+                {"customer": "ALC", "invoice_date": date,
+                 "lines": [{"revenue_account": "4100", "quantity": 1, "unit_price": price}]},
+                format="json").json()["data"]
+
+        small = mk_invoice(100000, "2026-01-05")   # older, smaller
+        large = mk_invoice(300000, "2026-02-05")   # newer, larger
+        # Receipt of exactly the large balance, largest-first → clears LARGE, leaves small.
+        self.client.post(
+            f"/v1/finance/customers/{c['id']}/receipt/?entity={entity.code}",
+            {"amount": 300000, "payment_date": "2026-03-01", "deposit_account": "1100",
+             "allocation_strategy": "largest"}, format="json")
+        self.assertEqual(Invoice.objects.get(id=large["id"]).payment_status, "PAID")
+        self.assertEqual(Invoice.objects.get(id=small["id"]).payment_status, "UNPAID")
+
+    def test_receipt_rejects_unknown_allocation_strategy(self):
+        entity, _, _ = self.build_books()
+        c = self.client.post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"code": "BAD", "name": "Bad Co"}, format="json").json()["data"]
+        resp = self.client.post(
+            f"/v1/finance/customers/{c['id']}/receipt/?entity={entity.code}",
+            {"amount": 100000, "payment_date": "2026-03-01", "deposit_account": "1100",
+             "allocation_strategy": "fifo"}, format="json")
+        self.assertEqual(resp.status_code, 400, resp.content)
+
     def test_entity_create_provisions_new_books(self):
         # Seed first so the NGN currency exists for the default base_currency.
         self._seed()

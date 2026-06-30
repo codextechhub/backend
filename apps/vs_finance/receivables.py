@@ -185,20 +185,56 @@ def _post_invoice_atomic(invoice, *, actor_user=None):
     return invoice
 
 
+def post_opening_balance(customer, *, actor_user=None, date=None):
+    """Seat a customer's ``opening_balance`` as a posted opening invoice.
+
+    Raises an :class:`~vs_finance.models.Invoice` (``source=OPENING``) that posts
+    ``Dr AR control · Cr Retained Earnings`` — so the figure shows in the customer's
+    outstanding (which is invoice-derived) *and* in the GL, without touching P&L
+    revenue. No-op unless the opening balance is positive. Returns the invoice or
+    ``None``. Runs the normal :func:`post_invoice` guards (open period, etc.).
+    """
+    import datetime
+
+    from .constants import InvoiceSource, RETAINED_EARNINGS_CODE
+    from .models import Invoice, InvoiceLine
+
+    amount = int(customer.opening_balance or 0)
+    if amount <= 0:
+        return None
+
+    equity = resolve_account(customer.entity, RETAINED_EARNINGS_CODE, label="opening balance equity")
+    invoice = Invoice.objects.create(
+        entity=customer.entity, customer=customer,
+        invoice_date=date or datetime.date.today(),
+        source=InvoiceSource.OPENING,
+        narration=f"Opening balance for {customer.code}",
+        created_by=actor_user,
+    )
+    InvoiceLine.objects.create(
+        invoice=invoice, revenue_account=equity,
+        quantity=1, unit_price=amount, line_no=1,
+    )
+    post_invoice(invoice, actor_user=actor_user)
+    return invoice
+
+
 # --------------------------------------------------------------------------- #
 # Payment posting + allocation                                                #
 # --------------------------------------------------------------------------- #
 
-def post_payment(payment, *, actor_user=None, auto_allocate=True, allocations=None):
+def post_payment(payment, *, actor_user=None, auto_allocate=True, allocations=None,
+                 strategy="oldest"):
     """Post a customer :class:`Payment` (Dr bank, Cr AR) and allocate it to invoices.
 
     ``allocations`` (a list of ``(invoice, amount_kobo)``) applies an explicit split;
-    otherwise ``auto_allocate`` settles the customer's oldest open invoices first.
+    otherwise ``auto_allocate`` settles open invoices in ``strategy`` order
+    (``"oldest"`` by due date, or ``"largest"`` balance first).
     """
     try:
         return _post_payment_atomic(
             payment, actor_user=actor_user,
-            auto_allocate=auto_allocate, allocations=allocations,
+            auto_allocate=auto_allocate, allocations=allocations, strategy=strategy,
         )
     except FinanceError as exc:
         record_rejection(
@@ -229,8 +265,18 @@ def customer_credit_balance(customer) -> int:
     return pay + notes - refunded
 
 
-def _build_invoice_plan(customer, allocations):
-    """An explicit ``[(invoice, amount)]`` plan, or open invoices oldest-first."""
+#: Supported auto-allocation strategies for settling a receipt's cash.
+ALLOCATION_STRATEGIES = ("oldest", "largest")
+
+
+def _build_invoice_plan(customer, allocations, *, strategy="oldest"):
+    """An explicit ``[(invoice, amount)]`` plan, or open invoices in ``strategy`` order.
+
+    ``strategy`` (when ``allocations`` is not given): ``"oldest"`` settles by due date
+    first (the default), ``"largest"`` settles the biggest outstanding balance first.
+    """
+    from django.db.models import F
+
     from .models import Invoice
 
     if allocations is not None:
@@ -239,8 +285,13 @@ def _build_invoice_plan(customer, allocations):
         Invoice.objects
         .filter(customer=customer, status=DocumentStatus.POSTED)
         .exclude(payment_status=InvoicePaymentStatus.PAID)
-        .order_by("due_date", "invoice_date", "id")
     )
+    if strategy == "largest":
+        open_invoices = open_invoices.annotate(
+            _bal=F("total") - F("amount_paid") - F("amount_credited"),
+        ).order_by("-_bal", "due_date", "id")
+    else:
+        open_invoices = open_invoices.order_by("due_date", "invoice_date", "id")
     return [(inv, inv.balance_due) for inv in open_invoices]
 
 
@@ -274,7 +325,8 @@ def _apply_payment_subledger(payment, plan, *, remaining):
 
 
 @transaction.atomic
-def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, allocations=None):
+def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, allocations=None,
+                         strategy="oldest"):
     from .models import JournalEntry, JournalLine
 
     if payment.status != DocumentStatus.DRAFT:
@@ -294,7 +346,8 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
 
     # Split at source: settle invoices against AR, and book any unapplied cash as a
     # customer-credit liability (so AR never carries a credit balance).
-    plan = _build_invoice_plan(customer, allocations) if (allocations is not None or auto_allocate) else []
+    plan = (_build_invoice_plan(customer, allocations, strategy=strategy)
+            if (allocations is not None or auto_allocate) else [])
     applied, _created = _apply_payment_subledger(payment, plan, remaining=payment.amount)
     excess = payment.amount - applied
 
@@ -343,13 +396,14 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
 
 
 @transaction.atomic
-def allocate_payment(payment, *, allocations=None, actor_user=None):
+def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="oldest"):
     """Apply a posted payment's **stored customer credit** to invoices.
 
     After posting, any unapplied cash sits in the customer-credit liability (2140).
     Applying it to invoices reclassifies it back to AR (``Dr customer-credit · Cr AR``)
     and settles the invoices — no cash moves. ``allocations`` is an optional explicit
-    ``[(invoice, amount)]`` plan; without it, open invoices are settled oldest-first.
+    ``[(invoice, amount)]`` plan; without it, open invoices are settled in ``strategy``
+    order (``"oldest"`` by due date, or ``"largest"`` balance first).
     """
     from .models import JournalEntry, JournalLine
 
@@ -360,7 +414,7 @@ def allocate_payment(payment, *, allocations=None, actor_user=None):
     if remaining <= 0:
         return []
 
-    plan = _build_invoice_plan(payment.customer, allocations)
+    plan = _build_invoice_plan(payment.customer, allocations, strategy=strategy)
     applied, created = _apply_payment_subledger(payment, plan, remaining=remaining)
     if applied <= 0:
         return []

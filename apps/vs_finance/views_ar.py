@@ -116,6 +116,17 @@ def _allocation_plan(entity, raw_allocations):
     return plan
 
 
+def _allocation_strategy(raw):
+    """Validate an optional ``allocation_strategy`` request value (default 'oldest')."""
+    from .receivables import ALLOCATION_STRATEGIES
+
+    val = (raw or "oldest").lower()
+    if val not in ALLOCATION_STRATEGIES:
+        raise ValidationError(
+            {"allocation_strategy": f"Must be one of: {', '.join(ALLOCATION_STRATEGIES)}."})
+    return val
+
+
 # --------------------------------------------------------------------------- #
 # Customers / payers                                                          #
 # --------------------------------------------------------------------------- #
@@ -217,10 +228,11 @@ class CustomerListCreateView(_FinanceBase):
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
 
-        customers = list(qs.order_by("code")[:500])
-        ledger = _customer_ledger(entity, [c.id for c in customers])
+        paginator = XVSPagination()
+        page = paginator.paginate_queryset(qs.order_by("code"), request, view=self)
+        ledger = _customer_ledger(entity, [c.id for c in page])
         rows = []
-        for c in customers:
+        for c in page:
             row = CustomerSerializer(c).data
             led = ledger.get(c.id, {})
             net = led.get("outstanding", 0) - led.get("credit", 0)
@@ -228,7 +240,7 @@ class CustomerListCreateView(_FinanceBase):
             row["balance_naira"] = format_naira(net)
             row["account_status"] = _account_status(net, led.get("overdue", False))
             rows.append(row)
-        return success_response("Customers retrieved.", data=rows)
+        return paginator.get_paginated_response(rows)
 
     @transaction.atomic
     def post(self, request):
@@ -258,6 +270,12 @@ class CustomerListCreateView(_FinanceBase):
             source_id=str(body.get("source_id", "")),
             is_active=bool(body.get("is_active", True)),
         )
+        # Seat any opening balance as a posted opening invoice (Dr AR / Cr Retained
+        # Earnings) so it shows in the customer's outstanding and the GL. Inside this
+        # atomic block, so a posting failure (e.g. no open period) rolls the whole
+        # customer-create back with a clear error.
+        from .receivables import post_opening_balance
+        post_opening_balance(customer, actor_user=request.user)
         return success_response(
             f"Customer {customer.code} created.",
             data=CustomerSerializer(customer).data, status=201,
@@ -411,7 +429,8 @@ class CustomerReceiptView(_FinanceBase):
         auto = body.get("auto_allocate", True)
         if isinstance(auto, str):
             auto = auto.lower() not in ("false", "0", "no")
-        post_payment(payment, actor_user=request.user, auto_allocate=bool(auto))
+        post_payment(payment, actor_user=request.user, auto_allocate=bool(auto),
+                     strategy=_allocation_strategy(body.get("allocation_strategy")))
         return success_response(
             f"Receipt {payment.document_number} recorded for {customer.code}.",
             data={
@@ -457,14 +476,16 @@ class PaymentListView(_FinanceBase):
                 Q(document_number__icontains=search) | Q(customer__name__icontains=search)
                 | Q(customer__code__icontains=search) | Q(reference__icontains=search))
 
+        # allocation_status is derived from allocated_amount vs amount; express it as a
+        # DB filter so paging counts are correct (it used to filter post-slice in Python).
         status_f = request.query_params.get("status")
-        rows = []
-        for p in qs.order_by("-payment_date", "-id")[:500]:
-            row = PaymentSerializer(p).data
-            if status_f and row["allocation_status"] != status_f:
-                continue
-            rows.append(row)
-        return success_response("Receipts retrieved.", data=rows)
+        if status_f == "ALLOCATED":
+            qs = qs.filter(allocated_amount__gte=F("amount"))
+        elif status_f == "UNALLOCATED":
+            qs = qs.filter(allocated_amount__lte=0)
+        elif status_f == "PARTIAL":
+            qs = qs.filter(allocated_amount__gt=0, allocated_amount__lt=F("amount"))
+        return _paginate(request, qs.order_by("-payment_date", "-id"), PaymentSerializer, self)
 
 
 class PaymentDetailView(_FinanceBase):
@@ -542,7 +563,8 @@ class PaymentAllocateView(_FinanceBase):
         if plan:
             allocate_payment(p, allocations=plan, actor_user=request.user)
         elif body.get("auto_allocate"):
-            allocate_payment(p, actor_user=request.user)
+            allocate_payment(p, actor_user=request.user,
+                             strategy=_allocation_strategy(body.get("allocation_strategy")))
         else:
             raise ValidationError({"allocations": "Provide allocations or auto_allocate=true."})
         p.refresh_from_db()
