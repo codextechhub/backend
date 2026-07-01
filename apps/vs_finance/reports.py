@@ -1686,3 +1686,73 @@ def statutory_pack(entity, *, as_of=None, period=None) -> StatutoryPack:
         changes_in_equity=statement_of_changes_in_equity(entity, period=period),
         trial_balance=trial_balance(entity, period=period),
     )
+
+
+#: Synthetic equity line for the unclosed net income (no backing GL account).
+CURRENT_YEAR_EARNINGS_LINE = "CURRENT_YEAR_EARNINGS"
+
+
+@dataclass
+class BalanceSheetSections:
+    """The balance sheet grouped into IFRS Statement-of-Financial-Position sections.
+
+    ``sections`` are :class:`IFRSSection` (non-current assets, current assets, equity,
+    non-current liabilities, current liabilities). Equity keeps the unclosed net income
+    as its own *Current year earnings* line rather than folding it into Retained
+    earnings, so it reads like the balance-sheet screen. Totals reconcile to
+    :func:`balance_sheet`.
+    """
+
+    entity_id: int
+    as_of: object
+    sections: list = field(default_factory=list)
+    total_assets: int = 0
+    total_liabilities: int = 0
+    total_equity: int = 0
+    current_year_earnings: int = 0
+
+    @property
+    def is_balanced(self) -> bool:
+        return self.total_assets == self.total_liabilities + self.total_equity
+
+    @property
+    def difference(self) -> int:
+        return self.total_assets - (self.total_liabilities + self.total_equity)
+
+
+def balance_sheet_sections(entity, *, as_of=None) -> BalanceSheetSections:
+    """Regroup the balance sheet onto IFRS SOFP sections for statutory presentation.
+
+    Reuses the same section/line machinery as :func:`statutory_pack`, but surfaces the
+    unclosed net income as a distinct *Current year earnings* equity line.
+    """
+    as_of = as_of or timezone.now().date()
+    bs = balance_sheet(entity, as_of=as_of)
+    line_map = _ifrs_line_map(entity)
+
+    section_rows = {
+        "non_current_assets": bs.asset_rows, "current_assets": bs.asset_rows,
+        "equity": bs.equity_rows,
+        "non_current_liabilities": bs.liability_rows,
+        "current_liabilities": bs.liability_rows,
+    }
+    sections: list[IFRSSection] = []
+    for key, label, lines in _ifrs_sofp_sections():
+        groups, total = _group_rows_by_ifrs_line(
+            section_rows[key], line_map, ordered_lines=lines)
+        if key == "equity" and bs.retained_earnings:
+            groups.append(IFRSLineGroup(
+                line=CURRENT_YEAR_EARNINGS_LINE, label="Current year earnings",
+                amount=bs.retained_earnings))
+            total += bs.retained_earnings
+        sections.append(IFRSSection(key=key, label=label, groups=groups, total=total))
+
+    section_total = {s.key: s.total for s in sections}
+    return BalanceSheetSections(
+        entity_id=entity.id, as_of=as_of, sections=sections,
+        total_assets=section_total["non_current_assets"] + section_total["current_assets"],
+        total_liabilities=(
+            section_total["non_current_liabilities"] + section_total["current_liabilities"]),
+        total_equity=section_total["equity"],
+        current_year_earnings=bs.retained_earnings,
+    )

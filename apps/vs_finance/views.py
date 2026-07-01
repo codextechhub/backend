@@ -1156,27 +1156,43 @@ class BalanceSheetView(APIView):
     rbac_permission = "finance.report.view"
 
     def get(self, request):
-        from .reports import balance_sheet
+        from .reports import balance_sheet_sections
 
         from .exports import ReportTable
 
         entity = resolve_entity(request)
         as_of = request.query_params.get("as_of") or None
-        bs = balance_sheet(entity, as_of=as_of)
+        bs = balance_sheet_sections(entity, as_of=as_of)
 
-        rows = [["Asset", r.code, r.name, r.amount_naira] for r in bs.asset_rows]
-        rows += [["Liability", r.code, r.name, r.amount_naira] for r in bs.liability_rows]
-        rows += [["Equity", r.code, r.name, r.amount_naira] for r in bs.equity_rows]
-        rows += [["Equity", "", "Retained earnings (unclosed)", format_naira(bs.retained_earnings)]]
+        def _group(g):
+            return {
+                "line": g.line, "label": g.label, "amount": _money(g.amount),
+                "accounts": [
+                    {"account_id": a["account_id"], "code": a["code"],
+                     "name": a["name"], "amount": _money(a["amount"])}
+                    for a in g.accounts
+                ],
+            }
+
+        def _section(s):
+            return {
+                "key": s.key, "label": s.label, "total": _money(s.total),
+                "groups": [_group(g) for g in s.groups],
+            }
+
+        rows = []
+        for s in bs.sections:
+            for g in s.groups:
+                rows.append([s.label, g.label, format_naira(g.amount)])
         export = _maybe_export(request, ReportTable(
             title="Balance Sheet",
             subtitle=f"{entity.code} · as at {bs.as_of}",
-            columns=["Section", "Code", "Account", "Amount"],
+            columns=["Section", "Line", "Amount"],
             rows=rows,
             summary_rows=[
-                ["", "", "Total assets", format_naira(bs.total_assets)],
-                ["", "", "Total liabilities", format_naira(bs.total_liabilities)],
-                ["", "", "Total equity", format_naira(bs.total_equity)],
+                ["", "Total assets", format_naira(bs.total_assets)],
+                ["", "Total liabilities", format_naira(bs.total_liabilities)],
+                ["", "Total equity", format_naira(bs.total_equity)],
             ],
         ), filename=f"balance_sheet_{entity.code}")
         if export is not None:
@@ -1187,14 +1203,13 @@ class BalanceSheetView(APIView):
             data={
                 "entity": entity.code,
                 "as_of": str(bs.as_of),
-                "assets": [_line(r) for r in bs.asset_rows],
-                "liabilities": [_line(r) for r in bs.liability_rows],
-                "equity": [_line(r) for r in bs.equity_rows],
+                "sections": [_section(s) for s in bs.sections],
                 "total_assets": _money(bs.total_assets),
                 "total_liabilities": _money(bs.total_liabilities),
-                "retained_earnings": _money(bs.retained_earnings),
                 "total_equity": _money(bs.total_equity),
+                "retained_earnings": _money(bs.current_year_earnings),
                 "is_balanced": bs.is_balanced,
+                "difference": _money(bs.difference),
             },
         )
 
