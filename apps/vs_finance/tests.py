@@ -2472,6 +2472,24 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
         self.assertIn(
             "Current year earnings", [g.label for g in by_key["equity"].groups])
 
+    def test_balance_sheet_nets_contra_asset_and_balances(self):
+        # Accumulated depreciation is a contra-asset (credit balance). It must REDUCE
+        # PP&E and keep the sheet balanced — not be added to assets.
+        from .reports import balance_sheet_sections
+        entity, _, periods = self.build_books()
+        p = periods[0]
+        post_journal(self.make_entry(entity, p, [("1100", 1000000, 0), ("3100", 0, 1000000)]))  # capital
+        post_journal(self.make_entry(entity, p, [("1500", 400000, 0), ("1100", 0, 400000)]))     # buy equipment
+        post_journal(self.make_entry(entity, p, [("5400", 100000, 0), ("1900", 0, 100000)]))      # depreciation
+
+        bs = balance_sheet_sections(entity)
+        self.assertTrue(bs.is_balanced)
+        self.assertEqual(bs.total_assets, 900000)   # 600k cash + 300k net PP&E
+        by_key = {s.key: s for s in bs.sections}
+        ppe = next(g for g in by_key["non_current_assets"].groups if g.line == "PPE")
+        self.assertEqual(ppe.amount, 300000)         # 400k cost − 100k accumulated dep
+        self.assertEqual(by_key["non_current_assets"].total, 300000)
+
     def test_cash_flow_ignores_non_cash_journals(self):
         entity, _, periods = self.build_books()
         # An accrual that never touches cash (Dr expense, Cr payable) must not move cash.

@@ -818,11 +818,19 @@ class StatementLine:
 def _net_by_account(balances, *, account_types=None) -> dict:
     """Aggregate ``AccountBalance`` rows into ``{account_id: (account, net_kobo)}``.
 
-    ``net`` is the closing position (opening + movement) signed to each account's
-    normal balance — positive means the account grew in its natural direction. Pass
-    ``account_types`` (a set of :class:`AccountType`) to restrict which accounts count.
+    ``net`` is the closing position (opening + movement) signed to the account **type's**
+    natural side (ASSET/EXPENSE → debit-positive; LIABILITY/EQUITY/INCOME →
+    credit-positive) — *not* the account's own ``normal_balance``. That distinction
+    matters for **contra** accounts: accumulated depreciation (a contra-asset) carries a
+    credit balance, so signing it as an asset (dr − cr) makes it *reduce* PP&E on the
+    statements, and a contra-income (sales returns) reduces revenue. Signing by the
+    account's own (flipped) normal balance would instead *add* these, overstating the
+    line and breaking the balance-sheet equation. Pass ``account_types`` (a set of
+    :class:`AccountType`) to restrict which accounts count.
     """
-    from .constants import NormalBalance
+    from .constants import AccountType
+
+    debit_natural = {AccountType.ASSET, AccountType.EXPENSE}
 
     out: dict[int, list] = {}
     for bal in balances:
@@ -831,7 +839,7 @@ def _net_by_account(balances, *, account_types=None) -> dict:
             continue
         dr = bal.opening_debit + bal.debit_total
         cr = bal.opening_credit + bal.credit_total
-        net = (dr - cr) if acc.normal_balance == NormalBalance.DEBIT else (cr - dr)
+        net = (dr - cr) if acc.account_type in debit_natural else (cr - dr)
         slot = out.get(acc.id)
         if slot is None:
             out[acc.id] = [acc, net]
