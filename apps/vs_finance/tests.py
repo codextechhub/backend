@@ -2988,7 +2988,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         imp = self.client.post(
             f"/v1/finance/bank-accounts/{bank.id}/statement-lines/?entity={entity.code}",
             {"lines": [{"txn_date": "2026-01-15", "amount": 50000}]}, format="json")
-        line_id = imp.json()["data"][0]["id"]
+        line_id = imp.json()["data"]["imported"][0]["id"]
         self.client.post(
             f"/v1/finance/bank-accounts/{bank.id}/auto-reconcile/?entity={entity.code}",
             {"tolerance_days": 5}, format="json")
@@ -3003,7 +3003,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         adj_imp = self.client.post(
             f"/v1/finance/bank-accounts/{bank.id}/statement-lines/?entity={entity.code}",
             {"lines": [{"txn_date": "2026-01-20", "amount": -1500, "description": "Fee"}]}, format="json")
-        adj_line = adj_imp.json()["data"][0]["id"]
+        adj_line = adj_imp.json()["data"]["imported"][0]["id"]
         adj = self.client.post(
             f"/v1/finance/statement-lines/{adj_line}/adjust/?entity={entity.code}", {}, format="json")
         self.assertEqual(adj.json()["data"]["match_source"], "ADJUSTMENT")
