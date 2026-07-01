@@ -85,6 +85,7 @@ from .views_ops import (
     BankReconcileCompleteView,
     BankStatementLineAdjustView,
     BankStatementLineGroupMatchView,
+    BankStatementLineIgnoreView,
     BankStatementLineMatchView,
     BankStatementLineUnmatchView,
     BankStatementLineView,
@@ -259,6 +260,8 @@ urlpatterns = [
          name="finance-statement-line-adjust"),
     path("statement-lines/<int:pk>/unmatch/", BankStatementLineUnmatchView.as_view(),
          name="finance-statement-line-unmatch"),
+    path("statement-lines/<int:pk>/ignore/", BankStatementLineIgnoreView.as_view(),
+         name="finance-statement-line-ignore"),
 
     # Expense claims
     path("expense-claims/", ExpenseClaimListCreateView.as_view(), name="finance-expense-list"),

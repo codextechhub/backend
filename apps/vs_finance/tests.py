@@ -1337,6 +1337,27 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(sline.line_matches.count(), 0)
         self.assertIn(gl1.id, {l.id for l in _unmatched_gl_lines(bank)})
 
+    def test_ignore_line_excludes_it_from_unmatched(self):
+        from vs_finance.banking import set_line_ignored
+        from vs_finance.exceptions import BankReconciliationError
+        from vs_finance.constants import BankLineStatus
+
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        _, lines, _ = import_statement_lines(bank, [
+            {"txn_date": datetime.date(2026, 1, 5), "amount": 10000, "description": "Opening"}])
+        line = lines[0]
+        set_line_ignored(line)
+        line.refresh_from_db()
+        self.assertEqual(line.status, BankLineStatus.IGNORED)
+        # Ignored lines don't count as unmatched.
+        self.assertEqual(
+            bank.statement_lines.filter(status=BankLineStatus.UNMATCHED).count(), 0)
+        # Revert; a matched line can't be ignored.
+        set_line_ignored(line, ignored=False)
+        line.refresh_from_db()
+        self.assertEqual(line.status, BankLineStatus.UNMATCHED)
+
     def test_group_match_rejects_mismatched_total(self):
         from vs_finance.banking import group_match
         from vs_finance.exceptions import BankReconciliationError

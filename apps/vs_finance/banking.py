@@ -371,6 +371,36 @@ def unmatch_line(statement_line, *, actor_user=None):
     return statement_line
 
 
+@transaction.atomic
+def set_line_ignored(statement_line, *, ignored=True, reason="", actor_user=None):
+    """Mark an unmatched statement line ``IGNORED`` (a known duplicate / opening-balance
+    line), or revert an ignored line back to ``UNMATCHED``.
+
+    Ignored lines carry no ledger effect and drop out of the unreconciled count (which
+    only counts ``UNMATCHED``), so a statement of MATCHED + IGNORED lines can still
+    reconcile. Only unmatched↔ignored transitions are allowed.
+    """
+    if ignored:
+        if statement_line.status != BankLineStatus.UNMATCHED:
+            raise BankReconciliationError(
+                f"Statement line is '{statement_line.status}', only an unmatched line can be ignored.",
+            )
+        statement_line.status = BankLineStatus.IGNORED
+    else:
+        if statement_line.status != BankLineStatus.IGNORED:
+            raise BankReconciliationError("Only an ignored line can be un-ignored.")
+        statement_line.status = BankLineStatus.UNMATCHED
+    statement_line.save(update_fields=["status", "updated_at"])
+    record(
+        entity=statement_line.bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
+        actor_user=actor_user, target=statement_line.bank_account,
+        message=(f"{'Ignored' if ignored else 'Un-ignored'} a statement line on "
+                 f"{statement_line.bank_account.name}." + (f" Reason: {reason}" if reason else "")),
+        bank_account_id=statement_line.bank_account_id,
+    )
+    return statement_line
+
+
 # --------------------------------------------------------------------------- #
 # Adjusting journals (book what the statement reveals)                        #
 # --------------------------------------------------------------------------- #

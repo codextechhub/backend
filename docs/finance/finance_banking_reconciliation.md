@@ -71,14 +71,15 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 | `POST /statement-lines/<pk>/match-group/` | `finance.bankaccount.reconcile` | Pair to **several** cash journal lines that **sum** to the line (many-to-one) | `journal_lines` (id[], ≥2) | `201` line |
 | `POST /statement-lines/<pk>/adjust/` | `finance.bankaccount.reconcile` | **Book** an unrecorded line + match it | `counter_account?`, `counter_code?`, `narration?` | `201` line |
 | `POST /statement-lines/<pk>/unmatch/` | `finance.bankaccount.reconcile` | Undo a match (reverses adjustment if any) | — | line |
+| `POST /statement-lines/<pk>/ignore/` | `finance.bankaccount.reconcile` | Mark an unmatched line **IGNORED** (or revert with `ignored:false`) | `ignored?`, `reason?` | line |
 
 ## 4. Lifecycle / state machine
 
 ```
 Statement line:  UNMATCHED ──match / auto-match / match-group──▶ MATCHED
                       │  └──adjust (book + match)──▶ MATCHED (source=ADJUSTMENT)
-                      └── (IGNORED — defined, not set by any endpoint yet)
                  MATCHED ──unmatch──▶ UNMATCHED  (adjusting journal reversed if present)
+                 UNMATCHED ⇄ IGNORED  (ignore / revert; excluded from unreconciled count)
 
 Statement: UPLOADED ──(no unmatched lines left)──▶ RECONCILED
 Recon run:  BALANCED | OUT_OF_BALANCE   (per snapshot)
@@ -156,8 +157,9 @@ returns the line to `UNMATCHED`.
   that matches an existing line on `(txn_date, amount, description, reference)` is
   held back as a *suspected duplicate* and returned in the response; `force=true`
   imports anyway. Two identical rows in one *fresh* batch are both kept.
-- **`IGNORED` is defined but no endpoint sets it** — there's no "ignore this line"
-  action yet; lines are either UNMATCHED or MATCHED via the API.
+- ✅ **`IGNORED` now settable** via `ignore/` (a known duplicate or opening-balance
+  line); ignored lines are excluded from the unreconciled count, so a statement of
+  MATCHED + IGNORED lines still reconciles.
 - ✅ **`book-lines/` now paginates** (was capped at 200).
 - **Import doesn't validate** opening/closing against the GL — it records what the
   bank said; the difference surfaces later in the reconciliation snapshot.

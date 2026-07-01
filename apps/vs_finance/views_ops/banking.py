@@ -434,3 +434,27 @@ class BankStatementLineUnmatchView(_StatementLineActionBase):
         )
 
 
+class BankStatementLineIgnoreView(_StatementLineActionBase):
+    """POST {ignored?: true, reason?} — mark an unmatched line IGNORED (a known
+    duplicate / opening-balance line), or revert it with ``ignored: false``.
+
+    docstring-name: Ignore a bank statement line
+    """
+
+    rbac_permission = "finance.bankaccount.reconcile"
+
+    def post(self, request, pk):
+        from ..banking import set_line_ignored
+
+        _, line = self._line(request, pk)
+        body = request.data or {}
+        set_line_ignored(
+            line, ignored=_bool(body.get("ignored", True), default=True),
+            reason=body.get("reason", ""), actor_user=request.user,
+        )
+        line.refresh_from_db()
+        return success_response(
+            "Statement line updated.", data=BankStatementLineSerializer(line).data,
+        )
+
+
