@@ -31,10 +31,10 @@ Routes (mounted at `/v1/finance/`): `bank-accounts/…`,
   just set pairings/snapshots. The **only** ledger-moving action is
   `post_bank_adjustment` (booking a missing charge/interest), and `unmatch` reverses
   that adjustment if the match created one (§6).
-- **Do fuzzy matching.** Every match is by **exact signed amount**: a 1:1 match
-  (`match/`) needs an equal GL line; a **group match** (`match-group/`) needs several
-  GL lines that *sum* to the statement line. **Auto**-match only does the single-line
-  case; the one-bank-line-covers-many-receipts case is a manual group match (§4/§6).
+- **Do fuzzy matching.** Every match is by **exact signed amount** — a 1:1 match, a
+  group match (many GL lines summing to one bank line), or a split match (many bank
+  lines summing to one GL line). `auto-reconcile` does 1:1 then a conservative group
+  pass; splits are manual (§4/§5).
 
 ## 2. Domain model
 
@@ -64,7 +64,8 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 | `PATCH /bank-accounts/<pk>/` | `finance.bankaccount.update` | Edit settings | `name?`, `bank_name?`, `account_number?`, `currency?`, `is_active?`, `is_primary?` | account |
 | `GET /bank-accounts/<pk>/statement-lines/` | `finance.bankaccount.view` | List lines (**paginated**). Query: `status` | — | paginated `BankStatementLineSerializer` |
 | `POST /bank-accounts/<pk>/statement-lines/` | `finance.bankaccount.import` | **Import** a batch. De-dups on `external_id`; rows without one that match an existing line are held back as *suspected duplicates* unless `force` | `lines:[{txn_date, amount (signed), description?, reference?, external_id?}]`, `force?`, `statement_date?`, `period_label?`, `opening_balance?`, `closing_balance?` | `201` `{imported[], suspected_duplicates[]}` |
-| `POST /bank-accounts/<pk>/auto-reconcile/` | `finance.bankaccount.reconcile` | Auto-match by amount+date | `tolerance_days?` (default 4) | matched lines |
+| `POST /bank-accounts/<pk>/auto-reconcile/` | `finance.bankaccount.reconcile` | Auto-match: 1:1 exact, then (unless `group:false`) group GL lines that **sum** to a bank line | `tolerance_days?` (default 4), `group?` (default true) | matched lines |
+| `POST /bank-accounts/<pk>/split-match/` | `finance.bankaccount.reconcile` | Match **one** cash journal line to **several** statement lines that **sum** to it (reverse of group) | `journal_line`, `statement_lines` (id[], ≥2) | `201` lines |
 | `GET /bank-accounts/<pk>/book-lines/` | `finance.bankaccount.view` | Unmatched GL cash lines (the "book" side), **paginated** | — | paginated `{id, date, description, reference, amount(signed)}` |
 | `POST /bank-accounts/<pk>/reconcile/complete/` | `finance.bankaccount.reconcile` | Record a reconciliation snapshot | — | `201` `BankReconciliationSerializer` |
 | `POST /statement-lines/<pk>/match/` | `finance.bankaccount.reconcile` | Manually pair to **one** cash journal line (equal amount) | `journal_line` (id) | line |
@@ -76,7 +77,7 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 ## 4. Lifecycle / state machine
 
 ```
-Statement line:  UNMATCHED ──match / auto-match / match-group──▶ MATCHED
+Statement line:  UNMATCHED ──match / auto-match / match-group / split-match──▶ MATCHED
                       │  └──adjust (book + match)──▶ MATCHED (source=ADJUSTMENT)
                  MATCHED ──unmatch──▶ UNMATCHED  (adjusting journal reversed if present)
                  UNMATCHED ⇄ IGNORED  (ignore / revert; excluded from unreconciled count)
@@ -96,12 +97,14 @@ Recon run:  BALANCED | OUT_OF_BALANCE   (per snapshot)
 statement.amount : +inflow (GL debit to cash) / −outflow (GL credit)
 _signed_gl(line) : line.debit − line.credit                (banking.py:108)
 ```
-**Auto-match rule** — `auto_reconcile` (`banking.py:130`), greedy & conservative:
+**Auto-match rule** — `auto_reconcile`, conservative (both passes only fire on a
+*unique* fit; each GL line consumed once):
 ```
-match sline ↔ first unconsumed posted cash line where
-    _signed_gl(gl) == sline.amount               (exact signed amount)
-    AND |gl.entry.date − sline.txn_date| ≤ tolerance_days   (default 4)
-each GL line consumed at most once; ambiguous → left for a human
+pass 1 (1:1):   match sline ↔ the sole unconsumed cash line where
+                    _signed_gl(gl) == sline.amount  AND  |date diff| ≤ tolerance_days
+pass 2 (group): for each still-unmatched sline, if a UNIQUE subset (size 2..max_group)
+                of same-direction, in-tolerance GL lines SUMS to sline.amount → group-match
+                (skipped when the candidate pool is large, to stay cheap + unambiguous)
 ```
 **Balances** — `book_balance = gl_account_balance(gl_account)` (posted GL, signed to
 normal side, `banking.py:39`); `statement_balance` = latest statement's
@@ -146,10 +149,12 @@ returns the line to `UNMATCHED`.
 
 ## 8. Gotchas / known limitations
 
-- ✅ **Many-to-one group matching** (`match-group/`) handles one bank line covering
-  several receipts (GL lines summing to the statement amount, via `BankLineMatch`).
-  **Still not supported:** the reverse (one GL line split across several statement
-  lines), and **auto**-match remains single-line only — group matches are manual.
+- ✅ **Many-to-one, split, and auto-grouping all supported now**: `match-group/`
+  (one bank line ↔ many GL lines), `split-match/` (one GL line ↔ many statement
+  lines), and `auto-reconcile` runs a group pass after the 1:1 pass. All go through
+  `BankLineMatch` and require an **exact** signed-amount sum; auto-grouping only fires
+  on a *unique* bounded subset (size ≤ `max_group`, small candidate pool) to stay
+  conservative. Fuzzy/approximate matching is still intentionally out of scope.
 - ✅ **Ambiguous auto-match now skipped** (was greedy first-match) — `auto_reconcile`
   only auto-pairs when **exactly one** GL candidate fits amount+date; ties are left
   for a human.
@@ -180,7 +185,7 @@ returns the line to `UNMATCHED`.
 | File | Responsibility |
 |---|---|
 | `models/ops.py` | `BankAccount`, `BankStatementLine`, `BankLineMatch` (group match), `BankStatement`, `BankReconciliation` |
-| `banking.py` | `import_statement_lines`, `auto_reconcile`, `match_line`, `group_match`, `unmatch_line`, `post_bank_adjustment`, `gl_account_balance`, `statement_balance`, `_record_reconciliation`, `complete_reconciliation` |
+| `banking.py` | `import_statement_lines`, `auto_reconcile` (+group pass), `match_line`, `group_match`, `split_match`, `set_line_ignored`, `unmatch_line`, `post_bank_adjustment`, `gl_account_balance`, `statement_balance`, `_record_reconciliation`, `complete_reconciliation` |
 | `views_ops/banking.py` | bank-account CRUD + statement-line / reconcile / match / adjust / unmatch views |
 | `serializers.py` | `BankAccountSerializer`, `BankStatementSerializer`, `BankStatementLineSerializer`, `BankReconciliationSerializer` |
 | `constants.py` | `BankLineStatus`, `BankMatchSource`, `BankStatementStatus`, `BankReconStatus`; `BANK_CHARGES_CODE` (5500) |

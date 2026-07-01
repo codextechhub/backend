@@ -249,7 +249,9 @@ class BankAutoReconcileView(_FinanceBase):
             raise NotFound("Bank account not found for this entity.")
         body = request.data or {}
         tolerance = _int(body.get("tolerance_days", 4), "tolerance_days", minimum=0) or 4
-        matched = auto_reconcile(bank, tolerance_days=tolerance, actor_user=request.user)
+        group = _bool(body.get("group", True), default=True)
+        matched = auto_reconcile(
+            bank, tolerance_days=tolerance, group=group, actor_user=request.user)
         return success_response(
             f"Auto-matched {len(matched)} statement line(s).",
             data=BankStatementLineSerializer(matched, many=True).data,
@@ -386,6 +388,46 @@ class BankStatementLineGroupMatchView(_StatementLineActionBase):
         return success_response(
             "Statement line group-matched.",
             data=BankStatementLineSerializer(line).data, status=201,
+        )
+
+
+class BankSplitMatchView(_FinanceBase):
+    """POST {journal_line, statement_lines:[ids]} — match one cash journal line to
+    several statement lines that sum to it (one ledger movement the bank split).
+
+    docstring-name: Split-match a cash journal line
+    """
+
+    rbac_permission = "finance.bankaccount.reconcile"
+
+    def post(self, request, pk):
+        from ..banking import split_match
+
+        entity = resolve_entity(request)
+        bank = BankAccount.objects.filter(entity=entity, pk=pk).select_related("gl_account").first()
+        if bank is None:
+            raise NotFound("Bank account not found for this entity.")
+        body = request.data or {}
+        jl_ref = body.get("journal_line")
+        jl = (JournalLine.objects.filter(pk=jl_ref, entry__entity=entity).select_related("entry").first()
+              if jl_ref not in (None, "") else None)
+        if jl is None:
+            raise ValidationError({"journal_line": "A valid journal line id is required."})
+        ids = body.get("statement_lines") or []
+        if not isinstance(ids, list) or len(ids) < 2:
+            raise ValidationError(
+                {"statement_lines": "Provide a list of at least two statement line ids."})
+        slines = list(
+            BankStatementLine.objects.filter(pk__in=ids, bank_account=bank).select_related("bank_account"))
+        missing = set(map(str, ids)) - {str(s.id) for s in slines}
+        if missing:
+            raise ValidationError(
+                {"statement_lines": f"Not found on this bank account: {', '.join(sorted(missing))}."})
+        split_match(jl, slines, actor_user=request.user)
+        rows = BankStatementLine.objects.filter(pk__in=[s.id for s in slines])
+        return success_response(
+            "Journal line split-matched.",
+            data=BankStatementLineSerializer(rows, many=True).data, status=201,
         )
 
 

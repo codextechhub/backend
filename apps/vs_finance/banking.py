@@ -128,9 +128,34 @@ def import_statement_lines(bank_account, rows, *, statement_date=None, period_la
 # Matching                                                                    #
 # --------------------------------------------------------------------------- #
 
+#: Largest "one bank line covers N receipts" group auto-match tries.
+GROUP_AUTO_MATCH_MAX = 4
+#: Skip group auto-match when a statement line has more candidate GL lines than this
+#: (keeps the bounded subset search cheap and the result unambiguous).
+_GROUP_AUTO_MATCH_POOL_CAP = 12
+
+
 def _signed_gl(line) -> int:
     """A cash-account journal line's signed contribution in kobo (debit - credit)."""
     return (line.debit or 0) - (line.credit or 0)
+
+
+def _unique_summing_subset(lines, target, *, max_size):
+    """The **unique** subset (size 2..``max_size``) of ``lines`` whose signed amounts
+    sum to ``target`` — or ``None`` when there is no such subset **or more than one**
+    (ambiguous). Conservative on purpose: auto-grouping only fires when there's a single
+    unambiguous answer.
+    """
+    from itertools import combinations
+
+    found = None
+    for size in range(2, min(max_size, len(lines)) + 1):
+        for combo in combinations(lines, size):
+            if sum(_signed_gl(gl) for gl in combo) == target:
+                if found is not None:
+                    return None  # more than one subset fits → ambiguous
+                found = combo
+    return found
 
 
 def _unmatched_gl_lines(bank_account):
@@ -151,16 +176,23 @@ def _unmatched_gl_lines(bank_account):
 
 
 @transaction.atomic
-def auto_reconcile(bank_account, *, tolerance_days=4, actor_user=None):
+def auto_reconcile(bank_account, *, tolerance_days=4, group=True,
+                   max_group=GROUP_AUTO_MATCH_MAX, actor_user=None):
     """Pair unmatched statement lines to unmatched GL cash lines by amount + date.
 
-    A statement line auto-matches a posted cash-account journal line with the **same
-    signed amount** whose journal date is within ``tolerance_days`` — but only when
-    there is **exactly one** such unconsumed candidate. If several GL lines could fit
-    (same amount + date), the line is left unmatched for a human rather than guessed at.
-    Each GL line is consumed at most once. Returns the statement lines newly matched.
+    **First pass — 1:1:** a statement line auto-matches a posted cash-account journal
+    line with the **same signed amount** whose journal date is within ``tolerance_days``,
+    but only when there is **exactly one** such unconsumed candidate; ambiguous ties are
+    left for a human.
+
+    **Second pass — group (when ``group``):** for each still-unmatched line, if a
+    **unique** small subset (size 2..``max_group``) of same-direction, in-tolerance GL
+    lines *sums* to it (one bank line covering several receipts), they are group-matched
+    via :class:`~vs_finance.models.BankLineMatch`. Skipped when the candidate pool is
+    large (ambiguity/cost). Each GL line is consumed at most once. Returns the statement
+    lines newly matched.
     """
-    from .models import BankStatementLine
+    from .models import BankLineMatch, BankStatementLine
 
     pending = list(
         BankStatementLine.objects
@@ -170,6 +202,11 @@ def auto_reconcile(bank_account, *, tolerance_days=4, actor_user=None):
     gl_lines = list(_unmatched_gl_lines(bank_account))
     consumed: set[int] = set()
     matched = []
+
+    def _mark(sline):
+        sline.status = BankLineStatus.MATCHED
+        sline.match_source = BankMatchSource.AUTO
+        sline.reconciled_at = timezone.now()
 
     for sline in pending:
         candidates = [
@@ -182,12 +219,34 @@ def auto_reconcile(bank_account, *, tolerance_days=4, actor_user=None):
             continue  # 0 = no match; >1 = ambiguous, leave it for a human
         gl = candidates[0]
         sline.matched_line = gl
-        sline.status = BankLineStatus.MATCHED
-        sline.match_source = BankMatchSource.AUTO
-        sline.reconciled_at = timezone.now()
+        _mark(sline)
         sline.save(update_fields=["matched_line", "status", "match_source", "reconciled_at", "updated_at"])
         consumed.add(gl.id)
         matched.append(sline)
+
+    if group:
+        # Second pass: group several GL lines that SUM to a still-unmatched bank line.
+        for sline in pending:
+            if sline.status != BankLineStatus.UNMATCHED:
+                continue
+            pool = [
+                gl for gl in gl_lines
+                if gl.id not in consumed
+                and (_signed_gl(gl) > 0) == (sline.amount > 0)  # same direction
+                and abs((gl.entry.date - sline.txn_date).days) <= tolerance_days
+            ]
+            if not (2 <= len(pool) <= _GROUP_AUTO_MATCH_POOL_CAP):
+                continue
+            subset = _unique_summing_subset(pool, sline.amount, max_size=max_group)
+            if subset is None:
+                continue
+            BankLineMatch.objects.bulk_create(
+                [BankLineMatch(statement_line=sline, journal_line=gl) for gl in subset],
+            )
+            _mark(sline)
+            sline.save(update_fields=["status", "match_source", "reconciled_at", "updated_at"])
+            consumed.update(gl.id for gl in subset)
+            matched.append(sline)
 
     if matched:
         record(
@@ -334,6 +393,73 @@ def group_match(statement_line, journal_lines, *, actor_user=None):
         bank_account_id=bank_account.id, journal_lines=len(lines),
     )
     return statement_line
+
+
+@transaction.atomic
+def split_match(journal_line, statement_lines, *, actor_user=None):
+    """Match **one** cash journal line to **several** statement lines that sum to it.
+
+    The reverse of :func:`group_match`: one ledger movement the bank reported as several
+    lines (e.g. a payout split into principal + fee). Each statement line must be
+    unmatched and on the same bank account as the journal line's GL cash account; their
+    signed amounts total the journal line's signed amount. Records a
+    :class:`~vs_finance.models.BankLineMatch` per statement line — no ledger effect.
+    Unmatching any one of them later frees just that line (see :func:`unmatch_line`).
+    """
+    from .models import BankLineMatch
+
+    slines = list(statement_lines)
+    if len(slines) < 2:
+        raise BankReconciliationError(
+            "A split match needs at least two statement lines (use match for one).",
+        )
+    bank_account = slines[0].bank_account
+    if journal_line.account_id != bank_account.gl_account_id:
+        raise BankReconciliationError(
+            "The journal line is not on this bank account's GL cash account.",
+        )
+    if journal_line.entry.status != DocumentStatus.POSTED:
+        raise BankReconciliationError("Only a posted journal line can be matched.")
+    if journal_line.bank_statement_lines.exists() or journal_line.bank_line_matches.exists():
+        raise BankReconciliationError(f"Journal line {journal_line.id} is already matched.")
+
+    seen: set[int] = set()
+    total = 0
+    for sl in slines:
+        if sl.id in seen:
+            raise BankReconciliationError("A statement line appears twice in the split.")
+        seen.add(sl.id)
+        if sl.bank_account_id != bank_account.id:
+            raise BankReconciliationError("All statement lines must belong to the same bank account.")
+        if sl.status != BankLineStatus.UNMATCHED:
+            raise BankReconciliationError(
+                f"Statement line {sl.id} is '{sl.status}', only an unmatched line can be matched.",
+            )
+        total += sl.amount
+
+    if total != _signed_gl(journal_line):
+        raise BankReconciliationError(
+            f"Statement lines sum to {total} kobo, not the journal line's "
+            f"{_signed_gl(journal_line)} kobo.",
+        )
+
+    BankLineMatch.objects.bulk_create(
+        [BankLineMatch(statement_line=sl, journal_line=journal_line) for sl in slines],
+    )
+    now = timezone.now()
+    for sl in slines:
+        sl.status = BankLineStatus.MATCHED
+        sl.match_source = BankMatchSource.MANUAL
+        sl.reconciled_at = now
+        sl.save(update_fields=["status", "match_source", "reconciled_at", "updated_at"])
+    record(
+        entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
+        actor_user=actor_user, target=bank_account,
+        message=f"Split-matched journal line {journal_line.id} across {len(slines)} "
+                f"statement line(s) on {bank_account.name}.",
+        bank_account_id=bank_account.id, statement_lines=len(slines),
+    )
+    return slines
 
 
 @transaction.atomic
