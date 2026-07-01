@@ -209,18 +209,26 @@ class BankStatementLineView(_FinanceBase):
                 "external_id": row.get("external_id", ""),
             })
         body = request.data or {}
-        _, created = import_statement_lines(
+        _, created, suspected = import_statement_lines(
             bank, parsed, actor_user=request.user,
+            force=_bool(body.get("force", False), default=False),
             statement_date=_date(body.get("statement_date"), "statement_date"),
             period_label=str(body.get("period_label", "")).strip(),
             opening_balance=_signed_money(body.get("opening_balance", 0), "opening_balance"),
             closing_balance=(_signed_money(body.get("closing_balance"), "closing_balance")
                              if body.get("closing_balance") not in (None, "") else None),
         )
+        message = f"Imported {len(created)} statement line(s)."
+        if suspected:
+            message += (f" {len(suspected)} suspected duplicate(s) held back — "
+                        f"re-send with force=true to import them anyway.")
         return success_response(
-            f"Imported {len(created)} statement line(s) "
-            f"({len(rows) - len(created)} skipped as duplicates).",
-            data=BankStatementLineSerializer(created, many=True).data, status=201,
+            message,
+            data={
+                "imported": BankStatementLineSerializer(created, many=True).data,
+                "suspected_duplicates": suspected,
+            },
+            status=201,
         )
 
 
@@ -260,6 +268,7 @@ class BankBookLinesView(_FinanceBase):
     rbac_permission = "finance.bankaccount.view"
 
     def get(self, request, pk):
+        from core.pagination import XVSPagination
         from ..banking import _unmatched_gl_lines
         from ..models import Customer
 
@@ -276,14 +285,17 @@ class BankBookLinesView(_FinanceBase):
             label, sep, tail = (desc or "").partition(": ")
             return f"{label}: {names[tail]}" if sep and tail in names else (desc or "—")
 
+        # Paginate the unmatched book lines (was capped at [:200]); build rows per page.
+        paginator = XVSPagination()
+        page = paginator.paginate_queryset(_unmatched_gl_lines(bank), request, view=self)
         rows = [{
             "id": ln.id,
             "date": ln.entry.date,
             "description": humanize(ln.description or ln.entry.narration or "—"),
             "reference": ln.entry.document_number or ln.entry.reference or "",
             "amount": int((ln.debit or 0) - (ln.credit or 0)),
-        } for ln in _unmatched_gl_lines(bank)[:200]]
-        return success_response("Unmatched book lines retrieved.", data=rows)
+        } for ln in page]
+        return paginator.get_paginated_response(rows)
 
 
 class BankReconcileCompleteView(_FinanceBase):

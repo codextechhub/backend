@@ -51,19 +51,31 @@ def gl_account_balance(account) -> int:
 
 @transaction.atomic
 def import_statement_lines(bank_account, rows, *, statement_date=None, period_label="",
-                           opening_balance=0, closing_balance=None, actor_user=None):
-    """Import ``rows`` into a new :class:`BankStatement` (idempotent on ``external_id``).
+                           opening_balance=0, closing_balance=None, force=False, actor_user=None):
+    """Import ``rows`` into a new :class:`BankStatement`. Returns
+    ``(statement, created_lines, suspected_duplicates)``.
 
     ``rows`` is an iterable of dicts: ``{txn_date, amount, description?, reference?,
     external_id?}`` where ``amount`` is signed kobo. The batch is grouped under a
     :class:`BankStatement` (period opening → closing); when ``closing_balance`` is not
-    given it is derived as ``opening + Σ amounts``. Lines whose ``external_id`` already
-    exists for this account are skipped. Returns ``(statement, created_lines)``.
+    given it is derived as ``opening + Σ amounts``.
+
+    De-dup guards against an accidental re-upload silently doubling a bank charge:
+
+    * a row whose ``external_id`` already exists for this account is skipped (exact dup);
+    * a row **without** an ``external_id`` that matches an existing line on
+      ``(txn_date, amount, description, reference)`` is treated as a *suspected*
+      re-import — held back and returned in ``suspected_duplicates`` rather than
+      imported — **unless** ``force`` is set.
+
+    Two genuinely identical same-day transactions in one *fresh* batch are both kept
+    (the check is against already-stored lines, not within the batch).
     """
     from .models import BankStatement, BankStatementLine
 
     rows = list(rows)
     created = []
+    suspected = []
     movement = 0
     for row in rows:
         external_id = (row.get("external_id") or "").strip()
@@ -72,18 +84,29 @@ def import_statement_lines(bank_account, rows, *, statement_date=None, period_la
         ).exists():
             continue
         amount = int(row["amount"])
+        description = row.get("description", "")
+        reference = row.get("reference", "")
+        if (not force and not external_id and BankStatementLine.objects.filter(
+            bank_account=bank_account, txn_date=row["txn_date"], amount=amount,
+            description=description, reference=reference,
+        ).exists()):
+            suspected.append({
+                "txn_date": row["txn_date"], "amount": amount,
+                "description": description, "reference": reference,
+            })
+            continue
         created.append(BankStatementLine(
             bank_account=bank_account,
             txn_date=row["txn_date"],
             amount=amount,
-            description=row.get("description", ""),
-            reference=row.get("reference", ""),
+            description=description,
+            reference=reference,
             external_id=external_id,
         ))
         movement += amount
 
     if not created:
-        return None, []
+        return None, [], suspected
 
     opening_balance = int(opening_balance or 0)
     if closing_balance is None:
@@ -98,7 +121,7 @@ def import_statement_lines(bank_account, rows, *, statement_date=None, period_la
     for line in created:
         line.statement = statement
     BankStatementLine.objects.bulk_create(created)
-    return statement, list(BankStatementLine.objects.filter(statement=statement))
+    return statement, list(BankStatementLine.objects.filter(statement=statement)), suspected
 
 
 # --------------------------------------------------------------------------- #
@@ -130,11 +153,11 @@ def _unmatched_gl_lines(bank_account):
 def auto_reconcile(bank_account, *, tolerance_days=4, actor_user=None):
     """Pair unmatched statement lines to unmatched GL cash lines by amount + date.
 
-    A statement line matches the first available posted cash-account journal line with
-    the **same signed amount** whose journal date is within ``tolerance_days`` of the
-    statement date. Greedy and conservative: each GL line is consumed at most once, and
-    anything ambiguous is simply left unmatched for a human to pair. Returns the list of
-    statement lines newly matched.
+    A statement line auto-matches a posted cash-account journal line with the **same
+    signed amount** whose journal date is within ``tolerance_days`` — but only when
+    there is **exactly one** such unconsumed candidate. If several GL lines could fit
+    (same amount + date), the line is left unmatched for a human rather than guessed at.
+    Each GL line is consumed at most once. Returns the statement lines newly matched.
     """
     from .models import BankStatementLine
 
@@ -148,21 +171,22 @@ def auto_reconcile(bank_account, *, tolerance_days=4, actor_user=None):
     matched = []
 
     for sline in pending:
-        for gl in gl_lines:
-            if gl.id in consumed:
-                continue
-            if _signed_gl(gl) != sline.amount:
-                continue
-            if abs((gl.entry.date - sline.txn_date).days) > tolerance_days:
-                continue
-            sline.matched_line = gl
-            sline.status = BankLineStatus.MATCHED
-            sline.match_source = BankMatchSource.AUTO
-            sline.reconciled_at = timezone.now()
-            sline.save(update_fields=["matched_line", "status", "match_source", "reconciled_at", "updated_at"])
-            consumed.add(gl.id)
-            matched.append(sline)
-            break
+        candidates = [
+            gl for gl in gl_lines
+            if gl.id not in consumed
+            and _signed_gl(gl) == sline.amount
+            and abs((gl.entry.date - sline.txn_date).days) <= tolerance_days
+        ]
+        if len(candidates) != 1:
+            continue  # 0 = no match; >1 = ambiguous, leave it for a human
+        gl = candidates[0]
+        sline.matched_line = gl
+        sline.status = BankLineStatus.MATCHED
+        sline.match_source = BankMatchSource.AUTO
+        sline.reconciled_at = timezone.now()
+        sline.save(update_fields=["matched_line", "status", "match_source", "reconciled_at", "updated_at"])
+        consumed.add(gl.id)
+        matched.append(sline)
 
     if matched:
         record(

@@ -61,9 +61,9 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 | `GET /bank-accounts/<pk>/` | `finance.bankaccount.view` | Detail + metrics (book/stmt balance, unreconciled), recent txns, statements, recon history | — | detail |
 | `PATCH /bank-accounts/<pk>/` | `finance.bankaccount.update` | Edit settings | `name?`, `bank_name?`, `account_number?`, `currency?`, `is_active?`, `is_primary?` | account |
 | `GET /bank-accounts/<pk>/statement-lines/` | `finance.bankaccount.view` | List lines (**paginated**). Query: `status` | — | paginated `BankStatementLineSerializer` |
-| `POST /bank-accounts/<pk>/statement-lines/` | `finance.bankaccount.import` | **Import** a batch (idempotent on `external_id`) | `lines:[{txn_date, amount (signed), description?, reference?, external_id?}]`, `statement_date?`, `period_label?`, `opening_balance?`, `closing_balance?` | `201` imported lines |
+| `POST /bank-accounts/<pk>/statement-lines/` | `finance.bankaccount.import` | **Import** a batch. De-dups on `external_id`; rows without one that match an existing line are held back as *suspected duplicates* unless `force` | `lines:[{txn_date, amount (signed), description?, reference?, external_id?}]`, `force?`, `statement_date?`, `period_label?`, `opening_balance?`, `closing_balance?` | `201` `{imported[], suspected_duplicates[]}` |
 | `POST /bank-accounts/<pk>/auto-reconcile/` | `finance.bankaccount.reconcile` | Auto-match by amount+date | `tolerance_days?` (default 4) | matched lines |
-| `GET /bank-accounts/<pk>/book-lines/` | `finance.bankaccount.view` | Unmatched GL cash lines (the "book" side), capped 200 | — | `{id, date, description, reference, amount(signed)}[]` |
+| `GET /bank-accounts/<pk>/book-lines/` | `finance.bankaccount.view` | Unmatched GL cash lines (the "book" side), **paginated** | — | paginated `{id, date, description, reference, amount(signed)}` |
 | `POST /bank-accounts/<pk>/reconcile/complete/` | `finance.bankaccount.reconcile` | Record a reconciliation snapshot | — | `201` `BankReconciliationSerializer` |
 | `POST /statement-lines/<pk>/match/` | `finance.bankaccount.reconcile` | Manually pair to a cash journal line | `journal_line` (id) | line |
 | `POST /statement-lines/<pk>/adjust/` | `finance.bankaccount.reconcile` | **Book** an unrecorded line + match it | `counter_account?`, `counter_code?`, `narration?` | `201` line |
@@ -146,15 +146,16 @@ returns the line to `UNMATCHED`.
   statement.amount`. A single bank deposit that lumps several receipts (or a partial
   clearing) won't auto-match; you'd match manually against an equal line or book an
   adjustment. No split/many-to-one matching.
-- **Greedy first-match** — `auto_reconcile` takes the *first* unconsumed GL line with
-  the same amount+date; with duplicate amounts on the same day it may pair the
-  "wrong" one (still conservative — each GL line used once).
-- **De-dup needs `external_id`** — import only skips duplicates when the row carries
-  an `external_id`. Re-importing a statement without ids **duplicates** lines.
+- ✅ **Ambiguous auto-match now skipped** (was greedy first-match) — `auto_reconcile`
+  only auto-pairs when **exactly one** GL candidate fits amount+date; ties are left
+  for a human.
+- ✅ **Re-import guard** (was silent duplication) — a row without an `external_id`
+  that matches an existing line on `(txn_date, amount, description, reference)` is
+  held back as a *suspected duplicate* and returned in the response; `force=true`
+  imports anyway. Two identical rows in one *fresh* batch are both kept.
 - **`IGNORED` is defined but no endpoint sets it** — there's no "ignore this line"
   action yet; lines are either UNMATCHED or MATCHED via the API.
-- **`book-lines/` is capped at 200 and un-paginated**; the statement-lines list *is*
-  paginated.
+- ✅ **`book-lines/` now paginates** (was capped at 200).
 - **Import doesn't validate** opening/closing against the GL — it records what the
   bank said; the difference surfaces later in the reconciliation snapshot.
 

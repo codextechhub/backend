@@ -1247,12 +1247,58 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
             {"txn_date": datetime.date(2026, 1, 5), "amount": 50000, "external_id": "A1"},
             {"txn_date": datetime.date(2026, 1, 6), "amount": -2000, "external_id": "A2"},
         ]
-        _, created = import_statement_lines(bank, rows)
+        _, created, _ = import_statement_lines(bank, rows)
         self.assertEqual(len(created), 2)
         # Re-import the same export: nothing new.
-        _, again = import_statement_lines(bank, rows)
+        _, again, _ = import_statement_lines(bank, rows)
         self.assertEqual(again, [])
         self.assertEqual(BankStatementLine.objects.filter(bank_account=bank).count(), 2)
+
+    def test_reimport_without_external_id_is_held_back_as_suspected(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        rows = [{"txn_date": datetime.date(2026, 1, 5), "amount": -1500,
+                 "description": "Monthly fee"}]
+        _, created, suspected = import_statement_lines(bank, rows)
+        self.assertEqual(len(created), 1)
+        self.assertEqual(suspected, [])
+        # Re-import the same content (no external_id): held back, not duplicated.
+        _, created2, suspected2 = import_statement_lines(bank, rows)
+        self.assertEqual(created2, [])
+        self.assertEqual(len(suspected2), 1)
+        self.assertEqual(BankStatementLine.objects.filter(bank_account=bank).count(), 1)
+        # force=True imports it anyway (a genuine repeat charge).
+        _, created3, _ = import_statement_lines(bank, rows, force=True)
+        self.assertEqual(len(created3), 1)
+        self.assertEqual(BankStatementLine.objects.filter(bank_account=bank).count(), 2)
+
+    def test_identical_lines_in_one_fresh_batch_are_both_kept(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        # Two genuinely identical same-day charges in one upload → both imported.
+        rows = [
+            {"txn_date": datetime.date(2026, 1, 5), "amount": -1500, "description": "Fee"},
+            {"txn_date": datetime.date(2026, 1, 5), "amount": -1500, "description": "Fee"},
+        ]
+        _, created, suspected = import_statement_lines(bank, rows)
+        self.assertEqual(len(created), 2)
+        self.assertEqual(suspected, [])
+
+    def test_auto_reconcile_leaves_ambiguous_ties_unmatched(self):
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        # Two GL cash inflows of +50,000 on the same date — a statement line of +50,000
+        # has two equally-good candidates, so auto-match must leave it for a human.
+        for _ in range(2):
+            post_journal(self.make_entry(
+                entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)],
+                date=datetime.date(2026, 1, 15)))
+        import_statement_lines(bank, [
+            {"txn_date": datetime.date(2026, 1, 16), "amount": 50000, "external_id": "S1"}])
+        matched = auto_reconcile(bank, tolerance_days=4)
+        self.assertEqual(matched, [])
+        self.assertEqual(
+            BankStatementLine.objects.get(external_id="S1").status, BankLineStatus.UNMATCHED)
 
     def test_auto_reconcile_matches_by_amount_and_date(self):
         entity, _, periods = self.build_books()
@@ -1325,7 +1371,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
     def test_import_groups_lines_under_a_statement(self):
         entity, _, _ = self.build_books()
         bank = self.make_bank(entity)
-        statement, lines = import_statement_lines(
+        statement, lines, _ = import_statement_lines(
             bank, [
                 {"txn_date": datetime.date(2026, 1, 5), "amount": 50000},
                 {"txn_date": datetime.date(2026, 1, 6), "amount": -2000},
@@ -1347,7 +1393,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         post_journal(self.make_entry(
             entity, periods[0], [("1100", 50000, 0), ("4100", 0, 50000)],
             date=datetime.date(2026, 1, 15)))
-        statement, _ = import_statement_lines(bank, [
+        statement, _, _ = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 16), "amount": 50000}])
         auto_reconcile(bank, tolerance_days=4)
 
@@ -2250,6 +2296,30 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(cf.by_activity["financing"], 1000000)  # capital
         self.assertEqual(cf.net_change, 780000)
         self.assertTrue(cf.is_reconciled)
+
+    def test_balance_sheet_sections_group_by_ifrs_and_balance(self):
+        from .reports import balance_sheet_sections
+        entity, _, periods = self.build_books()
+        self._seed_activity(entity, periods[0])
+
+        bs = balance_sheet_sections(entity)
+        self.assertTrue(bs.is_balanced)
+        self.assertEqual(bs.total_assets, 1180000)
+        self.assertEqual(bs.total_liabilities, 0)
+        self.assertEqual(bs.total_equity, 1180000)
+        self.assertEqual(bs.current_year_earnings, 180000)
+
+        by_key = {s.key: s for s in bs.sections}
+        self.assertEqual(
+            set(by_key),
+            {"non_current_assets", "current_assets", "equity",
+             "non_current_liabilities", "current_liabilities"})
+        # Cash (1100) → current assets 780,000; PP&E (1500) → non-current 400,000.
+        self.assertEqual(by_key["current_assets"].total, 780000)
+        self.assertEqual(by_key["non_current_assets"].total, 400000)
+        # The unclosed net income shows as its own equity line, not folded away.
+        self.assertIn(
+            "Current year earnings", [g.label for g in by_key["equity"].groups])
 
     def test_cash_flow_ignores_non_cash_journals(self):
         entity, _, periods = self.build_books()
