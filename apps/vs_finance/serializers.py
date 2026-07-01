@@ -694,18 +694,24 @@ class BankStatementLineSerializer(serializers.ModelSerializer):
     amount_naira = serializers.SerializerMethodField()
     match_source_display = serializers.CharField(source="get_match_source_display", read_only=True)
     matched_reference = serializers.SerializerMethodField()
+    # Journal lines paired to this statement line via a group (many-to-one) match;
+    # empty for a plain 1:1 match (which uses matched_line_id).
+    group_line_ids = serializers.SerializerMethodField()
 
     class Meta:
         model = BankStatementLine
         fields = [
             "id", "bank_account_id", "statement_id", "txn_date", "description",
             "reference", "amount", "amount_naira", "status", "matched_line_id",
-            "adjusting_journal_id", "match_source", "match_source_display",
-            "matched_reference", "external_id", "reconciled_at",
+            "group_line_ids", "adjusting_journal_id", "match_source",
+            "match_source_display", "matched_reference", "external_id", "reconciled_at",
         ]
 
     def get_amount_naira(self, obj) -> str:
         return format_naira(obj.amount)
+
+    def get_group_line_ids(self, obj) -> list:
+        return list(obj.line_matches.values_list("journal_line_id", flat=True))
 
     def get_matched_reference(self, obj):
         """The document number of the matched journal entry (or adjusting entry)."""

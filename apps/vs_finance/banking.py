@@ -143,7 +143,8 @@ def _unmatched_gl_lines(bank_account):
             account=bank_account.gl_account,
             entry__status=DocumentStatus.POSTED,
         )
-        .filter(bank_statement_lines__isnull=True)
+        # Not paired either 1:1 (matched_line) or as part of a group match.
+        .filter(bank_statement_lines__isnull=True, bank_line_matches__isnull=True)
         .select_related("entry")
         .order_by("entry__date", "id")
     )
@@ -271,6 +272,71 @@ def match_line(statement_line, journal_line, *, actor_user=None):
 
 
 @transaction.atomic
+def group_match(statement_line, journal_lines, *, actor_user=None):
+    """Match one statement line to **several** cash journal lines that sum to its amount.
+
+    The many-to-one case: one bank line (e.g. a PSP settlement) settling multiple
+    ledger movements. Each line must be posted, on this bank's GL cash account, and not
+    already matched (1:1 or in another group); their signed amounts
+    (``debit − credit``) must total the statement line's signed amount exactly. Records
+    a :class:`~vs_finance.models.BankLineMatch` per pair — no ledger effect. Returns the
+    statement line.
+    """
+    from .models import BankLineMatch
+
+    if statement_line.status != BankLineStatus.UNMATCHED:
+        raise BankReconciliationError(
+            f"Statement line is '{statement_line.status}', only an unmatched line can be matched.",
+        )
+    lines = list(journal_lines)
+    if len(lines) < 2:
+        raise BankReconciliationError(
+            "A group match needs at least two journal lines (use match for a single line).",
+        )
+
+    bank_account = statement_line.bank_account
+    seen: set[int] = set()
+    total = 0
+    for jl in lines:
+        if jl.id in seen:
+            raise BankReconciliationError("A journal line appears twice in the group.")
+        seen.add(jl.id)
+        if jl.account_id != bank_account.gl_account_id:
+            raise BankReconciliationError(
+                "A journal line is not on this bank account's GL cash account.",
+            )
+        if jl.entry.status != DocumentStatus.POSTED:
+            raise BankReconciliationError("Only posted journal lines can be matched.")
+        if jl.bank_statement_lines.exists() or jl.bank_line_matches.exists():
+            raise BankReconciliationError(f"Journal line {jl.id} is already matched.")
+        total += _signed_gl(jl)
+
+    if total != statement_line.amount:
+        raise BankReconciliationError(
+            f"Group total {total} kobo does not equal the statement line "
+            f"{statement_line.amount} kobo.",
+        )
+
+    BankLineMatch.objects.bulk_create(
+        [BankLineMatch(statement_line=statement_line, journal_line=jl) for jl in lines],
+    )
+    statement_line.status = BankLineStatus.MATCHED
+    statement_line.match_source = BankMatchSource.MANUAL
+    statement_line.reconciled_at = timezone.now()
+    statement_line.save(
+        update_fields=["status", "match_source", "reconciled_at", "updated_at"],
+    )
+    record(
+        entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
+        actor_user=actor_user, target=bank_account,
+        message=f"Group-matched a statement line to {len(lines)} journal line(s) "
+                f"on {bank_account.name}.",
+        bank_account_id=bank_account.id, journal_lines=len(lines),
+    )
+    return statement_line
+
+
+@transaction.atomic
 def unmatch_line(statement_line, *, actor_user=None):
     """Undo a match — and reverse the adjusting journal if the match created one.
 
@@ -284,6 +350,8 @@ def unmatch_line(statement_line, *, actor_user=None):
     adj = statement_line.adjusting_journal
     if adj is not None:
         reverse_journal(adj, actor_user=actor_user)
+    # Drop any group-match links (many-to-one); these carry no ledger effect.
+    statement_line.line_matches.all().delete()
     statement_line.matched_line = None
     statement_line.adjusting_journal = None
     statement_line.status = BankLineStatus.UNMATCHED

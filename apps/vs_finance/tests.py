@@ -1300,6 +1300,59 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(
             BankStatementLine.objects.get(external_id="S1").status, BankLineStatus.UNMATCHED)
 
+    def test_group_match_pairs_many_gl_lines_to_one_statement_line(self):
+        from vs_finance.banking import group_match, unmatch_line, _unmatched_gl_lines
+        from vs_finance.exceptions import BankReconciliationError
+
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        # Two receipts of 30,000 and 20,000 land as one 50,000 bank settlement line.
+        e1 = self.make_entry(entity, periods[0], [("1100", 30000, 0), ("4100", 0, 30000)],
+                             date=datetime.date(2026, 1, 15))
+        e2 = self.make_entry(entity, periods[0], [("1100", 20000, 0), ("4100", 0, 20000)],
+                             date=datetime.date(2026, 1, 15))
+        post_journal(e1)
+        post_journal(e2)
+        gl1 = e1.lines.get(account__code="1100")
+        gl2 = e2.lines.get(account__code="1100")
+        _, lines, _ = import_statement_lines(bank, [
+            {"txn_date": datetime.date(2026, 1, 16), "amount": 50000}])
+        sline = lines[0]
+
+        # Wrong total is rejected; the correct pair matches.
+        with self.assertRaises(BankReconciliationError):
+            group_match(sline, [gl1])  # needs ≥2
+        group_match(sline, [gl1, gl2])
+        sline.refresh_from_db()
+        self.assertEqual(sline.status, BankLineStatus.MATCHED)
+        self.assertEqual(sline.line_matches.count(), 2)
+        # Both GL lines drop out of the unmatched "book" side.
+        self.assertNotIn(gl1.id, {l.id for l in _unmatched_gl_lines(bank)})
+        self.assertNotIn(gl2.id, {l.id for l in _unmatched_gl_lines(bank)})
+
+        # Unmatch drops the group links and frees the GL lines again.
+        unmatch_line(sline)
+        sline.refresh_from_db()
+        self.assertEqual(sline.status, BankLineStatus.UNMATCHED)
+        self.assertEqual(sline.line_matches.count(), 0)
+        self.assertIn(gl1.id, {l.id for l in _unmatched_gl_lines(bank)})
+
+    def test_group_match_rejects_mismatched_total(self):
+        from vs_finance.banking import group_match
+        from vs_finance.exceptions import BankReconciliationError
+
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        e1 = self.make_entry(entity, periods[0], [("1100", 30000, 0), ("4100", 0, 30000)])
+        e2 = self.make_entry(entity, periods[0], [("1100", 20000, 0), ("4100", 0, 20000)])
+        post_journal(e1)
+        post_journal(e2)
+        _, lines, _ = import_statement_lines(bank, [
+            {"txn_date": datetime.date(2026, 1, 16), "amount": 60000}])  # ≠ 30k+20k
+        with self.assertRaises(BankReconciliationError):
+            group_match(lines[0], [e1.lines.get(account__code="1100"),
+                                   e2.lines.get(account__code="1100")])
+
     def test_auto_reconcile_matches_by_amount_and_date(self):
         entity, _, periods = self.build_books()
         bank = self.make_bank(entity)

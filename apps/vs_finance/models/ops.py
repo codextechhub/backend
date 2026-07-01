@@ -146,6 +146,35 @@ class BankStatementLine(TimeStampedModel):
         return f"{self.txn_date} {self.amount} [{self.status}]"
 
 
+class BankLineMatch(TimeStampedModel):
+    """Links a statement line to a GL cash journal line in a **group** (many-to-one) match.
+
+    The 1:1 case uses :attr:`BankStatementLine.matched_line`. A group match — one bank
+    line that settles several ledger movements (e.g. a PSP settlement covering many
+    receipts) — records each paired cash :class:`JournalLine` here instead; their signed
+    amounts sum to the statement line's amount. Unmatching deletes these rows.
+    """
+
+    statement_line = models.ForeignKey(
+        BankStatementLine, on_delete=models.CASCADE, related_name="line_matches",
+    )
+    journal_line = models.ForeignKey(
+        "JournalLine", on_delete=models.PROTECT, related_name="bank_line_matches",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["statement_line", "journal_line"],
+                name="uniq_finance_bank_line_match",
+            ),
+        ]
+        indexes = [models.Index(fields=["journal_line"])]
+
+    def __str__(self) -> str:
+        return f"{self.statement_line_id}↔{self.journal_line_id}"
+
+
 class BankStatement(TimeStampedModel):
     """An imported bank statement — a batch of lines for a period, with opening/closing.
 

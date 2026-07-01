@@ -358,6 +358,37 @@ class BankStatementLineMatchView(_StatementLineActionBase):
         )
 
 
+class BankStatementLineGroupMatchView(_StatementLineActionBase):
+    """POST {journal_lines:[ids]} — match a statement line to several cash journal lines
+    whose signed amounts sum to it (one settlement covering many receipts).
+
+    docstring-name: Group-match a bank statement line
+    """
+
+    rbac_permission = "finance.bankaccount.reconcile"
+
+    def post(self, request, pk):
+        from ..banking import group_match
+
+        entity, line = self._line(request, pk)
+        ids = (request.data or {}).get("journal_lines") or []
+        if not isinstance(ids, list) or len(ids) < 2:
+            raise ValidationError(
+                {"journal_lines": "Provide a list of at least two journal line ids."})
+        jls = list(
+            JournalLine.objects.filter(pk__in=ids, entry__entity=entity).select_related("entry"))
+        missing = set(map(str, ids)) - {str(jl.id) for jl in jls}
+        if missing:
+            raise ValidationError(
+                {"journal_lines": f"Not found in this entity: {', '.join(sorted(missing))}."})
+        group_match(line, jls, actor_user=request.user)
+        line.refresh_from_db()
+        return success_response(
+            "Statement line group-matched.",
+            data=BankStatementLineSerializer(line).data, status=201,
+        )
+
+
 class BankStatementLineAdjustView(_StatementLineActionBase):
     """POST {counter_account?, counter_code?, narration?} — book + match an unrecorded line.
 
