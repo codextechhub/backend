@@ -3412,7 +3412,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         ec = entity.code
 
         pnl = self.client.get(f"/v1/finance/reports/income-statement/?entity={ec}").json()["data"]
-        self.assertEqual(pnl["net_income"]["kobo"], 180000)
+        self.assertEqual(pnl["totals"]["net"]["amount"]["kobo"], 180000)
 
         bs = self.client.get(f"/v1/finance/reports/balance-sheet/?entity={ec}").json()["data"]
         self.assertTrue(bs["is_balanced"])
@@ -4219,7 +4219,7 @@ class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
     # --- the slice report ----------------------------------------------------
     def test_slice_groups_by_dimension_and_cost_centre(self):
         from vs_finance.models import CostCenter
-        from vs_finance.reports import analytics_slice, UNASSIGNED_BUCKET
+        from vs_finance.reports import analytics_slice
         from vs_finance.views_ops import _resolve_dimensions
         entity, _, _ = self.build_books()
         self._axis(entity)
@@ -4235,10 +4235,12 @@ class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
             {r.bucket: r.net for r in by_fund.rows if r.code == "5500"},
             {"GRANT-A": 100000, "INTERNAL": 40000})
 
+        # Only cost-centre-tagged lines appear — the untagged 40,000 spend is excluded
+        # (no "Unassigned" catch-all).
         by_cc = analytics_slice(entity, axis="cost_center")
         self.assertEqual(
             {r.bucket: r.net for r in by_cc.rows if r.code == "5500"},
-            {"PRI": 100000, UNASSIGNED_BUCKET: 40000})
+            {"PRI": 100000})
 
     def test_slice_period_scoping(self):
         from vs_finance.reports import analytics_slice

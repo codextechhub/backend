@@ -123,10 +123,6 @@ def trial_balance(entity, *, period=None) -> TrialBalance:
 # Analytical slice — net activity per account, bucketed by an axis            #
 # --------------------------------------------------------------------------- #
 
-#: Sentinel bucket for lines that carry no value on the requested axis.
-UNASSIGNED_BUCKET = "Unassigned"
-
-
 @dataclass
 class AnalyticsSliceRow:
     """One account's net movement within a single analytical bucket (kobo)."""
@@ -169,8 +165,10 @@ def analytics_slice(entity, *, axis, period=None, account_type=None) -> Analytic
     """Net movement per account, bucketed by ``axis``, over posted journals.
 
     ``axis`` is either the literal ``"cost_center"`` or a :class:`~vs_finance.models.Dimension`
-    code (e.g. ``"FUND"``). Lines with no value on the axis fall into
-    :data:`UNASSIGNED_BUCKET`. Optionally scope to one ``period`` and/or one
+    code (e.g. ``"FUND"``). **Only lines actually tagged on the axis are included** — a
+    line with no cost centre (or no value for the dimension) is not part of that axis's
+    analysis and is skipped, so the report shows genuinely-allocated activity rather
+    than a catch-all bucket. Optionally scope to one ``period`` and/or one
     ``account_type``. Net is ``debit - credit`` (kobo) so it reads naturally for both
     sides of the books.
     """
@@ -182,6 +180,8 @@ def analytics_slice(entity, *, axis, period=None, account_type=None) -> Analytic
         .filter(entry__entity=entity, entry__status=DocumentStatus.POSTED)
         .select_related("account", "cost_center")
     )
+    if axis == "cost_center":
+        qs = qs.filter(cost_center__isnull=False)  # only cost-centre-tagged lines
     if period is not None:
         qs = qs.filter(entry__period=period)
     if account_type:
@@ -192,9 +192,11 @@ def analytics_slice(entity, *, axis, period=None, account_type=None) -> Analytic
     total_net = 0
     for line in qs:
         if axis == "cost_center":
-            bucket = line.cost_center.code if line.cost_center_id else UNASSIGNED_BUCKET
+            bucket = line.cost_center.code
         else:
-            bucket = (line.dimensions or {}).get(axis) or UNASSIGNED_BUCKET
+            bucket = (line.dimensions or {}).get(axis)
+            if not bucket:
+                continue  # untagged on this dimension → not part of the analysis
         acc = line.account
         slot = by_key.setdefault(
             (bucket, acc.id),
