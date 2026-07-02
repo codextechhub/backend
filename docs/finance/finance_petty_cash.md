@@ -24,15 +24,15 @@ Routes (mounted at `/v1/finance/`): `petty-cash-funds/…`,
   **replenish** (restore to float from bank).
 
 **This does NOT:**
-- **Hold a second source of truth.** `current_balance` is a maintained mirror of the
-  GL petty-cash account — "money only ever moves via journals against `gl_account`"
-  (`models/ops.py:370`). It's kept in step *by these services*, not by every posting
-  to that account (§8).
-- **Let you overspend the tin.** A voucher whose total exceeds `current_balance` is
-  **rejected** (`PettyCashOverdrawError`); a row lock stops two concurrent vouchers
-  both slipping under the guard.
-- **Void/reject a posted voucher.** A voucher is `DRAFT → POSTED` only; the cash left
-  the tin when posted, so a mistake is fixed by reversing the journal (no `void` here).
+- **Hold a second source of truth.** The **GL petty-cash account is truth**;
+  `current_balance` is a denormalised mirror **re-synced from the GL after every
+  operation**, and the overdraw guard reads the GL live — so the mirror can't drift or
+  mis-authorise a payout (§6/§8).
+- **Let you overspend the tin.** A voucher whose total exceeds the **live GL** cash on
+  hand is **rejected** (`PettyCashOverdrawError`); a row lock stops two concurrent
+  vouchers both slipping under the guard.
+- **Reject a posted voucher** — but a posted voucher **can be voided** (`void/`):
+  it reverses the journal (cash back to the tin) and marks the voucher CANCELLED (§4).
 
 ## 2. Domain model
 
@@ -53,20 +53,22 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 | Method + path | permission key | what it does | request body | response |
 |---|---|---|---|---|
 | `GET /petty-cash-funds/` | `finance.pettycash.view` | List funds. Query: `is_active` | — | `PettyCashFundSerializer[]` (un-paginated) |
-| `POST /petty-cash-funds/` | `finance.pettycash.manage` | Create a fund (maps to a GL account) | `name`, `gl_account`, `custodian?`/`custodian_name?`, `float_amount?`, `currency?` | `201` fund |
+| `POST /petty-cash-funds/` | `finance.pettycash.create` | Create a fund (maps to a GL account) | `name`, `gl_account`, `custodian?`/`custodian_name?`, `float_amount?`, `currency?` | `201` fund |
 | `GET /petty-cash-funds/<pk>/` | `finance.pettycash.view` | Fund + week spend + movement register | — | detail |
-| `PATCH /petty-cash-funds/<pk>/` | `finance.pettycash.manage` | Edit fund settings | `name?`, `custodian?`, `float_amount?`, `is_active?` | fund |
-| `POST /petty-cash-funds/<pk>/establish/` | `finance.pettycash.replenish` | Move cash bank → tin (open/increase the float) | `bank_account`, `amount`, `date` | fund |
+| `PATCH /petty-cash-funds/<pk>/` | `finance.pettycash.update` | Edit fund settings | `name?`, `custodian?`, `float_amount?`, `is_active?` | fund |
+| `POST /petty-cash-funds/<pk>/establish/` | `finance.pettycash.establish` | Move cash bank → tin (open/increase the float) | `bank_account`, `amount`, `date` | fund |
 | `POST /petty-cash-funds/<pk>/replenish/` | `finance.pettycash.replenish` | Top the tin back to its float (or by `amount`) | `bank_account`, `date`, `amount?` | fund |
 | `GET /petty-cash-status/` | `finance.pettycash.view` | Per-fund position + low-balance flags | Query: `threshold_bps` (default 2500 = 25%) | `{rows[]}` |
-| `GET /petty-cash-vouchers/` | `finance.pettycash.view` | List vouchers (paginated). Query: `fund`, `status` | — | paginated `PettyCashVoucherSerializer` |
-| `POST /petty-cash-vouchers/` | `finance.pettycash.create` | Create a **DRAFT** voucher + lines | `fund`, `voucher_date`, `payee?`, `spent_by?`, `lines:[{expense_account, quantity?, unit_price, tax_code?, cost_center?}]` | `201` voucher |
-| `GET /petty-cash-vouchers/<pk>/` | `finance.pettycash.view` | One voucher | — | detail |
-| `POST /petty-cash-vouchers/<pk>/post/` | `finance.pettycash.post` | Post it (relieve the tin) | — | voucher |
+| `GET /petty-cash-vouchers/` | `finance.pettycashvoucher.view` | List vouchers (paginated). Query: `fund`, `status` | — | paginated `PettyCashVoucherSerializer` |
+| `POST /petty-cash-vouchers/` | `finance.pettycashvoucher.create` | Create a **DRAFT** voucher + lines | `fund`, `voucher_date`, `payee?`, `spent_by?`, `lines:[{expense_account, quantity?, unit_price, tax_code?, cost_center?}]` | `201` voucher |
+| `GET /petty-cash-vouchers/<pk>/` | `finance.pettycashvoucher.view` | One voucher | — | detail |
+| `POST /petty-cash-vouchers/<pk>/post/` | `finance.pettycashvoucher.post` | Post it (relieve the tin) | — | voucher |
+| `POST /petty-cash-vouchers/<pk>/void/` | `finance.pettycashvoucher.post` | Void a **posted** voucher (reverses journal, cash back to tin → CANCELLED) | — | voucher |
 
-> **Permission verbs are mixed here:** fund create/edit uses `manage`, voucher create
-> uses `create`, establish **and** replenish both use `replenish`, posting a voucher
-> uses `post` (§9) — worth care when assigning roles.
+> **Two resources:** the **fund** (`finance.pettycash.*` — `view/create/update/
+> establish/replenish`) and the **voucher** (`finance.pettycashvoucher.*` —
+> `view/create/post`) are separate RBAC resources, mirroring how every other finance
+> document gets its own resource, so each verb is unambiguous (§9).
 
 ## 4. Lifecycle / state machine
 
@@ -74,50 +76,57 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 Fund:    (create) ──establish──▶ float on hand ──voucher posts (spend)──▶ balance ↓
                                         ▲                                     │
                                         └──────── replenish (to float) ◀──────┘
-Voucher: DRAFT ──post──▶ POSTED   (lowers the fund; no void/reject)
+Voucher: DRAFT ──post──▶ POSTED ──void──▶ CANCELLED   (journal reversed, cash back to tin)
 ```
 - **Establish** seeds (or permanently increases) the float. **Vouchers** spend it
   down. **Replenish** tops it back up (defaults to the exact `shortfall`).
-- `current_balance` moves in the *same transaction* as each posting (establish +total,
-  voucher −total, replenish +top_up).
+- **Void** undoes a posted voucher: reverses its journal (restoring the tin) and marks
+  it CANCELLED.
+- `current_balance` is **re-synced from the GL** in the *same transaction* as each
+  posting (establish / voucher / replenish / void), so it always matches truth.
 
 ## 5. Calculations
 
 ```
-shortfall       = max(float_amount − current_balance, 0)
+on_hand         = gl_cash_on_hand(fund)   # LIVE GL balance of the petty-cash account
+shortfall       = max(float_amount − on_hand, 0)
 voucher line    net = quantity × unit_price ;  tax = net × rate_bps / 10000   (ROUND_HALF_UP)
-overdraw guard  reject if voucher.total > current_balance
-replenish top_up = shortfall (default)  or  amount
-needs_replenish = current_balance ≤ float_amount × threshold_bps / 10000   (default 25%)
+overdraw guard  reject if voucher.total > on_hand          # live GL, not the mirror
+replenish top_up = shortfall (default)  or  amount          # shortfall from live GL
+needs_replenish = on_hand ≤ float_amount × threshold_bps / 10000   (default 25%)
 ```
 Voucher pricing reuses the shared AR helpers (`receivables.compute_line_net`/
 `compute_tax`).
 
 ## 6. What posting does to the ledger
 
-Each action posts a journal **and** adjusts `current_balance` atomically.
+Each action posts a journal, then **re-syncs `current_balance` from the GL**
+(`gl_cash_on_hand`) in the same transaction.
 
-**Establish** (`_establish_fund_atomic`, `petty_cash.py:66`):
+**Establish** (`_establish_fund_atomic`):
 ```
 Dr  petty cash (fund gl_account)   amount
-Cr  bank (bank account's GL cash)  amount        → current_balance += amount
+Cr  bank (bank account's GL cash)  amount
 ```
-**Voucher** (`_post_voucher_atomic`, `petty_cash.py:139`) — DRAFT, positive total, fund
-active, and **total ≤ current_balance** (row-locked):
+**Voucher** (`_post_voucher_atomic`) — DRAFT, positive total, fund active, and
+**total ≤ live GL cash on hand** (row-locked):
 ```
 Dr  expense  (per (account, cost centre))   Σ net   ← P&L, carries the cost centre
 Dr  input tax (per tax account)             Σ tax
-Cr  petty cash (fund gl_account)            total   → current_balance −= total
+Cr  petty cash (fund gl_account)            total
 ```
-**Replenish** (`_replenish_fund_atomic`, `petty_cash.py:257`):
+**Replenish** (`_replenish_fund_atomic`):
 ```
 Dr  petty cash (fund gl_account)   top_up
-Cr  bank                           top_up          → current_balance += top_up,
-                                                     last_replenished_at = date
+Cr  bank                           top_up          → last_replenished_at = date
 ```
-All go through `post_journal` (the `finance_journals_posting` guards); a `FinanceError`
-writes a durable rejection row. Cost centres ride the expense lines only (the
-propagation fix); tax and the petty-cash credit don't.
+**Void** (`void_voucher`) — reverses a posted voucher's journal (a mirror
+`Dr petty cash, Cr expense`), so the cash returns to the tin and the voucher is
+CANCELLED.
+
+All go through `post_journal`/`reverse_journal` (the `finance_journals_posting`
+guards); a `FinanceError` writes a durable rejection row. Cost centres ride the
+expense lines only (the propagation fix); tax and the petty-cash credit don't.
 
 ## 7. Worked example
 
@@ -132,36 +141,39 @@ shortfall back to ₦50,000.
 
 ## 8. Gotchas / known limitations
 
-- **`current_balance` is a mirror maintained only by these services.** A journal
-  posted *directly* to the petty-cash GL account (e.g. a manual `direct-entry` or an
-  adjustment) moves the GL but **not** `current_balance`, so the two would drift.
-  Trust the GL as truth; treat `current_balance` as a convenience mirror.
-- **No void for a posted voucher** — `DRAFT → POSTED` only; correct a mistake by
-  reversing the voucher's journal (unlike expense claims, there's no `void/` action).
-- **Establish uses the `replenish` permission** (no separate establish verb), and fund
-  master-data uses `manage` while voucher create uses `create` — mixed verbs (§9).
-- **`custodian`/`spent_by` are optional** (free-text `custodian_name` fallback), so
-  "who spent it" reporting needs the FK set.
+- ✅ **`current_balance` can't drift** — it's re-synced from the GL after every op and
+  the overdraw guard reads the GL live (`gl_cash_on_hand`), so a stray direct journal to
+  the account no longer leaves the mirror or the guard stale (they self-heal on the next
+  op / on any read via `fund_status`).
+- ✅ **A posted voucher can be voided** (`void/`) — reverses the journal, returns the
+  cash to the tin, marks CANCELLED.
+- ✅ **Permission verbs cleaned up** — the fund and voucher are now separate RBAC
+  resources with unambiguous verbs (§9).
+- **`custodian`/`spent_by` are optional** (free-text fallback), so "who spent it"
+  reporting needs the FK set. *(Left intentional.)*
 - Fund list and the status endpoint are **un-paginated** (funds are few — fine); the
   voucher list *is* paginated.
 
 ## 9. Permissions & tenant isolation
 
-- Verbs: `finance.pettycash.{view, manage (fund CRUD), create (voucher), post
-  (voucher), replenish (establish + replenish)}`.
+- **Two resources, unambiguous verbs:**
+  - `finance.pettycash.{view, create, update, establish, replenish}` — the **fund**
+    (master data + cash-in movements).
+  - `finance.pettycashvoucher.{view, create, post}` — the **voucher** (`void/` reuses
+    `post`, like other undo-an-approval actions).
 - Every action resolves the entity then `filter(entity=…, pk=…)` (`_fund`/`_voucher`),
-  and `establish`/`replenish` reject a `bank_account` from another entity
-  (`petty_cash.py`) → no cross-tenant cash movement. ✅
-- `_resolve_account`/`_resolve_bank_account`/`_resolve_user` are entity/platform
-  scoped.
+  and `establish`/`replenish` reject a `bank_account` from another entity → no
+  cross-tenant cash movement. ✅
+- `_resolve_account`/`_resolve_bank_account`/`_resolve_user` are entity/platform scoped.
 
 ## 10. Code map
 
 | File | Responsibility |
 |---|---|
 | `models/ops.py` | `PettyCashFund`, `PettyCashVoucher`, `PettyCashVoucherLine` |
-| `petty_cash.py` | `establish_fund`, `price_voucher`, `post_voucher`, `replenish_fund`, `fund_status` |
-| `views_ops/pettycash.py` | fund CRUD (+ register), establish, replenish, status, voucher list/create/post |
+| `petty_cash.py` | `gl_cash_on_hand`, `establish_fund`, `price_voucher`, `post_voucher`, `void_voucher`, `replenish_fund`, `fund_status` |
+| `views_ops/pettycash.py` | fund CRUD (+ register), establish, replenish, status, voucher list/create/post/void |
+| `management/commands/seed_finance_permissions.py` | the `pettycash` + `pettycashvoucher` RBAC resources |
 | `serializers.py` | `PettyCashFundSerializer`, `PettyCashVoucherSerializer`(+`Line`) |
 | `constants.py` | `PETTY_CASH_CODE` (1110); reuses `DocumentStatus`; `PettyCashOverdrawError` in `exceptions.py` |
 
@@ -170,11 +182,13 @@ shortfall back to ₦50,000.
 Existing (`tests.py`, `PettyCashTests`): establish moves cash bank→tin and rejects
 non-positive; voucher posts + lowers balance; overdraw blocked and audited; replenish
 restores the float (and rejects when nothing to top up); status flags low balance.
+Plus (added with the fixes): the guard reads the **live GL** and re-syncs a drifted
+mirror (`test_overdraw_guard_uses_live_gl_and_resyncs_mirror`); **void** reverses the
+journal + returns cash + CANCELLED, and is refused on a draft.
 
 Worth asserting if not already:
-- **403** per verb (view/manage/create/post/replenish); **cross-tenant** fund/voucher
-  id → 404; establish/replenish reject another entity's bank account.
+- **403** per verb (fund `view/create/update/establish/replenish`, voucher
+  `view/create/post`); **cross-tenant** fund/voucher id → 404; establish/replenish
+  reject another entity's bank account.
 - Concurrent vouchers can't both overdraw (the `select_for_update` lock).
-- `current_balance` stays equal to the GL account balance across establish → spend →
-  replenish; and the **drift** case (a direct journal to the account) is documented.
 - `fund_status` threshold boundary (`needs_replenish`); empty-list on a fresh entity.

@@ -437,6 +437,7 @@ class FinanceAuditAction(models.TextChoices):
     PETTY_CASH_ESTABLISHED = "PETTY_CASH_ESTABLISHED", "Petty cash fund established / topped up"
     PETTY_CASH_VOUCHER_POSTED = "PETTY_CASH_VOUCHER_POSTED", "Petty cash voucher posted"
     PETTY_CASH_VOUCHER_REJECTED = "PETTY_CASH_VOUCHER_REJECTED", "Petty cash voucher rejected"
+    PETTY_CASH_VOUCHER_VOIDED = "PETTY_CASH_VOUCHER_VOIDED", "Petty cash voucher voided"
     PETTY_CASH_REPLENISHED = "PETTY_CASH_REPLENISHED", "Petty cash fund replenished"
     PAYROLL_POSTED = "PAYROLL_POSTED", "Payroll run posted"
     PAYROLL_POST_REJECTED = "PAYROLL_POST_REJECTED", "Payroll run posting rejected"

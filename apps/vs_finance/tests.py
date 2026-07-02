@@ -135,8 +135,10 @@ from vs_finance.expenses import (
 from vs_finance.petty_cash import (
     establish_fund,
     fund_status,
+    gl_cash_on_hand,
     post_voucher,
     replenish_fund,
+    void_voucher,
 )
 from vs_finance.tax_filing import (
     file_filing,
@@ -1774,6 +1776,49 @@ class PettyCashTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(debit, credit)
         self.assertEqual(voucher.journal.lines.get(account__code="1110").credit, 107500)
         self.assertEqual(fund.current_balance, 5000000 - 107500)
+
+    def test_overdraw_guard_uses_live_gl_and_resyncs_mirror(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        fund = self._make_fund(entity, float_amount=50000)
+        establish_fund(fund, bank_account=bank, amount=50000, date=datetime.date(2026, 1, 1))
+        # Corrupt the denormalised mirror to look flush; the GL still holds only 50,000.
+        PettyCashFund.objects.filter(pk=fund.pk).update(current_balance=999999)
+        over = self._make_voucher(fund, lines=[("5500", 1, 60000, None)])
+        with self.assertRaises(PettyCashOverdrawError):
+            post_voucher(over)  # guard reads the live GL (50,000), not the drifted mirror
+        # A within-limit voucher posts and re-syncs the mirror to the true GL balance.
+        ok = self._make_voucher(fund, lines=[("5500", 1, 40000, None)])
+        post_voucher(ok)
+        fund.refresh_from_db()
+        self.assertEqual(fund.current_balance, 10000)
+        self.assertEqual(gl_cash_on_hand(fund), 10000)
+
+    def test_void_voucher_reverses_journal_and_returns_cash(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        fund = self._make_fund(entity, float_amount=5000000)
+        establish_fund(fund, bank_account=bank, amount=5000000, date=datetime.date(2026, 1, 1))
+        voucher = self._make_voucher(fund, lines=[("5500", 1, 100000, None)])
+        post_voucher(voucher)
+        journal = voucher.journal
+        fund.refresh_from_db()
+        self.assertEqual(fund.current_balance, 4900000)
+        void_voucher(voucher)
+        voucher.refresh_from_db(); fund.refresh_from_db(); journal.refresh_from_db()
+        self.assertEqual(voucher.status, DocumentStatus.CANCELLED)
+        self.assertEqual(journal.status, DocumentStatus.REVERSED)
+        self.assertEqual(fund.current_balance, 5000000)  # cash back in the tin
+        self.assertEqual(gl_cash_on_hand(fund), 5000000)
+        self.assertTrue(
+            FinanceAuditLog.objects.filter(action="PETTY_CASH_VOUCHER_VOIDED").exists())
+
+    def test_void_refused_on_draft_voucher(self):
+        entity, _, _ = self.build_books()
+        fund = self._make_fund(entity)
+        draft = self._make_voucher(fund, lines=[("5500", 1, 10000, None)])
+        with self.assertRaises(PettyCashError):
+            void_voucher(draft)
 
     def test_voucher_overdraw_is_blocked_and_audited(self):
         entity, _, _ = self.build_books()

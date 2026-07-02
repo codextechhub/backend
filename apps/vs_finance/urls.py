@@ -136,6 +136,7 @@ from .views_ops import (
     PettyCashVoucherDetailView,
     PettyCashVoucherListCreateView,
     PettyCashVoucherPostView,
+    PettyCashVoucherVoidView,
     TaxCodeListCreateView,
     TaxFilingDetailView,
     TaxFilingFileView,
@@ -294,6 +295,8 @@ urlpatterns = [
          name="finance-pettycash-voucher-detail"),
     path("petty-cash-vouchers/<int:pk>/post/", PettyCashVoucherPostView.as_view(),
          name="finance-pettycash-voucher-post"),
+    path("petty-cash-vouchers/<int:pk>/void/", PettyCashVoucherVoidView.as_view(),
+         name="finance-pettycash-voucher-void"),
 
     # Tax remittance / filing
     path("tax-obligations/", TaxObligationListCreateView.as_view(), name="finance-tax-obligation-list"),

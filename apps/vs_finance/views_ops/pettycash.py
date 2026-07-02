@@ -62,7 +62,7 @@ class PettyCashFundListCreateView(_FinanceBase):
 
     @property
     def rbac_permission(self):
-        return "finance.pettycash.manage" if self.request.method == "POST" \
+        return "finance.pettycash.create" if self.request.method == "POST" \
             else "finance.pettycash.view"
 
     def get(self, request):
@@ -108,7 +108,7 @@ class PettyCashFundDetailView(_PettyCashFundActionBase):
     """docstring-name: Petty cash funds"""
     @property
     def rbac_permission(self):
-        return "finance.pettycash.manage" if self.request.method == "PATCH" \
+        return "finance.pettycash.update" if self.request.method == "PATCH" \
             else "finance.pettycash.view"
 
     def _register(self, fund, *, limit=80):
@@ -182,7 +182,7 @@ class PettyCashFundEstablishView(_PettyCashFundActionBase):
     docstring-name: Establish a petty cash fund
     """
 
-    rbac_permission = "finance.pettycash.replenish"
+    rbac_permission = "finance.pettycash.establish"
 
     def post(self, request, pk):
         from ..petty_cash import establish_fund
@@ -272,8 +272,8 @@ class PettyCashVoucherListCreateView(_FinanceBase):
 
     @property
     def rbac_permission(self):
-        return "finance.pettycash.create" if self.request.method == "POST" \
-            else "finance.pettycash.view"
+        return "finance.pettycashvoucher.create" if self.request.method == "POST" \
+            else "finance.pettycashvoucher.view"
 
     def get(self, request):
         entity = resolve_entity(request)
@@ -340,7 +340,7 @@ class _PettyCashVoucherActionBase(_FinanceBase):
 
 class PettyCashVoucherDetailView(_PettyCashVoucherActionBase):
     """docstring-name: Petty cash vouchers"""
-    rbac_permission = "finance.pettycash.view"
+    rbac_permission = "finance.pettycashvoucher.view"
 
     def get(self, request, pk):
         _, voucher = self._voucher(request, pk)
@@ -352,7 +352,7 @@ class PettyCashVoucherDetailView(_PettyCashVoucherActionBase):
 
 class PettyCashVoucherPostView(_PettyCashVoucherActionBase):
     """docstring-name: Post a petty cash voucher"""
-    rbac_permission = "finance.pettycash.post"
+    rbac_permission = "finance.pettycashvoucher.post"
 
     def post(self, request, pk):
         from ..petty_cash import post_voucher
@@ -362,6 +362,25 @@ class PettyCashVoucherPostView(_PettyCashVoucherActionBase):
         voucher.refresh_from_db()
         return success_response(
             f"Petty cash voucher {voucher.document_number} posted.",
+            data=PettyCashVoucherSerializer(voucher).data,
+        )
+
+
+class PettyCashVoucherVoidView(_PettyCashVoucherActionBase):
+    """POST — void a posted voucher (reverses its journal, returns the cash to the tin).
+
+    docstring-name: Void a petty cash voucher
+    """
+    rbac_permission = "finance.pettycashvoucher.post"
+
+    def post(self, request, pk):
+        from ..petty_cash import void_voucher
+
+        _, voucher = self._voucher(request, pk)
+        void_voucher(voucher, actor_user=request.user)
+        voucher.refresh_from_db()
+        return success_response(
+            f"Petty cash voucher {voucher.document_number} voided.",
             data=PettyCashVoucherSerializer(voucher).data,
         )
 

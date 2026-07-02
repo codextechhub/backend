@@ -376,8 +376,9 @@ class PettyCashFund(TimeStampedModel):
     the cash physically on hand. The fund runs **perpetually**: each
     :class:`PettyCashVoucher` posts ``Dr expense, Cr petty cash`` as it is spent, and
     :func:`vs_finance.petty_cash.replenish_fund` tops the float back up
-    (``Dr petty cash, Cr bank``). ``current_balance`` always equals the GL balance of
-    ``gl_account``.
+    (``Dr petty cash, Cr bank``). ``current_balance`` is a denormalised mirror **re-synced
+    from the GL balance of ``gl_account`` after every operation** (the GL is the source of
+    truth; the overdraw guard reads it live), so the two never silently drift.
     """
 
     entity = models.ForeignKey(

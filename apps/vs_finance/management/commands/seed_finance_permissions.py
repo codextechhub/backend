@@ -64,8 +64,14 @@ FINANCE_RESOURCES = [
     ("payrollrun",   "payroll runs",           [("view", "SENSITIVE"), ("create", "SENSITIVE"),
                                                 ("post", "CRITICAL"), ("pay", "CRITICAL"),
                                                 ("view_sensitive", "SENSITIVE")]),
-    ("pettycash",    "petty cash",             [("view", "NORMAL"), ("create", "SENSITIVE"), ("manage", "SENSITIVE"),
-                                                ("post", "SENSITIVE"), ("replenish", "SENSITIVE")]),
+    # The fund/float (master data) and the voucher (a spend document) are distinct
+    # resources — mirroring how every other finance document (invoice, expenseclaim …)
+    # gets its own resource — so each verb is unambiguous.
+    ("pettycash",        "petty cash funds",    [("view", "NORMAL"), ("create", "SENSITIVE"),
+                                                ("update", "SENSITIVE"), ("establish", "SENSITIVE"),
+                                                ("replenish", "SENSITIVE")]),
+    ("pettycashvoucher", "petty cash vouchers", [("view", "NORMAL"), ("create", "SENSITIVE"),
+                                                ("post", "SENSITIVE")]),
     ("refund",       "customer refunds",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("post", "CRITICAL")]),
     ("tax",          "tax filings",            [("view", "NORMAL"), ("file", "SENSITIVE"),
                                                 ("pay", "CRITICAL"), ("manage", "SENSITIVE")]),

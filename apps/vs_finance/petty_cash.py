@@ -2,8 +2,9 @@
 
 A :class:`~vs_finance.models.PettyCashFund` is a tin of cash a custodian holds for
 day-to-day small spends. It runs **perpetually**: money moves through the GL the moment
-it happens, and the fund's ``current_balance`` mirror always equals the GL balance of its
-``gl_account``.
+it happens. The **GL petty-cash account is the source of truth** for cash on hand — the
+overdraw guard reads it live, and the fund's ``current_balance`` is *re-synced from it*
+after every operation (so it self-heals and can't silently drift).
 
 Three moments touch the ledger:
 
@@ -36,6 +37,19 @@ from .constants import (
 from .exceptions import FinanceError, PettyCashError, PettyCashOverdrawError
 from .posting import post_journal, resolve_period
 from .receivables import compute_line_net, compute_tax
+
+
+def gl_cash_on_hand(fund) -> int:
+    """Live cash on hand for ``fund`` — the posted GL balance of its petty-cash account.
+
+    The source of truth (an asset, signed to its natural debit balance). Used for the
+    overdraw guard and to re-sync the fund's denormalised ``current_balance`` after each
+    operation, so a stray direct journal to the account can never leave the guard or the
+    stored mirror stale.
+    """
+    from .banking import gl_account_balance
+
+    return gl_account_balance(fund.gl_account)
 
 
 # --------------------------------------------------------------------------- #
@@ -89,7 +103,7 @@ def _establish_fund_atomic(fund, *, bank_account, amount, date, actor_user=None)
     )
     post_journal(entry, actor_user=actor_user)
 
-    fund.current_balance = int(fund.current_balance) + amount
+    fund.current_balance = gl_cash_on_hand(fund)  # re-sync from the GL (truth)
     fund.save(update_fields=["current_balance", "updated_at"])
 
     record(
@@ -153,9 +167,12 @@ def _post_voucher_atomic(voucher, *, actor_user=None):
     fund = PettyCashFund.objects.select_for_update().get(pk=voucher.fund_id)
     if not fund.is_active:
         raise PettyCashError(f"Petty cash fund '{fund.name}' is inactive.")
-    if voucher.total > int(fund.current_balance):
+    # Guard against the LIVE GL cash on hand (truth), not the denormalised mirror, so a
+    # drifted mirror can never over- or under-authorise a payout.
+    on_hand = gl_cash_on_hand(fund)
+    if voucher.total > on_hand:
         raise PettyCashOverdrawError(
-            fund_name=fund.name, requested=voucher.total, on_hand=fund.current_balance,
+            fund_name=fund.name, requested=voucher.total, on_hand=on_hand,
         )
 
     period = resolve_period(voucher.entity, voucher.voucher_date)
@@ -214,7 +231,7 @@ def _post_voucher_atomic(voucher, *, actor_user=None):
 
     post_journal(entry, actor_user=actor_user)
 
-    fund.current_balance = int(fund.current_balance) - voucher.total
+    fund.current_balance = gl_cash_on_hand(fund)  # re-sync from the GL (truth)
     fund.save(update_fields=["current_balance", "updated_at"])
 
     voucher.journal = entry
@@ -226,6 +243,47 @@ def _post_voucher_atomic(voucher, *, actor_user=None):
         actor_user=actor_user, target=voucher,
         message=f"Posted petty cash voucher ({voucher.total} kobo from '{fund.name}').",
         journal_id=entry.pk, total=voucher.total, tax=voucher.tax_total,
+    )
+    return voucher
+
+
+@transaction.atomic
+def void_voucher(voucher, *, actor_user=None):
+    """Void a **posted** petty-cash voucher: reverse its journal and put the cash back.
+
+    The "undo" for a voucher posted in error. Reverses the posting journal (a mirror
+    entry that restores ``Dr petty cash, Cr expense``), re-syncs the fund's
+    ``current_balance`` from the GL (so the cash returns to the tin), and marks the
+    voucher CANCELLED. Only a POSTED voucher can be voided.
+    """
+    from .models import PettyCashFund
+
+    if voucher.status != DocumentStatus.POSTED:
+        raise PettyCashError(
+            f"Only a posted voucher can be voided (this is '{voucher.status}').",
+        )
+    if voucher.journal_id is None:
+        raise PettyCashError("Voucher has no posting journal to reverse.")
+
+    # Lock the fund so the re-sync of current_balance is consistent under concurrency.
+    fund = PettyCashFund.objects.select_for_update().get(pk=voucher.fund_id)
+
+    from .posting import reverse_journal
+    reverse_journal(voucher.journal, actor_user=actor_user)
+
+    fund.current_balance = gl_cash_on_hand(fund)  # cash restored to the tin
+    fund.save(update_fields=["current_balance", "updated_at"])
+
+    voucher.status = DocumentStatus.CANCELLED
+    voucher.save(update_fields=["status", "updated_at"])
+
+    record(
+        entity=voucher.entity, action=FinanceAuditAction.PETTY_CASH_VOUCHER_VOIDED,
+        actor_user=actor_user, target=voucher,
+        message=f"Voided petty cash voucher {voucher.document_number or voucher.pk} "
+                f"(reversed journal {voucher.journal_id}); {voucher.total} kobo back to "
+                f"'{fund.name}'.",
+        journal_id=voucher.journal_id, total=voucher.total,
     )
     return voucher
 
@@ -261,6 +319,9 @@ def _replenish_fund_atomic(fund, *, bank_account, date, amount=None, actor_user=
     if bank_account.entity_id != fund.entity_id:
         raise PettyCashError("The bank account belongs to a different entity.")
 
+    # Re-sync from the GL before sizing the top-up, so the shortfall is measured against
+    # the real cash on hand (not a possibly-drifted mirror).
+    fund.current_balance = gl_cash_on_hand(fund)
     top_up = fund.shortfall if amount is None else int(amount)
     if top_up <= 0:
         raise PettyCashError(
@@ -285,7 +346,7 @@ def _replenish_fund_atomic(fund, *, bank_account, date, amount=None, actor_user=
     )
     post_journal(entry, actor_user=actor_user)
 
-    fund.current_balance = int(fund.current_balance) + top_up
+    fund.current_balance = gl_cash_on_hand(fund)  # re-sync from the GL (truth)
     fund.last_replenished_at = date
     fund.save(update_fields=["current_balance", "last_replenished_at", "updated_at"])
 
@@ -319,13 +380,15 @@ def fund_status(entity, *, threshold_bps=2500) -> list:
     )
     for fund in qs:
         threshold = int(fund.float_amount) * threshold_bps // 10000
+        on_hand = gl_cash_on_hand(fund)  # live GL truth, so alerts can't be misled by drift
+        shortfall = max(int(fund.float_amount) - on_hand, 0)
         rows.append({
             "fund_id": fund.id, "name": fund.name,
             "gl_code": fund.gl_account.code,
             "float_amount": int(fund.float_amount),
-            "current_balance": int(fund.current_balance),
-            "shortfall": fund.shortfall,
-            "needs_replenish": int(fund.current_balance) <= threshold,
+            "current_balance": on_hand,
+            "shortfall": shortfall,
+            "needs_replenish": on_hand <= threshold,
             "last_replenished_at": fund.last_replenished_at,
         })
     return rows
