@@ -433,6 +433,7 @@ class FinanceAuditAction(models.TextChoices):
     EXPENSE_CLAIM_POSTED = "EXPENSE_CLAIM_POSTED", "Expense claim posted"
     EXPENSE_CLAIM_POST_REJECTED = "EXPENSE_CLAIM_POST_REJECTED", "Expense claim posting rejected"
     EXPENSE_CLAIM_SETTLED = "EXPENSE_CLAIM_SETTLED", "Expense claim settled"
+    EXPENSE_CLAIM_VOIDED = "EXPENSE_CLAIM_VOIDED", "Expense claim voided"
     PETTY_CASH_ESTABLISHED = "PETTY_CASH_ESTABLISHED", "Petty cash fund established / topped up"
     PETTY_CASH_VOUCHER_POSTED = "PETTY_CASH_VOUCHER_POSTED", "Petty cash voucher posted"
     PETTY_CASH_VOUCHER_REJECTED = "PETTY_CASH_VOUCHER_REJECTED", "Petty cash voucher rejected"

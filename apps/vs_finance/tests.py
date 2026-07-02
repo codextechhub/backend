@@ -127,7 +127,11 @@ from vs_finance.banking import (
     match_line,
     post_bank_adjustment,
 )
-from vs_finance.expenses import post_expense_claim, settle_expense_claim
+from vs_finance.expenses import (
+    post_expense_claim,
+    settle_expense_claim,
+    void_expense_claim,
+)
 from vs_finance.petty_cash import (
     establish_fund,
     fund_status,
@@ -1617,6 +1621,36 @@ class ExpenseClaimTests(_Phase4FixtureMixin, TestCase):
         )
         with self.assertRaises(ExpenseClaimError):
             post_expense_claim(claim)
+
+    def test_void_reverses_journal_and_cancels_unreimbursed_claim(self):
+        entity, _, _ = self.build_books()
+        claim = self._make_claim(entity, lines=[("5500", 1, 100000, None)])
+        post_expense_claim(claim)
+        journal = claim.journal
+        void_expense_claim(claim)
+        claim.refresh_from_db()
+        journal.refresh_from_db()
+        self.assertEqual(claim.status, DocumentStatus.CANCELLED)
+        self.assertEqual(journal.status, DocumentStatus.REVERSED)
+        # The reversal backs the liability and expense out to zero.
+        self.assertTrue(
+            FinanceAuditLog.objects.filter(action="EXPENSE_CLAIM_VOIDED").exists())
+
+    def test_void_refused_once_reimbursed(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        claim = self._make_claim(entity, lines=[("5500", 1, 100000, None)])
+        post_expense_claim(claim)
+        settle_expense_claim(claim, bank_account=bank, pay_date=datetime.date(2026, 1, 15),
+                             amount=40000)
+        with self.assertRaises(ExpenseClaimError):
+            void_expense_claim(claim)  # cash already left → must reverse reimbursement first
+
+    def test_void_refused_on_draft(self):
+        entity, _, _ = self.build_books()
+        claim = self._make_claim(entity, lines=[("5500", 1, 100000, None)])
+        with self.assertRaises(ExpenseClaimError):
+            void_expense_claim(claim)  # a draft is rejected, not voided
 
 
 class CostCenterPropagationTests(_Phase4FixtureMixin, _ARFixtureMixin, TestCase):

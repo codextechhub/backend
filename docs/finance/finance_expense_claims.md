@@ -25,9 +25,9 @@ Routes (mounted at `/v1/finance/`): `expense-claims/`, `expense-claims/summary/`
 **This does NOT:**
 - **Touch the procurement vendor ledger.** The claimant is not a `Vendor`; the
   credit goes to the shared accrued-reimbursement liability (`2400`), not AP.
-- **Reject a posted claim.** `reject/` only cancels a **DRAFT** (`views_ops/expenses.py`);
-  a posted claim's mistake is undone by reversing its journal (`finance_journals_posting`),
-  there's no "void posted claim" action.
+- **Reject a posted claim.** `reject/` only cancels a **DRAFT**; a *posted* claim is
+  undone with **`void/`** (reverses its journal → CANCELLED), and only while it hasn't
+  been reimbursed yet (§4).
 - **Validate the claimant is a real employee.** `claimant` is optional; a free-text
   `claimant_name` is accepted as-is.
 
@@ -56,6 +56,7 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 | `POST /expense-claims/<pk>/post/` | `finance.expenseclaim.post` | DRAFT → POSTED (raise the liability journal) | — | claim |
 | `POST /expense-claims/<pk>/reject/` | `finance.expenseclaim.post` | DRAFT → CANCELLED (approver's call) | — | claim |
 | `POST /expense-claims/<pk>/settle/` | `finance.expenseclaim.settle` | Reimburse (full or partial) | `bank_account`, `pay_date`, `amount?` | claim |
+| `POST /expense-claims/<pk>/void/` | `finance.expenseclaim.post` | Void a **posted, un-reimbursed** claim (reverses its journal → CANCELLED) | — | claim |
 | `POST /expense-claims/<pk>/lines/<line_id>/receipt/` | `finance.expenseclaim.create` | Attach a receipt (multipart `file`) | `file` | `201` claim |
 | `DELETE …/lines/<line_id>/receipt/` | `finance.expenseclaim.create` | Remove a receipt | — | claim |
 
@@ -67,11 +68,15 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 
 ```
 DRAFT ──post──▶ POSTED ──settle (×N, partial ok)──▶ payment_status PAID
-  │                                                   (UNPAID→PARTIAL→PAID)
+  │               │                                   (UNPAID→PARTIAL→PAID)
+  │               └──void (only if un-reimbursed)──▶ CANCELLED (posting journal REVERSED)
   └──reject──▶ CANCELLED
 ```
 - **Create** makes a priced DRAFT. **post/** raises the liability; **reject/** cancels
   a DRAFT only. **settle/** reimburses (repeatable until `balance_due` hits 0).
+- **void/** undoes a *posted* claim booked in error: it reverses the posting journal
+  and marks the claim CANCELLED — but **only while `amount_paid == 0`**; once cash has
+  been reimbursed you must reverse that reimbursement first.
 - Approve-vs-reject is one decision by one role: both `post/` and `reject/` use
   `finance.expenseclaim.post` (§9).
 
@@ -127,8 +132,9 @@ A receipt PDF attaches to the line via `lines/<id>/receipt/` (multipart `file`).
   approver who can post can also reject (approve-or-reject is one decision).
 - **Receipt endpoints use `finance.expenseclaim.create`** — the creator/claimant
   attaches receipts, not the approver.
-- **No void for a posted claim** — reject is DRAFT-only; a posted mistake is corrected
-  by reversing its journal (there's no `unpost`/`void` action here).
+- ✅ **Posted claims can be voided** (`void/`) — but only while un-reimbursed; it
+  reverses the posting journal and cancels the claim. Once reimbursed, the cash has
+  left, so the reimbursement must be reversed first (guarded).
 - **Free-text claimant** — `claimant` FK is optional; `claimant_name` is unvalidated,
   so reporting "by employee" needs the FK to be set.
 - **Receipt URLs are exposed** in the serializer (`receipt_url`, absolute) — fine for
@@ -149,7 +155,7 @@ A receipt PDF attaches to the line via `lines/<id>/receipt/` (multipart `file`).
 | File | Responsibility |
 |---|---|
 | `models/ops.py` | `ExpenseClaim`, `ExpenseClaimLine` |
-| `expenses.py` | `price_expense_claim`, `post_expense_claim`, `settle_expense_claim` |
+| `expenses.py` | `price_expense_claim`, `post_expense_claim`, `settle_expense_claim`, `void_expense_claim` |
 | `views_ops/expenses.py` | list/create (+ `display_status`/`q`), post, reject, settle, receipt, summary |
 | `serializers.py` | `ExpenseClaimSerializer`, `ExpenseClaimLineSerializer` (receipt urls) |
 | `constants.py` | `ACCRUED_REIMBURSEMENT_CODE` (2400); reuses `InvoicePaymentStatus`, `DocumentStatus` |

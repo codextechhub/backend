@@ -216,3 +216,43 @@ def _settle_expense_claim_atomic(claim, *, bank_account, pay_date, amount=None, 
         journal_id=entry.pk, amount=pay, payment_status=claim.payment_status,
     )
     return claim
+
+
+@transaction.atomic
+def void_expense_claim(claim, *, actor_user=None):
+    """Void a **posted, un-reimbursed** expense claim.
+
+    Reverses the posting journal (an audit-correct mirror entry that backs out the
+    expense and the accrued-reimbursement liability) and marks the claim CANCELLED —
+    the "undo" for a claim posted in error, without hand-reversing the journal.
+
+    Refuses once any reimbursement has been paid: the cash has already left the bank,
+    so that must be handled first (reverse the reimbursement) before the claim can be
+    voided. ``reject`` remains the path for a claim still in DRAFT.
+    """
+    from .posting import reverse_journal
+
+    if claim.status != DocumentStatus.POSTED:
+        raise ExpenseClaimError(
+            f"Only a posted claim can be voided (this is '{claim.status}'); "
+            f"a draft is rejected, not voided.",
+        )
+    if claim.amount_paid > 0:
+        raise ExpenseClaimError(
+            "This claim has already been reimbursed; reverse the reimbursement "
+            "before voiding the claim.",
+        )
+    if claim.journal_id is None:
+        raise ExpenseClaimError("Claim has no posting journal to reverse.")
+
+    reverse_journal(claim.journal, actor_user=actor_user)
+    claim.status = DocumentStatus.CANCELLED
+    claim.save(update_fields=["status", "updated_at"])
+    record(
+        entity=claim.entity, action=FinanceAuditAction.EXPENSE_CLAIM_VOIDED,
+        actor_user=actor_user, target=claim,
+        message=f"Voided expense claim {claim.document_number or claim.pk} "
+                f"(reversed journal {claim.journal_id}).",
+        journal_id=claim.journal_id, total=claim.total,
+    )
+    return claim

@@ -107,6 +107,7 @@ from .views_ops import (
     ExpenseClaimRejectView,
     ExpenseClaimSettleView,
     ExpenseClaimSummaryView,
+    ExpenseClaimVoidView,
     FinanceAuditLogListView,
     FixedAssetAcquireView,
     FixedAssetDepreciateView,
@@ -273,6 +274,7 @@ urlpatterns = [
     path("expense-claims/<int:pk>/post/", ExpenseClaimPostView.as_view(), name="finance-expense-post"),
     path("expense-claims/<int:pk>/reject/", ExpenseClaimRejectView.as_view(), name="finance-expense-reject"),
     path("expense-claims/<int:pk>/settle/", ExpenseClaimSettleView.as_view(), name="finance-expense-settle"),
+    path("expense-claims/<int:pk>/void/", ExpenseClaimVoidView.as_view(), name="finance-expense-void"),
     path("expense-claims/<int:pk>/lines/<int:line_id>/receipt/", ExpenseClaimReceiptView.as_view(),
          name="finance-expense-line-receipt"),
 

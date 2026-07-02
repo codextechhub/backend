@@ -235,6 +235,25 @@ class ExpenseClaimSettleView(_ExpenseClaimActionBase):
         )
 
 
+class ExpenseClaimVoidView(_ExpenseClaimActionBase):
+    """POST — void a posted, un-reimbursed claim (reverses its journal, marks CANCELLED).
+
+    docstring-name: Void an expense claim
+    """
+    rbac_permission = "finance.expenseclaim.post"  # the approver undoes their approval
+
+    def post(self, request, pk):
+        from ..expenses import void_expense_claim
+
+        _, claim = self._claim(request, pk)
+        void_expense_claim(claim, actor_user=request.user)
+        claim.refresh_from_db()
+        return success_response(
+            f"Expense claim {claim.document_number} voided.",
+            data=ExpenseClaimSerializer(claim, context={"request": request}).data,
+        )
+
+
 class ExpenseClaimSummaryView(_FinanceBase):
     """GET — header KPIs over **all** expense claims (accurate under pagination).
 
