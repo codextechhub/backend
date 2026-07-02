@@ -3878,6 +3878,79 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
             self.assertEqual(r.status_code, 200, f"{path}: {r.content}")
             self.assertEqual(set(r.json()["data"].keys()), keys, path)
 
+    # ── Audit trail ───────────────────────────────────────────────────────
+    def _audit(self, entity, **kw):
+        defaults = dict(
+            entity=entity, actor=self.user,
+            action=FinanceAuditAction.JOURNAL_POSTED,
+            status=FinanceAuditStatus.SUCCESS,
+            target_type="JournalEntry", target_id="1", document_number="JE-1",
+            message="", before={}, after={}, metadata={"secret": "internal-only"},
+        )
+        defaults.update(kw)
+        return FinanceAuditLog.objects.create(**defaults)
+
+    def test_audit_log_lists_and_never_leaks_metadata(self):
+        entity, _, _ = self.build_books()
+        self._audit(entity, before={"status": "DRAFT"}, after={"status": "POSTED"},
+                    document_number="JE-9")
+        resp = self.client.get(f"/v1/finance/audit-logs/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        rows = resp.json()["data"]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertNotIn("metadata", row)                      # internal bag stays server-side
+        self.assertEqual(row["before"], {"status": "DRAFT"})
+        self.assertEqual(row["after"], {"status": "POSTED"})
+        self.assertEqual(row["action_display"], "Journal posted")
+        self.assertEqual(row["actor"], self.user.email)
+
+    def test_audit_log_filters(self):
+        from django.utils import timezone
+        entity, _, _ = self.build_books()
+        self._audit(entity, action=FinanceAuditAction.JOURNAL_POSTED,
+                    status=FinanceAuditStatus.SUCCESS,
+                    created_at=timezone.make_aware(datetime.datetime(2026, 1, 5, 9, 0)))
+        self._audit(entity, action=FinanceAuditAction.JOURNAL_POST_REJECTED,
+                    status=FinanceAuditStatus.FAILED, target_type="Payment",
+                    created_at=timezone.make_aware(datetime.datetime(2026, 6, 20, 9, 0)))
+
+        base = f"/v1/finance/audit-logs/?entity={entity.code}"
+        self.assertEqual(len(self.client.get(base).json()["data"]), 2)
+        self.assertEqual(len(self.client.get(base + "&status=FAILED").json()["data"]), 1)
+        self.assertEqual(len(self.client.get(base + "&action=JOURNAL_POSTED").json()["data"]), 1)
+        self.assertEqual(len(self.client.get(base + "&target_type=Payment").json()["data"]), 1)
+        self.assertEqual(len(self.client.get(base + f"&actor={self.user.id}").json()["data"]), 2)
+        # Inclusive date window keeps only the January row.
+        win = self.client.get(base + "&date_from=2026-01-01&date_to=2026-01-31").json()["data"]
+        self.assertEqual(len(win), 1)
+        self.assertEqual(win[0]["action"], "JOURNAL_POSTED")
+
+    def test_audit_log_scoped_to_entity(self):
+        entity, _, _ = self.build_books()
+        other = LedgerEntity.objects.create(
+            name="Other Books", code="OTHER", kind=LedgerEntity.Kind.TENANT)
+        self._audit(entity, document_number="MINE")
+        self._audit(other, document_number="THEIRS")
+        rows = self.client.get(f"/v1/finance/audit-logs/?entity={entity.code}").json()["data"]
+        self.assertEqual([r["document_number"] for r in rows], ["MINE"])
+
+    def test_audit_facets_return_present_options_only(self):
+        entity, _, _ = self.build_books()
+        self._audit(entity, action=FinanceAuditAction.JOURNAL_POSTED, target_type="JournalEntry")
+        self._audit(entity, action=FinanceAuditAction.PAYMENT_POSTED, target_type="Payment")
+        # Two rows share JOURNAL_POSTED — the facet must still be de-duplicated
+        # (guards the .distinct()/Meta.ordering gotcha that returned dup codes).
+        self._audit(entity, action=FinanceAuditAction.JOURNAL_POSTED, target_type="JournalEntry")
+        data = self.client.get(f"/v1/finance/audit-logs/facets/?entity={entity.code}").json()["data"]
+        self.assertEqual([a["email"] for a in data["actors"]], [self.user.email])
+        self.assertEqual(set(data["target_types"]), {"JournalEntry", "Payment"})
+        codes = [a["value"] for a in data["actions"]]
+        self.assertEqual(sorted(codes), ["JOURNAL_POSTED", "PAYMENT_POSTED"])   # no dupes
+        self.assertEqual(
+            {a["value"]: a["label"] for a in data["actions"]},
+            {"JOURNAL_POSTED": "Journal posted", "PAYMENT_POSTED": "Payment posted"})
+
 
 class EntityCreatePermissionTests(TestCase):
     """Provisioning a new entity must be gated on ``finance.entity.create``.
@@ -3918,6 +3991,11 @@ class EntityCreatePermissionTests(TestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, 403)
+
+    def test_audit_view_denied_without_grant(self):
+        # The audit trail (and its facets) are gated on finance.audit.view.
+        self.assertEqual(self.client.get("/v1/finance/audit-logs/?entity=TBOOK").status_code, 403)
+        self.assertEqual(self.client.get("/v1/finance/audit-logs/facets/?entity=TBOOK").status_code, 403)
 
 
 class FinanceDashboardTests(_ARFixtureMixin, TestCase):

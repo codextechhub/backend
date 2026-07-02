@@ -108,6 +108,7 @@ from .views_ops import (
     ExpenseClaimSettleView,
     ExpenseClaimSummaryView,
     ExpenseClaimVoidView,
+    FinanceAuditFacetsView,
     FinanceAuditLogListView,
     FixedAssetAcquireView,
     FixedAssetDepreciateView,
@@ -339,4 +340,5 @@ urlpatterns = [
 
     # Audit trail
     path("audit-logs/", FinanceAuditLogListView.as_view(), name="finance-audit-list"),
+    path("audit-logs/facets/", FinanceAuditFacetsView.as_view(), name="finance-audit-facets"),
 ]

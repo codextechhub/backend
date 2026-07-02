@@ -1150,10 +1150,14 @@ class FixedAssetSerializer(serializers.ModelSerializer):
 
 class FinanceAuditLogSerializer(serializers.ModelSerializer):
     actor = serializers.CharField(source="actor.email", read_only=True, default=None)
+    action_display = serializers.CharField(source="get_action_display", read_only=True)
 
     class Meta:
         model = FinanceAuditLog
+        # `before`/`after` are the human-meaningful field-level snapshot the UI
+        # summarises ("N fields changed"); `metadata` is an internal bag (ids,
+        # request context) with no reader value — deliberately NOT exposed.
         fields = [
-            "id", "action", "status", "actor", "target_type", "target_id",
-            "document_number", "message", "metadata", "created_at",
+            "id", "action", "action_display", "status", "actor", "target_type",
+            "target_id", "document_number", "message", "before", "after", "created_at",
         ]
