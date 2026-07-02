@@ -51,6 +51,17 @@ class DatabaseStorageTests(TestCase):
         with self.assertRaises(SuspiciousOperation):
             self.storage.save("../../etc/passwd.csv", ContentFile(b"x"))
 
+    def test_stored_name_is_unguessable(self):
+        # The stored name keeps a readable prefix but carries a high-entropy token,
+        # so a caller can't fetch a file by guessing a predictable path.
+        name = self.storage.save("expense-receipts/receipt.pdf", ContentFile(b"%PDF fake"))
+        self.assertNotEqual(name, "expense-receipts/receipt.pdf")
+        self.assertTrue(name.startswith("expense-receipts/receipt-"))
+        self.assertTrue(name.endswith(".pdf"))
+        # Two uploads of the same filename get distinct, unguessable names.
+        other = self.storage.save("expense-receipts/receipt.pdf", ContentFile(b"%PDF two"))
+        self.assertNotEqual(name, other)
+
 
 class MediaViewTests(TestCase):
     def setUp(self):
