@@ -1196,12 +1196,27 @@ def _classify_cash_flow(account) -> str:
 
 
 @dataclass
+class CashFlowLine:
+    """One counter-account's net cash contribution within an activity (kobo).
+
+    ``amount`` is credit − debit on the non-cash leg: positive = cash in, negative =
+    cash out (e.g. paying a payable or buying PP&E).
+    """
+
+    account_id: int
+    code: str
+    name: str
+    amount: int = 0
+
+
+@dataclass
 class CashFlowStatement:
     """Cash movement for a window, classified by activity (kobo).
 
     ``opening_cash + net_change == closing_cash`` is the reconciliation the statement
     exists to prove. ``by_activity`` holds the operating / investing / financing
-    subtotals, which sum to ``net_change``.
+    subtotals, which sum to ``net_change``. ``activity_lines`` breaks each activity into
+    its counter-account line items (direct method).
     """
 
     entity_id: int
@@ -1209,6 +1224,8 @@ class CashFlowStatement:
     opening_cash: int = 0
     closing_cash: int = 0
     by_activity: dict = field(default_factory=lambda: {a: 0 for a in CASH_FLOW_ACTIVITIES})
+    activity_lines: dict = field(
+        default_factory=lambda: {a: [] for a in CASH_FLOW_ACTIVITIES})
 
     @property
     def net_change(self) -> int:
@@ -1280,10 +1297,27 @@ def cash_flow_statement(entity, *, period=None) -> CashFlowStatement:
         .exclude(account_id__in=cash_ids)
         .select_related("account")
     )
+    line_acc: dict[tuple, list] = {}
     for leg in legs:
         # A credit to a non-cash account is a source of cash (+), a debit a use (−).
         contribution = leg.credit - leg.debit
-        stmt.by_activity[_classify_cash_flow(leg.account)] += contribution
+        activity = _classify_cash_flow(leg.account)
+        stmt.by_activity[activity] += contribution
+        slot = line_acc.get((activity, leg.account_id))
+        if slot is None:
+            line_acc[(activity, leg.account_id)] = [leg.account, contribution]
+        else:
+            slot[1] += contribution
+
+    # Break each activity into its counter-account line items (direct method), sorted
+    # by account code; net-zero counter-accounts are dropped.
+    for (activity, account_id), (acc, amount) in sorted(
+        line_acc.items(), key=lambda kv: (kv[0][0], kv[1][0].code)
+    ):
+        if amount == 0:
+            continue
+        stmt.activity_lines[activity].append(CashFlowLine(
+            account_id=account_id, code=acc.code, name=acc.name, amount=amount))
 
     return stmt
 

@@ -1228,23 +1228,34 @@ class CashFlowView(APIView):
         period = _resolve_period(entity, request)
         cf = cash_flow_statement(entity, period=period)
 
+        _ACT_LABEL = {
+            "operating": "Operating activities",
+            "investing": "Investing activities",
+            "financing": "Financing activities",
+        }
+        rows = []
+        for act in ("operating", "investing", "financing"):
+            for ln in cf.activity_lines[act]:
+                rows.append([_ACT_LABEL[act], ln.name, format_naira(ln.amount)])
+            rows.append([_ACT_LABEL[act], f"Net cash from {act}",
+                         format_naira(cf.by_activity[act])])
         export = _maybe_export(request, ReportTable(
             title="Cash Flow Statement",
             subtitle=f"{entity.code} · {getattr(period, 'name', None) or 'Year to date'}",
-            columns=["Activity", "Amount"],
-            rows=[
-                ["Operating activities", format_naira(cf.by_activity["operating"])],
-                ["Investing activities", format_naira(cf.by_activity["investing"])],
-                ["Financing activities", format_naira(cf.by_activity["financing"])],
-            ],
+            columns=["Activity", "Line", "Amount"],
+            rows=rows,
             summary_rows=[
-                ["Net change in cash", format_naira(cf.net_change)],
-                ["Opening cash", format_naira(cf.opening_cash)],
-                ["Closing cash", format_naira(cf.closing_cash)],
+                ["", "Net change in cash", format_naira(cf.net_change)],
+                ["", "Cash at start of period", format_naira(cf.opening_cash)],
+                ["", "Cash at end of period", format_naira(cf.closing_cash)],
             ],
         ), filename=f"cash_flow_{entity.code}")
         if export is not None:
             return export
+
+        def _cfline(ln):
+            return {"account_id": ln.account_id, "code": ln.code,
+                    "name": ln.name, "amount": _money(ln.amount)}
 
         return success_response(
             message="Cash flow statement retrieved.",
@@ -1254,6 +1265,9 @@ class CashFlowView(APIView):
                 "opening_cash": _money(cf.opening_cash),
                 "closing_cash": _money(cf.closing_cash),
                 "by_activity": {k: _money(v) for k, v in cf.by_activity.items()},
+                "activity_lines": {
+                    k: [_cfline(ln) for ln in v] for k, v in cf.activity_lines.items()
+                },
                 "net_change": _money(cf.net_change),
                 "is_reconciled": cf.is_reconciled,
             },

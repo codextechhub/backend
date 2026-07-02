@@ -2501,6 +2501,21 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(cf.net_change, 0)
         self.assertTrue(cf.is_reconciled)
 
+    def test_cash_flow_breaks_activities_into_line_items(self):
+        entity, _, periods = self.build_books()
+        self._seed_activity(entity, periods[0])
+
+        cf = cash_flow_statement(entity)
+        # Operating splits into the revenue (source) and salaries (use) counter-accounts.
+        op = {ln.code: ln.amount for ln in cf.activity_lines["operating"]}
+        self.assertEqual(op, {"4100": 300000, "5200": -120000})
+        inv = {ln.code: ln.amount for ln in cf.activity_lines["investing"]}
+        self.assertEqual(inv, {"1500": -400000})   # equipment purchase (cash out)
+        fin = {ln.code: ln.amount for ln in cf.activity_lines["financing"]}
+        self.assertEqual(fin, {"3100": 1000000})   # owner capital (cash in)
+        # Line items foot to their activity subtotal.
+        self.assertEqual(sum(op.values()), cf.by_activity["operating"])
+
 
 class IncomeStatementCompareTests(_Phase4FixtureMixin, TestCase):
     """The P&L with Budget + Prior-year comparison columns (income_statement_compare)."""
