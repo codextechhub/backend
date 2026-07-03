@@ -36,3 +36,16 @@ without naming *what* makes it so.
 
 Finish with a one-line **verdict**: ship / fix-first, and the single most
 important thing to do before shipping.
+
+## Module documentation initiative
+
+When asked to continue the module docs (or anything touching `docs/finance/`,
+`docs/payments/`, `docs/procurement/`): **read `docs/module-docs-playbook.md`
+first and follow it exactly.** It defines the slice-report loop (trace →
+template → commit → gotcha briefing → user picks → fixes), the conductor
+working mode (main session orchestrates + QAs; Opus-high subagents write all
+feature code; agents never commit), and the conventions (stage files
+explicitly — never `git add -A`; commit to main, don't push; one sequential
+agent when fixes share constants.py/migrations; run the test suite yourself
+after agent work). Template: `docs/finance/_report_template.md`. Status and
+next slices live at the top of the playbook.
