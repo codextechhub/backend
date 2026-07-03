@@ -950,7 +950,7 @@ class Budget(TimeStampedModel):
 
     @property
     def is_locked(self) -> bool:
-        return self.status in (BudgetStatus.APPROVED, BudgetStatus.LOCKED)
+        return self.status == BudgetStatus.APPROVED
 
 
 class BudgetLine(TimeStampedModel):

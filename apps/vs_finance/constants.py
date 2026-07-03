@@ -338,10 +338,13 @@ class StatutoryType(models.TextChoices):
 
 
 class BudgetStatus(models.TextChoices):
-    """Lifecycle of a budget; locked on approval so actuals can't be re-planned."""
+    """Lifecycle of a budget; approval locks the figures so actuals can't be re-planned.
+
+    Two states only: a DRAFT budget is editable; APPROVED locks it (see
+    :attr:`Budget.is_locked`). There is no separate LOCKED state — approval *is* the lock.
+    """
     DRAFT = "DRAFT", "Draft"
     APPROVED = "APPROVED", "Approved"
-    LOCKED = "LOCKED", "Locked"
 
 
 class DepreciationMethod(models.TextChoices):
@@ -450,6 +453,7 @@ class FinanceAuditAction(models.TextChoices):
     PERIOD_LOCKED = "PERIOD_LOCKED", "Period locked"
     TAX_FILING_PREPARED = "TAX_FILING_PREPARED", "Tax filing prepared"
     TAX_FILING_FILED = "TAX_FILING_FILED", "Tax filing submitted to authority"
+    TAX_FILING_UNFILED = "TAX_FILING_UNFILED", "Tax filing un-filed (reverted to draft)"
     TAX_FILING_PAID = "TAX_FILING_PAID", "Tax filing paid / remitted"
     TAX_FILING_REJECTED = "TAX_FILING_REJECTED", "Tax filing action rejected"
 

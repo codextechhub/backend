@@ -13,8 +13,8 @@ Routes (mounted at `/v1/finance/`): `budgets/`, `budgets/<pk>/`,
 
 ## 1. What it is (and what it is NOT)
 
-- **`Budget`** (`models/ops.py:909`): `fiscal_year`, `name`, `status`
-  (`DRAFT → APPROVED`; `LOCKED` exists in the enum but nothing sets it), auto code
+- **`Budget`** (`models/ops.py:909`): `fiscal_year`, `name`, `status` — two states
+  only, `DRAFT → APPROVED` (approval *is* the lock) — auto code
   `CFX-<entity>-BDG-<year>-NNNNN` from the shared document sequence.
 - **`BudgetLine`** (`:956`): one budgeted cell; `unique(budget, account, cost_center,
   period_no)`.
@@ -30,7 +30,7 @@ Routes (mounted at `/v1/finance/`): `budgets/`, `budgets/<pk>/`,
 
 | Model | File | Key fields |
 |---|---|---|
-| `Budget` | `models/ops.py:909` | `code`, `fiscal_year`, `name`, `status`, `approved_at/by`; `unique(entity, fiscal_year, name)`; `is_locked = status ∈ {APPROVED, LOCKED}` |
+| `Budget` | `models/ops.py:909` | `code`, `fiscal_year`, `name`, `status`, `approved_at/by`; `unique(entity, fiscal_year, name)`; `is_locked = status == APPROVED` |
 | `BudgetLine` | `:956` | `account` (P&L only), `cost_center?`, `period_no` (1–12), `amount` (kobo) |
 
 ## 3. Endpoint map
@@ -51,7 +51,7 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 ## 4. Lifecycle / state machine
 
 ```
-DRAFT ──approve──▶ APPROVED  (locked; LOCKED enum value exists but is never set)
+DRAFT ──approve──▶ APPROVED  (locked — approval is the lock; there is no third state)
 ```
 Draft: create/rename/line edits (add, wholesale replace, delete). Approved: frozen —
 only variance/heatmap reads. No un-approve, no delete-budget endpoint.
@@ -89,9 +89,9 @@ locked. Post ₦45,000 of salaries in period 1 → `variance/?period_no=1` shows
 
 ## 8. Gotchas / known limitations
 
-- **`LOCKED` is defined but never set** — same dead-enum pattern payroll's `CANCELLED`
-  had; `is_locked` treats APPROVED and LOCKED identically, so nothing is lost, but
-  there's no "lock harder" action.
+- ✅ **The dead `LOCKED` enum was removed** (migration `0026`; no data existed with
+  that value). `BudgetStatus` is now honestly two states, and
+  `income_statement_compare`'s budget lookup was updated with it.
 - **Approval is one-way** — no un-approve. A wrong approved budget can only be
   superseded by a new budget (the `unique(entity, year, name)` means a new name).
 - **No cost-centre variance.** Budget cells carry cost centres, but the variance and

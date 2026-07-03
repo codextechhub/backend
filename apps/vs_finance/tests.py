@@ -145,6 +145,7 @@ from vs_finance.tax_filing import (
     outstanding_obligations,
     pay_filing,
     prepare_filing,
+    unfile_filing,
 )
 from vs_finance.constants import TaxFilingStatus, TaxObligationType
 from vs_finance.payroll import cancel_payroll_run, pay_payroll, post_payroll
@@ -529,6 +530,33 @@ class FinanceAuditTests(_GLFixtureMixin, TestCase):
             log.save()
         with self.assertRaises(ValueError):
             log.delete()
+
+    def test_audit_log_immutable_at_db_level(self):
+        # Queryset .update()/.delete() bypass the Python model hooks, but the DB
+        # triggers (Postgres) must still block them. A normal INSERT keeps working.
+        from django.db import Error, transaction
+
+        entity, period = self.build_ledger()
+        entry = self.make_entry(entity, period, [("1100", 1000, 0), ("4100", 0, 1000)])
+        post_journal(entry)  # writes an audit row via a normal INSERT
+        qs = FinanceAuditLog.objects.filter(target_id=str(entry.pk))
+        self.assertTrue(qs.exists())
+
+        with self.assertRaises(Error):
+            with transaction.atomic():
+                qs.update(message="tampered")
+        with self.assertRaises(Error):
+            with transaction.atomic():
+                qs.delete()
+        # The row is untouched, and inserts still succeed.
+        log = qs.first()
+        self.assertNotEqual(log.message, "tampered")
+        reversal = reverse_journal(entry)
+        self.assertTrue(
+            FinanceAuditLog.objects.filter(
+                action=FinanceAuditAction.JOURNAL_POSTED, target_id=str(reversal.pk),
+            ).exists()
+        )
 
 
 class _ARFixtureMixin(_GLFixtureMixin):
@@ -1956,6 +1984,29 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(a.pk, b.pk)
         self.assertEqual(TaxFiling.objects.filter(entity=entity, obligation=ob).count(), 1)
 
+    def test_overlapping_period_is_rejected(self):
+        entity, _, periods = self.build_books()
+        ob = self._wht_obligation(entity)
+        self._accrue_wht(entity, periods[0], amount=50000)
+        prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
+                       period_end=datetime.date(2026, 1, 31))
+        # A different-but-overlapping window (mid-Jan into Feb) clashes.
+        with self.assertRaises(TaxFilingError):
+            prepare_filing(ob, period_start=datetime.date(2026, 1, 15),
+                           period_end=datetime.date(2026, 2, 15))
+
+    def test_adjacent_non_overlapping_period_is_accepted(self):
+        entity, _, periods = self.build_books()
+        ob = self._wht_obligation(entity)
+        self._accrue_wht(entity, periods[0], amount=50000)
+        jan = prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
+                             period_end=datetime.date(2026, 1, 31))
+        feb = prepare_filing(ob, period_start=datetime.date(2026, 2, 1),
+                             period_end=datetime.date(2026, 2, 28))
+        self.assertNotEqual(jan.pk, feb.pk)
+        self.assertEqual(
+            TaxFiling.objects.filter(entity=entity, obligation=ob).count(), 2)
+
     def test_file_nets_input_vat_then_pay_clears_liability(self):
         entity, _, periods = self.build_books()
         bank = self.make_bank(entity)
@@ -2068,6 +2119,57 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
                 status=FinanceAuditStatus.FAILED,
             ).exists()
         )
+
+    def test_unfile_reverses_netting_journal_and_reverts_to_draft(self):
+        entity, _, periods = self.build_books()
+        ob = self._vat_obligation(entity)
+        self._accrue_output_vat(entity, periods[0], net=1000000, vat=75000)
+        self._accrue_input_vat(entity, periods[0], net=400000, vat=30000)
+        filing = prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
+                                period_end=datetime.date(2026, 1, 31))
+        file_filing(filing, filed_date=datetime.date(2026, 2, 5), filing_reference="VAT-202601")
+        filing.refresh_from_db()
+        netting = filing.filing_journal
+        self.assertIsNotNone(netting)
+
+        unfile_filing(filing)
+        filing.refresh_from_db()
+        self.assertEqual(filing.filing_status, TaxFilingStatus.DRAFT)
+        self.assertIsNone(filing.filing_journal)
+        self.assertEqual(filing.filing_reference, "")
+        self.assertIsNone(filing.filed_at)
+        # The netting journal is reversed (audit-correct undo), not edited.
+        netting.refresh_from_db()
+        self.assertEqual(netting.status, DocumentStatus.REVERSED)
+        self.assertTrue(
+            FinanceAuditLog.objects.filter(
+                entity=entity, action=FinanceAuditAction.TAX_FILING_UNFILED,
+            ).exists()
+        )
+
+    def test_unfile_refused_once_any_payment_made(self):
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        ob = self._wht_obligation(entity)
+        self._accrue_wht(entity, periods[0], amount=50000)
+        filing = prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
+                                period_end=datetime.date(2026, 1, 31))
+        file_filing(filing, filed_date=datetime.date(2026, 2, 5))
+        pay_filing(filing, bank_account=bank, pay_date=datetime.date(2026, 2, 10), amount=20000)
+        filing.refresh_from_db()
+        with self.assertRaises(TaxFilingError):
+            unfile_filing(filing)
+        filing.refresh_from_db()
+        self.assertEqual(filing.filing_status, TaxFilingStatus.FILED)
+
+    def test_unfile_refused_on_draft(self):
+        entity, _, periods = self.build_books()
+        ob = self._wht_obligation(entity)
+        self._accrue_wht(entity, periods[0], amount=50000)
+        filing = prepare_filing(ob, period_start=datetime.date(2026, 1, 1),
+                                period_end=datetime.date(2026, 1, 31))
+        with self.assertRaises(TaxFilingError):
+            unfile_filing(filing)
 
     def test_outstanding_obligations_reports_net(self):
         entity, _, periods = self.build_books()
@@ -2379,6 +2481,53 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
         a1.refresh_from_db()
         self.assertEqual(a1.accumulated_depreciation, 100000)
 
+    def test_run_period_depreciation_spanning_two_periods_posts_two_journals(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        asset = self._make_asset(entity, cost=1100000, salvage=0, life=11)
+        acquire_asset(asset, bank_account=bank)
+        # Charges due Feb 1 and Mar 1 (100,000 each). Run up to Mar 31.
+        result = run_period_depreciation(entity, up_to_date=datetime.date(2026, 3, 31))
+        self.assertEqual(result["period_count"], 2)
+        self.assertEqual(len(result["journal_ids"]), 2)
+        self.assertEqual(result["journal_id"], result["journal_ids"][0])
+        self.assertEqual(result["total"], 200000)
+        from vs_finance.models import JournalEntry
+        entries = [JournalEntry.objects.get(id=j) for j in result["journal_ids"]]
+        # Each journal is dated inside its own period and totals 100,000.
+        for entry in entries:
+            self.assertEqual(entry.lines.get(account__code="5400").debit, 100000)
+            self.assertEqual(entry.lines.get(account__code="1900").credit, 100000)
+            self.assertTrue(entry.period.start_date <= entry.date <= entry.period.end_date)
+            self.assertLessEqual(entry.date, datetime.date(2026, 3, 31))
+        # Chronological: first journal is February's.
+        self.assertEqual(entries[0].period.period_no, 2)
+        self.assertEqual(entries[1].period.period_no, 3)
+
+    def test_run_period_depreciation_without_fiscal_period_raises_typed_error(self):
+        # Schedule charges extending past the last seeded period (FY2026 only) must
+        # surface a DepreciationError naming the date, not an AttributeError/500.
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        # Acquired June 2026, 11 monthly charges → Jul 2026 … May 2027; no FY2027 exists.
+        asset = self._make_asset(entity, cost=1100000, salvage=0, life=11,
+                                 acq=datetime.date(2026, 6, 1))
+        acquire_asset(asset, bank_account=bank)
+        with self.assertRaises(DepreciationError) as ctx:
+            run_period_depreciation(entity, up_to_date=datetime.date(2027, 5, 31))
+        self.assertIn("No fiscal period covers", str(ctx.exception))
+        self.assertIn("2027", str(ctx.exception))
+
+    def test_run_period_depreciation_single_period_returns_one_journal(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        asset = self._make_asset(entity, cost=1100000, salvage=0, life=11)
+        acquire_asset(asset, bank_account=bank)
+        result = run_period_depreciation(entity, up_to_date=datetime.date(2026, 2, 28))
+        self.assertEqual(result["period_count"], 1)
+        self.assertEqual(result["journal_ids"], [result["journal_id"]])
+        self.assertEqual(result["total"], 100000)
+
     def test_dispose_asset_books_proceeds_and_gain_loss(self):
         entity, _, _ = self.build_books()
         bank = self.make_bank(entity)
@@ -2397,6 +2546,13 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(entry.lines.get(account__code="1900").debit, 200000)
         self.assertEqual(entry.lines.get(account__code="1500").credit, 1100000)
         self.assertEqual(entry.lines.get(account__code="4100").credit, 950000 - nbv)
+
+    def test_post_depreciation_on_draft_asset_is_rejected(self):
+        entity, _, _ = self.build_books()
+        asset = self._make_asset(entity)  # DRAFT — never acquired
+        self.assertEqual(asset.asset_status, AssetStatus.DRAFT)
+        with self.assertRaises(DepreciationError):
+            post_depreciation(asset, up_to_date=datetime.date(2026, 12, 31))
 
     def test_cannot_rebuild_schedule_after_posting(self):
         entity, _, _ = self.build_books()
@@ -2441,6 +2597,40 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
         jan.refresh_from_db()
         self.assertEqual(jan.status, PeriodStatus.LOCKED)
         # A LOCKED period cannot be reopened.
+        with self.assertRaises(PeriodCloseError):
+            reopen_period(entity, jan)
+
+    def test_reopen_closed_period_returns_to_open(self):
+        entity, _, periods = self.build_books()
+        jan = periods[0]
+        close_period(entity, jan)
+        jan.refresh_from_db()
+        self.assertEqual(jan.status, PeriodStatus.CLOSED)
+        reopen_period(entity, jan)
+        jan.refresh_from_db()
+        self.assertEqual(jan.status, PeriodStatus.OPEN)
+
+    def test_lock_closed_period_seals_it(self):
+        entity, _, periods = self.build_books()
+        jan = periods[0]
+        close_period(entity, jan)
+        lock_period(entity, jan)
+        jan.refresh_from_db()
+        self.assertEqual(jan.status, PeriodStatus.LOCKED)
+
+    def test_lock_refuses_non_closed_period(self):
+        entity, _, periods = self.build_books()
+        jan = periods[0]  # still OPEN
+        with self.assertRaises(PeriodCloseError):
+            lock_period(entity, jan)
+        jan.refresh_from_db()
+        self.assertEqual(jan.status, PeriodStatus.OPEN)
+
+    def test_reopen_refuses_locked_period(self):
+        entity, _, periods = self.build_books()
+        jan = periods[0]
+        close_period(entity, jan)
+        lock_period(entity, jan)
         with self.assertRaises(PeriodCloseError):
             reopen_period(entity, jan)
 
@@ -3853,6 +4043,25 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         data = resp.json()["data"]
         self.assertEqual(data["period"]["status"], PeriodStatus.CLOSED)
         self.assertTrue(data["checklist"]["passed"])
+
+    def test_period_reopen_and_lock_actions(self):
+        entity, periods = self._seed()
+        ec = entity.code
+        pid = periods[0].id
+        closed = self.client.post(
+            f"/v1/finance/periods/{pid}/close/?entity={ec}", data={}, format="json")
+        self.assertEqual(closed.status_code, 200, closed.content)
+        # Re-open the closed period back to OPEN.
+        reopened = self.client.post(
+            f"/v1/finance/periods/{pid}/reopen/?entity={ec}", data={}, format="json")
+        self.assertEqual(reopened.status_code, 200, reopened.content)
+        self.assertEqual(reopened.json()["data"]["status"], PeriodStatus.OPEN)
+        # Close again, then lock it (permanently sealed).
+        self.client.post(f"/v1/finance/periods/{pid}/close/?entity={ec}", data={}, format="json")
+        locked = self.client.post(
+            f"/v1/finance/periods/{pid}/lock/?entity={ec}", data={}, format="json")
+        self.assertEqual(locked.status_code, 200, locked.content)
+        self.assertEqual(locked.json()["data"]["status"], PeriodStatus.LOCKED)
 
     def test_trial_balance_exports_in_each_format(self):
         entity, _ = self._seed()

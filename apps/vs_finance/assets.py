@@ -240,10 +240,10 @@ def post_depreciation(asset, *, up_to_date, actor_user=None, allow_restricted=Fa
 def _post_depreciation_atomic(asset, *, up_to_date, actor_user=None, allow_restricted=False):
     from .models import JournalEntry, JournalLine
 
-    if asset.asset_status not in (AssetStatus.ACTIVE, AssetStatus.DRAFT):
+    if asset.asset_status != AssetStatus.ACTIVE:
         raise DepreciationError(
             f"Asset {asset.document_number or asset.pk} is '{asset.asset_status}'; "
-            f"depreciation cannot be posted.",
+            f"only an ACTIVE asset can be depreciated.",
         )
 
     _, accum, expense = _asset_accounts(asset)
@@ -305,7 +305,7 @@ def _due_depreciation(entity, up_to_date):
         DepreciationSchedule.objects
         .filter(
             asset__entity=entity, is_posted=False, depreciation_date__lte=up_to_date,
-            asset__asset_status__in=(AssetStatus.ACTIVE, AssetStatus.DRAFT),
+            asset__asset_status=AssetStatus.ACTIVE,
         )
         .select_related("asset", "asset__depreciation_expense_account",
                         "asset__accumulated_depreciation_account")
@@ -336,7 +336,16 @@ def preview_period_depreciation(entity, *, up_to_date):
 
 
 def run_period_depreciation(entity, *, up_to_date, actor_user=None):
-    """Post one compound journal for every depreciation charge due up to ``up_to_date``."""
+    """Post depreciation due up to ``up_to_date`` — one compound journal **per period**.
+
+    Due charges are grouped by their :class:`FiscalPeriod` and each period gets its own
+    compound journal (Dr per expense account / Cr per accumulated-depreciation account),
+    dated at the latest ``depreciation_date`` in that period — so a charge never posts
+    into the wrong period. If a period is CLOSED, :func:`post_journal` raises
+    :class:`PeriodClosedError` and it propagates: the operator re-opens that period (via
+    the period-reopen endpoint) and re-runs. Records a durable rejection audit on any
+    :class:`FinanceError`.
+    """
     try:
         return _run_period_depreciation_atomic(entity, up_to_date=up_to_date, actor_user=actor_user)
     except FinanceError as exc:
@@ -356,33 +365,61 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
     if not charges:
         raise DepreciationError("No depreciation is due up to that date.")
 
-    expense, accum = {}, {}
+    # Group the charge rows by the fiscal period their depreciation_date falls in, so
+    # each period is posted with its own compound journal dated within that period.
+    period_cache: dict = {}
+    groups: dict = {}  # period -> {"rows": [...], "latest_date": date}
     for row in charges:
-        _, accum_acct, expense_acct = _asset_accounts(row.asset)
-        expense[expense_acct] = expense.get(expense_acct, 0) + row.amount
-        accum[accum_acct] = accum.get(accum_acct, 0) + row.amount
+        period = period_cache.get(row.depreciation_date)
+        if period is None:
+            period = resolve_period(entity, row.depreciation_date)
+            if period is None:
+                # Fail closed with a typed error rather than grouping under None.
+                raise DepreciationError(
+                    f"No fiscal period covers {row.depreciation_date}; create the "
+                    f"fiscal year before running depreciation.",
+                )
+            period_cache[row.depreciation_date] = period
+        bucket = groups.setdefault(period, {"rows": [], "latest_date": row.depreciation_date})
+        bucket["rows"].append(row)
+        if row.depreciation_date > bucket["latest_date"]:
+            bucket["latest_date"] = row.depreciation_date
 
-    period = resolve_period(entity, up_to_date)
-    entry = JournalEntry.objects.create(
-        entity=entity, date=up_to_date, period=period, source=JournalSource.CLOSING,
-        narration=f"Depreciation run to {up_to_date}", created_by=actor_user,
-    )
-    line_no = 0
-    for acct, amount in expense.items():
-        line_no += 1
-        JournalLine.objects.create(entry=entry, account=acct, debit=amount, credit=0,
-                                   description="Depreciation", line_no=line_no)
-    for acct, amount in accum.items():
-        line_no += 1
-        JournalLine.objects.create(entry=entry, account=acct, debit=0, credit=amount,
-                                   description="Accumulated depreciation", line_no=line_no)
-    post_journal(entry, actor_user=actor_user)
+    row_to_journal: dict = {}
+    journal_ids: list[int] = []
+    # Post chronologically so journal_ids[0] is the earliest period's journal.
+    for period in sorted(groups, key=lambda p: p.start_date):
+        bucket = groups[period]
+        expense, accum = {}, {}
+        for row in bucket["rows"]:
+            _, accum_acct, expense_acct = _asset_accounts(row.asset)
+            expense[expense_acct] = expense.get(expense_acct, 0) + row.amount
+            accum[accum_acct] = accum.get(accum_acct, 0) + row.amount
+
+        entry = JournalEntry.objects.create(
+            entity=entity, date=bucket["latest_date"], period=period,
+            source=JournalSource.CLOSING,
+            narration=f"Depreciation run for {period.name}", created_by=actor_user,
+        )
+        line_no = 0
+        for acct, amount in expense.items():
+            line_no += 1
+            JournalLine.objects.create(entry=entry, account=acct, debit=amount, credit=0,
+                                       description="Depreciation", line_no=line_no)
+        for acct, amount in accum.items():
+            line_no += 1
+            JournalLine.objects.create(entry=entry, account=acct, debit=0, credit=amount,
+                                       description="Accumulated depreciation", line_no=line_no)
+        post_journal(entry, actor_user=actor_user)
+        journal_ids.append(entry.pk)
+        for row in bucket["rows"]:
+            row_to_journal[row.pk] = entry
 
     # Mark every due row posted (zero-amount rows too) and roll up per asset.
     by_asset: dict = {}
     for row in rows:
         row.is_posted = True
-        row.journal = entry if row.amount > 0 else None
+        row.journal = row_to_journal.get(row.pk)  # None for zero-amount rows
         row.posted_at = timezone.now()
         row.save(update_fields=["is_posted", "journal", "posted_at", "updated_at"])
         by_asset[row.asset] = by_asset.get(row.asset, 0) + row.amount
@@ -395,12 +432,16 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):
     total = sum(r.amount for r in charges)
     record(
         entity=entity, action=FinanceAuditAction.DEPRECIATION_POSTED,
-        actor_user=actor_user, target=entry,
-        message=f"Posted a {total} kobo depreciation run across {len(by_asset)} asset(s).",
-        journal_id=entry.pk, charges=len(charges), total=total, assets=len(by_asset),
+        actor_user=actor_user, target=None, target_type="LedgerEntity",
+        target_id=str(entity.pk),
+        message=f"Posted a {total} kobo depreciation run across {len(by_asset)} asset(s) "
+                f"in {len(journal_ids)} period(s).",
+        journal_id=journal_ids[0], journal_ids=journal_ids, charges=len(charges),
+        total=total, assets=len(by_asset), period_count=len(journal_ids),
     )
-    return {"journal_id": entry.pk, "total": total, "charge_count": len(charges),
-            "asset_count": len(by_asset)}
+    return {"journal_id": journal_ids[0], "journal_ids": journal_ids,
+            "period_count": len(journal_ids), "total": total,
+            "charge_count": len(charges), "asset_count": len(by_asset)}
 
 
 def dispose_asset(asset, *, disposal_date, proceeds=0, bank_account=None,

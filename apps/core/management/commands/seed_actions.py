@@ -80,6 +80,8 @@ ACTIONS: list[tuple[str, str]] = [
     ("activate",   "Activate a draft record into its live, operative state."),
     ("pay",        "Disburse funds to settle a payable, payroll, or tax liability."),
     ("close",      "Close an accounting period, locking it against further postings."),
+    ("reopen",     "Re-open a closed accounting period back to open (audited)."),
+    ("lock",       "Permanently seal a closed accounting period against any re-open."),
     ("establish",  "Fund a petty-cash float from a bank account (open or increase it)."),
     ("replenish",  "Replenish a petty-cash float back to its imprest level."),
     ("file",       "File a statutory return (VAT, WHT, PAYE) with the authority."),

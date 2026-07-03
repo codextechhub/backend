@@ -36,9 +36,10 @@ Routes (mounted at `/v1/finance/`): `audit-logs/`, `audit-logs/facets/`.
 |---|---|---|
 | `FinanceAuditLog` | `models/gl.py:525` | `entity`, `actor?` (null = system), `action`, `status`, `target_type/id`, `document_number`, `message`, `before/after/metadata` (JSON), `created_at` |
 
-Immutability is enforced in the model: `save()` on an existing row and `delete()`
-both raise (`models/gl.py:581`). Indexed on `(entity, action)`, `(target_type,
-target_id)`, `(entity, created_at)`.
+Immutability is enforced in the model (`save()` on an existing row and `delete()`
+both raise, `models/gl.py:581`) **and at the DB** (BEFORE UPDATE/DELETE triggers,
+migration `0025`), so even ORM-bypassing writes are blocked. Indexed on
+`(entity, action)`, `(target_type, target_id)`, `(entity, created_at)`.
 
 ## 3. Endpoint map
 
@@ -78,10 +79,12 @@ dropdowns with only the actions/actors that exist for this entity.
 
 ## 8. Gotchas / known limitations
 
-- **Immutability is model-level, not DB-level.** `save()`/`delete()` raise, but a
-  queryset `.update()`/`.delete()` (or raw SQL) bypasses model methods — Django has
-  no per-row DB immutability here. Defence in depth would be a DB trigger or a
-  DB-user without UPDATE/DELETE grants on the table.
+- ✅ **Immutability is enforced at the DB level too** — migration
+  `0025_financeauditlog_immutability_triggers` installs BEFORE UPDATE/DELETE triggers
+  (PostgreSQL `RAISE EXCEPTION`; MariaDB `SIGNAL` branch for the legacy fallback), so
+  queryset `.update()`/`.delete()` and raw SQL are blocked, not just model `save()`.
+  Reversible migration; note a future retention/archival job would need to drop the
+  triggers first.
 - **No retention/archival** — the table grows unboundedly; fine for years at this
   volume, but worth a policy eventually.
 - **The central mirror can silently drop events** (by design — best-effort); never

@@ -31,6 +31,8 @@ from .views import (
     JournalPostView,
     JournalReverseView,
     PeriodCloseView,
+    PeriodLockView,
+    PeriodReopenView,
     StatutoryPackView,
     TrialBalanceView,
 )
@@ -143,6 +145,7 @@ from .views_ops import (
     TaxFilingFileView,
     TaxFilingListCreateView,
     TaxFilingPayView,
+    TaxFilingUnfileView,
     TaxFilingSummaryView,
     TaxObligationDetailView,
     TaxObligationListCreateView,
@@ -225,6 +228,8 @@ urlpatterns = [
     path("direct-entries/", DirectEntryCreateView.as_view(), name="finance-direct-entry-create"),
     path("periods/<int:id>/checklist/", PeriodCloseView.as_view(), name="finance-period-checklist"),
     path("periods/<int:id>/close/", PeriodCloseView.as_view(), name="finance-period-close"),
+    path("periods/<int:id>/reopen/", PeriodReopenView.as_view(), name="finance-period-reopen"),
+    path("periods/<int:id>/lock/", PeriodLockView.as_view(), name="finance-period-lock"),
 
     # Reports / financial statements
     path("reports/dashboard/", FinanceDashboardView.as_view(), name="finance-dashboard"),
@@ -309,6 +314,7 @@ urlpatterns = [
     path("tax-filings/summary/", TaxFilingSummaryView.as_view(), name="finance-tax-filing-summary"),
     path("tax-filings/<int:pk>/", TaxFilingDetailView.as_view(), name="finance-tax-filing-detail"),
     path("tax-filings/<int:pk>/file/", TaxFilingFileView.as_view(), name="finance-tax-filing-file"),
+    path("tax-filings/<int:pk>/unfile/", TaxFilingUnfileView.as_view(), name="finance-tax-filing-unfile"),
     path("tax-filings/<int:pk>/pay/", TaxFilingPayView.as_view(), name="finance-tax-filing-pay"),
 
     # Payroll

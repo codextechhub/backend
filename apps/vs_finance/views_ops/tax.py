@@ -279,6 +279,26 @@ class TaxFilingFileView(_TaxFilingActionBase):
         )
 
 
+class TaxFilingUnfileView(_TaxFilingActionBase):
+    """POST — revert a filed return to draft (reverse its netting/penalty journal).
+
+    docstring-name: Un-file a tax return
+    """
+
+    rbac_permission = "finance.tax.file"
+
+    def post(self, request, pk):
+        from ..tax_filing import unfile_filing
+
+        _, filing = self._filing(request, pk)
+        unfile_filing(filing, actor_user=request.user)
+        filing.refresh_from_db()
+        return success_response(
+            f"Tax filing {filing.document_number} un-filed.",
+            data=TaxFilingSerializer(filing).data,
+        )
+
+
 class TaxFilingPayView(_TaxFilingActionBase):
     """POST — remit a filed return (Dr liability, Cr bank).
 

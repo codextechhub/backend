@@ -48,7 +48,7 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 | `GET /fixed-assets/<pk>/` | `finance.fixedasset.view` | Asset + schedule | — | detail |
 | `POST /fixed-assets/<pk>/acquire/` | `finance.fixedasset.acquire` | Capitalise + build schedule (DRAFT → ACTIVE) | `bank_account` **or** `credit_account` | asset |
 | `POST /fixed-assets/<pk>/depreciate/` | `finance.fixedasset.depreciate` | Post this asset's due charges (one journal per row) | `up_to_date` | rows posted |
-| `POST /fixed-assets/run-depreciation/` | `finance.fixedasset.depreciate` (GET preview: `.view`) | **One compound journal** for every due charge across the entity | `up_to_date` | `{journal_id, total, …}` |
+| `POST /fixed-assets/run-depreciation/` | `finance.fixedasset.depreciate` (GET preview: `.view`) | One compound journal **per fiscal period** covering every due charge across the entity | `up_to_date` | `{journal_id, journal_ids[], period_count, total, …}` |
 | `POST /fixed-assets/<pk>/dispose/` | `finance.fixedasset.dispose` | Retire/sell (→ DISPOSED) | `disposal_date`, `proceeds?`, `bank_account?`, `gain_loss_account?` | asset |
 
 ## 4. Lifecycle / state machine
@@ -58,8 +58,9 @@ DRAFT ──acquire──▶ ACTIVE ──(last schedule row posts)──▶ FUL
                      │                                        │
                      └───────────── dispose ──────────────────┴──▶ DISPOSED
 ```
-Depreciation posts from ACTIVE (and, oddly, DRAFT — §8) until the schedule is
-exhausted; disposal is allowed from ACTIVE or FULLY_DEPRECIATED.
+Depreciation posts from **ACTIVE only** (a DRAFT asset — not yet capitalised — is
+refused) until the schedule is exhausted; disposal is allowed from ACTIVE or
+FULLY_DEPRECIATED.
 
 ## 5. Calculations
 
@@ -86,11 +87,14 @@ charge = max(book_value × 2/months, (book_value − salvage)/months_left)
 **own** journal dated on the row's `depreciation_date` (so charges land in their own
 periods); rolls `accumulated_depreciation`; flips FULLY_DEPRECIATED when done.
 
-**Run (entity-wide)** (`_run_period_depreciation_atomic`, `:351`) — **one compound
-journal dated `up_to_date`** grouping Dr per expense account / Cr per accum account
-for *all* due rows. Period close calls this with `allow_restricted` (posts into a
-SOFT_CLOSED period — exactly what soft-close exists for, via
-`close.run_period_depreciation`).
+**Run (entity-wide)** (`_run_period_depreciation_atomic`) — due charges are grouped
+by their **fiscal period**, and each period gets its own compound journal (Dr per
+expense account / Cr per accum account) dated at the latest charge date within that
+period — so a backlog never collapses into one month. A CLOSED period in the range
+raises cleanly (re-open it via `periods/<id>/reopen/`, then re-run); a date with no
+fiscal period raises a typed `DepreciationError`. Period close still auto-posts due
+depreciation with `allow_restricted` (into a SOFT_CLOSED period) via
+`close.run_period_depreciation`.
 
 **Dispose** (`_dispose_asset_atomic`, `:424`):
 ```
@@ -109,15 +113,12 @@ Cr gain 50,000, Cr 1500 1,200,000`.
 
 ## 8. Gotchas / known limitations
 
-- **The compound run collapses a backlog into one period.** `run-depreciation` posts
-  *every* due charge in **one journal dated `up_to_date`** — a 3-month backlog lands
-  entirely in that period (per-asset `depreciate/` doesn't: each row posts on its own
-  date). Fine when run monthly at close; distorting after a long gap.
-- **DRAFT assets can post depreciation.** `post_depreciation` and `_due_depreciation`
-  accept `DRAFT` alongside `ACTIVE` (`assets.py:245`, `:308`) — a schedule built for
-  an un-capitalised asset would depreciate an asset that isn't on the books. Low
-  exposure (schedules are normally built by `acquire`), but the guard should arguably
-  be ACTIVE-only.
+- ✅ **The run posts per-period** (was: one lump dated `up_to_date`) — a backlog now
+  lands in its own months, matching the per-asset path. Response keeps `journal_id`
+  (first/earliest) and adds `journal_ids` + `period_count`. A CLOSED period in the
+  backlog raises — by design; re-open, then re-run.
+- ✅ **Depreciation is ACTIVE-only** (was: DRAFT allowed) — an un-capitalised asset
+  can no longer accrue depreciation.
 - **Disposal doesn't warn about unposted due charges** — NBV at disposal uses only
   what's been *booked*; pending schedule rows are silently orphaned (they drop out of
   `_due_depreciation` once DISPOSED). Accounting-acceptable, but a "you have unposted
@@ -147,6 +148,9 @@ Cr gain 50,000, Cr 1500 1,200,000`.
 Existing (fixed-asset tests): schedule maths (both methods), acquire, depreciation
 posting, disposal gain/loss.
 
+Added with the fixes: a two-period backlog posts two per-period journals; the
+single-period run still returns one (`journal_id == journal_ids[0]`); DRAFT
+depreciation rejected; a schedule date with no fiscal period raises a typed error.
+
 Worth asserting: 403 per verb; cross-tenant → 404; rebuild-after-posting refused;
-compound-run backlog behaviour (documented); DRAFT-depreciation quirk (documented);
 month-end clamping; empty register.

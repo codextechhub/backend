@@ -995,11 +995,11 @@ def income_statement_compare(entity, *, period=None) -> IncomeStatementCompare:
     has_prior = prior_fy is not None
     pri_inc, pri_exp = _actuals(prior_fy) if has_prior else ({}, {})
 
-    # Budget for the current fiscal year — prefer an approved/locked plan over a draft.
+    # Budget for the current fiscal year — prefer an approved (locked) plan over a draft.
     budget = (
         Budget.objects.filter(
             entity=entity, fiscal_year=fy,
-            status__in=[BudgetStatus.APPROVED, BudgetStatus.LOCKED]).order_by("-id").first()
+            status=BudgetStatus.APPROVED).order_by("-id").first()
         or Budget.objects.filter(entity=entity, fiscal_year=fy).order_by("-id").first())
     has_budget = budget is not None
     budget_by_acc: dict[int, list] = {}

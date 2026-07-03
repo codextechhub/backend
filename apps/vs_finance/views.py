@@ -966,6 +966,64 @@ class PeriodCloseView(APIView):
         )
 
 
+class PeriodReopenView(APIView):
+    """POST /finance/periods/<id>/reopen/?entity= — re-open a CLOSED/SOFT_CLOSED period.
+
+    A LOCKED period cannot be re-opened; an already-OPEN period is refused.
+
+    docstring-name: Re-open a fiscal period
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.period.reopen"
+
+    def _period(self, request, id):
+        entity = resolve_entity(request)
+        period = FiscalPeriod.objects.filter(entity=entity, id=id).first()
+        if period is None:
+            raise NotFound("Fiscal period not found for this entity.")
+        return entity, period
+
+    def post(self, request, id):
+        from .close import reopen_period
+
+        entity, period = self._period(request, id)
+        period = reopen_period(entity, period, actor_user=request.user)
+        return success_response(
+            message=f"Period '{period}' re-opened to {period.status}.",
+            data=FiscalPeriodSerializer(period).data,
+        )
+
+
+class PeriodLockView(APIView):
+    """POST /finance/periods/<id>/lock/?entity= — permanently seal a CLOSED period.
+
+    Only a CLOSED period can be locked; the lock is irreversible.
+
+    docstring-name: Lock a fiscal period
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.period.lock"
+
+    def _period(self, request, id):
+        entity = resolve_entity(request)
+        period = FiscalPeriod.objects.filter(entity=entity, id=id).first()
+        if period is None:
+            raise NotFound("Fiscal period not found for this entity.")
+        return entity, period
+
+    def post(self, request, id):
+        from .close import lock_period
+
+        entity, period = self._period(request, id)
+        period = lock_period(entity, period, actor_user=request.user)
+        return success_response(
+            message=f"Period '{period}' locked to {period.status}.",
+            data=FiscalPeriodSerializer(period).data,
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Reports / financial statements                                              #
 # --------------------------------------------------------------------------- #

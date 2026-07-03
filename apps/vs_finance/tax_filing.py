@@ -121,6 +121,27 @@ def _prepare_filing_atomic(obligation, *, period_start, period_end, due_date,
         filing_status=TaxFilingStatus.DRAFT,
     ).first()
     if filing is None:
+        # A new draft must not straddle any other filing for the same obligation.
+        # Overlap: existing.period_start <= new.period_end AND existing.period_end >= new.period_start.
+        # The exact-match draft above is the refresh path and is excluded here.
+        clash = (
+            TaxFiling.objects.filter(
+                entity=entity, obligation=obligation,
+                period_start__lte=period_end, period_end__gte=period_start,
+            )
+            .exclude(
+                period_start=period_start, period_end=period_end,
+                filing_status=TaxFilingStatus.DRAFT,
+            )
+            .order_by("period_start")
+            .first()
+        )
+        if clash is not None:
+            raise TaxFilingError(
+                f"Filing period {period_start}–{period_end} overlaps existing "
+                f"{obligation.code} filing {clash.document_number or clash.pk} "
+                f"({clash.period_start}–{clash.period_end}).",
+            )
         filing = TaxFiling(
             entity=entity, obligation=obligation,
             period_start=period_start, period_end=period_end,
@@ -252,6 +273,71 @@ def _file_filing_atomic(filing, *, filed_date, filing_reference, adjustment_amou
         ),
         journal_id=entry.pk if entry else None,
         total=filing.amount_due, tax=filing.recoverable_amount,
+    )
+    return filing
+
+
+# --------------------------------------------------------------------------- #
+# Unfile (revert a FILED return to DRAFT — the audit-correct undo)             #
+# --------------------------------------------------------------------------- #
+
+def unfile_filing(filing, *, actor_user=None):
+    """Revert a FILED return to DRAFT: reverse its netting/penalty journal, clear filing.
+
+    The undo for a return filed in error, before any remittance. A PAID return is
+    refused (reverse the remittance first); so is a return with any payment recorded.
+    Records a durable rejection audit on any :class:`FinanceError`.
+    """
+    try:
+        return _unfile_filing_atomic(filing, actor_user=actor_user)
+    except FinanceError as exc:
+        record_rejection(
+            entity=filing.entity, action=FinanceAuditAction.TAX_FILING_REJECTED,
+            exc=exc, actor_user=actor_user, target=filing,
+        )
+        raise
+
+
+@transaction.atomic
+def _unfile_filing_atomic(filing, *, actor_user=None):
+    from .posting import reverse_journal
+
+    if filing.filing_status == TaxFilingStatus.PAID:
+        raise TaxFilingError(
+            f"Filing {filing.document_number or filing.pk} is PAID; reverse the "
+            f"remittance before un-filing it.",
+        )
+    if filing.filing_status != TaxFilingStatus.FILED:
+        raise TaxFilingError(
+            f"Filing {filing.document_number or filing.pk} is '{filing.filing_status}', "
+            f"only a filed return can be un-filed.",
+        )
+    if int(filing.amount_paid or 0) > 0:
+        raise TaxFilingError(
+            "This filing carries a remittance; reverse the payment before un-filing it.",
+        )
+
+    reversed_journal_id = None
+    if filing.filing_journal_id is not None:
+        reverse_journal(filing.filing_journal, actor_user=actor_user)
+        reversed_journal_id = filing.filing_journal_id
+        filing.filing_journal = None
+
+    filing.filed_at = None
+    filing.filing_reference = ""
+    filing.filing_status = TaxFilingStatus.DRAFT
+    filing.save(update_fields=[
+        "filing_journal", "filed_at", "filing_reference", "filing_status", "updated_at",
+    ])
+
+    record(
+        entity=filing.entity, action=FinanceAuditAction.TAX_FILING_UNFILED,
+        actor_user=actor_user, target=filing,
+        message=(
+            f"Un-filed {filing.obligation.code} return "
+            f"{filing.document_number or filing.pk} back to draft."
+        ),
+        journal_id=reversed_journal_id,
     )
     return filing
 

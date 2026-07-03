@@ -24,9 +24,9 @@ ar-aging, ar-reconciliation, customer-statement, analytics-slice}/`,
 - **Recompute the ledger.** Statements read `AccountBalance` (kept in step by the
   posting engine); they're views over truth, not re-derivations — except AR aging /
   customer statements / analytics-slice, which walk documents/lines directly.
-- **Expose reopen/lock via the API.** `close.reopen_period` and `close.lock_period`
-  exist as services but **no URL routes them** (§8) — `LOCKED` is unreachable and
-  re-opening needs a shell.
+- **Leave close as the only period control.** Re-opening a mis-closed period
+  (`periods/<id>/reopen/`) and permanently sealing one (`periods/<id>/lock/`) are
+  first-class endpoints, each behind its own CRITICAL key (§3/§4).
 
 ## 2. Domain model
 
@@ -55,7 +55,9 @@ close uses `finance.period.close`.
 | `reports/analytics-slice/` | `analytics_slice` | `?axis=cost_center|<dimension>`; reads posted JournalLines |
 | `reports/dashboard/` | `dashboard.py` | KPI cards + sparklines + AR blocks in one payload |
 | `GET periods/<id>/checklist/` | `close_checklist` | preview, no side effects |
-| `POST periods/<id>/close/` | `close_period` | body: `soft?`, `force?`, `run_depreciation?` (default true) |
+| `POST periods/<id>/close/` | `close_period` | body: `soft?`, `force?`, `run_depreciation?` (default true); key `finance.period.close` |
+| `POST periods/<id>/reopen/` | `reopen_period` | CLOSED/SOFT_CLOSED → OPEN (LOCKED refused); key `finance.period.reopen` (CRITICAL) |
+| `POST periods/<id>/lock/` | `lock_period` | CLOSED → LOCKED, **irreversible**; key `finance.period.lock` (CRITICAL) |
 
 **Exports:** every tabular report accepts `?export=csv|xlsx|pdf` (`_maybe_export`,
 `views.py:994` → `exports.render`); the parameter is `export`, **not** `format`
@@ -64,9 +66,9 @@ close uses `finance.period.close`.
 ## 4. Lifecycle / state machine (period close)
 
 ```
-OPEN ──close(soft)──▶ SOFT_CLOSED ──close──▶ CLOSED ──lock──▶ LOCKED
-  ▲                        │                    │      (service only — no endpoint)
-  └──── reopen (service only — no endpoint) ◀──┘
+OPEN ──close(soft)──▶ SOFT_CLOSED ──close──▶ CLOSED ──lock──▶ LOCKED (irreversible)
+  ▲                        │                    │
+  └────────── reopen ◀─────┴────────────────────┘
 ```
 `close_period` (`close.py:160`): refuses CLOSED/LOCKED; posts due depreciation first
 (`run_depreciation=true`, into SOFT_CLOSED via `allow_restricted`); runs the
@@ -107,10 +109,9 @@ depreciation posted, checklist green, period CLOSED.
 
 ## 8. Gotchas / known limitations
 
-- **Reopen and lock have no endpoints.** `reopen_period` / `lock_period`
-  (`close.py:196`, `:215`) are implemented, audited, and guarded — but not routed, so
-  `LOCKED` is unreachable via the API and re-opening a mis-closed period requires a
-  shell. (Third dead-state pattern after payroll `CANCELLED` and budget `LOCKED`.)
+- ✅ **Reopen and lock are now routed** (`periods/<id>/reopen/` and `…/lock/`), each
+  behind its own CRITICAL key (`finance.period.reopen` / `.lock`). Lock remains
+  deliberately irreversible; treat both keys as top-tier privileges.
 - **`force` close is powerful** — it overrides *blocking* integrity failures
   (unbalanced TB included). It's audited, but treat `finance.period.close` as a
   highly privileged key.
