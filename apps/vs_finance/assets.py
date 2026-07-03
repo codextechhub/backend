@@ -471,6 +471,19 @@ def _dispose_asset_atomic(asset, *, disposal_date, proceeds=0, bank_account=None
             f"Asset {asset.document_number or asset.pk} is '{asset.asset_status}'; "
             f"only an active or fully-depreciated asset can be disposed.",
         )
+    # Refuse to dispose while depreciation due up to the disposal date is still unposted:
+    # the disposal journal would otherwise strip the cost/accum before those charges land,
+    # understating the loss. Charges dated AFTER the disposal date are fine to orphan
+    # (the asset's life is simply cut short).
+    unposted_due = asset.schedule.filter(
+        is_posted=False, depreciation_date__lte=disposal_date,
+    ).count()
+    if unposted_due:
+        raise DepreciationError(
+            f"Asset {asset.document_number or asset.pk} has {unposted_due} unposted "
+            f"depreciation charge(s) due on or before {disposal_date}; post depreciation "
+            f"up to the disposal date before disposing.",
+        )
     proceeds = int(proceeds or 0)
     nbv = asset.cost - asset.accumulated_depreciation
     gain_loss = proceeds - nbv  # >0 gain, <0 loss

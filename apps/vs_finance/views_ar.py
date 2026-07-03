@@ -296,7 +296,13 @@ class CustomerListCreateView(_FinanceBase):
         # atomic block, so a posting failure (e.g. no open period) rolls the whole
         # customer-create back with a clear error.
         from .receivables import post_opening_balance
-        post_opening_balance(customer, actor_user=request.user)
+        # An optional historical opening_date backdates the opening invoice + its journal
+        # (falls back to today inside the service); the posting guards roll the whole
+        # create back if that date lands in a closed/missing period.
+        post_opening_balance(
+            customer, actor_user=request.user,
+            date=_date(body.get("opening_date"), "opening_date"),
+        )
         return success_response(
             f"Customer {customer.code} created.",
             data=CustomerSerializer(customer).data, status=201,

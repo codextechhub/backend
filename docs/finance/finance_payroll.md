@@ -61,14 +61,15 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 | `POST /payroll-runs/<pk>/post/` | `finance.payrollrun.post` | **Accrue** (DRAFT → POSTED) | — | run |
 | `POST /payroll-runs/<pk>/pay/` | `finance.payrollrun.pay` | **Disburse** net wages (POSTED → PAID) | `bank_account?`, `pay_date?` | run |
 | `POST /payroll-runs/<pk>/cancel/` | `finance.payrollrun.post` | Cancel a DRAFT, or **void** a POSTED (un-paid) run — reverses the accrual → CANCELLED. Refused once PAID | — | run |
-| `GET/POST /employee-salaries/` | `finance.payrollrun.view` / `.create` | Roster list / add | `name`, `gross_amount`, `structure?`, flat `paye/pension?`, `cost_center?` | salary |
-| `PATCH/DELETE /employee-salaries/<pk>/` | `finance.payrollrun.create` | Edit / remove a roster row | — | salary |
-| `GET/POST /salary-structures/` | `finance.payrollrun.view` / `.create` | Structure list / create | `name`, `components:[…]` | structure |
-| `GET /salary-structures/<pk>/` | `finance.payrollrun.view` | One structure + components | — | detail |
+| `GET/POST /employee-salaries/` | `finance.salary.view` / `.create` | Roster list / add | `name`, `gross_amount`, `structure?`, flat `paye/pension?`, `cost_center?` | salary |
+| `PATCH/DELETE /employee-salaries/<pk>/` | `finance.salary.update` / `.delete` | Edit / remove a roster row | — | salary |
+| `GET/POST /salary-structures/` | `finance.salary.view` / `.create` | Structure list / create | `name`, `components:[…]` | structure |
+| `GET/PATCH /salary-structures/<pk>/` | `finance.salary.view` / `.update` | One structure + components / edit | — | detail |
 
-> **Note:** the roster (`employee-salaries`) and templates (`salary-structures`)
-> reuse the **`payrollrun`** permission family — there's no separate resource, so
-> managing them needs `finance.payrollrun.create`.
+> **Note:** the roster (`employee-salaries`) and templates (`salary-structures`) are
+> their own RBAC resource — `finance.salary.{view,create,update,delete}`, all
+> SENSITIVE — separate from the `payrollrun` family. Individual pay-figure visibility
+> (FLS) remains keyed on `finance.payrollrun.view_sensitive` everywhere.
 
 ## 4. Lifecycle / state machine
 
@@ -153,16 +154,21 @@ gross total, but each employee line's name/amounts are stripped.
   (aggregate cost for finance) — but treat run-level totals as *not* secret.
 - **A structure silently overrides the flat PAYE/pension** on an `EmployeeSalary` — if
   a row has both a structure and typed figures, the typed ones are ignored.
-- **Roster + structures need `payrollrun.create`** (no dedicated resource) — HR-style
-  roster edits share the payroll-run create privilege.
+- ✅ **Roster + structures have their own RBAC resource** —
+  `finance.salary.{view, create, update, delete}` (all SENSITIVE; even listing exposes
+  who earns what), split from `payrollrun.*` like the petty-cash precedent. Generating
+  a *run* from the roster still uses `payrollrun.create`. **Ops note:** roles that used
+  `payrollrun.create` for roster edits need the new `salary.*` grants. The FLS
+  "see individual pay figures" key stays unified on `payrollrun.view_sensitive`.
 - **`generate` copies the roster at that moment** — later roster edits don't touch an
   already-generated draft; regenerate for a fresh copy.
 
 ## 9. Permissions & tenant isolation
 
-- Verbs (one resource): `finance.payrollrun.{view, create, post, pay,
-  view_sensitive}`. `view` and `view_sensitive` are both **SENSITIVE** in the seed —
-  payroll is sensitive by nature.
+- Two resources: `finance.payrollrun.{view, create, post, pay, view_sensitive}` for
+  runs, and `finance.salary.{view, create, update, delete}` for the roster and
+  structures. Every one of them is **SENSITIVE** (or CRITICAL) in the seed — payroll
+  data is sensitive by nature.
 - **Field-level security:** `PayrollLineSerializer` and `EmployeeSalarySerializer` use
   `FieldSecurityMixin` — `gross/paye/pension/net_amount`, `components` (and the line's
   `employee_name`) are stripped unless the caller holds

@@ -49,7 +49,8 @@ FINANCE_RESOURCES = [
                                                 ("update", "SENSITIVE"), ("import", "SENSITIVE"),
                                                 ("reconcile", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
     ("budget",       "budgets",                [("view", "NORMAL"), ("create", "SENSITIVE"),
-                                                ("edit", "SENSITIVE"), ("approve", "SENSITIVE")]),
+                                                ("edit", "SENSITIVE"), ("approve", "SENSITIVE"),
+                                                ("delete", "SENSITIVE")]),
     ("concession",   "concessions",            [("view", "NORMAL"), ("create", "SENSITIVE"), ("post", "SENSITIVE")]),
     ("creditnote",   "credit/debit notes",     [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("post", "CRITICAL"), ("allocate", "SENSITIVE")]),
@@ -65,6 +66,11 @@ FINANCE_RESOURCES = [
     ("payrollrun",   "payroll runs",           [("view", "SENSITIVE"), ("create", "SENSITIVE"),
                                                 ("post", "CRITICAL"), ("pay", "CRITICAL"),
                                                 ("view_sensitive", "SENSITIVE")]),
+    # The salary roster / structures (master data behind a run) get their own resource so
+    # editing them is not conflated with running payroll. Every verb is SENSITIVE — even
+    # listing exposes who earns what.
+    ("salary",       "employee salaries & structures", [("view", "SENSITIVE"), ("create", "SENSITIVE"),
+                                                ("update", "SENSITIVE"), ("delete", "SENSITIVE")]),
     # The fund/float (master data) and the voucher (a spend document) are distinct
     # resources — mirroring how every other finance document (invoice, expenseclaim …)
     # gets its own resource — so each verb is unambiguous.

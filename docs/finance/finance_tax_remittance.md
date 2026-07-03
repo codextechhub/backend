@@ -24,8 +24,9 @@ Routes (mounted at `/v1/finance/`): `tax-obligations/…`, `tax-obligations/outs
 - **Accrue tax.** The liability already sits in the control account from source
   postings (perpetual). `prepare` only *reads* the GL movement; the only journals here
   are the VAT-netting/penalty entry at filing and the remittance at pay.
-- **Auto-compute `due_date`.** The obligation's `filing_day` is informational master
-  data (exposed/edited, seeded) — `prepare` takes `due_date` from the caller.
+- **Require a `due_date` from the caller.** When omitted, `prepare` derives it from
+  the obligation's `filing_day` (day N of the month after period end); an explicit
+  date still wins.
 - **Un-file a return that's been paid.** `unfile/` reverts a FILED return to DRAFT
   (reversing its netting/penalty journal) — but only while **no** remittance has been
   recorded; a paid return needs its payment reversed first (§4).
@@ -127,8 +128,10 @@ filing → PAID.
 - ✅ **Overlapping periods are rejected** at prepare time (any other filing for the
   obligation whose window straddles the new one, exact-draft refresh excluded) — the
   double-remittance hole is closed.
-- **`filing_day` is informational** — it doesn't compute `due_date`; the caller
-  passes one.
+- ✅ **`filing_day` now drives the default `due_date`** — when the caller omits it,
+  prepare sets day `filing_day` of the month after `period_end` (clamped to month
+  length; December rolls the year). An explicit `due_date` always wins; a refresh
+  with no explicit date re-derives it.
 - **`outstanding/` scans all-time GL movement** per obligation (two aggregates each)
   — fine at this scale.
 - `pay/` accepts a filing already PAID *only* to reject on `balance_due ≤ 0`; partials

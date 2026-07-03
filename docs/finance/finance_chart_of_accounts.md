@@ -176,12 +176,13 @@ seeded control codes those services expect include `1100` Cash & Bank, `1200` AR
 
 ## 8. Gotchas / known limitations
 
-- **`GET /entities/` is not school-scoped** (`views.py:138`) — it lists every set
-  of books. Safe only if `finance.entity.view` is granted to platform admins
-  only. **Verify the role grant** before treating this as fine (see §9).
-- **`parent` is a pk on account create**, a code on cost-center create — easy to
-  document wrong. Account create also silently ignores any `currency`/`ifrs_line`
-  in the body.
+- ✅ **`GET /entities/` is now tenancy-scoped** — CX staff see every set of books;
+  a school-scoped user sees only entities sourced from their school (none without a
+  school), matching `resolve_entity`'s rule. Defence in depth on top of the key being
+  seeded to platform admins only.
+- ✅ **`parent` on account create accepts a code or a pk** (code tried first, like
+  the cost-center resolver). Account create still silently ignores any
+  `currency`/`ifrs_line` in the body.
 - **`with_balance=true` returns the whole tree un-paginated** — fine for a CoA
   (bounded), but it also runs a `Sum` over `AccountBalance` per node; large
   charts pay for it.
@@ -198,9 +199,8 @@ seeded control codes those services expect include `1100` Cash & Bank, `1200` AR
   swap to another tenant's books → `404`. ✅
 - **Account detail/PATCH** resolve the entity first, then `filter(entity=…, pk=…)`
   (`views.py:271`), so a `pk` from another tenant → `NotFound`. ✅
-- **Entity list (`GET /entities/`)** is the exception — **no per-school filter**
-  (§8). This is the one isolation question in the slice; resolve it by confirming
-  who holds `finance.entity.view`.
+- **Entity list (`GET /entities/`)** applies the same rule in its queryset:
+  non-CX users are filtered to `source_school`, no school → empty. ✅
 
 ## 10. Code map
 
@@ -220,9 +220,8 @@ To assert (security-critical first):
 - `403` for a caller missing `finance.account.view` / `finance.entity.create`.
 - **Cross-tenant:** school-A user hitting `?entity=<school-B>` and
   `accounts/<school-B-pk>/` → `404`.
-- **`GET /entities/` exposure:** confirm a school-scoped user with
-  `finance.entity.view` cannot see other tenants' books (or that the key is
-  platform-only).
+- **`GET /entities/` scoping** (covered by `EntityListScopingTests`): CX staff see
+  all; a school user sees only their own; a school-less user sees none.
 - Happy path: create account → `normal_balance` derived correctly for each type
   and for `is_contra`; PATCH cannot change `account_type`.
 - Empty-list shape: `GET /accounts/` for a fresh entity (`success_response`

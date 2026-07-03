@@ -155,8 +155,8 @@ concession_date}` → draft; `post/` → `Dr 4910 500000 / Cr 1200 500000`, invo
 
 ## 8. Gotchas / known limitations
 
-- **Refund list is un-paginated** (`[:200]`, `views_ar.py`) — unlike credit notes /
-  concessions / ar-adjustments which paginate. Inconsistent; large entities truncate.
+- ✅ **Refund list paginates** (covered by the ops pagination sweep) — this gotcha was
+  stale; all four adjustment lists now use the standard `{pagination, data}` envelope.
 - **A refund needs existing credit** — you can't refund a customer who only has open
   invoices; settle/credit first so `2140` holds the balance.
 - **Write-offs have no document** to list/detail — they're audit-log entries only;

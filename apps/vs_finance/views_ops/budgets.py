@@ -116,11 +116,15 @@ class _BudgetActionBase(_FinanceBase):
 
 
 class BudgetDetailView(_BudgetActionBase):
-    """GET one budget; PATCH to rename a draft. docstring-name: Budgets"""
+    """GET one budget; PATCH to rename a draft; DELETE a draft. docstring-name: Budgets"""
 
     @property
     def rbac_permission(self):
-        return "finance.budget.edit" if self.request.method == "PATCH" else "finance.budget.view"
+        if self.request.method == "PATCH":
+            return "finance.budget.edit"
+        if self.request.method == "DELETE":
+            return "finance.budget.delete"
+        return "finance.budget.view"
 
     def get(self, request, pk):
         _, budget = self._budget(request, pk)
@@ -137,6 +141,13 @@ class BudgetDetailView(_BudgetActionBase):
         update_budget(budget, name=str(name).strip() if name is not None else None, actor_user=request.user)
         budget.refresh_from_db()
         return success_response("Budget updated.", data=BudgetSerializer(budget).data)
+
+    def delete(self, request, pk):
+        from ..budgets import delete_budget
+
+        _, budget = self._budget(request, pk)
+        delete_budget(budget, actor_user=request.user)
+        return success_response("Budget deleted.", data={})
 
 
 class BudgetLineCreateView(_BudgetActionBase):

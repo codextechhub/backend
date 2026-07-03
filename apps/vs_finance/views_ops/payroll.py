@@ -240,8 +240,8 @@ class EmployeeSalaryListCreateView(_FinanceBase):
 
     @property
     def rbac_permission(self):
-        return "finance.payrollrun.create" if self.request.method == "POST" \
-            else "finance.payrollrun.view"
+        return "finance.salary.create" if self.request.method == "POST" \
+            else "finance.salary.view"
 
     def get(self, request):
         entity = resolve_entity(request)
@@ -286,8 +286,11 @@ class EmployeeSalaryDetailView(_FinanceBase):
 
     @property
     def rbac_permission(self):
-        return "finance.payrollrun.view" if self.request.method == "GET" \
-            else "finance.payrollrun.create"
+        if self.request.method == "DELETE":
+            return "finance.salary.delete"
+        if self.request.method == "PATCH":
+            return "finance.salary.update"
+        return "finance.salary.view"
 
     def patch(self, request, pk):
         entity = resolve_entity(request)
@@ -408,8 +411,8 @@ class SalaryStructureListCreateView(_FinanceBase):
 
     @property
     def rbac_permission(self):
-        return "finance.payrollrun.create" if self.request.method == "POST" \
-            else "finance.payrollrun.view"
+        return "finance.salary.create" if self.request.method == "POST" \
+            else "finance.salary.view"
 
     def get(self, request):
         entity = resolve_entity(request)
@@ -451,8 +454,8 @@ class SalaryStructureDetailView(_FinanceBase):
 
     @property
     def rbac_permission(self):
-        return "finance.payrollrun.view" if self.request.method == "GET" \
-            else "finance.payrollrun.create"
+        return "finance.salary.view" if self.request.method == "GET" \
+            else "finance.salary.update"
 
     def _structure(self, request, pk):
         entity = resolve_entity(request)

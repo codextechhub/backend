@@ -62,7 +62,7 @@ All require `?entity=<id|code>`. Gate: `IsAuthenticatedAndActive & HasRBACPermis
 | Method + path | permission key | what it does | request body | response |
 |---|---|---|---|---|
 | `GET /customers/` | `finance.customer.view` | List + computed `balance`/`account_status` (**paginated**). Query: `search`, `is_active` | — | paginated `CustomerSerializer` + balance |
-| `POST /customers/` | `finance.customer.create` | Create. AR control **defaults to `1200`**; if `opening_balance>0`, posts an **opening invoice** (§6) | `code`, `name`, `receivable_account?`, billing\_*?, `opening_balance?`, `source_type?/source_id?` | `201` `CustomerSerializer` |
+| `POST /customers/` | `finance.customer.create` | Create. AR control **defaults to `1200`**; if `opening_balance>0`, posts an **opening invoice** (§6), backdatable via `opening_date` | `code`, `name`, `receivable_account?`, billing\_*?, `opening_balance?`, `opening_date?`, `source_type?/source_id?` | `201` `CustomerSerializer` |
 | `GET /customers/<pk>/` | `finance.customer.view` | Customer detail + ledger | — | detail |
 | `POST /customers/<pk>/receipt/` | `finance.payment.create` | Record a receipt, auto-allocate | `amount`, `payment_date`, `deposit_account`, `method?`, `auto_allocate?`, `allocation_strategy?` (`oldest`\|`largest`) | `201` `{allocated, unallocated}` |
 | `GET /invoices/` | `finance.invoice.view` | List. Query: `status`, `payment_status`, `bucket` (draft/issued/partial/paid/overdue), `search`, `customer` | — | paginated `InvoiceSerializer` |
@@ -181,8 +181,9 @@ the receipt shows `allocation_status:"PARTIAL"` (`unallocated_amount` 12500).
   covers today (or `4100` is missing), the opening invoice fails and the whole
   customer create rolls back with a clear error. Intended (loud > silent), but
   worth knowing.
-- **The opening invoice is dated `today`** (`receivables.py:188`) — opening AR
-  lands in the current period, not a historical one.
+- ✅ **The opening invoice is backdatable** — pass an optional `opening_date` on
+  customer create to seat migrated balances in their historical period (defaults to
+  today; a closed/missing period still rolls the whole create back, loudly).
 - **Invoice create defaults `post=True`** — omitting `post` posts immediately;
   pass `post:false` for a draft.
 - **`pay/` requires a POSTED invoice** (`views_ar.py`); paying a draft → 400.

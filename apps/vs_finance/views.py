@@ -136,6 +136,15 @@ class EntityListCreateView(generics.ListCreateAPIView):
 
     def get_queryset(self):
         qs = LedgerEntity.objects.all().order_by("code")
+        # Tenancy (defence-in-depth, matching resolve_entity): CX staff see every set
+        # of books; a school-scoped user sees only entities sourced from their school,
+        # and a user with no school sees none.
+        user = getattr(self.request, "user", None)
+        if getattr(user, "user_type", None) != "CX_STAFF":
+            school = getattr(self.request, "school", None) or getattr(user, "school", None)
+            if school is None:
+                return qs.none()
+            qs = qs.filter(source_school=school)
         if (kind := self.request.query_params.get("kind")):
             qs = qs.filter(kind=kind)
         if (active := self.request.query_params.get("is_active")) is not None:
@@ -193,8 +202,13 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
         if atype not in AccountType.values:
             raise ValidationError({"account_type": "Choose a valid account type."})
         parent = None
-        if body.get("parent"):
-            parent = Account.objects.filter(entity=entity, pk=body.get("parent")).first()
+        if (parent_ref := body.get("parent")) not in (None, ""):
+            # Resolve by code first, then numeric pk (mirrors _resolve_cost_center),
+            # scoped to the entity.
+            pqs = Account.objects.filter(entity=entity)
+            parent = pqs.filter(code=str(parent_ref)).first()
+            if parent is None and str(parent_ref).isdigit():
+                parent = pqs.filter(pk=int(parent_ref)).first()
             if parent is None:
                 raise ValidationError({"parent": "No such parent account in this entity."})
         # normal_balance is derived from type/contra by Account.save() when left blank.

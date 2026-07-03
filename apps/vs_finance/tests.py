@@ -1960,6 +1960,35 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
             date=date,
         ))
 
+    def test_prepare_defaults_due_date_from_filing_day(self):
+        # filing_day defaults to 21 → day 21 of the month after period_end.
+        entity, _, _ = self.build_books()
+        ob = self._vat_obligation(entity)
+        filing = prepare_filing(
+            ob, period_start=datetime.date(2026, 6, 1),
+            period_end=datetime.date(2026, 6, 30))
+        self.assertEqual(filing.due_date, datetime.date(2026, 7, 21))
+
+    def test_prepare_clamps_due_day_to_short_following_month(self):
+        # period_end March 31 → April (30 days); filing_day 31 clamps to Apr 30.
+        entity, _, _ = self.build_books()
+        ob = self._vat_obligation(entity)
+        ob.filing_day = 31
+        ob.save(update_fields=["filing_day"])
+        filing = prepare_filing(
+            ob, period_start=datetime.date(2026, 3, 1),
+            period_end=datetime.date(2026, 3, 31))
+        self.assertEqual(filing.due_date, datetime.date(2026, 4, 30))
+
+    def test_prepare_respects_explicit_due_date(self):
+        entity, _, _ = self.build_books()
+        ob = self._vat_obligation(entity)
+        filing = prepare_filing(
+            ob, period_start=datetime.date(2026, 6, 1),
+            period_end=datetime.date(2026, 6, 30),
+            due_date=datetime.date(2026, 7, 5))
+        self.assertEqual(filing.due_date, datetime.date(2026, 7, 5))
+
     def test_prepare_vat_nets_input_against_output(self):
         entity, _, periods = self.build_books()
         ob = self._vat_obligation(entity)
@@ -2334,6 +2363,30 @@ class BudgetTests(_Phase4FixtureMixin, TestCase):
         with self.assertRaises(BudgetError):
             add_budget_line(budget, account=salaries, period_no=13, amount=10000)
 
+    def test_delete_draft_budget_removes_lines_and_writes_audit(self):
+        from vs_finance.budgets import delete_budget
+        from vs_finance.models import BudgetLine
+
+        entity, year, _ = self.build_books()
+        budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Plan")
+        salaries = Account.objects.get(entity=entity, code="5200")
+        add_budget_line(budget, account=salaries, period_no=1, amount=60000)
+        bid = budget.id
+        delete_budget(budget)
+        self.assertFalse(Budget.objects.filter(id=bid).exists())
+        self.assertFalse(BudgetLine.objects.filter(budget_id=bid).exists())  # lines cascade
+        self.assertTrue(FinanceAuditLog.objects.filter(
+            action=FinanceAuditAction.BUDGET_DELETED, target_id=str(bid)).exists())
+
+    def test_delete_approved_budget_refuses(self):
+        from vs_finance.budgets import delete_budget
+
+        entity, year, _ = self.build_books()
+        budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Plan")
+        approve_budget(budget)
+        with self.assertRaises(BudgetError):
+            delete_budget(budget)
+
     def test_budget_vs_actual_variance(self):
         entity, year, periods = self.build_books()
         budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Plan")
@@ -2536,9 +2589,10 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
         post_depreciation(asset, up_to_date=datetime.date(2026, 3, 31))  # 2 charges = 200,000
         asset.refresh_from_db()
         nbv = asset.net_book_value  # 900,000
-        # Sell for 950,000 → 50,000 gain; gain to 4100 income.
+        # Sell for 950,000 → 50,000 gain; gain to 4100 income. Dispose on Mar 31 so no
+        # depreciation charge is yet due-but-unposted (the Apr 1 charge is future-dated).
         entry = dispose_asset(
-            asset, disposal_date=datetime.date(2026, 4, 1), proceeds=950000,
+            asset, disposal_date=datetime.date(2026, 3, 31), proceeds=950000,
             bank_account=bank, gain_loss_account=Account.objects.get(entity=entity, code="4100"))
         asset.refresh_from_db()
         self.assertEqual(asset.asset_status, AssetStatus.DISPOSED)
@@ -2562,6 +2616,45 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
         post_depreciation(asset, up_to_date=datetime.date(2026, 2, 28))
         with self.assertRaises(DepreciationError):
             build_depreciation_schedule(asset)
+
+    def test_dispose_blocked_when_due_depreciation_unposted(self):
+        # A charge due Feb 1 2026 is still unposted; disposing Mar 1 must refuse.
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        asset = self._make_asset(entity, cost=1100000, salvage=0, life=11)
+        acquire_asset(asset, bank_account=bank)
+        with self.assertRaises(DepreciationError) as ctx:
+            dispose_asset(asset, disposal_date=datetime.date(2026, 3, 1),
+                          proceeds=0, bank_account=bank)
+        self.assertIn("unposted", str(ctx.exception).lower())
+        asset.refresh_from_db()
+        self.assertEqual(asset.asset_status, AssetStatus.ACTIVE)  # nothing disposed
+
+    def test_dispose_succeeds_after_posting_due_depreciation(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        asset = self._make_asset(entity, cost=1100000, salvage=0, life=11)
+        acquire_asset(asset, bank_account=bank)
+        # Post the two charges due up to the disposal date (Feb 1 + Mar 1), then dispose.
+        post_depreciation(asset, up_to_date=datetime.date(2026, 3, 1))
+        loss = Account.objects.get(entity=entity, code="5300")
+        dispose_asset(asset, disposal_date=datetime.date(2026, 3, 1), proceeds=0,
+                      bank_account=bank, gain_loss_account=loss)
+        asset.refresh_from_db()
+        self.assertEqual(asset.asset_status, AssetStatus.DISPOSED)
+
+    def test_dispose_ignores_future_dated_unposted_charges(self):
+        # Disposing on the acquisition date: every charge (Feb+) is future-dated and may
+        # be orphaned (life cut short), so the disposal is allowed.
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        asset = self._make_asset(entity, cost=1100000, salvage=0, life=11)
+        acquire_asset(asset, bank_account=bank)
+        loss = Account.objects.get(entity=entity, code="5300")
+        dispose_asset(asset, disposal_date=datetime.date(2026, 1, 1), proceeds=0,
+                      bank_account=bank, gain_loss_account=loss)
+        asset.refresh_from_db()
+        self.assertEqual(asset.asset_status, AssetStatus.DISPOSED)
 
 
 class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
@@ -3172,6 +3265,23 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(reg[0]["balance"], 4880000)  # 5,000,000 − 120,000
         self.assertEqual(reg[-1]["in"], 5000000)
         self.assertEqual(reg[-1]["category"], "Top-up")
+
+    def test_customer_opening_balance_backdated_to_opening_date(self):
+        # A historical opening_date inside an open period backdates the opening invoice
+        # and its journal (F4).
+        from vs_finance.constants import InvoiceSource
+        from vs_finance.models import Customer, Invoice
+
+        entity, _, _ = self.build_books()
+        resp = self.client.post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"code": "OPENC", "name": "Backdated Co", "opening_balance": 5000000,
+             "opening_date": "2026-03-15"}, format="json")
+        self.assertEqual(resp.status_code, 201, resp.content)
+        cust = Customer.objects.get(entity=entity, code="OPENC")
+        inv = Invoice.objects.get(entity=entity, customer=cust, source=InvoiceSource.OPENING)
+        self.assertEqual(inv.invoice_date, datetime.date(2026, 3, 15))
+        self.assertEqual(inv.journal.date, datetime.date(2026, 3, 15))
 
     def test_employee_salary_roster_generates_a_run(self):
         entity, _, _ = self.build_books()
@@ -4280,6 +4390,59 @@ class EntityCreatePermissionTests(TestCase):
         # The audit trail (and its facets) are gated on finance.audit.view.
         self.assertEqual(self.client.get("/v1/finance/audit-logs/?entity=TBOOK").status_code, 403)
         self.assertEqual(self.client.get("/v1/finance/audit-logs/facets/?entity=TBOOK").status_code, 403)
+
+
+class _StubUser:
+    """A minimal user carrying just the attributes get_queryset reads."""
+    def __init__(self, user_type, school=None):
+        self.user_type = user_type
+        self.school = school
+
+
+class _StubRequest:
+    """A minimal request exposing user + query_params (and optionally .school)."""
+    def __init__(self, user, params=None):
+        self.user = user
+        self.query_params = params or {}
+
+
+class EntityListScopingTests(TestCase):
+    """EntityListCreateView.get_queryset is tenancy-scoped for non-platform staff (F1)."""
+
+    def setUp(self):
+        self.school = School.objects.create(name="Greenfield", slug="greenfield-f1", code="GRNF1")
+        self.other = School.objects.create(name="Bluewater", slug="bluewater-f1", code="BLUF1")
+        self.mine = LedgerEntity.objects.create(
+            name="Greenfield Books", code="GREENF1",
+            kind=LedgerEntity.Kind.TENANT, source_school=self.school,
+        )
+        self.theirs = LedgerEntity.objects.create(
+            name="Bluewater Books", code="BLUEF1",
+            kind=LedgerEntity.Kind.TENANT, source_school=self.other,
+        )
+
+    def _codes(self, user, params=None):
+        from vs_finance.views import EntityListCreateView
+
+        view = EntityListCreateView()
+        view.request = _StubRequest(user=user, params=params)
+        return set(view.get_queryset().values_list("code", flat=True))
+
+    def test_cx_staff_sees_every_entity(self):
+        codes = self._codes(_StubUser("CX_STAFF"))
+        self.assertTrue({"GREENF1", "BLUEF1"} <= codes)
+
+    def test_school_user_sees_only_own(self):
+        codes = self._codes(_StubUser("SCHOOL_STAFF", school=self.school))
+        self.assertEqual(codes, {"GREENF1"})
+
+    def test_user_without_school_sees_none(self):
+        self.assertEqual(self._codes(_StubUser("SCHOOL_STAFF")), set())
+
+    def test_scoping_composes_with_kind_filter(self):
+        codes = self._codes(_StubUser("SCHOOL_STAFF", school=self.school),
+                            params={"kind": LedgerEntity.Kind.TENANT})
+        self.assertEqual(codes, {"GREENF1"})
 
 
 class FinanceDashboardTests(_ARFixtureMixin, TestCase):

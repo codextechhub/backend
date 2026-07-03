@@ -119,10 +119,10 @@ Cr gain 50,000, Cr 1500 1,200,000`.
   backlog raises — by design; re-open, then re-run.
 - ✅ **Depreciation is ACTIVE-only** (was: DRAFT allowed) — an un-capitalised asset
   can no longer accrue depreciation.
-- **Disposal doesn't warn about unposted due charges** — NBV at disposal uses only
-  what's been *booked*; pending schedule rows are silently orphaned (they drop out of
-  `_due_depreciation` once DISPOSED). Accounting-acceptable, but a "you have unposted
-  depreciation" warning would help.
+- ✅ **Disposal is blocked while due depreciation is unposted** — charges due on or
+  before the disposal date must be posted first (clear error names the count), so the
+  gain/loss is always computed on an up-to-date book value. Charges dated *after* the
+  disposal are still orphaned by design (the life is cut short).
 - **No un-dispose / no schedule edit** after posting starts — corrections via journal
   reversal only.
 

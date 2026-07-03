@@ -25,6 +25,8 @@ All amounts are integer kobo; every mutating call records a durable rejection au
 """
 from __future__ import annotations
 
+import datetime
+
 from django.db import transaction
 from django.db.models import Sum
 
@@ -42,6 +44,23 @@ from .posting import post_journal, resolve_period
 # --------------------------------------------------------------------------- #
 # GL movement helper                                                           #
 # --------------------------------------------------------------------------- #
+
+def _default_due_date(period_end, filing_day):
+    """Day ``filing_day`` of the month *after* ``period_end``, clamped to that month's length.
+
+    Matches the obligation's ``filing_day`` help_text ("Day of the month after period end
+    the return is due"). A small local month-arithmetic helper (deliberately not imported
+    from :mod:`assets`, to keep the tax service self-contained).
+    """
+    year = period_end.year + (1 if period_end.month == 12 else 0)
+    month = 1 if period_end.month == 12 else period_end.month + 1
+    if month == 12:
+        next_month_first = datetime.date(year + 1, 1, 1)
+    else:
+        next_month_first = datetime.date(year, month + 1, 1)
+    last_day = (next_month_first - datetime.timedelta(days=1)).day
+    return datetime.date(year, month, min(int(filing_day), last_day))
+
 
 def _account_movement(entity, account, *, period_start=None, period_end=None):
     """Return ``(debit_sum, credit_sum)`` of POSTED journal lines for ``account``.
@@ -146,7 +165,13 @@ def _prepare_filing_atomic(obligation, *, period_start, period_end, due_date,
             entity=entity, obligation=obligation,
             period_start=period_start, period_end=period_end,
         )
-    filing.due_date = due_date
+    # A caller-supplied due_date always wins; when None, default it deterministically to
+    # the obligation's filing_day of the month after period_end (overwriting a stale one
+    # on refresh, so the default stays consistent with the obligation).
+    filing.due_date = (
+        due_date if due_date is not None
+        else _default_due_date(period_end, obligation.filing_day)
+    )
     filing.currency = currency or filing.currency
     filing.gross_liability = gross
     filing.recoverable_amount = recoverable

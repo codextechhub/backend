@@ -1042,6 +1042,9 @@ class EmployeeSalarySerializer(FieldSecurityMixin, serializers.ModelSerializer):
 
     # FLS: the pay figures are sensitive — names stay visible (the roster), but the
     # amounts are stripped unless the caller holds the sensitive grant.
+    # Note: field-level "see individual pay figures" stays keyed on the single
+    # finance.payrollrun.view_sensitive grant (NOT finance.salary.*, which gates the
+    # roster/structure endpoints themselves), so one key governs pay-figure visibility.
     read_permissions = {
         "gross_amount": "finance.payrollrun.view_sensitive",
         "paye_amount": "finance.payrollrun.view_sensitive",

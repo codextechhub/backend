@@ -129,6 +129,28 @@ def delete_budget_line(budget, line_id):
 
 
 @transaction.atomic
+def delete_budget(budget, *, actor_user=None):
+    """Delete a DRAFT budget (its lines cascade). Refuses an approved/locked budget.
+
+    The audit row is written **before** the delete — capturing the document fields the
+    record needs while the row still exists — then the budget is removed.
+    """
+    _ensure_editable(budget)
+    entity = budget.entity
+    name = budget.name
+    fiscal_year = budget.fiscal_year.year
+    budget_id = budget.id
+    record(
+        entity=entity, action=FinanceAuditAction.BUDGET_DELETED,
+        actor_user=actor_user, target=budget,
+        message=f"Deleted budget '{name}' for FY{fiscal_year}.",
+        budget_id=budget_id,
+    )
+    budget.delete()
+    return budget
+
+
+@transaction.atomic
 def approve_budget(budget, *, actor_user=None):
     """Approve a draft budget, locking its lines against further edits."""
     if budget.status != BudgetStatus.DRAFT:

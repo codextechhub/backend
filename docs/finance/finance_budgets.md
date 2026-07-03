@@ -41,7 +41,7 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 |---|---|---|---|---|
 | `GET /budgets/` | `finance.budget.view` | List (paginated, page-scoped enrichment) | — | budgets |
 | `POST /budgets/` | `finance.budget.create` | Create a DRAFT (optionally with lines) | `name`, `fiscal_year`, `lines?` | `201` budget |
-| `GET/PATCH /budgets/<pk>/` | `finance.budget.view` / `.edit` | Detail / rename (draft-only); `lines` replaces wholesale | `name?`, `lines?` | budget |
+| `GET/PATCH/DELETE /budgets/<pk>/` | `finance.budget.view` / `.edit` / `.delete` | Detail / rename (draft-only; `lines` replaces wholesale) / delete a **draft** | `name?`, `lines?` | budget |
 | `POST /budgets/<pk>/lines/` | `finance.budget.edit` | Add/update one cell (upsert on the cell key) | `account`, `period_no`, `amount`, `cost_center?` | line |
 | `PATCH/DELETE /budgets/<pk>/lines/<line_id>/` | `finance.budget.edit` | Edit / remove a cell (draft-only) | — | — |
 | `POST /budgets/<pk>/approve/` | `finance.budget.approve` | DRAFT → APPROVED (locks) | — | budget |
@@ -99,7 +99,9 @@ locked. Post ₦45,000 of salaries in period 1 → `variance/?period_no=1` shows
   centre). Now that GL lines carry cost centres, a line-level actuals query (as in
   `analytics_slice`) could close this.
 - **`PATCH lines` replaces wholesale** (delete + recreate) — send the full set.
-- **No budget delete** endpoint (lines yes, budget no).
+- ✅ **Draft budgets can be deleted** (`DELETE /budgets/<pk>/`, key
+  `finance.budget.delete`, audited as `BUDGET_DELETED`); an approved budget still
+  refuses — the lock survives.
 
 ## 9. Permissions & tenant isolation
 
