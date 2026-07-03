@@ -147,7 +147,7 @@ from vs_finance.tax_filing import (
     prepare_filing,
 )
 from vs_finance.constants import TaxFilingStatus, TaxObligationType
-from vs_finance.payroll import pay_payroll, post_payroll
+from vs_finance.payroll import cancel_payroll_run, pay_payroll, post_payroll
 from vs_finance.budgets import add_budget_line, approve_budget
 from vs_finance.assets import (
     acquire_asset, build_depreciation_schedule, dispose_asset, post_depreciation,
@@ -2180,6 +2180,36 @@ class PayrollTests(_Phase4FixtureMixin, TestCase):
         run = self._make_run(entity, lines=[("Ada", 300000, 30000, 15000)])
         with self.assertRaises(PayrollError):
             pay_payroll(run, bank_account=bank)
+
+    def test_cancel_draft_run_marks_cancelled(self):
+        entity, _, _ = self.build_books()
+        run = self._make_run(entity, lines=[("Ada", 300000, 30000, 15000)])
+        cancel_payroll_run(run)
+        run.refresh_from_db()
+        self.assertEqual(run.run_status, PayrollRunStatus.CANCELLED)
+        self.assertIsNone(run.journal_id)  # nothing was posted
+
+    def test_void_posted_run_reverses_accrual(self):
+        entity, _, _ = self.build_books()
+        run = self._make_run(entity, lines=[("Ada", 300000, 30000, 15000)])
+        post_payroll(run)
+        run.refresh_from_db()
+        journal = run.journal
+        cancel_payroll_run(run)
+        run.refresh_from_db(); journal.refresh_from_db()
+        self.assertEqual(run.run_status, PayrollRunStatus.CANCELLED)
+        self.assertEqual(journal.status, DocumentStatus.REVERSED)  # accrual backed out
+        self.assertTrue(
+            FinanceAuditLog.objects.filter(action="PAYROLL_CANCELLED").exists())
+
+    def test_void_refused_once_paid(self):
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        run = self._make_run(entity, lines=[("Ada", 300000, 30000, 15000)])
+        post_payroll(run)
+        pay_payroll(run, bank_account=bank)
+        with self.assertRaises(PayrollError):
+            cancel_payroll_run(run)  # net wages already left the bank
 
 
 class BudgetTests(_Phase4FixtureMixin, TestCase):

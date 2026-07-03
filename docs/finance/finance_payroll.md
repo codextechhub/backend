@@ -27,8 +27,9 @@ Routes (mounted at `/v1/finance/`): `payroll-runs/…`, `payroll-runs/{summary,g
 - **Show individual salaries to everyone.** Per-employee names and pay figures are
   **FLS-masked** — only holders of `finance.payrollrun.view_sensitive` see them; plain
   `view` sees the run and its **totals** but not who earns what (§9).
-- **Cancel/void a run.** `PayrollRunStatus.CANCELLED` exists but **no endpoint sets
-  it**; a mistake is undone by reversing the accrual (and disbursement) journal (§8).
+- **One-click undo a *paid* run.** `cancel/` voids a DRAFT or POSTED (un-paid) run
+  (§4), but a **PAID** run is refused — the net wages already left, so the disbursement
+  must be reversed (a real clawback) first.
 
 ## 2. Domain model
 
@@ -40,9 +41,9 @@ Routes (mounted at `/v1/finance/`): `payroll-runs/…`, `payroll-runs/{summary,g
 | `SalaryComponent` | `:823` | `kind` (EARNING/DEDUCTION), `calc_method`, `rate_bps`, `amount`, `is_basic`, `statutory_type` (NONE/PAYE/PENSION), `sequence` |
 | `EmployeeSalary` | `:865` | `name`, `employee?`, `structure?`, `gross_amount`, flat `paye/pension_amount`, `cost_center`, `is_active` |
 
-- Money is kobo. **`run_status`** (`PayrollRunStatus`): `DRAFT → POSTED → PAID`
-  (`CANCELLED` unused). The run also carries a `DocumentStatus` (set to POSTED on
-  accrual).
+- Money is kobo. **`run_status`** (`PayrollRunStatus`): `DRAFT → POSTED → PAID`, plus
+  `CANCELLED` (from `cancel/`). The run also carries a `DocumentStatus` (set to POSTED
+  on accrual, CANCELLED on cancel).
 - Default posting accounts: salary `5200`, PAYE `2310`, pension `2320`, net wages
   `2330` (overridable per run).
 
@@ -59,6 +60,7 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 | `GET /payroll-runs/<pk>/` | `finance.payrollrun.view` | Run + lines | — | detail |
 | `POST /payroll-runs/<pk>/post/` | `finance.payrollrun.post` | **Accrue** (DRAFT → POSTED) | — | run |
 | `POST /payroll-runs/<pk>/pay/` | `finance.payrollrun.pay` | **Disburse** net wages (POSTED → PAID) | `bank_account?`, `pay_date?` | run |
+| `POST /payroll-runs/<pk>/cancel/` | `finance.payrollrun.post` | Cancel a DRAFT, or **void** a POSTED (un-paid) run — reverses the accrual → CANCELLED. Refused once PAID | — | run |
 | `GET/POST /employee-salaries/` | `finance.payrollrun.view` / `.create` | Roster list / add | `name`, `gross_amount`, `structure?`, flat `paye/pension?`, `cost_center?` | salary |
 | `PATCH/DELETE /employee-salaries/<pk>/` | `finance.payrollrun.create` | Edit / remove a roster row | — | salary |
 | `GET/POST /salary-structures/` | `finance.payrollrun.view` / `.create` | Structure list / create | `name`, `components:[…]` | structure |
@@ -74,14 +76,19 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 Roster (EmployeeSalary) ──generate──▶ DRAFT run
                           (or POST /payroll-runs/ by hand)
 DRAFT ──post (accrue)──▶ POSTED ──pay (disburse)──▶ PAID
-                            │                          │
-                        journal                 disbursement_journal
+  │                         │  │                        │
+cancel                    journal │              disbursement_journal
+  ▼                          cancel (reverse accrual)
+CANCELLED  ◀─────────────────┘   (PAID can't be cancelled — reverse the disbursement first)
 ```
 - **post** requires a DRAFT with ≥1 line, positive gross, and **no negative net** on
   any line; it stamps `run_status=POSTED` and `status=POSTED`, and freezes the four
   posting accounts on the run.
 - **pay** requires POSTED and a bank account; it clears net wages and sets `PAID`.
-- No cancel — a wrong run is reversed via its journals (§8).
+- **cancel** (`cancel_payroll_run`): a DRAFT is just marked CANCELLED; a POSTED run is
+  **voided** by reversing its accrual journal → CANCELLED; a PAID run is **refused**
+  (the cash left the bank — reverse the disbursement first). Idempotent when already
+  cancelled.
 
 ## 5. Calculations
 
@@ -137,9 +144,10 @@ gross total, but each employee line's name/amounts are stripped.
 
 ## 8. Gotchas / known limitations
 
-- **No cancel/void for a run** — `CANCELLED` is defined but unreachable; a posted (or
-  paid) run booked in error is undone by reversing its accrual journal (and the
-  disbursement journal too, if paid). No one-click undo.
+- ✅ **Cancel/void a run** (`cancel/`) — a DRAFT is cancelled; a POSTED run is voided
+  by reversing its accrual. **PAID runs are refused** (reverse the disbursement first);
+  there's no `unpay`/clawback action, so a paid run in error still needs manual journal
+  reversal.
 - **Totals are visible with plain `view`; only individual salaries are FLS-masked.**
   `payrollrun.view` exposes `gross_total`/`net_total` etc. on the run — deliberate
   (aggregate cost for finance) — but treat run-level totals as *not* secret.
@@ -168,7 +176,7 @@ gross total, but each employee line's name/amounts are stripped.
 | File | Responsibility |
 |---|---|
 | `models/ops.py` | `PayrollRun`, `PayrollLine`, `SalaryStructure`, `SalaryComponent`, `EmployeeSalary` |
-| `payroll.py` | `apply_structure`, `compute_payroll`, `generate_run_from_roster`, `_accounts_for`, `post_payroll`, `pay_payroll` |
+| `payroll.py` | `apply_structure`, `compute_payroll`, `generate_run_from_roster`, `_accounts_for`, `post_payroll`, `pay_payroll`, `cancel_payroll_run` |
 | `views_ops/payroll.py` | run list/create/generate/summary/post/pay, employee-salary + salary-structure CRUD |
 | `serializers.py` | `PayrollRun/LineSerializer` (FLS), `EmployeeSalarySerializer` (FLS), `SalaryStructure/ComponentSerializer` |
 | `constants.py` | `PayrollRunStatus`, `SalaryComponentKind`, `SalaryCalcMethod`, `StatutoryType`; `SALARIES_EXPENSE_CODE`/`PAYE_PAYABLE_CODE`/`PENSION_PAYABLE_CODE`/`NET_WAGES_PAYABLE_CODE` |
@@ -186,5 +194,5 @@ Worth asserting if not already:
   flat PAYE/pension; `net = gross − paye − pension`.
 - `generate_run_from_roster` uses only active rows and errors on an empty roster.
 - Post guards (draft, ≥1 line, positive gross, no negative net); empty-list shape.
-- (Known gap) no cancel/void action — a posted run's correction path is journal
-  reversal.
+- **Cancel/void** (added): a DRAFT is cancelled with no GL; a POSTED run's accrual is
+  reversed → CANCELLED; a PAID run is refused.

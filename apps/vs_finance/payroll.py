@@ -320,3 +320,46 @@ def _pay_payroll_atomic(run, *, bank_account=None, pay_date=None, actor_user=Non
         journal_id=entry.pk, net=run.net_total,
     )
     return run
+
+
+@transaction.atomic
+def cancel_payroll_run(run, *, actor_user=None):
+    """Cancel / void a payroll run raised in error, by its state:
+
+    * **DRAFT** — nothing posted, just mark it CANCELLED.
+    * **POSTED** (accrued, not yet paid) — reverse the accrual journal (an audit-correct
+      mirror that backs out the salary expense and the PAYE/pension/net liabilities) and
+      mark it CANCELLED.
+    * **PAID** — refused: the net wages have already left the bank, so the disbursement
+      must be reversed first (a real cash clawback), before the run can be voided.
+
+    Idempotent on an already-cancelled run.
+    """
+    from .posting import reverse_journal
+
+    if run.run_status == PayrollRunStatus.CANCELLED:
+        return run
+    if run.run_status == PayrollRunStatus.PAID:
+        raise PayrollError(
+            "This run has been paid — the net wages already left the bank. Reverse the "
+            "disbursement before voiding the run.",
+        )
+
+    if run.run_status == PayrollRunStatus.POSTED and run.journal_id is not None:
+        reverse_journal(run.journal, actor_user=actor_user)
+
+    was = run.run_status
+    run.run_status = PayrollRunStatus.CANCELLED
+    run.status = DocumentStatus.CANCELLED
+    run.save(update_fields=["run_status", "status", "updated_at"])
+
+    record(
+        entity=run.entity, action=FinanceAuditAction.PAYROLL_CANCELLED,
+        actor_user=actor_user, target=run,
+        message=(f"Voided payroll run {run.document_number or run.pk} "
+                 f"(reversed accrual journal {run.journal_id})."
+                 if was == PayrollRunStatus.POSTED
+                 else f"Cancelled draft payroll run {run.document_number or run.pk}."),
+        journal_id=run.journal_id, previous_status=was,
+    )
+    return run

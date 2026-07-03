@@ -188,6 +188,25 @@ class PayrollRunPayView(_PayrollActionBase):
         )
 
 
+class PayrollRunCancelView(_PayrollActionBase):
+    """POST — cancel a draft run, or void a posted (un-paid) run by reversing its accrual.
+
+    docstring-name: Cancel a payroll run
+    """
+    rbac_permission = "finance.payrollrun.post"  # the approver who accrues can void
+
+    def post(self, request, pk):
+        from ..payroll import cancel_payroll_run
+
+        _, run = self._run(request, pk)
+        cancel_payroll_run(run, actor_user=request.user)
+        run.refresh_from_db()
+        return success_response(
+            f"Payroll run {run.document_number} cancelled.",
+            data=PayrollRunSerializer(run).data,
+        )
+
+
 
 
 # --------------------------------------------------------------------------- #

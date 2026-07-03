@@ -442,6 +442,7 @@ class FinanceAuditAction(models.TextChoices):
     PAYROLL_POSTED = "PAYROLL_POSTED", "Payroll run posted"
     PAYROLL_POST_REJECTED = "PAYROLL_POST_REJECTED", "Payroll run posting rejected"
     PAYROLL_PAID = "PAYROLL_PAID", "Payroll run disbursed"
+    PAYROLL_CANCELLED = "PAYROLL_CANCELLED", "Payroll run cancelled / voided"
     BUDGET_APPROVED = "BUDGET_APPROVED", "Budget approved"
     ASSET_ACQUIRED = "ASSET_ACQUIRED", "Fixed asset acquired"
     DEPRECIATION_POSTED = "DEPRECIATION_POSTED", "Depreciation posted"
