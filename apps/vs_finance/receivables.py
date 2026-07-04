@@ -330,6 +330,36 @@ def _apply_payment_subledger(payment, plan, *, remaining):
 @transaction.atomic
 def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, allocations=None,
                          strategy="oldest"):
+    """Post a draft receipt: settle invoices, book the cash, and cut the GL journal.
+
+    Runs in one transaction so the subledger (PaymentAllocation rows + invoice
+    ``amount_paid``) and the general ledger (JournalEntry/JournalLine) can never
+    drift apart — either everything commits or nothing does.
+
+    Steps:
+      1. **Guard.** Only a DRAFT payment with a positive amount can post, and the
+         customer must have an AR control account and the payment a deposit
+         (bank/cash) account — otherwise there's nowhere to book the two sides.
+      2. **Plan.** ``_build_invoice_plan`` turns ``allocations`` (an explicit
+         ``[(invoice, amount)]`` list) or ``auto_allocate`` (open invoices in
+         ``strategy`` order — ``"oldest"`` by due date, ``"largest"`` by balance)
+         into what to settle. Empty plan if neither is supplied.
+      3. **Apply to subledger.** ``_apply_payment_subledger`` writes/extends the
+         PaymentAllocation rows and bumps each invoice's ``amount_paid`` (capped at
+         its balance and the cash left), returning ``applied`` — the total actually
+         settled. It touches no GL accounts; this function owns the journal.
+      4. **Split the cash.** ``excess = amount - applied`` is unapplied cash. We
+         *split at source*: settled cash clears AR, but any excess is booked as a
+         customer-credit liability so the AR control account never carries a credit
+         balance. (That stored credit is later drained by ``allocate_payment``.)
+      5. **Journal.** Balanced entry — Dr deposit account (cash in) for the full
+         amount; Cr AR for ``applied``; Cr customer-credit (2140) for ``excess``.
+         ``post_journal`` validates it balances and marks it posted.
+      6. **Finalise.** Link the journal, flip status to POSTED, store
+         ``allocated_amount``, and write a PAYMENT_POSTED audit record.
+
+    Returns the updated ``payment``. Raises ``PostingError`` on any guard failure.
+    """
     from .models import JournalEntry, JournalLine
 
     if payment.status != DocumentStatus.DRAFT:
