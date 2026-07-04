@@ -27,18 +27,21 @@ from vs_finance.models import (
     Payment,
     TaxCode,
 )
-from vs_finance.receivables import post_invoice
+from vs_finance.receivables import customer_credit_balance, post_invoice
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies
 from vs_procurement.models import Vendor, VendorPayment
 
+from rest_framework.exceptions import ValidationError
+
 from . import reconciliation, services, webhooks
-from .constants import CollectionStatus, PayoutBatchStatus, PayoutStatus
-from .exceptions import DuplicateWebhookError, WebhookSignatureError
+from .constants import CollectionStatus, PayoutBatchStatus, PayoutStatus, VirtualAccountStatus
+from .exceptions import DuplicateWebhookError, PaymentStateError, WebhookSignatureError
 from .models import (
     CollectionIntent,
     PaymentEvent,
     PayoutBatch,
     PayoutInstruction,
+    VirtualAccount,
 )
 from .providers import registry
 from .providers.fake import FakeProvider
@@ -164,6 +167,55 @@ class CollectionTests(_PaymentsFixtureMixin, TestCase):
         # A second confirm must not book a second receipt.
         services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
         self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)
+
+    def test_settled_amount_overrides_requested(self):
+        """A provider that settles less than requested books the settled amount and
+        keeps the requested amount for audit."""
+        entity, customer, _ = self.build()
+        intent = services.initiate_collection(entity=entity, amount=50000, customer=customer)
+        intent = services.confirm_collection(
+            intent, status=CollectionStatus.SUCCEEDED, amount=48000,
+        )
+        self.assertEqual(intent.amount, 48000)
+        payment = Payment.objects.get(pk=intent.payment_id)
+        self.assertEqual(payment.amount, 48000)
+        self.assertEqual(intent.metadata["requested_amount"], 50000)
+
+    def test_standalone_receipt_parks_credit_not_auto_settling(self):
+        """A collection with no invoice must NOT auto-settle the customer's open
+        invoices; the cash parks as customer credit instead."""
+        entity, customer, _ = self.build()
+        inv = self.make_posted_invoice(entity, customer, amount=30000)
+        intent = services.initiate_collection(entity=entity, amount=20000, customer=customer)
+        services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+        inv.refresh_from_db()
+        self.assertEqual(inv.amount_paid, 0)  # not auto-settled
+        self.assertGreater(customer_credit_balance(customer), 0)  # cash held as credit
+
+    def test_customerless_initiate_is_rejected(self):
+        entity, _, _ = self.build()
+        with self.assertRaises(ValidationError):
+            services.initiate_collection(entity=entity, amount=1000)
+        self.assertFalse(CollectionIntent.objects.filter(entity=entity).exists())
+
+    def test_one_active_virtual_account_per_customer_provider(self):
+        entity, customer, _ = self.build()
+        services.create_virtual_account(entity=entity, customer=customer, provider="FAKE")
+        with self.assertRaises(ValidationError):
+            services.create_virtual_account(entity=entity, customer=customer, provider="FAKE")
+        self.assertEqual(
+            VirtualAccount.objects.filter(entity=entity, customer=customer).count(), 1)
+
+    def test_inactive_virtual_account_deposit_is_held(self):
+        entity, customer, _ = self.build()
+        va = services.create_virtual_account(entity=entity, customer=customer, provider="FAKE")
+        services.set_virtual_account_status(va, status="INACTIVE")
+        intent = services.initiate_collection(entity=entity, amount=25000, customer=customer)
+        intent.virtual_account = va
+        intent.save(update_fields=["virtual_account"])
+        with self.assertRaises(PaymentStateError):
+            services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+        self.assertFalse(Payment.objects.filter(entity=entity).exists())
 
 
 class WebhookTests(_PaymentsFixtureMixin, TestCase):
@@ -650,6 +702,16 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
             f"/v1/payments/virtual-accounts/{va['id']}/?entity={entity.code}",
             {"status": "SUSPENDED"}, format="json")
         self.assertEqual(bad.status_code, 400, bad.content)
+
+    def test_virtual_account_list_uses_standard_envelope(self):
+        entity, customer, _ = self.build()
+        services.create_virtual_account(entity=entity, customer=customer, provider="FAKE")
+        resp = self.client.get(f"/v1/payments/virtual-accounts/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["pagination"]["pageSize"], 25)
+        self.assertIn("kpis", body)
+        self.assertEqual(len(body["data"]), 1)
 
     def test_collections_filter_by_virtual_account(self):
         entity, customer, _ = self.build()

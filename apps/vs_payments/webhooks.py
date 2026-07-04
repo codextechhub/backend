@@ -91,7 +91,7 @@ def _dispatch(event: WebhookEvent, parsed) -> None:
     if parsed.direction == PaymentDirection.COLLECTION:
         intent = _find_collection(parsed)
         if intent is not None:
-            services.confirm_collection(intent, status=parsed.status)
+            services.confirm_collection(intent, status=parsed.status, amount=parsed.amount)
             event.collection = intent
             event.status = WebhookStatus.PROCESSED
         else:

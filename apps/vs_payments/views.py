@@ -15,14 +15,11 @@ handler, so the views stay thin.
 """
 from __future__ import annotations
 
-import math
-
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import generics
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny
-from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.pagination import XVSPagination
@@ -239,25 +236,10 @@ class VirtualAccountListCreateView(APIView):
             qs = qs.filter(
                 Q(customer__name__icontains=search) | Q(customer__code__icontains=search)
                 | Q(account_number__icontains=search) | Q(bank_name__icontains=search))
-        qs = qs.order_by("-created_at")
-
-        page = max(int(request.query_params.get("page", 1) or 1), 1)
-        page_size = min(max(int(request.query_params.get("page_size", 20) or 20), 1), 100)
-        total = qs.count()
-        total_pages = math.ceil(total / page_size) if total else 1
-        start = (page - 1) * page_size
-        rows = VirtualAccountSerializer(
-            qs[start:start + page_size], many=True, context={"request": request}).data
-        return Response({
-            "success": True,
-            "message": "Virtual accounts retrieved.",
-            "pagination": {
-                "currentPage": page, "pageSize": page_size, "totalItems": total,
-                "totalPages": total_pages, "next": None, "previous": None,
-            },
-            "kpis": kpis,
-            "data": rows,
-        })
+        resp = _paginate(request, qs.order_by("-created_at"), VirtualAccountSerializer, self,
+                         context={"request": request})
+        resp.data["kpis"] = kpis
+        return resp
 
     def post(self, request):
         entity = resolve_entity(request)

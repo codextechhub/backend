@@ -102,10 +102,10 @@ Notes:
   `int(body.get("amount") or 0)` and must be `> 0` (`views.py:123-125`). `customer`
   / `invoice` / `deposit_account` resolve **within the entity** by pk **or code**
   via `_entity_obj` (`views.py:58-75`) — a ref from another tenant raises a 400.
-- **VA list does NOT use the shared `_paginate` envelope.** It hand-rolls
-  pagination (`page`/`page_size`, default 20, cap 100) and returns an extra
-  top-level `kpis` object (`views.py:222-260`) — a different response shape from
-  every other list in this app. Frontend-visible; flagged in §8.
+- **VA list now uses the shared `_paginate` envelope** (`views.py:239-242`),
+  routing through `XVSPagination` (page size **25**, real `next`/`previous`) and
+  injecting the extra top-level `kpis` object onto `resp.data` — consistent with
+  every other list in this app.
 - There is no `?entity` exception here — every collections/VA route is
   entity-scoped (unlike `vs_finance` currencies/fx-rates).
 
@@ -147,13 +147,16 @@ verbatim (`amount`, kobo) from request → intent → receipt. The two computed
 surfaces:
 
 **Booked receipt amount.** `_book_receipt` books `Payment.amount = intent.amount`
-(`services.py:231-237`) — the **intent** amount, *not* the amount the provider
-reports as settled. `confirm_collection` computes
-`amount = result.amount or intent.amount` (`services.py:191`) but that local is
-**never used** in the SUCCEEDED path. Symbolically: `booked = intent.amount`
-always. Example: intent for `5 000 000` kobo (₦50,000); provider webhook reports
-`amount: 4 900 000`; we still book **5 000 000**. See §8 — this matters for
-variable-amount virtual-account deposits.
+(`services.py:231-237`). As of the hardening pass, `confirm_collection` first
+adopts the **settled** amount: `settled = amount or intent.amount`; if
+`settled > 0 and settled != intent.amount` it stashes the original in
+`intent.metadata["requested_amount"]` and overwrites `intent.amount = settled`
+before booking (`services.py:214-220`). So `booked = settled` when the provider
+reports one, else the requested amount. Example: intent for `5 000 000` kobo
+(₦50,000); webhook reports `amount: 4 900 000` → we book **4 900 000** and keep
+`requested_amount: 5 000 000` on metadata. (A `0` report never overrides — the
+FakeProvider `verify` reports 0, so verify-driven confirms keep the requested
+amount.)
 
 **Collections summary success rate** (`views.py:170-171`):
 `rate = round(paid_count × 100 / (paid_count + failed_count))`, `None` when no
@@ -185,16 +188,19 @@ Carried vs dropped on the way to the ledger:
   `resolve_account(entity, CASH_BANK_CODE="1100")` (`services.py:228-230`,
   `vs_finance/constants.py:564`).
 - **Allocation:** if the intent has an `invoice`, `allocations = [(invoice, amount)]`
-  — a fixed split (`services.py:238`). **If it has no invoice, `allocations=None`,
-  so `post_payment` falls to its default `auto_allocate=True`** and settles the
-  customer's **open invoices oldest-first** (`receivables.py:352-354`,
-  `_build_invoice_plan`). Any cash beyond open invoices lands in `2140` customer
-  credit. → A "general" collection is **not** parked as credit; it silently pays
-  down whatever the customer already owes (§8).
-- **Requires a customer.** `_book_receipt` raises `PaymentStateError` if
-  `intent.customer_id is None` (`services.py:224-226`) because AR is a
-  per-customer sub-ledger. A customer-less collection can be initiated and paid but
-  can **never** be booked (§8).
+  — a fixed split against that invoice. **If it has no invoice, `_book_receipt`
+  now passes `auto_allocate=False`** (`services.py:259-264`), so a standalone
+  collection is parked in `2140` customer credit rather than silently settling the
+  customer's open invoices. (Standalone receipts are a confirmed use case.)
+- **Requires a customer at initiation.** `initiate_collection` now raises
+  `ValidationError` (→ 400) if no customer is given/derivable **before** creating
+  the intent or calling the provider (`services.py:77-78`), so a customer-less
+  collection can no longer be started. `_book_receipt` keeps its defensive
+  `customer_id is None` guard (`services.py:245-247`).
+- **Inactive-VA hold.** If the intent is linked to an INACTIVE virtual account,
+  `_book_receipt` raises `PaymentStateError` before booking (`services.py:241-244`),
+  so the deposit is held (webhook marked FAILED, retained for replay) instead of
+  auto-posting to a deactivated NUBAN.
 - The intent's `payment` FK is set, `status=SUCCEEDED`, `confirmed_at=now`
   (`services.py:206-209`), and a `COLLECTION_CONFIRMED` `PaymentEvent` is written
   in the same transaction (`services.py:210-215`).
@@ -229,58 +235,57 @@ Using the `FakeProvider` (test wiring, `tests.py:119-151`,
 
 ## 8. Gotchas / known limitations
 
-1. **Provider-reported settled amount is ignored when booking.**
-   `confirm_collection` computes `amount = result.amount or intent.amount`
-   (`services.py:191`) and the webhook passes `parsed.status` (amount dropped), but
-   `_book_receipt` always books `intent.amount` (`services.py:231-237`). For
-   fixed-price checkout this is fine; for a **variable-amount virtual-account
-   deposit** (payer chooses how much to send) we book the *intended* amount, not
-   what actually landed — a silent under/over-statement. **Recommend fix.**
+> Hardening pass (2026-07-04) closed items 1–4, 6, 7 below. 5 and 8 remain open,
+> as noted.
 
-2. **Collection with no invoice silently auto-allocates to the customer's oldest
-   open invoices.** `allocations=None` → `post_payment` default `auto_allocate=True`
-   (`services.py:238`, `receivables.py:352-354`). A caller who intends a
-   "standalone" receipt may unexpectedly settle unrelated invoices. **Judgment
-   call** — this may be the desired AR behaviour, but it is undocumented at the
-   gateway. Verdict: confirm intent; consider `auto_allocate=False` when no invoice
-   is supplied.
+1. ✅ **Provider-reported settled amount is now booked.** `confirm_collection`
+   adopts `settled = amount or intent.amount`; when the provider reports a positive
+   amount that differs from the request it stashes `requested_amount` on metadata
+   and books the settled figure (`services.py:214-220`); the webhook threads
+   `parsed.amount` through (`webhooks.py:94`). A `0` report never overrides. Test:
+   `test_settled_amount_overrides_requested`.
 
-3. **Customer-less collection is a landmine.** `initiate_collection` allows
-   `customer=None` (`services.py:55-86`) and returns a valid `checkout_url`, but
-   `_book_receipt` hard-raises without a customer (`services.py:224-226`). If the
-   payer pays, the confirming webhook throws → the `WebhookEvent` is marked FAILED
-   and the money is un-bookable until a customer is attached. **Recommend fix** —
-   either require a customer at initiate, or route customer-less cash to a
-   suspense/credit account.
+2. ✅ **Standalone (no-invoice) collections park as customer credit, not
+   auto-settlement.** `_book_receipt` passes `auto_allocate=False` when there is no
+   invoice (`services.py:259-264`), so the cash lands in `2140` instead of silently
+   paying down the customer's oldest open invoices. Test:
+   `test_standalone_receipt_parks_credit_not_auto_settling`.
 
-4. **`VirtualAccount` "one active per customer per provider" is claimed but not
-   enforced.** The docstring (`models.py:36-38`) promises it; the only DB constraint
-   is `(provider, account_number)` (`models.py:72-77`) and
-   `create_virtual_account` does no existence check (`services.py:123-147`). Calling
-   POST twice mints two active NUBANs for the same customer. **Recommend fix** —
-   add the constraint/guard, or drop the claim.
+3. ✅ **Customer-less collection is rejected at initiation.**
+   `initiate_collection` raises `ValidationError` (400) before creating the intent
+   or calling the provider when no customer is given/derivable (`services.py:77-78`).
+   Test: `test_customerless_initiate_is_rejected`.
 
-5. **`REFUNDED` is a dead state in this slice.** It is in the enum and the summary
-   `group_counts` (`constants.py:53`, `views.py:168`) but no endpoint/service
-   transitions into it. **By design for now** (refunds are a later capability) —
-   worth a note so the console does not advertise a refund action that no-ops.
+4. ✅ **"One active VA per customer per provider" is now enforced.** A partial
+   `UniqueConstraint` on `(entity, provider, customer)` where `status=ACTIVE and
+   customer not null` (`models.py:77-81`, migration `0003`) plus a friendly
+   pre-flight guard in `create_virtual_account` (`services.py:131-136`). Test:
+   `test_one_active_virtual_account_per_customer_provider`.
 
-6. **VA list has a bespoke response shape.** Unlike every other list (which uses
-   the `{pagination, data}` XVSPagination envelope), `GET /virtual-accounts/`
-   returns `{success, message, pagination, kpis, data}` with a hand-rolled
-   paginator (`views.py:251-260`). Consistent for the frontend that consumes it,
-   but a **frontend-visible** divergence to keep in mind.
+5. ⚠️ **`REFUNDED` is a dead state in this slice.** It is in the enum and the
+   summary `group_counts` (`constants.py:53`, `views.py:168`) but no
+   endpoint/service transitions into it. **Open — by design for now** (refunds are a
+   later capability); worth ensuring the console does not advertise a refund action
+   that no-ops.
 
-7. **Deactivating a VA does not stop it collecting.** `set_virtual_account_status`
-   flips local status only (`services.py:150-169`); nothing checks VA status when a
-   deposit webhook arrives and books a receipt. **By design** (documented in the
-   docstring) but a real operational gap — an "INACTIVE" NUBAN still self-books.
+6. ✅ **VA list now uses the standard envelope.** `GET /virtual-accounts/` routes
+   through `_paginate`/`XVSPagination` (page size 25, real next/previous) with
+   `kpis` injected onto `resp.data` (`views.py:239-242`) — consistent with every
+   other list. Frontend-visible change: default page size 20 → 25. Test:
+   `test_virtual_account_list_uses_standard_envelope`.
 
-8. **`search` on account_number is an FLS oracle.** `account_number` is FLS-masked
-   in the serializer (§9), but the list view lets any `payments.virtual_account.view`
-   holder filter by `search=<digits>` against `account_number`
-   (`views.py:238-241`), so presence can be probed without the sensitive grant.
-   Low severity; note for the settlement/FLS review.
+7. ✅ **A deposit on an INACTIVE VA is held, not auto-booked.** `_book_receipt`
+   raises `PaymentStateError` when the linked VA is INACTIVE (`services.py:241-244`);
+   the webhook path marks the event FAILED (retained/replayable) rather than posting
+   to a deactivated NUBAN. Note: `set_virtual_account_status` is still local-only
+   (no provider-side teardown — by design). Test:
+   `test_inactive_virtual_account_deposit_is_held`.
+
+8. ⚠️ **`search` on account_number is an FLS oracle.** `account_number` is
+   FLS-masked in the serializer (§9), but the list view lets any
+   `payments.virtual_account.view` holder filter by `search=<digits>` against
+   `account_number` (`views.py:235-238`), so presence can be probed without the
+   sensitive grant. **Open** — low severity; revisit in the settlement/FLS review.
 
 ## 9. Permissions & tenant isolation
 
@@ -336,28 +341,32 @@ server-side.
 
 ## 11. Test coverage & gaps
 
-Baseline: **32 green** (`python manage.py test vs_payments
+Baseline after hardening: **38 green** (`python manage.py test vs_payments
 --settings=apps.settings.local`). Collections/VA-relevant:
-- `CollectionTests` (`tests.py:119-166`): initiate → PROCESSING + checkout +
-  audit row; verify → books receipt & settles invoice; failed collection books
-  nothing; **confirm idempotency** (a second confirm books no second receipt).
-- `PaymentsAPITests`: `test_initiate_collection_endpoint` (`tests.py:470`),
-  `test_collection_detail_verify_confirms` (`tests.py:482`),
-  `test_virtual_account_provision_list_and_status` (`tests.py:610-652` — provision,
-  paginated list + KPIs, status filter, PATCH deactivate, bogus-status 400, and
-  `account_number` visible *because* super-admin holds `view_sensitive`),
-  `test_collections_filter_by_virtual_account` (`tests.py:654-668`).
+- `CollectionTests`: initiate → PROCESSING + checkout + audit row; verify → books
+  receipt & settles invoice; failed collection books nothing; **confirm
+  idempotency**; plus the five hardening tests — `test_settled_amount_overrides_
+  requested`, `test_standalone_receipt_parks_credit_not_auto_settling`,
+  `test_customerless_initiate_is_rejected`,
+  `test_one_active_virtual_account_per_customer_provider`,
+  `test_inactive_virtual_account_deposit_is_held`.
+- `PaymentsAPITests`: `test_initiate_collection_endpoint`,
+  `test_collection_detail_verify_confirms`,
+  `test_virtual_account_provision_list_and_status` (provision, paginated list +
+  KPIs, status filter, PATCH deactivate, bogus-status 400, `account_number` visible
+  *because* super-admin holds `view_sensitive`),
+  `test_collections_filter_by_virtual_account`,
+  `test_virtual_account_list_uses_standard_envelope`.
 
-Gaps to cover before shipping fixes:
+Gaps still open:
 - **403 / permission-denied** — no test asserts a caller *without*
   `collection.create` / `virtual_account.create` gets 403.
 - **Cross-tenant isolation** — no test that a `pk` or `?entity` from another
   tenant 404s on these routes.
-- **FLS masking** — no test that a caller *without* `view_sensitive` sees VA
-  `account_number` stripped (only the positive case is tested).
+- **FLS masking (negative case)** — no test that a caller *without*
+  `view_sensitive` sees VA `account_number` stripped; and the §8.8 `search` oracle
+  is unaddressed.
 - **Empty-list shape** — `success_response` coerces `[]`→`{}`; the collections
   empty list envelope is unasserted.
-- **Gotcha behaviours** — none of §8.1 (amount mismatch), §8.2 (no-invoice
-  auto-allocation), §8.3 (customer-less confirm failure) is pinned by a test.
 </content>
 </invoke>

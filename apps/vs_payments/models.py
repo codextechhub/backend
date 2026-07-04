@@ -74,6 +74,11 @@ class VirtualAccount(TimeStampedModel):
                 fields=["provider", "account_number"],
                 name="uniq_payments_va_provider_account",
             ),
+            models.UniqueConstraint(
+                fields=["entity", "provider", "customer"],
+                condition=models.Q(status="ACTIVE", customer__isnull=False),
+                name="uniq_payments_va_active_customer_provider",
+            ),
         ]
         indexes = [
             models.Index(fields=["entity", "provider"]),

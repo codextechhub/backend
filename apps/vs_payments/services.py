@@ -74,6 +74,8 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
     currency = currency or _entity_currency(entity)
     if invoice is not None and customer is None:
         customer = invoice.customer
+    if customer is None:
+        raise ValidationError({"customer": "A customer is required to book the collection receipt."})
 
     intent = CollectionIntent.objects.create(
         entity=entity, provider=provider_name, channel=channel, reference=reference,
@@ -126,6 +128,12 @@ def create_virtual_account(*, entity, customer, provider=None, deposit_account=N
     from django.conf import settings
 
     provider_name = provider or getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")
+    if VirtualAccount.objects.filter(
+        entity=entity, provider=provider_name, customer=customer,
+        status=VirtualAccountStatus.ACTIVE,
+    ).exists():
+        raise ValidationError(
+            {"customer": "This customer already has an active virtual account with this provider."})
     client = get_provider(provider_name)
     reference = _new_reference()
     result = client.create_virtual_account(
@@ -203,10 +211,19 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
         )
         return intent
 
+    settled = amount or intent.amount
+    if settled > 0 and settled != intent.amount:
+        # The provider settled a different amount than we requested; book what
+        # actually settled and keep the original for audit.
+        intent.metadata = {**(intent.metadata or {}), "requested_amount": intent.amount}
+        intent.amount = settled
+
     _book_receipt(intent, actor_user=actor_user)
     intent.status = CollectionStatus.SUCCEEDED
     intent.confirmed_at = timezone.now()
-    intent.save(update_fields=["status", "payment", "confirmed_at", "raw_response", "updated_at"])
+    intent.save(update_fields=[
+        "status", "payment", "amount", "metadata", "confirmed_at", "raw_response", "updated_at",
+    ])
     audit.record(
         action=PaymentAuditAction.COLLECTION_CONFIRMED, entity=intent.entity,
         provider=intent.provider, reference=intent.reference, actor_user=actor_user,
@@ -221,6 +238,10 @@ def _book_receipt(intent, *, actor_user=None):
     from vs_finance.models import Payment
     from vs_finance.receivables import post_payment
 
+    if (intent.virtual_account_id
+            and intent.virtual_account.status == VirtualAccountStatus.INACTIVE):
+        raise PaymentStateError(
+            "Virtual account is inactive; deposit held for manual review.")
     if intent.customer_id is None:
         raise PaymentStateError(
             "Cannot book a receipt: the collection has no customer (AR sub-ledger).",
@@ -235,8 +256,13 @@ def _book_receipt(intent, *, actor_user=None):
         reference=intent.reference,
         narration=intent.narration or f"Gateway collection {intent.reference}",
     )
-    allocations = [(intent.invoice, intent.amount)] if intent.invoice_id else None
-    post_payment(payment, actor_user=actor_user, allocations=allocations)
+    if intent.invoice_id:
+        post_payment(payment, actor_user=actor_user,
+                     allocations=[(intent.invoice, intent.amount)])
+    else:
+        # Standalone receipt: park the cash as customer credit (2140) rather than
+        # auto-settling the customer's oldest open invoices.
+        post_payment(payment, actor_user=actor_user, auto_allocate=False)
     intent.payment = payment
 
 
