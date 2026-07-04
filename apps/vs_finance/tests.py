@@ -4563,6 +4563,65 @@ class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
         self.assertTrue(d["gl_postings"])
         self.assertEqual(d["summary"]["total"]["kobo"], inv.total)
 
+    def test_detail_surfaces_credit_note_and_write_off_settlements(self):
+        """A credit note and a write-off must appear in settlements, gl_journals and
+        the summary — not just cash payments."""
+        import json
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        from vs_finance.views import InvoiceDetailView
+
+        entity, period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
+        post_invoice(inv)  # total 100,000, all AR
+
+        # Apply a 30,000 credit note, then write off the remaining balance.
+        note = CreditNote.objects.create(
+            entity=entity, customer=customer, kind=CreditNoteKind.CREDIT,
+            note_date=datetime.date(2026, 1, 15), invoice=inv, reason="Goodwill",
+        )
+        CreditNoteLine.objects.create(
+            note=note, revenue_account=Account.objects.get(entity=entity, code="4900"),
+            quantity=1, unit_price=30000, tax_code=None, line_no=1,
+        )
+        post_credit_note(note, auto_allocate=True)
+        write_off_invoice(inv, write_off_date=datetime.date(2026, 1, 28))
+        inv.refresh_from_db()
+
+        u = get_user_model().objects.create_user(
+            email="inv-settle@test.com", password="x", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Inv", last_name="Settle")
+        role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
+        PlatformUserRoleAssignment.objects.create(user=u, role=role, assignment_status="ACTIVE")
+
+        req = APIRequestFactory().get(f"/v1/finance/invoices/{inv.pk}/", {"entity": entity.code})
+        force_authenticate(req, user=u)
+        resp = InvoiceDetailView.as_view()(req, pk=inv.pk)
+        resp.render()
+        self.assertEqual(resp.status_code, 200)
+        d = json.loads(resp.content)["data"]
+
+        # Summary now splits cash vs non-cash and fully settles the invoice.
+        self.assertEqual(d["summary"]["paid"]["kobo"], 0)
+        self.assertEqual(d["summary"]["credited"]["kobo"], 100000)
+        self.assertEqual(d["summary"]["settled"]["kobo"], 100000)
+        self.assertEqual(d["summary"]["balance"]["kobo"], 0)
+
+        # Settlements carry both the credit note and the write-off (no cash payment).
+        types = {s["type"] for s in d["settlements"]}
+        self.assertEqual(types, {"CREDIT_NOTE", "WRITE_OFF"})
+        self.assertEqual([s["type"] for s in d["settlements"] if s["type"] == "PAYMENT"], [])
+
+        # GL history has all three journals: the invoice, the credit note, the write-off.
+        doc_types = {g["document_type"] for g in d["gl_journals"]}
+        self.assertEqual(doc_types, {"INVOICE", "CREDIT_NOTE", "WRITE_OFF"})
+
+        # Activity timeline mentions both non-cash events.
+        labels = " ".join(a["label"] for a in d["activity"])
+        self.assertIn("Credit note", labels)
+        self.assertIn("Write-off", labels)
+
 
 class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
     """POST /finance/invoices/ raises (and posts) a manual invoice, gated on create."""

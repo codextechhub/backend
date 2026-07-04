@@ -91,6 +91,44 @@ def post_credit_note(note, *, actor_user=None, auto_allocate=False, allocations=
 
 @transaction.atomic
 def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allocations=None):
+    """Post a draft credit/debit note: raise its AR journal (and, for a credit, settle
+    invoices) in one transaction.
+
+    One ``note.kind`` drives two mirror-image postings, so the body forks on
+    ``is_debit``. Everything runs atomically — subledger writes (allocation rows +
+    invoice ``amount_credited``) and the GL journal commit together or not at all.
+
+    Steps:
+      1. **Guard.** Only a DRAFT note posts, and the customer must have an AR control
+         account (both sides of the entry touch it).
+      2. **Price.** ``price_credit_note`` recomputes each line's net/tax and rolls up
+         the totals; the note total must then be positive.
+      3. **Group the lines.** Revenue is bucketed by ``(revenue_account, cost_center)``
+         so the cost-centre split survives into the GL; output tax is aggregated by
+         its collected (output-tax) account. This keeps the journal to one line per
+         distinct account instead of one per note line.
+      4. **Post the journal — direction depends on kind:**
+         * **DEBIT note** (charge more, a supplementary invoice): ``Dr AR`` (gross),
+           ``Cr revenue`` + ``Cr output tax``. Never allocated → ``applied = 0``.
+         * **CREDIT note** (give value back): ``Dr revenue/returns`` +
+           ``Dr output-tax reversal``, then split the credit like a payment —
+           ``_build_invoice_plan`` picks which invoices to settle (explicit
+           ``allocations`` or ``auto_allocate`` oldest-first), and
+           ``_apply_creditnote_subledger`` writes the CreditNoteAllocation rows and
+           bumps each invoice's ``amount_credited`` (no GL — this function owns the
+           journal), returning ``applied``. The applied portion credits AR
+           (``Cr AR``); any ``excess`` is booked to the customer-credit liability
+           (``Cr 2140``) so AR never carries a credit balance. That stored credit is
+           later drained by ``allocate_credit_note``.
+      5. **Balance & post.** ``post_journal`` validates the entry balances and marks
+         it posted.
+      6. **Finalise.** Link the journal, flip status to POSTED, store
+         ``allocated_amount`` (credit notes only), and write a
+         CREDIT_NOTE_POSTED / DEBIT_NOTE_POSTED audit record.
+
+    Returns the updated ``note``. Raises ``PostingError`` on any guard failure;
+    ``post_credit_note`` wraps this to record a rejection on ``FinanceError``.
+    """
     from .models import JournalEntry, JournalLine
 
     if note.status != DocumentStatus.DRAFT:

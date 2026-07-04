@@ -742,7 +742,8 @@ class InvoiceDetailView(APIView):
     rbac_permission = "finance.invoice.view"
 
     def get(self, request, pk):
-        from .models import Invoice
+        from .constants import FinanceAuditAction, FinanceAuditStatus
+        from .models import FinanceAuditLog, Invoice, JournalEntry
 
         entity = resolve_entity(request)
         inv = (
@@ -750,12 +751,34 @@ class InvoiceDetailView(APIView):
             .select_related("customer", "journal")
             .prefetch_related(
                 "lines__revenue_account", "lines__tax_code",
-                "allocations__payment", "dunning_notices", "journal__lines__account",
+                "allocations__payment__journal__lines__account",
+                "credit_allocations__note__journal__lines__account",
+                "dunning_notices", "journal__lines__account",
             )
             .first()
         )
         if inv is None:
             raise NotFound("No such invoice in this entity.")
+
+        # Write-offs leave no allocation row and their journal has no invoice FK — the
+        # only structured link back to the invoice is the audit trail. Pull the
+        # successful write-off events, then fetch their journals for the GL history.
+        writeoff_logs = list(
+            FinanceAuditLog.objects.filter(
+                entity=entity, target_type="Invoice", target_id=str(inv.pk),
+                action=FinanceAuditAction.INVOICE_WRITTEN_OFF,
+                status=FinanceAuditStatus.SUCCESS,
+            ).order_by("created_at")
+        )
+        writeoff_journal_ids = [
+            int(log.metadata["journal_id"])
+            for log in writeoff_logs if log.metadata.get("journal_id")
+        ]
+        writeoff_journals = {
+            j.id: j for j in JournalEntry.objects
+            .filter(id__in=writeoff_journal_ids)
+            .prefetch_related("lines__account")
+        }
 
         lines = [
             {
@@ -770,6 +793,9 @@ class InvoiceDetailView(APIView):
             }
             for ln in inv.lines.all()
         ]
+
+        # Cash receipts allocated to this invoice — kept as `payments` for existing
+        # consumers; also fed into the unified `settlements` list below.
         payments = [
             {
                 "date": a.payment.payment_date.isoformat(),
@@ -779,6 +805,31 @@ class InvoiceDetailView(APIView):
             }
             for a in inv.allocations.all()
         ]
+
+        # Every way this invoice was settled down: cash, credit notes, write-offs.
+        settlements = [dict(row, type="PAYMENT") for row in payments]
+        for a in inv.credit_allocations.all():
+            settlements.append({
+                "type": "CREDIT_NOTE",
+                "date": a.note.note_date.isoformat(),
+                "reference": a.note.document_number,
+                "method": None,
+                "amount": _money(a.amount),
+            })
+        for log in writeoff_logs:
+            j = writeoff_journals.get(int(log.metadata.get("journal_id") or 0))
+            settlements.append({
+                "type": "WRITE_OFF",
+                "date": (j.date.isoformat() if j else log.created_at.date().isoformat()),
+                "reference": inv.document_number,
+                "method": None,
+                "amount": _money(int(log.metadata.get("amount") or 0)),
+            })
+        settlements.sort(key=lambda x: x["date"])
+
+        # Flat lines of the invoice's own AR journal — kept as `gl_postings` for
+        # existing consumers. `gl_journals` is the full GL history: the invoice posting
+        # plus every settlement's journal, grouped per source document.
         gl_postings = []
         if inv.journal_id:
             for gl in inv.journal.lines.all():
@@ -786,6 +837,41 @@ class InvoiceDetailView(APIView):
                     "account_code": gl.account.code, "account_name": gl.account.name,
                     "debit": _money(gl.debit), "credit": _money(gl.credit),
                 })
+
+        gl_journals = []
+        _seen_journals: set[int] = set()
+
+        def _add_journal(j, doc_type, reference, date):
+            if j is None or j.id in _seen_journals:
+                return
+            _seen_journals.add(j.id)
+            gl_journals.append({
+                "document_type": doc_type,
+                "reference": reference,
+                "date": date,
+                "source": j.source,
+                "lines": [
+                    {
+                        "account_code": gl.account.code, "account_name": gl.account.name,
+                        "debit": _money(gl.debit), "credit": _money(gl.credit),
+                    }
+                    for gl in j.lines.all()
+                ],
+            })
+
+        _add_journal(inv.journal, "INVOICE", inv.document_number, inv.invoice_date.isoformat())
+        for a in inv.allocations.all():
+            _add_journal(a.payment.journal, "PAYMENT", a.payment.document_number,
+                         a.payment.payment_date.isoformat())
+        for a in inv.credit_allocations.all():
+            _add_journal(a.note.journal, "CREDIT_NOTE", a.note.document_number,
+                         a.note.note_date.isoformat())
+        for log in writeoff_logs:
+            j = writeoff_journals.get(int(log.metadata.get("journal_id") or 0))
+            if j is not None:
+                _add_journal(j, "WRITE_OFF", inv.document_number, j.date.isoformat())
+        gl_journals.sort(key=lambda x: x["date"])
+
         reminders = [
             {
                 "date": (d.notice_date or d.created_at.date()).isoformat(),
@@ -802,6 +888,18 @@ class InvoiceDetailView(APIView):
                 "date": a.payment.payment_date.isoformat(),
                 "label": f"Payment {a.payment.document_number} ({format_naira(a.amount)})",
             })
+        for a in inv.credit_allocations.all():
+            activity.append({
+                "date": a.note.note_date.isoformat(),
+                "label": f"Credit note {a.note.document_number} ({format_naira(a.amount)})",
+            })
+        for log in writeoff_logs:
+            j = writeoff_journals.get(int(log.metadata.get("journal_id") or 0))
+            amount = int(log.metadata.get("amount") or 0)
+            activity.append({
+                "date": (j.date.isoformat() if j else log.created_at.date().isoformat()),
+                "label": f"Write-off ({format_naira(amount)})",
+            })
         for r in reminders:
             activity.append({"date": r["date"], "label": f"Reminder level {r['level']} — {r['status']}"})
         activity.sort(key=lambda x: x["date"])
@@ -812,13 +910,18 @@ class InvoiceDetailView(APIView):
                 "invoice": InvoiceSerializer(inv).data,
                 "summary": {
                     "subtotal": _money(inv.subtotal), "tax": _money(inv.tax_total),
-                    "total": _money(inv.total), "paid": _money(inv.amount_paid),
+                    "total": _money(inv.total),
+                    "paid": _money(inv.amount_paid),
+                    "credited": _money(inv.amount_credited),
+                    "settled": _money(inv.settled_amount),
                     "balance": _money(inv.balance_due),
                     "due_date": inv.due_date.isoformat() if inv.due_date else None,
                 },
                 "lines": lines,
                 "payments": payments,
+                "settlements": settlements,
                 "gl_postings": gl_postings,
+                "gl_journals": gl_journals,
                 "reminders": reminders,
                 "activity": activity,
             },
