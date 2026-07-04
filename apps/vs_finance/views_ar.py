@@ -1021,7 +1021,11 @@ class _CreditNoteActionBase(_FinanceBase):
 
 
 class CreditNoteDetailView(_CreditNoteActionBase):
-    """docstring-name: Credit notes"""
+    """GET /finance/credit-notes/<id>/ — retrieve one credit or debit note (by id),
+    with its lines and current allocation state.
+
+    docstring-name: Credit notes
+    """
     rbac_permission = "finance.creditnote.view"
 
     def get(self, request, pk):
@@ -1032,7 +1036,15 @@ class CreditNoteDetailView(_CreditNoteActionBase):
 
 
 class CreditNotePostView(_CreditNoteActionBase):
-    """docstring-name: Post a credit note"""
+    """POST /finance/credit-notes/<id>/post/ — post a draft credit/debit note to the GL.
+
+    Body ``{allocations:[{invoice, amount}]}`` for an explicit split, or
+    ``{auto_allocate:true}`` (the default when no allocations are given) to apply a
+    CREDIT note oldest-first against the customer's open invoices. A debit note raises
+    the receivable; a credit note reduces it and settles/credits the invoices.
+
+    docstring-name: Post a credit note
+    """
     rbac_permission = "finance.creditnote.post"
 
     def post(self, request, pk):
@@ -1054,7 +1066,12 @@ class CreditNotePostView(_CreditNoteActionBase):
 
 
 class CreditNoteAllocateView(_CreditNoteActionBase):
-    """docstring-name: Allocate a credit note"""
+    """POST /finance/credit-notes/<id>/allocate/ — apply an already-posted CREDIT note to
+    the customer's open invoices. Body ``{allocations:[{invoice, amount}]}``; each amount
+    is capped at the invoice balance and the note's unallocated remainder.
+
+    docstring-name: Allocate a credit note
+    """
     rbac_permission = "finance.creditnote.allocate"
 
     def post(self, request, pk):
@@ -1128,7 +1145,10 @@ class _RefundActionBase(_FinanceBase):
 
 
 class RefundDetailView(_RefundActionBase):
-    """docstring-name: Refunds"""
+    """GET /finance/refunds/<id>/ — retrieve one customer refund (by id).
+
+    docstring-name: Refunds
+    """
     rbac_permission = "finance.refund.view"
 
     def get(self, request, pk):
@@ -1137,7 +1157,11 @@ class RefundDetailView(_RefundActionBase):
 
 
 class RefundPostView(_RefundActionBase):
-    """docstring-name: Post a refund"""
+    """POST /finance/refunds/<id>/post/ — post a draft refund, paying the customer's
+    credit back out (Dr customer credit / Cr bank) and recording the GL journal.
+
+    docstring-name: Post a refund
+    """
     rbac_permission = "finance.refund.post"
 
     def post(self, request, pk):
@@ -1422,7 +1446,11 @@ class _ConcessionActionBase(_FinanceBase):
 
 
 class ConcessionDetailView(_ConcessionActionBase):
-    """docstring-name: Concessions"""
+    """GET /finance/concessions/<id>/ — retrieve one concession (discount / waiver /
+    scholarship) by id.
+
+    docstring-name: Concessions
+    """
     rbac_permission = "finance.concession.view"
 
     def get(self, request, pk):
@@ -1433,7 +1461,12 @@ class ConcessionDetailView(_ConcessionActionBase):
 
 
 class ConcessionPostView(_ConcessionActionBase):
-    """docstring-name: Post a concession"""
+    """POST /finance/concessions/<id>/post/ — post a draft concession, writing the
+    discount/waiver/scholarship off against the allowance account (Dr allowance / Cr AR)
+    so it reduces the linked invoice's balance and the customer's outstanding.
+
+    docstring-name: Post a concession
+    """
     rbac_permission = "finance.concession.post"
 
     def post(self, request, pk):
@@ -1552,7 +1585,11 @@ class _PaymentPlanActionBase(_FinanceBase):
 
 
 class PaymentPlanDetailView(_PaymentPlanActionBase):
-    """docstring-name: Payment plans"""
+    """GET /finance/payment-plans/<id>/ — retrieve one installment payment plan (by id),
+    including its scheduled installments and progress.
+
+    docstring-name: Payment plans
+    """
     rbac_permission = "finance.paymentplan.view"
 
     def get(self, request, pk):
@@ -1561,7 +1598,11 @@ class PaymentPlanDetailView(_PaymentPlanActionBase):
 
 
 class PaymentPlanActivateView(_PaymentPlanActionBase):
-    """docstring-name: Activate a payment plan"""
+    """POST /finance/payment-plans/<id>/activate/ — move a draft plan into ACTIVE so its
+    installment schedule becomes live and can be tracked against customer receipts.
+
+    docstring-name: Activate a payment plan
+    """
     rbac_permission = "finance.paymentplan.activate"
 
     def post(self, request, pk):
@@ -1577,7 +1618,12 @@ class PaymentPlanActivateView(_PaymentPlanActionBase):
 
 
 class PaymentPlanRefreshView(_PaymentPlanActionBase):
-    """docstring-name: Refresh payment plan status"""
+    """POST /finance/payment-plans/<id>/refresh/ — recompute the plan's progress, marking
+    installments paid and advancing plan status. Body may carry a ``settled_amount``
+    (kobo) to apply against the schedule; omit it to just re-derive from what's settled.
+
+    docstring-name: Refresh payment plan status
+    """
     rbac_permission = "finance.paymentplan.activate"
 
     def post(self, request, pk):
@@ -1598,7 +1644,11 @@ class PaymentPlanRefreshView(_PaymentPlanActionBase):
 
 
 class PaymentPlanCancelView(_PaymentPlanActionBase):
-    """docstring-name: Cancel a payment plan"""
+    """POST /finance/payment-plans/<id>/cancel/ — cancel a plan, closing out its remaining
+    installments so it no longer tracks against the customer's balance.
+
+    docstring-name: Cancel a payment plan
+    """
     rbac_permission = "finance.paymentplan.cancel"
 
     def post(self, request, pk):
@@ -1770,7 +1820,11 @@ class DunningPolicyListCreateView(_FinanceBase):
 
 
 class DunningPolicyDetailView(_FinanceBase):
-    """docstring-name: Dunning policies"""
+    """GET / PATCH one dunning policy (by id). PATCH updates name / active / default and,
+    if ``stages`` is given, replaces the whole reminder ladder.
+
+    docstring-name: Dunning policies
+    """
 
     @property
     def rbac_permission(self):
@@ -1930,7 +1984,10 @@ class _DunningNoticeActionBase(_FinanceBase):
 
 
 class DunningNoticeDetailView(_DunningNoticeActionBase):
-    """docstring-name: Dunning notices"""
+    """GET /finance/dunning-notices/<id>/ — retrieve one dunning (reminder) notice by id.
+
+    docstring-name: Dunning notices
+    """
     rbac_permission = "finance.dunning.view"
 
     def get(self, request, pk):
@@ -1941,7 +1998,11 @@ class DunningNoticeDetailView(_DunningNoticeActionBase):
 
 
 class DunningNoticeSendView(_DunningNoticeActionBase):
-    """docstring-name: Send a dunning notice"""
+    """POST /finance/dunning-notices/<id>/send/ — dispatch a pending notice over its
+    stage's channels (in-app + email) and mark it SENT.
+
+    docstring-name: Send a dunning notice
+    """
     rbac_permission = "finance.dunning.send"
 
     def post(self, request, pk):
@@ -1957,7 +2018,11 @@ class DunningNoticeSendView(_DunningNoticeActionBase):
 
 
 class DunningNoticeCancelView(_DunningNoticeActionBase):
-    """docstring-name: Cancel a dunning notice"""
+    """POST /finance/dunning-notices/<id>/cancel/ — cancel a notice before it goes out,
+    recording an optional ``reason``.
+
+    docstring-name: Cancel a dunning notice
+    """
     rbac_permission = "finance.dunning.send"
 
     def post(self, request, pk):
