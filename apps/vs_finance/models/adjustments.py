@@ -185,6 +185,17 @@ class Refund(FinanceDocument):
     Posting (:func:`vs_finance.credit_notes.post_refund`) raises ``Dr customer credit
     (2140), Cr bank`` — paying out the customer's stored credit balance (not an open
     receivable), capped at their available credit.
+
+    Args:
+        customer: The customer receiving the refund.
+        refund_date: The date the refund is paid.
+        currency: The currency of the refund (optional, defaults to entity's).
+        method: How the refund is paid (bank transfer, cash, etc.).
+        amount: The amount refunded, in kobo.
+        bank_account: The bank account the refund is paid from (optional).
+        deposit_account: The GL account credited (where the money left from).
+        reference: Optional reference for the refund.
+        narration: Optional narration for the refund.
     """
 
     DOC_TYPE = DocType.REFUND
