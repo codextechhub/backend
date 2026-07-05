@@ -127,7 +127,7 @@ def build_installments(plan, *, amounts=None):
         if any(a <= 0 for a in amounts):
             raise PostingError("Every installment amount must be positive.")
 
-    plan.installments.all().delete()
+    plan.installments.all().delete()  # clear any existing schedule on the draft plan
     rows = [
         PaymentPlanInstallment(
             plan=plan, seq_no=i + 1,
