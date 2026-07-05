@@ -107,14 +107,37 @@ def _resolve_invoice(entity, ref, field="invoice", *, required=True):
     return invoice
 
 
+def _resolve_debit_note(entity, ref, field="debit_note"):
+    """Resolve a posted DEBIT note by document number or id within ``entity``."""
+    from .constants import CreditNoteKind, DocumentStatus
+    from .models import CreditNote
+
+    qs = CreditNote.objects.filter(
+        entity=entity, kind=CreditNoteKind.DEBIT, status=DocumentStatus.POSTED)
+    note = (
+        qs.filter(pk=int(ref)).first() if str(ref).isdigit()
+        else qs.filter(document_number=str(ref)).first()
+    )
+    if note is None:
+        raise NotFound(f"No debit note matches '{ref}' for this entity.")
+    return note
+
+
 def _allocation_plan(entity, raw_allocations):
-    """Coerce a request ``allocations`` list into ``[(invoice, amount_kobo), ...]``."""
+    """Coerce a request ``allocations`` list into ``[(target, amount_kobo), ...]``.
+
+    Each item settles an invoice (``{"invoice": ref, "amount": …}``) or a DEBIT note
+    (``{"debit_note": ref, "amount": …}``) — both debit AR and are settled by receipts.
+    """
     if not raw_allocations:
         return None
     plan = []
     for i, item in enumerate(raw_allocations):
-        invoice = _resolve_invoice(entity, item.get("invoice"), f"allocations[{i}].invoice")
-        plan.append((invoice, _money(item.get("amount"), f"allocations[{i}].amount")))
+        if item.get("debit_note") not in (None, ""):
+            target = _resolve_debit_note(entity, item.get("debit_note"), f"allocations[{i}].debit_note")
+        else:
+            target = _resolve_invoice(entity, item.get("invoice"), f"allocations[{i}].invoice")
+        plan.append((target, _money(item.get("amount"), f"allocations[{i}].amount")))
     return plan
 
 
@@ -154,11 +177,15 @@ def _customer_ledger(entity, customer_ids=None):
     inv = Invoice.objects.filter(entity=entity, status=DocumentStatus.POSTED)
     pay = Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED)
     note = CreditNote.objects.filter(entity=entity, status=DocumentStatus.POSTED, kind=CreditNoteKind.CREDIT)
+    # Open DEBIT notes are supplementary AR charges: their unsettled balance is
+    # outstanding, exactly like an open invoice.
+    dn = CreditNote.objects.filter(entity=entity, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT)
     ref = Refund.objects.filter(entity=entity, status=DocumentStatus.POSTED)
     if customer_ids is not None:
         inv = inv.filter(customer_id__in=customer_ids)
         pay = pay.filter(customer_id__in=customer_ids)
         note = note.filter(customer_id__in=customer_ids)
+        dn = dn.filter(customer_id__in=customer_ids)
         ref = ref.filter(customer_id__in=customer_ids)
 
     out: dict[int, dict] = {}
@@ -184,6 +211,10 @@ def _customer_ledger(entity, customer_ids=None):
     for r in note.values("customer_id").annotate(
         c=Coalesce(Sum(F("total") - F("allocated_amount")), 0)):
         slot(r["customer_id"])["_notes"] = int(r["c"] or 0)
+    for r in dn.values("customer_id").annotate(
+        c=Coalesce(Sum(F("total") - F("amount_paid")), 0)):
+        d = slot(r["customer_id"])
+        d["outstanding"] += int(r["c"] or 0)
     for r in ref.values("customer_id").annotate(c=Coalesce(Sum("amount"), 0)):
         slot(r["customer_id"])["_refunded"] = int(r["c"] or 0)
 
@@ -323,8 +354,8 @@ class CustomerDetailView(_FinanceBase):
     def get(self, request, pk):
         import datetime
 
-        from .constants import DocumentStatus, InvoicePaymentStatus
-        from .models import Invoice, Payment
+        from .constants import CreditNoteKind, DocumentStatus, InvoicePaymentStatus
+        from .models import CreditNote, Invoice, Payment
 
         entity = resolve_entity(request)
         customer = _resolve_customer(entity, pk)
@@ -338,6 +369,12 @@ class CustomerDetailView(_FinanceBase):
         payments = list(Payment.objects.filter(
             entity=entity, customer=customer, status=DocumentStatus.POSTED,
         ).order_by("payment_date", "id")[:500])
+        # DEBIT notes are supplementary AR charges — they belong in the statement (debit
+        # side) and their unsettled balance is an open item, just like an invoice.
+        debit_notes = list(CreditNote.objects.filter(
+            entity=entity, customer=customer, status=DocumentStatus.POSTED,
+            kind=CreditNoteKind.DEBIT,
+        ).order_by("note_date", "id")[:500])
 
         def inv_status(i):
             if i.payment_status == InvoicePaymentStatus.PAID:
@@ -345,6 +382,13 @@ class CustomerDetailView(_FinanceBase):
             if i.due_date and i.due_date < today and i.balance_due > 0:
                 return "OVERDUE"
             if i.payment_status == InvoicePaymentStatus.PARTIAL:
+                return "PARTIAL"
+            return "ISSUED"
+
+        def dn_status(n):
+            if n.settlement_status == InvoicePaymentStatus.PAID:
+                return "PAID"
+            if n.settlement_status == InvoicePaymentStatus.PARTIAL:
                 return "PARTIAL"
             return "ISSUED"
 
@@ -358,24 +402,38 @@ class CustomerDetailView(_FinanceBase):
             }
             for i in invoices if i.balance_due > 0
         ]
+        open_debit_notes = [
+            {
+                "document_number": n.document_number,
+                "note_date": n.note_date.isoformat() if n.note_date else None,
+                "total": _money_obj(n.total), "balance": _money_obj(n.balance_due),
+                "status": dn_status(n),
+            }
+            for n in debit_notes if n.balance_due > 0
+        ]
 
-        # Transactions: invoices (debit) and receipts (credit), reverse-chronological (newest first).
+        # Transactions: invoices + debit notes (debit) and receipts (credit),
+        # reverse-chronological (newest first).
         transactions = (
             [{"date": i.invoice_date.isoformat(), "type": "INVOICE",
               "reference": i.document_number, "amount": _money_obj(i.total),
               "status": inv_status(i)} for i in invoices]
+            + [{"date": n.note_date.isoformat(), "type": "DEBIT_NOTE",
+                "reference": n.document_number, "amount": _money_obj(n.total),
+                "status": dn_status(n)} for n in debit_notes]
             + [{"date": p.payment_date.isoformat(), "type": "PAYMENT",
                 "reference": p.document_number, "amount": _money_obj(p.amount),
                 "status": "POSTED"} for p in payments]
         )
         transactions.sort(key=lambda t: t["date"], reverse=True)
 
-        # Statement: opening balance, then invoices (debit) and receipts (credit),
-        # chronological (oldest first), with a running balance.
+        # Statement: opening balance, then invoices + debit notes (debit) and receipts
+        # (credit), chronological (oldest first), with a running balance.
         events = []
         if customer.opening_balance:
             events.append((datetime.date.min, "Opening balance", customer.opening_balance, 0))
         events += [(i.invoice_date, f"Invoice {i.document_number}", i.total, 0) for i in invoices]
+        events += [(n.note_date, f"Debit note {n.document_number}", n.total, 0) for n in debit_notes]
         events += [(p.payment_date, f"Receipt {p.document_number}", 0, p.amount) for p in payments]
         events.sort(key=lambda e: e[0])
         running = 0
@@ -397,6 +455,7 @@ class CustomerDetailView(_FinanceBase):
                 "account_status": _account_status(net, led.get("overdue", False)),
             },
             "open_invoices": open_invoices,
+            "open_debit_notes": open_debit_notes,
             "transactions": transactions,
             "statement": statement,
         })
@@ -622,13 +681,14 @@ class PaymentDetailView(_FinanceBase):
     rbac_permission = "finance.payment.view"
 
     def get(self, request, pk):
-        from .constants import DocumentStatus, InvoicePaymentStatus
-        from .models import Invoice, Payment
+        from .constants import CreditNoteKind, DocumentStatus, InvoicePaymentStatus
+        from .models import CreditNote, Invoice, Payment
 
         entity = resolve_entity(request)
         p = (Payment.objects.filter(entity=entity, pk=pk)
              .select_related("customer", "deposit_account", "journal")
-             .prefetch_related("allocations__invoice", "journal__lines__account").first())
+             .prefetch_related("allocations__invoice", "debit_note_allocations__note",
+                               "journal__lines__account").first())
         if p is None:
             raise NotFound("Receipt not found for this entity.")
 
@@ -636,6 +696,11 @@ class PaymentDetailView(_FinanceBase):
             {"invoice": a.invoice.document_number, "invoice_id": a.invoice_id,
              "amount": _money_obj(a.amount)}
             for a in p.allocations.all()
+        ]
+        allocations += [
+            {"debit_note": a.note.document_number, "debit_note_id": a.note_id,
+             "amount": _money_obj(a.amount)}
+            for a in p.debit_note_allocations.all()
         ]
         open_invoices = [
             {"id": i.id, "document_number": i.document_number,
@@ -645,6 +710,17 @@ class PaymentDetailView(_FinanceBase):
                 entity=entity, customer=p.customer, status=DocumentStatus.POSTED,
             ).exclude(payment_status=InvoicePaymentStatus.PAID).order_by("due_date", "invoice_date", "id")
             if i.balance_due > 0
+        ]
+        # DEBIT notes are settleable AR items too — offer the customer's open ones.
+        open_debit_notes = [
+            {"id": n.id, "document_number": n.document_number,
+             "note_date": n.note_date.isoformat() if n.note_date else None,
+             "balance": _money_obj(n.balance_due)}
+            for n in CreditNote.objects.filter(
+                entity=entity, customer=p.customer, status=DocumentStatus.POSTED,
+                kind=CreditNoteKind.DEBIT,
+            ).exclude(settlement_status=InvoicePaymentStatus.PAID).order_by("note_date", "id")
+            if n.balance_due > 0
         ]
         gl_postings = []
         if p.journal_id:
@@ -657,6 +733,7 @@ class PaymentDetailView(_FinanceBase):
             "payment": PaymentSerializer(p).data,
             "allocations": allocations,
             "open_invoices": open_invoices,
+            "open_debit_notes": open_debit_notes,
             "gl_postings": gl_postings,
         })
 

@@ -753,6 +753,7 @@ class InvoiceDetailView(APIView):
                 "lines__revenue_account", "lines__tax_code",
                 "allocations__payment__journal__lines__account",
                 "credit_allocations__note__journal__lines__account",
+                "concessions__journal__lines__account",
                 "dunning_notices", "journal__lines__account",
             )
             .first()
@@ -806,7 +807,11 @@ class InvoiceDetailView(APIView):
             for a in inv.allocations.all()
         ]
 
-        # Every way this invoice was settled down: cash, credit notes, write-offs.
+        # Posted concessions (discounts/waivers/scholarships) on this invoice.
+        concessions = [c for c in inv.concessions.all() if c.status == "POSTED"]
+
+        # Every way this invoice was settled down: cash, credit notes, concessions,
+        # write-offs.
         settlements = [dict(row, type="PAYMENT") for row in payments]
         for a in inv.credit_allocations.all():
             settlements.append({
@@ -815,6 +820,14 @@ class InvoiceDetailView(APIView):
                 "reference": a.note.document_number,
                 "method": None,
                 "amount": _money(a.amount),
+            })
+        for c in concessions:
+            settlements.append({
+                "type": "CONCESSION",
+                "date": c.concession_date.isoformat(),
+                "reference": c.document_number,
+                "method": None,
+                "amount": _money(c.amount),
             })
         for log in writeoff_logs:
             j = writeoff_journals.get(int(log.metadata.get("journal_id") or 0))
@@ -866,6 +879,9 @@ class InvoiceDetailView(APIView):
         for a in inv.credit_allocations.all():
             _add_journal(a.note.journal, "CREDIT_NOTE", a.note.document_number,
                          a.note.note_date.isoformat())
+        for c in concessions:
+            _add_journal(c.journal, "CONCESSION", c.document_number,
+                         c.concession_date.isoformat())
         for log in writeoff_logs:
             j = writeoff_journals.get(int(log.metadata.get("journal_id") or 0))
             if j is not None:
@@ -892,6 +908,11 @@ class InvoiceDetailView(APIView):
             activity.append({
                 "date": a.note.note_date.isoformat(),
                 "label": f"Credit note {a.note.document_number} ({format_naira(a.amount)})",
+            })
+        for c in concessions:
+            activity.append({
+                "date": c.concession_date.isoformat(),
+                "label": f"{c.get_kind_display()} {c.document_number} ({format_naira(c.amount)})",
             })
         for log in writeoff_logs:
             j = writeoff_journals.get(int(log.metadata.get("journal_id") or 0))

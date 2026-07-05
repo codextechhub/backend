@@ -42,9 +42,10 @@ Routes (mounted at `/v1/finance/`): `credit-notes/…`, `refunds/…`,
 
 | Model | File | Key fields | Notes |
 |---|---|---|---|
-| `CreditNote` | `models/adjustments.py:33` | `customer`, `kind` (CREDIT/DEBIT), `note_date`, `invoice?`, `subtotal`/`tax_total`/`total`, `allocated_amount`, `journal` | `unallocated_amount = total − allocated` (CREDIT only) |
+| `CreditNote` | `models/adjustments.py:33` | `customer`, `kind` (CREDIT/DEBIT), `note_date`, `invoice?`, `subtotal`/`tax_total`/`total`, `allocated_amount`, **`amount_paid`, `settlement_status`**, `journal` | `unallocated_amount = total − allocated` (CREDIT only); `balance_due = total − amount_paid` (DEBIT only) |
 | `CreditNoteLine` | `:113` | `revenue_account`, `quantity`, `unit_price`, `tax_code`, `net_amount`, `tax_amount`, `cost_center` | priced like an invoice line |
-| `CreditNoteAllocation` | `:150` | `note`, `invoice`, `amount` | bumps `Invoice.amount_credited`; `unique(note, invoice)` |
+| `CreditNoteAllocation` | `:150` | `note`, `invoice`, `amount` | CREDIT note → invoice; bumps `Invoice.amount_credited`; `unique(note, invoice)` |
+| `DebitNoteAllocation` | `:182` | `payment`, `note`, `amount` | receipt → DEBIT note; bumps `CreditNote.amount_paid`; `unique(payment, note)` |
 | `Refund` | `:182` | `customer`, `refund_date`, `method`, `amount`, `bank_account?`/`deposit_account?`, `journal` | pays out credit |
 | `Concession` | `:228` | `customer`, `invoice`, `kind`, `amount`, `allowance_account?`, `journal` | single amount, no lines |
 
@@ -80,8 +81,12 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 ## 4. Lifecycle / state machine
 
 - **Credit/debit note:** `DRAFT` (priced) → `POSTED` (`post_credit_note`). A
-  POSTED **CREDIT** note can then `allocate/` its stored credit; a **DEBIT** note
-  cannot allocate (it raised AR, not credit).
+  POSTED **CREDIT** note can then `allocate/` its stored credit onto invoices. A
+  **DEBIT** note cannot `allocate/` (it raised AR, not credit) — but because it
+  debits AR like an invoice, it **is settled by receipts**: `post_payment` /
+  `allocate_payment` treat open DEBIT notes as AR open items and bump their
+  `amount_paid` / `settlement_status` (UNPAID → PARTIAL → PAID) via
+  `DebitNoteAllocation`. See `finance_invoicing_ar` §receipts.
 - **Refund / concession:** `DRAFT` → `POSTED` (`post_refund` / `post_concession`).
 - **Write-off:** no draft — a single posted action on a POSTED invoice.
 
@@ -98,7 +103,9 @@ concession.amount must be 0 < amount ≤ invoice.balance_due
 credit-note allocation: apply = min(requested, invoice.balance_due, remaining)
 ```
 `customer_credit_balance` = unapplied receipts + unapplied CREDIT notes − refunds
-already paid (`receivables.py`).
+already paid − **unsettled DEBIT-note balances**, floored at 0 (`receivables.py`).
+An open DEBIT note is a supplementary charge still to collect, so it offsets what a
+refund may pay out.
 
 ## 6. What posting does to the ledger
 
@@ -110,12 +117,15 @@ Dr  output-tax reversal (per account) Σ tax
 Cr  receivable (AR control)           applied        (settles invoices)
 Cr  customer credit (2140)            excess          (unapplied remainder)
 ```
-**DEBIT note** — supplementary charge:
+**DEBIT note** — supplementary charge (debits AR just like an invoice):
 ```
 Dr  receivable (AR control)   total
 Cr  revenue (per account)     Σ net
 Cr  output tax (per account)  Σ tax
 ```
+A later receipt settles it with no new GL beyond the receipt's own `Cr AR` for the
+applied portion — the DEBIT note's AR debit and the receipt's AR credit net off, and
+only the true excess lands in `2140`. The sub-ledger record is a `DebitNoteAllocation`.
 **Refund** (`_post_refund_atomic`, `credit_notes.py:327`):
 ```
 Dr  customer credit (2140)   amount
@@ -161,7 +171,16 @@ concession_date}` → draft; `post/` → `Dr 4910 500000 / Cr 1200 500000`, invo
   invoices; settle/credit first so `2140` holds the balance.
 - **Write-offs have no document** to list/detail — they're audit-log entries only;
   the only "list" is `ar-adjustments/`.
-- **DEBIT note `allocate/` → 400** ("a debit note increases the receivable").
+- **DEBIT note `allocate/` → 400** ("a debit note increases the receivable"). This
+  only blocks the credit-note *allocate* verb (which reduces another invoice). A DEBIT
+  note is instead **settled by a receipt** — `post_payment`/`allocate_payment` pick it
+  up as an open AR item, or target it explicitly with
+  `allocations:[{debit_note, amount}]`.
+- ✅ **Fixed 2026-07-05: receipts now settle DEBIT notes.** Previously a receipt could
+  only allocate to invoices, so a DEBIT note with no invoice sat unsettled forever and
+  the whole receipt fell to `2140` — the customer's credit balance was overstated by
+  the note amount and the note was unpayable. DEBIT notes are now first-class AR open
+  items across allocation, the customer ledger, statement, and refund cap.
 
 ## 9. Permissions & tenant isolation
 
@@ -178,8 +197,9 @@ concession_date}` → draft; `post/` → `Dr 4910 500000 / Cr 1200 500000`, invo
 
 | File | Responsibility |
 |---|---|
-| `models/adjustments.py` | `CreditNote`(+`Line`,`Allocation`), `Refund`, `Concession` |
+| `models/adjustments.py` | `CreditNote`(+`Line`,`Allocation`), `DebitNoteAllocation`, `Refund`, `Concession` |
 | `credit_notes.py` | price/post/allocate credit notes, `post_refund`, `write_off_invoice` |
+| `receivables.py` | receipt allocation over invoices **+ DEBIT notes** (`_build_invoice_plan`, `_apply_payment_subledger`), `customer_credit_balance` |
 | `installments.py` | `post_concession` |
 | `views_ar.py` | credit-note / refund / write-off / ar-adjustments / concession views |
 | `serializers.py` | `CreditNoteSerializer`, `RefundSerializer`, `ConcessionSerializer` |
@@ -193,7 +213,11 @@ invoice), `ConcessionTests` (discount reduces invoice, posts to allowances).
 Worth asserting if not already:
 - **403** per verb; **cross-tenant** note/refund/concession id → 404.
 - Refund **capped** at customer credit (over-refund → 400) and books `Dr 2140 / Cr bank`.
-- DEBIT note increases AR and **cannot** be allocated (→ 400).
+- DEBIT note increases AR and **cannot** be allocated via `allocate/` (→ 400), but a
+  receipt **settles** it — `test_receipt_settles_standalone_debit_note` (the reported
+  bug: DN 20k + receipt 40k → DN PAID, 20k customer credit),
+  `test_explicit_receipt_allocation_to_debit_note`, `test_stored_credit_settles_debit_note`,
+  `test_receipt_allocates_across_invoice_and_debit_note_oldest_first`.
 - Write-off `Dr 5300 / Cr AR`, bumps `amount_credited`, full-balance default + the
   "exceeds balance" guard; appears in `ar-adjustments/`.
 - Concession exceeding `balance_due` → 400; refreshes the invoice's payment plan.

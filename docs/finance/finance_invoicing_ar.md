@@ -26,7 +26,8 @@ Routes covered (mounted at `/v1/finance/`): `customers/`, `customers/<pk>/`,
   journal **Dr receivable / Cr revenue / Cr output tax** and links it via
   `journal`.
 - A **`Payment`** (`models/ar.py:219`) is a customer **receipt** — money in,
-  settling one or more invoices; overflow becomes customer credit.
+  settling one or more **open AR items** (invoices **and** posted DEBIT notes, which
+  debit AR the same way); overflow becomes customer credit.
 
 **This does NOT:**
 - **Let AR carry a credit balance.** Overpayments are split at source into a
@@ -46,6 +47,7 @@ Routes covered (mounted at `/v1/finance/`): `customers/`, `customers/<pk>/`,
 | `InvoiceLine` | `models/ar.py:176` | `revenue_account`, `quantity`, `unit_price`, `tax_code`, `net_amount`, `tax_amount`, `cost_center`, `dimensions` | net/tax stored, not re-derived |
 | `Payment` | `models/ar.py:219` | `customer`, `payment_date`, `method`, `amount`, `allocated_amount`, `deposit_account`, `journal` | receipt |
 | `PaymentAllocation` | `models/ar.py:268` | `payment`, `invoice`, `amount` | the receipt↔invoice link |
+| `DebitNoteAllocation` | `models/adjustments.py:182` | `payment`, `note`, `amount` | the receipt↔DEBIT-note link (bumps `CreditNote.amount_paid`) |
 | `FeeStructure` / `FeeItem` | `models/ar.py:302`/`:364` | billing catalogue → invoices | `applies_to` gates AR generation |
 
 - **Money is kobo.** `total = subtotal + tax_total`; `settled = amount_paid +
@@ -72,8 +74,8 @@ All require `?entity=<id|code>`. Gate: `IsAuthenticatedAndActive & HasRBACPermis
 | `POST /invoices/<pk>/pay/` | `finance.payment.create` | Receipt settling **this** invoice | `amount`, `payment_date`, `deposit_account`, `method?`, … | `201` `InvoiceSerializer` |
 | `POST /invoices/<pk>/remind/` | `finance.dunning.send` | Raise a dunning reminder → `finance_dunning` | `message?` | `DunningNoticeSerializer` |
 | `GET /payments/` | `finance.payment.view` | Posted receipts + allocation state (**paginated**). Query: `status` (ALLOCATED/PARTIAL/UNALLOCATED, filtered in-DB), `method`, `customer`, `search` | — | paginated `PaymentSerializer` |
-| `GET /payments/<pk>/` | `finance.payment.view` | Receipt + allocations + open-invoice candidates + GL | — | detail |
-| `POST /payments/<pk>/allocate/` | `finance.payment.allocate` | Apply stored customer credit to invoices | `allocations:[{invoice, amount}]` **or** `auto_allocate:true` (+ `allocation_strategy?`) | `PaymentSerializer` |
+| `GET /payments/<pk>/` | `finance.payment.view` | Receipt + allocations + open-invoice **and open-debit-note** candidates + GL | — | detail |
+| `POST /payments/<pk>/allocate/` | `finance.payment.allocate` | Apply stored customer credit to open AR items | `allocations:[{invoice\|debit_note, amount}]` **or** `auto_allocate:true` (+ `allocation_strategy?`) | `PaymentSerializer` |
 | `GET/POST /fee-structures/…` | `finance.feestructure.view`/`.create` | Billing catalogue CRUD | — | `FeeStructureSerializer` |
 | `POST /fee-structures/<pk>/generate/` | `finance.feestructure.generate` | One **posted** invoice per customer | `customers:[…]` or `all_active:true`, `invoice_date?`, `due_date?` | `201` invoices |
 
@@ -133,9 +135,12 @@ Dr  deposit (bank/cash)            payment.amount
 Cr  receivable (AR control)        applied            (only if applied > 0)
 Cr  customer credit (2140)         excess             (only if overpaid)
 ```
-`applied` is what the allocation plan settled (explicit `[(invoice, amount)]` or
-oldest-first open invoices); each `PaymentAllocation` row is written and the
-invoice's `amount_paid` bumped *before* the GL line, capped at balance/remaining.
+`applied` is what the allocation plan settled (explicit `[(target, amount)]` or
+oldest-first open items); each row is written and the target's `amount_paid` bumped
+*before* the GL line, capped at balance/remaining. A target is an **invoice**
+(`PaymentAllocation`, bumps `Invoice.amount_paid`) or a posted **DEBIT note**
+(`DebitNoteAllocation`, bumps `CreditNote.amount_paid`). Both debit AR when raised, so
+the single `Cr AR` for `applied` settles either — no debit-note-specific GL.
 
 **Applying stored credit** — `allocate_payment` on an already-posted receipt
 reclassifies, **no cash moves**:
@@ -153,10 +158,14 @@ Dr  receivable (AR control 1200)   opening_balance
 Cr  operating revenue (4100)       opening_balance
 ```
 
-**Auto-allocation order** — `_build_invoice_plan` (`receivables.py:232`) settles
-either `oldest` (due date, default) or `largest` (biggest balance) first;
+**Auto-allocation order** — `_build_invoice_plan` (`receivables.py:272`) settles
+either `oldest` (document date, default) or `largest` (biggest balance) first, across
+open invoices **and** open DEBIT notes together (`include_debit_notes=True` on the
+receipt paths; the credit-note sub-ledger keeps its own invoice-only plan);
 `post_payment`/`allocate_payment` take a `strategy` arg, exposed as
-`allocation_strategy` on the receipt/allocate endpoints.
+`allocation_strategy` on the receipt/allocate endpoints. Explicit allocations may name
+a debit note with `{debit_note, amount}` instead of `{invoice, amount}`, and the
+payment-detail view lists the customer's `open_debit_notes` alongside `open_invoices`.
 
 ## 7. Worked example
 
@@ -189,10 +198,16 @@ the receipt shows `allocation_status:"PARTIAL"` (`unallocated_amount` 12500).
 - **`pay/` requires a POSTED invoice** (`views_ar.py`); paying a draft → 400.
 - **AR control defaults to `1200`** on customer create if omitted — verify the
   chart has it (it's in the seeded `DEFAULT_CHART`).
+- ✅ **Fixed 2026-07-05: receipts settle DEBIT notes.** A DEBIT note debits AR like an
+  invoice, but receipts used to allocate only to invoices — so a debit note raised with
+  no invoice sat unsettled and the whole receipt fell to `2140`, overstating customer
+  credit. Debit notes are now open AR items in allocation, the customer ledger/statement,
+  and the refund cap (`customer_credit_balance` nets unsettled DN balances). See
+  `finance_ar_adjustments` §8.
 
 _Fixed (were flagged here): customer/receipt lists now paginate via XVSPagination
 (no 500-cap truncation); `opening_balance` posts an opening invoice; auto-allocation
-supports `oldest`|`largest`._
+supports `oldest`|`largest`; receipts settle DEBIT notes (2026-07-05)._
 
 ## 9. Permissions & tenant isolation
 

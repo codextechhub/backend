@@ -9,6 +9,7 @@ from ..constants import (
     CreditNoteKind,
     DocType,
     InstallmentStatus,
+    InvoicePaymentStatus,
     PaymentMethod,
     PaymentPlanFrequency,
     PaymentPlanStatus,
@@ -67,6 +68,16 @@ class CreditNote(FinanceDocument):
     allocated_amount = MoneyField(
         help_text="Portion of a CREDIT note applied to invoices, in kobo.",
     )
+    # A DEBIT note is a supplementary charge that debits AR, so — like an invoice — it
+    # is *settled* by receipts. ``amount_paid`` tracks cash allocated against it and
+    # ``settlement_status`` mirrors Invoice.payment_status. Both are inert on CREDIT
+    # notes (which are the ones with balances *given back*, tracked by allocated_amount).
+    amount_paid = MoneyField(help_text="Cash allocated to this DEBIT note, in kobo.")
+    settlement_status = models.CharField(
+        max_length=8, choices=InvoicePaymentStatus.choices,
+        default=InvoicePaymentStatus.UNPAID,
+        help_text="How much of a DEBIT note has been settled by receipts.",
+    )
 
     journal = models.ForeignKey(
         "JournalEntry", on_delete=models.PROTECT, related_name="credit_notes",
@@ -89,6 +100,26 @@ class CreditNote(FinanceDocument):
     def unallocated_amount(self) -> int:
         """Credit not yet applied to an invoice (CREDIT notes only)."""
         return self.total - self.allocated_amount
+
+    @property
+    def balance_due(self) -> int:
+        """Outstanding amount a DEBIT note still owes (total minus cash allocated).
+
+        Meaningful for DEBIT notes only; a CREDIT note never carries a balance due.
+        """
+        return self.total - self.amount_paid
+
+    def refresh_settlement_status(self, *, save: bool = True) -> None:
+        """Derive a DEBIT note's ``settlement_status`` from ``amount_paid`` vs total."""
+        if self.amount_paid <= 0:
+            status = InvoicePaymentStatus.UNPAID
+        elif self.amount_paid >= self.total:
+            status = InvoicePaymentStatus.PAID
+        else:
+            status = InvoicePaymentStatus.PARTIAL
+        self.settlement_status = status
+        if save:
+            self.save(update_fields=["settlement_status", "updated_at"])
 
     def recompute_totals(self, *, save: bool = True) -> None:
         agg = self.lines.aggregate(
@@ -177,6 +208,40 @@ class CreditNoteAllocation(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.note_id}→{self.invoice_id}: {self.amount}"
+
+
+class DebitNoteAllocation(TimeStampedModel):
+    """Links a slice of a :class:`Payment` to a specific DEBIT :class:`CreditNote`.
+
+    A DEBIT note debits AR when it posts (the customer owes it), so a receipt settles
+    it exactly like an invoice: the GL already credits AR for the applied cash (in
+    :func:`vs_finance.receivables._post_payment_atomic`); this row is the sub-ledger
+    record of which debit note that cash cleared, and bumps the note's ``amount_paid``.
+    The invoice-settlement twin is :class:`PaymentAllocation`.
+    """
+
+    payment = models.ForeignKey(
+        "Payment", on_delete=models.CASCADE, related_name="debit_note_allocations",
+    )
+    note = models.ForeignKey(
+        CreditNote, on_delete=models.PROTECT, related_name="settlements",
+    )
+    amount = MoneyField(help_text="Amount of the payment applied to this debit note, in kobo.")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["payment", "note"], name="uniq_finance_dnalloc_payment_note",
+            ),
+            models.CheckConstraint(
+                check=models.Q(amount__gte=0), name="ck_finance_dnalloc_non_negative",
+            ),
+        ]
+        indexes = [models.Index(fields=["note"]), models.Index(fields=["payment"])]
+        ordering = ["payment", "id"]
+
+    def __str__(self) -> str:
+        return f"{self.payment_id}→DN{self.note_id}: {self.amount}"
 
 
 class Refund(FinanceDocument):
@@ -324,6 +389,11 @@ class PaymentPlan(FinanceDocument):
     )
     installment_count = models.PositiveSmallIntegerField(default=1)
     total_amount = MoneyField(help_text="Total amount being spread, in kobo.")
+    baseline_settled = MoneyField(
+        help_text="Invoice settlement (cash + non-cash credits) already applied when "
+                  "the plan was activated. Excluded from installment progress so "
+                  "pre-plan credits/waivers aren't miscounted as installment payments.",
+    )
     notes = models.CharField(max_length=255, blank=True, default="")
 
     class Meta(FinanceDocument.Meta):

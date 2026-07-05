@@ -768,6 +768,120 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
         with self.assertRaises(PostingError):
             allocate_credit_note(note)
 
+    def _post_debit_note(self, entity, customer, *, amount, date, tax=None):
+        """Helper: create + post a single-line DEBIT note, return it refreshed."""
+        note = CreditNote.objects.create(
+            entity=entity, customer=customer, kind=CreditNoteKind.DEBIT,
+            note_date=date, reason="Supplementary charge",
+        )
+        CreditNoteLine.objects.create(
+            note=note, revenue_account=Account.objects.get(entity=entity, code="4100"),
+            quantity=1, unit_price=amount, tax_code=tax, line_no=1,
+        )
+        post_credit_note(note)
+        note.refresh_from_db()
+        return note
+
+    def test_receipt_settles_standalone_debit_note(self):
+        # The reported bug: a debit note with no invoice, then a larger receipt. The
+        # receipt must settle the debit note (not leave it dangling) and book only the
+        # true excess as customer credit.
+        entity, period, customer, _ = self.build_ar()
+        bank = Account.objects.get(entity=entity, code="1100")
+        note = self._post_debit_note(
+            entity, customer, amount=20000, date=datetime.date(2026, 1, 10))
+
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 15),
+            amount=40000, deposit_account=bank,
+        )
+        post_payment(pay)  # auto-allocates → should settle the debit note first
+        note.refresh_from_db()
+        pay.refresh_from_db()
+
+        # Debit note fully settled by the receipt.
+        self.assertEqual(note.amount_paid, 20000)
+        self.assertEqual(note.balance_due, 0)
+        self.assertEqual(note.settlement_status, InvoicePaymentStatus.PAID)
+        # Only the true excess is unallocated credit.
+        self.assertEqual(pay.allocated_amount, 20000)
+        self.assertEqual(pay.unallocated_amount, 20000)
+        self.assertEqual(customer_credit_balance(customer), 20000)
+        # GL: DN debited AR 20k; the applied receipt credits AR 20k (nets to zero);
+        # the 20k excess lands in customer credit (2140).
+        ar_bal = AccountBalance.objects.get(account__code="1200", period=period)
+        cc_bal = AccountBalance.objects.get(account__code="2140", period=period)
+        self.assertEqual(ar_bal.debit_total, 20000)
+        self.assertEqual(ar_bal.credit_total, 20000)
+        self.assertEqual(cc_bal.credit_total, 20000)
+
+    def test_explicit_receipt_allocation_to_debit_note(self):
+        # An explicit allocation plan can target a debit note directly.
+        entity, period, customer, _ = self.build_ar()
+        bank = Account.objects.get(entity=entity, code="1100")
+        note = self._post_debit_note(
+            entity, customer, amount=20000, date=datetime.date(2026, 1, 10))
+
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 15),
+            amount=15000, deposit_account=bank,
+        )
+        post_payment(pay, auto_allocate=False, allocations=[(note, 15000)])
+        note.refresh_from_db()
+        pay.refresh_from_db()
+        self.assertEqual(note.amount_paid, 15000)
+        self.assertEqual(note.balance_due, 5000)
+        self.assertEqual(note.settlement_status, InvoicePaymentStatus.PARTIAL)
+        self.assertEqual(pay.allocated_amount, 15000)
+
+    def test_stored_credit_settles_debit_note(self):
+        # A receipt posted before the debit note leaves stored credit; allocating it
+        # later drains the credit onto the open debit note.
+        entity, period, customer, _ = self.build_ar()
+        bank = Account.objects.get(entity=entity, code="1100")
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 5),
+            amount=20000, deposit_account=bank,
+        )
+        post_payment(pay)  # no open items → 20k stored credit
+        self.assertEqual(customer_credit_balance(customer), 20000)
+
+        note = self._post_debit_note(
+            entity, customer, amount=20000, date=datetime.date(2026, 1, 10))
+        # A fresh debit note offsets the refundable credit until settled.
+        self.assertEqual(customer_credit_balance(customer), 0)
+
+        allocate_payment(pay)  # drain stored credit onto the debit note
+        note.refresh_from_db()
+        self.assertEqual(note.balance_due, 0)
+        self.assertEqual(note.settlement_status, InvoicePaymentStatus.PAID)
+        cc_bal = AccountBalance.objects.get(account__code="2140", period=period)
+        self.assertEqual(cc_bal.credit_total, 20000)  # booked on receipt
+        self.assertEqual(cc_bal.debit_total, 20000)   # reclassed onto the DN → net 0
+
+    def test_receipt_allocates_across_invoice_and_debit_note_oldest_first(self):
+        # Mixed open items settle oldest-first regardless of document type.
+        entity, period, customer, _ = self.build_ar()
+        bank = Account.objects.get(entity=entity, code="1100")
+        note = self._post_debit_note(
+            entity, customer, amount=30000, date=datetime.date(2026, 1, 8))
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)])
+        inv.invoice_date = datetime.date(2026, 1, 20)
+        inv.due_date = datetime.date(2026, 1, 20)
+        inv.save(update_fields=["invoice_date", "due_date"])
+        post_invoice(inv)
+
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 25),
+            amount=40000, deposit_account=bank,
+        )
+        post_payment(pay)  # oldest-first → DN (Jan 8) fully, then 10k onto the invoice
+        note.refresh_from_db()
+        inv.refresh_from_db()
+        self.assertEqual(note.balance_due, 0)
+        self.assertEqual(inv.amount_paid, 10000)
+        self.assertEqual(inv.balance_due, 40000)
+
     def test_credit_note_revenue_line_carries_cost_centre_to_gl(self):
         from .models import CostCenter
 
@@ -1029,6 +1143,62 @@ class PaymentPlanTests(_ARFixtureMixin, TestCase):
         self.assertEqual(statuses, ["PAID", "PAID", "PENDING", "PENDING"])
         self.assertEqual(plan.settled_total, 50000)
         self.assertEqual(plan.plan_status, "ACTIVE")
+
+    def test_pre_plan_waiver_does_not_pre_settle_installments(self):
+        """A waiver applied before the plan reduces the spread total but must NOT count
+        as an installment payment — the first installment stays fully PENDING."""
+        entity, period, customer, _ = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 3225000, None)])
+        post_invoice(inv)  # ₦3,225,000 outstanding
+
+        # 10% waiver → 322,500 credited, balance 2,902,500.
+        waiver = Concession.objects.create(
+            entity=entity, customer=customer, invoice=inv, kind="WAIVER",
+            concession_date=datetime.date(2026, 1, 12), amount=322500,
+        )
+        post_concession(waiver)
+        inv.refresh_from_db()
+        self.assertEqual(inv.balance_due, 2902500)
+
+        # Spread the outstanding balance over 3 monthly installments of 967,500.
+        plan = PaymentPlan.objects.create(
+            entity=entity, customer=customer, invoice=inv,
+            start_date=datetime.date(2026, 1, 15), frequency="MONTHLY",
+            installment_count=3, total_amount=inv.balance_due,
+        )
+        build_installments(plan)
+        self.assertEqual([i.amount for i in plan.installments.order_by("seq_no")],
+                         [967500, 967500, 967500])
+        activate_payment_plan(plan)
+        plan.refresh_from_db()
+
+        # The waiver is the plan's baseline — nothing is pre-settled.
+        self.assertEqual(plan.baseline_settled, 322500)
+        installs = list(plan.installments.order_by("seq_no"))
+        self.assertEqual([i.status for i in installs], ["PENDING", "PENDING", "PENDING"])
+        self.assertEqual(installs[0].amount_settled, 0)
+        self.assertEqual(installs[0].balance, 967500)
+
+        # A real ₦967,500 payment then fully settles installment #1 only.
+        bank = Account.objects.get(entity=entity, code="1100")
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 16),
+            amount=967500, deposit_account=bank,
+        )
+        post_payment(pay)  # auto-refreshes the linked plan
+        plan.refresh_from_db()
+        self.assertEqual([i.status for i in plan.installments.order_by("seq_no")],
+                         ["PAID", "PENDING", "PENDING"])
+
+        # Paying the remaining two installments completes the plan.
+        pay2 = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 22),
+            amount=1935000, deposit_account=bank,
+        )
+        post_payment(pay2)
+        plan.refresh_from_db()
+        self.assertEqual(plan.plan_status, "COMPLETED")
+        self.assertTrue(all(i.status == "PAID" for i in plan.installments.all()))
 
     def test_build_rejects_mismatched_explicit_amounts(self):
         entity, period, customer, vat = self.build_ar()
@@ -4563,9 +4733,9 @@ class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
         self.assertTrue(d["gl_postings"])
         self.assertEqual(d["summary"]["total"]["kobo"], inv.total)
 
-    def test_detail_surfaces_credit_note_and_write_off_settlements(self):
-        """A credit note and a write-off must appear in settlements, gl_journals and
-        the summary — not just cash payments."""
+    def test_detail_surfaces_credit_note_concession_and_write_off_settlements(self):
+        """A credit note, a concession and a write-off must all appear in settlements,
+        gl_journals and the summary — not just cash payments."""
         import json
         from django.contrib.auth import get_user_model
         from rest_framework.test import APIRequestFactory, force_authenticate
@@ -4576,7 +4746,7 @@ class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
         post_invoice(inv)  # total 100,000, all AR
 
-        # Apply a 30,000 credit note, then write off the remaining balance.
+        # 30,000 credit note + 20,000 concession, then write off the remaining balance.
         note = CreditNote.objects.create(
             entity=entity, customer=customer, kind=CreditNoteKind.CREDIT,
             note_date=datetime.date(2026, 1, 15), invoice=inv, reason="Goodwill",
@@ -4586,6 +4756,11 @@ class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
             quantity=1, unit_price=30000, tax_code=None, line_no=1,
         )
         post_credit_note(note, auto_allocate=True)
+        concession = Concession.objects.create(
+            entity=entity, customer=customer, invoice=inv, kind="WAIVER",
+            concession_date=datetime.date(2026, 1, 18), amount=20000,
+        )
+        post_concession(concession)
         write_off_invoice(inv, write_off_date=datetime.date(2026, 1, 28))
         inv.refresh_from_db()
 
@@ -4608,18 +4783,19 @@ class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
         self.assertEqual(d["summary"]["settled"]["kobo"], 100000)
         self.assertEqual(d["summary"]["balance"]["kobo"], 0)
 
-        # Settlements carry both the credit note and the write-off (no cash payment).
+        # Settlements carry the credit note, the concession and the write-off (no cash).
         types = {s["type"] for s in d["settlements"]}
-        self.assertEqual(types, {"CREDIT_NOTE", "WRITE_OFF"})
+        self.assertEqual(types, {"CREDIT_NOTE", "CONCESSION", "WRITE_OFF"})
         self.assertEqual([s["type"] for s in d["settlements"] if s["type"] == "PAYMENT"], [])
 
-        # GL history has all three journals: the invoice, the credit note, the write-off.
+        # GL history has every journal: invoice, credit note, concession, write-off.
         doc_types = {g["document_type"] for g in d["gl_journals"]}
-        self.assertEqual(doc_types, {"INVOICE", "CREDIT_NOTE", "WRITE_OFF"})
+        self.assertEqual(doc_types, {"INVOICE", "CREDIT_NOTE", "CONCESSION", "WRITE_OFF"})
 
-        # Activity timeline mentions both non-cash events.
+        # Activity timeline mentions all three non-cash events.
         labels = " ".join(a["label"] for a in d["activity"])
         self.assertIn("Credit note", labels)
+        self.assertIn("Waiver", labels)
         self.assertIn("Write-off", labels)
 
 

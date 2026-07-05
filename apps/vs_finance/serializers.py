@@ -554,7 +554,7 @@ class PaymentPlanSerializer(serializers.ModelSerializer):
             "id", "document_number", "customer_id", "customer_code", "customer_name",
             "invoice_id", "invoice_number", "plan_status", "start_date", "frequency",
             "installment_count", "total_amount", "total_naira",
-            "scheduled_total", "settled_total", "outstanding_total",
+            "baseline_settled", "scheduled_total", "settled_total", "outstanding_total",
             "notes", "installments",
         ]
 

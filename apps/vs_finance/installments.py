@@ -167,8 +167,15 @@ def _activate_payment_plan_atomic(plan, *, actor_user=None):
             f"{plan.total_amount} kobo; rebuild the schedule.",
         )
 
+    # Snapshot the invoice settlement that predates the plan. Because the plan spreads
+    # the *outstanding balance* (total minus what's already settled — e.g. a waiver),
+    # that prior settlement is baked into total_amount and must not also be counted as
+    # installment progress. Only settlement beyond this baseline advances the schedule.
+    if plan.invoice_id is not None:
+        plan.invoice.refresh_from_db()
+        plan.baseline_settled = plan.invoice.settled_amount
     plan.plan_status = PaymentPlanStatus.ACTIVE
-    plan.save(update_fields=["plan_status", "updated_at"])
+    plan.save(update_fields=["plan_status", "baseline_settled", "updated_at"])
     record(
         entity=plan.entity, action=FinanceAuditAction.PAYMENT_PLAN_ACTIVATED,
         actor_user=actor_user, target=plan,
@@ -200,9 +207,11 @@ def refresh_plan_progress(plan, *, settled_amount=None, actor_user=None):
     """Distribute settlement across the plan's installments oldest-first.
 
     ``settled_amount`` (kobo) overrides the source figure; otherwise, for a plan linked
-    to an invoice, the invoice's :attr:`Invoice.settled_amount` (cash + non-cash
-    credits) is used. Each installment is filled in sequence, its ``amount_settled`` and
-    derived status updated. When the whole plan is settled it flips to COMPLETED.
+    to an invoice, the settlement *since activation* is used — the invoice's
+    :attr:`Invoice.settled_amount` (cash + non-cash credits) minus the plan's
+    ``baseline_settled`` snapshot, so pre-plan credits/waivers baked into the plan total
+    aren't double-counted. Each installment is filled in sequence, its ``amount_settled``
+    and derived status updated. When the whole plan is settled it flips to COMPLETED.
     Returns the plan. No GL effect — this only mirrors money already posted elsewhere.
     """
     if plan.plan_status not in (PaymentPlanStatus.ACTIVE, PaymentPlanStatus.COMPLETED):
@@ -211,7 +220,9 @@ def refresh_plan_progress(plan, *, settled_amount=None, actor_user=None):
     if settled_amount is None:
         if plan.invoice_id is not None:
             plan.invoice.refresh_from_db()
-            settled_amount = plan.invoice.settled_amount
+            # Only settlement *after* the plan's baseline counts toward installments —
+            # pre-plan credits/waivers are already reflected in the smaller total_amount.
+            settled_amount = plan.invoice.settled_amount - plan.baseline_settled
         else:
             settled_amount = plan.settled_total  # standalone plan: leave as-is
     remaining = max(int(settled_amount), 0)

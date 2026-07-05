@@ -262,64 +262,98 @@ def customer_credit_balance(customer) -> int:
         customer=customer, status=DocumentStatus.POSTED, kind=CreditNoteKind.CREDIT))
     refunded = Refund.objects.filter(
         customer=customer, status=DocumentStatus.POSTED).aggregate(s=Sum("amount"))["s"] or 0
-    return pay + notes - refunded
+    # A still-unsettled DEBIT note is an outstanding charge; it offsets refundable credit
+    # so we never hand back cash that a supplementary charge still needs to collect.
+    # Floored at zero: a net-negative position means the customer owes, not that they
+    # have credit to refund.
+    debit_due = sum(n.balance_due for n in CreditNote.objects.filter(
+        customer=customer, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT))
+    return max(0, pay + notes - refunded - debit_due)
 
 
 #: Supported auto-allocation strategies for settling a receipt's cash.
 ALLOCATION_STRATEGIES = ("oldest", "largest")
 
 
-def _build_invoice_plan(customer, allocations, *, strategy="oldest"):
-    """An explicit ``[(invoice, amount)]`` plan, or open invoices in ``strategy`` order.
+def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_debit_notes=False):
+    """An explicit ``[(target, amount)]`` plan, or open AR items in ``strategy`` order.
 
-    ``strategy`` (when ``allocations`` is not given): ``"oldest"`` settles by due date
-    first (the default), ``"largest"`` settles the biggest outstanding balance first.
+    A *target* is an :class:`Invoice` or — when ``include_debit_notes`` is set — a posted
+    DEBIT :class:`CreditNote`, which debits AR just like an invoice and is settled the
+    same way by receipts. Both expose ``balance_due``. ``strategy`` (when ``allocations``
+    is not given): ``"oldest"`` settles by document date first (the default), ``"largest"``
+    settles the biggest outstanding balance first. Debit-note settlement is opt-in because
+    the credit-note sub-ledger can only point at invoices; payment paths pass it True.
     """
     from django.db.models import F
 
-    from .models import Invoice
+    from .constants import CreditNoteKind
+    from .models import CreditNote, Invoice
 
     if allocations is not None:
         return list(allocations)
-    open_invoices = (
+
+    open_invoices = list(
         Invoice.objects
         .filter(customer=customer, status=DocumentStatus.POSTED)
         .exclude(payment_status=InvoicePaymentStatus.PAID)
     )
+    # (target, balance_due, sort_date) — sort_date drives oldest-first across both types.
+    items = [(inv, inv.balance_due, inv.due_date or inv.invoice_date) for inv in open_invoices]
+    if include_debit_notes:
+        open_notes = list(
+            CreditNote.objects
+            .filter(customer=customer, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT)
+            .exclude(settlement_status=InvoicePaymentStatus.PAID)
+        )
+        items += [(dn, dn.balance_due, dn.note_date) for dn in open_notes]
+
     if strategy == "largest":
-        open_invoices = open_invoices.annotate(
-            _bal=F("total") - F("amount_paid") - F("amount_credited"),
-        ).order_by("-_bal", "due_date", "id")
+        items.sort(key=lambda t: (-t[1], t[2], t[0].pk))
     else:
-        open_invoices = open_invoices.order_by("due_date", "invoice_date", "id")
-    return [(inv, inv.balance_due) for inv in open_invoices]
+        items.sort(key=lambda t: (t[2], t[0].pk))
+    return [(target, balance) for target, balance, _date in items]
 
 
 def _apply_payment_subledger(payment, plan, *, remaining):
-    """Create/extend PaymentAllocation rows + bump invoice ``amount_paid`` for the
-    plan, capped at each invoice balance and ``remaining``. GL-agnostic — the caller
-    posts the journal. Returns ``(applied_total, created_rows)``."""
-    from .models import PaymentAllocation
+    """Settle the plan's AR targets from a payment, capped at each target's balance and
+    ``remaining``. A target is an :class:`Invoice` (→ PaymentAllocation, bump
+    ``amount_paid``) or a DEBIT :class:`CreditNote` (→ DebitNoteAllocation, bump its
+    ``amount_paid``). GL-agnostic — the caller posts the journal (the applied total
+    credits AR either way). Returns ``(applied_total, created_rows)``."""
+    from .models import CreditNote, DebitNoteAllocation, PaymentAllocation
 
     applied, created = 0, []
-    for invoice, requested in plan:
+    for target, requested in plan:
         if remaining <= 0:
             break
-        apply_amount = min(int(requested), invoice.balance_due, remaining)
+        apply_amount = min(int(requested), target.balance_due, remaining)
         if apply_amount <= 0:
             continue
-        alloc, _was = PaymentAllocation.objects.get_or_create(
-            payment=payment, invoice=invoice, defaults={"amount": 0},
-        )
-        alloc.amount += apply_amount
-        alloc.save(update_fields=["amount", "updated_at"])
 
-        invoice.amount_paid += apply_amount
-        invoice.refresh_payment_status(save=False)
-        invoice.save(update_fields=["amount_paid", "payment_status", "updated_at"])
-        # Keep any installment plan on this invoice in step with the new settlement.
-        from .installments import refresh_plans_for_invoice
-        refresh_plans_for_invoice(invoice)
+        if isinstance(target, CreditNote):
+            alloc, _was = DebitNoteAllocation.objects.get_or_create(
+                payment=payment, note=target, defaults={"amount": 0},
+            )
+            alloc.amount += apply_amount
+            alloc.save(update_fields=["amount", "updated_at"])
+
+            target.amount_paid += apply_amount
+            target.refresh_settlement_status(save=False)
+            target.save(update_fields=["amount_paid", "settlement_status", "updated_at"])
+        else:
+            alloc, _was = PaymentAllocation.objects.get_or_create(
+                payment=payment, invoice=target, defaults={"amount": 0},
+            )
+            alloc.amount += apply_amount
+            alloc.save(update_fields=["amount", "updated_at"])
+
+            target.amount_paid += apply_amount
+            target.refresh_payment_status(save=False)
+            target.save(update_fields=["amount_paid", "payment_status", "updated_at"])
+            # Keep any installment plan on this invoice in step with the new settlement.
+            from .installments import refresh_plans_for_invoice
+            refresh_plans_for_invoice(target)
 
         remaining -= apply_amount
         applied += apply_amount
@@ -377,9 +411,11 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
     if payment.deposit_account_id is None:
         raise PostingError("Payment has no deposit (bank/cash) account set.")
 
-    # Split at source: settle invoices against AR, and book any unapplied cash as a
-    # customer-credit liability (so AR never carries a credit balance).
-    plan = (_build_invoice_plan(customer, allocations, strategy=strategy)
+    # Split at source: settle open AR items (invoices + debit notes) against AR, and
+    # book any unapplied cash as a customer-credit liability (so AR never carries a
+    # credit balance).
+    plan = (_build_invoice_plan(customer, allocations, strategy=strategy,
+                                include_debit_notes=True)
             if (allocations is not None or auto_allocate) else [])
     applied, _created = _apply_payment_subledger(payment, plan, remaining=payment.amount)
     excess = payment.amount - applied
@@ -447,7 +483,8 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
     if remaining <= 0:
         return []
 
-    plan = _build_invoice_plan(payment.customer, allocations, strategy=strategy)
+    plan = _build_invoice_plan(payment.customer, allocations, strategy=strategy,
+                               include_debit_notes=True)
     applied, created = _apply_payment_subledger(payment, plan, remaining=remaining)
     if applied <= 0:
         return []
