@@ -285,6 +285,19 @@ def post_concession(concession, *, actor_user=None):
 
 @transaction.atomic
 def _post_concession_atomic(concession, *, actor_user=None):
+    """Post a draft concession: raise its journal and mark it POSTED.
+    
+    Steps:
+      1. **Guard.** Only a DRAFT concession posts, and the amount must be positive and 
+      not exceed the invoice's outstanding balance.
+      2. **Post the journal** (``Dr discounts & allowances, Cr AR control``) to clear 
+      that much of the invoice.
+      3. **Finalise.** Link the journal, flip status to POSTED, update the invoice's 
+      ``amount_credited`` and refresh any active payment plan. 
+      4. Write a CONCESSION_POSTED audit record. Returns the updated ``concession``. 
+      Raises ``PostingError`` on any guard failure; ``post_concession`` wraps this 
+      to record a rejection on ``FinanceError``.
+    """
     from .models import JournalEntry, JournalLine, PaymentPlan
 
     if concession.status != DocumentStatus.DRAFT:
