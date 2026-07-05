@@ -373,6 +373,14 @@ def post_refund(refund, *, actor_user=None):
 
 @transaction.atomic
 def _post_refund_atomic(refund, *, actor_user=None):
+    """Post a draft refund: raise its bank journal and mark it POSTED.
+    Steps:
+      1. **Guard.** Only a DRAFT refund posts, and the amount must be positive and not exceed the customer's available credit.
+      2. **Post the journal** (``Dr customer-credit (2140), Cr bank``) to pay out the refund.
+      3. **Finalise.** Link the journal, flip status to POSTED, and write a REFUND_POSTED audit record.
+        Returns the updated ``refund``. Raises ``PostingError`` on any guard failure;
+        ``post_refund`` wraps this to record a rejection on ``FinanceError``.
+    """
     from .models import JournalEntry, JournalLine
 
     if refund.status != DocumentStatus.DRAFT:
