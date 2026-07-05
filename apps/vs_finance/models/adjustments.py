@@ -245,6 +245,15 @@ class Concession(FinanceDocument):
     invoice via :attr:`Invoice.amount_credited` — exactly like a targeted, single-line
     credit note, but tagged by :class:`~vs_finance.constants.ConcessionKind` for
     reporting (a school tenant's *scholarship*/*bursary* is just ``kind=SCHOLARSHIP``).
+
+    Arguments:
+        customer: The customer receiving the concession.
+        invoice: The invoice whose balance this concession reduces.
+        kind: The type of concession (discount, waiver, scholarship).
+        concession_date: The date the concession is granted.
+        amount: The amount of the receivable forgiven/discounted, in kobo.
+        allowance_account: The contra-revenue/expense account debited (optional).
+        reason: Optional reason for the concession.
     """
 
     DOC_TYPE = DocType.CONCESSION
