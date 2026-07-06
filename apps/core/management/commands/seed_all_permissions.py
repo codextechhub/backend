@@ -15,7 +15,9 @@ All individual seeds are idempotent, so this command is safe to re-run.
 Seed order
 ----------
 1. seed_actions              — global PermissionAction vocabulary (verbs)
-2. seed_prebuilt_role_templates — school_admin / branch_admin prebuilt roles
+2. seed_prebuilt_role_templates — school_admin / branch_admin / teacher prebuilt roles
+2b. seed_school_permissions  — school + academics modules → prebuilt-role defaults
+                               + backfill existing school role templates
 3. seed_platform_permissions — platform module (registry, roles, team, staff,
                                organogram, schools, branches, audit, dashboard)
                                → both platform roles
@@ -34,6 +36,7 @@ SEED_STEPS: list[tuple[str, list]] = [
     # (management_command_name, extra_args)
     ("seed_actions",                 []),
     ("seed_prebuilt_role_templates", []),
+    ("seed_school_permissions",      []),
     ("seed_platform_permissions",    []),
     ("seed_import_permissions",      []),
     ("seed_workflow_permissions",    []),

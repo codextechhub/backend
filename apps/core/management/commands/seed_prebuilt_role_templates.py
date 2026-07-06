@@ -18,6 +18,13 @@ PREBUILT_ROLES = [
         "tier": "A",
         "description": "Administrative manager of a single branch.",
     },
+    {
+        "key": "teacher",
+        "name": "Teacher",
+        "scope": "branch",
+        "tier": "B",
+        "description": "Teaching staff member scoped to a branch. Sensible default role for STAFF-type users invited as teachers.",
+    },
 ]
 
 

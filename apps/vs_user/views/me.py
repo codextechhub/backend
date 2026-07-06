@@ -22,6 +22,7 @@ from ..models import (
 )
 from ..serializers import (
     UserReadSerializer,
+    school_public_info,
 )
 
 from django.utils.dateparse import parse_date as _parse_date
@@ -48,6 +49,7 @@ class CurrentUserView(APIView):
             message="Current user retrieved successfully.",
             data={
                 "user": UserReadSerializer(request.user).data,
+                "school": school_public_info(getattr(request.user, "school", None), request),
                 "permissions": permissions,
             },
         )

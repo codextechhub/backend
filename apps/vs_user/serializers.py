@@ -34,6 +34,38 @@ from .models import (
 )
 
 
+def school_public_info(school, request=None) -> dict | None:
+    """Return a school's public branding identity for auth payloads.
+
+    Shape: ``{"id", "name", "slug", "logo"}`` where ``logo`` is an absolute URL
+    (built from ``request`` when available) or ``None``. Returns ``None`` when
+    there is no school (e.g. CX_STAFF or a user without a school FK).
+
+    Null-safe at every level: a missing ``branding`` row, a missing logo upload,
+    or an unreadable file URL all resolve to ``logo: None`` rather than raising.
+    """
+    if school is None:
+        return None
+
+    logo_url = None
+    branding = getattr(school, "branding", None)
+    logo = getattr(branding, "logo", None) if branding is not None else None
+    if logo:
+        try:
+            url = logo.url
+        except Exception:
+            url = None
+        if url:
+            logo_url = request.build_absolute_uri(url) if request is not None else url
+
+    return {
+        "id": school.id,
+        "name": school.name,
+        "slug": school.slug,
+        "logo": logo_url,
+    }
+
+
 # =============================================================================
 # Helpers -- UNCHANGED FROM ORIGINAL
 # =============================================================================

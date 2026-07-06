@@ -9,7 +9,7 @@ from django.utils import timezone
 
 from ..models import User, LoginSession, AccountLockout, AuthAttempt, AuthEventLog
 from ..tokens import CodeXRefreshToken
-from ..serializers import UserReadSerializer
+from ..serializers import UserReadSerializer, school_public_info
 from .audit import log_auth_event, record_attempt, blacklist_all_user_tokens, get_client_ip, get_device_label
 
 # TODO: Default lockout threshold — overridable per school via System Config (Module 6).
@@ -141,6 +141,7 @@ class LoginService:
             'refresh':     tokens['refresh'],
             'session_id':  session.id,
             'user':        UserReadSerializer(authed).data,
+            'school':      school_public_info(authed.school, request),
             'permissions': permissions,
         }
 
