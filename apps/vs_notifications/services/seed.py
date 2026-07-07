@@ -443,6 +443,7 @@ def _build_default_templates() -> dict:
             "body": (
                 "Overdue invoice: ₦{{ amount_outstanding }} outstanding for "
                 "{{ student_first_name }} {{ student_last_name }} — {{ days_overdue }} day(s) overdue."
+                " {{ reminder_message }}"
             ),
         },
         ("billing.invoice_overdue", C.EMAIL): {
@@ -450,6 +451,7 @@ def _build_default_templates() -> dict:
             "body": (
                 "Dear Parent/Guardian,\n\n"
                 "This is a reminder that the following invoice is overdue.\n\n"
+                "{{ reminder_message }}\n\n"
                 "Student: {{ student_first_name }} {{ student_last_name }}\n"
                 "Invoice number: {{ invoice_number }}\n"
                 "Outstanding amount: ₦{{ amount_outstanding }}\n"

@@ -37,6 +37,15 @@ app.conf.beat_schedule = {
         "schedule": crontab(hour=2, minute=30),
     },
 
+    # --- vs_finance (dunning) --------------------------------------------
+    # Daily: generate the day's overdue reminders and dispatch every PENDING
+    # notice through vs_notifications. Idempotent per (invoice, level) and per
+    # run date, so a missed window is safe.
+    "finance-daily-dunning": {
+        "task": "vs_finance.run_daily_dunning",
+        "schedule": crontab(hour=6, minute=0),
+    },
+
     # --- vs_health (VIGIL observability) ---------------------------------
     # Synthetic probes, queue snapshots, and alert evaluation. All idempotent
     # and safe to miss in eager environments.

@@ -6370,3 +6370,213 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         inv.refresh_from_db()
         self.assertEqual(inv.amount_credited, 100000)
         self.assertEqual(inv.balance_due, 0)
+
+
+class DunningNotificationTests(_GLFixtureMixin, TestCase):
+    """Dunning delivery routed entirely through vs_notifications.
+
+    Proves that generating + sending a dunning notice creates a
+    ``vs_notifications.Notification`` record (delivery goes through the notification
+    system, never from vs_finance directly), that the policy stage's message carries
+    the escalation wording, and that the daily scheduler + graceful-degradation paths
+    behave. Notifications are school-scoped, so these use a school-owned entity.
+    """
+
+    def setUp(self):
+        from vs_notifications.services.seed import (
+            seed_event_types, seed_notification_templates, seed_school_settings,
+        )
+
+        # Seed the notification event types + default templates (fresh test DB, so the
+        # get_or_create seed picks up the extended overdue template), then the school's
+        # channel settings.
+        seed_event_types()
+        seed_notification_templates()
+
+        self.school = School.objects.create(name="Maplewood", slug="maplewood-dnt", code="MPLDN")
+        seed_school_settings(self.school)
+
+        seed_currencies()
+        self.entity = LedgerEntity.objects.create(
+            name="Maplewood Books", code="MPLBK", kind=LedgerEntity.Kind.TENANT,
+            source_school=self.school,
+        )
+        seed_chart_of_accounts(self.entity)
+        self.year = FiscalYear.objects.create(
+            entity=self.entity, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        self.period = FiscalPeriod.objects.create(
+            entity=self.entity, fiscal_year=self.year, period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+            status=PeriodStatus.OPEN,
+        )
+        self.customer = Customer.objects.create(
+            entity=self.entity, code="CUSTD", name="Debtor Ltd",
+            receivable_account=Account.objects.get(entity=self.entity, code="1200"),
+            billing_email="debtor@example.com",
+        )
+
+    # --- helpers ----------------------------------------------------------- #
+
+    def _overdue_invoice(self, *, unit_price=100000, due=datetime.date(2026, 1, 10)):
+        inv = Invoice.objects.create(
+            entity=self.entity, customer=self.customer,
+            invoice_date=datetime.date(2026, 1, 1), due_date=due,
+        )
+        InvoiceLine.objects.create(
+            invoice=inv, revenue_account=Account.objects.get(entity=self.entity, code="4100"),
+            quantity=1, unit_price=unit_price, tax_code=None, line_no=1,
+        )
+        post_invoice(inv)
+        inv.refresh_from_db()
+        return inv
+
+    def _generate_one(self, *, as_of=datetime.date(2026, 2, 15)):
+        ensure_default_policy(self.entity)
+        self._overdue_invoice()
+        notices = generate_dunning(self.entity, as_of=as_of)
+        self.assertEqual(len(notices), 1)
+        return notices[0]
+
+    # --- 1. delivery goes through vs_notifications ------------------------- #
+
+    def test_mark_sent_creates_email_notification_and_flips_sent(self):
+        from vs_notifications.models import Notification
+        from vs_notifications.constants import ChannelChoices
+
+        notice = self._generate_one()
+        mark_notice_sent(notice)
+
+        notice.refresh_from_db()
+        self.assertEqual(notice.notice_status, "SENT")
+        self.assertIsNotNone(notice.sent_at)
+
+        email = Notification.objects.filter(
+            school=self.school, channel=ChannelChoices.EMAIL,
+            unregistered_email="debtor@example.com",
+        )
+        self.assertTrue(email.exists(), "an EMAIL notification should be created for the customer")
+
+    # --- 2. escalation wording comes from the policy ---------------------- #
+
+    def test_email_body_contains_policy_reminder_message(self):
+        from vs_notifications.models import Notification
+        from vs_notifications.constants import ChannelChoices
+
+        notice = self._generate_one()
+        # The generated notice snapshots the stage message (the policy's wording).
+        self.assertTrue(notice.message)
+        mark_notice_sent(notice)
+
+        email = Notification.objects.get(
+            school=self.school, channel=ChannelChoices.EMAIL,
+            unregistered_email="debtor@example.com",
+        )
+        self.assertIn(notice.message, email.body)
+
+    # --- 3. platform/no-school entity: skipped gracefully ------------------ #
+
+    def test_no_school_entity_skips_delivery_but_marks_sent(self):
+        from vs_notifications.models import Notification
+
+        platform = LedgerEntity.objects.create(
+            name="Platform Books", code="PLTDN", kind=LedgerEntity.Kind.PLATFORM,
+        )
+        seed_chart_of_accounts(platform)
+        FiscalYear.objects.create(
+            entity=platform, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        FiscalPeriod.objects.create(
+            entity=platform, fiscal_year=FiscalYear.objects.get(entity=platform),
+            period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+            status=PeriodStatus.OPEN,
+        )
+        cust = Customer.objects.create(
+            entity=platform, code="PCUST", name="Platform Debtor",
+            receivable_account=Account.objects.get(entity=platform, code="1200"),
+            billing_email="p@example.com",
+        )
+        inv = Invoice.objects.create(
+            entity=platform, customer=cust, invoice_date=datetime.date(2026, 1, 1),
+            due_date=datetime.date(2026, 1, 10),
+        )
+        InvoiceLine.objects.create(
+            invoice=inv, revenue_account=Account.objects.get(entity=platform, code="4100"),
+            quantity=1, unit_price=100000, tax_code=None, line_no=1,
+        )
+        post_invoice(inv)
+        ensure_default_policy(platform)
+        notices = generate_dunning(platform, as_of=datetime.date(2026, 2, 15))
+        self.assertEqual(len(notices), 1)
+
+        before = Notification.objects.count()
+        mark_notice_sent(notices[0])  # must not raise
+        notices[0].refresh_from_db()
+        # No school → delivery skipped, but the notice still flips SENT (nothing to retry).
+        self.assertEqual(notices[0].notice_status, "SENT")
+        self.assertEqual(Notification.objects.count(), before)
+
+    # --- 4. customer without billing_email → FAILED notification ---------- #
+
+    def test_missing_billing_email_records_failed_notification(self):
+        from vs_notifications.models import Notification
+        from vs_notifications.constants import ChannelChoices, NotificationStatus
+
+        self.customer.billing_email = ""
+        self.customer.save(update_fields=["billing_email"])
+
+        notice = self._generate_one()
+        mark_notice_sent(notice)  # must not crash
+
+        failed = Notification.objects.filter(
+            school=self.school, channel=ChannelChoices.EMAIL,
+            status=NotificationStatus.FAILED, failure_reason="NO_EMAIL_ADDRESS",
+        )
+        self.assertTrue(failed.exists())
+        notice.refresh_from_db()
+        self.assertEqual(notice.notice_status, "SENT")
+
+    # --- 5. run_daily_dunning end-to-end + skips no-policy entity ---------- #
+
+    def test_run_daily_dunning_generates_dispatches_and_skips_no_policy(self):
+        from vs_finance.tasks import run_daily_dunning
+        from vs_notifications.models import Notification
+        from vs_notifications.constants import ChannelChoices
+        from vs_notifications.services.seed import seed_school_settings
+
+        # This entity has a policy + an overdue invoice.
+        ensure_default_policy(self.entity)
+        self._overdue_invoice(due=datetime.date(2026, 1, 5))
+
+        # A second school entity with NO policy — must be skipped, not crash the run.
+        other_school = School.objects.create(name="Oak", slug="oak-dnt", code="OAKDN")
+        seed_school_settings(other_school)
+        other = LedgerEntity.objects.create(
+            name="Oak Books", code="OAKBK", kind=LedgerEntity.Kind.TENANT,
+            source_school=other_school,
+        )
+        seed_chart_of_accounts(other)
+
+        result = run_daily_dunning()
+
+        self.assertGreaterEqual(result["generated"], 1)
+        self.assertGreaterEqual(result["sent"], 1)
+        self.assertGreaterEqual(result["skipped"], 1)  # the no-policy entity
+        self.assertTrue(Notification.objects.filter(
+            school=self.school, channel=ChannelChoices.EMAIL,
+            unregistered_email="debtor@example.com").exists())
+
+    # --- 6. idempotency: second mark_notice_sent is a no-op --------------- #
+
+    def test_second_mark_sent_does_not_duplicate_notification(self):
+        from vs_notifications.models import Notification
+
+        notice = self._generate_one()
+        mark_notice_sent(notice)
+        count_after_first = Notification.objects.count()
+
+        mark_notice_sent(notice)  # already SENT → no-op
+        self.assertEqual(Notification.objects.count(), count_after_first)

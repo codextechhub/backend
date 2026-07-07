@@ -14,6 +14,7 @@ through the recorded channel. All amounts are integer kobo.
 from __future__ import annotations
 
 import datetime
+import logging
 
 from django.db import transaction
 from django.utils import timezone
@@ -26,6 +27,8 @@ from .constants import (
     FinanceAuditAction,
 )
 from .exceptions import PostingError
+
+logger = logging.getLogger(__name__)
 
 
 #: A sensible out-of-the-box ladder: (level, name, min_days_overdue, channel).
@@ -248,8 +251,88 @@ def _resolve_settled(entity, *, actor_user=None):
             notice.save(update_fields=["notice_status", "updated_at"])
 
 
+def _dispatch_notice(notice, *, actor_user=None):
+    """Deliver a dunning ``notice`` through **vs_notifications** — never directly.
+
+    Routing all delivery through the notification system keeps vs_finance out of the
+    email business: it fires the platform-wide ``billing.invoice_overdue`` event with a
+    context carrying every variable the templates reference (plus the policy stage's
+    ``reminder_message`` so the escalation wording comes from the dunning policy, not a
+    per-level event), targeting the customer's ``billing_email`` as an
+    :class:`~vs_notifications.services.dispatch.UnregisteredRecipient`.
+
+    Degrades gracefully in two cases, mirroring the finance audit-mirror / approval-
+    notification patterns:
+
+    * **No school** — the notice's entity is a platform/product book
+      (``source_school`` is ``None``); notifications are school-scoped, so delivery is
+      impossible. Logs at info and returns ``None`` (the caller still flips the notice
+      SENT — see :func:`mark_notice_sent`).
+    * **vs_notifications unavailable** (ImportError) — logs and returns ``None``.
+
+    A genuine :class:`~vs_notifications.exceptions.UnknownEventTypeError` (the event key
+    isn't seeded/active) propagates — that is a deploy-config error the caller decides
+    how to handle. Returns the ``NotificationService.send`` result (list of ids), or
+    ``None`` when delivery was skipped.
+    """
+    from .money import to_naira
+
+    school = notice.entity.source_school
+    if school is None:
+        logger.info(
+            "Dunning notice %s: entity %s has no school; cannot school-scope a "
+            "notification — skipping delivery.",
+            notice.document_number or notice.pk, notice.entity_id,
+        )
+        return None
+
+    try:
+        from vs_notifications.services.dispatch import (
+            NotificationService, UnregisteredRecipient,
+        )
+    except ImportError:
+        logger.warning(
+            "vs_notifications unavailable; dunning notice %s not delivered.",
+            notice.document_number or notice.pk,
+        )
+        return None
+
+    customer = notice.customer
+    invoice = notice.invoice
+    context = {
+        "student_first_name": customer.name,
+        "student_last_name": "",
+        "invoice_number": invoice.document_number,
+        "amount_outstanding": f"{to_naira(notice.amount_due):,.2f}",
+        "due_date": invoice.due_date.isoformat() if invoice.due_date else "—",
+        "days_overdue": notice.days_overdue,
+        "school_name": school.name,
+        # Escalation wording is owned by the dunning policy stage, not the event.
+        "reminder_message": notice.message,
+        "level": notice.level,
+    }
+
+    return NotificationService.send(
+        event_key="billing.invoice_overdue",
+        context=context,
+        recipients=[],
+        school=school,
+        unregistered_recipients=[
+            UnregisteredRecipient(
+                email=customer.billing_email or "", name=customer.name,
+            ),
+        ],
+    )
+
+
 def mark_notice_sent(notice, *, actor_user=None):
-    """Record that a PENDING notice was dispatched. Idempotent once sent."""
+    """Deliver a PENDING notice through vs_notifications, then record it SENT.
+
+    Idempotent once sent. Delivery runs **before** the SENT flip, so a dispatch
+    failure leaves the notice PENDING for the next run to retry rather than falsely
+    marking it sent. A no-school / vs_notifications-unavailable skip still flips SENT
+    (delivery isn't possible there; there is nothing to retry).
+    """
     from .models import DunningNotice  # noqa: F401  (typing/clarity)
 
     if notice.notice_status == DunningNoticeStatus.SENT:
@@ -259,6 +342,9 @@ def mark_notice_sent(notice, *, actor_user=None):
             f"Notice {notice.document_number} is '{notice.notice_status}'; "
             f"only a pending notice can be marked sent.",
         )
+
+    _dispatch_notice(notice, actor_user=actor_user)
+
     notice.notice_status = DunningNoticeStatus.SENT
     notice.sent_at = timezone.now()
     notice.save(update_fields=["notice_status", "sent_at", "updated_at"])
