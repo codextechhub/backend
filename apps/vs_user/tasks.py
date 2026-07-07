@@ -127,8 +127,10 @@ def send_invitation_email_task(self, activation_key: str):
         return
 
     except Exception as exc:
-        error_str = str(exc)
-        is_final  = self.request.retries >= self.max_retries
+        # In eager mode the task runs in-process during the HTTP request —
+        # there is no worker to retry on, and self.retry() would raise
+        # straight through the request. Treat the first failure as final.
+        is_final = self.request.is_eager or self.request.retries >= self.max_retries
         label = _classify_email_error(exc)
         _record_invitation_email(activation_key, success=False, error=label)
         if is_final:
@@ -204,5 +206,12 @@ def send_password_reset_email_task(self, activation_key: str, origin: str, sende
         return
     except Exception as exc:
         label = _classify_email_error(exc)
-        logger.error('Password reset email failed for activation_key=%s: %s', activation_key, label)
+        # Eager mode runs in-process during the HTTP request — retrying is
+        # impossible and raising would 500 the request. The reset row already
+        # exists, so log and give up; the user can request another email.
+        if self.request.is_eager or self.request.retries >= self.max_retries:
+            logger.error('Password reset email permanently failed for activation_key=%s: %s', activation_key, label)
+            return
+        logger.warning('Password reset email attempt %s failed for activation_key=%s: %s',
+                       self.request.retries + 1, activation_key, label)
         raise self.retry(exc=exc)

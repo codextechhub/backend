@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import logging
 import uuid
 
 from django.contrib.auth.password_validation import validate_password
@@ -20,6 +21,8 @@ from django.utils import timezone
 from ..models import User, UserInvitation, AuthEventLog, PlatformStaffProfile
 from ..services.audit import log_auth_event
 from ..tokens import CodeXRefreshToken
+
+logger = logging.getLogger(__name__)
 
 
 INVITATION_EXPIRY_DAYS = 7
@@ -192,12 +195,21 @@ class InvitationService:
             )
 
         from ..tasks import send_invitation_email_task
-        send_invitation_email_task.delay(
+        try:
+            send_invitation_email_task.delay(
                 str(user.activation_key),
                 _job_owner_id=str(user.id),
                 _job_school_id=user.school_id,
                 _job_label=f"Invitation email to {user.email}",
                 _job_kind="email",
+            )
+        except Exception:
+            # The invitation record is already reset — an email dispatch
+            # failure must not fail the resend request. The failure is
+            # visible via the invitation's email_status tracking.
+            logger.error(
+                'Failed to dispatch invitation email for user %s — email will need to be resent manually.',
+                user.pk, exc_info=True,
             )
 
         log_auth_event(

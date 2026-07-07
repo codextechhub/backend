@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import logging
 import uuid
 
 from django.contrib.auth.password_validation import validate_password
@@ -13,6 +14,8 @@ from django.utils import timezone
 
 from ..models import User, PasswordResetRequest, AuthEventLog, AccountLockout
 from .audit import log_auth_event, blacklist_all_user_tokens, get_client_ip
+
+logger = logging.getLogger(__name__)
 
 # Self-service reset: 1 hour. Admin-triggered reset: 24 hours.
 RESET_EXPIRY_SELF_HOURS  = 1
@@ -140,21 +143,26 @@ class PasswordService:
         )
         from ..tasks import send_password_reset_email_task
         try:
-            send_password_reset_email_task.delay(
-                activation_key=str(user.activation_key),
-                origin=origin,
-                sender_name=sender_name,
-                _job_owner_id=str(user.id),
-                _job_school_id=user.school_id,
-                _job_label="Password reset email",
-                _job_kind="email",
-            )
-        except Exception:
-            # Broker unavailable — run synchronously so the email still goes out
-            send_password_reset_email_task.apply(
-                kwargs=dict(
+            try:
+                send_password_reset_email_task.delay(
                     activation_key=str(user.activation_key),
                     origin=origin,
                     sender_name=sender_name,
+                    _job_owner_id=str(user.id),
+                    _job_school_id=user.school_id,
+                    _job_label="Password reset email",
+                    _job_kind="email",
                 )
-            )
+            except Exception:
+                # Broker unavailable — run synchronously so the email still goes out
+                send_password_reset_email_task.apply(
+                    kwargs=dict(
+                        activation_key=str(user.activation_key),
+                        origin=origin,
+                        sender_name=sender_name,
+                    )
+                )
+        except Exception:
+            # The reset row already exists — an email failure must never
+            # break the reset request itself. The user can request again.
+            logger.exception("Password reset email dispatch failed for user %s", user.pk)
