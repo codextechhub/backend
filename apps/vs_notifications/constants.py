@@ -50,10 +50,13 @@ class NotificationStatus:
 
 class NotificationErrorCode:
     UNKNOWN_EVENT_TYPE                    = "UNKNOWN_EVENT_TYPE"
+    UNKNOWN_CHANNEL                       = "UNKNOWN_CHANNEL"
+    UNSUPPORTED_CHANNEL                   = "UNSUPPORTED_CHANNEL"
     DUPLICATE_TEMPLATE                    = "DUPLICATE_TEMPLATE"
     INVALID_TEMPLATE_SYNTAX               = "INVALID_TEMPLATE_SYNTAX"
     READ_STATE_NOT_SUPPORTED_FOR_CHANNEL  = "READ_STATE_NOT_SUPPORTED_FOR_CHANNEL"
     IN_APP_ALWAYS_ENABLED                 = "IN_APP_ALWAYS_ENABLED"
+    TRANSACTIONAL_NOT_CONFIGURABLE        = "TRANSACTIONAL_NOT_CONFIGURABLE"
     FILTER_REQUIRED                       = "FILTER_REQUIRED"
     ACCESS_DENIED                         = "ACCESS_DENIED"
     NO_EMAIL_ADDRESS                      = "NO_EMAIL_ADDRESS"
@@ -100,7 +103,12 @@ class NotificationPermission:
 #   description       — when does this event fire?
 #   source_module     — the vs_* app that owns this event
 #   supported_channels— list of channel strings this event supports
-#   default_enabled   — whether new schools start with this event on
+#   default_enabled   — principled fallback when no setting row exists; also
+#                       the value used to seed platform rows
+#   is_transactional  — (optional, default False) True bypasses all
+#                       NotificationSetting checks; the event always dispatches
+#                       on its supported channels (is_active still wins). Use for
+#                       password resets, invites, and similar must-send mail.
 # ---------------------------------------------------------------------------
 
 EVENT_TYPE_REGISTRY = [
@@ -249,11 +257,24 @@ EVENT_TYPE_REGISTRY = [
         "label": "User invited",
         "description": (
             "Fires when a staff invitation email is dispatched. EMAIL channel only — "
-            "the recipient has no in-app account yet."
+            "the recipient has no in-app account yet. Transactional: always sent."
         ),
-        "source_module": "vs_users",
+        "source_module": "vs_user",
         "supported_channels": [ChannelChoices.EMAIL],
         "default_enabled": True,
+        "is_transactional": True,
+    },
+    {
+        "key": "user.password_reset",
+        "label": "Password reset",
+        "description": (
+            "Fires when a password reset email is dispatched (self-service or "
+            "admin-initiated). EMAIL channel only. Transactional: always sent."
+        ),
+        "source_module": "vs_user",
+        "supported_channels": [ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "is_transactional": True,
     },
     {
         "key": "user.account_locked",
@@ -276,6 +297,41 @@ EVENT_TYPE_REGISTRY = [
         "label": "Data import failed",
         "description": "Fires when a data import job fails after exhausting retries.",
         "source_module": "vs_import",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+
+    # ── Background tasks (core) ────────────────────────────────────────────
+    # These were previously created at runtime by core.tasks_base via
+    # get_or_create; registering them here makes seeding authoritative and
+    # upserts by key so the runtime creates find an existing row.
+
+    {
+        "key": "task.completed",
+        "label": "Background task completed",
+        "description": "Fires when a background job the user owns finishes successfully.",
+        "source_module": "core",
+        "supported_channels": [ChannelChoices.IN_APP],
+        "default_enabled": True,
+    },
+    {
+        "key": "task.failed",
+        "label": "Background task failed",
+        "description": "Fires when a background job the user owns fails.",
+        "source_module": "core",
+        "supported_channels": [ChannelChoices.IN_APP],
+        "default_enabled": True,
+    },
+
+    # ── Todo / task review (vs_todo) ───────────────────────────────────────
+    # Also created at runtime by vs_todo; registered here so seeding is
+    # authoritative. Both in-app and email are used by the review-request flow.
+
+    {
+        "key": "todo.task_completed",
+        "label": "Task completed — review requested",
+        "description": "Fires when a self-completed task awaits its reviewer's review.",
+        "source_module": "vs_todo",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
     },

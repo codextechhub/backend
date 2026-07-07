@@ -23,13 +23,17 @@
 #
 #   send_notification(
 #       event_key="user.invited",
-#       context={"invite_link": url, "school_name": school.name},
+#       context={"invitation_url": url, "school_name": school.name},
 #       recipients=[],
-#       school=school,
 #       unregistered_recipients=[
 #           UnregisteredRecipient(email="new@staff.com", name="Jane Doe"),
 #       ],
+#       metadata={"activation_key": key},   # internal-only correlation data
 #   )
+#
+# `school` is OPTIONAL — notifications are recipient-centric. Pass it to scope
+# history and pick up a school's settings overrides; omit it for school-less
+# recipients (CX staff, invitees).
 #
 # All valid event_key values are listed in vs_notifications/constants.py
 # under EVENT_TYPE_REGISTRY.
@@ -47,9 +51,10 @@ def send_notification(
     event_key: str,
     context: dict,
     recipients: list,
-    school,
+    school=None,
     suppress: bool = False,
     unregistered_recipients: Optional[list[UnregisteredRecipient]] = None,
+    metadata: Optional[dict] = None,
 ) -> list[str]:
     """
     Send a notification to one or more recipients for the given event.
@@ -60,11 +65,15 @@ def send_notification(
         context:                 Template variables dict. Keys required per event type
                                  are documented in constants.py EVENT_TYPE_REGISTRY.
         recipients:              List of User instances to notify.
-        school:                  The School instance (scopes the notification).
+        school:                  Optional School instance. Stored on each record for
+                                 filtering/history and used to resolve school-specific
+                                 settings overrides. Defaults to None (platform scope).
         suppress:                Pass True to skip dispatch entirely — useful when
                                  bulk-creating records where notifications would be noise.
         unregistered_recipients: List of UnregisteredRecipient(email, name) for
                                  recipients who have no User account yet (e.g. user.invited).
+        metadata:                Optional internal-only dict stored on every created
+                                 record (e.g. activation_key). Never serialized out.
 
     Returns:
         List of created Notification UUIDs as strings.
@@ -80,4 +89,5 @@ def send_notification(
         school=school,
         suppress=suppress,
         unregistered_recipients=unregistered_recipients,
+        metadata=metadata,
     )

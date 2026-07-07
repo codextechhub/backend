@@ -1,9 +1,10 @@
 """Celery tasks for vs_todo.
 
 send_completion_review_request — fired (with a short countdown) when a user
-marks their OWN task as done. Emails the reviewer — the manager who assigned
-the task, or the assignee's direct line manager for self-set tasks — and drops
-an in-app notification so the bell picks it up.
+marks their OWN task as done. Notifies the reviewer — the manager who assigned
+the task, or the assignee's direct line manager for self-set tasks — via the
+vs_notifications engine on both the email and in-app channels (the bell picks
+up the in-app record).
 
 The countdown is the undo window: the task re-checks the Task row at send time
 and silently drops the request if the completion was undone (or re-done, which
@@ -19,41 +20,12 @@ from django.utils import timezone
 logger = logging.getLogger("vs_todo.tasks")
 
 
+def _first_name(user) -> str:
+    return user.full_name.split(" ")[0] if user.full_name else ""
+
+
 def _fmt_dt(dt) -> str:
     return timezone.localtime(dt).strftime("%d %b %Y, %H:%M") if dt else "—"
-
-
-def _build_review_email(task, reviewer, assignee) -> tuple[str, str]:
-    """Subject + plain-text body for the review request email."""
-    subject = f'Review requested: "{task.title}" marked as done'
-
-    lines = [
-        f"Hello {reviewer.full_name.split(' ')[0] if reviewer.full_name else 'there'},",
-        "",
-        f"{assignee.full_name} has marked the task below as completed and it is",
-        "awaiting your review.",
-        "",
-        f"  Task       : {task.title}",
-    ]
-    if task.description:
-        lines.append(f"  Details    : {task.description}")
-    lines += [
-        f"  Metric     : {task.metric or '—'}",
-        f"  Target     : {task.target or '—'}",
-        f"  Priority   : {task.get_priority_display()}",
-        f"  Deadline   : {task.deadline.strftime('%d %b %Y')}",
-        f"  Completed  : {_fmt_dt(task.completed_at)}",
-    ]
-    if task.department:
-        lines.append(f"  Department : {task.department}")
-    lines += [
-        "",
-        "Review it on the console under Tasks → My Team"
-        f" → {assignee.full_name.split(' ')[0] if assignee.full_name else 'your team'}.",
-        "",
-        "— CodeX Vision Console (automated message)",
-    ]
-    return subject, "\n".join(lines)
 
 
 @shared_task(bind=True, name="vs_todo.send_completion_review_request")
@@ -65,10 +37,14 @@ def send_completion_review_request(self, task_id: int, completed_at: str = ""):
       * task deleted / reopened within the grace window → skip;
       * completed_at no longer matches the stamp captured at queue time
         (an undo + re-complete queued a fresher request) → skip.
+
+    Dispatch goes through the vs_notifications engine (todo.task_completed,
+    seeded via the event registry). An unseeded registry would raise
+    UnknownEventTypeError — swallowed and reported as a skip so a missing seed
+    never crashes the task.
     """
-    from vs_notifications.constants import ChannelChoices, NotificationStatus
-    from vs_notifications.models import Notification, NotificationEventType
-    from vs_notifications.tasks import deliver_email_notification
+    from vs_notifications.exceptions import UnknownEventTypeError
+    from vs_notifications.notify import send_notification
 
     from .constants import EVENT_TASK_COMPLETED
     from .models import Task
@@ -89,45 +65,39 @@ def send_completion_review_request(self, task_id: int, completed_at: str = ""):
     if reviewer is None or reviewer.pk == assignee.pk:
         return {"skipped": "no-reviewer"}
 
-    event, _ = NotificationEventType.objects.get_or_create(
-        key=EVENT_TASK_COMPLETED,
-        defaults=dict(
-            label="Task completed — review requested",
-            source_module="vs_todo",
-        ),
-    )
+    context = {
+        "reviewer_name":    reviewer.full_name,
+        "reviewer_first":   _first_name(reviewer) or "there",
+        "assignee_name":    assignee.full_name,
+        "assignee_first":   _first_name(assignee) or "your team",
+        "task_title":       task.title,
+        "task_description": task.description or "",
+        "task_metric":      task.metric or "—",
+        "task_target":      task.target or "—",
+        "task_priority":    task.get_priority_display(),
+        "task_deadline":    task.deadline.strftime("%d %b %Y"),
+        "task_completed":   _fmt_dt(task.completed_at),
+        "task_department":  task.department or "",
+    }
 
-    subject, body = _build_review_email(task, reviewer, assignee)
-
-    # Email — created PENDING and handed to the standard delivery task so it
-    # gets the house retry/idempotency behaviour. Platform-level: school=None.
-    email_notif = Notification.objects.create(
-        school=None,
-        recipient=reviewer,
-        event_type=event,
-        channel=ChannelChoices.EMAIL,
-        subject=subject,
-        body=body,
-        status=NotificationStatus.PENDING,
-    )
-    deliver_email_notification.apply_async(args=[str(email_notif.id)])
-
-    # In-app — recorded as SENT directly; the bell poll picks it up.
-    Notification.objects.create(
-        school=None,
-        recipient=reviewer,
-        event_type=event,
-        channel=ChannelChoices.IN_APP,
-        subject=f"Completed task awaiting review: {task.title}",
-        body=(
-            f'{assignee.full_name} marked "{task.title}" as done. '
-            "Kindly review it under Tasks → My Team."
-        ),
-        status=NotificationStatus.SENT,
-    )
+    # Platform-level tool (CX staff, no school). The engine creates the email
+    # (PENDING → delivery task) and in-app (SENT) records for todo.task_completed.
+    try:
+        created_ids = send_notification(
+            event_key=EVENT_TASK_COMPLETED,
+            context=context,
+            recipients=[reviewer],
+            school=None,
+        )
+    except UnknownEventTypeError:
+        logger.error(
+            "send_completion_review_request: event %s is not seeded — skipping task %s.",
+            EVENT_TASK_COMPLETED, task.pk,
+        )
+        return {"skipped": "event-not-seeded"}
 
     logger.info(
-        "Review request for task %s sent to %s (email notif %s).",
-        task.pk, reviewer.pk, email_notif.id,
+        "Review request for task %s dispatched to %s (%d record(s)).",
+        task.pk, reviewer.pk, len(created_ids),
     )
-    return {"reviewer": reviewer.pk, "email_notification": str(email_notif.id)}
+    return {"reviewer": reviewer.pk, "notifications": created_ids}

@@ -173,6 +173,68 @@ class TaskServiceTests(OrganogramFixtureMixin, TestCase):
         self.assertIsNone(task.completed_at)
 
 
+class ReviewRequestDispatchTests(OrganogramFixtureMixin, TestCase):
+    """send_completion_review_request now dispatches through the notification
+    engine (todo.task_completed) instead of hand-building Notification rows."""
+
+    def setUp(self):
+        self.build_org()
+        self.today = timezone.localdate()
+        from vs_notifications.services.seed import (
+            seed_event_types, seed_notification_templates,
+        )
+        seed_event_types()
+        seed_notification_templates()
+
+    def _completed_task(self):
+        # head assigns down to member, so head is the reviewer.
+        task = tasks_svc.create_task(
+            actor=self.head, title="Ship the report", deadline=self.today,
+            assignee=self.member,
+        )
+        tasks_svc.set_done(task, done=True, actor=self.member)
+        task.refresh_from_db()
+        return task
+
+    def test_dispatch_creates_in_app_and_email_for_reviewer(self):
+        from unittest import mock
+
+        from vs_notifications.constants import ChannelChoices
+        from vs_notifications.models import Notification
+        from vs_todo.tasks import send_completion_review_request
+
+        task = self._completed_task()
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
+            result = send_completion_review_request.apply(
+                kwargs={"task_id": task.pk,
+                        "completed_at": task.completed_at.isoformat()}
+            ).get()
+
+        self.assertEqual(result["reviewer"], self.head.pk)
+        notifs = Notification.objects.filter(recipient=self.head)
+        self.assertEqual(
+            notifs.filter(channel=ChannelChoices.IN_APP).count(), 1,
+        )
+        self.assertEqual(
+            notifs.filter(channel=ChannelChoices.EMAIL).count(), 1,
+        )
+        in_app = notifs.get(channel=ChannelChoices.IN_APP)
+        self.assertEqual(in_app.event_type.key, "todo.task_completed")
+        self.assertIn("Ship the report", in_app.body)
+        email = notifs.get(channel=ChannelChoices.EMAIL)
+        self.assertIn("Ship the report", email.subject)
+        self.assertIn(self.member.full_name, email.body)
+
+    def test_skips_when_completion_superseded(self):
+        from vs_todo.tasks import send_completion_review_request
+
+        task = self._completed_task()
+        result = send_completion_review_request.apply(
+            kwargs={"task_id": task.pk, "completed_at": "1999-01-01T00:00:00+00:00"}
+        ).get()
+        self.assertEqual(result, {"skipped": "superseded-by-newer-completion"})
+
+
 class DashboardTests(OrganogramFixtureMixin, TestCase):
     def setUp(self):
         self.build_org()

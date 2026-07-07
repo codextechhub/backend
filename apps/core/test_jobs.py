@@ -39,6 +39,13 @@ def _cx(email, *, platform_admin=False, **extra):
 class TrackedTaskTests(TestCase):
     def setUp(self):
         self.owner = _cx("owner@codexng.com")
+        # _notify_owner dispatches task.completed / task.failed through the
+        # notification engine, which needs the event registry + DB templates.
+        from vs_notifications.services.seed import (
+            seed_event_types, seed_notification_templates,
+        )
+        seed_event_types()
+        seed_notification_templates()
 
     def test_owned_task_lifecycle_and_notification(self):
         _job_probe_ok.delay(
@@ -55,9 +62,15 @@ class TrackedTaskTests(TestCase):
         self.assertIsNotNone(job.started_at)
         self.assertIsNotNone(job.finished_at)
 
+        # task.completed is IN_APP only; the label is carried in the body, so the
+        # notification exists and names the job even though the subject is empty.
+        from vs_notifications.constants import ChannelChoices
         from vs_notifications.models import Notification
-        note = Notification.objects.get(recipient=self.owner)
-        self.assertIn("Probe job", note.subject)
+        note = Notification.objects.get(
+            recipient=self.owner, channel=ChannelChoices.IN_APP,
+        )
+        self.assertEqual(note.event_type.key, "task.completed")
+        self.assertIn("Probe job", note.body)
         self.assertIsNone(note.school_id)
 
     def test_failure_recorded_with_error(self):

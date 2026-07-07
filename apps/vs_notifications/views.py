@@ -1,14 +1,26 @@
 # =============================================================================
 # vs_notifications / views.py
 #
-# ViewSets and views for vs_notifications.
+# ViewSets for vs_notifications.
 #
 # Endpoint groups:
 #   NotificationViewSet          — user feed, mark-read, unread count
 #   NotificationHistoryViewSet   — admin history log
-#   SchoolNotificationSettingViewSet — school-level settings
+#   NotificationSettingViewSet   — effective settings matrix (read) + upsert
 #   NotificationTemplateViewSet  — Vision Staff template management
 #   NotificationEventTypeViewSet — event type catalogue (read-only, all users)
+#
+# Scoping model (the platform is global; school is optional):
+#   * School-scoped users act on their own school. Supplying ?school= for a
+#     DIFFERENT school returns 404 (never leak another school's existence);
+#     their own id is allowed.
+#   * CX staff (user.school is None) default to the PLATFORM scope, or pass
+#     ?school=<id> to view/write a specific school's rows.
+#
+# NOTE on managers: view scoping is done EXPLICITLY (recipient=… / school=… /
+# all_objects) rather than relying on the ambient TenantAwareManager — the
+# tenant thread-local is not reliably set for DRF-authenticated requests, and
+# explicit scoping is the security-critical contract here.
 # =============================================================================
 
 import logging
@@ -18,18 +30,21 @@ from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
-from rest_framework.response import Response
 
 from core.pagination import XVSPagination
 from core.response import error_response, success_response
 
-from .constants import ChannelChoices, NotificationErrorCode, NotificationPermission, NotificationStatus
+from .constants import (
+    ChannelChoices,
+    NotificationErrorCode,
+    NotificationPermission,
+)
 from .exceptions import FilterRequiredError
 from .models import (
     Notification,
     NotificationEventType,
+    NotificationSetting,
     NotificationTemplate,
-    SchoolNotificationSetting,
 )
 from vs_rbac.permissions import HasRBACPermission
 
@@ -42,12 +57,15 @@ from .serializers import (
     NotificationListSerializer,
     NotificationTemplatePreviewSerializer,
     NotificationTemplateSerializer,
-    SchoolNotificationSettingSerializer,
     SettingsBulkUpdateSerializer,
 )
+from .services.settings import resolve_channels_bulk
 
 
 logger = logging.getLogger("vs_notifications.views")
+
+# Sentinel used by history + settings to mean "the platform (school IS NULL) rows".
+_PLATFORM_SCOPE = "platform"
 
 
 # ---------------------------------------------------------------------------
@@ -58,7 +76,7 @@ class NotificationViewSet(viewsets.GenericViewSet):
     """
     Handles the authenticated user's in-app notification feed.
 
-    All querysets are scoped to the requesting user — no cross-user access.
+    Every queryset is scoped to the requesting user — no cross-user access.
 
     Routes:
         GET  /notifications/              — paginated feed (in-app only)
@@ -91,7 +109,6 @@ class NotificationViewSet(viewsets.GenericViewSet):
         """GET /notifications/ — paginated in-app feed with optional filters."""
         qs = self.get_queryset()
 
-        # Optional filters
         is_read = request.query_params.get("is_read")
         if is_read is not None:
             qs = qs.filter(is_read=is_read.lower() == "true")
@@ -114,57 +131,55 @@ class NotificationViewSet(viewsets.GenericViewSet):
             return self.get_paginated_response(serializer.data)
 
         serializer = NotificationListSerializer(qs, many=True)
-        return success_response(data=serializer.data)
+        return success_response("Notifications retrieved.", data=serializer.data)
 
     def retrieve(self, request, pk=None):
-        """GET /notifications/{id}/ — single notification detail."""
+        """
+        GET /notifications/{id}/ — single in-app notification detail.
+
+        Strictly scoped to the requesting user's IN_APP notifications. Anything
+        else (another user's record, an email record, a bad id) returns 404 —
+        we never leak existence with a 403, and staff use the history endpoint.
+        """
         try:
-            notif = Notification.objects.select_related("event_type").get(pk=pk)
+            notif = (
+                self.get_queryset().get(pk=pk)
+            )
         except Notification.DoesNotExist:
             return error_response(
-                message="Notification not found.",
-                status_code=status.HTTP_404_NOT_FOUND,
-            )
-
-        is_vision_staff = getattr(request.user, "user_type", "") == "CX_STAFF"
-        if not is_vision_staff and notif.recipient_id != request.user.id:
-            return error_response(
-                error_code=NotificationErrorCode.ACCESS_DENIED,
-                message="You do not have permission to access this notification.",
-                status_code=status.HTTP_403_FORBIDDEN,
+                "Notification not found.",
+                status=status.HTTP_404_NOT_FOUND,
             )
 
         serializer = NotificationDetailSerializer(notif)
-        return success_response(data=serializer.data)
+        return success_response("Notification retrieved.", data=serializer.data)
 
     @action(detail=False, methods=["get"], url_path="unread-count")
     def unread_count(self, request):
         """
         GET /notifications/unread-count/
-        Returns the count of unread in-app notifications.
-        Lightweight — used to drive the bell badge.
+        Count of unread in-app notifications. Drives the bell badge.
         """
         count = Notification.objects.filter(
             recipient=request.user,
             channel=ChannelChoices.IN_APP,
             is_read=False,
         ).count()
-        return success_response(data={"unread_count": count})
+        return success_response("Unread count retrieved.", data={"unread_count": count})
 
     @action(detail=False, methods=["post"], url_path="mark-read")
     def mark_read(self, request):
         """
         POST /notifications/mark-read/
-        Mark a list of notification IDs as read.
-        Only the requesting user's IN_APP notifications are updated —
-        IDs belonging to other users or EMAIL notifications are silently skipped.
+        Mark a list of notification IDs as read. Only the requesting user's
+        IN_APP notifications are updated — foreign or EMAIL ids are skipped.
         """
         serializer = MarkReadSerializer(data=request.data)
         if not serializer.is_valid():
             return error_response(
-                message="Invalid request.",
-                errors=serializer.errors,
-                status_code=status.HTTP_400_BAD_REQUEST,
+                "Invalid request.",
+                error=serializer.errors,
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         ids = serializer.validated_data["ids"]
@@ -179,7 +194,7 @@ class NotificationViewSet(viewsets.GenericViewSet):
             ).update(is_read=True, read_at=now)
 
         return success_response(
-            message=f"{updated} notification(s) marked as read.",
+            f"{updated} notification(s) marked as read.",
             data={"updated_count": updated},
         )
 
@@ -199,7 +214,7 @@ class NotificationViewSet(viewsets.GenericViewSet):
             ).update(is_read=True, read_at=now)
 
         return success_response(
-            message=f"All {updated} unread notification(s) marked as read.",
+            f"All {updated} unread notification(s) marked as read.",
             data={"updated_count": updated},
         )
 
@@ -212,8 +227,9 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
     """
     Admin notification history log.
 
-    School Admins: see their school's notifications only.
-    Vision Staff:  see all schools (requires at least one filter).
+    School Admins: see EXACTLY their own school's rows (never platform rows).
+    CX staff:      see everything; must supply ≥1 filter. Pass
+                   ``scope=platform`` to filter to platform rows (school IS NULL).
 
     Routes:
         GET /notifications/history/      — paginated log
@@ -226,9 +242,16 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
     pagination_class   = XVSPagination
 
     def get_queryset(self):
+        """
+        Base queryset, scoped by the caller's tenancy.
+
+        School admins are hard-scoped to their own school (all_objects so the
+        include_global manager change can't leak platform rows into their view).
+        CX staff (no school) see everything.
+        """
         user = self.request.user
         qs = (
-            Notification.objects
+            Notification.all_objects
             .select_related("recipient", "event_type")
             .order_by("-created_at")
         )
@@ -238,6 +261,7 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
 
     def _apply_filters(self, qs, params, is_vision_staff: bool):
         """Apply query param filters to the history queryset."""
+        scope           = params.get("scope")
         school_id       = params.get("school_id")
         recipient_email = params.get("recipient_email")
         event_type_key  = params.get("event_type_key")
@@ -246,14 +270,18 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
         created_after   = params.get("created_after")
         created_before  = params.get("created_before")
 
-        # Vision Staff must supply at least one filter
-        if is_vision_staff and not any([
-            school_id, recipient_email, event_type_key,
+        # Everyone (school admins included, who have an implicit school filter)
+        # must narrow the log with at least one explicit filter, so a school-less
+        # CX user cannot dump the entire table unfiltered.
+        if not any([
+            scope, school_id, recipient_email, event_type_key,
             channel, status_param, created_after, created_before,
         ]):
             raise FilterRequiredError()
 
-        if school_id:
+        if scope == _PLATFORM_SCOPE:
+            qs = qs.filter(school__isnull=True)
+        elif school_id:
             qs = qs.filter(school_id=school_id)
         if recipient_email:
             qs = qs.filter(recipient__email__icontains=recipient_email)
@@ -279,9 +307,9 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
             qs = self._apply_filters(qs, request.query_params, is_vision_staff)
         except FilterRequiredError as exc:
             return error_response(
-                error_code=NotificationErrorCode.FILTER_REQUIRED,
-                message=exc.message,
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                exc.message,
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                code=NotificationErrorCode.FILTER_REQUIRED,
             )
 
         page = self.paginate_queryset(qs)
@@ -290,7 +318,7 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
             return self.get_paginated_response(serializer.data)
 
         serializer = NotificationHistorySerializer(qs, many=True)
-        return success_response(data=serializer.data)
+        return success_response("History retrieved.", data=serializer.data)
 
     def retrieve(self, request, pk=None):
         """GET /notifications/history/{id}/"""
@@ -299,93 +327,264 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
             notif = qs.get(pk=pk)
         except Notification.DoesNotExist:
             return error_response(
-                message="Notification not found.",
-                status_code=status.HTTP_404_NOT_FOUND,
+                "Notification not found.",
+                status=status.HTTP_404_NOT_FOUND,
             )
         serializer = NotificationHistoryDetailSerializer(notif)
-        return success_response(data=serializer.data)
+        return success_response("Notification retrieved.", data=serializer.data)
 
 
 # ---------------------------------------------------------------------------
-# 3.  School notification settings
+# 3.  Notification settings (effective matrix + overrides)
 # ---------------------------------------------------------------------------
 
-class SchoolNotificationSettingViewSet(viewsets.GenericViewSet):
+class NotificationSettingViewSet(viewsets.GenericViewSet):
     """
-    School-level notification settings.
+    Notification settings — the EFFECTIVE matrix and per-scope overrides.
 
-    GET  /notifications/settings/  — list all settings for the school,
-                                     grouped by source module.
-    PATCH /notifications/settings/ — bulk update is_enabled values.
+    GET   /notifications/settings/        — full effective matrix for the scope.
+    PATCH /notifications/settings/update/ — upsert override rows by
+                                            (event_type_key, channel).
+
+    Scope resolution (same for GET and PATCH):
+      * School-scoped caller → their own school, overlaid on platform defaults.
+        ?school=<own id> is allowed; ?school=<other id> → 404 (no leak).
+      * CX staff (user.school is None) → platform scope by default;
+        ?school=<id> targets that school's effective matrix / rows.
+
+    Transactional event types appear in the matrix flagged
+    ``is_transactional: true`` and are read-only (they bypass settings) — a
+    PATCH touching one is rejected.
 
     Permission: communication.communication_permissions.enforce (RBAC).
-    Queryset: strictly scoped to the requesting user's school.
 
-    docstring-name: School notification settings
+    docstring-name: Notification settings
     """
     permission_classes = [IsAuthenticated, HasRBACPermission]
     rbac_permission    = NotificationPermission.ENFORCE_PERMISSIONS
 
-    def get_queryset(self):
-        return (
-            SchoolNotificationSetting.objects
-            .filter(school=self.request.user.school)
-            .select_related("event_type")
-            .order_by("event_type__source_module", "event_type__key", "channel")
+    # ── Scope helpers ──────────────────────────────────────────────────────
+
+    def _resolve_scope(self, request):
+        """
+        Resolve the (school) scope for this request from the caller + ?school=.
+
+        Returns a School instance or None (platform scope). Raises a DRF-style
+        404 response by returning it via the caller — here we return either
+        (school_or_none, None) on success, or (None, error_response) on denial.
+        """
+        user = request.user
+        requested = request.query_params.get("school")
+
+        # School-scoped user: locked to their own school.
+        if not getattr(user, "is_vision_staff", False):
+            own = user.school
+            if requested is not None and str(requested) != str(getattr(own, "id", "")):
+                # Never leak another school's existence.
+                return None, error_response(
+                    "Not found.", status=status.HTTP_404_NOT_FOUND,
+                )
+            return own, None
+
+        # CX staff: platform scope unless ?school= is supplied.
+        if requested is None:
+            return None, None
+
+        from vs_schools.models import School
+        try:
+            school = School.objects.get(pk=requested)
+        except (School.DoesNotExist, ValueError, TypeError):
+            return None, error_response(
+                "Not found.", status=status.HTTP_404_NOT_FOUND,
+            )
+        return school, None
+
+    def _build_matrix(self, school):
+        """
+        Build the effective settings matrix for a scope.
+
+        For each active event type × supported channel, resolve the effective
+        value and record which layer produced it. resolve_channels_bulk owns the
+        is_active / transactional / layering logic; the same fetched rows also
+        feed the `source` label ("school" / "platform" / "default") so the UI
+        can render provenance. Total cost: 1 event-type query + 1 settings query.
+        """
+        event_types = list(
+            NotificationEventType.objects.filter(is_active=True)
+            .order_by("source_module", "key")
         )
 
+        # One settings query for the whole matrix. Materialised to a list so it
+        # feeds both the provenance sets below and the bulk resolver without
+        # re-querying.
+        from django.db.models import Q
+        scope_q = Q(school__isnull=True)
+        if school is not None:
+            scope_q |= Q(school=school)
+        rows = list(
+            NotificationSetting.all_objects.filter(
+                scope_q, event_type__in=event_types,
+            ).values("event_type_id", "channel", "is_enabled", "school_id")
+        )
+
+        # Which (event_type_id, channel) have a school row / platform row?
+        school_rows = set()
+        platform_rows = set()
+        for r in rows:
+            key = (r["event_type_id"], r["channel"])
+            if r["school_id"] is None:
+                platform_rows.add(key)
+            else:
+                school_rows.add(key)
+
+        # Layering rules live in the service — pass the pre-fetched rows through.
+        resolved_by_et = resolve_channels_bulk(event_types, school=school, rows=rows)
+
+        matrix = []
+        for et in event_types:
+            resolved = resolved_by_et[et.id]
+            for channel in et.supported_channels:
+                key = (et.id, channel)
+                if et.is_transactional or not et.is_active:
+                    source = "default"
+                elif school is not None and key in school_rows:
+                    source = "school"
+                elif key in platform_rows:
+                    source = "platform"
+                else:
+                    source = "default"
+                matrix.append({
+                    "event_type_key":   et.key,
+                    "event_type_label": et.label,
+                    "source_module":    et.source_module,
+                    "channel":          channel,
+                    "is_enabled":       resolved.get(channel, False),
+                    "is_transactional": et.is_transactional,
+                    "source":           source,
+                })
+        return matrix
+
+    # ── Read ───────────────────────────────────────────────────────────────
+
     def list(self, request):
-        """GET /notifications/settings/"""
-        qs = self.get_queryset()
-        serializer = SchoolNotificationSettingSerializer(qs, many=True)
-        return success_response(data=serializer.data)
+        """GET /notifications/settings/ — the effective matrix for the scope."""
+        school, denied = self._resolve_scope(request)
+        if denied is not None:
+            return denied
+
+        matrix = self._build_matrix(school)
+        return success_response("Settings retrieved.", data=matrix)
+
+    # ── Write ──────────────────────────────────────────────────────────────
 
     def partial_update(self, request):
         """
-        PATCH /notifications/settings/
-        Bulk update is_enabled values. All changes commit atomically.
+        PATCH /notifications/settings/update/
+        Upsert override rows by (event_type_key, channel). Atomic.
+
+        Rejections (400 with field errors):
+          * unknown event key / unknown or unsupported channel
+          * disabling IN_APP (IN_APP_ALWAYS_ENABLED)
+          * toggling a transactional event type (TRANSACTIONAL_NOT_CONFIGURABLE)
         """
+        school, denied = self._resolve_scope(request)
+        if denied is not None:
+            return denied
+
         serializer = SettingsBulkUpdateSerializer(data=request.data)
         if not serializer.is_valid():
             return error_response(
-                message="Invalid request.",
-                errors=serializer.errors,
-                status_code=status.HTTP_400_BAD_REQUEST,
+                "Invalid request.",
+                error=serializer.errors,
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         updates = serializer.validated_data["updates"]
-        setting_ids = [item["id"] for item in updates]
 
-        # Build map of existing settings (scoped to this school for safety)
-        settings_map = {
-            s.id: s
-            for s in SchoolNotificationSetting.objects.filter(
-                id__in=setting_ids,
-                school=request.user.school,
-            )
+        # Resolve all referenced event types up front (one query).
+        keys = {u["event_type_key"] for u in updates}
+        event_types = {
+            et.key: et
+            for et in NotificationEventType.objects.filter(key__in=keys, is_active=True)
         }
 
-        updated_settings = []
-        with transaction.atomic():
-            for item in updates:
-                setting = settings_map.get(item["id"])
-                if setting is None:
-                    # ID not found or belongs to another school — skip silently
-                    continue
-                setting.is_enabled = item["is_enabled"]
-                setting.updated_by = request.user
-                updated_settings.append(setting)
+        errors = []
+        for idx, item in enumerate(updates):
+            key = item["event_type_key"]
+            channel = item["channel"]
+            is_enabled = item["is_enabled"]
 
-            SchoolNotificationSetting.objects.bulk_update(
-                updated_settings, ["is_enabled", "updated_by", "updated_at"]
+            et = event_types.get(key)
+            if et is None:
+                errors.append({
+                    "index": idx,
+                    "error_code": NotificationErrorCode.UNKNOWN_EVENT_TYPE,
+                    "message": f"Unknown or inactive event type: '{key}'.",
+                })
+                continue
+            if channel not in ChannelChoices.ALL:
+                errors.append({
+                    "index": idx,
+                    "error_code": NotificationErrorCode.UNKNOWN_CHANNEL,
+                    "message": f"Unknown channel: '{channel}'.",
+                })
+                continue
+            if channel not in et.supported_channels:
+                errors.append({
+                    "index": idx,
+                    "error_code": NotificationErrorCode.UNSUPPORTED_CHANNEL,
+                    "message": f"Channel '{channel}' is not supported by '{key}'.",
+                })
+                continue
+            if et.is_transactional:
+                errors.append({
+                    "index": idx,
+                    "error_code": NotificationErrorCode.TRANSACTIONAL_NOT_CONFIGURABLE,
+                    "message": (
+                        f"'{key}' is a transactional event and cannot be "
+                        "configured — it always dispatches."
+                    ),
+                })
+                continue
+            if channel == ChannelChoices.IN_APP and is_enabled is False:
+                errors.append({
+                    "index": idx,
+                    "error_code": NotificationErrorCode.IN_APP_ALWAYS_ENABLED,
+                    "message": "The in-app channel cannot be disabled.",
+                })
+                continue
+
+        if errors:
+            return error_response(
+                "One or more updates were rejected.",
+                error={"updates": errors},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
-        result_serializer = SchoolNotificationSettingSerializer(
-            updated_settings, many=True
-        )
+        # All valid — upsert override rows by (school, event_type, channel).
+        with transaction.atomic():
+            for item in updates:
+                et = event_types[item["event_type_key"]]
+                NotificationSetting.all_objects.update_or_create(
+                    school=school,
+                    event_type=et,
+                    channel=item["channel"],
+                    defaults={
+                        "is_enabled": item["is_enabled"],
+                        "updated_by": request.user,
+                    },
+                )
+
+        # Return the updated effective entries (fresh resolve).
+        matrix = self._build_matrix(school)
+        touched = {(u["event_type_key"], u["channel"]) for u in updates}
+        updated_entries = [
+            row for row in matrix
+            if (row["event_type_key"], row["channel"]) in touched
+        ]
         return success_response(
-            message=f"{len(updated_settings)} setting(s) updated.",
-            data=result_serializer.data,
+            f"{len(updates)} setting(s) updated.",
+            data=updated_entries,
         )
 
 
@@ -401,7 +600,7 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
     POST  /notifications/templates/             — create template
     GET   /notifications/templates/{id}/        — retrieve single
     PATCH /notifications/templates/{id}/        — update
-    POST  /notifications/templates/{id}/preview/— render preview
+    POST  /notifications/templates/{id}/preview/— render preview (incl. html_body)
 
     Permission: communication.notification_templates.configure (RBAC).
 
@@ -430,7 +629,7 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
             qs = qs.filter(channel=channel)
 
         serializer = NotificationTemplateSerializer(qs, many=True)
-        return success_response(data=serializer.data)
+        return success_response("Templates retrieved.", data=serializer.data)
 
     def create(self, request):
         """POST /notifications/templates/"""
@@ -440,9 +639,9 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
         )
         if not serializer.is_valid():
             return error_response(
-                message="Invalid template data.",
-                errors=serializer.errors,
-                status_code=status.HTTP_400_BAD_REQUEST,
+                "Invalid template data.",
+                error=serializer.errors,
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         try:
@@ -451,18 +650,17 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
             # Catch unique_together violation on (event_type, channel)
             if "unique" in str(exc).lower():
                 return error_response(
-                    error_code=NotificationErrorCode.DUPLICATE_TEMPLATE,
-                    message=(
-                        "A template for this event type and channel already exists. "
-                        "Update the existing template instead."
-                    ),
-                    status_code=status.HTTP_409_CONFLICT,
+                    "A template for this event type and channel already exists. "
+                    "Update the existing template instead.",
+                    status=status.HTTP_409_CONFLICT,
+                    code=NotificationErrorCode.DUPLICATE_TEMPLATE,
                 )
             raise
 
         return success_response(
+            "Template created.",
             data=NotificationTemplateSerializer(template).data,
-            status_code=status.HTTP_201_CREATED,
+            status=status.HTTP_201_CREATED,
         )
 
     def retrieve(self, request, pk=None):
@@ -471,11 +669,11 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
             template = self.get_queryset().get(pk=pk)
         except NotificationTemplate.DoesNotExist:
             return error_response(
-                message="Template not found.",
-                status_code=status.HTTP_404_NOT_FOUND,
+                "Template not found.",
+                status=status.HTTP_404_NOT_FOUND,
             )
         serializer = NotificationTemplateSerializer(template)
-        return success_response(data=serializer.data)
+        return success_response("Template retrieved.", data=serializer.data)
 
     def partial_update(self, request, pk=None):
         """PATCH /notifications/templates/{id}/"""
@@ -483,8 +681,8 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
             template = self.get_queryset().get(pk=pk)
         except NotificationTemplate.DoesNotExist:
             return error_response(
-                message="Template not found.",
-                status_code=status.HTTP_404_NOT_FOUND,
+                "Template not found.",
+                status=status.HTTP_404_NOT_FOUND,
             )
 
         serializer = NotificationTemplateSerializer(
@@ -495,13 +693,16 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
         )
         if not serializer.is_valid():
             return error_response(
-                message="Invalid template data.",
-                errors=serializer.errors,
-                status_code=status.HTTP_400_BAD_REQUEST,
+                "Invalid template data.",
+                error=serializer.errors,
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         updated = serializer.save()
-        return success_response(data=NotificationTemplateSerializer(updated).data)
+        return success_response(
+            "Template updated.",
+            data=NotificationTemplateSerializer(updated).data,
+        )
 
     @action(detail=True, methods=["post"], url_path="preview")
     def preview(self, request, pk=None):
@@ -513,20 +714,20 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
             template = self.get_queryset().get(pk=pk)
         except NotificationTemplate.DoesNotExist:
             return error_response(
-                message="Template not found.",
-                status_code=status.HTTP_404_NOT_FOUND,
+                "Template not found.",
+                status=status.HTTP_404_NOT_FOUND,
             )
 
         serializer = NotificationTemplatePreviewSerializer(data=request.data)
         if not serializer.is_valid():
             return error_response(
-                message="Invalid preview request.",
-                errors=serializer.errors,
-                status_code=status.HTTP_400_BAD_REQUEST,
+                "Invalid preview request.",
+                error=serializer.errors,
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         rendered = serializer.render(template)
-        return success_response(data=rendered)
+        return success_response("Preview rendered.", data=rendered)
 
 
 # ---------------------------------------------------------------------------
@@ -537,7 +738,6 @@ class NotificationEventTypeViewSet(viewsets.GenericViewSet):
     """
     Read-only event type catalogue.
     Accessible to all authenticated users.
-    Used by the School Admin settings UI and the Vision Staff template editor.
 
     GET /notifications/event-types/      — list all active event types
     GET /notifications/event-types/{id}/ — retrieve single event type
@@ -555,7 +755,7 @@ class NotificationEventTypeViewSet(viewsets.GenericViewSet):
         """GET /notifications/event-types/"""
         qs = self.get_queryset()
         serializer = NotificationEventTypeSerializer(qs, many=True)
-        return success_response(data=serializer.data)
+        return success_response("Event types retrieved.", data=serializer.data)
 
     def retrieve(self, request, pk=None):
         """GET /notifications/event-types/{id}/"""
@@ -563,8 +763,8 @@ class NotificationEventTypeViewSet(viewsets.GenericViewSet):
             event_type = self.get_queryset().get(pk=pk)
         except NotificationEventType.DoesNotExist:
             return error_response(
-                message="Event type not found.",
-                status_code=status.HTTP_404_NOT_FOUND,
+                "Event type not found.",
+                status=status.HTTP_404_NOT_FOUND,
             )
         serializer = NotificationEventTypeSerializer(event_type)
-        return success_response(data=serializer.data)
+        return success_response("Event type retrieved.", data=serializer.data)

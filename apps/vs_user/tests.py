@@ -240,19 +240,28 @@ class EmailFailureResilienceTests(TestCase):
     Regression — an SMTP outage during eager (in-process) email sending must
     not 500 the request.
 
-    The email tasks previously called self.retry() on every failure. When
-    Celery runs eagerly (CELERY_TASK_ALWAYS_EAGER on staging/local, or the
-    broker-down .apply() fallback in PasswordService), that raised
-    celery.exceptions.Retry straight through the HTTP request, so
-    POST /v1/user/auth/password/reset/request/ returned 500 whenever
-    smtp.zoho.com was unreachable — even though the PasswordResetRequest
-    row was already created.
+    Email now flows through the vs_notifications engine: the vs_user task
+    dispatches (synchronously, cheaply) and the engine's
+    deliver_email_notification does the SMTP send. Under eager mode the delivery
+    task runs in-process; its eager guard treats the first failure as final, so
+    celery.exceptions.Retry never propagates through the HTTP request even when
+    smtp.zoho.com is unreachable — the PasswordResetRequest / UserInvitation row
+    is already persisted.
     """
 
     RESET_URL = "/v1/user/auth/password/reset/request/"
 
     def setUp(self):
         from apps.celery import app as celery_app
+        from vs_notifications.services.seed import (
+            seed_event_types, seed_notification_templates,
+        )
+
+        # The event registry + DB templates are not seeded by migrations, so the
+        # engine has nothing to render/dispatch without this.
+        seed_event_types()
+        seed_notification_templates()
+
         self.celery_app = celery_app
         self._old_eager = celery_app.conf.task_always_eager
         self._old_propagates = celery_app.conf.task_eager_propagates
@@ -276,7 +285,7 @@ class EmailFailureResilienceTests(TestCase):
         from vs_user.models import PasswordResetRequest
 
         user = make_cx_user(email="reset-smtp@codex.test")
-        with mock.patch("vs_user.tasks.send_email", side_effect=self._smtp_down):
+        with mock.patch("vs_notifications.tasks.send_email", side_effect=self._smtp_down):
             resp = self.client.post(self.RESET_URL, {"email": user.email}, format="json")
 
         self.assertEqual(resp.status_code, 200)
@@ -297,7 +306,7 @@ class EmailFailureResilienceTests(TestCase):
         with mock.patch.object(
             tasks.send_password_reset_email_task, "delay",
             side_effect=Exception("broker connection refused"),
-        ), mock.patch("vs_user.tasks.send_email", side_effect=self._smtp_down):
+        ), mock.patch("vs_notifications.tasks.send_email", side_effect=self._smtp_down):
             resp = self.client.post(self.RESET_URL, {"email": user.email}, format="json")
 
         self.assertEqual(resp.status_code, 200)
@@ -306,6 +315,8 @@ class EmailFailureResilienceTests(TestCase):
         )
 
     def test_invitation_email_eager_smtp_failure_marks_failed_without_raising(self):
+        """Engine path: dispatch → deliver task fails under eager → receiver marks
+        the invitation FAILED via the notification_failed signal, no retry."""
         from datetime import timedelta
         from unittest import mock
 
@@ -322,11 +333,13 @@ class EmailFailureResilienceTests(TestCase):
             is_used=False,
         )
 
-        with mock.patch("vs_user.tasks.send_email", side_effect=self._smtp_down):
-            # Must not raise Retry (or anything else) into the caller.
-            send_invitation_email_task.apply(
-                kwargs={"activation_key": str(user.activation_key)}
-            )
+        with mock.patch("vs_notifications.tasks.send_email", side_effect=self._smtp_down):
+            # dispatch enqueues the delivery task via transaction.on_commit —
+            # capture and execute it so the eager delivery runs and fails.
+            with self.captureOnCommitCallbacks(execute=True):
+                send_invitation_email_task.apply(
+                    kwargs={"activation_key": str(user.activation_key)}
+                )
 
         invitation.refresh_from_db()
         self.assertEqual(invitation.email_status, UserInvitation.EmailStatus.FAILED)
@@ -334,4 +347,126 @@ class EmailFailureResilienceTests(TestCase):
             invitation.email_attempts, 1,
             "eager mode must not retry in-process",
         )
-        self.assertIn("SMTP", invitation.email_last_error)
+        # The engine stores the raw exception string on failure_reason, which the
+        # receiver copies into email_last_error (the old per-exception label
+        # classifier is gone).
+        self.assertIn("unreachable", invitation.email_last_error)
+
+
+from django.test import override_settings
+
+
+@override_settings(
+    EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+    DEFAULT_FROM_EMAIL="CodeX System <system@codexng.com>",
+    EMAIL_CC=[],
+    FRONTEND_BASE_URL="https://intranet.codexng.com",
+)
+class InvitationEngineDispatchTests(TestCase):
+    """The vs_user email tasks now flow through the notification engine.
+
+    Verifies the dispatch record + metadata, the receiver-driven invitation
+    tracking on success, and the per-message From (from_name) parity.
+    """
+
+    def setUp(self):
+        from vs_notifications.services.seed import (
+            seed_event_types, seed_notification_templates,
+        )
+        seed_event_types()
+        seed_notification_templates()
+
+    def _invitation_for(self, user, invited_by=None):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from vs_user.models import UserInvitation
+        return UserInvitation.objects.create(
+            user=user, invited_by=invited_by or user,
+            expires_at=timezone.now() + timedelta(days=7), is_used=False,
+        )
+
+    def test_invitation_dispatch_creates_notification_with_activation_key(self):
+        from unittest import mock
+
+        from vs_notifications.constants import ChannelChoices
+        from vs_notifications.models import Notification
+        from vs_user.tasks import send_invitation_email_task
+
+        user = make_cx_user(email="invited@codex.test")
+        user.invited_by_name = "Ada Admin"
+        user.save(update_fields=["invited_by_name"])
+
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
+            send_invitation_email_task.apply(
+                kwargs={"activation_key": str(user.activation_key)}
+            )
+
+        notif = Notification.objects.get(recipient=user, channel=ChannelChoices.EMAIL)
+        self.assertEqual(notif.event_type.key, "user.invited")
+        self.assertEqual(notif.metadata.get("activation_key"), str(user.activation_key))
+        self.assertEqual(notif.metadata.get("from_name"), "Ada Admin")
+
+    def test_successful_delivery_updates_invitation_via_receiver(self):
+        from django.core import mail
+
+        from vs_user.models import UserInvitation
+        from vs_user.tasks import send_invitation_email_task
+
+        user = make_cx_user(email="invited-ok@codex.test")
+        invitation = self._invitation_for(user)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            send_invitation_email_task.apply(
+                kwargs={"activation_key": str(user.activation_key)}
+            )
+
+        invitation.refresh_from_db()
+        self.assertEqual(invitation.email_status, UserInvitation.EmailStatus.SENT)
+        self.assertEqual(invitation.email_attempts, 1)
+        self.assertIsNotNone(invitation.email_sent_at)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_from_name_lands_in_outgoing_from_header(self):
+        from django.core import mail
+
+        from vs_user.tasks import send_invitation_email_task
+
+        user = make_cx_user(email="fromname@codex.test")
+        user.invited_by_name = "Bola Inviter"
+        user.save(update_fields=["invited_by_name"])
+        self._invitation_for(user)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            send_invitation_email_task.apply(
+                kwargs={"activation_key": str(user.activation_key)}
+            )
+
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("Bola Inviter", mail.outbox[0].from_email)
+        # Address portion is preserved from DEFAULT_FROM_EMAIL.
+        self.assertIn("system@codexng.com", mail.outbox[0].from_email)
+
+    def test_password_reset_dispatch_creates_notification(self):
+        from unittest import mock
+
+        from vs_notifications.constants import ChannelChoices
+        from vs_notifications.models import Notification
+        from vs_user.tasks import send_password_reset_email_task
+
+        user = make_cx_user(email="pwreset@codex.test")
+
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
+            send_password_reset_email_task.apply(
+                kwargs={
+                    "activation_key": str(user.activation_key),
+                    "origin": "SELF",
+                    "sender_name": "CodeX System",
+                }
+            )
+
+        notif = Notification.objects.get(recipient=user, channel=ChannelChoices.EMAIL)
+        self.assertEqual(notif.event_type.key, "user.password_reset")
+        self.assertEqual(notif.metadata.get("from_name"), "CodeX System")
+        self.assertIn("reset-password", notif.body)

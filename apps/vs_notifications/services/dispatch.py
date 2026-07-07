@@ -3,15 +3,21 @@
 #
 # NotificationService — the primary entry point for all notification dispatch.
 #
-# Called by other module services (vs_billing, vs_workflow, vs_students, etc.).
+# Called by other module services (vs_finance, vs_workflow, vs_user, etc.).
 # Never called directly from views.
+#
+# Notifications are RECIPIENT-centric. `school` is an optional scope stored on
+# each record for filtering/history; it is NOT required to dispatch. CX staff
+# and any other school-less recipients are first-class.
 #
 # Responsibilities:
 #   - Validate the event key
-#   - Resolve channel settings for the school
-#   - Render templates
-#   - Create Notification records
+#   - Resolve which channels fire (resolve_channels — school row → platform row
+#     → default_enabled; transactional events bypass settings)
+#   - Render templates (subject, plain body, optional HTML body)
+#   - Create Notification records (storing metadata + html_body)
 #   - Enqueue Celery tasks via transaction.on_commit (email only)
+#   - Fire notification_failed for pre-flight FAILED email records after commit
 # =============================================================================
 
 import logging
@@ -24,8 +30,9 @@ from django.utils import timezone
 from ..constants import ChannelChoices, NotificationStatus
 from ..exceptions import UnknownEventTypeError, TemplateRenderError
 from ..models import Notification, NotificationEventType, NotificationTemplate
+from ..signals import notification_failed
 from .render import render_notification_template
-from .settings import bulk_is_channel_enabled
+from .settings import resolve_channels
 
 logger = logging.getLogger("vs_notifications.dispatch")
 
@@ -39,7 +46,7 @@ logger = logging.getLogger("vs_notifications.dispatch")
 class UnregisteredRecipient:
     """
     Represents an email recipient who does not yet have a User account.
-    Used exclusively for the user.invited event type.
+    Used for events like user.invited / user.password_reset.
     """
     email: str
     name: str = ""
@@ -53,23 +60,15 @@ class NotificationService:
     """
     Primary dispatch service for vs_notifications.
 
-    Usage example (from vs_billing):
+    Usage example (from vs_finance):
 
         from vs_notifications.services.dispatch import NotificationService
 
         NotificationService.send(
-            event_key="billing.invoice_issued",
-            context={
-                "student_first_name": student.first_name,
-                "student_last_name":  student.last_name,
-                "invoice_number":     invoice.number,
-                "invoice_amount":     str(invoice.total_amount),
-                "due_date":           invoice.due_date.strftime("%d %b %Y"),
-                "school_name":        school.name,
-                "payment_link":       payment_url,
-            },
+            event_key="billing.invoice_overdue",
+            context={...},
             recipients=[guardian_user],
-            school=school,
+            school=school,            # optional — omit for school-less recipients
         )
     """
 
@@ -78,24 +77,29 @@ class NotificationService:
         event_key: str,
         context: dict,
         recipients: list,
-        school,
+        school=None,
         suppress: bool = False,
         unregistered_recipients: Optional[list[UnregisteredRecipient]] = None,
+        metadata: Optional[dict] = None,
     ) -> list:
         """
         Dispatch notifications for a given event to a list of recipients.
 
         Args:
-            event_key:               Dot-notation event key, e.g. "billing.invoice_issued".
-            context:                 Dict of template variables. All keys defined in the
-                                     FRD Section 8 registry for this event must be present.
+            event_key:               Dot-notation event key, e.g. "user.invited".
+            context:                 Dict of template variables.
             recipients:              List of User instances to notify.
-            school:                  The School instance (tenant scope).
+            school:                  Optional School instance. Stored on each
+                                     record for filtering/history and used to
+                                     resolve school-specific settings overrides.
+                                     Defaults to None (platform scope).
             suppress:                If True, return immediately without dispatching.
-                                     Use for bulk operations where notification is noise.
-            unregistered_recipients: Optional list of UnregisteredRecipient dataclass
-                                     instances.  Used exclusively for user.invited —
+            unregistered_recipients: Optional list of UnregisteredRecipient — for
                                      recipients who have no User account yet.
+            metadata:                Optional dict stored on EVERY created record's
+                                     internal-only metadata field (e.g. an
+                                     activation_key for delivery-signal receivers).
+                                     Never exposed via any serializer.
 
         Returns:
             List of created Notification UUIDs (as strings).
@@ -108,6 +112,8 @@ class NotificationService:
             logger.debug("Notification suppressed for event_key=%s", event_key)
             return []
 
+        metadata = metadata or {}
+
         # ── 1. Resolve event type ──────────────────────────────────────────
         try:
             event_type = NotificationEventType.objects.get(
@@ -119,16 +125,17 @@ class NotificationService:
                 message=f"Unknown or inactive notification event key: '{event_key}'",
             )
 
-        # ── 2. Resolve channel settings for this school ────────────────────
-        channel_enabled = bulk_is_channel_enabled(school, event_type)
+        # ── 2. Resolve which channels fire (school row → platform → default;
+        #        transactional events bypass settings). ──────────────────────
+        channel_enabled = resolve_channels(event_type, school=school)
 
         # ── 3. Pre-fetch templates for enabled channels ────────────────────
         enabled_channels = [ch for ch, on in channel_enabled.items() if on]
         if not enabled_channels:
             logger.debug(
-                "All channels disabled for school=%s event_key=%s — nothing to dispatch.",
-                getattr(school, "slug", school.id),
+                "All channels disabled for event_key=%s (school=%s) — nothing to dispatch.",
                 event_key,
+                getattr(school, "id", None),
             )
             return []
 
@@ -153,7 +160,7 @@ class NotificationService:
                 # Check email address availability before rendering
                 email_addr = _resolve_email(target)
                 if channel == ChannelChoices.EMAIL and not email_addr:
-                    # Create a FAILED record immediately — no point rendering or queuing
+                    # Pre-flight FAILED — no point rendering or queuing.
                     notifications_to_create.append(
                         _build_failed_notification(
                             event_type=event_type,
@@ -161,14 +168,15 @@ class NotificationService:
                             school=school,
                             target=target,
                             failure_reason="NO_EMAIL_ADDRESS",
+                            metadata=metadata,
                         )
                     )
                     continue
 
-                # Render template
+                # Render template (subject, plain body, optional HTML body).
                 try:
-                    rendered_subject, rendered_body = render_notification_template(
-                        template, context
+                    rendered_subject, rendered_body, rendered_html = (
+                        render_notification_template(template, context)
                     )
                 except TemplateRenderError as exc:
                     logger.error(
@@ -182,6 +190,7 @@ class NotificationService:
                             school=school,
                             target=target,
                             failure_reason=str(exc),
+                            metadata=metadata,
                         )
                     )
                     continue
@@ -196,6 +205,8 @@ class NotificationService:
                         target=target,
                         subject=rendered_subject,
                         body=rendered_body,
+                        html_body=rendered_html if not is_in_app else "",
+                        metadata=metadata,
                         # IN_APP is immediately SENT — no async task needed
                         status=NotificationStatus.SENT if is_in_app else NotificationStatus.PENDING,
                         dispatched_at=timezone.now() if is_in_app else None,
@@ -209,27 +220,44 @@ class NotificationService:
         created = Notification.objects.bulk_create(notifications_to_create)
         created_ids = [str(n.id) for n in created]
 
-        # ── 6. Enqueue Celery tasks for email records after commit ─────────
+        # ── 6. Post-commit side effects ────────────────────────────────────
+        # Email PENDING → enqueue delivery. Email FAILED (pre-flight) → fire the
+        # notification_failed signal so downstream trackers see the terminal
+        # state even though no delivery task runs. Both wait for commit so a
+        # rollback never enqueues or signals a phantom record.
         email_ids = [
             str(n.id)
             for n in created
             if n.channel == ChannelChoices.EMAIL
             and n.status == NotificationStatus.PENDING
         ]
+        preflight_failed = [
+            n
+            for n in created
+            if n.channel == ChannelChoices.EMAIL
+            and n.status == NotificationStatus.FAILED
+        ]
 
-        if email_ids:
-            def enqueue_email_tasks():
-                from ..tasks import deliver_email_notification
-                for notif_id in email_ids:
-                    deliver_email_notification.delay(notif_id)
+        if email_ids or preflight_failed:
+            def _after_commit():
+                if email_ids:
+                    from ..tasks import deliver_email_notification
+                    for notif_id in email_ids:
+                        deliver_email_notification.delay(notif_id)
+                for notif in preflight_failed:
+                    notification_failed.send(
+                        sender=Notification, notification=notif
+                    )
 
-            transaction.on_commit(enqueue_email_tasks)
+            transaction.on_commit(_after_commit)
 
         logger.info(
-            "Dispatched %d notification records for event_key=%s (email tasks: %d).",
+            "Dispatched %d notification records for event_key=%s "
+            "(email tasks: %d, pre-flight failed: %d).",
             len(created_ids),
             event_key,
             len(email_ids),
+            len(preflight_failed),
         )
         return created_ids
 
@@ -257,7 +285,6 @@ def _build_targets(recipients: list, unregistered: list) -> list:
     Combine registered User instances and UnregisteredRecipient dataclasses
     into a single iterable for the dispatch loop.
     """
-    # Wrap User instances in a simple container so the loop uses one code path
     return list(recipients) + list(unregistered)
 
 
@@ -272,7 +299,8 @@ def _resolve_email(target) -> str:
 
 
 def _build_notification(
-    event_type, channel, school, target, subject, body, status, dispatched_at
+    event_type, channel, school, target, subject, body, html_body,
+    metadata, status, dispatched_at,
 ) -> Notification:
     """
     Construct an unsaved Notification instance.
@@ -287,13 +315,15 @@ def _build_notification(
         unregistered_email=target.email if is_unregistered else "",
         subject=subject,
         body=body,
+        html_body=html_body,
+        metadata=metadata,
         status=status,
         dispatched_at=dispatched_at,
     )
 
 
 def _build_failed_notification(
-    event_type, channel, school, target, failure_reason: str
+    event_type, channel, school, target, failure_reason: str, metadata: dict,
 ) -> Notification:
     """
     Construct an unsaved Notification instance pre-set to FAILED.
@@ -309,6 +339,8 @@ def _build_failed_notification(
         unregistered_email=target.email if is_unregistered else "",
         subject="",
         body="",
+        html_body="",
+        metadata=metadata,
         status=NotificationStatus.FAILED,
         failure_reason=failure_reason,
     )

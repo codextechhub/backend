@@ -65,14 +65,18 @@ def render_template(template_text: str, context: dict) -> str:
         ) from exc
 
 
-def render_notification_template(notification_template, context: dict) -> tuple[str, str]:
+def render_notification_template(notification_template, context: dict) -> tuple[str, str, str]:
     """
-    High-level helper used by the dispatch service.
+    High-level helper used by the dispatch service and the preview endpoint.
 
-    Renders both subject and body from a NotificationTemplate instance.
-    Returns (rendered_subject, rendered_body).
+    Renders subject, plain body, and (optional) HTML body from a
+    NotificationTemplate instance. Returns (subject, body, html_body).
 
-    If subject is empty (e.g. for in-app templates), it is returned as "".
+    Empty template fields render as "" (in-app templates carry no subject; most
+    templates carry no html_body). A render failure of html_body is raised the
+    same way as a body failure (TemplateRenderError) so the caller treats the
+    whole record as FAILED — an email that would ship a broken HTML alternative
+    is not worth sending.
 
     Args:
         notification_template:  A NotificationTemplate model instance.
@@ -84,4 +88,9 @@ def render_notification_template(notification_template, context: dict) -> tuple[
         else ""
     )
     rendered_body = render_template(notification_template.body, context)
-    return rendered_subject, rendered_body
+    rendered_html = (
+        render_template(notification_template.html_body, context)
+        if getattr(notification_template, "html_body", "")
+        else ""
+    )
+    return rendered_subject, rendered_body, rendered_html

@@ -27,7 +27,7 @@ def send_email(
     *,
     subject: str,
     plain_message: str,
-    html_message: str,
+    html_message: str | None = None,
     recipient_list: list[str],
     from_email: str | None = None,
     cc: list[str] | None = None,
@@ -38,6 +38,11 @@ def send_email(
     Automatically attaches any addresses listed in settings.EMAIL_CC so
     every outgoing email gets the same CC list (useful for monitoring /
     testing). Clear EMAIL_CC in the environment to disable.
+
+    ``html_message`` is optional: when provided the message is sent multipart
+    (plain body + HTML alternative); when omitted (or empty) a plain-text-only
+    email is sent. Existing keyword callers that always pass html_message keep
+    working unchanged.
     """
     from_email = from_email or build_from_email()
     cc = cc or getattr(settings, 'EMAIL_CC', [])
@@ -49,5 +54,6 @@ def send_email(
         to=recipient_list,
         cc=cc,
     )
-    msg.attach_alternative(html_message, 'text/html')
+    if html_message:
+        msg.attach_alternative(html_message, 'text/html')
     msg.send()

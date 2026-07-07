@@ -2,16 +2,24 @@
 # vs_notifications / models.py
 #
 # Models:
-#   NotificationEventType       — platform-defined event registry (seeded)
-#   NotificationTemplate        — per-(event_type, channel) editable template
-#   SchoolNotificationSetting   — per-school enable/disable toggle per channel
-#   Notification                — dispatch record, one per recipient per channel
+#   NotificationEventType   — platform-defined event registry (seeded)
+#   NotificationTemplate    — per-(event_type, channel) editable template
+#   NotificationSetting     — enable/disable toggle per channel; school-scoped
+#                             OR platform-wide (school=NULL)
+#   Notification            — dispatch record, one per recipient per channel
+#
+# The platform is global: school users are only a fraction of notification
+# consumers (CX staff and future user types have no school). Notifications are
+# therefore RECIPIENT-centric — `Notification.school` is a nullable filter/
+# history anchor, not a dispatch requirement. Settings layer the same way:
+# a NotificationSetting with school=NULL is a platform-wide default.
 # =============================================================================
 
 import uuid
 
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 
 from .constants import ChannelChoices, NotificationStatus
 from vs_rbac.managers import TenantAwareManager
@@ -71,8 +79,19 @@ class NotificationEventType(models.Model):
     default_enabled = models.BooleanField(
         default=True,
         help_text=(
-            "Whether this event type is enabled by default when a new school is seeded. "
-            "Does not retroactively affect existing school settings."
+            "Principled fallback when no NotificationSetting row (school or "
+            "platform) exists for a (event_type, channel). Resolution order is: "
+            "school row → platform row → this value. Also the value used to seed "
+            "platform rows."
+        ),
+    )
+    is_transactional = models.BooleanField(
+        default=False,
+        help_text=(
+            "Transactional events (e.g. password resets, invitations) bypass "
+            "NotificationSetting checks entirely — they always dispatch on their "
+            "supported channels. The platform kill switch (is_active) still wins "
+            "over everything."
         ),
     )
     is_active = models.BooleanField(
@@ -144,8 +163,17 @@ class NotificationTemplate(models.Model):
     )
     body = models.TextField(
         help_text=(
-            "Notification body. Supports {{ variable }} substitution using "
-            "Django template syntax. Stored rendered at dispatch time."
+            "Notification body (plain text). Supports {{ variable }} substitution "
+            "using Django template syntax. Stored rendered at dispatch time."
+        ),
+    )
+    html_body = models.TextField(
+        blank=True,
+        default="",
+        help_text=(
+            "Optional HTML body for the email channel. Supports {{ variable }} "
+            "substitution. When present, email delivery becomes multipart "
+            "(plain-text body + HTML alternative). Ignored for in-app."
         ),
     )
     is_active = models.BooleanField(
@@ -185,24 +213,33 @@ class NotificationTemplate(models.Model):
 
 
 # ---------------------------------------------------------------------------
-# 3.  SchoolNotificationSetting
+# 3.  NotificationSetting
 # ---------------------------------------------------------------------------
 
-class SchoolNotificationSetting(models.Model):
+class NotificationSetting(models.Model):
     """
-    Per-school, per-event-type, per-channel configuration.
+    Per-event-type, per-channel enable/disable toggle.
 
-    Controls whether the dispatch service creates Notification records for
-    a given school on a given channel.
+    Two flavours, distinguished by `school`:
+      * school-scoped  (school=<School>)  — a school's override.
+      * platform-wide  (school=NULL)      — the default for every recipient
+                                            that has no school-specific override.
 
-    Records are created by seed_notification_settings management command
-    (called after school provisioning in vs_onboarding).  School Admins
-    update is_enabled on existing records via PATCH.  They do not create
-    or delete records.
+    Resolution (most specific wins, see services/settings.resolve_channels):
+        school row → platform row → event_type.default_enabled.
 
-    The IN_APP channel cannot be disabled — enforced at the serializer and
-    service layer.  Attempting to set is_enabled=False for IN_APP raises
-    InAppAlwaysEnabledError.
+    Platform rows are seeded from each event type's default_enabled (by the
+    data migration and seed command). School rows are written by School Admins
+    via PATCH; CX staff write platform rows (or a specific school's rows).
+
+    The IN_APP channel cannot be disabled — enforced where settings are WRITTEN
+    (serializer/service). resolve_channels only reads rows; it does not silently
+    override a persisted value.
+
+    The default manager is TenantAware with include_global=True: a school-scoped
+    request sees its own rows PLUS the platform (school=NULL) rows. `all_objects`
+    is the unscoped escape hatch used by the service layer (Celery has no
+    thread-local tenant context) and by explicit view scoping.
     """
 
     id = models.UUIDField(
@@ -214,12 +251,17 @@ class SchoolNotificationSetting(models.Model):
         "vs_schools.School",
         on_delete=models.CASCADE,
         related_name="notification_settings",
-        help_text="The school these settings apply to.",
+        null=True,
+        blank=True,
+        help_text=(
+            "The school this override applies to. NULL means a platform-wide "
+            "default that applies to every recipient without a school override."
+        ),
     )
     event_type = models.ForeignKey(
         NotificationEventType,
         on_delete=models.CASCADE,
-        related_name="school_settings",
+        related_name="settings",
         help_text="The event type being configured.",
     )
     channel = models.CharField(
@@ -230,8 +272,8 @@ class SchoolNotificationSetting(models.Model):
     is_enabled = models.BooleanField(
         default=True,
         help_text=(
-            "Whether this (event_type, channel) fires for this school. "
-            "School Admins toggle this. IN_APP cannot be set to False."
+            "Whether this (event_type, channel) fires for this scope. "
+            "Admins toggle this. IN_APP cannot be set to False."
         ),
     )
     updated_by = models.ForeignKey(
@@ -244,23 +286,39 @@ class SchoolNotificationSetting(models.Model):
     )
     updated_at = models.DateTimeField(auto_now=True)
 
-    objects = TenantAwareManager()
+    objects = TenantAwareManager(include_global=True)
     all_objects = models.Manager()
 
     class Meta:
         default_manager_name = "objects"
         base_manager_name = "all_objects"
-        unique_together = [["school", "event_type", "channel"]]
+        constraints = [
+            # A school may hold at most one row per (event_type, channel).
+            models.UniqueConstraint(
+                fields=["school", "event_type", "channel"],
+                condition=Q(school__isnull=False),
+                name="uq_notif_setting_school_scoped",
+            ),
+            # At most one platform-wide row per (event_type, channel).
+            models.UniqueConstraint(
+                fields=["event_type", "channel"],
+                condition=Q(school__isnull=True),
+                name="uq_notif_setting_platform",
+            ),
+        ]
         indexes = [
-            models.Index(fields=["school", "event_type"]),
+            # resolve_channels fetches both the school row and the platform row
+            # (school IN (<id>, NULL)) for one (event_type) in a single query.
+            models.Index(fields=["event_type", "channel", "school"]),
             models.Index(fields=["school", "channel", "is_enabled"]),
         ]
-        verbose_name = "School notification setting"
-        verbose_name_plural = "School notification settings"
+        verbose_name = "Notification setting"
+        verbose_name_plural = "Notification settings"
 
     def __str__(self):
         status = "on" if self.is_enabled else "off"
-        return f"{self.school_id} / {self.event_type.key} / {self.channel} ({status})"
+        scope = self.school_id if self.school_id else "platform"
+        return f"{scope} / {self.event_type.key} / {self.channel} ({status})"
 
 
 # ---------------------------------------------------------------------------
@@ -302,9 +360,9 @@ class Notification(models.Model):
         null=True,
         blank=True,
         help_text=(
-            "School of the recipient — the tenant scoping anchor. "
-            "Null only for platform-level notifications to CX staff "
-            "(e.g. background-task completion alerts)."
+            "Optional scope for filtering/history. NOT a dispatch requirement — "
+            "notifications are recipient-centric. Null for platform-level "
+            "recipients (CX staff, and any recipient with no school)."
         ),
     )
     recipient = models.ForeignKey(
@@ -344,7 +402,28 @@ class Notification(models.Model):
         help_text="Rendered subject line (email only). Stored at dispatch time.",
     )
     body = models.TextField(
-        help_text="Rendered body after variable substitution. Stored at dispatch time.",
+        help_text="Rendered plain-text body after substitution. Stored at dispatch time.",
+    )
+    html_body = models.TextField(
+        blank=True,
+        default="",
+        help_text=(
+            "Rendered HTML body (email only). Populated at dispatch time when the "
+            "template defines an html_body. When present, delivery is multipart."
+        ),
+    )
+    # Internal-only correlation store, never serialized (FLS). Recognised keys:
+    #   activation_key — invitation tracking correlation for the delivery-signal
+    #                    receivers (vs_user.receivers).
+    #   from_name      — per-message From display name; deliver_email_notification
+    #                    builds the From address from it via build_from_email.
+    metadata = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Internal-only caller correlation data (e.g. activation_key for "
+            "invitation tracking). NEVER exposed in any serializer (FLS)."
+        ),
     )
     status = models.CharField(
         max_length=20,

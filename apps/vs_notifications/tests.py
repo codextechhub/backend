@@ -1,3 +1,608 @@
-from django.test import TestCase
+# =============================================================================
+# vs_notifications / tests.py
+#
+# Suite for the recipient-centric notification overhaul.
+#
+# Security first (403 without RBAC, cross-tenant isolation, feed 404, history
+# scoping), then the domain logic (resolve_channels layering, dispatch with no
+# school, html multipart, pre-flight FAILED signal, delivery task signals), the
+# settings API (effective matrix shape + source, upsert, IN_APP + transactional
+# rejections), and the empty-list response shape.
+#
+# Runs on SQLite (apps.settings.test) and Postgres (apps.settings.local) — the
+# conditional UniqueConstraints exercise on both.
+# =============================================================================
 
-# Create your tests here.
+from unittest import mock
+
+from django.contrib.auth import get_user_model
+from django.core import mail
+from django.test import TestCase, override_settings
+from rest_framework.test import APIClient
+
+from vs_schools.models import School
+
+from .constants import ChannelChoices, NotificationErrorCode, NotificationPermission, NotificationStatus
+from .models import (
+    Notification,
+    NotificationEventType,
+    NotificationSetting,
+)
+from .services.dispatch import NotificationService, UnregisteredRecipient
+from .services.settings import resolve_channels, resolve_channels_bulk
+from .services.seed import seed_event_types, seed_notification_templates, seed_platform_settings
+from . import signals
+
+User = get_user_model()
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+def _grant_school_permission(user, school, permission_key):
+    """Build the full RBAC chain so *user* holds *permission_key* in *school*."""
+    from vs_rbac.models import (
+        Permission,
+        PermissionAction,
+        PermissionModule,
+        PermissionResource,
+        SchoolRolePermission,
+        SchoolRoleTemplate,
+        SchoolUserRoleAssignment,
+    )
+
+    module_key, resource_name, action_key = permission_key.split(".")
+    module, _ = PermissionModule.objects.get_or_create(name=module_key)
+    resource, _ = PermissionResource.objects.get_or_create(module=module, name=resource_name)
+    action, _ = PermissionAction.objects.get_or_create(name=action_key)
+    perm, _ = Permission.objects.get_or_create(module=module, resource=resource, action=action)
+
+    role = SchoolRoleTemplate.objects.create(
+        school=school, name=f"Role {permission_key}",
+    )
+    SchoolRolePermission.objects.create(role=role, permission=perm, granted=True)
+    SchoolUserRoleAssignment.objects.create(
+        school=school, user=user, role=role, assignment_status="ACTIVE",
+    )
+
+
+class _NotifFixture(TestCase):
+    """Seeds event types/templates/platform settings and builds users + schools."""
+
+    def setUp(self):
+        seed_event_types()
+        seed_notification_templates()
+        seed_platform_settings()
+
+        self.school_a = School.objects.create(name="Alpha", slug="alpha-nt", code="ALPNT")
+        self.school_b = School.objects.create(name="Beta", slug="beta-nt", code="BETNT")
+
+        # School-scoped admin in school A, granted the settings permission.
+        self.admin_a = User.objects.create_user(
+            email="admin-a@test.com", password="x", user_type="SCHOOL_ADMIN",
+            status="ACTIVE", first_name="Ada", last_name="Admin", school=self.school_a,
+        )
+        _grant_school_permission(
+            self.admin_a, self.school_a, NotificationPermission.ENFORCE_PERMISSIONS,
+        )
+
+        # A plain school user with no RBAC grants (for 403 tests).
+        self.plain_a = User.objects.create_user(
+            email="plain-a@test.com", password="x", user_type="SCHOOL_ADMIN",
+            status="ACTIVE", first_name="Peter", last_name="Plain", school=self.school_a,
+        )
+
+        # A CX super admin (bypasses RBAC; no school → platform scope).
+        self.cx = User.objects.create_user(
+            email="cx@test.com", password="x", user_type="CX_STAFF",
+            status="ACTIVE", first_name="Cee", last_name="Ex",
+        )
+        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
+        PlatformUserRoleAssignment.objects.create(
+            user=self.cx, role=role, assignment_status="ACTIVE",
+        )
+
+    def _client(self, user):
+        """
+        Authenticate with a real JWT so TenantJWTAuthentication establishes the
+        school (tenant) context on the request — school-scoped RBAC checks read
+        request.school, which force_authenticate would leave unset.
+        """
+        from rest_framework_simplejwt.tokens import AccessToken
+        token = AccessToken.for_user(user)
+        c = APIClient()
+        c.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        return c
+
+    def _event(self, key):
+        return NotificationEventType.objects.get(key=key)
+
+
+# ---------------------------------------------------------------------------
+# resolve_channels — layering
+# ---------------------------------------------------------------------------
+
+class ResolveChannelsTests(_NotifFixture):
+
+    def test_default_when_no_rows(self):
+        et = self._event("student.enrolled")
+        NotificationSetting.all_objects.filter(event_type=et).delete()
+        resolved = resolve_channels(et, school=self.school_a)
+        self.assertEqual(
+            resolved,
+            {ChannelChoices.IN_APP: et.default_enabled, ChannelChoices.EMAIL: et.default_enabled},
+        )
+
+    def test_platform_row_wins_over_default(self):
+        et = self._event("student.enrolled")
+        NotificationSetting.all_objects.filter(
+            event_type=et, channel=ChannelChoices.EMAIL, school__isnull=True,
+        ).update(is_enabled=False)
+        resolved = resolve_channels(et, school=self.school_a)
+        self.assertFalse(resolved[ChannelChoices.EMAIL])
+
+    def test_school_row_beats_platform(self):
+        et = self._event("student.enrolled")
+        NotificationSetting.all_objects.filter(
+            event_type=et, channel=ChannelChoices.EMAIL, school__isnull=True,
+        ).update(is_enabled=False)
+        NotificationSetting.all_objects.create(
+            school=self.school_a, event_type=et, channel=ChannelChoices.EMAIL, is_enabled=True,
+        )
+        self.assertTrue(resolve_channels(et, school=self.school_a)[ChannelChoices.EMAIL])
+        # School B has no override → still off (platform).
+        self.assertFalse(resolve_channels(et, school=self.school_b)[ChannelChoices.EMAIL])
+
+    def test_transactional_bypasses_disabled_rows(self):
+        et = self._event("user.password_reset")
+        NotificationSetting.all_objects.create(
+            school=None, event_type=et, channel=ChannelChoices.EMAIL, is_enabled=False,
+        )
+        self.assertTrue(resolve_channels(et)[ChannelChoices.EMAIL])
+
+    def test_is_active_kills_all(self):
+        et = self._event("user.password_reset")  # transactional
+        et.is_active = False
+        et.save(update_fields=["is_active"])
+        self.assertEqual(resolve_channels(et), {ChannelChoices.EMAIL: False})
+
+
+# ---------------------------------------------------------------------------
+# resolve_channels_bulk — layering across multiple event types, one query
+# ---------------------------------------------------------------------------
+
+class ResolveChannelsBulkTests(_NotifFixture):
+
+    def test_layering_across_multiple_event_types_one_call(self):
+        """school beats platform beats default — for several event types at once."""
+        et_school = self._event("student.enrolled")       # school override wins
+        et_platform = self._event("student.deactivated")  # platform row wins
+        et_default = self._event("student.promoted")      # no rows → default
+        et_tx = self._event("user.password_reset")        # transactional bypass
+
+        # et_school: platform says off, school A says on → school wins.
+        NotificationSetting.all_objects.filter(
+            event_type=et_school, channel=ChannelChoices.EMAIL, school__isnull=True,
+        ).update(is_enabled=False)
+        NotificationSetting.all_objects.create(
+            school=self.school_a, event_type=et_school,
+            channel=ChannelChoices.EMAIL, is_enabled=True,
+        )
+        # et_platform: platform row says off; no school override → platform wins.
+        NotificationSetting.all_objects.filter(
+            event_type=et_platform, channel=ChannelChoices.EMAIL, school__isnull=True,
+        ).update(is_enabled=False)
+        # et_default: no rows at all → default_enabled fallback.
+        NotificationSetting.all_objects.filter(event_type=et_default).delete()
+        # et_tx: a disabled row must be ignored — transactional always fires.
+        NotificationSetting.all_objects.create(
+            school=None, event_type=et_tx, channel=ChannelChoices.EMAIL, is_enabled=False,
+        )
+
+        resolved = resolve_channels_bulk(
+            [et_school, et_platform, et_default, et_tx], school=self.school_a,
+        )
+
+        self.assertTrue(resolved[et_school.id][ChannelChoices.EMAIL])       # school layer
+        self.assertFalse(resolved[et_platform.id][ChannelChoices.EMAIL])    # platform layer
+        self.assertEqual(                                                    # default layer
+            resolved[et_default.id][ChannelChoices.EMAIL], et_default.default_enabled,
+        )
+        self.assertTrue(resolved[et_tx.id][ChannelChoices.EMAIL])           # transactional
+
+    def test_bulk_uses_single_settings_query(self):
+        event_types = list(NotificationEventType.objects.filter(is_active=True))
+        with self.assertNumQueries(1):
+            resolve_channels_bulk(event_types, school=self.school_a)
+
+    def test_matrix_build_costs_two_queries(self):
+        """1 event-type query + 1 settings query — no per-event resolve queries."""
+        from .views import NotificationSettingViewSet
+        view = NotificationSettingViewSet()
+        with self.assertNumQueries(2):
+            matrix = view._build_matrix(self.school_a)
+        self.assertTrue(matrix)
+
+    def test_single_resolve_delegates_to_bulk(self):
+        et = self._event("student.enrolled")
+        self.assertEqual(
+            resolve_channels(et, school=self.school_a),
+            resolve_channels_bulk([et], school=self.school_a)[et.id],
+        )
+
+
+# ---------------------------------------------------------------------------
+# Dispatch service
+# ---------------------------------------------------------------------------
+
+class DispatchTests(_NotifFixture):
+
+    def _recipient(self, email="rcpt@test.com"):
+        return User.objects.create_user(
+            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Rex", last_name="Cipient",
+        )
+
+    def test_school_none_creates_records_and_enqueues_email(self):
+        rcpt = self._recipient()
+        # on_commit fires the enqueue; TestCase never commits, so capture it.
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay") as delay:
+            with self.captureOnCommitCallbacks(execute=True):
+                ids = NotificationService.send(
+                    event_key="student.enrolled",
+                    context={"student_first_name": "Sam", "student_last_name": "Doe"},
+                    recipients=[rcpt],
+                    # no school → platform scope
+                )
+        self.assertEqual(len(ids), 2)  # in_app + email
+        notifs = Notification.objects.filter(id__in=ids)
+        self.assertIsNone(notifs.first().school_id)
+        email = notifs.get(channel=ChannelChoices.EMAIL)
+        self.assertEqual(email.status, NotificationStatus.PENDING)
+        in_app = notifs.get(channel=ChannelChoices.IN_APP)
+        self.assertEqual(in_app.status, NotificationStatus.SENT)
+        delay.assert_called_once_with(str(email.id))
+
+    def test_metadata_stored_but_never_serialized(self):
+        rcpt = self._recipient()
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
+            ids = NotificationService.send(
+                event_key="student.enrolled",
+                context={"student_first_name": "Sam"},
+                recipients=[rcpt],
+                metadata={"activation_key": "abc123"},
+            )
+        n = Notification.objects.filter(id__in=ids).first()
+        self.assertEqual(n.metadata, {"activation_key": "abc123"})
+        from .serializers import NotificationDetailSerializer, NotificationHistoryDetailSerializer
+        self.assertNotIn("metadata", NotificationDetailSerializer(n).data)
+        self.assertNotIn("metadata", NotificationHistoryDetailSerializer(n).data)
+
+    def test_html_body_rendered_and_stored(self):
+        with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
+            ids = NotificationService.send(
+                event_key="user.invited",
+                context={
+                    "user_first_name": "Jane", "user_full_name": "Jane Doe",
+                    "school_name": "Alpha", "invitation_url": "https://x/y", "expiry_days": 7,
+                },
+                recipients=[],
+                unregistered_recipients=[UnregisteredRecipient(email="new@test.com", name="Jane")],
+            )
+        n = Notification.objects.get(id=ids[0])
+        self.assertEqual(n.channel, ChannelChoices.EMAIL)
+        self.assertIn("Jane", n.html_body)
+        self.assertIn("<html", n.html_body.lower())
+
+    def test_preflight_failed_fires_notification_failed(self):
+        received = []
+        signals.notification_failed.connect(
+            lambda sender, notification, **kw: received.append(notification),
+            weak=False, dispatch_uid="test-preflight",
+        )
+        self.addCleanup(
+            signals.notification_failed.disconnect, dispatch_uid="test-preflight",
+        )
+        # The pre-flight FAILED signal fires from on_commit — capture it.
+        with self.captureOnCommitCallbacks(execute=True):
+            ids = NotificationService.send(
+                event_key="user.invited",
+                context={"user_first_name": "Jane", "school_name": "Alpha",
+                         "invitation_url": "u", "expiry_days": 7, "user_full_name": "Jane Doe"},
+                recipients=[],
+                unregistered_recipients=[UnregisteredRecipient(email="", name="Jane")],
+            )
+        n = Notification.objects.get(id=ids[0])
+        self.assertEqual(n.status, NotificationStatus.FAILED)
+        self.assertEqual(n.failure_reason, "NO_EMAIL_ADDRESS")
+        self.assertEqual(len(received), 1)
+        self.assertEqual(received[0].id, n.id)
+
+    def test_all_channels_disabled_returns_empty(self):
+        et = self._event("student.enrolled")
+        NotificationSetting.all_objects.filter(event_type=et).update(is_enabled=False)
+        rcpt = self._recipient()
+        ids = NotificationService.send(
+            event_key="student.enrolled",
+            context={"student_first_name": "Sam"},
+            recipients=[rcpt],
+            school=self.school_a,
+        )
+        self.assertEqual(ids, [])
+
+
+# ---------------------------------------------------------------------------
+# Delivery task + signals
+# ---------------------------------------------------------------------------
+
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend",
+                   DEFAULT_FROM_EMAIL="CodeX System <system@codexng.com>", EMAIL_CC=[])
+class DeliveryTaskTests(_NotifFixture):
+
+    def _pending_email(self, html=""):
+        et = self._event("student.enrolled")
+        return Notification.objects.create(
+            school=None, recipient=None, unregistered_email="dest@test.com",
+            event_type=et, channel=ChannelChoices.EMAIL, subject="Hi",
+            body="plain body", html_body=html, status=NotificationStatus.PENDING,
+        )
+
+    def test_deliver_marks_sent_and_fires_signal(self):
+        from .tasks import deliver_email_notification
+        notif = self._pending_email()
+        received = []
+        signals.notification_sent.connect(
+            lambda sender, notification, **kw: received.append(notification),
+            weak=False, dispatch_uid="test-sent",
+        )
+        self.addCleanup(signals.notification_sent.disconnect, dispatch_uid="test-sent")
+
+        deliver_email_notification(str(notif.id))
+        notif.refresh_from_db()
+        self.assertEqual(notif.status, NotificationStatus.SENT)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(len(received), 1)
+
+    def test_deliver_multipart_when_html_present(self):
+        from .tasks import deliver_email_notification
+        notif = self._pending_email(html="<p>rich</p>")
+        deliver_email_notification(str(notif.id))
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        self.assertTrue(
+            any(ct == "text/html" for _, ct in getattr(msg, "alternatives", [])),
+            "expected an HTML alternative to be attached",
+        )
+
+    def test_deliver_no_html_is_plain(self):
+        from .tasks import deliver_email_notification
+        notif = self._pending_email(html="")
+        deliver_email_notification(str(notif.id))
+        msg = mail.outbox[0]
+        self.assertEqual(getattr(msg, "alternatives", []), [])
+
+    def test_from_name_metadata_sets_from_header(self):
+        from .tasks import deliver_email_notification
+        et = self._event("student.enrolled")
+        notif = Notification.objects.create(
+            school=None, recipient=None, unregistered_email="dest@test.com",
+            event_type=et, channel=ChannelChoices.EMAIL, subject="Hi",
+            body="plain", status=NotificationStatus.PENDING,
+            metadata={"from_name": "Ada Admin"},
+        )
+        deliver_email_notification(str(notif.id))
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("Ada Admin", mail.outbox[0].from_email)
+        self.assertIn("system@codexng.com", mail.outbox[0].from_email)
+
+    def test_eager_mode_first_failure_is_final_no_retry(self):
+        from unittest import mock
+
+        from .tasks import deliver_email_notification
+        notif = self._pending_email()
+        received = []
+        signals.notification_failed.connect(
+            lambda sender, notification, **kw: received.append(notification),
+            weak=False, dispatch_uid="test-eager-fail",
+        )
+        self.addCleanup(
+            signals.notification_failed.disconnect, dispatch_uid="test-eager-fail",
+        )
+
+        def _boom(*a, **k):
+            raise RuntimeError("smtp down")
+
+        # request.is_eager is True when the task runs synchronously (.apply()),
+        # so the guard must mark FAILED on the first failure without retrying.
+        with mock.patch("vs_notifications.tasks.send_email", side_effect=_boom):
+            deliver_email_notification.apply(args=[str(notif.id)]).get()
+
+        notif.refresh_from_db()
+        self.assertEqual(notif.status, NotificationStatus.FAILED)
+        self.assertEqual(notif.retry_count, 1, "must not retry in eager mode")
+        self.assertEqual(len(received), 1)
+
+
+# ---------------------------------------------------------------------------
+# Feed retrieve — cross-user isolation
+# ---------------------------------------------------------------------------
+
+class FeedRetrieveTests(_NotifFixture):
+
+    def test_retrieve_other_users_notification_is_404(self):
+        et = self._event("student.enrolled")
+        mine = Notification.objects.create(
+            school=self.school_a, recipient=self.admin_a, event_type=et,
+            channel=ChannelChoices.IN_APP, body="x", status=NotificationStatus.SENT,
+        )
+        theirs = Notification.objects.create(
+            school=self.school_a, recipient=self.plain_a, event_type=et,
+            channel=ChannelChoices.IN_APP, body="y", status=NotificationStatus.SENT,
+        )
+        client = self._client(self.admin_a)
+        self.assertEqual(client.get(f"/v1/notify/{mine.id}/").status_code, 200)
+        self.assertEqual(client.get(f"/v1/notify/{theirs.id}/").status_code, 404)
+
+
+# ---------------------------------------------------------------------------
+# Settings API — security + shape + upsert
+# ---------------------------------------------------------------------------
+
+class SettingsApiTests(_NotifFixture):
+
+    def test_settings_requires_rbac_permission(self):
+        resp = self._client(self.plain_a).get("/v1/notify/settings/")
+        self.assertEqual(resp.status_code, 403)
+
+    def test_school_admin_cannot_read_other_school(self):
+        resp = self._client(self.admin_a).get(
+            f"/v1/notify/settings/?school={self.school_b.id}"
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_school_admin_can_read_own_school(self):
+        resp = self._client(self.admin_a).get(
+            f"/v1/notify/settings/?school={self.school_a.id}"
+        )
+        self.assertEqual(resp.status_code, 200)
+
+    def test_matrix_shape_and_source_field(self):
+        resp = self._client(self.cx).get("/v1/notify/settings/")
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.json()["data"]
+        self.assertTrue(rows)
+        row = rows[0]
+        for field in ["event_type_key", "event_type_label", "source_module",
+                      "channel", "is_enabled", "is_transactional", "source"]:
+            self.assertIn(field, row)
+        self.assertIn(row["source"], {"platform", "default"})
+        tx = [r for r in rows if r["event_type_key"] == "user.password_reset"]
+        self.assertTrue(tx and all(r["is_transactional"] for r in tx))
+
+    def test_patch_upsert_creates_override_row(self):
+        resp = self._client(self.cx).patch(
+            "/v1/notify/settings/update/",
+            {"updates": [{"event_type_key": "student.enrolled",
+                          "channel": "email", "is_enabled": False}]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        row = NotificationSetting.all_objects.get(
+            school__isnull=True, event_type__key="student.enrolled", channel="email",
+        )
+        self.assertFalse(row.is_enabled)
+        entries = resp.json()["data"]
+        self.assertEqual(entries[0]["event_type_key"], "student.enrolled")
+        self.assertFalse(entries[0]["is_enabled"])
+
+    def test_patch_school_scoped_writes_school_row(self):
+        self._client(self.admin_a).patch(
+            f"/v1/notify/settings/update/?school={self.school_a.id}",
+            {"updates": [{"event_type_key": "student.enrolled",
+                          "channel": "email", "is_enabled": False}]},
+            format="json",
+        )
+        self.assertTrue(
+            NotificationSetting.all_objects.filter(
+                school=self.school_a, event_type__key="student.enrolled",
+                channel="email", is_enabled=False,
+            ).exists()
+        )
+
+    def test_patch_reject_disable_in_app(self):
+        resp = self._client(self.cx).patch(
+            "/v1/notify/settings/update/",
+            {"updates": [{"event_type_key": "student.enrolled",
+                          "channel": "in_app", "is_enabled": False}]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        errs = resp.json()["error"]["updates"]
+        self.assertEqual(errs[0]["error_code"], NotificationErrorCode.IN_APP_ALWAYS_ENABLED)
+
+    def test_patch_reject_transactional_toggle(self):
+        resp = self._client(self.cx).patch(
+            "/v1/notify/settings/update/",
+            {"updates": [{"event_type_key": "user.password_reset",
+                          "channel": "email", "is_enabled": False}]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        errs = resp.json()["error"]["updates"]
+        self.assertEqual(
+            errs[0]["error_code"], NotificationErrorCode.TRANSACTIONAL_NOT_CONFIGURABLE,
+        )
+
+    def test_patch_reject_unknown_event(self):
+        resp = self._client(self.cx).patch(
+            "/v1/notify/settings/update/",
+            {"updates": [{"event_type_key": "does.not.exist",
+                          "channel": "email", "is_enabled": True}]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
+
+# ---------------------------------------------------------------------------
+# History — school scoping
+# ---------------------------------------------------------------------------
+
+class HistoryScopingTests(_NotifFixture):
+
+    def setUp(self):
+        super().setUp()
+        _grant_school_permission(
+            self.admin_a, self.school_a, NotificationPermission.AUDIT_ACTIVITY,
+        )
+        et = self._event("student.enrolled")
+        self.n_a = Notification.objects.create(
+            school=self.school_a, recipient=self.admin_a, event_type=et,
+            channel=ChannelChoices.IN_APP, body="a", status=NotificationStatus.SENT,
+        )
+        self.n_b = Notification.objects.create(
+            school=self.school_b, recipient=None, unregistered_email="b@test.com",
+            event_type=et, channel=ChannelChoices.EMAIL, body="b",
+            status=NotificationStatus.SENT,
+        )
+        self.n_platform = Notification.objects.create(
+            school=None, recipient=self.cx, event_type=et,
+            channel=ChannelChoices.IN_APP, body="p", status=NotificationStatus.SENT,
+        )
+
+    def test_school_admin_sees_only_own_school(self):
+        resp = self._client(self.admin_a).get(
+            "/v1/notify/history/?event_type_key=student.enrolled"
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        ids = {r["id"] for r in resp.json()["data"]}
+        self.assertIn(str(self.n_a.id), ids)
+        self.assertNotIn(str(self.n_b.id), ids)
+        self.assertNotIn(str(self.n_platform.id), ids)
+
+    def test_cx_platform_scope_filter(self):
+        resp = self._client(self.cx).get("/v1/notify/history/?scope=platform")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        ids = {r["id"] for r in resp.json()["data"]}
+        self.assertIn(str(self.n_platform.id), ids)
+        self.assertNotIn(str(self.n_a.id), ids)
+
+    def test_cx_requires_a_filter(self):
+        resp = self._client(self.cx).get("/v1/notify/history/")
+        self.assertEqual(resp.status_code, 422)
+
+
+# ---------------------------------------------------------------------------
+# Empty-list / object response shapes
+# ---------------------------------------------------------------------------
+
+class ResponseShapeTests(_NotifFixture):
+
+    def test_unread_count_object_shape(self):
+        resp = self._client(self.plain_a).get("/v1/notify/unread-count/")
+        self.assertEqual(resp.json()["data"], {"unread_count": 0})
+
+    def test_settings_matrix_returns_list(self):
+        resp = self._client(self.cx).get("/v1/notify/settings/")
+        self.assertIsInstance(resp.json()["data"], list)

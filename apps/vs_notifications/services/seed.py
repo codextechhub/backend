@@ -44,6 +44,7 @@ def seed_event_types() -> dict:
                 "source_module":      entry["source_module"],
                 "supported_channels": entry["supported_channels"],
                 "default_enabled":    entry.get("default_enabled", True),
+                "is_transactional":   entry.get("is_transactional", False),
                 "is_active":          True,
             },
         )
@@ -61,22 +62,67 @@ def seed_event_types() -> dict:
     return {"created": created_count, "updated": updated_count}
 
 
+def seed_platform_settings() -> dict:
+    """
+    Create the platform-wide (school=NULL) NotificationSetting rows.
+
+    For each active NotificationEventType and each of its supported_channels a
+    platform row is created with is_enabled = event_type.default_enabled.
+    These are the defaults resolve_channels() falls back to before hitting the
+    event type's default_enabled directly; seeding them makes the defaults
+    explicit and admin-visible.
+
+    Transactional event types are skipped — they bypass settings entirely, so a
+    setting row for them would be dead data.
+
+    Uses get_or_create — existing rows are never overwritten, so an admin's
+    platform-level change is preserved and new event types are picked up on the
+    next run.
+
+    Returns:
+        {"created": N, "skipped": N}
+    """
+    from ..models import NotificationEventType, NotificationSetting
+
+    active_event_types = NotificationEventType.objects.filter(
+        is_active=True, is_transactional=False,
+    )
+
+    created_count = 0
+    skipped_count = 0
+
+    for event_type in active_event_types:
+        for channel in event_type.supported_channels:
+            _, created = NotificationSetting.all_objects.get_or_create(
+                school=None,
+                event_type=event_type,
+                channel=channel,
+                defaults={"is_enabled": event_type.default_enabled},
+            )
+            if created:
+                created_count += 1
+            else:
+                skipped_count += 1
+
+    logger.info(
+        "seed_platform_settings complete — created: %d, skipped: %d",
+        created_count, skipped_count,
+    )
+    return {"created": created_count, "skipped": skipped_count}
+
+
 def seed_school_settings(school) -> dict:
     """
-    Create SchoolNotificationSetting records for a single school.
+    Create school-scoped NotificationSetting override rows for one school.
 
-    For each active NotificationEventType and each of its supported_channels,
-    a setting record is created using the event type's default_enabled value.
+    This is an OPTIONAL explicit-override path (platform defaults, seeded by
+    seed_platform_settings, already cover every school). It exists so a school
+    can be pre-populated with concrete rows an admin can then toggle, and is
+    still used by callers that want per-school rows materialised up front.
 
-    Uses get_or_create — existing records are never overwritten.  This means:
-      - Running this on an already-configured school is safe.
-      - If a School Admin has changed a setting, that change is preserved.
-      - New event types added after initial provisioning will be seeded on
-        the next run with their default_enabled value.
-
-    Called by:
-      - vs_onboarding after a new school is provisioned.
-      - seed_notification_settings management command (targeted at one school).
+    For each active, non-transactional NotificationEventType and each supported
+    channel, a row is created with is_enabled = event_type.default_enabled.
+    Uses get_or_create — existing admin-configured rows are never overwritten.
 
     Args:
         school:  A School model instance.
@@ -84,16 +130,18 @@ def seed_school_settings(school) -> dict:
     Returns:
         {"created": N, "skipped": N}
     """
-    from ..models import NotificationEventType, SchoolNotificationSetting
+    from ..models import NotificationEventType, NotificationSetting
 
-    active_event_types = NotificationEventType.objects.filter(is_active=True)
+    active_event_types = NotificationEventType.objects.filter(
+        is_active=True, is_transactional=False,
+    )
 
     created_count = 0
     skipped_count = 0
 
     for event_type in active_event_types:
         for channel in event_type.supported_channels:
-            _, created = SchoolNotificationSetting.objects.get_or_create(
+            _, created = NotificationSetting.all_objects.get_or_create(
                 school=school,
                 event_type=event_type,
                 channel=channel,
@@ -166,6 +214,142 @@ def seed_notification_templates() -> dict:
         created_count, skipped_count,
     )
     return {"created": created_count, "skipped": skipped_count}
+
+
+# ---------------------------------------------------------------------------
+# Ported HTML email bodies (transactional events)
+#
+# Faithful ports of vs_user/templates/vs_user/emails/*.html with the nested
+# Django-template variables ({{ user.first_name }} etc.) flattened to the flat
+# context keys the render engine receives. Copy is preserved; only variable
+# references and a couple of account-detail fields (which the flat context does
+# not carry) were adjusted.
+# ---------------------------------------------------------------------------
+
+_INVITATION_HTML = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Welcome to {{ school_name }}</title>
+  </head>
+  <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f5f5f5;">
+    <table role="presentation" style="width: 100%; border-collapse: collapse">
+      <tr>
+        <td align="center" style="padding: 40px 0">
+          <table role="presentation" style="width: 600px; max-width: 100%; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);">
+            <!-- Header -->
+            <tr>
+              <td style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px 30px; text-align: center; border-radius: 8px 8px 0 0;">
+                <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 600;">Welcome to {{ school_name }}</h1>
+              </td>
+            </tr>
+            <!-- Body -->
+            <tr>
+              <td style="padding: 40px 30px">
+                <p style="margin: 0 0 20px; color: #333333; font-size: 16px; line-height: 1.6;">Hello <strong>{{ user_first_name }}</strong>,</p>
+                <p style="margin: 0 0 20px; color: #333333; font-size: 16px; line-height: 1.6;">You have been invited to join <strong>{{ school_name }}</strong> on XVision System. To get started, please activate your account by setting up your password.</p>
+                <!-- Account Details Box -->
+                <div style="background-color: #f8f9fa; border-left: 4px solid #667eea; padding: 20px; margin: 30px 0; border-radius: 4px;">
+                  <p style="margin: 0 0 10px; color: #666666; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Your Account Details</p>
+                  <p style="margin: 0 0 8px; color: #333333; font-size: 15px;"><strong>Name:</strong> {{ user_full_name }}</p>
+                  <p style="margin: 0; color: #333333; font-size: 15px;"><strong>Institution:</strong> {{ school_name }}</p>
+                </div>
+                <!-- CTA Button -->
+                <table role="presentation" style="margin: 30px 0">
+                  <tr>
+                    <td align="center">
+                      <a href="{{ invitation_url }}" style="display: inline-block; padding: 16px 40px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);">Activate Your Account</a>
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin: 30px 0 20px; color: #666666; font-size: 14px; line-height: 1.6;">Or copy and paste this URL into your browser:</p>
+                <p style="margin: 0 0 30px; padding: 15px; background-color: #f8f9fa; border-radius: 4px; word-break: break-all; font-size: 13px; color: #667eea; font-family: 'Courier New', monospace;">{{ invitation_url }}</p>
+                <!-- Important Notice -->
+                <div style="background-color: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 30px 0; border-radius: 4px;">
+                  <p style="margin: 0; color: #856404; font-size: 14px; line-height: 1.6;"><strong>⏰ Important:</strong> This invitation link will expire in <strong>{{ expiry_days }} days</strong>. Please activate your account before then.</p>
+                </div>
+                <p style="margin: 30px 0 0; color: #666666; font-size: 14px; line-height: 1.6;">If you didn't expect this invitation or have any questions, please contact your administrator.</p>
+              </td>
+            </tr>
+            <!-- Footer -->
+            <tr>
+              <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-radius: 0 0 8px 8px; border-top: 1px solid #e9ecef;">
+                <p style="margin: 0 0 10px; color: #999999; font-size: 13px">XVision System</p>
+                <p style="margin: 0; color: #999999; font-size: 13px">Powering Smart Institutions</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
+
+
+_PASSWORD_RESET_HTML = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reset Your Password</title>
+  </head>
+  <body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; background-color: #f5f5f5;">
+    <table role="presentation" style="width: 100%; border-collapse: collapse">
+      <tr>
+        <td align="center" style="padding: 40px 0">
+          <table role="presentation" style="width: 600px; max-width: 100%; background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);">
+            <!-- Header -->
+            <tr>
+              <td style="{% if origin == 'ADMIN' %}background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);{% else %}background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);{% endif %} padding: 40px 30px; text-align: center; border-radius: 8px 8px 0 0;">
+                <h1 style="margin: 0; color: #ffffff; font-size: 28px; font-weight: 600;">{% if origin == 'ADMIN' %}Password Reset Requested{% else %}Reset Your Password{% endif %}</h1>
+              </td>
+            </tr>
+            <!-- Body -->
+            <tr>
+              <td style="padding: 40px 30px">
+                <p style="margin: 0 0 20px; color: #333333; font-size: 16px; line-height: 1.6;">Hello <strong>{{ user_first_name }}</strong>,</p>
+                {% if origin == 'ADMIN' %}
+                <p style="margin: 0 0 20px; color: #333333; font-size: 16px; line-height: 1.6;">Your administrator has initiated a password reset for your CodeX Vision account. Use the link below to create a new password.</p>
+                {% else %}
+                <p style="margin: 0 0 20px; color: #333333; font-size: 16px; line-height: 1.6;">We received a request to reset the password for your CodeX Vision account. Click the button below to create a new password.</p>
+                {% endif %}
+                <!-- CTA Button -->
+                <table role="presentation" style="margin: 30px 0">
+                  <tr>
+                    <td align="center">
+                      <a href="{{ reset_url }}" style="display: inline-block; padding: 16px 40px; {% if origin == 'ADMIN' %}background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);{% else %}background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);{% endif %} color: #ffffff; text-decoration: none; border-radius: 6px; font-weight: 600; font-size: 16px; {% if origin == 'ADMIN' %}box-shadow: 0 4px 12px rgba(240, 147, 251, 0.4);{% else %}box-shadow: 0 4px 12px rgba(79, 172, 254, 0.4);{% endif %}">Reset Password</a>
+                    </td>
+                  </tr>
+                </table>
+                <p style="margin: 30px 0 20px; color: #666666; font-size: 14px; line-height: 1.6;">Or copy and paste this URL into your browser:</p>
+                <p style="margin: 0 0 30px; padding: 15px; background-color: #f8f9fa; border-radius: 4px; word-break: break-all; font-size: 13px; {% if origin == 'ADMIN' %}color: #f5576c;{% else %}color: #4facfe;{% endif %} font-family: 'Courier New', monospace;">{{ reset_url }}</p>
+                <!-- Expiry Notice -->
+                <div style="{% if origin == 'ADMIN' %}background-color: #fff0f6; border-left: 4px solid #f5576c;{% else %}background-color: #e7f7ff; border-left: 4px solid #4facfe;{% endif %} padding: 15px; margin: 30px 0; border-radius: 4px;">
+                  <p style="margin: 0; {% if origin == 'ADMIN' %}color: #c41d3a;{% else %}color: #0066cc;{% endif %} font-size: 14px; line-height: 1.6;"><strong>⏰ This link will expire in {{ expiry_hours }} hour{% if expiry_hours > 1 %}s{% endif %}.</strong> After that, you'll need to request a new password reset.</p>
+                </div>
+                <!-- Security Notice -->
+                <div style="background-color: #f8f9fa; padding: 20px; margin: 30px 0; border-radius: 4px;">
+                  <p style="margin: 0 0 10px; color: #666666; font-size: 14px; font-weight: 600;">🔒 Security Notice</p>
+                  <p style="margin: 0; color: #666666; font-size: 14px; line-height: 1.6;">If you didn't request this password reset, please ignore this email. Your password will remain unchanged. For security concerns, contact your administrator immediately.</p>
+                </div>
+              </td>
+            </tr>
+            <!-- Footer -->
+            <tr>
+              <td style="background-color: #f8f9fa; padding: 30px; text-align: center; border-radius: 0 0 8px 8px; border-top: 1px solid #e9ecef;">
+                <p style="margin: 0 0 10px; color: #999999; font-size: 13px">XVision System</p>
+                <p style="margin: 0; color: #999999; font-size: 13px">Empowering education through technology</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -520,19 +704,37 @@ def _build_default_templates() -> dict:
             ),
         },
 
-        # ── user.invited (EMAIL only) ───────────────────────────────────────
+        # ── user.invited (EMAIL only, transactional) ────────────────────────
+        # Ported from vs_user/templates/vs_user/emails/invitation.{txt,html}.
+        # The Django-template variables there ({{ user.first_name }} etc.) are
+        # flattened to the context keys the render engine receives:
+        #   user_first_name, user_full_name, school_name, invitation_url, expiry_days
         ("user.invited", C.EMAIL): {
-            "subject": "You have been invited to {{ school_name }} on CodeX Vision",
-            "body": (
-                "Hello {{ invitee_name }},\n\n"
-                "You have been invited to join {{ school_name }} on CodeX Vision "
-                "as a {{ role_name }}.\n\n"
-                "Click the link below to activate your account. "
-                "This link expires in {{ expiry_hours }} hours.\n\n"
-                "{{ activation_link }}\n\n"
-                "If you did not expect this invitation, please ignore this email.\n\n"
-                "CodeX Vision"
+            "subject": (
+                "{% if has_school %}You have been invited to {{ school_name }} "
+                "on XVision System{% else %}You have been invited to XVision "
+                "System{% endif %}"
             ),
+            "body": (
+                "Welcome to {{ school_name }}\n\n"
+                "Hello {{ user_first_name }},\n\n"
+                "You have been invited to join {{ school_name }} on XVision System.\n\n"
+                "YOUR ACCOUNT DETAILS\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "Name:        {{ user_full_name }}\n"
+                "Institution: {{ school_name }}\n\n"
+                "ACTIVATE YOUR ACCOUNT\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "Click the link below to set up your password and activate your account:\n\n"
+                "{{ invitation_url }}\n\n"
+                "⏰ IMPORTANT: This invitation link will expire in {{ expiry_days }} days.\n\n"
+                "If you didn't expect this invitation or have any questions, please contact "
+                "your administrator.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "XVision System\n"
+                "Powering Smart Institutions"
+            ),
+            "html_body": _INVITATION_HTML,
         },
 
         # ── user.account_locked ─────────────────────────────────────────────
@@ -595,6 +797,79 @@ def _build_default_templates() -> dict:
                 "Import ID: {{ import_id }}\n\n"
                 "Please log in to Vision to review the error report and retry.\n\n"
                 "CodeX Vision"
+            ),
+        },
+
+        # ── user.password_reset (EMAIL only, transactional) ─────────────────
+        # Ported from vs_user/templates/vs_user/emails/password_reset.{txt,html}.
+        # Flat context keys: user_first_name, reset_url, expiry_hours, origin,
+        # sender_name.
+        ("user.password_reset", C.EMAIL): {
+            "subject": (
+                "{% if origin == 'ADMIN' %}Your CodeX Vision password has been "
+                "reset by an administrator{% else %}Reset your CodeX Vision "
+                "password{% endif %}"
+            ),
+            "body": (
+                "{% if origin == 'ADMIN' %}PASSWORD RESET REQUESTED"
+                "{% else %}RESET YOUR PASSWORD{% endif %}\n\n"
+                "Hello {{ user_first_name }},\n\n"
+                "{% if origin == 'ADMIN' %}Your administrator has initiated a password "
+                "reset for your CodeX Vision account.{% else %}We received a request to "
+                "reset the password for your CodeX Vision account.{% endif %}\n\n"
+                "RESET YOUR PASSWORD\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "Click the link below to create a new password:\n\n"
+                "{{ reset_url }}\n\n"
+                "⏰ This link will expire in {{ expiry_hours }} hour"
+                "{% if expiry_hours > 1 %}s{% endif %}.\n\n"
+                "🔒 SECURITY NOTICE\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "If you didn't request this password reset, please ignore this email.\n"
+                "Your password will remain unchanged.\n\n"
+                "For security concerns, contact your administrator immediately.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "XVision System\n"
+                "Empowering education through technology"
+            ),
+            "html_body": _PASSWORD_RESET_HTML,
+        },
+
+        # ── task.completed / task.failed (core background jobs, IN_APP) ──────
+        ("task.completed", C.IN_APP): {
+            "subject": "",
+            "body": "Your background task '{{ label }}' finished successfully.",
+        },
+        ("task.failed", C.IN_APP): {
+            "subject": "",
+            "body": "Your background task '{{ label }}' FAILED. {{ error }}",
+        },
+
+        # ── todo.task_completed (review request) ────────────────────────────
+        ("todo.task_completed", C.IN_APP): {
+            "subject": "",
+            "body": (
+                "{{ assignee_name }} marked \"{{ task_title }}\" as done. "
+                "Kindly review it under Tasks → My Team."
+            ),
+        },
+        ("todo.task_completed", C.EMAIL): {
+            "subject": "Review requested: \"{{ task_title }}\" marked as done",
+            "body": (
+                "Hello {{ reviewer_first }},\n\n"
+                "{{ assignee_name }} has marked the task below as completed and it is\n"
+                "awaiting your review.\n\n"
+                "  Task       : {{ task_title }}\n"
+                "{% if task_description %}  Details    : {{ task_description }}\n{% endif %}"
+                "  Metric     : {{ task_metric }}\n"
+                "  Target     : {{ task_target }}\n"
+                "  Priority   : {{ task_priority }}\n"
+                "  Deadline   : {{ task_deadline }}\n"
+                "  Completed  : {{ task_completed }}\n"
+                "{% if task_department %}  Department : {{ task_department }}\n{% endif %}"
+                "\n"
+                "Review it on the console under Tasks → My Team → {{ assignee_first }}.\n\n"
+                "— CodeX Vision Console (automated message)"
             ),
         },
     }

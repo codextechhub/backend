@@ -165,29 +165,19 @@ class TrackedTask(Task):
         if not job.owner_id or not job.label:
             return
         try:
-            from vs_notifications.constants import ChannelChoices, NotificationStatus
-            from vs_notifications.models import Notification, NotificationEventType
+            from vs_notifications.notify import send_notification
 
             key = "task.completed" if succeeded else "task.failed"
-            event, _ = NotificationEventType.objects.get_or_create(
-                key=key,
-                defaults=dict(
-                    label="Background task completed" if succeeded else "Background task failed",
-                    source_module="core",
-                ),
-            )
-            outcome = "finished successfully" if succeeded else "FAILED"
-            Notification.objects.create(
+            send_notification(
+                event_key=key,
+                context={
+                    "label": job.label,
+                    "error": "" if succeeded else job.error[:300],
+                },
+                recipients=[job.owner],
                 school=job.school,
-                recipient_id=job.owner_id,
-                event_type=event,
-                channel=ChannelChoices.IN_APP,
-                subject=f"{job.label} — {outcome}",
-                body=(
-                    f"Your background task '{job.label}' {outcome}."
-                    + ("" if succeeded else f" Error: {job.error[:300]}")
-                ),
-                status=NotificationStatus.SENT,
             )
         except Exception:  # pragma: no cover
+            # Best-effort: any failure (including UnknownEventTypeError when the
+            # event registry is unseeded) is swallowed so it never fails the job.
             logger.warning("BackgroundJob notification failed for job %s", job.pk, exc_info=True)

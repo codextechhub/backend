@@ -11,8 +11,8 @@ from django.contrib import admin
 from .models import (
     Notification,
     NotificationEventType,
+    NotificationSetting,
     NotificationTemplate,
-    SchoolNotificationSetting,
 )
 
 
@@ -22,8 +22,8 @@ from .models import (
 
 @admin.register(NotificationEventType)
 class NotificationEventTypeAdmin(admin.ModelAdmin):
-    list_display  = ["key", "label", "source_module", "is_active", "default_enabled"]
-    list_filter   = ["source_module", "is_active", "default_enabled"]
+    list_display  = ["key", "label", "source_module", "is_active", "is_transactional", "default_enabled"]
+    list_filter   = ["source_module", "is_active", "is_transactional", "default_enabled"]
     search_fields = ["key", "label"]
     readonly_fields = ["id", "created_at", "updated_at"]
     ordering      = ["source_module", "key"]
@@ -33,7 +33,7 @@ class NotificationEventTypeAdmin(admin.ModelAdmin):
             "fields": ("id", "key", "label", "description", "source_module"),
         }),
         ("Channel & Defaults", {
-            "fields": ("supported_channels", "default_enabled", "is_active"),
+            "fields": ("supported_channels", "default_enabled", "is_transactional", "is_active"),
         }),
         ("Timestamps", {
             "fields": ("created_at", "updated_at"),
@@ -60,9 +60,10 @@ class NotificationTemplateAdmin(admin.ModelAdmin):
             "fields": ("id", "event_type", "channel", "is_active"),
         }),
         ("Content", {
-            "fields": ("subject", "body"),
+            "fields": ("subject", "body", "html_body"),
             "description": (
                 "Use {{ variable_name }} syntax for substitution. "
+                "html_body (email only) makes delivery multipart when present. "
                 "Available variables are defined per event type in the FRD."
             ),
         }),
@@ -74,20 +75,31 @@ class NotificationTemplateAdmin(admin.ModelAdmin):
 
 
 # ---------------------------------------------------------------------------
-# SchoolNotificationSetting
+# NotificationSetting
 # ---------------------------------------------------------------------------
 
-@admin.register(SchoolNotificationSetting)
-class SchoolNotificationSettingAdmin(admin.ModelAdmin):
-    list_display  = ["school", "event_type", "channel", "is_enabled", "updated_at"]
+@admin.register(NotificationSetting)
+class NotificationSettingAdmin(admin.ModelAdmin):
+    # school is nullable — a NULL school is a platform-wide default.
+    list_display  = ["scope_label", "event_type", "channel", "is_enabled", "updated_at"]
     list_filter   = ["channel", "is_enabled", "event_type__source_module"]
     search_fields = ["school__name", "school__slug", "event_type__key"]
     readonly_fields = ["id", "updated_at"]
     ordering = ["school__name", "event_type__source_module", "event_type__key", "channel"]
 
+    # Show platform-wide rows too — the tenant-aware default manager would hide
+    # NULL-school rows outside a school context; use the unscoped manager.
+    def get_queryset(self, request):
+        return NotificationSetting.all_objects.select_related("school", "event_type")
+
+    @admin.display(description="Scope", ordering="school__name")
+    def scope_label(self, obj):
+        return obj.school.name if obj.school_id else "— platform —"
+
     fieldsets = (
         ("Scope", {
             "fields": ("id", "school", "event_type", "channel"),
+            "description": "Leave school blank for a platform-wide default.",
         }),
         ("Setting", {
             "fields": ("is_enabled", "updated_by", "updated_at"),
@@ -112,7 +124,7 @@ class NotificationAdmin(admin.ModelAdmin):
     ]
     readonly_fields = [
         "id", "school", "recipient", "unregistered_email",
-        "event_type", "channel", "subject", "body",
+        "event_type", "channel", "subject", "body", "html_body", "metadata",
         "status", "failure_reason", "retry_count",
         "is_read", "read_at", "dispatched_at", "created_at",
     ]
@@ -133,10 +145,15 @@ class NotificationAdmin(admin.ModelAdmin):
             "fields": ("recipient", "unregistered_email"),
         }),
         ("Content", {
-            "fields": ("subject", "body"),
+            "fields": ("subject", "body", "html_body"),
         }),
         ("Delivery", {
             "fields": ("retry_count", "failure_reason", "dispatched_at"),
+        }),
+        ("Internal", {
+            "fields": ("metadata",),
+            "classes": ("collapse",),
+            "description": "Internal-only correlation data — never exposed via the API.",
         }),
         ("Read state", {
             "fields": ("is_read", "read_at"),
