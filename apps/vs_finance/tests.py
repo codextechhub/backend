@@ -6477,7 +6477,10 @@ class DunningNotificationTests(_GLFixtureMixin, TestCase):
 
     # --- 3. platform/no-school entity: skipped gracefully ------------------ #
 
-    def test_no_school_entity_skips_delivery_but_marks_sent(self):
+    def test_no_school_entity_still_delivers(self):
+        # Recipient-centric notifications: a platform/product book (no source_school)
+        # still delivers to the customer's billing_email — school is an optional scope,
+        # not a gate. (Tracks the notifications overhaul.)
         from vs_notifications.models import Notification
 
         platform = LedgerEntity.objects.create(
@@ -6515,9 +6518,9 @@ class DunningNotificationTests(_GLFixtureMixin, TestCase):
         before = Notification.objects.count()
         mark_notice_sent(notices[0])  # must not raise
         notices[0].refresh_from_db()
-        # No school → delivery skipped, but the notice still flips SENT (nothing to retry).
+        # No school → still delivered (recipient-centric), and the notice flips SENT.
         self.assertEqual(notices[0].notice_status, "SENT")
-        self.assertEqual(Notification.objects.count(), before)
+        self.assertGreater(Notification.objects.count(), before)
 
     # --- 4. customer without billing_email → FAILED notification ---------- #
 
