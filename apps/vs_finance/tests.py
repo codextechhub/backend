@@ -5737,3 +5737,307 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
         entry.refresh_from_db()
         self.assertEqual(entry.status, DocumentStatus.POSTED)
         self.assertEqual(entry.posted_by_id, approver.id)
+
+
+class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
+    """The refund approval slice: opt-in-by-template gating, SoD, and payout-on-approve.
+
+    Wires a customer :class:`Refund` into vs_workflow so that — when a template
+    exists for ``finance.refund`` — the cash payout happens only inside the engine's
+    ``on_approved`` callback (``credit_notes.post_refund``). With no template, direct
+    posting is unchanged. Reuses the same RBAC/user/template fixture shape as the
+    journal slice; a refund needs a customer holding available credit, seated here by
+    posting a standalone over-payment (books to customer-credit 2140).
+    """
+
+    APPROVE_KEY = "finance.refund.approve"
+
+    def setUp(self):
+        import io
+        from django.contrib.auth import get_user_model
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+        from vs_rbac.models import (
+            PlatformRoleTemplate, PlatformUserRoleAssignment,
+            SchoolRolePermission, SchoolRoleTemplate, SchoolUserRoleAssignment,
+        )
+
+        # The approver permission key must exist for the RBAC grant FK to resolve.
+        call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
+
+        self.User = get_user_model()
+        self.SchoolRoleTemplate = SchoolRoleTemplate
+        self.SchoolRolePermission = SchoolRolePermission
+        self.SchoolUserRoleAssignment = SchoolUserRoleAssignment
+
+        # A school-owned entity, so refund.school resolves to a real school and the
+        # engine's SCHOOL-scoped approver resolution has a pool to draw from.
+        self.school = School.objects.create(name="Riverside", slug="riverside-raw", code="RVRAW")
+        seed_currencies()
+        self.entity = LedgerEntity.objects.create(
+            name="Riverside Books", code="RVRBK", kind=LedgerEntity.Kind.TENANT,
+            source_school=self.school,
+        )
+        seed_chart_of_accounts(self.entity)
+        self.year = FiscalYear.objects.create(
+            entity=self.entity, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        self.period = FiscalPeriod.objects.create(
+            entity=self.entity, fiscal_year=self.year, period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+            status=PeriodStatus.OPEN,
+        )
+        self.bank = Account.objects.get(entity=self.entity, code="1100")
+        self.customer = Customer.objects.create(
+            entity=self.entity, code="CUSTR", name="Payer Ltd",
+            receivable_account=Account.objects.get(entity=self.entity, code="1200"),
+        )
+
+        # Requester: a CX super admin (bypasses the per-endpoint RBAC gate, sees every
+        # entity). SoD still excludes them from approving their own refund.
+        self.requester = self.User.objects.create_user(
+            email="req-raw@test.com", password="pw", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Reqi", last_name="Ester",
+        )
+        super_role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
+        PlatformUserRoleAssignment.objects.create(
+            user=self.requester, role=super_role, assignment_status="ACTIVE",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.requester)
+
+    # --- fixtures ---------------------------------------------------------- #
+
+    def _seat_credit(self, amount):
+        """Seat ``amount`` kobo of available customer credit via a standalone payment.
+
+        A receipt with no open invoices books its whole amount to the customer-credit
+        liability (2140) — exactly what a refund pays back out.
+        """
+        pay = Payment.objects.create(
+            entity=self.entity, customer=self.customer,
+            payment_date=datetime.date(2026, 1, 5), amount=amount, deposit_account=self.bank,
+        )
+        post_payment(pay)
+        self.assertEqual(customer_credit_balance(self.customer), amount)
+
+    def _make_draft_refund(self, *, amount=30000):
+        return Refund.objects.create(
+            entity=self.entity, customer=self.customer,
+            refund_date=datetime.date(2026, 1, 18), amount=amount,
+            deposit_account=self.bank, created_by=self.requester,
+        )
+
+    def _publish_standard_template(self, *, on_rejection="RETURN_TO_REQUESTER"):
+        from vs_workflow.services.templates import publish_template
+
+        return publish_template(
+            school=self.school, branch=None,
+            document_type="finance.refund", code="standard",
+            name="Standard refund approval",
+            stages_payload=[{
+                "code": "checker", "label": "Checker approval", "kind": "APPROVAL",
+                "order": 1, "approver_permission_key": self.APPROVE_KEY,
+                "approver_scope": "SCHOOL", "advance_rule": "ANY",
+                "on_rejection": on_rejection, "skip_if_no_approvers": False,
+            }])
+
+    def _make_approver(self, email="apr-raw@test.com"):
+        user = self.User.objects.create_user(
+            email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
+            first_name="Apro", last_name="Ver", school=self.school,
+        )
+        role, _ = self.SchoolRoleTemplate.objects.get_or_create(
+            id="refund-checker-role", defaults={"school": self.school, "name": "Refund Checker"},
+        )
+        self.SchoolRolePermission.objects.get_or_create(
+            role=role, permission_id=self.APPROVE_KEY, defaults={"granted": True},
+        )
+        self.SchoolUserRoleAssignment.objects.create(
+            school=self.school, user=user, role=role, assignment_status="ACTIVE",
+        )
+        return user
+
+    def _submit(self, refund):
+        return self.client.post(
+            f"/v1/finance/refunds/{refund.pk}/submit/?entity={self.entity.code}", {}, format="json")
+
+    def _post(self, refund):
+        return self.client.post(
+            f"/v1/finance/refunds/{refund.pk}/post/?entity={self.entity.code}", {}, format="json")
+
+    def _instance_for(self, refund):
+        from vs_workflow.models import WorkflowInstance
+        return WorkflowInstance.objects.for_document(refund).first()
+
+    # --- 1. Gate off: no template → direct post still works ---------------- #
+
+    def test_gate_off_direct_post_still_works(self):
+        from vs_finance.approvals import approval_required
+
+        self._seat_credit(30000)
+        refund = self._make_draft_refund(amount=30000)
+        self.assertFalse(approval_required(refund))
+        resp = self._post(refund)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        refund.refresh_from_db()
+        self.assertEqual(refund.status, DocumentStatus.POSTED)
+        self.assertIsNotNone(refund.journal_id)
+
+    # --- 2. Gate on: direct post refused ----------------------------------- #
+
+    def test_gate_on_direct_post_refused(self):
+        self._seat_credit(30000)
+        self._publish_standard_template()
+        refund = self._make_draft_refund(amount=30000)
+        resp = self._post(refund)
+        self.assertEqual(resp.status_code, 400, resp.content)
+        refund.refresh_from_db()
+        self.assertEqual(refund.status, DocumentStatus.DRAFT)
+        self.assertIsNone(refund.journal_id)
+
+    # --- 3. Gate on: submit → PENDING, no refund journal posted ------------ #
+
+    def test_gate_on_submit_moves_to_pending_and_no_payout(self):
+        self._seat_credit(30000)
+        self._publish_standard_template()
+        self._make_approver()  # keep the stage ACTIVE (do not auto-skip)
+        refund = self._make_draft_refund(amount=30000)
+        resp = self._submit(refund)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        refund.refresh_from_db()
+        self.assertEqual(refund.status, DocumentStatus.PENDING_APPROVAL)
+        self.assertIsNone(refund.journal_id)
+        # The credit is untouched until approval.
+        self.assertEqual(customer_credit_balance(self.customer), 30000)
+
+    # --- 4. SoD: requester cannot approve own refund ----------------------- #
+
+    def test_requester_cannot_approve_own_refund(self):
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.exceptions import (
+            NotAnEligibleApproverError, RequesterCannotApproveError,
+        )
+
+        self._seat_credit(30000)
+        self._publish_standard_template()
+        self._make_approver()
+        refund = self._make_draft_refund(amount=30000)
+        self._submit(refund)
+        instance = self._instance_for(refund)
+        with self.assertRaises((RequesterCannotApproveError, NotAnEligibleApproverError)):
+            wf_actions.record_action(instance.id, self.requester, ActionEnum.APPROVED)
+        refund.refresh_from_db()
+        self.assertEqual(refund.status, DocumentStatus.PENDING_APPROVAL)
+
+    # --- 5. Happy path: approver approves → post_refund runs, refund POSTED --- #
+
+    def test_approval_pays_out_and_posts_refund(self):
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+
+        self._seat_credit(30000)
+        self._publish_standard_template()
+        approver = self._make_approver()
+        refund = self._make_draft_refund(amount=30000)
+        self._submit(refund)
+        instance = self._instance_for(refund)
+
+        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+
+        refund.refresh_from_db()
+        self.assertEqual(refund.status, DocumentStatus.POSTED)
+        self.assertIsNotNone(refund.journal_id)                   # payout journal linked
+        self.assertEqual(refund.journal.posted_by_id, approver.id)  # posted by the approver
+        self.assertEqual(customer_credit_balance(self.customer), 0)  # credit paid out
+
+    # --- 6. Reject → DRAFT and Return → DRAFT ------------------------------ #
+
+    def test_reject_returns_refund_to_draft(self):
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+
+        self._seat_credit(30000)
+        self._publish_standard_template(on_rejection="TERMINAL")
+        approver = self._make_approver()
+        refund = self._make_draft_refund(amount=30000)
+        self._submit(refund)
+        instance = self._instance_for(refund)
+
+        wf_actions.record_action(instance.id, approver, ActionEnum.REJECTED, comment="no")
+
+        refund.refresh_from_db()
+        self.assertEqual(refund.status, DocumentStatus.DRAFT)
+        self.assertIsNone(refund.journal_id)
+        self.assertEqual(customer_credit_balance(self.customer), 30000)
+
+    def test_return_sends_refund_back_to_draft(self):
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+
+        self._seat_credit(30000)
+        self._publish_standard_template()  # on_rejection=RETURN_TO_REQUESTER
+        approver = self._make_approver()
+        refund = self._make_draft_refund(amount=30000)
+        self._submit(refund)
+        instance = self._instance_for(refund)
+
+        wf_actions.record_action(instance.id, approver, ActionEnum.RETURNED, comment="wrong account")
+
+        refund.refresh_from_db()
+        self.assertEqual(refund.status, DocumentStatus.DRAFT)
+
+    # --- 7. Option-A rollback: credit drained after submit ----------------- #
+
+    def test_posting_failure_at_approval_rolls_back_and_keeps_stage_active(self):
+        from vs_workflow.constants import (
+            WorkflowInstanceStatus, WorkflowStageAction as ActionEnum, WorkflowStageStatus,
+        )
+        from vs_finance.exceptions import PostingError
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.models import WorkflowStageAction
+
+        # Seat exactly enough credit for one refund; submit passes preflight.
+        self._seat_credit(30000)
+        self._publish_standard_template()
+        approver = self._make_approver()
+        refund = self._make_draft_refund(amount=30000)
+        self._submit(refund)
+        instance = self._instance_for(refund)
+
+        # Drain the customer's available credit while the refund sits in the queue by
+        # paying it out through a second, directly-posted refund (no template gate on
+        # that path yet — it's the same entity, but we bypass via the service). After
+        # this, post_refund on the queued refund must exceed available credit.
+        drain = Refund.objects.create(
+            entity=self.entity, customer=self.customer, refund_date=datetime.date(2026, 1, 6),
+            amount=30000, deposit_account=self.bank, created_by=self.requester,
+        )
+        from vs_finance.credit_notes import post_refund
+        post_refund(drain, actor_user=self.requester)
+        self.assertEqual(customer_credit_balance(self.customer), 0)
+
+        with self.assertRaises(PostingError):
+            wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+
+        # Option A: the approval action rolled back — refund not POSTED, no journal,
+        # and the stage is still ACTIVE for a retry.
+        refund.refresh_from_db()
+        self.assertNotEqual(refund.status, DocumentStatus.POSTED)
+        self.assertIsNone(refund.journal_id)
+        self.assertFalse(WorkflowStageAction.objects.filter(
+            stage_instance__instance=instance, action=ActionEnum.APPROVED,
+            reversed_at__isnull=True, is_reversal_of__isnull=True).exists())
+        instance.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        self.assertTrue(
+            instance.stage_instances.filter(status=WorkflowStageStatus.ACTIVE).exists())
+
+        # Retry succeeds once credit is re-seated.
+        self._seat_credit(30000)
+        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+        refund.refresh_from_db()
+        self.assertEqual(refund.status, DocumentStatus.POSTED)
+        self.assertEqual(refund.journal.posted_by_id, approver.id)

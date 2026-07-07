@@ -79,6 +79,7 @@ from .views_ar import (
     RefundDetailView,
     RefundListCreateView,
     RefundPostView,
+    RefundSubmitView,
 )
 from .views_ops import (
     BankAccountDetailView,
@@ -189,6 +190,7 @@ urlpatterns = [
          name="finance-creditnote-allocate"),
     path("refunds/", RefundListCreateView.as_view(), name="finance-refund-list"),
     path("refunds/<int:pk>/", RefundDetailView.as_view(), name="finance-refund-detail"),
+    path("refunds/<int:pk>/submit/", RefundSubmitView.as_view(), name="finance-refund-submit"),
     path("refunds/<int:pk>/post/", RefundPostView.as_view(), name="finance-refund-post"),
     path("invoices/<int:pk>/write-off/", InvoiceWriteOffView.as_view(), name="finance-invoice-writeoff"),
     path("ar-adjustments/", ARAdjustmentListView.as_view(), name="finance-ar-adjustments"),

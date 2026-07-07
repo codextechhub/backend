@@ -9,8 +9,10 @@ and the ``on_*`` lifecycle callbacks on each transition.
 
 **The golden rule (design §3): the GL posting happens inside ``on_approved``,
 never before.** So money cannot hit the ledger until approval completes. The
-posting call reuses the existing :func:`vs_finance.posting.post_journal` service
-unchanged — this module only moves *when* it is called and *who* triggers it.
+posting call reuses the existing per-document-type service unchanged
+(:func:`vs_finance.posting.post_journal` for journals,
+:func:`vs_finance.credit_notes.post_refund` for refunds) — this module only moves
+*when* it is called and *who* triggers it.
 
 **Post-failure behaviour — Option A (design §12 Q4).** The engine records an
 approver's vote inside ``record_action``'s ``transaction.atomic`` block, and the
@@ -105,9 +107,20 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
         # Runs inside record_action's atomic block; a posting failure here rolls the
         # whole approval action back and leaves the stage ACTIVE (Option A).
         doc = self._load(instance)
+        self._mark_approved(doc)
+        self.post(doc, actor_user=self._final_approver(instance))
+
+    def _mark_approved(self, doc) -> None:
+        """Flip the document to APPROVED before the GL posting (design §5).
+
+        The intermediate APPROVED write is transient — the ``post`` call overwrites
+        it with POSTED inside the same transaction. Subclasses whose posting service
+        insists on a DRAFT document (e.g. the refund service re-guards ``status ==
+        DRAFT``) override this to hand ``post`` a DRAFT document instead and let it
+        drive DRAFT → POSTED.
+        """
         doc.status = DocumentStatus.APPROVED
         doc.save(update_fields=["status", "updated_at"])
-        self.post(doc, actor_user=self._final_approver(instance))
 
     def on_rejected(self, instance, context) -> None:
         with transaction.atomic():
@@ -182,4 +195,70 @@ class JournalHandler(_FinancePostOnApprove):
                 {"label": "Total", "value": format_naira(document.total_debit_kobo)},
             ],
             "link": f"/finance/journals/{document.pk}/",
+        }
+
+
+@register_handler("finance.refund")
+class RefundHandler(_FinancePostOnApprove):
+    """Approval handler for a customer :class:`~vs_finance.models.Refund` (cash out)."""
+
+    @property
+    def document_model(self):
+        from .models import Refund
+        return Refund
+
+    def _mark_approved(self, doc) -> None:
+        # post_refund owns the DRAFT → POSTED transition and re-guards status ==
+        # DRAFT, so we hand it a DRAFT document rather than flipping to APPROVED
+        # first. On approval the refund thus moves PENDING_APPROVAL → DRAFT → POSTED,
+        # with post_refund driving the final POSTED write exactly as on the ungated
+        # direct-post path. (If post_refund raises, this DRAFT write rolls back with
+        # the whole approval action — Option A — so the doc is never left DRAFT.)
+        if doc.status != DocumentStatus.DRAFT:
+            doc.status = DocumentStatus.DRAFT
+            doc.save(update_fields=["status", "updated_at"])
+
+    def preflight(self, document) -> None:
+        """Run the refund-posting guards without writing anything.
+
+        Mirrors the guards in :func:`vs_finance.credit_notes._post_refund_atomic`
+        (positive amount, amount within the customer's available credit, a
+        resolvable deposit/bank account) with the same ``PostingError`` messages —
+        so the preflight and the eventual post agree — but never mutates. The DRAFT
+        check is handled by the base ``validate_document``.
+        """
+        from .exceptions import PostingError
+        from .receivables import customer_credit_balance
+
+        if document.amount <= 0:
+            raise PostingError("A refund must have a positive amount to post.")
+
+        available = customer_credit_balance(document.customer)
+        if document.amount > available:
+            raise PostingError(
+                f"Refund of {document.amount} kobo exceeds {document.customer.code}'s "
+                f"available credit ({available} kobo).",
+            )
+
+        deposit = document.deposit_account or (
+            document.bank_account.gl_account if document.bank_account_id else None
+        )
+        if deposit is None:
+            raise PostingError("Refund has no bank/deposit account to pay from.")
+
+    def post(self, document, *, actor_user) -> None:
+        from .credit_notes import post_refund
+
+        post_refund(document, actor_user=actor_user)
+
+    def summary(self, document) -> dict:
+        return {
+            "title": document.document_number or str(document.pk),
+            "subtitle": "Customer refund",
+            "fields": [
+                {"label": "Date", "value": document.refund_date.isoformat()},
+                {"label": "Customer", "value": document.customer.code},
+                {"label": "Amount", "value": format_naira(document.amount)},
+            ],
+            "link": f"/finance/refunds/{document.pk}/",
         }

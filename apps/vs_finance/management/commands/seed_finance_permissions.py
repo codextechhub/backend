@@ -83,7 +83,11 @@ FINANCE_RESOURCES = [
                                                 ("replenish", "SENSITIVE")]),
     ("pettycashvoucher", "petty cash vouchers", [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("post", "SENSITIVE")]),
-    ("refund",       "customer refunds",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("post", "CRITICAL")]),
+    ("refund",       "customer refunds",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("post", "CRITICAL"),
+                                                # Approval-workflow keys: submit a draft for approval, and the
+                                                # checker / high-value-controller approver keys the templates gate on.
+                                                ("submit", "SENSITIVE"), ("approve", "CRITICAL"),
+                                                ("approve_high_value", "CRITICAL")]),
     ("tax",          "tax filings",            [("view", "NORMAL"), ("file", "SENSITIVE"),
                                                 ("pay", "CRITICAL"), ("manage", "SENSITIVE")]),
 ]

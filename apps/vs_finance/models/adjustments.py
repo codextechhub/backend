@@ -265,6 +265,13 @@ class Refund(FinanceDocument):
 
     DOC_TYPE = DocType.REFUND
 
+    #: vs_workflow document-type token. When a WorkflowTemplate exists for this
+    #: token at the refund's (school, branch) scope, the payout is gated behind
+    #: approval (opt-in by template); otherwise the direct-post path is unchanged.
+    #: ``amount`` (kobo) is the plain magnitude field threshold conditions read via
+    #: ``{"op": "gte", "field": "amount", ...}``.
+    workflow_document_type = "finance.refund"
+
     customer = models.ForeignKey(
         Customer, on_delete=models.PROTECT, related_name="refunds",
     )

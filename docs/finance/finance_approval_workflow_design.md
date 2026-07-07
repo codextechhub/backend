@@ -138,12 +138,32 @@ must be set per your policy):
 | Credit note | `finance.credit_note` | `/credit-notes/<id>/submit/` | 1 checker; + finance mgr ≥ ₦1m |
 | Debit note | `finance.debit_note` | same endpoint, kind-routed | 1 checker |
 | Refund (cash out to customer) | `finance.refund` | `/refunds/<id>/submit/` | 1 checker always (cash leaves) |
-| Bad-debt write-off | `finance.write_off` | `/invoices/<id>/write-off/submit/` | Finance mgr; + controller ≥ ₦1m |
+| Bad-debt write-off | `finance.write_off` | `/write-offs/<id>/submit/` | Finance mgr; + controller ≥ ₦1m — **needs a new `WriteOffRequest` document (see below)** |
 | Concession (discount/waiver/scholarship) | `finance.concession` | `/concessions/<id>/submit/` | 1 checker; policy-holder ≥ threshold |
 | Expense claim | `finance.expense_claim` | replaces current post flow | Line mgr → finance (already half-built) |
 | Payroll run | `finance.payroll_run` | `/payroll-runs/<id>/submit/` | HR/finance mgr — high value, always |
 | Payout batch (money out via PSP) | `payments.payout_batch` | `/payout-batches/<id>/submit/` | 1 checker + controller ≥ threshold |
 | Budget | `finance.budget` | migrate existing `approve/` to engine | 1 approver (today it's a single call) |
+
+### Cut-1 scope adjustments (confirmed 2026-07-06)
+
+Two "money-out" documents don't fit the base handler as-is:
+
+- **Write-offs** have no document today — `write_off_invoice` is an *action* on an
+  invoice, recorded only in `FinanceAuditLog`. **Decision:** add a lightweight
+  `WriteOffRequest` document (`DRAFT → APPROVED → POSTED`, `entity`+`branch`+`invoice`
+  +`amount`+`write_off_account`) that the workflow attaches to; `on_approved` calls
+  the existing `write_off_invoice` service. This is the correct ERP shape (a
+  write-off *should* be an approvable, first-class record) and is the **one
+  sanctioned new table** — it supersedes §10's "no new finance tables" for this doc
+  type. The `ARAdjustmentListView`/`_writeoff_rows` reader should later prefer the
+  new document over the audit-log reconstruction (backward-compatible: keep reading
+  the log for historical write-offs).
+- **Payout batches** (`vs_payments`, gate the PSP *submission* not a GL post) are
+  **deferred** to a follow-up — cross-app and async-confirm shaped.
+
+So cut-1 approval coverage = **journals (done) → refunds → write-offs (via
+`WriteOffRequest`)**; payout batches later.
 
 **Invoices, customer receipts, and fee-run generation are intentionally NOT
 gated** — they are revenue capture, not disbursement, and gating them would break

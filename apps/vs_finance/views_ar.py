@@ -1235,18 +1235,57 @@ class RefundDetailView(_RefundActionBase):
         return success_response("Refund retrieved.", data=RefundSerializer(refund).data)
 
 
+class RefundSubmitView(_RefundActionBase):
+    """POST /finance/refunds/<id>/submit/ — submit a draft refund for approval.
+
+    Hands the refund to the ``vs_workflow`` engine via
+    :func:`vs_workflow.services.submission.submit_for_approval`. The handler's
+    ``validate_document`` runs the refund preflight now (positive amount, within the
+    customer's available credit, a resolvable deposit account) so a doomed refund is
+    refused before it enters the queue, and moves it to ``PENDING_APPROVAL``; the GL
+    is not touched until final approval fires the handler's ``on_approved`` payout.
+    Only meaningful when a template exists for ``finance.refund`` at this refund's
+    scope (see :func:`approvals.approval_required`).
+
+    docstring-name: Submit a refund for approval
+    """
+    rbac_permission = "finance.refund.submit"
+
+    def post(self, request, pk):
+        from vs_workflow.services.submission import submit_for_approval
+
+        _, refund = self._refund(request, pk)
+        submit_for_approval(refund, requested_by=request.user)
+        refund.refresh_from_db()
+        return success_response(
+            f"Refund {refund.document_number} submitted for approval.",
+            data=RefundSerializer(refund).data,
+        )
+
+
 class RefundPostView(_RefundActionBase):
     """POST /finance/refunds/<id>/post/ — post a draft refund, paying the customer's
     credit back out (Dr customer credit / Cr bank) and recording the GL journal.
+
+    When a workflow template is published for this refund's ``finance.refund``
+    document type (opt-in gate), direct posting is refused: the refund must go
+    through ``/submit/`` and pays out only on approval. With no template, this
+    behaves exactly as it always has.
 
     docstring-name: Post a refund
     """
     rbac_permission = "finance.refund.post"
 
     def post(self, request, pk):
+        from .approvals import approval_required
         from .credit_notes import post_refund
 
         _, refund = self._refund(request, pk)
+        if approval_required(refund):
+            raise ValidationError({
+                "detail": "This refund is approval-gated; submit it for approval "
+                          "instead of posting directly.",
+            })
         post_refund(refund, actor_user=request.user)
         refund.refresh_from_db()
         return success_response(
