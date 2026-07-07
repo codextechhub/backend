@@ -309,6 +309,69 @@ class Refund(FinanceDocument):
         ]
 
 
+class WriteOffRequest(FinanceDocument):
+    """A first-class, approvable bad-debt write-off against a posted :class:`Invoice`.
+
+    Historically a write-off was a bare invoice action recorded only in the audit log.
+    Making it a numbered :class:`FinanceDocument` gives it a lifecycle the workflow
+    engine can attach to: it is created DRAFT, optionally routed through approval, and
+    only on approval (or a direct post when ungated) does
+    :func:`vs_finance.credit_notes.write_off_invoice` run — unchanged — to post the
+    ``Dr bad-debt expense, Cr AR control`` journal and clear that much of the invoice
+    via :attr:`Invoice.amount_credited`. The posted journal is linked back on
+    :attr:`journal`.
+
+    Args:
+        invoice: The posted invoice whose outstanding balance is being written off.
+        amount: Amount to write off, in kobo. When left 0/omitted the service defaults
+            it to the invoice's full outstanding balance at post time.
+        write_off_account: Expense account debited; defaults to the entity's bad-debt
+            account (CoA ``5300``) inside the service when left null.
+        write_off_date: Accounting date for the write-off journal (defaults to the
+            invoice date inside the service when null).
+        narration: Optional narration carried onto the journal.
+        reason: Optional free-text reason for the write-off (governance/audit).
+        journal: The bad-debt :class:`JournalEntry` once posted.
+    """
+
+    DOC_TYPE = DocType.WRITE_OFF
+
+    #: vs_workflow document-type token. When a WorkflowTemplate exists for this token
+    #: at the request's (school, branch) scope, the write-off is gated behind approval
+    #: (opt-in by template); otherwise the direct-post path is unchanged. ``amount``
+    #: (kobo) is the magnitude threshold conditions read.
+    workflow_document_type = "finance.write_off"
+
+    invoice = models.ForeignKey(
+        Invoice, on_delete=models.PROTECT, related_name="write_off_requests",
+    )
+    amount = MoneyField(help_text="Amount to write off, in kobo.")
+    write_off_account = models.ForeignKey(
+        Account, on_delete=models.PROTECT, related_name="write_off_requests",
+        null=True, blank=True,
+        help_text="Expense account debited; defaults to the entity's bad-debt account.",
+    )
+    write_off_date = models.DateField(null=True, blank=True)
+    narration = models.CharField(max_length=255, blank=True, default="")
+    reason = models.CharField(max_length=255, blank=True, default="")
+    journal = models.ForeignKey(
+        "JournalEntry", on_delete=models.PROTECT, related_name="write_off_requests",
+        null=True, blank=True,
+    )
+
+    class Meta(FinanceDocument.Meta):
+        indexes = [
+            models.Index(fields=["entity", "status"]),
+            models.Index(fields=["invoice"]),
+            models.Index(fields=["entity", "write_off_date"]),
+        ]
+
+    @property
+    def amount_kobo(self) -> int:
+        """Stable alias for :attr:`amount` (kobo) for threshold conditions."""
+        return self.amount
+
+
 class Concession(FinanceDocument):
     """A non-cash reduction of a receivable — a discount, waiver or scholarship.
 

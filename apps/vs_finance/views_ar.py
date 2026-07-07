@@ -47,6 +47,7 @@ from .models import (
     Invoice,
     PaymentPlan,
     Refund,
+    WriteOffRequest,
 )
 from .serializers import (
     ConcessionSerializer,
@@ -59,6 +60,7 @@ from .serializers import (
     PaymentPlanSerializer,
     PaymentSerializer,
     RefundSerializer,
+    WriteOffRequestSerializer,
 )
 from .views import resolve_entity
 from .views_ops import (
@@ -1298,8 +1300,148 @@ class RefundPostView(_RefundActionBase):
 # Bad-debt write-off                                                          #
 # --------------------------------------------------------------------------- #
 
+def _build_write_off_request(entity, body, *, actor_user):
+    """Create a DRAFT :class:`WriteOffRequest` from an API body (shared by the
+    write-off-request create view and the invoice-write-off bridge).
+
+    ``amount`` defaults to the invoice's outstanding balance when omitted. Resolves
+    the invoice, optional write-off account and optional date within ``entity``.
+    """
+    invoice = _resolve_invoice(entity, body.get("invoice"))
+    amount = _money(body["amount"], "amount") if body.get("amount") not in (None, "") \
+        else invoice.balance_due
+    return WriteOffRequest.objects.create(
+        entity=entity, invoice=invoice, amount=amount,
+        write_off_account=_resolve_account(
+            entity, body.get("write_off_account"), "write_off_account"),
+        write_off_date=_date(body.get("write_off_date"), "write_off_date"),
+        narration=body.get("narration", ""),
+        reason=body.get("reason", ""),
+        created_by=actor_user,
+    )
+
+
+class WriteOffRequestListCreateView(_FinanceBase):
+    """GET (list) / POST (create draft) bad-debt write-off requests for an entity.
+
+    POST body: ``{invoice (doc-no|id, required), amount? (kobo; defaults to the
+    invoice's outstanding balance), write_off_account? (code|id), write_off_date?
+    (ISO), narration?, reason?}``. Creates a DRAFT request; the actual GL write-off
+    runs later, on approval (when gated) or a direct ``/post/`` (when not).
+
+    docstring-name: Write-off requests
+    """
+
+    @property
+    def rbac_permission(self):
+        return "finance.writeoff.create" if self.request.method == "POST" \
+            else "finance.writeoff.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = WriteOffRequest.objects.filter(entity=entity).select_related(
+            "invoice", "invoice__customer")
+        if (status_val := request.query_params.get("status")):
+            qs = qs.filter(status=status_val)
+        if (invoice := request.query_params.get("invoice")):
+            qs = qs.filter(invoice=_resolve_invoice(entity, invoice))
+        return _paginate(
+            request, qs.order_by("-id"), WriteOffRequestSerializer, self)
+
+    def post(self, request):
+        entity = resolve_entity(request)
+        wor = _build_write_off_request(entity, request.data or {}, actor_user=request.user)
+        return success_response(
+            f"Write-off request {wor.document_number} created.",
+            data=WriteOffRequestSerializer(wor).data, status=201,
+        )
+
+
+class _WriteOffActionBase(_FinanceBase):
+    def _wor(self, request, pk):
+        entity = resolve_entity(request)
+        wor = WriteOffRequest.objects.filter(entity=entity, pk=pk).select_related(
+            "invoice", "invoice__customer").first()
+        if wor is None:
+            raise NotFound("Write-off request not found for this entity.")
+        return entity, wor
+
+
+class WriteOffRequestDetailView(_WriteOffActionBase):
+    """GET /finance/write-offs/<id>/ — retrieve one bad-debt write-off request.
+
+    docstring-name: Write-off requests
+    """
+    rbac_permission = "finance.writeoff.view"
+
+    def get(self, request, pk):
+        _, wor = self._wor(request, pk)
+        return success_response(
+            "Write-off request retrieved.", data=WriteOffRequestSerializer(wor).data)
+
+
+class WriteOffRequestSubmitView(_WriteOffActionBase):
+    """POST /finance/write-offs/<id>/submit/ — submit a draft write-off for approval.
+
+    Hands the request to ``vs_workflow``; the handler's ``validate_document`` runs the
+    write-off preflight (invoice POSTED, outstanding balance, amount within balance)
+    now, and moves the request to ``PENDING_APPROVAL``. The invoice is not touched
+    until final approval fires the handler's ``on_approved`` write-off.
+
+    docstring-name: Submit a write-off for approval
+    """
+    rbac_permission = "finance.writeoff.submit"
+
+    def post(self, request, pk):
+        from vs_workflow.services.submission import submit_for_approval
+
+        _, wor = self._wor(request, pk)
+        submit_for_approval(wor, requested_by=request.user)
+        wor.refresh_from_db()
+        return success_response(
+            f"Write-off request {wor.document_number} submitted for approval.",
+            data=WriteOffRequestSerializer(wor).data,
+        )
+
+
+class WriteOffRequestPostView(_WriteOffActionBase):
+    """POST /finance/write-offs/<id>/post/ — post a draft write-off request.
+
+    When a workflow template is published for this request's ``finance.write_off``
+    document type (opt-in gate), direct posting is refused: it must go through
+    ``/submit/`` and writes off only on approval. With no template, this posts the
+    bad-debt journal and clears the invoice immediately.
+
+    docstring-name: Post a write-off request
+    """
+    rbac_permission = "finance.writeoff.post"
+
+    def post(self, request, pk):
+        from .approvals import approval_required
+        from .credit_notes import post_write_off_request
+
+        _, wor = self._wor(request, pk)
+        if approval_required(wor):
+            raise ValidationError({
+                "detail": "This write-off is approval-gated; submit it for approval instead.",
+            })
+        post_write_off_request(wor, actor_user=request.user)
+        wor.refresh_from_db()
+        return success_response(
+            f"Write-off request {wor.document_number} posted.",
+            data=WriteOffRequestSerializer(wor).data,
+        )
+
+
 class InvoiceWriteOffView(_FinanceBase):
     """POST /invoices/<pk>/write-off/ — write off an uncollectable balance as bad debt.
+
+    Now routes through the first-class :class:`WriteOffRequest` document so the same
+    entry point picks up approval gating transparently: it builds a DRAFT request from
+    the body, then — if a ``finance.write_off`` template is published for this
+    invoice's scope — submits it for approval and returns the request; otherwise it
+    posts the write-off directly and returns the invoice **exactly as before**, so the
+    ungated UX is unchanged.
 
     docstring-name: Write off an invoice
     """
@@ -1307,23 +1449,30 @@ class InvoiceWriteOffView(_FinanceBase):
     rbac_permission = "finance.invoice.writeoff"
 
     def post(self, request, pk):
-        from .credit_notes import write_off_invoice
+        from .approvals import approval_required
+        from .credit_notes import post_write_off_request
 
         entity = resolve_entity(request)
         invoice = Invoice.objects.filter(entity=entity, pk=pk).first()
         if invoice is None:
             raise NotFound("Invoice not found for this entity.")
-        body = request.data or {}
-        amount = _money(body["amount"], "amount") if body.get("amount") not in (None, "") else None
-        write_off_invoice(
-            invoice,
-            amount=amount,
-            write_off_account=_resolve_account(
-                entity, body.get("write_off_account"), "write_off_account"),
-            write_off_date=_date(body.get("write_off_date"), "write_off_date"),
-            narration=body.get("narration", ""),
-            actor_user=request.user,
-        )
+
+        body = dict(request.data or {})
+        # The bridge resolves the invoice from the body; pin it to the URL's invoice.
+        body["invoice"] = invoice.pk
+        wor = _build_write_off_request(entity, body, actor_user=request.user)
+
+        if approval_required(wor):
+            from vs_workflow.services.submission import submit_for_approval
+
+            submit_for_approval(wor, requested_by=request.user)
+            wor.refresh_from_db()
+            return success_response(
+                f"Write-off request {wor.document_number} submitted for approval.",
+                data=WriteOffRequestSerializer(wor).data,
+            )
+
+        post_write_off_request(wor, actor_user=request.user)
         invoice.refresh_from_db()
         return success_response(
             f"Invoice {invoice.document_number} written off.",

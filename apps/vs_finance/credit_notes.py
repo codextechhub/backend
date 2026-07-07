@@ -530,3 +530,39 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
         narration=narration or "", customer_code=customer.code, customer_name=customer.name,
     )
     return entry
+
+
+def post_write_off_request(wor, *, actor_user=None):
+    """Post a :class:`~vs_finance.models.WriteOffRequest`, running the write-off.
+
+    Thin adapter over the unchanged :func:`write_off_invoice` service: it validates
+    the request is in a postable state, delegates the actual GL work to
+    ``write_off_invoice`` (which posts the bad-debt journal, clears the invoice via
+    ``amount_credited`` and writes the audit row), then links the returned journal and
+    flips the request POSTED.
+
+    ``status`` must be DRAFT (the ungated direct-post path) or APPROVED (the approval
+    path, after the workflow base handler flips it) — both are valid entry states.
+    Any :class:`~vs_finance.exceptions.FinanceError` raised by ``write_off_invoice``
+    propagates unchanged (it records its own durable rejection audit); on the approval
+    path that rollback leaves the request non-POSTED for a retry. Returns the request.
+    """
+    if wor.status not in (DocumentStatus.DRAFT, DocumentStatus.APPROVED):
+        raise PostingError(
+            f"Write-off {wor.document_number or wor.pk} is '{wor.status}'; "
+            f"only a draft or approved write-off request can be posted.",
+        )
+
+    entry = write_off_invoice(
+        wor.invoice,
+        amount=wor.amount or None,
+        write_off_account=wor.write_off_account,
+        write_off_date=wor.write_off_date,
+        narration=wor.narration,
+        actor_user=actor_user,
+    )
+
+    wor.journal = entry
+    wor.status = DocumentStatus.POSTED
+    wor.save(update_fields=["journal", "status", "updated_at"])
+    return wor

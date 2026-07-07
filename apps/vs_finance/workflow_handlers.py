@@ -262,3 +262,74 @@ class RefundHandler(_FinancePostOnApprove):
             ],
             "link": f"/finance/refunds/{document.pk}/",
         }
+
+
+@register_handler("finance.write_off")
+class WriteOffHandler(_FinancePostOnApprove):
+    """Approval handler for a bad-debt :class:`~vs_finance.models.WriteOffRequest`.
+
+    Unlike the refund handler, the default ``_mark_approved`` (flip to APPROVED
+    before posting) is correct here: :func:`write_off_invoice` guards the *invoice*'s
+    status, not the request's, and :func:`post_write_off_request` accepts an APPROVED
+    request — so no DRAFT-override is needed.
+    """
+
+    @property
+    def document_model(self):
+        from .models import WriteOffRequest
+        return WriteOffRequest
+
+    def preflight(self, document) -> None:
+        """Run the write-off guards without writing anything.
+
+        Mirrors :func:`vs_finance.credit_notes._write_off_invoice_atomic` (invoice
+        POSTED, outstanding balance > 0, effective amount positive and within the
+        balance, customer has an AR control account) with the same ``PostingError``
+        messages — so the preflight and the eventual post agree — but never mutates.
+        """
+        from .exceptions import PostingError
+
+        invoice = document.invoice
+        if invoice.status != DocumentStatus.POSTED:
+            raise PostingError(
+                f"Invoice {invoice.document_number or invoice.pk} is '{invoice.status}'; "
+                f"only a posted invoice can be written off.",
+            )
+
+        balance = invoice.balance_due
+        if balance <= 0:
+            raise PostingError("Invoice has no outstanding balance to write off.")
+
+        amount = balance if document.amount in (None, 0, "") else int(document.amount)
+        if amount <= 0:
+            raise PostingError("Write-off amount must be positive.")
+        if amount > balance:
+            raise PostingError(
+                f"Write-off amount ({amount} kobo) exceeds the outstanding balance "
+                f"({balance} kobo).",
+            )
+
+        if invoice.customer.receivable_account is None:
+            raise PostingError(
+                f"Customer {invoice.customer.code} has no receivable (AR control) account set.",
+            )
+
+    def post(self, document, *, actor_user) -> None:
+        from .credit_notes import post_write_off_request
+
+        post_write_off_request(document, actor_user=actor_user)
+
+    def summary(self, document) -> dict:
+        invoice = document.invoice
+        amount = document.amount or invoice.balance_due
+        return {
+            "title": document.document_number or str(document.pk),
+            "subtitle": "Bad-debt write-off",
+            "fields": [
+                {"label": "Invoice", "value": invoice.document_number or str(invoice.pk)},
+                {"label": "Customer", "value": invoice.customer.code},
+                {"label": "Amount", "value": format_naira(amount)},
+                {"label": "Reason", "value": document.reason or "—"},
+            ],
+            "link": f"/finance/write-offs/{document.pk}/",
+        }

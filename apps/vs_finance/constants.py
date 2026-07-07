@@ -65,6 +65,7 @@ class DocType(models.TextChoices):
     REFUND = "RFD", "Customer Refund"
     PAYMENT_PLAN = "PPL", "Installment Payment Plan"
     CONCESSION = "CNC", "Concession / Discount / Waiver"
+    WRITE_OFF = "WOF", "Bad-debt Write-off"
     DUNNING_NOTICE = "DUN", "Dunning / Payment Reminder"
     PURCHASE_REQUISITION = "PR", "Purchase Requisition"
     RFQ = "RFQ", "Request for Quotation"

@@ -80,6 +80,10 @@ from .views_ar import (
     RefundListCreateView,
     RefundPostView,
     RefundSubmitView,
+    WriteOffRequestDetailView,
+    WriteOffRequestListCreateView,
+    WriteOffRequestPostView,
+    WriteOffRequestSubmitView,
 )
 from .views_ops import (
     BankAccountDetailView,
@@ -192,6 +196,10 @@ urlpatterns = [
     path("refunds/<int:pk>/", RefundDetailView.as_view(), name="finance-refund-detail"),
     path("refunds/<int:pk>/submit/", RefundSubmitView.as_view(), name="finance-refund-submit"),
     path("refunds/<int:pk>/post/", RefundPostView.as_view(), name="finance-refund-post"),
+    path("write-offs/", WriteOffRequestListCreateView.as_view(), name="finance-writeoff-list"),
+    path("write-offs/<int:pk>/", WriteOffRequestDetailView.as_view(), name="finance-writeoff-detail"),
+    path("write-offs/<int:pk>/submit/", WriteOffRequestSubmitView.as_view(), name="finance-writeoff-submit"),
+    path("write-offs/<int:pk>/post/", WriteOffRequestPostView.as_view(), name="finance-writeoff-post"),
     path("invoices/<int:pk>/write-off/", InvoiceWriteOffView.as_view(), name="finance-invoice-writeoff"),
     path("ar-adjustments/", ARAdjustmentListView.as_view(), name="finance-ar-adjustments"),
 

@@ -6041,3 +6041,332 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         refund.refresh_from_db()
         self.assertEqual(refund.status, DocumentStatus.POSTED)
         self.assertEqual(refund.journal.posted_by_id, approver.id)
+
+
+class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
+    """The bad-debt write-off approval slice: opt-in gating, SoD, write-off-on-approve.
+
+    Wires the first-class :class:`WriteOffRequest` document into vs_workflow so that —
+    when a template exists for ``finance.write_off`` — the invoice write-off happens
+    only inside ``on_approved`` (``credit_notes.write_off_invoice``, unchanged). With
+    no template, the direct-post path (and the invoice-write-off bridge) is unchanged.
+    Reuses the same RBAC/user/template fixture shape as the refund slice; needs a
+    POSTED invoice with an outstanding balance.
+    """
+
+    APPROVE_KEY = "finance.writeoff.approve"
+
+    def setUp(self):
+        import io
+        from django.contrib.auth import get_user_model
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+        from vs_rbac.models import (
+            PlatformRoleTemplate, PlatformUserRoleAssignment,
+            SchoolRolePermission, SchoolRoleTemplate, SchoolUserRoleAssignment,
+        )
+
+        call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
+
+        self.User = get_user_model()
+        self.SchoolRoleTemplate = SchoolRoleTemplate
+        self.SchoolRolePermission = SchoolRolePermission
+        self.SchoolUserRoleAssignment = SchoolUserRoleAssignment
+
+        # School-owned entity, so write_off_request.school resolves to a real school.
+        self.school = School.objects.create(name="Lakeside", slug="lakeside-woa", code="LKSWO")
+        seed_currencies()
+        self.entity = LedgerEntity.objects.create(
+            name="Lakeside Books", code="LKSBK", kind=LedgerEntity.Kind.TENANT,
+            source_school=self.school,
+        )
+        seed_chart_of_accounts(self.entity)
+        self.year = FiscalYear.objects.create(
+            entity=self.entity, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        self.period = FiscalPeriod.objects.create(
+            entity=self.entity, fiscal_year=self.year, period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+            status=PeriodStatus.OPEN,
+        )
+        self.customer = Customer.objects.create(
+            entity=self.entity, code="CUSTW", name="Debtor Ltd",
+            receivable_account=Account.objects.get(entity=self.entity, code="1200"),
+        )
+
+        self.requester = self.User.objects.create_user(
+            email="req-woa@test.com", password="pw", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Reqi", last_name="Ester",
+        )
+        super_role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
+        PlatformUserRoleAssignment.objects.create(
+            user=self.requester, role=super_role, assignment_status="ACTIVE",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.requester)
+
+    # --- fixtures ---------------------------------------------------------- #
+
+    def _posted_invoice(self, *, unit_price=100000):
+        """A POSTED invoice with a full outstanding balance (no tax, unpaid)."""
+        inv = Invoice.objects.create(
+            entity=self.entity, customer=self.customer,
+            invoice_date=datetime.date(2026, 1, 10), due_date=datetime.date(2026, 1, 25),
+        )
+        InvoiceLine.objects.create(
+            invoice=inv, revenue_account=Account.objects.get(entity=self.entity, code="4100"),
+            quantity=1, unit_price=unit_price, tax_code=None, line_no=1,
+        )
+        post_invoice(inv)
+        inv.refresh_from_db()
+        return inv
+
+    def _make_request(self, invoice, *, amount=None):
+        from vs_finance.models import WriteOffRequest
+        return WriteOffRequest.objects.create(
+            entity=self.entity, invoice=invoice,
+            amount=amount if amount is not None else invoice.balance_due,
+            write_off_date=datetime.date(2026, 1, 20), reason="uncollectable",
+            created_by=self.requester,
+        )
+
+    def _publish_standard_template(self, *, on_rejection="RETURN_TO_REQUESTER"):
+        from vs_workflow.services.templates import publish_template
+
+        return publish_template(
+            school=self.school, branch=None,
+            document_type="finance.write_off", code="standard",
+            name="Standard write-off approval",
+            stages_payload=[{
+                "code": "checker", "label": "Checker approval", "kind": "APPROVAL",
+                "order": 1, "approver_permission_key": self.APPROVE_KEY,
+                "approver_scope": "SCHOOL", "advance_rule": "ANY",
+                "on_rejection": on_rejection, "skip_if_no_approvers": False,
+            }])
+
+    def _make_approver(self, email="apr-woa@test.com"):
+        user = self.User.objects.create_user(
+            email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
+            first_name="Apro", last_name="Ver", school=self.school,
+        )
+        role, _ = self.SchoolRoleTemplate.objects.get_or_create(
+            id="writeoff-checker-role", defaults={"school": self.school, "name": "Write-off Checker"},
+        )
+        self.SchoolRolePermission.objects.get_or_create(
+            role=role, permission_id=self.APPROVE_KEY, defaults={"granted": True},
+        )
+        self.SchoolUserRoleAssignment.objects.create(
+            school=self.school, user=user, role=role, assignment_status="ACTIVE",
+        )
+        return user
+
+    def _submit(self, wor):
+        return self.client.post(
+            f"/v1/finance/write-offs/{wor.pk}/submit/?entity={self.entity.code}", {}, format="json")
+
+    def _post(self, wor):
+        return self.client.post(
+            f"/v1/finance/write-offs/{wor.pk}/post/?entity={self.entity.code}", {}, format="json")
+
+    def _instance_for(self, wor):
+        from vs_workflow.models import WorkflowInstance
+        return WorkflowInstance.objects.for_document(wor).first()
+
+    # --- 1. Gate off: direct post writes the invoice off ------------------- #
+
+    def test_gate_off_direct_post_writes_off(self):
+        from vs_finance.approvals import approval_required
+
+        inv = self._posted_invoice()
+        wor = self._make_request(inv)
+        self.assertFalse(approval_required(wor))
+        resp = self._post(wor)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        wor.refresh_from_db(); inv.refresh_from_db()
+        self.assertEqual(wor.status, DocumentStatus.POSTED)
+        self.assertIsNotNone(wor.journal_id)
+        self.assertEqual(inv.amount_credited, 100000)
+        self.assertEqual(inv.balance_due, 0)
+
+    # --- 2. Gate on: direct post refused ----------------------------------- #
+
+    def test_gate_on_direct_post_refused(self):
+        self._publish_standard_template()
+        inv = self._posted_invoice()
+        wor = self._make_request(inv)
+        resp = self._post(wor)
+        self.assertEqual(resp.status_code, 400, resp.content)
+        wor.refresh_from_db(); inv.refresh_from_db()
+        self.assertEqual(wor.status, DocumentStatus.DRAFT)
+        self.assertIsNone(wor.journal_id)
+        self.assertEqual(inv.amount_credited, 0)
+
+    # --- 3. Gate on: submit → PENDING, invoice untouched ------------------- #
+
+    def test_gate_on_submit_moves_to_pending_and_invoice_untouched(self):
+        self._publish_standard_template()
+        self._make_approver()
+        inv = self._posted_invoice()
+        wor = self._make_request(inv)
+        resp = self._submit(wor)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        wor.refresh_from_db(); inv.refresh_from_db()
+        self.assertEqual(wor.status, DocumentStatus.PENDING_APPROVAL)
+        self.assertIsNone(wor.journal_id)
+        self.assertEqual(inv.balance_due, 100000)
+
+    # --- 4. SoD: requester cannot approve own request ---------------------- #
+
+    def test_requester_cannot_approve_own_request(self):
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.exceptions import (
+            NotAnEligibleApproverError, RequesterCannotApproveError,
+        )
+
+        self._publish_standard_template()
+        self._make_approver()
+        inv = self._posted_invoice()
+        wor = self._make_request(inv)
+        self._submit(wor)
+        instance = self._instance_for(wor)
+        with self.assertRaises((RequesterCannotApproveError, NotAnEligibleApproverError)):
+            wf_actions.record_action(instance.id, self.requester, ActionEnum.APPROVED)
+        wor.refresh_from_db()
+        self.assertEqual(wor.status, DocumentStatus.PENDING_APPROVAL)
+
+    # --- 5. Happy path: approver approves → invoice written off ------------ #
+
+    def test_approval_writes_off_and_posts_request(self):
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+
+        self._publish_standard_template()
+        approver = self._make_approver()
+        inv = self._posted_invoice()
+        wor = self._make_request(inv)
+        self._submit(wor)
+        instance = self._instance_for(wor)
+
+        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+
+        wor.refresh_from_db(); inv.refresh_from_db()
+        self.assertEqual(wor.status, DocumentStatus.POSTED)
+        self.assertIsNotNone(wor.journal_id)
+        self.assertEqual(wor.journal.posted_by_id, approver.id)
+        self.assertEqual(inv.amount_credited, 100000)
+        self.assertEqual(inv.balance_due, 0)
+
+    # --- 6. Reject → DRAFT and Return → DRAFT ------------------------------ #
+
+    def test_reject_returns_request_to_draft(self):
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+
+        self._publish_standard_template(on_rejection="TERMINAL")
+        approver = self._make_approver()
+        inv = self._posted_invoice()
+        wor = self._make_request(inv)
+        self._submit(wor)
+        instance = self._instance_for(wor)
+
+        wf_actions.record_action(instance.id, approver, ActionEnum.REJECTED, comment="no")
+
+        wor.refresh_from_db(); inv.refresh_from_db()
+        self.assertEqual(wor.status, DocumentStatus.DRAFT)
+        self.assertIsNone(wor.journal_id)
+        self.assertEqual(inv.balance_due, 100000)
+
+    def test_return_sends_request_back_to_draft(self):
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+
+        self._publish_standard_template()  # RETURN_TO_REQUESTER
+        approver = self._make_approver()
+        inv = self._posted_invoice()
+        wor = self._make_request(inv)
+        self._submit(wor)
+        instance = self._instance_for(wor)
+
+        wf_actions.record_action(instance.id, approver, ActionEnum.RETURNED, comment="wrong amount")
+
+        wor.refresh_from_db(); inv.refresh_from_db()
+        self.assertEqual(wor.status, DocumentStatus.DRAFT)
+        self.assertEqual(inv.balance_due, 100000)
+
+    # --- 7. Option-A rollback: invoice settled after submit ---------------- #
+
+    def test_posting_failure_at_approval_rolls_back_and_keeps_stage_active(self):
+        from vs_workflow.constants import (
+            WorkflowInstanceStatus, WorkflowStageAction as ActionEnum, WorkflowStageStatus,
+        )
+        from vs_finance.exceptions import PostingError
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.models import WorkflowStageAction
+
+        self._publish_standard_template()
+        approver = self._make_approver()
+        inv = self._posted_invoice()
+        wor = self._make_request(inv)
+        self._submit(wor)  # preflight passes while the balance is outstanding
+        instance = self._instance_for(wor)
+
+        # Settle the invoice in full while the request sits in the queue, so
+        # write_off_invoice raises "no outstanding balance" at approval.
+        bank = Account.objects.get(entity=self.entity, code="1100")
+        pay = Payment.objects.create(
+            entity=self.entity, customer=self.customer,
+            payment_date=datetime.date(2026, 1, 15), amount=100000, deposit_account=bank,
+        )
+        post_payment(pay)
+        inv.refresh_from_db()
+        self.assertEqual(inv.balance_due, 0)
+
+        with self.assertRaises(PostingError):
+            wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+
+        # Option A: the approval action rolled back — request not POSTED, no journal,
+        # invoice untouched by any write-off, stage still ACTIVE for a retry.
+        wor.refresh_from_db()
+        self.assertNotEqual(wor.status, DocumentStatus.POSTED)
+        self.assertIsNone(wor.journal_id)
+        self.assertFalse(WorkflowStageAction.objects.filter(
+            stage_instance__instance=instance, action=ActionEnum.APPROVED,
+            reversed_at__isnull=True, is_reversal_of__isnull=True).exists())
+        instance.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        self.assertTrue(
+            instance.stage_instances.filter(status=WorkflowStageStatus.ACTIVE).exists())
+
+    # --- 8. Backward-compat bridge on /invoices/<id>/write-off/ ------------ #
+
+    def test_invoice_write_off_bridge_submits_when_gated(self):
+        from vs_finance.models import WriteOffRequest
+
+        self._publish_standard_template()
+        self._make_approver()
+        inv = self._posted_invoice()
+        resp = self.client.post(
+            f"/v1/finance/invoices/{inv.pk}/write-off/?entity={self.entity.code}", {}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        # A request was created and submitted; the invoice is NOT yet written off.
+        wor = WriteOffRequest.objects.get(invoice=inv)
+        self.assertEqual(wor.status, DocumentStatus.PENDING_APPROVAL)
+        inv.refresh_from_db()
+        self.assertEqual(inv.balance_due, 100000)
+
+    def test_invoice_write_off_bridge_posts_directly_when_ungated(self):
+        from vs_finance.models import WriteOffRequest
+
+        inv = self._posted_invoice()
+        resp = self.client.post(
+            f"/v1/finance/invoices/{inv.pk}/write-off/?entity={self.entity.code}", {}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        # No template → posts directly; the invoice is written off as before.
+        wor = WriteOffRequest.objects.get(invoice=inv)
+        self.assertEqual(wor.status, DocumentStatus.POSTED)
+        self.assertIsNotNone(wor.journal_id)
+        inv.refresh_from_db()
+        self.assertEqual(inv.amount_credited, 100000)
+        self.assertEqual(inv.balance_due, 0)

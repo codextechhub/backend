@@ -88,6 +88,11 @@ FINANCE_RESOURCES = [
                                                 # checker / high-value-controller approver keys the templates gate on.
                                                 ("submit", "SENSITIVE"), ("approve", "CRITICAL"),
                                                 ("approve_high_value", "CRITICAL")]),
+    # Bad-debt write-offs are now a first-class approvable document (WriteOffRequest);
+    # the existing finance.invoice.writeoff key still gates the invoice entry point.
+    ("writeoff",     "bad-debt write-offs",    [("view", "NORMAL"), ("create", "SENSITIVE"),
+                                                ("post", "CRITICAL"), ("submit", "SENSITIVE"),
+                                                ("approve", "CRITICAL"), ("approve_high_value", "CRITICAL")]),
     ("tax",          "tax filings",            [("view", "NORMAL"), ("file", "SENSITIVE"),
                                                 ("pay", "CRITICAL"), ("manage", "SENSITIVE")]),
 ]

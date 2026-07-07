@@ -61,6 +61,7 @@ from .models import (
     TaxCode,
     TaxFiling,
     TaxObligation,
+    WriteOffRequest,
 )
 from .money import format_naira
 
@@ -466,6 +467,25 @@ class RefundSerializer(serializers.ModelSerializer):
             "id", "document_number", "customer_id", "customer_code", "customer_name",
             "refund_date", "method", "status", "amount", "amount_naira",
             "bank_account_id", "reference", "narration",
+        ]
+
+    def get_amount_naira(self, obj) -> str:
+        return format_naira(obj.amount)
+
+
+class WriteOffRequestSerializer(serializers.ModelSerializer):
+    invoice_number = serializers.CharField(source="invoice.document_number", read_only=True)
+    customer_code = serializers.CharField(source="invoice.customer.code", read_only=True)
+    customer_name = serializers.CharField(source="invoice.customer.name", read_only=True)
+    amount_naira = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WriteOffRequest
+        fields = [
+            "id", "document_number", "status", "invoice_id", "invoice_number",
+            "customer_code", "customer_name", "amount", "amount_naira",
+            "write_off_account_id", "write_off_date", "narration", "reason",
+            "journal_id",
         ]
 
     def get_amount_naira(self, obj) -> str:
