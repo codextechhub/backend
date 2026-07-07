@@ -218,6 +218,18 @@ class FinanceDocument(TimeStampedModel):
             ),
         ]
 
+    @property
+    def school(self):
+        """School owning this document's ledger entity (None for platform/product books).
+
+        The workflow engine is school-scoped (it reads ``document.school`` /
+        ``document.branch`` when resolving approvers), while finance is
+        entity-scoped. This property bridges the two by returning the entity's
+        canonical originating school; platform/product entities have none, so it
+        returns ``None`` and the engine falls back to platform-level scoping.
+        """
+        return self.entity.source_school
+
     def assign_number(self, *, fiscal_year: int | None = None) -> str:
         """Allocate and store this document's number if it does not have one yet.
 

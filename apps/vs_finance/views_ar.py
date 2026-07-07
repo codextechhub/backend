@@ -427,11 +427,13 @@ class CustomerDetailView(_FinanceBase):
         )
         transactions.sort(key=lambda t: t["date"], reverse=True)
 
-        # Statement: opening balance, then invoices + debit notes (debit) and receipts
-        # (credit), chronological (oldest first), with a running balance.
+        # Statement: invoices + debit notes (debit) and receipts (credit),
+        # chronological (oldest first), with a running balance. An opening balance is
+        # already materialised as a posted OPENING invoice (see post_opening_balance)
+        # and rides in `invoices` below — we must NOT also add a synthetic opening row
+        # or the balance double-counts. This mirrors reports.customer_statement, which
+        # is likewise document-driven.
         events = []
-        if customer.opening_balance:
-            events.append((datetime.date.min, "Opening balance", customer.opening_balance, 0))
         events += [(i.invoice_date, f"Invoice {i.document_number}", i.total, 0) for i in invoices]
         events += [(n.note_date, f"Debit note {n.document_number}", n.total, 0) for n in debit_notes]
         events += [(p.payment_date, f"Receipt {p.document_number}", 0, p.amount) for p in payments]

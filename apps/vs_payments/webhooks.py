@@ -87,11 +87,21 @@ def ingest_webhook(*, provider: str, raw_body: bytes, headers: dict | None = Non
 
 
 def _dispatch(event: WebhookEvent, parsed) -> None:
-    """Route a verified event to the matching confirm service and mark it processed."""
+    """Route a verified event to the matching confirm service and mark it processed.
+
+    SECURITY: a valid signature proves the event *came from* the provider, but we do
+    **not** trust the status/amount it carries to move money. The event tells us only
+    *which* transaction changed; the ``confirm_*`` services then re-verify the
+    authoritative status and settled amount against the provider's API (the
+    ``status=None`` path polls ``verify_collection`` / ``verify_transfer``) before
+    booking any receipt or payout. This defends against a premature/forged-but-signed
+    ``success`` (e.g. Paystack sets ``charge.success`` regardless of the inner txn
+    status) and against a leaked webhook secret being used to fabricate settlements.
+    """
     if parsed.direction == PaymentDirection.COLLECTION:
         intent = _find_collection(parsed)
         if intent is not None:
-            services.confirm_collection(intent, status=parsed.status, amount=parsed.amount)
+            services.confirm_collection(intent)  # re-verifies via provider API
             event.collection = intent
             event.status = WebhookStatus.PROCESSED
         else:
@@ -100,7 +110,7 @@ def _dispatch(event: WebhookEvent, parsed) -> None:
     elif parsed.direction == PaymentDirection.PAYOUT:
         payout = _find_payout(parsed)
         if payout is not None:
-            services.confirm_payout(payout, status=parsed.status)
+            services.confirm_payout(payout)  # re-verifies via provider API
             event.payout = payout
             event.status = WebhookStatus.PROCESSED
         else:

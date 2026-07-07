@@ -953,8 +953,45 @@ class InvoiceDetailView(APIView):
 # Actions                                                                     #
 # --------------------------------------------------------------------------- #
 
+class JournalSubmitView(APIView):
+    """POST /finance/journals/<id>/submit/?entity= — submit a draft journal for approval.
+
+    Hands the journal to the ``vs_workflow`` engine via
+    :func:`vs_workflow.services.submission.submit_for_approval`. The handler's
+    ``validate_document`` runs the posting preflight now (so a doomed journal is
+    refused before it enters the queue) and moves the journal to
+    ``PENDING_APPROVAL``; the GL is not touched until final approval fires the
+    handler's ``on_approved`` posting. Only meaningful when a template exists for
+    ``finance.journal`` at this journal's scope (see :func:`approvals.approval_required`).
+
+    docstring-name: Submit a journal for approval
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.journal.submit"
+
+    def post(self, request, id):
+        from vs_workflow.services.submission import submit_for_approval
+
+        entity = resolve_entity(request)
+        entry = JournalEntry.objects.filter(entity=entity, id=id).first()
+        if entry is None:
+            raise NotFound("Journal entry not found for this entity.")
+        submit_for_approval(entry, requested_by=request.user)
+        entry.refresh_from_db()
+        return success_response(
+            message=f"Journal {entry.document_number} submitted for approval.",
+            data=JournalEntryDetailSerializer(entry).data,
+        )
+
+
 class JournalPostView(APIView):
     """POST /finance/journals/<id>/post/?entity= — post a draft journal.
+
+    When a workflow template is published for this journal's ``finance.journal``
+    document type (opt-in gate), direct posting is refused: the journal must go
+    through ``/submit/`` and posts only on approval. With no template, this behaves
+    exactly as it always has — a direct draft → POSTED post.
 
     docstring-name: Post a journal entry
     """
@@ -963,12 +1000,18 @@ class JournalPostView(APIView):
     rbac_permission = "finance.journal.post"
 
     def post(self, request, id):
+        from .approvals import approval_required
         from .posting import post_journal
 
         entity = resolve_entity(request)
         entry = JournalEntry.objects.filter(entity=entity, id=id).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
+        if approval_required(entry):
+            raise ValidationError({
+                "detail": "This journal is approval-gated; submit it for approval "
+                          "instead of posting directly.",
+            })
         post_journal(entry, actor_user=request.user)
         entry.refresh_from_db()
         return success_response(
@@ -987,13 +1030,24 @@ class JournalReverseView(APIView):
     rbac_permission = "finance.journal.reverse"
 
     def post(self, request, id):
+        import datetime
         from .posting import reverse_journal
 
         entity = resolve_entity(request)
         entry = JournalEntry.objects.filter(entity=entity, id=id).first()
         if entry is None:
             raise NotFound("Journal entry not found for this entity.")
-        reversal = reverse_journal(entry, actor_user=request.user)
+        # Optional reversal date; when omitted the service reverses into the original
+        # period, or into the current open period if that period has since closed.
+        body = request.data or {}
+        raw_date = body.get("date") or body.get("reversal_date")
+        rdate = None
+        if raw_date:
+            try:
+                rdate = datetime.date.fromisoformat(str(raw_date))
+            except ValueError:
+                raise ValidationError({"date": "Expected an ISO date (YYYY-MM-DD)."})
+        reversal = reverse_journal(entry, actor_user=request.user, date=rdate)
         return success_response(
             message=f"Journal {entry.document_number} reversed.",
             data=JournalEntryDetailSerializer(reversal).data,

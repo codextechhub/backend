@@ -428,6 +428,29 @@ class PostingTests(_GLFixtureMixin, TestCase):
         with self.assertRaises(PostingError):
             reverse_journal(entry)
 
+    def test_reverse_into_open_period_when_original_closed(self):
+        # Prior-period correction: the original journal's period has since closed, so
+        # the reversal is booked into a still-open period given an explicit date. Also
+        # guards the fix where the reversal's period follows the date rather than being
+        # pinned to the original's (now-closed) period.
+        entity, jan = self.build_ledger()
+        feb = FiscalPeriod.objects.create(
+            entity=entity, fiscal_year=jan.fiscal_year, period_no=2, name="Feb 2026",
+            start_date=datetime.date(2026, 2, 1), end_date=datetime.date(2026, 2, 28),
+            status=PeriodStatus.OPEN,
+        )
+        entry = self.make_entry(entity, jan, [("1100", 30000, 0), ("4100", 0, 30000)])
+        post_journal(entry)
+        jan.status = PeriodStatus.CLOSED           # Jan closes after the journal posted
+        jan.save(update_fields=["status"])
+
+        reversal = reverse_journal(entry, date=datetime.date(2026, 2, 15))
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, DocumentStatus.REVERSED)
+        self.assertEqual(reversal.status, DocumentStatus.POSTED)
+        self.assertEqual(reversal.period_id, feb.id)          # booked into the open period
+        self.assertEqual(reversal.date, datetime.date(2026, 2, 15))
+
 
 class TrialBalanceTests(_GLFixtureMixin, TestCase):
     def test_trial_balance_balances(self):
@@ -3453,6 +3476,25 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(inv.invoice_date, datetime.date(2026, 3, 15))
         self.assertEqual(inv.journal.date, datetime.date(2026, 3, 15))
 
+    def test_customer_opening_balance_credits_equity_not_revenue(self):
+        # Regression: an opening balance is prior-period value, so it must credit
+        # equity (Retained Earnings 3200), never current-period revenue (4100) —
+        # otherwise every migrated-in customer overstates the income statement.
+        from vs_finance.constants import InvoiceSource
+        from vs_finance.models import Customer, Invoice
+
+        entity, _, _ = self.build_books()
+        resp = self.client.post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"code": "OPENEQ", "name": "Opening Equity Co", "opening_balance": 5000000},
+            format="json")
+        self.assertEqual(resp.status_code, 201, resp.content)
+        cust = Customer.objects.get(entity=entity, code="OPENEQ")
+        inv = Invoice.objects.get(entity=entity, customer=cust, source=InvoiceSource.OPENING)
+        credit_codes = {ln.account.code for ln in inv.journal.lines.all() if ln.credit > 0}
+        self.assertIn("3200", credit_codes)        # Retained Earnings (equity)
+        self.assertNotIn("4100", credit_codes)     # not Operating Revenue (income)
+
     def test_employee_salary_roster_generates_a_run(self):
         entity, _, _ = self.build_books()
         for nm, g, p, pe in [("Ada Obi", 50000000, 7500000, 4000000),
@@ -3887,13 +3929,15 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
             format="json",
         )
         self.assertEqual(created.status_code, 201, created.content)
-        # An opening invoice (Dr 1200 AR / Cr 4100 Operating Revenue) was raised…
+        # An opening invoice (Dr 1200 AR / Cr 3200 Retained Earnings) was raised —
+        # opening balances credit equity, not current-period revenue.
         inv = Invoice.objects.get(entity=entity, source="OPENING", customer__code="OPN1")
         self.assertEqual(inv.status, "POSTED")
         self.assertEqual(inv.total, 500000)
         gl = {ln.account.code: (ln.debit, ln.credit) for ln in inv.journal.lines.all()}
         self.assertEqual(gl["1200"], (500000, 0))
-        self.assertEqual(gl["4100"], (0, 500000))
+        self.assertEqual(gl["3200"], (0, 500000))
+        self.assertNotIn("4100", gl)
         # …and it surfaces in the customer's outstanding, now a paginated list.
         listed = self.client.get(f"/v1/finance/customers/?entity={entity.code}").json()
         self.assertIn("pagination", listed)
@@ -5401,3 +5445,295 @@ class DimensionAnalyticsAPITests(_Phase4FixtureMixin, TestCase):
         force_authenticate(req, user=u)
         resp = AnalyticsSliceView.as_view()(req); resp.render()
         self.assertEqual(resp.status_code, 403)
+
+
+class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
+    """The journal approval slice: opt-in-by-template gating, SoD, and post-on-approve.
+
+    Wires a manual JournalEntry into vs_workflow so that — when a template exists
+    for ``finance.journal`` — GL posting happens only inside the engine's
+    ``on_approved`` callback. When no template exists, direct posting is unchanged
+    (regression guard). Covers the security-first cases from design §11.
+    """
+
+    APPROVE_KEY = "finance.journal.approve"
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIClient
+        from vs_rbac.models import (
+            PlatformRoleTemplate, PlatformUserRoleAssignment,
+            SchoolRolePermission, SchoolRoleTemplate, SchoolUserRoleAssignment,
+        )
+
+        # The approver permission key must exist for the RBAC grant FK to resolve.
+        import io
+        from django.core.management import call_command
+        call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
+
+        self.User = get_user_model()
+        self.School = School
+        self.SchoolRoleTemplate = SchoolRoleTemplate
+        self.SchoolRolePermission = SchoolRolePermission
+        self.SchoolUserRoleAssignment = SchoolUserRoleAssignment
+
+        # A school-owned entity, so document.school resolves to a real school and the
+        # engine's SCHOOL-scoped approver resolution has a pool to draw from.
+        self.school = School.objects.create(name="Greenfield", slug="greenfield-jaw", code="GRNJAW")
+        seed_currencies()
+        self.entity = LedgerEntity.objects.create(
+            name="Greenfield Books", code="GRNBK", kind=LedgerEntity.Kind.TENANT,
+            source_school=self.school,
+        )
+        seed_chart_of_accounts(self.entity)
+        self.year = FiscalYear.objects.create(
+            entity=self.entity, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        self.period = FiscalPeriod.objects.create(
+            entity=self.entity, fiscal_year=self.year, period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+            status=PeriodStatus.OPEN,
+        )
+
+        # Requester: a CX super admin (bypasses the per-endpoint RBAC gate and sees
+        # every entity). SoD still excludes them from approving their own journal.
+        self.requester = self.User.objects.create_user(
+            email="req-jaw@test.com", password="pw", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Reqi", last_name="Ester",
+        )
+        super_role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
+        PlatformUserRoleAssignment.objects.create(
+            user=self.requester, role=super_role, assignment_status="ACTIVE",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.requester)
+
+    # --- fixtures ---------------------------------------------------------- #
+
+    def _make_draft(self, *, debit=50000, period=None):
+        """A balanced two-line DRAFT journal (Dr cash / Cr revenue)."""
+        entry = JournalEntry.objects.create(
+            entity=self.entity, date=datetime.date(2026, 1, 15),
+            period=period or self.period, narration="approval test",
+            created_by=self.requester,
+        )
+        cash = Account.objects.get(entity=self.entity, code="1100")
+        rev = Account.objects.get(entity=self.entity, code="4100")
+        JournalLine.objects.create(entry=entry, account=cash, debit=debit, credit=0, line_no=1)
+        JournalLine.objects.create(entry=entry, account=rev, debit=0, credit=debit, line_no=2)
+        return entry
+
+    def _publish_standard_template(self):
+        from vs_workflow.services.templates import publish_template
+
+        return publish_template(
+            school=self.school, branch=None,
+            document_type="finance.journal", code="standard",
+            name="Standard journal approval",
+            stages_payload=[{
+                "code": "checker", "label": "Checker approval", "kind": "APPROVAL",
+                "order": 1, "approver_permission_key": self.APPROVE_KEY,
+                "approver_scope": "SCHOOL", "advance_rule": "ANY",
+                "on_rejection": "RETURN_TO_REQUESTER", "skip_if_no_approvers": False,
+            }],
+        )
+
+    def _make_approver(self, email="apr-jaw@test.com"):
+        """A school user holding finance.journal.approve at self.school."""
+        user = self.User.objects.create_user(
+            email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
+            first_name="Apro", last_name="Ver", school=self.school,
+        )
+        role, _ = self.SchoolRoleTemplate.objects.get_or_create(
+            id="checker-role", defaults={"school": self.school, "name": "Journal Checker"},
+        )
+        self.SchoolRolePermission.objects.get_or_create(
+            role=role, permission_id=self.APPROVE_KEY, defaults={"granted": True},
+        )
+        self.SchoolUserRoleAssignment.objects.create(
+            school=self.school, user=user, role=role, assignment_status="ACTIVE",
+        )
+        return user
+
+    def _submit(self, entry):
+        return self.client.post(
+            f"/v1/finance/journals/{entry.id}/submit/?entity={self.entity.code}", {}, format="json")
+
+    def _post(self, entry):
+        return self.client.post(
+            f"/v1/finance/journals/{entry.id}/post/?entity={self.entity.code}", {}, format="json")
+
+    def _instance_for(self, entry):
+        from vs_workflow.models import WorkflowInstance
+        return WorkflowInstance.objects.for_document(entry).first()
+
+    # --- 1. Gate off: no template → direct post still works ---------------- #
+
+    def test_gate_off_direct_post_still_works(self):
+        from vs_finance.approvals import approval_required
+
+        entry = self._make_draft()
+        self.assertFalse(approval_required(entry))
+        resp = self._post(entry)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, DocumentStatus.POSTED)
+        self.assertTrue(
+            AccountBalance.objects.filter(
+                account__entity=self.entity, period=self.period).exists())
+
+    # --- 2. Gate on: template → direct post refused, submit → PENDING, GL untouched --- #
+
+    def test_gate_on_direct_post_refused(self):
+        self._publish_standard_template()
+        entry = self._make_draft()
+        resp = self._post(entry)
+        self.assertEqual(resp.status_code, 400, resp.content)
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, DocumentStatus.DRAFT)
+
+    def test_gate_on_submit_moves_to_pending_and_leaves_gl_untouched(self):
+        self._publish_standard_template()
+        self._make_approver()  # keep the stage ACTIVE (do not auto-skip)
+        entry = self._make_draft()
+        resp = self._submit(entry)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, DocumentStatus.PENDING_APPROVAL)
+        # GL is untouched: no POSTED status, no balance movement.
+        self.assertFalse(JournalEntry.objects.filter(
+            pk=entry.pk, status=DocumentStatus.POSTED).exists())
+        self.assertFalse(AccountBalance.objects.filter(
+            account__entity=self.entity, period=self.period).exists())
+
+    # --- 3. SoD: requester cannot approve their own journal ---------------- #
+
+    def test_requester_cannot_approve_own_journal(self):
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.exceptions import (
+            NotAnEligibleApproverError, RequesterCannotApproveError,
+        )
+
+        self._publish_standard_template()
+        self._make_approver()
+        entry = self._make_draft()
+        self._submit(entry)
+        instance = self._instance_for(entry)
+        # The requester is never on the eligible snapshot and is hard-blocked either
+        # way — both are correct SoD outcomes.
+        with self.assertRaises((RequesterCannotApproveError, NotAnEligibleApproverError)):
+            wf_actions.record_action(instance.id, self.requester, ActionEnum.APPROVED)
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, DocumentStatus.PENDING_APPROVAL)
+
+    # --- 4. Happy path: a different approver approves → posts, posted_by == approver --- #
+
+    def test_approval_posts_and_stamps_approver_as_poster(self):
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+
+        self._publish_standard_template()
+        approver = self._make_approver()
+        entry = self._make_draft()
+        self._submit(entry)
+        instance = self._instance_for(entry)
+
+        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, DocumentStatus.POSTED)
+        self.assertEqual(entry.posted_by_id, approver.id)         # Q2: poster == final approver
+        self.assertEqual(entry.created_by_id, self.requester.id)  # Q2: maker unchanged
+        self.assertTrue(AccountBalance.objects.filter(
+            account__entity=self.entity, period=self.period).exists())
+
+    # --- 5. Reject → DRAFT and Return → DRAFT ------------------------------ #
+
+    def test_reject_returns_journal_to_draft(self):
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+
+        # A TERMINAL-on-rejection template so REJECTED ends the instance.
+        from vs_workflow.services.templates import publish_template
+        publish_template(
+            school=self.school, branch=None,
+            document_type="finance.journal", code="standard",
+            name="Standard journal approval",
+            stages_payload=[{
+                "code": "checker", "label": "Checker approval", "kind": "APPROVAL",
+                "order": 1, "approver_permission_key": self.APPROVE_KEY,
+                "approver_scope": "SCHOOL", "advance_rule": "ANY",
+                "on_rejection": "TERMINAL", "skip_if_no_approvers": False,
+            }])
+        approver = self._make_approver()
+        entry = self._make_draft()
+        self._submit(entry)
+        instance = self._instance_for(entry)
+
+        wf_actions.record_action(instance.id, approver, ActionEnum.REJECTED, comment="no")
+
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, DocumentStatus.DRAFT)
+        self.assertFalse(AccountBalance.objects.filter(
+            account__entity=self.entity, period=self.period).exists())
+
+    def test_return_sends_journal_back_to_draft(self):
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+
+        self._publish_standard_template()  # on_rejection=RETURN_TO_REQUESTER
+        approver = self._make_approver()
+        entry = self._make_draft()
+        self._submit(entry)
+        instance = self._instance_for(entry)
+
+        wf_actions.record_action(instance.id, approver, ActionEnum.RETURNED, comment="fix narration")
+
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, DocumentStatus.DRAFT)
+
+    # --- 6. Posting failure at approval time (Option A rollback) ----------- #
+
+    def test_posting_failure_at_approval_rolls_back_and_keeps_stage_active(self):
+        from vs_workflow.constants import WorkflowInstanceStatus, WorkflowStageStatus
+        from vs_finance.exceptions import PeriodClosedError
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.models import WorkflowStageAction
+
+        self._publish_standard_template()
+        approver = self._make_approver()
+        entry = self._make_draft()
+        self._submit(entry)  # preflight passes while the period is OPEN
+        instance = self._instance_for(entry)
+
+        # The period closes while the journal sits in the queue → posting must fail.
+        self.period.status = PeriodStatus.CLOSED
+        self.period.save(update_fields=["status"])
+
+        with self.assertRaises(PeriodClosedError):
+            wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+
+        # Option A: the approval action rolled back — journal not POSTED, and the
+        # stage is still ACTIVE for a retry once the period reopens.
+        entry.refresh_from_db()
+        self.assertNotEqual(entry.status, DocumentStatus.POSTED)
+        self.assertFalse(AccountBalance.objects.filter(
+            account__entity=self.entity, period=self.period).exists())
+        self.assertFalse(WorkflowStageAction.objects.filter(
+            stage_instance__instance=instance, action=ActionEnum.APPROVED,
+            reversed_at__isnull=True, is_reversal_of__isnull=True).exists())
+        instance.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        self.assertTrue(
+            instance.stage_instances.filter(status=WorkflowStageStatus.ACTIVE).exists())
+
+        # Retry succeeds once the period reopens.
+        self.period.status = PeriodStatus.OPEN
+        self.period.save(update_fields=["status"])
+        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+        entry.refresh_from_db()
+        self.assertEqual(entry.status, DocumentStatus.POSTED)
+        self.assertEqual(entry.posted_by_id, approver.id)

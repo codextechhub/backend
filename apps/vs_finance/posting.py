@@ -71,6 +71,22 @@ def ensure_period_open(period: _PeriodLike, *, allow_restricted: bool = False) -
         raise PeriodClosedError(period_label=label, status=str(status or "unknown"))
 
 
+def _period_accepts_posting(period, *, allow_restricted: bool = False) -> bool:
+    """Non-raising sibling of :func:`ensure_period_open`: can a posting land here?
+
+    Mirrors the guard's logic without raising, so callers (e.g. reversal-date
+    selection) can *test* a period and pick an alternative rather than fail.
+    """
+    if period is None:
+        return False
+    status = getattr(period, "status", None)
+    if status in PERIOD_POSTING_BLOCKED:
+        return False
+    if status in PERIOD_POSTING_RESTRICTED:
+        return allow_restricted
+    return status == PeriodStatus.OPEN
+
+
 def ensure_balanced(debit_kobo: int, credit_kobo: int) -> None:
     """Raise :class:`UnbalancedJournalError` unless debits exactly equal credits.
 
@@ -184,14 +200,24 @@ def _post_journal_atomic(entry, *, actor_user=None, allow_restricted: bool = Fal
       6. Write the authoritative ``JOURNAL_POSTED`` audit row — same commit as 4–5.
     """
     from .audit import record
+    from .models import JournalEntry
 
-    if entry.status == DocumentStatus.POSTED:
+    # Serialise concurrent posts of the *same* entry: take a row lock and re-read the
+    # status under it before doing anything. Without this, two requests can both pass
+    # the status guard on a stale in-memory copy and each apply the lines to
+    # AccountBalance — double-counting the ledger. The loser blocks here, then sees
+    # POSTED and is rejected. (Document numbering is already lock-safe; posting was not.)
+    locked_status = (
+        JournalEntry.objects.select_for_update()
+        .values_list("status", flat=True).get(pk=entry.pk)
+    )
+    if locked_status == DocumentStatus.POSTED:
         raise PostingError(
             f"Journal {entry.document_number or entry.pk} is already posted.",
         )
-    if entry.status in (DocumentStatus.REVERSED, DocumentStatus.CANCELLED):
+    if locked_status in (DocumentStatus.REVERSED, DocumentStatus.CANCELLED):
         raise PostingError(
-            f"Journal {entry.document_number or entry.pk} is '{entry.status}' and cannot be posted.",
+            f"Journal {entry.document_number or entry.pk} is '{locked_status}' and cannot be posted.",
         )
 
     ensure_period_open(entry.period, allow_restricted=allow_restricted)
@@ -249,11 +275,23 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
             f"Journal {entry.document_number or entry.pk} has already been reversed.",
         )
 
+    # Resolve the reversal's date and period from that date (an old bug pinned the
+    # reversal to the original's period regardless of the date passed). Prefer the
+    # caller's date; else the original's. But if the original's period has since
+    # closed and no explicit date was given, fall back to today so a prior-period
+    # correction can still be booked into the current open period — the standard way
+    # to reverse after a period closes.
+    reversal_date = date or entry.date
+    period = resolve_period(entry.entity, reversal_date)
+    if date is None and not _period_accepts_posting(period, allow_restricted=allow_restricted):
+        reversal_date = timezone.now().date()
+        period = resolve_period(entry.entity, reversal_date)
+
     reversal = JournalEntry.objects.create(
         entity=entry.entity,
         branch=entry.branch,
-        date=date or entry.date,
-        period=entry.period,
+        date=reversal_date,
+        period=period,
         source=JournalSource.SYSTEM,
         currency=entry.currency,
         fx_rate=entry.fx_rate,

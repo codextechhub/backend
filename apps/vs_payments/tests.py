@@ -241,6 +241,9 @@ class WebhookTests(_PaymentsFixtureMixin, TestCase):
         intent = services.initiate_collection(
             entity=entity, amount=40000, customer=customer, invoice=inv,
         )
+        # The webhook only triggers re-verification; the provider's API is the source
+        # of truth for status, so make verify agree the collection succeeded.
+        self.fake.forced_status[intent.reference] = "SUCCEEDED"
         raw, headers = self._signed(
             event="charge.success", reference=intent.reference, status="SUCCEEDED", amount=40000,
         )
@@ -253,6 +256,7 @@ class WebhookTests(_PaymentsFixtureMixin, TestCase):
     def test_duplicate_webhook_never_double_books(self):
         entity, customer, _ = self.build()
         intent = services.initiate_collection(entity=entity, amount=25000, customer=customer)
+        self.fake.forced_status[intent.reference] = "SUCCEEDED"  # provider verify agrees
         raw, headers = self._signed(
             event="charge.success", reference=intent.reference, status="SUCCEEDED", amount=25000,
         )
@@ -261,6 +265,21 @@ class WebhookTests(_PaymentsFixtureMixin, TestCase):
         with self.assertRaises(DuplicateWebhookError):
             webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
         self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)
+
+    def test_webhook_does_not_book_when_provider_verify_disagrees(self):
+        # SECURITY: a validly-signed "charge.success" must NOT book a receipt if the
+        # provider's own API doesn't confirm the transaction settled. The event is only
+        # a trigger to re-verify — here verify returns PENDING (no forced_status), so
+        # nothing is booked despite the webhook claiming SUCCEEDED.
+        entity, customer, _ = self.build()
+        intent = services.initiate_collection(entity=entity, amount=30000, customer=customer)
+        raw, headers = self._signed(
+            event="charge.success", reference=intent.reference, status="SUCCEEDED", amount=30000,
+        )
+        webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
+        intent.refresh_from_db()
+        self.assertNotEqual(intent.status, CollectionStatus.SUCCEEDED)
+        self.assertFalse(Payment.objects.filter(entity=entity).exists())
 
 
 class PayoutTests(_PaymentsFixtureMixin, TestCase):
@@ -286,6 +305,8 @@ class PayoutTests(_PaymentsFixtureMixin, TestCase):
             beneficiary_account_number="0123456789", beneficiary_bank_code="058",
             vendor=vendor,
         )
+        # Webhook triggers re-verification; provider verify_transfer is the source of truth.
+        self.fake.forced_status[payout.reference] = "PAID"
         raw, headers = self.fake.build_webhook(
             event="transfer.success", reference=payout.reference, status="PAID", amount=15000,
         )
@@ -544,6 +565,7 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
     def test_webhook_endpoint_processes_and_dedupes(self):
         entity, customer, _ = self.build()
         intent = services.initiate_collection(entity=entity, amount=33000, customer=customer)
+        self.fake.forced_status[intent.reference] = "SUCCEEDED"  # provider verify agrees
         raw, headers = self.fake.build_webhook(
             event="charge.success", reference=intent.reference, status="SUCCEEDED", amount=33000,
         )

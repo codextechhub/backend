@@ -34,7 +34,11 @@ FINANCE_RESOURCES = [
     ("taxcode",      "tax codes",              [("view", "NORMAL"), ("create", "NORMAL")]),
     ("period",       "accounting periods",     [("view", "NORMAL"), ("close", "CRITICAL"),
                                                 ("reopen", "CRITICAL"), ("lock", "CRITICAL")]),
-    ("journal",      "journal entries",        [("view", "NORMAL"), ("post", "CRITICAL"), ("reverse", "CRITICAL")]),
+    ("journal",      "journal entries",        [("view", "NORMAL"), ("post", "CRITICAL"), ("reverse", "CRITICAL"),
+                                                # Approval-workflow keys: submit a draft for approval, and the
+                                                # checker / high-value-controller approver keys the templates gate on.
+                                                ("submit", "SENSITIVE"), ("approve", "CRITICAL"),
+                                                ("approve_high_value", "CRITICAL")]),
     ("directentry",  "direct entries",         [("view", "NORMAL"), ("post", "CRITICAL")]),
     ("customer",     "customers / payers",     [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE")]),
     ("feestructure", "fee structures",         [("view", "NORMAL"), ("create", "SENSITIVE"),

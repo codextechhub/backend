@@ -377,6 +377,11 @@ class JournalEntry(FinanceDocument):
 
     DOC_TYPE = DocType.JOURNAL
 
+    #: vs_workflow document-type token. When a WorkflowTemplate exists for this
+    #: token at the journal's (school, branch) scope, posting is gated behind
+    #: approval (opt-in by template); otherwise the direct-post path is unchanged.
+    workflow_document_type = "finance.journal"
+
     date = models.DateField(help_text="Accounting date; determines the period it posts to.")
     period = models.ForeignKey(
         FiscalPeriod, on_delete=models.PROTECT, related_name="journal_entries",
@@ -420,6 +425,19 @@ class JournalEntry(FinanceDocument):
     @property
     def is_posted(self) -> bool:
         return self.status == DocumentStatus.POSTED
+
+    @property
+    def total_debit_kobo(self) -> int:
+        """Sum of this entry's line debits in kobo.
+
+        Exposed as a plain property so workflow threshold conditions can read it
+        via a dot-path (``{"op": "gte", "field": "total_debit_kobo", ...}``). On a
+        balanced entry this equals the total credits, i.e. the entry's magnitude.
+        """
+        from ..posting import sum_sides
+
+        total_debit, _ = sum_sides(self.lines.all())
+        return total_debit
 
     def totals(self) -> tuple[int, int]:
         """Return ``(total_debit, total_credit)`` in kobo over this entry's lines."""

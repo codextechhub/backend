@@ -189,21 +189,28 @@ def post_opening_balance(customer, *, actor_user=None, date=None):
     """Seat a customer's ``opening_balance`` as a posted opening invoice.
 
     Raises an :class:`~vs_finance.models.Invoice` (``source=OPENING``) that posts
-    ``Dr AR control · Cr Operating Revenue`` — so the figure shows in the customer's
-    outstanding (which is invoice-derived) *and* in the GL. No-op unless the opening
-    balance is positive. Returns the invoice or ``None``. Runs the normal
-    :func:`post_invoice` guards (open period, etc.).
+    ``Dr AR control · Cr Retained Earnings`` — the opening figure is prior-period
+    value, so it credits **equity**, never current-period revenue (crediting
+    revenue would overstate the income statement every time a customer is migrated
+    in with a balance). It still shows in the customer's outstanding (which is
+    invoice-derived) *and* in the GL. No-op unless the opening balance is positive.
+    Returns the invoice or ``None``. Runs the normal :func:`post_invoice` guards
+    (open period, etc.).
     """
     import datetime
 
-    from .constants import InvoiceSource, OPERATING_REVENUE_CODE
+    from .constants import InvoiceSource, RETAINED_EARNINGS_CODE
     from .models import Invoice, InvoiceLine
 
     amount = int(customer.opening_balance or 0)
     if amount <= 0:
         return None
 
-    revenue = resolve_account(customer.entity, OPERATING_REVENUE_CODE, label="opening balance revenue")
+    # Opening balances are prior-period value: credit equity (Retained Earnings),
+    # not revenue — otherwise onboarding/migrating a customer inflates this year's P&L.
+    opening_equity = resolve_account(
+        customer.entity, RETAINED_EARNINGS_CODE, label="opening balance equity",
+    )
     invoice = Invoice.objects.create(
         entity=customer.entity, customer=customer,
         invoice_date=date or datetime.date.today(),
@@ -212,7 +219,7 @@ def post_opening_balance(customer, *, actor_user=None, date=None):
         created_by=actor_user,
     )
     InvoiceLine.objects.create(
-        invoice=invoice, revenue_account=revenue,
+        invoice=invoice, revenue_account=opening_equity,
         quantity=1, unit_price=amount, line_no=1,
     )
     post_invoice(invoice, actor_user=actor_user)

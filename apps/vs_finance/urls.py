@@ -30,6 +30,7 @@ from .views import (
     JournalSummaryView,
     JournalPostView,
     JournalReverseView,
+    JournalSubmitView,
     PeriodCloseView,
     PeriodLockView,
     PeriodReopenView,
@@ -223,6 +224,7 @@ urlpatterns = [
          name="finance-dunning-notice-cancel"),
 
     # Actions
+    path("journals/<int:id>/submit/", JournalSubmitView.as_view(), name="finance-journal-submit"),
     path("journals/<int:id>/post/", JournalPostView.as_view(), name="finance-journal-post"),
     path("journals/<int:id>/reverse/", JournalReverseView.as_view(), name="finance-journal-reverse"),
     path("direct-entries/", DirectEntryCreateView.as_view(), name="finance-direct-entry-create"),
