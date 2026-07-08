@@ -6469,9 +6469,12 @@ class DunningNotificationTests(_GLFixtureMixin, TestCase):
         self.assertTrue(notice.message)
         mark_notice_sent(notice)
 
+        # Scope to the overdue event: post_invoice also fires an invoice_issued EMAIL
+        # to the same customer, so filter by event key to get the dunning notice.
         email = Notification.objects.get(
             school=self.school, channel=ChannelChoices.EMAIL,
             unregistered_email="debtor@example.com",
+            event_type__key="billing.invoice_overdue",
         )
         self.assertIn(notice.message, email.body)
 
@@ -6583,3 +6586,151 @@ class DunningNotificationTests(_GLFixtureMixin, TestCase):
 
         mark_notice_sent(notice)  # already SENT → no-op
         self.assertEqual(Notification.objects.count(), count_after_first)
+
+
+class InvoiceNotificationTests(_GLFixtureMixin, TestCase):
+    """Invoice + receipt notifications routed through vs_notifications (best-effort).
+
+    Fee/manual invoices email the customer on issue; opening-balance invoices stay
+    silent; every receipt emails a confirmation. Delivery is recipient-centric (works
+    with or without a school) and must NEVER break the underlying money posting.
+    """
+
+    def setUp(self):
+        from vs_notifications.services.seed import (
+            seed_event_types, seed_notification_templates, seed_school_settings,
+        )
+        seed_event_types()
+        seed_notification_templates()
+        self.school = School.objects.create(name="Birchwood", slug="birchwood-int", code="BRCIN")
+        seed_school_settings(self.school)
+        seed_currencies()
+        self.entity = LedgerEntity.objects.create(
+            name="Birchwood Books", code="BRCBK", kind=LedgerEntity.Kind.TENANT,
+            source_school=self.school,
+        )
+        seed_chart_of_accounts(self.entity)
+        self.year = FiscalYear.objects.create(
+            entity=self.entity, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        self.period = FiscalPeriod.objects.create(
+            entity=self.entity, fiscal_year=self.year, period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+            status=PeriodStatus.OPEN,
+        )
+        self.bank = Account.objects.get(entity=self.entity, code="1100")
+        self.customer = Customer.objects.create(
+            entity=self.entity, code="CUSTI", name="Payer Ltd",
+            receivable_account=Account.objects.get(entity=self.entity, code="1200"),
+            billing_email="payer@example.com",
+        )
+
+    def _make_invoice(self, *, unit_price=100000, source="MANUAL"):
+        inv = Invoice.objects.create(
+            entity=self.entity, customer=self.customer,
+            invoice_date=datetime.date(2026, 1, 5), due_date=datetime.date(2026, 1, 20),
+            source=source,
+        )
+        InvoiceLine.objects.create(
+            invoice=inv, revenue_account=Account.objects.get(entity=self.entity, code="4100"),
+            quantity=1, unit_price=unit_price, tax_code=None, line_no=1,
+        )
+        return inv
+
+    def _issued(self):
+        from vs_notifications.models import Notification
+        return Notification.objects.filter(event_type__key="billing.invoice_issued")
+
+    def _received(self):
+        from vs_notifications.models import Notification
+        return Notification.objects.filter(event_type__key="billing.payment_received")
+
+    def test_posting_manual_invoice_notifies_customer(self):
+        from vs_notifications.constants import ChannelChoices
+
+        inv = self._make_invoice()
+        post_invoice(inv)
+        self.assertTrue(self._issued().filter(
+            channel=ChannelChoices.EMAIL, unregistered_email="payer@example.com").exists())
+
+    def test_opening_balance_invoice_stays_silent(self):
+        from vs_finance.receivables import post_opening_balance
+
+        self.customer.opening_balance = 500000
+        self.customer.save(update_fields=["opening_balance"])
+        post_opening_balance(self.customer, date=datetime.date(2026, 1, 5))
+        # Opening balances are migration artefacts — no invoice_issued email.
+        self.assertFalse(self._issued().exists())
+
+    def test_posting_receipt_notifies_customer(self):
+        from vs_notifications.constants import ChannelChoices
+
+        inv = self._make_invoice()
+        post_invoice(inv)
+        pay = Payment.objects.create(
+            entity=self.entity, customer=self.customer,
+            payment_date=datetime.date(2026, 1, 10), amount=100000, deposit_account=self.bank,
+        )
+        post_payment(pay, allocations=[(inv, 100000)])
+        self.assertTrue(self._received().filter(
+            channel=ChannelChoices.EMAIL, unregistered_email="payer@example.com").exists())
+
+    def test_notification_failure_does_not_break_posting(self):
+        from vs_notifications.models import NotificationEventType
+
+        # Deactivate the event so send_notification raises inside the best-effort
+        # wrapper; the invoice must still post cleanly (money is never held hostage
+        # to a notification problem).
+        NotificationEventType.objects.filter(key="billing.invoice_issued").update(is_active=False)
+        inv = self._make_invoice()
+        post_invoice(inv)  # must not raise
+        inv.refresh_from_db()
+        self.assertEqual(inv.status, DocumentStatus.POSTED)
+        self.assertTrue(AccountBalance.objects.filter(
+            account__entity=self.entity, period=self.period).exists())
+        self.assertFalse(self._issued().exists())
+
+    def test_gateway_style_receipt_notifies(self):
+        # A standalone receipt (as the gateway books it) fires payment_received too.
+        pay = Payment.objects.create(
+            entity=self.entity, customer=self.customer,
+            payment_date=datetime.date(2026, 1, 12), amount=50000, deposit_account=self.bank,
+        )
+        post_payment(pay, auto_allocate=False)
+        self.assertTrue(self._received().exists())
+
+    def test_no_school_entity_posts_and_delivers(self):
+        # Recipient-centric: a platform book (no school) still notifies, and posting
+        # is unaffected.
+        platform = LedgerEntity.objects.create(
+            name="Platform Books", code="PLTIN", kind=LedgerEntity.Kind.PLATFORM,
+        )
+        seed_chart_of_accounts(platform)
+        FiscalYear.objects.create(
+            entity=platform, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        FiscalPeriod.objects.create(
+            entity=platform, fiscal_year=FiscalYear.objects.get(entity=platform),
+            period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+            status=PeriodStatus.OPEN,
+        )
+        cust = Customer.objects.create(
+            entity=platform, code="PLC", name="Platform Payer",
+            receivable_account=Account.objects.get(entity=platform, code="1200"),
+            billing_email="pp@example.com",
+        )
+        inv = Invoice.objects.create(
+            entity=platform, customer=cust, invoice_date=datetime.date(2026, 1, 5),
+            due_date=datetime.date(2026, 1, 20), source="MANUAL",
+        )
+        InvoiceLine.objects.create(
+            invoice=inv, revenue_account=Account.objects.get(entity=platform, code="4100"),
+            quantity=1, unit_price=100000, tax_code=None, line_no=1,
+        )
+        post_invoice(inv)  # must not raise
+        inv.refresh_from_db()
+        self.assertEqual(inv.status, DocumentStatus.POSTED)
+        self.assertTrue(self._issued().filter(unregistered_email="pp@example.com").exists())

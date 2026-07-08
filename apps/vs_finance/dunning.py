@@ -267,59 +267,60 @@ def _dispatch_notice(notice, *, actor_user=None):
     the customer's billing email — the school only resolves settings overrides and
     record attribution, so we pass it through as-is (possibly ``None``).
 
-    * **vs_notifications unavailable** (ImportError) — logs and returns ``None``.
-
-    A genuine :class:`~vs_notifications.exceptions.UnknownEventTypeError` (the event key
-    isn't seeded/active) propagates — that is a deploy-config error the caller decides
-    how to handle. Returns the ``send_notification`` result (list of ids).
+    **Best-effort:** delivery is handed off to vs_notifications, which owns its own
+    delivery tracking and email retries. Any problem here (notifications app absent, an
+    unseeded/inactive event, a template render error) is logged and swallowed — it must
+    not break the dunning ladder or leave a notice wedged in PENDING forever. Returns
+    the ``send_notification`` result (list of ids), or ``None`` when delivery was
+    skipped/failed.
     """
     from .money import to_naira
 
     try:
         from vs_notifications.notify import send_notification, UnregisteredRecipient
-    except ImportError:
+
+        school = notice.entity.source_school  # optional scope; may be None (platform books)
+        customer = notice.customer
+        invoice = notice.invoice
+        context = {
+            "customer_name": customer.name,
+            "invoice_number": invoice.document_number,
+            "amount_outstanding": f"{to_naira(notice.amount_due):,.2f}",
+            "due_date": invoice.due_date.isoformat() if invoice.due_date else "—",
+            "days_overdue": notice.days_overdue,
+            "school_name": school.name if school else "",
+            # Escalation wording is owned by the dunning policy stage, not the event.
+            "reminder_message": notice.message,
+            "level": notice.level,
+        }
+        return send_notification(
+            event_key="billing.invoice_overdue",
+            context=context,
+            recipients=[],
+            school=school,
+            unregistered_recipients=[
+                UnregisteredRecipient(
+                    email=customer.billing_email or "", name=customer.name,
+                ),
+            ],
+        )
+    except Exception:  # best-effort — a notification problem must not break dunning
         logger.warning(
-            "vs_notifications unavailable; dunning notice %s not delivered.",
-            notice.document_number or notice.pk,
+            "Dunning notice %s delivery failed; marking sent anyway "
+            "(vs_notifications owns delivery tracking/retries).",
+            notice.document_number or notice.pk, exc_info=True,
         )
         return None
-
-    school = notice.entity.source_school  # optional scope; may be None (platform books)
-    customer = notice.customer
-    invoice = notice.invoice
-    context = {
-        "student_first_name": customer.name,
-        "student_last_name": "",
-        "invoice_number": invoice.document_number,
-        "amount_outstanding": f"{to_naira(notice.amount_due):,.2f}",
-        "due_date": invoice.due_date.isoformat() if invoice.due_date else "—",
-        "days_overdue": notice.days_overdue,
-        "school_name": school.name if school else "",
-        # Escalation wording is owned by the dunning policy stage, not the event.
-        "reminder_message": notice.message,
-        "level": notice.level,
-    }
-
-    return send_notification(
-        event_key="billing.invoice_overdue",
-        context=context,
-        recipients=[],
-        school=school,
-        unregistered_recipients=[
-            UnregisteredRecipient(
-                email=customer.billing_email or "", name=customer.name,
-            ),
-        ],
-    )
 
 
 def mark_notice_sent(notice, *, actor_user=None):
     """Deliver a PENDING notice through vs_notifications, then record it SENT.
 
-    Idempotent once sent. Delivery runs **before** the SENT flip, so a dispatch
-    failure leaves the notice PENDING for the next run to retry rather than falsely
-    marking it sent. Delivery is recipient-centric (works with or without a school);
-    a vs_notifications-unavailable skip still flips SENT (nothing to retry there).
+    Idempotent once sent. Delivery is handed to vs_notifications (best-effort — see
+    :func:`_dispatch_notice`) before the SENT flip; a delivery problem is logged there
+    and the notice is still marked sent, since vs_notifications owns delivery tracking
+    and its own email retries. Delivery is recipient-centric (works with or without a
+    school).
     """
     from .models import DunningNotice  # noqa: F401  (typing/clarity)
 

@@ -578,19 +578,22 @@ def _build_default_templates() -> dict:
         },
 
         # ── billing.invoice_issued ──────────────────────────────────────────
+        # NB: billing.* events are fired by the domain-neutral vs_finance ledger,
+        # which knows a generic {{ customer_name }} (the billing party) — not a
+        # structured student first/last. Keep these on customer_name.
         ("billing.invoice_issued", C.IN_APP): {
             "subject": "",
             "body": (
                 "New invoice: ₦{{ invoice_amount }} is due for "
-                "{{ student_first_name }} {{ student_last_name }} by {{ due_date }}."
+                "{{ customer_name }} by {{ due_date }}."
             ),
         },
         ("billing.invoice_issued", C.EMAIL): {
-            "subject": "New fee invoice — {{ student_first_name }} {{ student_last_name }}",
+            "subject": "New fee invoice — {{ customer_name }}",
             "body": (
                 "Dear Parent/Guardian,\n\n"
                 "A new invoice has been issued for your child's school fees.\n\n"
-                "Student: {{ student_first_name }} {{ student_last_name }}\n"
+                "Bill to: {{ customer_name }}\n"
                 "Invoice number: {{ invoice_number }}\n"
                 "Amount due: ₦{{ invoice_amount }}\n"
                 "Due date: {{ due_date }}\n\n"
@@ -604,15 +607,15 @@ def _build_default_templates() -> dict:
             "subject": "",
             "body": (
                 "Payment confirmed: ₦{{ amount_paid }} received for "
-                "{{ student_first_name }} {{ student_last_name }} on {{ payment_date }}."
+                "{{ customer_name }} on {{ payment_date }}."
             ),
         },
         ("billing.payment_received", C.EMAIL): {
-            "subject": "Payment confirmed — {{ student_first_name }} {{ student_last_name }}",
+            "subject": "Payment confirmed — {{ customer_name }}",
             "body": (
                 "Dear Parent/Guardian,\n\n"
                 "We have received your payment. Thank you.\n\n"
-                "Student: {{ student_first_name }} {{ student_last_name }}\n"
+                "Bill to: {{ customer_name }}\n"
                 "Invoice number: {{ invoice_number }}\n"
                 "Amount paid: ₦{{ amount_paid }}\n"
                 "Payment date: {{ payment_date }}\n"
@@ -626,17 +629,17 @@ def _build_default_templates() -> dict:
             "subject": "",
             "body": (
                 "Overdue invoice: ₦{{ amount_outstanding }} outstanding for "
-                "{{ student_first_name }} {{ student_last_name }} — {{ days_overdue }} day(s) overdue."
+                "{{ customer_name }} — {{ days_overdue }} day(s) overdue."
                 " {{ reminder_message }}"
             ),
         },
         ("billing.invoice_overdue", C.EMAIL): {
-            "subject": "Overdue fee invoice — {{ student_first_name }} {{ student_last_name }}",
+            "subject": "Overdue fee invoice — {{ customer_name }}",
             "body": (
                 "Dear Parent/Guardian,\n\n"
                 "This is a reminder that the following invoice is overdue.\n\n"
                 "{{ reminder_message }}\n\n"
-                "Student: {{ student_first_name }} {{ student_last_name }}\n"
+                "Bill to: {{ customer_name }}\n"
                 "Invoice number: {{ invoice_number }}\n"
                 "Outstanding amount: ₦{{ amount_outstanding }}\n"
                 "Original due date: {{ due_date }}\n"
@@ -651,15 +654,15 @@ def _build_default_templates() -> dict:
             "subject": "",
             "body": (
                 "Refund processed: ₦{{ refund_amount }} refunded for "
-                "{{ student_first_name }} {{ student_last_name }}."
+                "{{ customer_name }}."
             ),
         },
         ("billing.refund_processed", C.EMAIL): {
-            "subject": "Refund processed — {{ student_first_name }} {{ student_last_name }}",
+            "subject": "Refund processed — {{ customer_name }}",
             "body": (
                 "Dear Parent/Guardian,\n\n"
                 "A refund has been processed on your account.\n\n"
-                "Student: {{ student_first_name }} {{ student_last_name }}\n"
+                "Bill to: {{ customer_name }}\n"
                 "Refund amount: ₦{{ refund_amount }}\n"
                 "Original invoice: {{ original_invoice_number }}\n"
                 "Processed by: {{ processed_by_name }}\n\n"

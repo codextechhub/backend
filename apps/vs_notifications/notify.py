@@ -10,10 +10,10 @@
 #   send_notification(
 #       event_key="billing.invoice_issued",
 #       context={
-#           "student_first_name": student.first_name,
-#           "invoice_number":     invoice.number,
-#           "due_date":           invoice.due_date.strftime("%d %b %Y"),
-#           "school_name":        school.name,
+#           "customer_name":  customer.name,
+#           "invoice_number": invoice.number,
+#           "due_date":       invoice.due_date.strftime("%d %b %Y"),
+#           "school_name":    school.name,
 #       },
 #       recipients=[guardian_user],
 #       school=school,

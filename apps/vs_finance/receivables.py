@@ -82,7 +82,7 @@ def post_invoice(invoice, *, actor_user=None):
     re-raises — mirroring the journal posting contract.
     """
     try:
-        return _post_invoice_atomic(invoice, actor_user=actor_user)
+        result = _post_invoice_atomic(invoice, actor_user=actor_user)
     except FinanceError as exc:
         record_rejection(
             entity=invoice.entity,
@@ -90,6 +90,10 @@ def post_invoice(invoice, *, actor_user=None):
             exc=exc, actor_user=actor_user, target=invoice,
         )
         raise
+    # Best-effort customer notification (never rolls back the post; skips openings).
+    from .notifications import notify_invoice_issued
+    notify_invoice_issued(invoice, actor_user=actor_user)
+    return result
 
 
 @transaction.atomic
@@ -239,7 +243,7 @@ def post_payment(payment, *, actor_user=None, auto_allocate=True, allocations=No
     (``"oldest"`` by due date, or ``"largest"`` balance first).
     """
     try:
-        return _post_payment_atomic(
+        result = _post_payment_atomic(
             payment, actor_user=actor_user,
             auto_allocate=auto_allocate, allocations=allocations, strategy=strategy,
         )
@@ -250,6 +254,10 @@ def post_payment(payment, *, actor_user=None, auto_allocate=True, allocations=No
             exc=exc, actor_user=actor_user, target=payment,
         )
         raise
+    # Best-effort receipt confirmation (never rolls back the post).
+    from .notifications import notify_payment_received
+    notify_payment_received(payment, actor_user=actor_user)
+    return result
 
 
 def customer_credit_balance(customer) -> int:
