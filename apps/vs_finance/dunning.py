@@ -20,12 +20,12 @@ from django.db import transaction  # Keeps dunning mutations atomic.
 from django.utils import timezone  # Supplies run dates and sent timestamps.
 
 from .audit import record  # Writes finance audit events.
-from .constants import (
+from .constants import (  # Import project symbols used by this module.
     DocumentStatus,  # Invoice lifecycle status.
     DunningChannel,  # Reminder delivery channel enum.
     DunningNoticeStatus,  # Reminder lifecycle status.
     FinanceAuditAction,  # Audit action enum values.
-)
+)  # Close the grouped expression.
 from .exceptions import PostingError  # Domain error for invalid dunning operations.
 
 logger = logging.getLogger(__name__)  # Module logger for notification dispatch failures.
@@ -36,7 +36,7 @@ DEFAULT_STAGES = (  # Standard reminder ladder used when no policy exists.
     (1, "Friendly reminder", 1, DunningChannel.EMAIL),  # First overdue-day reminder.
     (2, "Second reminder", 14, DunningChannel.EMAIL),  # Escalation after two weeks.
     (3, "Final notice", 30, DunningChannel.EMAIL),  # Final escalation after thirty days.
-)
+)  # Close the grouped expression.
 
 
 def ensure_default_policy(entity, *, name="Standard reminders"):  # Ensure an entity has a default dunning policy.
@@ -49,19 +49,19 @@ def ensure_default_policy(entity, *, name="Standard reminders"):  # Ensure an en
 
     existing = DunningPolicy.objects.filter(entity=entity, is_default=True).first()  # Look for existing default policy.
     if existing is not None:  # Keep existing policy untouched.
-        return existing
+        return existing  # Return the computed module result.
 
     policy = DunningPolicy.objects.create(  # Create the default policy header.
         entity=entity, name=name, is_active=True, is_default=True,  # Mark it active and default.
-    )
+    )  # Close the grouped expression.
     DunningStage.objects.bulk_create([  # Create the standard ladder efficiently.
         DunningStage(  # One reminder stage row.
             policy=policy, level=level, name=stage_name,  # Attach policy and stage identity.
             min_days_overdue=days, channel=channel,  # Store trigger threshold and channel.
             message=f"{stage_name}: your account has an overdue balance.",  # Default reminder wording.
-        )
+        )  # Close the grouped expression.
         for level, stage_name, days, channel in DEFAULT_STAGES  # Expand each default stage tuple.
-    ])
+    ])  # Execute the module statement.
     return policy  # Return the newly created default policy.
 
 
@@ -70,16 +70,16 @@ def _resolve_policy(entity, policy=None):  # Choose which dunning policy a run s
     from .models import DunningPolicy  # Local import avoids model import cycles.
 
     if policy is not None:  # Explicit policy wins.
-        return policy
+        return policy  # Return the computed module result.
     chosen = (  # Prefer active default, otherwise the first active policy.
         DunningPolicy.objects.filter(entity=entity, is_default=True, is_active=True).first()  # Active default policy.
         or DunningPolicy.objects.filter(entity=entity, is_active=True).order_by("id").first()  # Fallback active policy.
-    )
+    )  # Close the grouped expression.
     if chosen is None:  # Dunning cannot run without a stage policy.
-        raise PostingError(
+        raise PostingError(  # Raise the domain error for this path.
             "No active dunning policy for this entity. Create one (or call "
             "ensure_default_policy) before generating reminders.",
-        )
+        )  # Close the grouped expression.
     return chosen  # Return the selected active policy.
 
 
@@ -90,11 +90,11 @@ def _stage_for(stages, days_overdue: int):  # Find the highest threshold reached
         if days_overdue >= stage.min_days_overdue:  # This threshold has been reached.
             match = stage  # Keep walking so the highest qualifying stage wins.
         else:  # Later stages have higher thresholds and cannot qualify.
-            break
+            break  # Exit the current loop.
     return match  # Return highest qualifying stage or None.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_user=None):  # Generate overdue invoice reminders.
     """Raise dunning notices for ``entity``'s overdue invoices as at ``as_of`` (today default).
 
@@ -128,7 +128,7 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
         .annotate(_balance=balance, _due=Coalesce("due_date", "invoice_date"))  # Add balance and effective due date.
         .filter(_balance__gt=0, _due__lt=as_of)  # Keep only overdue invoices with remaining balance.
         .select_related("customer")  # Load customer for notice creation without N+1.
-    )
+    )  # Close the grouped expression.
     if customer is not None:  # Optional targeted customer run.
         invoices = invoices.filter(customer=customer)  # Restrict reminders to one customer.
 
@@ -160,9 +160,9 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
             (s for s in stages_by_level  # Walk in escalation order.
              if s.min_days_overdue <= days_overdue and s.level not in already),  # Qualifies and not issued before.
             None,  # No new stage qualifies.
-        )
+        )  # Close the grouped expression.
         if stage is None:  # Invoice has no new rung to receive.
-            continue
+            continue  # Skip to the next loop iteration.
 
         notice = DunningNotice.objects.create(  # Create the pending reminder notice.
             entity=entity, branch=invoice.branch, customer=invoice.customer,  # Scope and recipient context.
@@ -171,7 +171,7 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
             channel=stage.channel, message=stage.message,  # Copy delivery channel and stage wording.
             notice_status=DunningNoticeStatus.PENDING,  # Delivery has not happened yet.
             created_by=actor_user,  # Attribute notice creation to the caller.
-        )
+        )  # Close the grouped expression.
         created.append(notice)  # Include notice in the result list.
 
     record(  # Audit the dunning run summary.
@@ -180,11 +180,11 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
         message=f"Generated {len(created)} dunning notice(s) under '{policy.name}' "  # Human-readable summary.
                 f"as at {as_of}.",  # Include run date.
         policy_id=policy.pk, as_of=str(as_of), notices_created=len(created),  # Structured run metadata.
-    )
+    )  # Close the grouped expression.
     return created  # Return newly created notices.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def remind_invoice(invoice, *, actor_user=None, send=True, message=""):  # Create/send one invoice reminder.
     """Raise (and, by default, send) a dunning reminder for a single invoice.
 
@@ -221,8 +221,8 @@ def remind_invoice(invoice, *, actor_user=None, send=True, message=""):  # Creat
             "amount_due": invoice.balance_due, "channel": stage.channel,  # Balance and delivery channel.
             "message": message or stage.message,  # Custom message overrides stage message.
             "notice_status": DunningNoticeStatus.PENDING, "created_by": actor_user,  # Pending status and actor.
-        },
-    )
+        },  # Close the grouped value.
+    )  # Close the grouped expression.
     if not created:  # Existing notice gets refreshed/reactivated.
         notice.days_overdue = days_overdue  # Update overdue age.
         notice.amount_due = invoice.balance_due  # Update outstanding amount.
@@ -292,7 +292,7 @@ def _dispatch_notice(notice, *, actor_user=None):  # Send one notice through vs_
             # Escalation wording is owned by the dunning policy stage, not the event.  # Keep wording configurable.
             "reminder_message": notice.message,  # Stage-specific reminder text.
             "level": notice.level,  # Dunning escalation level.
-        }
+        }  # Close the grouped expression.
         return send_notification(  # Delegate delivery to vs_notifications.
             event_key="billing.invoice_overdue",  # Event key configured in notification templates.
             context=context,  # Render variables for template.
@@ -301,15 +301,15 @@ def _dispatch_notice(notice, *, actor_user=None):  # Send one notice through vs_
             unregistered_recipients=[  # Billing emails can receive without portal accounts.
                 UnregisteredRecipient(  # Customer recipient payload.
                     email=customer.billing_email or "", name=customer.name,  # Recipient email and display name.
-                ),
-            ],
-        )
+                ),  # Close the grouped value.
+            ],  # Close the grouped value.
+        )  # Close the grouped expression.
     except Exception:  # best-effort — a notification problem must not break dunning
         logger.warning(  # Log failure with stack trace for operations.
             "Dunning notice %s delivery failed; marking sent anyway "  # Explain lifecycle still advances.
             "(vs_notifications owns delivery tracking/retries).",  # Ownership of retries.
             notice.document_number or notice.pk, exc_info=True,  # Prefer document number, fallback to pk.
-        )
+        )  # Close the grouped expression.
         return None  # Swallow failures so notice can still move to SENT.
 
 
@@ -325,12 +325,12 @@ def mark_notice_sent(notice, *, actor_user=None):  # Dispatch and mark a pending
     from .models import DunningNotice  # noqa: F401  (typing/clarity)  # Keeps model dependency explicit.
 
     if notice.notice_status == DunningNoticeStatus.SENT:  # Already sent is idempotent success.
-        return notice
+        return notice  # Return the computed module result.
     if notice.notice_status != DunningNoticeStatus.PENDING:  # Only pending notices can be sent.
-        raise PostingError(
+        raise PostingError(  # Raise the domain error for this path.
             f"Notice {notice.document_number} is '{notice.notice_status}'; "
             f"only a pending notice can be marked sent.",
-        )
+        )  # Close the grouped expression.
 
     _dispatch_notice(notice, actor_user=actor_user)  # Best-effort delivery through notifications app.
 
@@ -343,14 +343,14 @@ def mark_notice_sent(notice, *, actor_user=None):  # Dispatch and mark a pending
         message=f"Dunning notice {notice.document_number} (L{notice.level}) sent to "  # Human-readable sent message.
                 f"{notice.customer.code} via {notice.channel}.",  # Include customer and channel.
         level=notice.level, channel=notice.channel,  # Structured audit metadata.
-    )
+    )  # Close the grouped expression.
     return notice  # Return the sent notice.
 
 
 def cancel_notice(notice, *, reason="", actor_user=None):  # Cancel an active reminder notice.
     """Withdraw a notice before/after sending. Idempotent on terminal states."""
     if notice.notice_status in (DunningNoticeStatus.CANCELLED, DunningNoticeStatus.RESOLVED):  # Terminal states stay unchanged.
-        return notice
+        return notice  # Return the computed module result.
     notice.notice_status = DunningNoticeStatus.CANCELLED  # Mark notice withdrawn.
     notice.save(update_fields=["notice_status", "updated_at"])  # Persist cancellation status.
     record(  # Audit the cancellation.
@@ -359,5 +359,5 @@ def cancel_notice(notice, *, reason="", actor_user=None):  # Cancel an active re
         message=f"Dunning notice {notice.document_number} cancelled."  # Human-readable cancellation message.
                 + (f" Reason: {reason}" if reason else ""),  # Append optional reason.
         level=notice.level,  # Structured escalation level.
-    )
+    )  # Close the grouped expression.
     return notice  # Return the cancelled notice.
