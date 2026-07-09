@@ -15,9 +15,9 @@ from ..exceptions import ProviderError  # Raised when provider requests fail or 
 DEFAULT_TIMEOUT = 20  # Conservative timeout so provider calls fail fast.
 
 
-def request_json(method: str, url: str, *, headers: dict | None = None,
+def request_json(method: str, url: str, *, headers: dict | None = None,  # Define the callable used by this module.
                  body: dict | None = None, provider: str = "",
-                 timeout: int = DEFAULT_TIMEOUT) -> dict:
+                 timeout: int = DEFAULT_TIMEOUT) -> dict:  # Start the nested execution block.
     """Make an HTTP request and parse a JSON response, or raise :class:`ProviderError`.
 
     A non-2xx status, a transport failure, or a non-JSON body all surface as a typed
@@ -35,17 +35,17 @@ def request_json(method: str, url: str, *, headers: dict | None = None,
             payload = resp.read().decode("utf-8")  # Decode the raw response body as UTF-8.
     except urllib.error.HTTPError as exc:  # Provider returned a 4xx/5xx response.
         detail = exc.read().decode("utf-8", "replace")[:500] if exc.fp else ""  # Capture a short error body when available.
-        raise ProviderError(
+        raise ProviderError(  # Raise the domain error for this path.
             f"{provider or 'Provider'} returned HTTP {exc.code}: {detail}",  # Include status and response snippet.
             provider=provider, provider_code=str(exc.code),  # Attach provider metadata for diagnostics.
-        )
+        )  # Close the grouped expression.
     except urllib.error.URLError as exc:  # DNS, connection, or timeout failure.
-        raise ProviderError(
+        raise ProviderError(  # Raise the domain error for this path.
             f"Could not reach {provider or 'provider'}: {exc.reason}", provider=provider,  # Surface the network reason.
-        )
+        )  # Close the grouped expression.
     try:  # Successful responses still need to be valid JSON.
         return json.loads(payload) if payload else {}  # Parse JSON, or return an empty dict for empty responses.
     except json.JSONDecodeError:  # Non-JSON bodies are not usable by the provider adapters.
-        raise ProviderError(
+        raise ProviderError(  # Raise the domain error for this path.
             f"{provider or 'Provider'} returned a non-JSON response.", provider=provider,  # Signal a bad upstream response shape.
-        )
+        )  # Close the grouped expression.
