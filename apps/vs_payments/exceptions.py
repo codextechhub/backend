@@ -10,25 +10,25 @@ from __future__ import annotations  # Defer annotation evaluation for forward re
 from vs_finance.exceptions import FinanceError  # Base finance exception used across the stack.
 
 
-class PaymentError(FinanceError):
+class PaymentError(FinanceError):  # Define the class used by this module.
     error_code = "PAYMENT_ERROR"  # Generic payment-layer error code.
     default_message = "A payment error occurred."  # Fallback message when none is supplied.
 
 
-class ProviderError(PaymentError):
+class ProviderError(PaymentError):  # Define the class used by this module.
     """The external PSP returned an error or could not be reached."""
 
     error_code = "PAYMENT_PROVIDER_ERROR"  # Provider request failed or was rejected.
     default_message = "The payment provider rejected or failed the request."  # Default provider failure message.
     http_status = 502  # Surface provider failures as bad gateway.
 
-    def __init__(self, message=None, *, provider=None, provider_code=None, **kwargs):
+    def __init__(self, message=None, *, provider=None, provider_code=None, **kwargs):  # Define the callable used by this module.
         self.provider = provider  # Store the provider name for downstream handling.
         self.provider_code = provider_code  # Store the provider-specific error code, if any.
         super().__init__(message, provider=provider, provider_code=provider_code, **kwargs)  # Pass context to FinanceError.
 
 
-class ProviderNotConfiguredError(PaymentError):
+class ProviderNotConfiguredError(PaymentError):  # Define the class used by this module.
     """A provider was requested but its keys/host are not configured in settings."""
 
     error_code = "PAYMENT_PROVIDER_NOT_CONFIGURED"  # Settings are missing required provider config.
@@ -36,7 +36,7 @@ class ProviderNotConfiguredError(PaymentError):
     http_status = 503  # Service unavailable until configuration is supplied.
 
 
-class WebhookSignatureError(PaymentError):
+class WebhookSignatureError(PaymentError):  # Define the class used by this module.
     """The inbound webhook signature did not verify against the provider secret."""
 
     error_code = "WEBHOOK_SIGNATURE_INVALID"  # Signature verification failed.
@@ -44,7 +44,7 @@ class WebhookSignatureError(PaymentError):
     http_status = 401  # Invalid signature should be treated as unauthorized.
 
 
-class DuplicateWebhookError(PaymentError):
+class DuplicateWebhookError(PaymentError):  # Define the class used by this module.
     """A webhook event we have already processed arrived again (idempotency guard).
 
     This is *not* an error condition for the caller — it means "already handled, do
@@ -57,7 +57,7 @@ class DuplicateWebhookError(PaymentError):
     http_status = 200  # Duplicate webhooks are acknowledged successfully.
 
 
-class PaymentStateError(PaymentError):
+class PaymentStateError(PaymentError):  # Define the class used by this module.
     """An action was attempted from an invalid collection/payout state."""
 
     error_code = "PAYMENT_STATE_ERROR"  # The requested action does not match the current payment state.
