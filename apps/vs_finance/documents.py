@@ -54,7 +54,7 @@ def primary_collection_account(entity):  # Resolve the bank account printed on f
     return (  # Prefer explicit primary account, fallback to first active account.
         qs.filter(is_primary_collection=True).first()  # Primary collection account when configured.
         or qs.filter(is_active=True).order_by("id").first()  # Stable fallback active account.
-    )
+    )  # Close the grouped expression.
 
 
 # --------------------------------------------------------------------------- #
@@ -101,7 +101,7 @@ def _issuer_block(entity, *, branch=None) -> dict:  # Build school/entity identi
         "phone": "",  # Phone is currently not sourced.
         "website": website,  # Website URL.
         "bank": bank_block,  # Pay-to bank details.
-    }
+    }  # Close the grouped expression.
 
 
 def _customer_block(customer) -> dict:  # Build customer identity block for invoice/receipt templates.
@@ -111,7 +111,7 @@ def _customer_block(customer) -> dict:  # Build customer identity block for invo
         "email": customer.billing_email or "",  # Billing email or blank.
         "phone": customer.billing_phone or "",  # Billing phone or blank.
         "address": customer.billing_address or "",  # Billing address or blank.
-    }
+    }  # Close the grouped expression.
 
 
 def _payment_status_badge(payment_status: str) -> str:  # Convert invoice payment status to template CSS token.
@@ -160,7 +160,7 @@ def invoice_document_context(invoice) -> dict:  # Build printable invoice templa
             "tax_amount": format_naira(ln.tax_amount) if ln.tax_code_id else "Exempt",  # Display tax or exemption.
             "is_exempt": ln.tax_code_id is None,  # Boolean for template styling.
             "net_amount": format_naira(ln.net_amount),  # Display net line amount.
-        })
+        })  # Execute the module statement.
 
     return {  # Return full invoice document context.
         "issuer": _issuer_block(entity, branch=invoice.branch),  # Letterhead and pay-to block.
@@ -181,8 +181,8 @@ def invoice_document_context(invoice) -> dict:  # Build printable invoice templa
             "amount_paid": format_naira(invoice.amount_paid),  # Display paid amount.
             "balance_due": format_naira(invoice.balance_due),  # Display outstanding balance.
             "qr_payload": invoice.document_number,  # QR payload currently uses document number.
-        },
-    }
+        },  # Close the grouped value.
+    }  # Close the grouped expression.
 
 
 def render_invoice_document_html(invoice, *, request=None) -> str:  # Render an invoice document to HTML.
@@ -190,7 +190,7 @@ def render_invoice_document_html(invoice, *, request=None) -> str:  # Render an 
         "vs_finance/invoice_document.html",  # Invoice template path.
         invoice_document_context(invoice),  # Build invoice context.
         request=request,  # Pass request for context processors/static absolute paths.
-    )
+    )  # Close the grouped expression.
 
 
 def render_invoice_document_pdf(invoice, *, request=None) -> bytes:  # Render an invoice document to PDF.
@@ -226,7 +226,7 @@ def receipt_document_context(payment) -> dict:  # Build printable receipt templa
             "sub": inv.narration or inv.reference or "",  # Secondary invoice text.
             "amount_applied": format_naira(alloc.amount),  # Display amount applied to invoice.
             "invoice_balance_after": format_naira(inv.balance_due),  # Display invoice balance after allocation.
-        })
+        })  # Execute the module statement.
 
     try:  # Convert stored method value to human label when enum knows it.
         method_label = PaymentMethod(payment.method).label  # Django choices enum label.
@@ -246,8 +246,8 @@ def receipt_document_context(payment) -> dict:  # Build printable receipt templa
             "allocations": allocations,  # Prepared allocation rows.
             "customer_balance_after": format_naira(_customer_net_after(entity, payment.customer)),  # Display net AR after receipt.
             "settled_stamp": "Received",  # Static stamp text for the template.
-        },
-    }
+        },  # Close the grouped value.
+    }  # Close the grouped expression.
 
 
 def render_receipt_document_html(payment, *, request=None) -> str:  # Render a receipt document to HTML.
@@ -255,7 +255,7 @@ def render_receipt_document_html(payment, *, request=None) -> str:  # Render a r
         "vs_finance/receipt_document.html",  # Receipt template path.
         receipt_document_context(payment),  # Build receipt context.
         request=request,  # Pass request for context processors/static absolute paths.
-    )
+    )  # Close the grouped expression.
 
 
 def render_receipt_document_pdf(payment, *, request=None) -> bytes:  # Render a receipt document to PDF.
