@@ -18,7 +18,7 @@ from django.utils import timezone  # Timestamp reconciliation operations.
 
 from .accounts import resolve_account  # Resolve GL accounts from entity-scoped codes.
 from .audit import record  # Write finance audit events for reconciliation actions.
-from .constants import (
+from .constants import (  # Import project symbols used by this module.
     BankLineStatus,  # Lifecycle of imported statement lines.
     BankMatchSource,  # Indicates whether a match was manual, automatic, or adjustment-driven.
     BankReconStatus,  # Overall reconciliation status snapshot.
@@ -27,7 +27,7 @@ from .constants import (
     FinanceAuditAction,  # Audit action enum for banking events.
     JournalSource,  # Journal origin indicator.
     NormalBalance,  # Controls how signed balances are interpreted.
-)
+)  # Close the grouped expression.
 from .exceptions import BankReconciliationError  # Raised for reconciliation and matching violations.
 from .posting import post_journal, resolve_period, reverse_journal  # Post, period-check, and reverse journals.
 
@@ -36,7 +36,7 @@ from .posting import post_journal, resolve_period, reverse_journal  # Post, peri
 # Statement import                                                            #
 # --------------------------------------------------------------------------- #
 
-def gl_account_balance(account) -> int:
+def gl_account_balance(account) -> int:  # Define the callable used by this module.
     """Net posted balance of a GL ``account`` in kobo, signed to its normal side."""
     from django.db.models import Sum  # Aggregate debit and credit totals in SQL.
     from .models import AccountBalance  # Stored balance snapshot table.
@@ -45,13 +45,13 @@ def gl_account_balance(account) -> int:
         d=Sum("debit_total"), c=Sum("credit_total"))
     net = (agg["d"] or 0) - (agg["c"] or 0)  # Compute the raw net balance.
     if account.normal_balance != NormalBalance.DEBIT:  # Flip sign when the account's normal side is credit.
-        net = -net
+        net = -net  # Store the intermediate module value.
     return int(net)  # Return a signed integer kobo balance.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def import_statement_lines(bank_account, rows, *, statement_date=None, period_label="",
-                           opening_balance=0, closing_balance=None, force=False, actor_user=None):
+                           opening_balance=0, closing_balance=None, force=False, actor_user=None):  # Start the nested execution block.
     """Import ``rows`` into a new :class:`BankStatement`. Returns
     ``(statement, created_lines, suspected_duplicates)``.
 
@@ -80,44 +80,44 @@ def import_statement_lines(bank_account, rows, *, statement_date=None, period_la
     for row in rows:  # Normalize each raw row into a statement line.
         external_id = (row.get("external_id") or "").strip()  # Clean up the optional external id.
         if external_id and BankStatementLine.objects.filter(  # Skip exact duplicates by external id.
-            bank_account=bank_account, external_id=external_id,
-        ).exists():
+            bank_account=bank_account, external_id=external_id,  # Continue the structured value.
+        ).exists():  # Start the nested execution block.
             continue  # Ignore already-imported rows with the same external id.
         amount = int(row["amount"])  # Normalize the signed amount to integer kobo.
         description = row.get("description", "")  # Optional bank memo/description.
         reference = row.get("reference", "")  # Optional bank reference.
         if (not force and not external_id and BankStatementLine.objects.filter(  # Heuristic duplicate detection when no external id exists.
             bank_account=bank_account, txn_date=row["txn_date"], amount=amount,
-            description=description, reference=reference,
-        ).exists()):
-            suspected.append({
+            description=description, reference=reference,  # Continue the structured value.
+        ).exists()):  # Start the nested execution block.
+            suspected.append({  # Continue the structured value.
                 "txn_date": row["txn_date"], "amount": amount,
                 "description": description, "reference": reference,
-            })
+            })  # Execute the module statement.
             continue  # Hold suspicious duplicates back unless the caller forces the import.
         created.append(BankStatementLine(  # Create the unsaved statement line object.
-            bank_account=bank_account,
+            bank_account=bank_account,  # Continue the structured value.
             txn_date=row["txn_date"],
-            amount=amount,
-            description=description,
-            reference=reference,
-            external_id=external_id,
-        ))
+            amount=amount,  # Continue the structured value.
+            description=description,  # Continue the structured value.
+            reference=reference,  # Continue the structured value.
+            external_id=external_id,  # Continue the structured value.
+        ))  # Execute the module statement.
         movement += amount  # Keep a running total of the signed statement movement.
 
     if not created:  # Nothing new survived the dedupe checks.
-        return None, [], suspected
+        return None, [], suspected  # Return the computed module result.
 
     opening_balance = int(opening_balance or 0)  # Normalize the provided opening balance.
     if closing_balance is None:  # Derive the closing balance when the caller did not supply one.
         closing_balance = opening_balance + movement  # Opening plus signed movements equals closing.
     statement = BankStatement.objects.create(  # Create the imported statement header.
-        bank_account=bank_account,
-        statement_date=statement_date or max(l.txn_date for l in created),
+        bank_account=bank_account,  # Continue the structured value.
+        statement_date=statement_date or max(l.txn_date for l in created),  # Continue the structured value.
         period_label=period_label or "",
-        opening_balance=opening_balance, closing_balance=int(closing_balance),
-        status=BankStatementStatus.UPLOADED, imported_by=actor_user,
-    )
+        opening_balance=opening_balance, closing_balance=int(closing_balance),  # Continue the structured value.
+        status=BankStatementStatus.UPLOADED, imported_by=actor_user,  # Continue the structured value.
+    )  # Close the grouped expression.
     for line in created:  # Attach the new rows to the statement header before saving.
         line.statement = statement  # Set the foreign key on each line.
     BankStatementLine.objects.bulk_create(created)  # Bulk insert the imported statement lines.
@@ -129,18 +129,18 @@ def import_statement_lines(bank_account, rows, *, statement_date=None, period_la
 # --------------------------------------------------------------------------- #
 
 #: Largest "one bank line covers N receipts" group auto-match tries.
-GROUP_AUTO_MATCH_MAX = 4
+GROUP_AUTO_MATCH_MAX = 4  # Store the intermediate module value.
 #: Skip group auto-match when a statement line has more candidate GL lines than this
 #: (keeps the bounded subset search cheap and the result unambiguous).
-_GROUP_AUTO_MATCH_POOL_CAP = 12
+_GROUP_AUTO_MATCH_POOL_CAP = 12  # Store the intermediate module value.
 
 
-def _signed_gl(line) -> int:
+def _signed_gl(line) -> int:  # Define the callable used by this module.
     """A cash-account journal line's signed contribution in kobo (debit - credit)."""
     return (line.debit or 0) - (line.credit or 0)  # Positive means cash in; negative means cash out.
 
 
-def _unique_summing_subset(lines, target, *, max_size):
+def _unique_summing_subset(lines, target, *, max_size):  # Define the callable used by this module.
     """The **unique** subset (size 2..``max_size``) of ``lines`` whose signed amounts
     sum to ``target`` — or ``None`` when there is no such subset **or more than one**
     (ambiguous). Conservative on purpose: auto-grouping only fires when there's a single
@@ -158,26 +158,26 @@ def _unique_summing_subset(lines, target, *, max_size):
     return found  # Return the unique subset or None when no answer exists.
 
 
-def _unmatched_gl_lines(bank_account):
+def _unmatched_gl_lines(bank_account):  # Define the callable used by this module.
     """Posted cash-account journal lines not yet paired to a statement line."""
     from .models import JournalLine  # Import lazily to avoid model cycles.
 
     return (  # Find posted cash-account journal lines that are still unpaired.
-        JournalLine.objects
-        .filter(
-            account=bank_account.gl_account,
-            entry__status=DocumentStatus.POSTED,
-        )
+        JournalLine.objects  # Execute the module statement.
+        .filter(  # Continue the structured value.
+            account=bank_account.gl_account,  # Continue the structured value.
+            entry__status=DocumentStatus.POSTED,  # Continue the structured value.
+        )  # Close the grouped expression.
         # Not paired either 1:1 (matched_line) or as part of a group match.  # Exclude already matched lines.
-        .filter(bank_statement_lines__isnull=True, bank_line_matches__isnull=True)
+        .filter(bank_statement_lines__isnull=True, bank_line_matches__isnull=True)  # Store the intermediate module value.
         .select_related("entry")
         .order_by("entry__date", "id")
-    )
+    )  # Close the grouped expression.
 
 
-@transaction.atomic
-def auto_reconcile(bank_account, *, tolerance_days=4, group=True,
-                   max_group=GROUP_AUTO_MATCH_MAX, actor_user=None):
+@transaction.atomic  # Apply the decorator to this callable.
+def auto_reconcile(bank_account, *, tolerance_days=4, group=True,  # Define the callable used by this module.
+                   max_group=GROUP_AUTO_MATCH_MAX, actor_user=None):  # Start the nested execution block.
     """Pair unmatched statement lines to unmatched GL cash lines by amount + date.
 
     **First pass — 1:1:** a statement line auto-matches a posted cash-account journal
@@ -195,26 +195,26 @@ def auto_reconcile(bank_account, *, tolerance_days=4, group=True,
     from .models import BankLineMatch, BankStatementLine  # Load reconciliation models lazily.
 
     pending = list(  # Statement lines that still need matching.
-        BankStatementLine.objects
-        .filter(bank_account=bank_account, status=BankLineStatus.UNMATCHED)
+        BankStatementLine.objects  # Execute the module statement.
+        .filter(bank_account=bank_account, status=BankLineStatus.UNMATCHED)  # Store the intermediate module value.
         .order_by("txn_date", "id")
-    )
+    )  # Close the grouped expression.
     gl_lines = list(_unmatched_gl_lines(bank_account))  # Unpaired GL cash lines eligible for matching.
     consumed: set[int] = set()  # GL line ids already consumed by a match.
     matched = []  # Statement lines matched by this run.
 
-    def _mark(sline):
+    def _mark(sline):  # Define the callable used by this module.
         sline.status = BankLineStatus.MATCHED  # Mark the statement line matched.
         sline.match_source = BankMatchSource.AUTO  # Record that the match was automatic.
         sline.reconciled_at = timezone.now()  # Timestamp the match.
 
     for sline in pending:  # First pass: exact 1:1 amount matching.
         candidates = [  # Find all GL lines that match by amount and date window.
-            gl for gl in gl_lines
-            if gl.id not in consumed
-            and _signed_gl(gl) == sline.amount
-            and abs((gl.entry.date - sline.txn_date).days) <= tolerance_days
-        ]
+            gl for gl in gl_lines  # Execute the module statement.
+            if gl.id not in consumed  # Branch on the current domain condition.
+            and _signed_gl(gl) == sline.amount  # Execute the module statement.
+            and abs((gl.entry.date - sline.txn_date).days) <= tolerance_days  # Execute the module statement.
+        ]  # Close the grouped expression.
         if len(candidates) != 1:  # Ambiguous or absent matches stay for manual review.
             continue  # 0 = no match; >1 = ambiguous, leave it for a human
         gl = candidates[0]  # The only unambiguous candidate.
@@ -228,21 +228,21 @@ def auto_reconcile(bank_account, *, tolerance_days=4, group=True,
         # Second pass: group several GL lines that SUM to a still-unmatched bank line.
         for sline in pending:  # Revisit only the still-unmatched statement lines.
             if sline.status != BankLineStatus.UNMATCHED:  # Skip anything already matched in pass one.
-                continue
+                continue  # Skip to the next loop iteration.
             pool = [  # Candidate GL pool for a possible group match.
-                gl for gl in gl_lines
-                if gl.id not in consumed
+                gl for gl in gl_lines  # Execute the module statement.
+                if gl.id not in consumed  # Branch on the current domain condition.
                 and (_signed_gl(gl) > 0) == (sline.amount > 0)  # same direction
-                and abs((gl.entry.date - sline.txn_date).days) <= tolerance_days
-            ]
+                and abs((gl.entry.date - sline.txn_date).days) <= tolerance_days  # Execute the module statement.
+            ]  # Close the grouped expression.
             if not (2 <= len(pool) <= _GROUP_AUTO_MATCH_POOL_CAP):  # Require a bounded candidate pool.
-                continue
+                continue  # Skip to the next loop iteration.
             subset = _unique_summing_subset(pool, sline.amount, max_size=max_group)  # Find a unique subset sum.
             if subset is None:  # Ambiguous or absent group match.
-                continue
+                continue  # Skip to the next loop iteration.
             BankLineMatch.objects.bulk_create(  # Create one row per paired statement/journal line.
-                [BankLineMatch(statement_line=sline, journal_line=gl) for gl in subset],
-            )
+                [BankLineMatch(statement_line=sline, journal_line=gl) for gl in subset],  # Continue the structured value.
+            )  # Close the grouped expression.
             _mark(sline)  # Mark the statement line matched.
             sline.save(update_fields=["status", "match_source", "reconciled_at", "updated_at"])  # Persist the group match.
             consumed.update(gl.id for gl in subset)  # Prevent reused GL lines.
@@ -250,22 +250,22 @@ def auto_reconcile(bank_account, *, tolerance_days=4, group=True,
 
     if matched:  # Emit an audit event only when something matched.
         record(  # Log the automatic reconciliation run.
-            entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
-            actor_user=actor_user, target=bank_account,
+            entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,  # Continue the structured value.
+            actor_user=actor_user, target=bank_account,  # Continue the structured value.
             message=f"Auto-matched {len(matched)} line(s) on {bank_account.name}.",
-            matched=len(matched), bank_account_id=bank_account.id,
-        )
+            matched=len(matched), bank_account_id=bank_account.id,  # Continue the structured value.
+        )  # Close the grouped expression.
         _record_reconciliation(bank_account, matched_count=len(matched), actor_user=actor_user)  # Snapshot the new state.
     return matched  # Return the statement lines that matched in this run.
 
 
-def statement_balance(bank_account) -> int | None:
+def statement_balance(bank_account) -> int | None:  # Define the callable used by this module.
     """The most recent imported statement's closing balance (kobo), or None."""
     latest = bank_account.statements.order_by("-statement_date", "-id").first()  # Pick the latest statement.
     return int(latest.closing_balance) if latest else None  # Return its closing balance or None when absent.
 
 
-def _record_reconciliation(bank_account, *, matched_count, actor_user=None):
+def _record_reconciliation(bank_account, *, matched_count, actor_user=None):  # Define the callable used by this module.
     """Snapshot book vs statement balance after a reconcile, and close clean statements."""
     from .models import BankReconciliation  # Snapshot model for reconciliation results.
 
@@ -274,13 +274,13 @@ def _record_reconciliation(bank_account, *, matched_count, actor_user=None):
     stmt_val = stmt if stmt is not None else book  # Fall back to book balance when no statement exists.
     difference = book - stmt_val  # Difference between ledger and statement.
     recon = BankReconciliation.objects.create(  # Persist the reconciliation snapshot.
-        bank_account=bank_account, as_of_date=timezone.now().date(),
-        book_balance=book, statement_balance=stmt_val, difference=difference,
-        matched_count=matched_count,
-        status=BankReconStatus.BALANCED if difference == 0 else BankReconStatus.OUT_OF_BALANCE,
-        performed_by=actor_user,
+        bank_account=bank_account, as_of_date=timezone.now().date(),  # Continue the structured value.
+        book_balance=book, statement_balance=stmt_val, difference=difference,  # Continue the structured value.
+        matched_count=matched_count,  # Continue the structured value.
+        status=BankReconStatus.BALANCED if difference == 0 else BankReconStatus.OUT_OF_BALANCE,  # Continue the structured value.
+        performed_by=actor_user,  # Continue the structured value.
         statement=bank_account.statements.order_by("-statement_date", "-id").first(),
-    )
+    )  # Close the grouped expression.
     # A statement with no remaining unmatched lines is fully reconciled.  # Mark clean statements reconciled.
     for st in bank_account.statements.filter(status=BankStatementStatus.UPLOADED):  # Check each uploaded statement.
         if not st.lines.filter(status=BankLineStatus.UNMATCHED).exists() and st.lines.exists():  # Fully matched statement.
@@ -289,49 +289,49 @@ def _record_reconciliation(bank_account, *, matched_count, actor_user=None):
     return recon  # Return the reconciliation snapshot.
 
 
-@transaction.atomic
-def complete_reconciliation(bank_account, *, actor_user=None):
+@transaction.atomic  # Apply the decorator to this callable.
+def complete_reconciliation(bank_account, *, actor_user=None):  # Define the callable used by this module.
     """Finalise a reconciliation — record a snapshot of the account's current state."""
     from .models import BankStatementLine  # Statement line model for the matched count.
 
     matched = BankStatementLine.objects.filter(  # Count already-matched lines on this bank account.
-        bank_account=bank_account, status=BankLineStatus.MATCHED).count()
+        bank_account=bank_account, status=BankLineStatus.MATCHED).count()  # Store the intermediate module value.
     recon = _record_reconciliation(bank_account, matched_count=matched, actor_user=actor_user)  # Snapshot the state.
     record(  # Log the reconciliation completion.
-        entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
-        actor_user=actor_user, target=bank_account,
+        entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,  # Continue the structured value.
+        actor_user=actor_user, target=bank_account,  # Continue the structured value.
         message=f"Reconciliation completed on {bank_account.name} "
                 f"(diff {recon.difference} kobo).",
-        bank_account_id=bank_account.id, difference=recon.difference,
-    )
+        bank_account_id=bank_account.id, difference=recon.difference,  # Continue the structured value.
+    )  # Close the grouped expression.
     return recon  # Return the completed reconciliation snapshot.
 
 
-@transaction.atomic
-def match_line(statement_line, journal_line, *, actor_user=None):
+@transaction.atomic  # Apply the decorator to this callable.
+def match_line(statement_line, journal_line, *, actor_user=None):  # Define the callable used by this module.
     """Manually pair a statement line to a specific cash-account journal line."""
     bank_account = statement_line.bank_account  # Resolve the owning bank account once.
     if journal_line.account_id != bank_account.gl_account_id:  # The journal must sit on the cash account.
-        raise BankReconciliationError(
+        raise BankReconciliationError(  # Raise the domain error for this path.
             "The journal line is not on this bank account's GL cash account.",
-        )
+        )  # Close the grouped expression.
     if _signed_gl(journal_line) != statement_line.amount:  # Amounts must match exactly in signed form.
-        raise BankReconciliationError(
+        raise BankReconciliationError(  # Raise the domain error for this path.
             f"Amount mismatch: statement {statement_line.amount} kobo vs journal line "
             f"{_signed_gl(journal_line)} kobo.",
-        )
+        )  # Close the grouped expression.
     statement_line.matched_line = journal_line  # Link the manual match target.
     statement_line.status = BankLineStatus.MATCHED  # Mark the line reconciled.
     statement_line.match_source = BankMatchSource.MANUAL  # Record the manual source.
     statement_line.reconciled_at = timezone.now()  # Timestamp the match.
     statement_line.save(  # Persist the manual match fields.
         update_fields=["matched_line", "status", "match_source", "reconciled_at", "updated_at"],
-    )
+    )  # Close the grouped expression.
     return statement_line  # Return the matched statement line.
 
 
-@transaction.atomic
-def group_match(statement_line, journal_lines, *, actor_user=None):
+@transaction.atomic  # Apply the decorator to this callable.
+def group_match(statement_line, journal_lines, *, actor_user=None):  # Define the callable used by this module.
     """Match one statement line to **several** cash journal lines that sum to its amount.
 
     The many-to-one case: one bank line (e.g. a PSP settlement) settling multiple
@@ -344,14 +344,14 @@ def group_match(statement_line, journal_lines, *, actor_user=None):
     from .models import BankLineMatch  # Join table for group matches.
 
     if statement_line.status != BankLineStatus.UNMATCHED:  # Only unmatched lines can be grouped.
-        raise BankReconciliationError(
+        raise BankReconciliationError(  # Raise the domain error for this path.
             f"Statement line is '{statement_line.status}', only an unmatched line can be matched.",
-        )
+        )  # Close the grouped expression.
     lines = list(journal_lines)  # Materialize the candidate journal lines.
     if len(lines) < 2:  # Group matching needs more than one line.
-        raise BankReconciliationError(
+        raise BankReconciliationError(  # Raise the domain error for this path.
             "A group match needs at least two journal lines (use match for a single line).",
-        )
+        )  # Close the grouped expression.
 
     bank_account = statement_line.bank_account  # Resolve the owning bank account once.
     seen: set[int] = set()  # Prevent duplicate journal lines in the same group.
@@ -361,9 +361,9 @@ def group_match(statement_line, journal_lines, *, actor_user=None):
             raise BankReconciliationError("A journal line appears twice in the group.")
         seen.add(jl.id)  # Mark this journal line as seen.
         if jl.account_id != bank_account.gl_account_id:  # Every line must be on the cash account.
-            raise BankReconciliationError(
+            raise BankReconciliationError(  # Raise the domain error for this path.
                 "A journal line is not on this bank account's GL cash account.",
-            )
+            )  # Close the grouped expression.
         if jl.entry.status != DocumentStatus.POSTED:  # Only posted journal lines can be matched.
             raise BankReconciliationError("Only posted journal lines can be matched.")
         if jl.bank_statement_lines.exists() or jl.bank_line_matches.exists():  # Reject already-matched lines.
@@ -371,32 +371,32 @@ def group_match(statement_line, journal_lines, *, actor_user=None):
         total += _signed_gl(jl)  # Accumulate the signed contribution.
 
     if total != statement_line.amount:  # The group must sum exactly to the statement amount.
-        raise BankReconciliationError(
+        raise BankReconciliationError(  # Raise the domain error for this path.
             f"Group total {total} kobo does not equal the statement line "
             f"{statement_line.amount} kobo.",
-        )
+        )  # Close the grouped expression.
 
     BankLineMatch.objects.bulk_create(  # Persist one link row per journal line.
-        [BankLineMatch(statement_line=statement_line, journal_line=jl) for jl in lines],
-    )
+        [BankLineMatch(statement_line=statement_line, journal_line=jl) for jl in lines],  # Continue the structured value.
+    )  # Close the grouped expression.
     statement_line.status = BankLineStatus.MATCHED  # Mark the statement line reconciled.
     statement_line.match_source = BankMatchSource.MANUAL  # Record that a human applied the group match.
     statement_line.reconciled_at = timezone.now()  # Timestamp the match.
     statement_line.save(  # Persist the statement line state.
         update_fields=["status", "match_source", "reconciled_at", "updated_at"],
-    )
+    )  # Close the grouped expression.
     record(  # Write a reconciliation audit event.
-        entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
-        actor_user=actor_user, target=bank_account,
+        entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,  # Continue the structured value.
+        actor_user=actor_user, target=bank_account,  # Continue the structured value.
         message=f"Group-matched a statement line to {len(lines)} journal line(s) "
                 f"on {bank_account.name}.",
-        bank_account_id=bank_account.id, journal_lines=len(lines),
-    )
+        bank_account_id=bank_account.id, journal_lines=len(lines),  # Continue the structured value.
+    )  # Close the grouped expression.
     return statement_line  # Return the matched statement line.
 
 
-@transaction.atomic
-def split_match(journal_line, statement_lines, *, actor_user=None):
+@transaction.atomic  # Apply the decorator to this callable.
+def split_match(journal_line, statement_lines, *, actor_user=None):  # Define the callable used by this module.
     """Match **one** cash journal line to **several** statement lines that sum to it.
 
     The reverse of :func:`group_match`: one ledger movement the bank reported as several
@@ -410,14 +410,14 @@ def split_match(journal_line, statement_lines, *, actor_user=None):
 
     slines = list(statement_lines)  # Materialize the statement lines.
     if len(slines) < 2:  # Split matching needs more than one statement line.
-        raise BankReconciliationError(
+        raise BankReconciliationError(  # Raise the domain error for this path.
             "A split match needs at least two statement lines (use match for one).",
-        )
+        )  # Close the grouped expression.
     bank_account = slines[0].bank_account  # All statement lines must belong to the same bank account.
     if journal_line.account_id != bank_account.gl_account_id:  # The journal must sit on the same cash account.
-        raise BankReconciliationError(
+        raise BankReconciliationError(  # Raise the domain error for this path.
             "The journal line is not on this bank account's GL cash account.",
-        )
+        )  # Close the grouped expression.
     if journal_line.entry.status != DocumentStatus.POSTED:  # Only posted journal lines can be matched.
         raise BankReconciliationError("Only a posted journal line can be matched.")
     if journal_line.bank_statement_lines.exists() or journal_line.bank_line_matches.exists():  # Reject already-matched lines.
@@ -432,20 +432,20 @@ def split_match(journal_line, statement_lines, *, actor_user=None):
         if sl.bank_account_id != bank_account.id:  # All lines must belong to the same bank account.
             raise BankReconciliationError("All statement lines must belong to the same bank account.")
         if sl.status != BankLineStatus.UNMATCHED:  # Only unmatched lines can participate.
-            raise BankReconciliationError(
+            raise BankReconciliationError(  # Raise the domain error for this path.
                 f"Statement line {sl.id} is '{sl.status}', only an unmatched line can be matched.",
-            )
+            )  # Close the grouped expression.
         total += sl.amount  # Accumulate the statement amounts.
 
     if total != _signed_gl(journal_line):  # The split must equal the journal line exactly.
-        raise BankReconciliationError(
+        raise BankReconciliationError(  # Raise the domain error for this path.
             f"Statement lines sum to {total} kobo, not the journal line's "
             f"{_signed_gl(journal_line)} kobo.",
-        )
+        )  # Close the grouped expression.
 
     BankLineMatch.objects.bulk_create(  # Create one match row per statement line.
-        [BankLineMatch(statement_line=sl, journal_line=journal_line) for sl in slines],
-    )
+        [BankLineMatch(statement_line=sl, journal_line=journal_line) for sl in slines],  # Continue the structured value.
+    )  # Close the grouped expression.
     now = timezone.now()  # Share one timestamp across the matched rows.
     for sl in slines:  # Mark each statement line matched.
         sl.status = BankLineStatus.MATCHED  # Update the status.
@@ -453,17 +453,17 @@ def split_match(journal_line, statement_lines, *, actor_user=None):
         sl.reconciled_at = now  # Apply the same reconciliation timestamp.
         sl.save(update_fields=["status", "match_source", "reconciled_at", "updated_at"])  # Persist the state.
     record(  # Log the split match in the audit trail.
-        entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
-        actor_user=actor_user, target=bank_account,
+        entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,  # Continue the structured value.
+        actor_user=actor_user, target=bank_account,  # Continue the structured value.
         message=f"Split-matched journal line {journal_line.id} across {len(slines)} "
                 f"statement line(s) on {bank_account.name}.",
-        bank_account_id=bank_account.id, statement_lines=len(slines),
-    )
+        bank_account_id=bank_account.id, statement_lines=len(slines),  # Continue the structured value.
+    )  # Close the grouped expression.
     return slines  # Return the matched statement lines.
 
 
-@transaction.atomic
-def unmatch_line(statement_line, *, actor_user=None):
+@transaction.atomic  # Apply the decorator to this callable.
+def unmatch_line(statement_line, *, actor_user=None):  # Define the callable used by this module.
     """Undo a match — and reverse the adjusting journal if the match created one.
 
     A plain match just drops the pairing (no ledger effect). A match that booked
@@ -486,18 +486,18 @@ def unmatch_line(statement_line, *, actor_user=None):
     statement_line.save(update_fields=[  # Persist the unmatch state.
         "matched_line", "adjusting_journal", "status", "match_source",
         "reconciled_at", "updated_at",
-    ])
+    ])  # Execute the module statement.
     record(  # Log the unmatch in the audit trail.
-        entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
-        actor_user=actor_user, target=bank_account,
+        entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,  # Continue the structured value.
+        actor_user=actor_user, target=bank_account,  # Continue the structured value.
         message=f"Unmatched a statement line on {bank_account.name}"
                 + (f" and reversed adjusting journal {adj.pk}." if adj else "."),
-        bank_account_id=bank_account.id,
-    )
+        bank_account_id=bank_account.id,  # Continue the structured value.
+    )  # Close the grouped expression.
     return statement_line  # Return the unmatched statement line.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def set_line_ignored(statement_line, *, ignored=True, reason="", actor_user=None):
     """Mark an unmatched statement line ``IGNORED`` (a known duplicate / opening-balance
     line), or revert an ignored line back to ``UNMATCHED``.
@@ -508,9 +508,9 @@ def set_line_ignored(statement_line, *, ignored=True, reason="", actor_user=None
     """
     if ignored:  # Move an unmatched line into ignored state.
         if statement_line.status != BankLineStatus.UNMATCHED:  # Only unmatched lines can be ignored.
-            raise BankReconciliationError(
+            raise BankReconciliationError(  # Raise the domain error for this path.
                 f"Statement line is '{statement_line.status}', only an unmatched line can be ignored.",
-            )
+            )  # Close the grouped expression.
         statement_line.status = BankLineStatus.IGNORED  # Mark the line ignored.
     else:  # Restore an ignored line back to unmatched.
         if statement_line.status != BankLineStatus.IGNORED:  # Only ignored lines can be restored.
@@ -518,12 +518,12 @@ def set_line_ignored(statement_line, *, ignored=True, reason="", actor_user=None
         statement_line.status = BankLineStatus.UNMATCHED  # Restore the unmatched state.
     statement_line.save(update_fields=["status", "updated_at"])  # Persist the status change.
     record(  # Log the ignore/un-ignore action.
-        entity=statement_line.bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
-        actor_user=actor_user, target=statement_line.bank_account,
+        entity=statement_line.bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,  # Continue the structured value.
+        actor_user=actor_user, target=statement_line.bank_account,  # Continue the structured value.
         message=(f"{'Ignored' if ignored else 'Un-ignored'} a statement line on "
                  f"{statement_line.bank_account.name}." + (f" Reason: {reason}" if reason else "")),
-        bank_account_id=statement_line.bank_account_id,
-    )
+        bank_account_id=statement_line.bank_account_id,  # Continue the structured value.
+    )  # Close the grouped expression.
     return statement_line  # Return the updated statement line.
 
 
@@ -531,8 +531,8 @@ def set_line_ignored(statement_line, *, ignored=True, reason="", actor_user=None
 # Adjusting journals (book what the statement reveals)                        #
 # --------------------------------------------------------------------------- #
 
-@transaction.atomic
-def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=None,
+@transaction.atomic  # Apply the decorator to this callable.
+def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=None,  # Define the callable used by this module.
                          narration="", actor_user=None):
     """Book an unrecorded statement line (charge/interest) and match it.
 
@@ -551,16 +551,16 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
     bank_account = statement_line.bank_account  # Resolve the owning bank account.
     entity = bank_account.entity  # Resolve the owning entity.
     if statement_line.status != BankLineStatus.UNMATCHED:  # Only unmatched lines can be adjusted.
-        raise BankReconciliationError(
+        raise BankReconciliationError(  # Raise the domain error for this path.
             f"Statement line is '{statement_line.status}', only an unmatched line can be adjusted.",
-        )
+        )  # Close the grouped expression.
     if statement_line.amount == 0:  # Zero-amount lines do not require adjustments.
         raise BankReconciliationError("Cannot adjust a zero-amount statement line.")
 
     if counter_account is None:  # Resolve a default counter account when one is not supplied.
         counter_account = resolve_account(  # Default to bank charges if the caller didn't specify a code.
             entity, counter_code or BANK_CHARGES_CODE, label="bank charge counter",
-        )
+        )  # Close the grouped expression.
 
     period = resolve_period(entity, statement_line.txn_date)  # Find the open accounting period for the line date.
     cash = bank_account.gl_account  # The bank account's GL cash account.
@@ -568,30 +568,30 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
     inflow = statement_line.amount > 0  # Positive means bank credit/inflow.
 
     entry = JournalEntry.objects.create(  # Create the adjusting journal header.
-        entity=entity, branch=bank_account.branch,
-        date=statement_line.txn_date, period=period,
-        source=JournalSource.BANK,
+        entity=entity, branch=bank_account.branch,  # Continue the structured value.
+        date=statement_line.txn_date, period=period,  # Continue the structured value.
+        source=JournalSource.BANK,  # Continue the structured value.
         narration=narration or statement_line.description or "Bank adjustment",
-        reference=statement_line.reference, created_by=actor_user,
-    )
+        reference=statement_line.reference, created_by=actor_user,  # Continue the structured value.
+    )  # Close the grouped expression.
     if inflow:  # Bank credited us, so cash is debited and the counter account is credited.
         cash_line = JournalLine.objects.create(  # Debit the cash account for the inflow.
-            entry=entry, account=cash, debit=magnitude, credit=0,
+            entry=entry, account=cash, debit=magnitude, credit=0,  # Continue the structured value.
             description="Bank credit", line_no=1,
-        )
+        )  # Close the grouped expression.
         JournalLine.objects.create(  # Credit the counter account for the offset.
-            entry=entry, account=counter_account, debit=0, credit=magnitude,
+            entry=entry, account=counter_account, debit=0, credit=magnitude,  # Continue the structured value.
             description=statement_line.description or "Bank credit", line_no=2,
-        )
+        )  # Close the grouped expression.
     else:  # Bank charged us, so the counter account is debited and cash is credited.
         JournalLine.objects.create(  # Debit the counter account for the expense.
-            entry=entry, account=counter_account, debit=magnitude, credit=0,
+            entry=entry, account=counter_account, debit=magnitude, credit=0,  # Continue the structured value.
             description=statement_line.description or "Bank charge", line_no=1,
-        )
+        )  # Close the grouped expression.
         cash_line = JournalLine.objects.create(  # Credit the cash account for the bank charge.
-            entry=entry, account=cash, debit=0, credit=magnitude,
+            entry=entry, account=cash, debit=0, credit=magnitude,  # Continue the structured value.
             description="Bank charge", line_no=2,
-        )
+        )  # Close the grouped expression.
 
     post_journal(entry, actor_user=actor_user)  # Validate and post the adjusting journal.
 
@@ -603,12 +603,12 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
     statement_line.save(update_fields=[  # Persist the adjusted statement line state.
         "adjusting_journal", "matched_line", "status", "match_source",
         "reconciled_at", "updated_at",
-    ])
+    ])  # Execute the module statement.
 
     record(  # Log the bank adjustment in the audit trail.
-        entity=entity, action=FinanceAuditAction.BANK_CHARGE_POSTED,
-        actor_user=actor_user, target=bank_account,
+        entity=entity, action=FinanceAuditAction.BANK_CHARGE_POSTED,  # Continue the structured value.
+        actor_user=actor_user, target=bank_account,  # Continue the structured value.
         message=f"Booked bank adjustment {magnitude} kobo on {bank_account.name}.",
-        journal_id=entry.pk, amount=statement_line.amount,
-    )
+        journal_id=entry.pk, amount=statement_line.amount,  # Continue the structured value.
+    )  # Close the grouped expression.
     return entry  # Return the posted adjusting journal entry.
