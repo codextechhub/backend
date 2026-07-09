@@ -18,13 +18,13 @@ from dataclasses import dataclass, field  # Lightweight dashboard payload contai
 from django.db.models import F, Sum  # Database expressions and aggregation helpers.
 from django.db.models.functions import TruncMonth  # Month bucketing for trend charts.
 
-from .constants import (
+from .constants import (  # Import project symbols used by this module.
     AccountType,  # Account classification enum.
     DocumentStatus,  # Finance document lifecycle statuses.
     InvoicePaymentStatus,  # Invoice paid/partial/unpaid statuses.
     NormalBalance,  # Debit/credit normal balance enum.
     PeriodStatus,  # Fiscal period lifecycle statuses.
-)
+)  # Close the grouped expression.
 from .models import AccountBalance, BankAccount, Customer, FiscalPeriod, Invoice, Payment  # Dashboard query models.
 from .money import format_naira  # Formats integer-kobo amounts for API display.
 
@@ -51,7 +51,7 @@ def _user_label(user) -> str:  # Build a display label for a user or system acto
 def _pct_change(curr: int, prev: int) -> float | None:  # Compute signed percentage movement.
     """Signed % change vs the prior point, or ``None`` when there's no base."""
     if not prev:  # Avoid divide-by-zero and undefined base.
-        return None
+        return None  # Return the computed module result.
     return round((curr - prev) * 100 / abs(prev), 1)  # Return one-decimal percent delta.
 
 
@@ -68,25 +68,25 @@ def _current_period(entity, period=None):  # Resolve dashboard anchor period.
     """
     qs = FiscalPeriod.objects.filter(entity=entity).select_related("fiscal_year")  # Entity periods with fiscal year loaded.
     if period is not None:  # Caller explicitly pinned a period.
-        return period
+        return period  # Return the computed module result.
     today = datetime.date.today()  # Default dashboard date.
     containing = (  # Prefer the period containing today.
         qs.filter(start_date__lte=today, end_date__gte=today)  # Date within period boundaries.
         .order_by("-fiscal_year__year", "-period_no")  # Stable latest match.
         .first()  # Return one period or None.
-    )
+    )  # Close the grouped expression.
     return (  # Fallback chain when today has no period.
         containing  # Current calendar period.
         or qs.filter(status=PeriodStatus.OPEN).order_by("-fiscal_year__year", "-period_no").first()  # Latest open period.
         or qs.order_by("-fiscal_year__year", "-period_no").first()  # Latest period of any status.
-    )
+    )  # Close the grouped expression.
 
 
 def _fiscal_year_label(current) -> str | None:  # Format fiscal year span for dashboard header.
     """A span label like ``2025/2026`` (or ``2026`` if the year is single-calendar)."""
     fy = getattr(current, "fiscal_year", None)  # Current period may be absent.
     if fy is None:  # No fiscal year to label.
-        return None
+        return None  # Return the computed module result.
     s, e = fy.start_date.year, fy.end_date.year  # Fiscal year start/end calendar years.
     return f"{s}/{e}" if s != e else str(fy.year)  # Use span only when crossing calendar years.
 
@@ -97,7 +97,7 @@ def _period_window(entity, current, n=SPARK_POINTS):  # Build trailing fiscal-pe
         FiscalPeriod.objects.filter(entity=entity)  # Scope to entity.
         .select_related("fiscal_year")  # Load fiscal year for sorting and labels.
         .order_by("fiscal_year__year", "period_no")  # Chronological order.
-    )
+    )  # Close the grouped expression.
     if current is not None:  # Trim to periods ending at the current anchor.
         idx = next((i for i, p in enumerate(all_p) if p.id == current.id), len(all_p) - 1)  # Find anchor index.
         all_p = all_p[: idx + 1]  # Keep periods up to anchor.
@@ -114,13 +114,13 @@ def _closing_series(account_ids, window_periods, normal) -> list[int]:  # Build 
     sparkline window (e.g. an opening capital injection in period 1).
     """
     if not account_ids or not window_periods:  # No accounts or periods means zero series.
-        return [0 for _ in window_periods]
+        return [0 for _ in window_periods]  # Return the computed module result.
     sign = 1 if normal == NormalBalance.DEBIT else -1  # Convert movements to natural-balance sign.
     rows = (  # Aggregate account movements by fiscal period.
         AccountBalance.objects.filter(account_id__in=account_ids)  # Account set to chart.
         .values("period__fiscal_year__year", "period__period_no")  # Group by period identity.
         .annotate(dr=Sum("debit_total"), cr=Sum("credit_total"))  # Sum period debit/credit movements.
-    )
+    )  # Close the grouped expression.
     moves: dict[tuple, int] = {}  # Movement by fiscal period key.
     for r in rows:  # Convert aggregate rows to signed movements.
         key = (r["period__fiscal_year__year"], r["period__period_no"])  # Comparable period key.
@@ -141,15 +141,15 @@ def _net_income_series(entity, window_periods) -> list[int]:  # Build YTD net-in
     so it's true year-to-date even when the window starts mid-year.
     """
     if not window_periods:  # No period window means no series.
-        return []
+        return []  # Return the computed module result.
     rows = (  # Aggregate income/expense movements by period.
         AccountBalance.objects.filter(  # Restrict balances to P&L accounts.
             account__entity=entity,  # Scope to entity.
             account__account_type__in=[AccountType.INCOME, AccountType.EXPENSE],  # Income and expenses only.
-        )
+        )  # Close the grouped expression.
         .values("period__fiscal_year__year", "period__period_no")  # Group by fiscal period.
         .annotate(d=Sum("debit_total"), c=Sum("credit_total"))  # Sum debit/credit movements.
-    )
+    )  # Close the grouped expression.
     net_by: dict[tuple, int] = {}  # Net income movement by period key.
     for r in rows:  # Convert rows to net P&L movement.
         key = (r["period__fiscal_year__year"], r["period__period_no"])  # Comparable period key.
@@ -182,12 +182,12 @@ def _cash_account_ids(entity) -> set:  # Resolve GL account ids that count as ca
 
     ids = set(  # Start with canonical cash account when present.
         Account.objects.filter(entity=entity, code=CASH_BANK_CODE).values_list("id", flat=True)  # Cash & Bank account id.
-    )
+    )  # Close the grouped expression.
     ids |= set(  # Include operational bank accounts mapped to GL accounts.
         BankAccount.objects.filter(entity=entity)  # Entity bank accounts.
         .exclude(gl_account=None)  # Ignore incomplete bank accounts.
         .values_list("gl_account_id", flat=True)  # Bank GL account ids.
-    )
+    )  # Close the grouped expression.
     return ids  # Return cash-equivalent account ids.
 
 
@@ -199,7 +199,7 @@ def _payable_account_ids(entity) -> set:  # Resolve vendor payable account ids b
             Vendor.objects.filter(entity=entity)  # Vendors in this entity.
             .exclude(payable_account=None)  # Ignore vendors without payable account.
             .values_list("payable_account_id", flat=True)  # Payable account ids.
-        )
+        )  # Close the grouped expression.
     except Exception:  # pragma: no cover - procurement optional
         return set()  # Degrade to no payables instead of breaking dashboard.
 
@@ -222,7 +222,7 @@ def _revenue_vs_budget(entity, fiscal_year) -> dict:  # Build revenue/expense ac
             Budget.objects.filter(entity=entity, fiscal_year=fiscal_year)  # Entity/year budgets.
             .order_by("-approved_at", "-id")  # Prefer latest approved/latest created.
             .first()  # Return one budget or None.
-        )
+        )  # Close the grouped expression.
     rev_plan = exp_plan = 0  # Budget totals default to zero.
     if budget is not None:  # Compute plan totals when a budget exists.
         rep = budget_vs_actual(budget)  # Reuse budget-vs-actual report rows.
@@ -244,7 +244,7 @@ def _revenue_vs_budget(entity, fiscal_year) -> dict:  # Build revenue/expense ac
         "revenue": line(rev_actual, rev_plan),  # Revenue actual vs plan.
         "expense": line(exp_actual, exp_plan),  # Expense actual vs plan.
         "net": {"actual": _m(net_actual), "delta_pct": _pct_change(net_actual, net_plan)},  # Net actual and plan delta.
-    }
+    }  # Close the grouped expression.
 
 
 def _ar_aging_block(entity, as_of) -> dict:  # Build AR aging chart block.
@@ -274,20 +274,20 @@ def _trend(entity, anchor) -> dict:  # Build trailing receivables-issued vs coll
         r["m"]: int(r["s"] or 0)  # Month bucket -> total issued.
         for r in Invoice.objects.filter(  # Query posted invoices in window.
             entity=entity, status=DocumentStatus.POSTED, invoice_date__gte=start  # Entity, posted, after start.
-        )
+        )  # Close the grouped expression.
         .annotate(m=TruncMonth("invoice_date"))  # Bucket invoice date by month.
         .values("m")  # Group by month.
         .annotate(s=Sum("total"))  # Sum invoice totals.
-    }
+    }  # Close the grouped expression.
     collected = {  # Posted payment totals by month.
         r["m"]: int(r["s"] or 0)  # Month bucket -> total collected.
         for r in Payment.objects.filter(  # Query posted payments in window.
             entity=entity, status=DocumentStatus.POSTED, payment_date__gte=start  # Entity, posted, after start.
-        )
+        )  # Close the grouped expression.
         .annotate(m=TruncMonth("payment_date"))  # Bucket payment date by month.
         .values("m")  # Group by month.
         .annotate(s=Sum("amount"))  # Sum payment amounts.
-    }
+    }  # Close the grouped expression.
     labels, iss, col = [], [], []  # Chart labels and two series.
     cur = start  # Current month cursor.
     for _ in range(TREND_MONTHS):  # Build fixed-length trend arrays.
@@ -304,23 +304,23 @@ def _top_overdue(entity, as_of) -> list[dict]:  # Return top overdue customer in
     qs = (  # Query open overdue invoices.
         Invoice.objects.filter(  # Posted invoices due before as-of.
             entity=entity, status=DocumentStatus.POSTED, due_date__lt=today  # Entity, posted, overdue.
-        )
+        )  # Close the grouped expression.
         .exclude(payment_status=InvoicePaymentStatus.PAID)  # Exclude fully paid invoices.
         .annotate(bal=F("total") - F("amount_paid") - F("amount_credited"))  # Compute outstanding balance.
         .filter(bal__gt=0)  # Keep invoices with actual balance.
         .select_related("customer")  # Load customer for row payload.
         .order_by("-bal")[:TOP_OVERDUE]  # Largest overdue balances first.
-    )
+    )  # Close the grouped expression.
     return [  # Shape overdue rows.
-        {
+        {  # Continue the structured value.
             "customer": i.customer.name,  # Customer name.
             "customer_code": i.customer.code,  # Customer code.
             "reference": i.document_number,  # Invoice number.
             "amount": _m(i.bal),  # Outstanding amount.
             "days_overdue": (today - i.due_date).days,  # Age past due.
-        }
+        }  # Close the grouped expression.
         for i in qs  # Iterate top overdue invoices.
-    ]
+    ]  # Close the grouped expression.
 
 
 def _vendor_due(entity) -> list[dict]:  # Return upcoming vendor bills best-effort.
@@ -335,23 +335,23 @@ def _vendor_due(entity) -> list[dict]:  # Return upcoming vendor bills best-effo
                 status=DocumentStatus.POSTED,  # Posted vendor invoices only.
                 due_date__gte=today,  # Not already overdue.
                 due_date__lte=end,  # Due within configured window.
-            )
+            )  # Close the grouped expression.
             .exclude(payment_status=InvoicePaymentStatus.PAID)  # Exclude paid bills.
             .annotate(bal=F("total") - F("amount_paid"))  # Compute balance.
             .filter(bal__gt=0)  # Keep bills with balance.
             .select_related("vendor")  # Load vendor for row payload.
             .order_by("due_date")[:TOP_OVERDUE]  # Soonest due first.
-        )
+        )  # Close the grouped expression.
         return [  # Shape vendor due rows.
-            {
+            {  # Continue the structured value.
                 "vendor": v.vendor.name,  # Vendor name.
                 "reference": v.document_number,  # Bill number.
                 "due_date": v.due_date.isoformat(),  # ISO due date.
                 "amount": _m(v.bal),  # Outstanding amount.
                 "days_until": (v.due_date - today).days,  # Days until due.
-            }
+            }  # Close the grouped expression.
             for v in qs  # Iterate vendor bills.
-        ]
+        ]  # Close the grouped expression.
     except Exception:  # pragma: no cover - procurement optional
         return []  # Degrade to empty vendor list.
 
@@ -372,11 +372,11 @@ def _approvals(entity) -> dict:  # Count pending procurement approval overlays.
             ("PurchaseRequisition", "Purchase requisitions"),  # Requisition count spec.
             ("PurchaseOrder", "Purchase orders"),  # PO count spec.
             ("VendorInvoice", "Vendor invoices"),  # Vendor invoice count spec.
-        ]
+        ]  # Close the grouped expression.
         for model_name, label in specs:  # Count each procurement document type.
             model = getattr(pm, model_name, None)  # Resolve model defensively.
             if model is None:  # Skip unavailable model.
-                continue
+                continue  # Skip to the next loop iteration.
             count = model.objects.filter(entity=entity, approval_state=pending).count()  # Entity-scoped pending count.
             items.append({"label": label, "count": count})  # Add count row.
     except Exception:  # pragma: no cover - procurement optional
@@ -386,7 +386,7 @@ def _approvals(entity) -> dict:  # Count pending procurement approval overlays.
 
 def _close_progress(entity, period) -> dict | None:  # Summarize period close checklist status.
     if period is None:  # No period means no close checklist.
-        return None
+        return None  # Return the computed module result.
     from .close import close_checklist  # Existing period-close checklist service.
 
     try:  # Checklist can fail on configuration issues; dashboard should degrade.
@@ -399,7 +399,7 @@ def _close_progress(entity, period) -> dict | None:  # Summarize period close ch
         "done": sum(1 for c in checks if c["passed"]),  # Passed check count.
         "total": len(checks),  # Total check count.
         "checks": checks,  # Per-check rows.
-    }
+    }  # Close the grouped expression.
 
 
 def _recent_journals(entity, limit=5) -> list[dict]:  # Return recent journal activity rows.
@@ -409,12 +409,12 @@ def _recent_journals(entity, limit=5) -> list[dict]:  # Return recent journal ac
         JournalEntry.objects.filter(entity=entity)  # Scope to entity.
         .select_related("created_by")  # Load creator for display label.
         .order_by("-date", "-id")[:limit]  # Most recent first.
-    )
+    )  # Close the grouped expression.
     out = []  # Recent journal payload rows.
     for j in qs:  # Shape each journal row.
         dr, _cr = j.totals()  # Journal amount from debit side.
         out.append(  # Append dashboard row.
-            {
+            {  # Continue the structured value.
                 "document_number": j.document_number,  # Journal number.
                 "date": j.date.isoformat(),  # ISO journal date.
                 "source": getattr(j, "source", "") or "Manual",  # Journal source label.
@@ -422,8 +422,8 @@ def _recent_journals(entity, limit=5) -> list[dict]:  # Return recent journal ac
                 "amount": _m(dr),  # Journal amount.
                 "status": j.status,  # Journal status.
                 "created_by": _user_label(getattr(j, "created_by", None)),  # Creator label.
-            }
-        )
+            }  # Close the grouped expression.
+        )  # Close the grouped expression.
     return out  # Return recent journals.
 
 
@@ -431,7 +431,7 @@ def _recent_journals(entity, limit=5) -> list[dict]:  # Return recent journal ac
 # Entry point                                                                 #
 # --------------------------------------------------------------------------- #
 
-@dataclass
+@dataclass  # Apply the decorator to this callable.
 class FinanceDashboard:  # Thin typed wrapper for dashboard payloads.
     payload: dict = field(default_factory=dict)  # Dashboard response payload.
 
@@ -452,10 +452,10 @@ def finance_dashboard(entity, *, period=None) -> dict:  # Assemble complete fina
             Customer.objects.filter(entity=entity)  # Customers in entity.
             .exclude(receivable_account=None)  # Customers with AR accounts.
             .values_list("receivable_account_id", flat=True)  # AR account ids.
-        ),
+        ),  # Close the grouped value.
         periods,  # Sparkline periods.
         NormalBalance.DEBIT,  # AR is debit-natural.
-    )
+    )  # Close the grouped expression.
     ap = _closing_series(_payable_account_ids(entity), periods, NormalBalance.CREDIT)  # Payables KPI series.
     ni = _net_income_series(entity, periods)  # Net income YTD KPI series.
 
@@ -469,7 +469,7 @@ def finance_dashboard(entity, *, period=None) -> dict:  # Assemble complete fina
             "receivables": _kpi(ar),  # Receivables card.
             "payables": _kpi(ap),  # Payables card.
             "net_income_ytd": _kpi(ni),  # Net income card.
-        },
+        },  # Close the grouped value.
         "revenue_vs_budget": _revenue_vs_budget(entity, getattr(current, "fiscal_year", None)),  # Actual vs budget block.
         "ar_aging": _ar_aging_block(entity, as_of),  # AR aging block.
         "trend": _trend(entity, as_of),  # Receivables vs collections trend.
@@ -478,4 +478,4 @@ def finance_dashboard(entity, *, period=None) -> dict:  # Assemble complete fina
         "approvals": _approvals(entity),  # Pending procurement approvals.
         "close_progress": _close_progress(entity, current),  # Period-close checklist progress.
         "recent_journals": _recent_journals(entity),  # Recent journal activity.
-    }
+    }  # Close the grouped expression.
