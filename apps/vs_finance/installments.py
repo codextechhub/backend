@@ -16,27 +16,27 @@ Domain-neutral throughout: only generic customers, invoices and accounts. A scho
 tenant's *scholarship/bursary* is simply a concession with ``kind=SCHOLARSHIP``. All
 amounts are integer kobo.
 """
-from __future__ import annotations  # Defer annotation evaluation during app import.
+from __future__ import annotations
 
-import datetime  # Date arithmetic for installment due dates.
-from decimal import Decimal, ROUND_HALF_UP  # Exact installment splitting and rounding.
+import datetime
+from decimal import Decimal, ROUND_HALF_UP
 
-from django.db import transaction  # Keeps plan/concession mutations atomic.
+from django.db import transaction
 
-from .accounts import resolve_account  # Resolves default concession allowance account.
-from .audit import record, record_rejection  # Finance audit helpers.
-from .constants import (  # Import project symbols used by this module.
-    ConcessionKind,  # Concession category enum.
-    DISCOUNTS_ALLOWED_CODE,  # Default discounts/concessions contra-revenue account.
-    DocumentStatus,  # Finance document lifecycle statuses.
-    FinanceAuditAction,  # Audit action enum values.
-    InstallmentStatus,  # Individual installment lifecycle statuses.
-    JournalSource,  # Journal source enum values.
-    PaymentPlanFrequency,  # Payment plan recurrence enum.
-    PaymentPlanStatus,  # Payment plan lifecycle statuses.
-)  # Close the grouped expression.
-from .exceptions import FinanceError, PostingError  # Base finance and posting errors.
-from .posting import post_journal, resolve_period  # GL posting and period resolution helpers.
+from .accounts import resolve_account
+from .audit import record, record_rejection
+from .constants import (
+    ConcessionKind,
+    DISCOUNTS_ALLOWED_CODE,
+    DocumentStatus,
+    FinanceAuditAction,
+    InstallmentStatus,
+    JournalSource,
+    PaymentPlanFrequency,
+    PaymentPlanStatus,
+)
+from .exceptions import FinanceError, PostingError
+from .posting import post_journal, resolve_period
 
 
 # --------------------------------------------------------------------------- #
@@ -47,14 +47,15 @@ from .posting import post_journal, resolve_period  # GL posting and period resol
 _DAY_DELTAS = {  # Fixed-day frequency offsets.
     PaymentPlanFrequency.WEEKLY: 7,  # Weekly installments are 7 days apart.
     PaymentPlanFrequency.FORTNIGHTLY: 14,  # Fortnightly installments are 14 days apart.
-}  # Close the grouped expression.
+}
 _MONTH_DELTAS = {  # Calendar-month frequency offsets.
     PaymentPlanFrequency.MONTHLY: 1,  # Monthly installments advance one month.
     PaymentPlanFrequency.QUARTERLY: 3,  # Quarterly installments advance three months.
-}  # Close the grouped expression.
+}
 
 
-def _add_months(d: datetime.date, months: int) -> datetime.date:  # Add calendar months with day clamping.
+# Add calendar months with day clamping.
+def _add_months(d: datetime.date, months: int) -> datetime.date:
     """Add ``months`` to ``d``, clamping the day to the target month's last day."""
     month_index = d.month - 1 + months  # Convert to zero-based month and add offset.
     year = d.year + month_index // 12  # Carry overflow months into year.
@@ -63,22 +64,24 @@ def _add_months(d: datetime.date, months: int) -> datetime.date:  # Add calendar
     if month == 12:  # December has a fixed last day.
         last_day = 31  # Last day of December.
     else:  # Other months use the day before next month.
-        last_day = (datetime.date(year, month + 1, 1) - datetime.timedelta(days=1)).day  # Target month length.
-    return datetime.date(year, month, min(d.day, last_day))  # Preserve original day where possible.
+        last_day = (datetime.date(year, month + 1, 1) - datetime.timedelta(days=1)).day
+    return datetime.date(year, month, min(d.day, last_day))
 
 
-def _due_date(start: datetime.date, index: int, frequency: str) -> datetime.date:  # Compute installment due date.
+# Compute installment due date.
+def _due_date(start: datetime.date, index: int, frequency: str) -> datetime.date:
     """Due date of the ``index``-th installment (0-based) for ``frequency`` from ``start``."""
     if index == 0:  # First installment is due on the start date.
-        return start  # Return the computed module result.
+        return start
     if frequency in _DAY_DELTAS:  # Day-based frequencies use simple timedelta math.
-        return start + datetime.timedelta(days=_DAY_DELTAS[frequency] * index)  # Offset by fixed days.
+        return start + datetime.timedelta(days=_DAY_DELTAS[frequency] * index)
     if frequency in _MONTH_DELTAS:  # Month-based frequencies use calendar clamping.
         return _add_months(start, _MONTH_DELTAS[frequency] * index)  # Offset by calendar months.
     raise PostingError(f"Unsupported payment-plan frequency '{frequency}'.")
 
 
-def split_amount(total_kobo: int, count: int) -> list[int]:  # Split integer-kobo total into installment amounts.
+# Split integer-kobo total into installment amounts.
+def split_amount(total_kobo: int, count: int) -> list[int]:
     """Split ``total_kobo`` into ``count`` installments, remainder on the last one.
 
     Integer-exact (kobo never fractionalised): each of the first ``count-1`` installments
@@ -87,15 +90,16 @@ def split_amount(total_kobo: int, count: int) -> list[int]:  # Split integer-kob
     """
     if count <= 0:  # A payment plan needs at least one part.
         raise PostingError("A payment plan needs at least one installment.")
-    base = int((Decimal(int(total_kobo)) / Decimal(count)).quantize(  # Round the common installment amount.
-        Decimal("1"), rounding=ROUND_HALF_UP,  # Round to whole kobo with half-up discipline.
-    ))  # Execute the module statement.
+    base = int((Decimal(int(total_kobo)) / Decimal(count)).quantize(
+        Decimal("1"), rounding=ROUND_HALF_UP,
+    ))
     parts = [base] * (count - 1)  # First installments use the common rounded amount.
     parts.append(int(total_kobo) - base * (count - 1))  # Final installment absorbs any remainder.
     return parts  # Return exact-sum installment amounts.
 
 
-def build_installments(plan, *, amounts=None):  # Build draft plan installment rows.
+# Build draft plan installment rows.
+def build_installments(plan, *, amounts=None):
     """(Re)generate the installment rows for a DRAFT ``plan`` from its schedule fields.
 
     Replaces any existing installments. ``amounts`` may pass an explicit list of kobo
@@ -103,7 +107,7 @@ def build_installments(plan, *, amounts=None):  # Build draft plan installment r
     otherwise the total is split evenly with the remainder on the final installment.
     Returns the created installment rows.
     """
-    from .models import PaymentPlanInstallment  # Local import avoids model import cycles.
+    from .models import PaymentPlanInstallment
 
     if plan.plan_status != PaymentPlanStatus.DRAFT:  # Only draft schedules can be changed.
         raise PostingError("Only a draft payment plan's schedule can be (re)built.")
@@ -116,31 +120,32 @@ def build_installments(plan, *, amounts=None):  # Build draft plan installment r
     else:  # Caller supplied explicit amounts.
         amounts = [int(a) for a in amounts]  # Normalize amounts to integer kobo.
         if len(amounts) != count:  # Explicit amount count must match schedule count.
-            raise PostingError(  # Raise the domain error for this path.
+            raise PostingError(
                 f"Expected {count} installment amounts, got {len(amounts)}.",
-            )  # Close the grouped expression.
+            )
         if sum(amounts) != plan.total_amount:  # Explicit amounts must reconcile to plan total.
-            raise PostingError(  # Raise the domain error for this path.
+            raise PostingError(
                 f"Installment amounts sum to {sum(amounts)} kobo, "
                 f"but the plan total is {plan.total_amount} kobo.",
-            )  # Close the grouped expression.
+            )
         if any(a <= 0 for a in amounts):  # Each installment must be meaningful.
             raise PostingError("Every installment amount must be positive.")
 
-    plan.installments.all().delete()  # clear any existing schedule on the draft plan  # Replace draft schedule wholesale.
+    plan.installments.all().delete()
     rows = [  # Prepare installment rows for bulk insert.
         PaymentPlanInstallment(  # One planned installment row.
             plan=plan, seq_no=i + 1,  # Link plan and sequence number.
             due_date=_due_date(plan.start_date, i, plan.frequency),  # Compute due date.
             amount=amounts[i],  # Store kobo amount for this installment.
-        )  # Close the grouped expression.
+        )
         for i in range(count)  # Build one row per installment.
-    ]  # Close the grouped expression.
-    PaymentPlanInstallment.objects.bulk_create(rows)  # Persist schedule rows efficiently.
+    ]
+    PaymentPlanInstallment.objects.bulk_create(rows)
     return list(plan.installments.all())  # Return persisted installment rows.
 
 
-def activate_payment_plan(plan, *, actor_user=None):  # Public wrapper for plan activation.
+# Public wrapper for plan activation.
+def activate_payment_plan(plan, *, actor_user=None):
     """Commit a DRAFT plan: validate the schedule, mark ACTIVE, sync any settlement."""
     try:  # Atomic worker performs state transition.
         return _activate_payment_plan_atomic(plan, actor_user=actor_user)  # Activate the plan.
@@ -148,62 +153,65 @@ def activate_payment_plan(plan, *, actor_user=None):  # Public wrapper for plan 
         record_rejection(  # Record durable rejection.
             entity=plan.entity, action=FinanceAuditAction.PAYMENT_PLAN_ACTIVATED,  # Existing activation audit action.
             exc=exc, actor_user=actor_user, target=plan,  # Error, actor, and target context.
-        )  # Close the grouped expression.
-        raise  # Preserve original finance exception.
+        )
+        raise
 
 
-@transaction.atomic  # Apply the decorator to this callable.
-def _activate_payment_plan_atomic(plan, *, actor_user=None):  # Transactional payment-plan activation.
+@transaction.atomic
+# Transactional payment-plan activation.
+def _activate_payment_plan_atomic(plan, *, actor_user=None):
     if plan.plan_status != PaymentPlanStatus.DRAFT:  # Only draft plans can activate.
-        raise PostingError(  # Raise the domain error for this path.
+        raise PostingError(
             f"Payment plan {plan.document_number or plan.pk} is "
             f"'{plan.plan_status}'; only a draft plan can be activated.",
-        )  # Close the grouped expression.
-    if not plan.installments.exists():  # Activation requires a built schedule.
+        )
+    if not plan.installments.exists():
         raise PostingError("Build the installment schedule before activating the plan.")
     if plan.scheduled_total != plan.total_amount:  # Schedule amounts must reconcile to plan total.
-        raise PostingError(  # Raise the domain error for this path.
+        raise PostingError(
             f"Installments sum to {plan.scheduled_total} kobo but the plan total is "
             f"{plan.total_amount} kobo; rebuild the schedule.",
-        )  # Close the grouped expression.
+        )
 
     # Snapshot the invoice settlement that predates the plan. Because the plan spreads
     # the *outstanding balance* (total minus what's already settled — e.g. a waiver),
     # that prior settlement is baked into total_amount and must not also be counted as
     # installment progress. Only settlement beyond this baseline advances the schedule.
     if plan.invoice_id is not None:  # Linked invoice plans need settlement baseline.
-        plan.invoice.refresh_from_db()  # Reload invoice settlement fields.
+        plan.invoice.refresh_from_db()
         plan.baseline_settled = plan.invoice.settled_amount  # Snapshot pre-plan settlement.
     plan.plan_status = PaymentPlanStatus.ACTIVE  # Move plan into active lifecycle state.
-    plan.save(update_fields=["plan_status", "baseline_settled", "updated_at"])  # Persist activation fields.
+    plan.save(update_fields=["plan_status", "baseline_settled", "updated_at"])
     record(  # Audit successful activation.
         entity=plan.entity, action=FinanceAuditAction.PAYMENT_PLAN_ACTIVATED,  # Audit action.
         actor_user=actor_user, target=plan,  # Actor and target context.
         message=f"Activated {plan.installment_count}-installment plan "  # Human-readable activation message.
                 f"for {plan.customer.code} ({plan.total_amount} kobo).",  # Customer and amount.
         total=plan.total_amount, installments=plan.installment_count,  # Structured metadata.
-    )  # Close the grouped expression.
+    )
     # Reflect any settlement already on the linked invoice.  # Keep schedule progress current immediately.
     refresh_plan_progress(plan, actor_user=actor_user)  # Apply post-baseline settlement to installments.
     return plan  # Return activated plan.
 
 
-def cancel_payment_plan(plan, *, actor_user=None):  # Cancel a payment plan.
+# Cancel a payment plan.
+def cancel_payment_plan(plan, *, actor_user=None):
     """Cancel a plan that is no longer being followed. Idempotent on terminal states."""
     if plan.plan_status in (PaymentPlanStatus.COMPLETED, PaymentPlanStatus.CANCELLED):  # Terminal states are idempotent.
-        return plan  # Return the computed module result.
+        return plan
     plan.plan_status = PaymentPlanStatus.CANCELLED  # Mark plan cancelled.
-    plan.save(update_fields=["plan_status", "updated_at"])  # Persist lifecycle change.
+    plan.save(update_fields=["plan_status", "updated_at"])
     record(  # Audit cancellation.
         entity=plan.entity, action=FinanceAuditAction.PAYMENT_PLAN_CANCELLED,  # Audit action.
         actor_user=actor_user, target=plan,  # Actor and target context.
         message=f"Cancelled payment plan {plan.document_number} for {plan.customer.code}.",  # Human-readable message.
-    )  # Close the grouped expression.
+    )
     return plan  # Return cancelled plan.
 
 
-@transaction.atomic  # Apply the decorator to this callable.
-def refresh_plan_progress(plan, *, settled_amount=None, actor_user=None):  # Recalculate installment settlement statuses.
+@transaction.atomic
+# Recalculate installment settlement statuses.
+def refresh_plan_progress(plan, *, settled_amount=None, actor_user=None):
     """Distribute settlement across the plan's installments oldest-first.
 
     ``settled_amount`` (kobo) overrides the source figure; otherwise, for a plan linked
@@ -215,11 +223,11 @@ def refresh_plan_progress(plan, *, settled_amount=None, actor_user=None):  # Rec
     Returns the plan. No GL effect — this only mirrors money already posted elsewhere.
     """
     if plan.plan_status not in (PaymentPlanStatus.ACTIVE, PaymentPlanStatus.COMPLETED):  # Draft/cancelled plans do not track progress.
-        return plan  # Return the computed module result.
+        return plan
 
     if settled_amount is None:  # Derive settlement from linked invoice or current plan state.
         if plan.invoice_id is not None:  # Invoice-backed plans use invoice settlement.
-            plan.invoice.refresh_from_db()  # Reload invoice settled amount.
+            plan.invoice.refresh_from_db()
             # Only settlement *after* the plan's baseline counts toward installments —
             # pre-plan credits/waivers are already reflected in the smaller total_amount.  # Avoid double-counting.
             settled_amount = plan.invoice.settled_amount - plan.baseline_settled  # Post-baseline settlement.
@@ -227,7 +235,7 @@ def refresh_plan_progress(plan, *, settled_amount=None, actor_user=None):  # Rec
             settled_amount = plan.settled_total  # standalone plan: leave as-is
     remaining = max(int(settled_amount), 0)  # Clamp negative settlement to zero.
 
-    for inst in plan.installments.order_by("seq_no", "id"):  # Fill installments oldest-first.
+    for inst in plan.installments.order_by("seq_no", "id"):
         applied = min(inst.amount, remaining)  # Amount applied to this installment.
         if applied >= inst.amount:  # Full installment settled.
             status = InstallmentStatus.PAID  # Mark paid.
@@ -238,21 +246,22 @@ def refresh_plan_progress(plan, *, settled_amount=None, actor_user=None):  # Rec
         if inst.amount_settled != applied or inst.status != status:  # Avoid unnecessary writes.
             inst.amount_settled = applied  # Store applied amount.
             inst.status = status  # Store derived status.
-            inst.save(update_fields=["amount_settled", "status", "updated_at"])  # Persist installment progress.
+            inst.save(update_fields=["amount_settled", "status", "updated_at"])
         remaining -= applied  # Reduce settlement available for later installments.
 
     if plan.settled_total >= plan.total_amount and plan.plan_status != PaymentPlanStatus.COMPLETED:  # Plan is fully settled.
         plan.plan_status = PaymentPlanStatus.COMPLETED  # Mark plan complete.
-        plan.save(update_fields=["plan_status", "updated_at"])  # Persist completion status.
+        plan.save(update_fields=["plan_status", "updated_at"])
         record(  # Audit completion once.
             entity=plan.entity, action=FinanceAuditAction.PAYMENT_PLAN_COMPLETED,  # Audit action.
             actor_user=actor_user, target=plan,  # Actor and target context.
             message=f"Payment plan {plan.document_number} fully settled.",  # Human-readable message.
-        )  # Close the grouped expression.
+        )
     return plan  # Return refreshed plan.
 
 
-def refresh_plans_for_invoice(invoice, *, actor_user=None):  # Sync active/completed plans for a changed invoice.
+# Sync active/completed plans for a changed invoice.
+def refresh_plans_for_invoice(invoice, *, actor_user=None):
     """Re-sync every live payment plan attached to ``invoice`` after its settled amount
     moved (a receipt, credit-note allocation or write-off).
 
@@ -261,14 +270,14 @@ def refresh_plans_for_invoice(invoice, *, actor_user=None):  # Sync active/compl
     lands on the invoice. No GL effect. Safe to call when the invoice has no plan.
     """
     if invoice is None or invoice.pk is None:  # Unsaved/missing invoices cannot have plans.
-        return  # Execute the module statement.
-    from .constants import PaymentPlanStatus  # Local import mirrors model query lifecycle enum.
-    from .models import PaymentPlan  # Local import avoids model import cycles.
+        return
+    from .constants import PaymentPlanStatus
+    from .models import PaymentPlan
 
-    plans = PaymentPlan.objects.filter(  # Find live plans tied to this invoice.
+    plans = PaymentPlan.objects.filter(
         invoice=invoice,  # Scope to changed invoice.
         plan_status__in=(PaymentPlanStatus.ACTIVE, PaymentPlanStatus.COMPLETED),  # Only live/completed plans need sync.
-    )  # Close the grouped expression.
+    )
     for plan in plans:  # Refresh each matching plan.
         refresh_plan_progress(plan, actor_user=actor_user)  # Recompute installment statuses.
 
@@ -277,7 +286,8 @@ def refresh_plans_for_invoice(invoice, *, actor_user=None):  # Sync active/compl
 # Concessions — discounts / waivers / scholarships (Dr allowance, Cr AR)        #
 # --------------------------------------------------------------------------- #
 
-def post_concession(concession, *, actor_user=None):  # Public wrapper for concession posting.
+# Public wrapper for concession posting.
+def post_concession(concession, *, actor_user=None):
     """Post a :class:`Concession` (``Dr discounts & allowances, Cr AR control``).
 
     Clears ``concession.amount`` of the linked invoice's balance via
@@ -290,12 +300,13 @@ def post_concession(concession, *, actor_user=None):  # Public wrapper for conce
         record_rejection(  # Record durable rejection.
             entity=concession.entity, action=FinanceAuditAction.CONCESSION_POSTED,  # Audit action.
             exc=exc, actor_user=actor_user, target=concession,  # Error, actor, and target context.
-        )  # Close the grouped expression.
-        raise  # Preserve original finance exception.
+        )
+        raise
 
 
-@transaction.atomic  # Apply the decorator to this callable.
-def _post_concession_atomic(concession, *, actor_user=None):  # Transactional concession posting implementation.
+@transaction.atomic
+# Transactional concession posting implementation.
+def _post_concession_atomic(concession, *, actor_user=None):
     """Post a draft concession: raise its journal and mark it POSTED.
     
     Steps:
@@ -309,20 +320,20 @@ def _post_concession_atomic(concession, *, actor_user=None):  # Transactional co
       Raises ``PostingError`` on any guard failure; ``post_concession`` wraps this 
       to record a rejection on ``FinanceError``.
     """
-    from .models import JournalEntry, JournalLine, PaymentPlan  # Journal and plan models used by posting.
+    from .models import JournalEntry, JournalLine, PaymentPlan
 
     if concession.status != DocumentStatus.DRAFT:  # Only draft concessions can post.
-        raise PostingError(  # Raise the domain error for this path.
+        raise PostingError(
             f"Concession {concession.document_number or concession.pk} is "
             f"'{concession.status}'; only a draft concession can be posted.",
-        )  # Close the grouped expression.
+        )
 
     invoice = concession.invoice  # Invoice receiving the concession credit.
     if invoice.status != DocumentStatus.POSTED:  # Only posted invoices have AR to reduce.
-        raise PostingError(  # Raise the domain error for this path.
+        raise PostingError(
             f"Invoice {invoice.document_number or invoice.pk} is '{invoice.status}'; "
             f"a concession can only reduce a posted invoice.",
-        )  # Close the grouped expression.
+        )
 
     balance = invoice.balance_due  # Current outstanding invoice balance.
     if balance <= 0:  # Nothing remains to concede.
@@ -331,10 +342,10 @@ def _post_concession_atomic(concession, *, actor_user=None):  # Transactional co
     if amount <= 0:  # Concession must reduce a positive amount.
         raise PostingError("A concession must have a positive amount to post.")
     if amount > balance:  # Cannot credit more than invoice balance.
-        raise PostingError(  # Raise the domain error for this path.
+        raise PostingError(
             f"Concession amount ({amount} kobo) exceeds the outstanding balance "
             f"({balance} kobo).",
-        )  # Close the grouped expression.
+        )
 
     customer = concession.customer  # Customer controls AR account.
     ar_account = customer.receivable_account  # AR control account for credit side.
@@ -343,33 +354,33 @@ def _post_concession_atomic(concession, *, actor_user=None):  # Transactional co
 
     allowance = concession.allowance_account or resolve_account(  # Use explicit allowance account or default.
         concession.entity, DISCOUNTS_ALLOWED_CODE, label="discounts & allowances",  # Resolve default allowance account.
-    )  # Close the grouped expression.
+    )
     period = resolve_period(concession.entity, concession.concession_date)  # Resolve concession period.
     label = concession.get_kind_display()  # Human concession kind label.
-    entry = JournalEntry.objects.create(  # Create concession journal header.
+    entry = JournalEntry.objects.create(
         entity=concession.entity, branch=concession.branch,  # Scope entity and optional branch.
         date=concession.concession_date, period=period, source=JournalSource.SALES,  # Sales-side concession entry.
         narration=concession.reason or f"{label} {concession.document_number or ''}".strip(),  # Narration from reason/kind.
         reference=concession.reference, created_by=actor_user,  # External reference and actor.
-    )  # Close the grouped expression.
-    JournalLine.objects.create(  # Debit discounts/allowances contra-revenue.
+    )
+    JournalLine.objects.create(
         entry=entry, account=allowance, debit=amount, credit=0,  # Dr allowance.
         description=f"{label}: {customer.code}", line_no=1,  # Line label and order.
-    )  # Close the grouped expression.
-    JournalLine.objects.create(  # Credit AR to reduce invoice balance.
+    )
+    JournalLine.objects.create(
         entry=entry, account=ar_account, debit=0, credit=amount,  # Cr receivables.
         description=f"AR {label.lower()}: {customer.code}", line_no=2,  # Line label and order.
-    )  # Close the grouped expression.
+    )
     post_journal(entry, actor_user=actor_user)  # Validate and post concession journal.
 
     concession.allowance_account = allowance  # Persist account used.
     concession.journal = entry  # Link concession to journal.
     concession.status = DocumentStatus.POSTED  # Mark concession posted.
-    concession.save(update_fields=["allowance_account", "journal", "status", "updated_at"])  # Persist posting fields.
+    concession.save(update_fields=["allowance_account", "journal", "status", "updated_at"])
 
     invoice.amount_credited += amount  # Increase non-cash credit applied to invoice.
     invoice.refresh_payment_status(save=False)  # Recompute invoice payment status.
-    invoice.save(update_fields=["amount_credited", "payment_status", "updated_at"])  # Persist invoice settlement fields.
+    invoice.save(update_fields=["amount_credited", "payment_status", "updated_at"])
 
     record(  # Audit successful concession.
         entity=concession.entity, action=FinanceAuditAction.CONCESSION_POSTED,  # Audit action.
@@ -378,11 +389,11 @@ def _post_concession_atomic(concession, *, actor_user=None):  # Transactional co
                 f"{invoice.document_number} for {customer.code}.",  # Invoice and customer context.
         journal_id=entry.pk, amount=amount, kind=concession.kind,  # Structured concession metadata.
         balance_after=invoice.balance_due,  # Remaining invoice balance.
-    )  # Close the grouped expression.
+    )
 
     # A concession settles part of the invoice — keep any active plan in step.  # Payment plans mirror settlement.
-    for plan in PaymentPlan.objects.filter(  # Find active plans linked to the invoice.
+    for plan in PaymentPlan.objects.filter(
         invoice=invoice, plan_status=PaymentPlanStatus.ACTIVE,  # Active invoice-backed plans.
-    ):  # Start the nested execution block.
+    ):
         refresh_plan_progress(plan, actor_user=actor_user)  # Recompute installment progress.
     return concession  # Return posted concession.

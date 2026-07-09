@@ -10,30 +10,33 @@ Issuer identity comes from the entity's originating school (platform books have 
 so those fields fall back to blanks); the 'pay to' bank is the entity's primary
 collection account (:func:`primary_collection_account`).
 """
-from __future__ import annotations  # Defer annotation evaluation during app import.
+from __future__ import annotations
 
-from django.template.loader import render_to_string  # Renders printable document templates.
+from django.template.loader import render_to_string
 
-from .money import format_naira, naira_in_words  # Display formatting for integer-kobo amounts.
+from .money import format_naira, naira_in_words
 
 
-class DocumentRenderUnavailable(Exception):  # Signals optional document rendering dependency failure.
+# Signals optional document rendering dependency failure.
+class DocumentRenderUnavailable(Exception):
     """Raised when an optional document renderer dependency is unavailable."""
 
 
-def render_document_html(template_name: str, context: dict, *, request=None) -> str:  # Render a document template to HTML.
+# Render a document template to HTML.
+def render_document_html(template_name: str, context: dict, *, request=None) -> str:
     """Render a printable finance document template to HTML."""
     return render_to_string(template_name, context, request=request)  # Delegate rendering to Django templates.
 
 
-def render_document_pdf(html: str, *, base_url: str | None = None) -> bytes:  # Convert rendered document HTML to PDF bytes.
+# Convert rendered document HTML to PDF bytes.
+def render_document_pdf(html: str, *, base_url: str | None = None) -> bytes:
     """Render document HTML to PDF using WeasyPrint, imported lazily.
 
     WeasyPrint depends on native libraries in many environments. Keeping the import
     here prevents missing libraries from breaking Django startup or unrelated tests.
     """
     try:  # WeasyPrint is optional and may fail on hosts without native libraries.
-        from weasyprint import HTML  # Import lazily to avoid breaking unrelated app startup.
+        from weasyprint import HTML
     except Exception as exc:  # pragma: no cover - exact failure depends on host libs
         raise DocumentRenderUnavailable("PDF rendering is unavailable.") from exc
     try:  # Rendering itself can fail due to native or template asset issues.
@@ -42,26 +45,28 @@ def render_document_pdf(html: str, *, base_url: str | None = None) -> bytes:  # 
         raise DocumentRenderUnavailable("PDF rendering failed.") from exc
 
 
-def primary_collection_account(entity):  # Resolve the bank account printed on finance documents.
+# Resolve the bank account printed on finance documents.
+def primary_collection_account(entity):
     """Return the entity's primary fee-collection :class:`BankAccount`, or a fallback.
 
     Preference order: the account flagged ``is_primary_collection`` → the first active
     account → ``None``. This is what the invoice/receipt print as the 'pay to' bank.
     """
-    from .models import BankAccount  # Local import avoids model import cycles.
+    from .models import BankAccount
 
-    qs = BankAccount.objects.filter(entity=entity)  # Restrict bank accounts to the document entity.
+    qs = BankAccount.objects.filter(entity=entity)
     return (  # Prefer explicit primary account, fallback to first active account.
-        qs.filter(is_primary_collection=True).first()  # Primary collection account when configured.
-        or qs.filter(is_active=True).order_by("id").first()  # Stable fallback active account.
-    )  # Close the grouped expression.
+        qs.filter(is_primary_collection=True).first()
+        or qs.filter(is_active=True).order_by("id").first()
+    )
 
 
 # --------------------------------------------------------------------------- #
 # Shared blocks                                                               #
 # --------------------------------------------------------------------------- #
 
-def _issuer_block(entity, *, branch=None) -> dict:  # Build school/entity identity block for document headers.
+# Build school/entity identity block for document headers.
+def _issuer_block(entity, *, branch=None) -> dict:
     """Letterhead identity for ``entity`` — school-derived, blanks for platform books."""
     school = entity.source_school  # School is the branding source when present.
     logo = ""  # Default to no logo.
@@ -101,22 +106,24 @@ def _issuer_block(entity, *, branch=None) -> dict:  # Build school/entity identi
         "phone": "",  # Phone is currently not sourced.
         "website": website,  # Website URL.
         "bank": bank_block,  # Pay-to bank details.
-    }  # Close the grouped expression.
+    }
 
 
-def _customer_block(customer) -> dict:  # Build customer identity block for invoice/receipt templates.
+# Build customer identity block for invoice/receipt templates.
+def _customer_block(customer) -> dict:
     return {  # Return a template-friendly customer structure.
         "customer_name": customer.name,  # Customer display name.
         "customer_code": customer.code,  # Customer account/reference code.
         "email": customer.billing_email or "",  # Billing email or blank.
         "phone": customer.billing_phone or "",  # Billing phone or blank.
         "address": customer.billing_address or "",  # Billing address or blank.
-    }  # Close the grouped expression.
+    }
 
 
-def _payment_status_badge(payment_status: str) -> str:  # Convert invoice payment status to template CSS token.
+# Convert invoice payment status to template CSS token.
+def _payment_status_badge(payment_status: str) -> str:
     """Map an invoice payment status to the template's badge CSS class."""
-    from .constants import InvoicePaymentStatus  # Local import avoids wider import dependencies.
+    from .constants import InvoicePaymentStatus
 
     if payment_status == InvoicePaymentStatus.PAID:  # Fully settled invoices use paid styling.
         return "paid"
@@ -125,26 +132,28 @@ def _payment_status_badge(payment_status: str) -> str:  # Convert invoice paymen
     return "unpaid"  # UNPAID (and overdue+unpaid) both read as 'unpaid'
 
 
-def _customer_net_after(entity, customer) -> int:  # Compute customer net receivable after current postings.
+# Compute customer net receivable after current postings.
+def _customer_net_after(entity, customer) -> int:
     """The customer's net AR position (kobo; positive = owes) after current postings.
 
     Reuses the AR ledger already backing the customer drawer
     (:func:`vs_finance.views_ar._customer_ledger`): net = outstanding − credit.
     """
-    from .views_ar import _customer_ledger  # Reuse the AR drawer ledger calculation.
+    from .views_ar import _customer_ledger
 
-    led = _customer_ledger(entity, [customer.id]).get(customer.id, {})  # Fetch ledger summary for one customer.
-    return int(led.get("outstanding", 0)) - int(led.get("credit", 0))  # Net open receivable minus credit.
+    led = _customer_ledger(entity, [customer.id]).get(customer.id, {})
+    return int(led.get("outstanding", 0)) - int(led.get("credit", 0))
 
 
 # --------------------------------------------------------------------------- #
 # Invoice document                                                            #
 # --------------------------------------------------------------------------- #
 
-def invoice_document_context(invoice) -> dict:  # Build printable invoice template context.
+# Build printable invoice template context.
+def invoice_document_context(invoice) -> dict:
     """Build the render context for the branded invoice document."""
     entity = invoice.entity  # Invoice entity drives issuer and bank details.
-    lines = list(invoice.lines.select_related("tax_code", "cost_center").order_by("line_no", "id"))  # Load invoice lines in print order.
+    lines = list(invoice.lines.select_related("tax_code", "cost_center").order_by("line_no", "id"))
 
     line_items = []  # Template-ready line item dictionaries.
     for ln in lines:  # Convert each invoice line for display.
@@ -160,7 +169,7 @@ def invoice_document_context(invoice) -> dict:  # Build printable invoice templa
             "tax_amount": format_naira(ln.tax_amount) if ln.tax_code_id else "Exempt",  # Display tax or exemption.
             "is_exempt": ln.tax_code_id is None,  # Boolean for template styling.
             "net_amount": format_naira(ln.net_amount),  # Display net line amount.
-        })  # Execute the module statement.
+        })
 
     return {  # Return full invoice document context.
         "issuer": _issuer_block(entity, branch=invoice.branch),  # Letterhead and pay-to block.
@@ -181,19 +190,21 @@ def invoice_document_context(invoice) -> dict:  # Build printable invoice templa
             "amount_paid": format_naira(invoice.amount_paid),  # Display paid amount.
             "balance_due": format_naira(invoice.balance_due),  # Display outstanding balance.
             "qr_payload": invoice.document_number,  # QR payload currently uses document number.
-        },  # Close the grouped value.
-    }  # Close the grouped expression.
+        },
+    }
 
 
-def render_invoice_document_html(invoice, *, request=None) -> str:  # Render an invoice document to HTML.
+# Render an invoice document to HTML.
+def render_invoice_document_html(invoice, *, request=None) -> str:
     return render_document_html(  # Delegate shared HTML rendering.
         "vs_finance/invoice_document.html",  # Invoice template path.
         invoice_document_context(invoice),  # Build invoice context.
         request=request,  # Pass request for context processors/static absolute paths.
-    )  # Close the grouped expression.
+    )
 
 
-def render_invoice_document_pdf(invoice, *, request=None) -> bytes:  # Render an invoice document to PDF.
+# Render an invoice document to PDF.
+def render_invoice_document_pdf(invoice, *, request=None) -> bytes:
     html = render_invoice_document_html(invoice, request=request)  # Render HTML first.
     base_url = request.build_absolute_uri("/") if request is not None else None  # Resolve relative assets when request exists.
     return render_document_pdf(html, base_url=base_url)  # Convert HTML to PDF bytes.
@@ -203,30 +214,32 @@ def render_invoice_document_pdf(invoice, *, request=None) -> bytes:  # Render an
 # Receipt document                                                            #
 # --------------------------------------------------------------------------- #
 
-def _provider_reference(payment) -> str:  # Resolve PSP reference for gateway-backed receipts.
+# Resolve PSP reference for gateway-backed receipts.
+def _provider_reference(payment) -> str:
     """The PSP transaction ref for a gateway receipt, best-effort (blank if none)."""
     try:  # Payments app may be optional in some environments.
-        from vs_payments.models import CollectionIntent  # Gateway collection intent model.
+        from vs_payments.models import CollectionIntent
     except ImportError:  # pragma: no cover - vs_payments optional
         return ""
-    intent = CollectionIntent.objects.filter(payment=payment).order_by("-id").first()  # Latest intent for this payment.
+    intent = CollectionIntent.objects.filter(payment=payment).order_by("-id").first()
     return intent.provider_reference if intent is not None else ""  # Return provider ref or blank.
 
 
-def receipt_document_context(payment) -> dict:  # Build printable receipt template context.
+# Build printable receipt template context.
+def receipt_document_context(payment) -> dict:
     """Build the render context for the branded receipt document."""
-    from .constants import PaymentMethod  # Local import for payment method labels.
+    from .constants import PaymentMethod
 
     entity = payment.entity  # Payment entity drives issuer and bank details.
     allocations = []  # Template-ready settlement rows.
-    for alloc in payment.allocations.select_related("invoice").order_by("id"):  # Walk allocations in stable order.
+    for alloc in payment.allocations.select_related("invoice").order_by("id"):
         inv = alloc.invoice  # Linked invoice for this allocation.
         allocations.append({  # Append allocation display row.
             "invoice_ref": inv.document_number,  # Settled invoice number.
             "sub": inv.narration or inv.reference or "",  # Secondary invoice text.
             "amount_applied": format_naira(alloc.amount),  # Display amount applied to invoice.
             "invoice_balance_after": format_naira(inv.balance_due),  # Display invoice balance after allocation.
-        })  # Execute the module statement.
+        })
 
     try:  # Convert stored method value to human label when enum knows it.
         method_label = PaymentMethod(payment.method).label  # Django choices enum label.
@@ -246,19 +259,21 @@ def receipt_document_context(payment) -> dict:  # Build printable receipt templa
             "allocations": allocations,  # Prepared allocation rows.
             "customer_balance_after": format_naira(_customer_net_after(entity, payment.customer)),  # Display net AR after receipt.
             "settled_stamp": "Received",  # Static stamp text for the template.
-        },  # Close the grouped value.
-    }  # Close the grouped expression.
+        },
+    }
 
 
-def render_receipt_document_html(payment, *, request=None) -> str:  # Render a receipt document to HTML.
+# Render a receipt document to HTML.
+def render_receipt_document_html(payment, *, request=None) -> str:
     return render_document_html(  # Delegate shared HTML rendering.
         "vs_finance/receipt_document.html",  # Receipt template path.
         receipt_document_context(payment),  # Build receipt context.
         request=request,  # Pass request for context processors/static absolute paths.
-    )  # Close the grouped expression.
+    )
 
 
-def render_receipt_document_pdf(payment, *, request=None) -> bytes:  # Render a receipt document to PDF.
+# Render a receipt document to PDF.
+def render_receipt_document_pdf(payment, *, request=None) -> bytes:
     html = render_receipt_document_html(payment, request=request)  # Render HTML first.
     base_url = request.build_absolute_uri("/") if request is not None else None  # Resolve relative assets when request exists.
     return render_document_pdf(html, base_url=base_url)  # Convert HTML to PDF bytes.

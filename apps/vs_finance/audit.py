@@ -12,32 +12,33 @@ The module keeps its **own** authoritative audit trail (the append-only
 :func:`record` writes the authoritative row and then mirrors a copy to ``vs_audit``
 best-effort, so the global activity view stays complete without becoming load-bearing.  # Keep the mirror non-blocking.
 """
-from __future__ import annotations  # Defer annotation evaluation for forward references.
+from __future__ import annotations
 
-from django.db import transaction  # Used to persist rejection logs in a new atomic block.
+from django.db import transaction
 
-from .constants import FinanceAuditStatus  # Success/failed status values for finance audits.
+from .constants import FinanceAuditStatus
 
 
-def _mirror_to_central(*, action, actor_user, entity, target_type, target_id,  # Define the callable used by this module.
-                       document_number, status, message, metadata):  # Start the nested execution block.
+# Support the mirror to central workflow.
+def _mirror_to_central(*, action, actor_user, entity, target_type, target_id,
+                       document_number, status, message, metadata):
     """Best-effort copy into central vs_audit. Never raises — the in-app log is truth."""
     try:  # Mirroring must never block the primary finance write.
-        from vs_audit.services import emit_audit_event  # Central audit emitter.
-        from vs_audit.models import AuditModuleKey, AuditActionType  # Central audit enums.
+        from vs_audit.services import emit_audit_event
+        from vs_audit.models import AuditModuleKey, AuditActionType
 
         emit_audit_event(  # Mirror the finance event into the platform audit log.
-            module_key=AuditModuleKey.FINANCE,  # Continue the structured value.
-            action_type=AuditActionType.FINANCIAL_TRANSACTION,  # Continue the structured value.
+            module_key=AuditModuleKey.FINANCE,
+            action_type=AuditActionType.FINANCIAL_TRANSACTION,
             entity_type=f"vs_finance.{target_type}" if target_type else "vs_finance",
             entity_id=str(target_id or ""),
             entity_label=document_number or str(target_id or ""),
-            actor_user=actor_user,  # Continue the structured value.
+            actor_user=actor_user,
             status="SUCCESS" if status == FinanceAuditStatus.SUCCESS else "FAILED",
             severity="INFO" if status == FinanceAuditStatus.SUCCESS else "WARNING",
             summary=message or f"Finance: {action}",
             metadata={"finance_action": str(action), **(metadata or {})},
-        )  # Close the grouped expression.
+        )
     except Exception:  # pragma: no cover - mirror is best-effort
         pass  # Swallow mirror failures so the authoritative finance log stays intact.
 
@@ -55,38 +56,39 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
     ``target`` may be passed instead of ``target_type``/``target_id`` for convenience;
     its class name and pk are used. Returns the created row.
     """
-    from .models import FinanceAuditLog  # Import lazily to avoid model import cycles.
+    from .models import FinanceAuditLog
 
     if target is not None:  # Allow callers to pass a model instance instead of manual identifiers.
         target_type = target_type or type(target).__name__  # Derive the target type from the instance.
         target_id = target_id or str(target.pk)  # Derive the target id from the instance pk.
         document_number = document_number or getattr(target, "document_number", "") or ""  # Pull document number when available.
 
-    log = FinanceAuditLog.objects.create(  # Write the authoritative audit row.
-        entity=entity,  # Continue the structured value.
-        actor=actor_user,  # Continue the structured value.
-        action=action,  # Continue the structured value.
-        status=status,  # Continue the structured value.
-        target_type=target_type,  # Continue the structured value.
-        target_id=str(target_id),  # Continue the structured value.
-        document_number=document_number,  # Continue the structured value.
-        message=message,  # Continue the structured value.
-        before=before or {},  # Continue the structured value.
-        after=after or {},  # Continue the structured value.
-        metadata=metadata or {},  # Continue the structured value.
-    )  # Close the grouped expression.
+    log = FinanceAuditLog.objects.create(
+        entity=entity,
+        actor=actor_user,
+        action=action,
+        status=status,
+        target_type=target_type,
+        target_id=str(target_id),
+        document_number=document_number,
+        message=message,
+        before=before or {},
+        after=after or {},
+        metadata=metadata or {},
+    )
 
     if mirror:  # Optionally mirror the event into the platform-wide audit log.
         _mirror_to_central(  # Copy the finance event into the central audit system.
-            action=action, actor_user=actor_user, entity=entity,  # Continue the structured value.
-            target_type=target_type, target_id=target_id,  # Continue the structured value.
-            document_number=document_number, status=status,  # Continue the structured value.
-            message=message, metadata=metadata,  # Continue the structured value.
-        )  # Close the grouped expression.
+            action=action, actor_user=actor_user, entity=entity,
+            target_type=target_type, target_id=target_id,
+            document_number=document_number, status=status,
+            message=message, metadata=metadata,
+        )
     return log  # Return the authoritative finance audit row.
 
 
-def record_rejection(*, entity, action, exc, actor_user=None, target=None,  # Define the callable used by this module.
+# Handle the record rejection workflow.
+def record_rejection(*, entity, action, exc, actor_user=None, target=None,
                      target_type="", target_id="", document_number="", **metadata):
     """Durably record a *failed* action in its own committed transaction.
 
@@ -97,15 +99,15 @@ def record_rejection(*, entity, action, exc, actor_user=None, target=None,  # De
     """
     error_code = getattr(exc, "error_code", type(exc).__name__)  # Preserve a stable error code when possible.
     try:  # Rejection logging must not mask the original exception.
-        with transaction.atomic():  # Write the rejection in a fresh transaction.
+        with transaction.atomic():
             record(  # Persist the failed finance action.
-                entity=entity, action=action, actor_user=actor_user,  # Continue the structured value.
-                target=target, target_type=target_type, target_id=target_id,  # Continue the structured value.
-                document_number=document_number,  # Continue the structured value.
-                status=FinanceAuditStatus.FAILED,  # Continue the structured value.
-                message=str(exc)[:255],  # Continue the structured value.
-                error_code=error_code,  # Continue the structured value.
-                **metadata,  # Continue the structured value.
-            )  # Close the grouped expression.
+                entity=entity, action=action, actor_user=actor_user,
+                target=target, target_type=target_type, target_id=target_id,
+                document_number=document_number,
+                status=FinanceAuditStatus.FAILED,
+                message=str(exc)[:255],
+                error_code=error_code,
+                **metadata,
+            )
     except Exception:  # pragma: no cover - never mask the real error
         pass  # Swallow logging failures so the original business error still surfaces.

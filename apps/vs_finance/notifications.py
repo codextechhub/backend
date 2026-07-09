@@ -15,22 +15,24 @@ customer's billing email is the recipient (an ``UnregisteredRecipient`` — a pa
 need not have a portal account), and the school (``entity.source_school``) is an
 *optional scope*, not a gate — platform/product books deliver just the same.
 """
-from __future__ import annotations  # Defer annotation evaluation during app startup.
+from __future__ import annotations
 
-import logging  # Used to log swallowed notification failures.
+import logging
 
-from .constants import InvoiceSource  # Used to suppress opening-balance notifications.
-from .money import to_naira  # Converts integer kobo to decimal naira.
+from .constants import InvoiceSource
+from .money import to_naira
 
 logger = logging.getLogger(__name__)  # Module logger for notification failures.
 
 
-def _naira(kobo) -> str:  # Format integer kobo for notification templates.
+# Format integer kobo for notification templates.
+def _naira(kobo) -> str:
     """Thousands-separated naira string, no symbol — the templates prepend ₦."""
     return f"{to_naira(int(kobo or 0)):,.2f}"  # Normalize missing values to zero and format with commas.
 
 
-def notify_invoice_issued(invoice, *, actor_user=None):  # Send best-effort invoice-issued notification.
+# Send best-effort invoice-issued notification.
+def notify_invoice_issued(invoice, *, actor_user=None):
     """Best-effort: email the customer that an invoice was issued.
 
     Skips opening-balance invoices (``source == OPENING``) — those are migration
@@ -39,10 +41,10 @@ def notify_invoice_issued(invoice, *, actor_user=None):  # Send best-effort invo
     """
     try:  # Notification failures must never roll back invoice posting.
         if invoice.source == InvoiceSource.OPENING:  # Opening balance invoices are migration artefacts.
-            return None  # Return the computed module result.
+            return None
 
-        from django.conf import settings  # Import lazily because notification config is optional.
-        from vs_notifications.notify import send_notification, UnregisteredRecipient  # Platform notification API.
+        from django.conf import settings
+        from vs_notifications.notify import send_notification, UnregisteredRecipient
 
         customer = invoice.customer  # Recipient information comes from the invoice customer.
         school = invoice.entity.source_school  # optional scope; may be None  # School scopes template settings when present.
@@ -54,7 +56,7 @@ def notify_invoice_issued(invoice, *, actor_user=None):  # Send best-effort invo
             "school_name": school.name if school else "",  # Optional school name.
             # No standing hosted pay page yet; fall back to the configured callback.  # Keep link configurable.
             "payment_link": getattr(settings, "PAYMENTS_CALLBACK_URL", "") or "",  # Optional payment URL.
-        }  # Close the grouped expression.
+        }
         return send_notification(  # Delegate delivery to vs_notifications.
             event_key="billing.invoice_issued",  # Event key configured in notification templates.
             context=context,  # Render data for the notification template.
@@ -62,17 +64,18 @@ def notify_invoice_issued(invoice, *, actor_user=None):  # Send best-effort invo
             school=school,  # Optional school scoping for notification configuration.
             unregistered_recipients=[  # Billing emails can receive without portal accounts.
                 UnregisteredRecipient(email=customer.billing_email or "", name=customer.name),  # Customer email/name payload.
-            ],  # Close the grouped value.
-        )  # Close the grouped expression.
+            ],
+        )
     except Exception:  # best-effort — never break the posting
         logger.warning(  # Log failure with stack trace for operations.
             "invoice_issued notification failed for invoice %s",  # Include invoice primary key.
             getattr(invoice, "pk", None), exc_info=True,  # Avoid attribute errors while logging.
-        )  # Close the grouped expression.
+        )
         return None  # Swallow failures so ledger posting remains committed.
 
 
-def notify_payment_received(payment, *, actor_user=None):  # Send best-effort payment-received notification.
+# Send best-effort payment-received notification.
+def notify_payment_received(payment, *, actor_user=None):
     """Best-effort: email the customer that a receipt was recorded. Never raises.
 
     Fires for every posted customer receipt (manual and gateway). When the receipt
@@ -80,11 +83,11 @@ def notify_payment_received(payment, *, actor_user=None):  # Send best-effort pa
     template; otherwise it renders blank.
     """
     try:  # Notification failures must never roll back payment posting.
-        from vs_notifications.notify import send_notification, UnregisteredRecipient  # Platform notification API.
+        from vs_notifications.notify import send_notification, UnregisteredRecipient
 
         customer = payment.customer  # Recipient information comes from the payment customer.
         school = payment.entity.source_school  # optional scope; may be None  # School scopes template settings when present.
-        alloc = payment.allocations.select_related("invoice").first()  # Load the first settlement allocation if any.
+        alloc = payment.allocations.select_related("invoice").first()
         invoice_number = alloc.invoice.document_number if alloc is not None else ""  # Surface one settled invoice number.
         context = {  # Template variables for the payment-received event.
             "customer_name": customer.name,  # Customer display name.
@@ -93,7 +96,7 @@ def notify_payment_received(payment, *, actor_user=None):  # Send best-effort pa
             "payment_date": payment.payment_date.isoformat() if payment.payment_date else "—",  # ISO date or dash.
             "receipt_number": payment.document_number,  # Posted receipt document number.
             "school_name": school.name if school else "",  # Optional school name.
-        }  # Close the grouped expression.
+        }
         return send_notification(  # Delegate delivery to vs_notifications.
             event_key="billing.payment_received",  # Event key configured in notification templates.
             context=context,  # Render data for the notification template.
@@ -101,11 +104,11 @@ def notify_payment_received(payment, *, actor_user=None):  # Send best-effort pa
             school=school,  # Optional school scoping for notification configuration.
             unregistered_recipients=[  # Billing emails can receive without portal accounts.
                 UnregisteredRecipient(email=customer.billing_email or "", name=customer.name),  # Customer email/name payload.
-            ],  # Close the grouped value.
-        )  # Close the grouped expression.
+            ],
+        )
     except Exception:  # best-effort — never break the posting
         logger.warning(  # Log failure with stack trace for operations.
             "payment_received notification failed for payment %s",  # Include payment primary key.
             getattr(payment, "pk", None), exc_info=True,  # Avoid attribute errors while logging.
-        )  # Close the grouped expression.
+        )
         return None  # Swallow failures so ledger posting remains committed.

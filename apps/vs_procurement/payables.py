@@ -12,48 +12,50 @@ Mirrors the AR revenue cycle in :mod:`vs_finance.receivables`, but for money *ou
 All amounts are integer kobo; tax/WHT are computed from basis points with the same
 ``ROUND_HALF_UP`` discipline as the rest of the engine.
 """
-from __future__ import annotations  # Defer annotation evaluation for forward references.
+from __future__ import annotations
 
-from collections import defaultdict  # Used to group journal debit lines by account.
-from decimal import Decimal  # Used for exact quantity comparisons in matching.
+from collections import defaultdict
+from decimal import Decimal
 
-from django.db import transaction  # Keep AP subledger and GL writes atomic.
-from django.db.models import F  # Update PO invoiced quantities without race-prone read/modify/write.
+from django.db import transaction
+from django.db.models import F
 
-from vs_finance.audit import record, record_rejection  # Durable finance audit events.
-from vs_finance.constants import (  # Import project symbols used by this module.
-    DocumentStatus,  # Draft/posted lifecycle.
-    FinanceAuditAction,  # Finance audit action enum.
-    InvoicePaymentStatus,  # Paid/unpaid state for bills.
-    JournalSource,  # Journal origin indicator.
-)  # Close the grouped expression.
-from vs_finance.exceptions import FinanceError, PostingError  # Shared finance error types.
-from vs_finance.posting import post_journal, resolve_period  # GL posting helpers.
-from vs_finance.receivables import compute_line_net, compute_tax  # Shared pricing and tax helpers.
+from vs_finance.audit import record, record_rejection
+from vs_finance.constants import (
+    DocumentStatus,
+    FinanceAuditAction,
+    InvoicePaymentStatus,
+    JournalSource,
+)
+from vs_finance.exceptions import FinanceError, PostingError
+from vs_finance.posting import post_journal, resolve_period
+from vs_finance.receivables import compute_line_net, compute_tax
 
-from .constants import MATCH_BLOCKING, MatchStatus, WHT_PAYABLE_CODE  # Procurement matching and WHT constants.
-from .exceptions import ThreeWayMatchError  # Raised when a blocking three-way match occurs.
-from .purchasing import resolve_account  # Procurement account resolver.
+from .constants import MATCH_BLOCKING, MatchStatus, WHT_PAYABLE_CODE
+from .exceptions import ThreeWayMatchError
+from .purchasing import resolve_account
 
 
 # --------------------------------------------------------------------------- #
 # Vendor invoice — pricing + three-way match                                  #
 # --------------------------------------------------------------------------- #
 
-def price_vendor_invoice(invoice) -> None:  # Define the callable used by this module.
+# Handle the price vendor invoice workflow.
+def price_vendor_invoice(invoice) -> None:
     """Compute each line's ``net_amount``/``tax_amount`` and roll up the totals."""
-    from .models import VendorInvoiceLine  # Import lazily to avoid model import cycles.
+    from .models import VendorInvoiceLine
 
     for line in invoice.lines.all():  # Reprice every bill line from quantity and unit price.
         net = compute_line_net(line.quantity, line.unit_price)  # Compute net kobo exactly.
         rate = line.tax_code.rate_bps if line.tax_code_id else 0  # Use the tax rate when a tax code exists.
         tax = compute_tax(net, rate)  # Compute input tax in kobo.
         if line.net_amount != net or line.tax_amount != tax:  # Avoid unnecessary writes.
-            VendorInvoiceLine.objects.filter(pk=line.pk).update(net_amount=net, tax_amount=tax)  # Persist recalculated amounts.
+            VendorInvoiceLine.objects.filter(pk=line.pk).update(net_amount=net, tax_amount=tax)
     invoice.recompute_totals(save=True)  # Roll line totals up to the invoice.
 
 
-def match_vendor_invoice(invoice, *, save: bool = True) -> str:  # Define the callable used by this module.
+# Handle the match vendor invoice workflow.
+def match_vendor_invoice(invoice, *, save: bool = True) -> str:
     """Run the three-way match (PO ↔ GRN ↔ invoice) and return the :class:`MatchStatus`.
 
     Per line linked to a PO line, compares the cumulative billed quantity and the unit
@@ -66,19 +68,19 @@ def match_vendor_invoice(invoice, *, save: bool = True) -> str:  # Define the ca
 
     A bill with no PO linkage is treated as ``AUTO_MATCHED`` (nothing to match against).
     """
-    from .models import PurchaseOrderLine  # Fresh PO line quantities are needed for matching.
+    from .models import PurchaseOrderLine
 
     status = MatchStatus.AUTO_MATCHED  # Default to matched until a variance is found.
     has_po_line = False  # Track whether this bill has any PO-backed lines.
 
-    for line in invoice.lines.select_related("po_line").all():  # Walk every bill line with PO linkage loaded.
+    for line in invoice.lines.select_related("po_line").all():
         if line.po_line_id is None:  # Non-PO lines have nothing to three-way match.
-            continue  # Skip to the next loop iteration.
+            continue
         has_po_line = True  # At least one line is PO-backed.
-        po_line = PurchaseOrderLine.objects.get(pk=line.po_line_id)  # Reload fresh quantities before matching.
-        billed_cum = Decimal(po_line.invoiced_qty) + Decimal(line.quantity)  # Cumulative billed quantity after this invoice.
-        ordered = Decimal(po_line.quantity)  # Ordered quantity from the PO.
-        received = Decimal(po_line.received_qty)  # Received quantity from GRNs.
+        po_line = PurchaseOrderLine.objects.get(pk=line.po_line_id)
+        billed_cum = Decimal(po_line.invoiced_qty) + Decimal(line.quantity)
+        ordered = Decimal(po_line.quantity)
+        received = Decimal(po_line.received_qty)
 
         if billed_cum > ordered:  # Cannot bill more than ordered.
             status = MatchStatus.OVER_BILLED  # Blocking match status.
@@ -95,7 +97,7 @@ def match_vendor_invoice(invoice, *, save: bool = True) -> str:  # Define the ca
 
     invoice.match_status = status  # Store the computed match result on the invoice object.
     if save:  # Persist when the caller wants durable match state.
-        invoice.save(update_fields=["match_status", "updated_at"])  # Save only the matching fields.
+        invoice.save(update_fields=["match_status", "updated_at"])
     return status  # Return the computed match status.
 
 
@@ -103,7 +105,8 @@ def match_vendor_invoice(invoice, *, save: bool = True) -> str:  # Define the ca
 # Vendor invoice posting (Dr GR/IR + input VAT, Cr AP)                         #
 # --------------------------------------------------------------------------- #
 
-def post_vendor_invoice(invoice, *, actor_user=None, allow_variance=False):  # Define the callable used by this module.
+# Handle the post vendor invoice workflow.
+def post_vendor_invoice(invoice, *, actor_user=None, allow_variance=False):
     """Match and post a :class:`VendorInvoice`, raising its AP journal.
 
     Pricing and the three-way match run **before** the posting transaction and persist
@@ -116,27 +119,28 @@ def post_vendor_invoice(invoice, *, actor_user=None, allow_variance=False):  # D
         match_vendor_invoice(invoice, save=True)  # Persist the match result before attempting the post.
     try:  # The atomic worker owns the GL write; this wrapper owns rejection audit.
         return _post_vendor_invoice_atomic(  # Post the vendor invoice into AP.
-            invoice, actor_user=actor_user, allow_variance=allow_variance,  # Continue the structured value.
-        )  # Close the grouped expression.
+            invoice, actor_user=actor_user, allow_variance=allow_variance,
+        )
     except FinanceError as exc:  # Log failed posting attempts durably.
         record_rejection(  # Record a vendor invoice post rejection.
-            entity=invoice.entity, action=FinanceAuditAction.VENDOR_INVOICE_POST_REJECTED,  # Continue the structured value.
-            exc=exc, actor_user=actor_user, target=invoice,  # Continue the structured value.
-        )  # Close the grouped expression.
-        raise  # Re-raise so callers see the posting failure.
+            entity=invoice.entity, action=FinanceAuditAction.VENDOR_INVOICE_POST_REJECTED,
+            exc=exc, actor_user=actor_user, target=invoice,
+        )
+        raise
 
 
-@transaction.atomic  # Apply the decorator to this callable.
-def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=False):  # Define the callable used by this module.
-    from vs_finance.models import JournalEntry, JournalLine  # Journal models for AP posting.
-    from .constants import GRIR_CLEARING_CODE  # Clearing account used for PO-backed purchases.
-    from .models import PurchaseOrderLine  # Updated after posting PO-backed bills.
+@transaction.atomic
+# Support the post vendor invoice atomic workflow.
+def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=False):
+    from vs_finance.models import JournalEntry, JournalLine
+    from .constants import GRIR_CLEARING_CODE
+    from .models import PurchaseOrderLine
 
     if invoice.status != DocumentStatus.DRAFT:  # Only draft bills can be posted.
-        raise PostingError(  # Raise the domain error for this path.
+        raise PostingError(
             f"Vendor invoice {invoice.document_number or invoice.pk} is '{invoice.status}', "
             f"only a draft can be posted.",
-        )  # Close the grouped expression.
+        )
 
     vendor = invoice.vendor  # Vendor drives the AP control account.
     ap_account = vendor.payable_account  # Resolve the vendor payable account.
@@ -148,17 +152,17 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
 
     match_status = invoice.match_status  # Use the previously computed match result.
     if match_status in MATCH_BLOCKING and not allow_variance:  # Blocking variances stop posting unless explicitly allowed.
-        raise ThreeWayMatchError(match_status)  # Raise the domain error for this path.
+        raise ThreeWayMatchError(match_status)
 
     period = resolve_period(invoice.entity, invoice.invoice_date)  # Find the open accounting period.
 
-    entry = JournalEntry.objects.create(  # Create the vendor invoice journal header.
-        entity=invoice.entity, branch=invoice.branch,  # Continue the structured value.
-        date=invoice.invoice_date, period=period,  # Continue the structured value.
-        source=JournalSource.PURCHASE, currency=invoice.currency,  # Continue the structured value.
+    entry = JournalEntry.objects.create(
+        entity=invoice.entity, branch=invoice.branch,
+        date=invoice.invoice_date, period=period,
+        source=JournalSource.PURCHASE, currency=invoice.currency,
         narration=invoice.narration or f"Bill {invoice.document_number or ''}".strip(),
-        reference=invoice.vendor_reference, created_by=actor_user,  # Continue the structured value.
-    )  # Close the grouped expression.
+        reference=invoice.vendor_reference, created_by=actor_user,
+    )
 
     # Debit side: PO-based net clears GR/IR clearing; non-PO net hits the expense
     # account directly. Input tax (recoverable) debits the tax code's paid account.
@@ -168,69 +172,69 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
     tax_by_account: dict[int, int] = defaultdict(int)  # Group input tax by paid account.
     tax_objs: dict[int, object] = {}  # Keep tax account objects for grouped tax lines.
 
-    for line in invoice.lines.select_related("expense_account", "tax_code__paid_account"):  # Walk all bill lines with posting targets loaded.
+    for line in invoice.lines.select_related("expense_account", "tax_code__paid_account"):
         if line.po_line_id is not None:  # PO-backed bills clear GR/IR.
             if grir is None:  # Resolve GR/IR once.
                 grir = resolve_account(invoice.entity, GRIR_CLEARING_CODE, label="GR/IR clearing")
             target = grir  # Debit GR/IR for PO-backed net amount.
         else:  # Non-PO bills hit the line expense account directly.
-            target = line.expense_account  # Store the intermediate module value.
+            target = line.expense_account
         debit_by_account[target.id] += line.net_amount  # Accumulate the line net amount by account.
         debit_objs[target.id] = target  # Store the account object for journal creation.
 
         if line.tax_amount:  # Tax-bearing lines require a recoverable tax account.
             tax_acc = line.tax_code.paid_account if line.tax_code_id else None  # Resolve input tax account.
             if tax_acc is None:  # A tax amount without a paid account is invalid.
-                raise PostingError(  # Raise the domain error for this path.
+                raise PostingError(
                     f"Tax code '{line.tax_code.code}' has no paid (input/recoverable) "
                     f"account set." if line.tax_code_id else "Tax amount present without a tax code.",
-                )  # Close the grouped expression.
+                )
             tax_by_account[tax_acc.id] += line.tax_amount  # Accumulate tax by account.
             tax_objs[tax_acc.id] = tax_acc  # Store the tax account object.
 
     line_no = 0  # Track journal line ordering.
     for acc_id, amount in debit_by_account.items():  # Emit grouped net debit lines.
         if amount == 0:  # Skip empty debit groups.
-            continue  # Skip to the next loop iteration.
+            continue
         line_no += 1  # Advance the journal line counter.
-        JournalLine.objects.create(  # Debit expense or GR/IR.
-            entry=entry, account=debit_objs[acc_id], debit=amount, credit=0,  # Continue the structured value.
+        JournalLine.objects.create(
+            entry=entry, account=debit_objs[acc_id], debit=amount, credit=0,
             description="Purchase", line_no=line_no,
-        )  # Close the grouped expression.
+        )
     for acc_id, amount in tax_by_account.items():  # Emit grouped input tax debit lines.
         line_no += 1  # Advance the journal line counter.
-        JournalLine.objects.create(  # Debit recoverable input tax.
-            entry=entry, account=tax_objs[acc_id], debit=amount, credit=0,  # Continue the structured value.
+        JournalLine.objects.create(
+            entry=entry, account=tax_objs[acc_id], debit=amount, credit=0,
             description="Input tax", line_no=line_no,
-        )  # Close the grouped expression.
+        )
     # Credit the AP control for the gross owed.  # Final line records the liability to the vendor.
     line_no += 1  # Advance to the AP credit line.
-    JournalLine.objects.create(  # Credit accounts payable for the gross invoice.
-        entry=entry, account=ap_account, debit=0, credit=invoice.total,  # Continue the structured value.
+    JournalLine.objects.create(
+        entry=entry, account=ap_account, debit=0, credit=invoice.total,
         description=f"AP: {vendor.code}", line_no=line_no,
-    )  # Close the grouped expression.
+    )
 
     post_journal(entry, actor_user=actor_user)  # Validate and post the balanced AP journal.
 
     # Advance invoiced quantities on the PO lines.  # Keep procurement quantities in sync with AP posting.
     for line in invoice.lines.all():  # Revisit bill lines after successful posting.
         if line.po_line_id:  # Only PO-backed lines affect PO invoiced quantity.
-            PurchaseOrderLine.objects.filter(pk=line.po_line_id).update(  # Increment atomically in SQL.
+            PurchaseOrderLine.objects.filter(pk=line.po_line_id).update(
                 invoiced_qty=F("invoiced_qty") + line.quantity,
-            )  # Close the grouped expression.
+            )
 
     invoice.journal = entry  # Link the bill to the posted journal.
     invoice.status = DocumentStatus.POSTED  # Mark the bill posted.
     invoice.refresh_payment_status(save=False)  # Recompute payment status.
-    invoice.save(update_fields=["journal", "status", "payment_status", "updated_at"])  # Persist posting fields.
+    invoice.save(update_fields=["journal", "status", "payment_status", "updated_at"])
 
     record(  # Log the successful vendor invoice post.
-        entity=invoice.entity, action=FinanceAuditAction.VENDOR_INVOICE_POSTED,  # Continue the structured value.
-        actor_user=actor_user, target=invoice,  # Continue the structured value.
+        entity=invoice.entity, action=FinanceAuditAction.VENDOR_INVOICE_POSTED,
+        actor_user=actor_user, target=invoice,
         message=f"Posted bill from {vendor.code} ({invoice.total} kobo).",
-        journal_id=entry.pk, total=invoice.total, tax=invoice.tax_total,  # Continue the structured value.
-        match_status=str(match_status),  # Continue the structured value.
-    )  # Close the grouped expression.
+        journal_id=entry.pk, total=invoice.total, tax=invoice.tax_total,
+        match_status=str(match_status),
+    )
     return invoice  # Return the posted vendor invoice.
 
 
@@ -238,7 +242,8 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
 # Vendor payment posting + allocation (Dr AP, Cr Bank net, Cr WHT)            #
 # --------------------------------------------------------------------------- #
 
-def post_vendor_payment(payment, *, actor_user=None, auto_allocate=True, allocations=None):  # Define the callable used by this module.
+# Handle the post vendor payment workflow.
+def post_vendor_payment(payment, *, actor_user=None, auto_allocate=True, allocations=None):
     """Post a :class:`VendorPayment` (Dr AP, Cr bank net, Cr WHT) and allocate it.
 
     ``allocations`` (a list of ``(vendor_invoice, gross_amount_kobo)``) applies an
@@ -247,26 +252,27 @@ def post_vendor_payment(payment, *, actor_user=None, auto_allocate=True, allocat
     """
     try:  # The atomic worker owns the GL and allocation work.
         return _post_vendor_payment_atomic(  # Post the payment and optionally allocate it.
-            payment, actor_user=actor_user,  # Continue the structured value.
-            auto_allocate=auto_allocate, allocations=allocations,  # Continue the structured value.
-        )  # Close the grouped expression.
+            payment, actor_user=actor_user,
+            auto_allocate=auto_allocate, allocations=allocations,
+        )
     except FinanceError as exc:  # Log rejected payment posts durably.
         record_rejection(  # Record the failed vendor payment post.
-            entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_POST_REJECTED,  # Continue the structured value.
-            exc=exc, actor_user=actor_user, target=payment,  # Continue the structured value.
-        )  # Close the grouped expression.
-        raise  # Re-raise the original finance error.
+            entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_POST_REJECTED,
+            exc=exc, actor_user=actor_user, target=payment,
+        )
+        raise
 
 
-@transaction.atomic  # Apply the decorator to this callable.
-def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True, allocations=None):  # Define the callable used by this module.
-    from vs_finance.models import JournalEntry, JournalLine  # Journal models for the payment entry.
+@transaction.atomic
+# Support the post vendor payment atomic workflow.
+def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True, allocations=None):
+    from vs_finance.models import JournalEntry, JournalLine
 
     if payment.status != DocumentStatus.DRAFT:  # Only draft vendor payments can be posted.
-        raise PostingError(  # Raise the domain error for this path.
+        raise PostingError(
             f"Vendor payment {payment.document_number or payment.pk} is '{payment.status}', "
             f"only a draft can be posted.",
-        )  # Close the grouped expression.
+        )
 
     vendor = payment.vendor  # Vendor drives AP and blocking rules.
     if vendor.on_hold:  # Payments are blocked for vendors on hold.
@@ -287,48 +293,48 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
 
     period = resolve_period(payment.entity, payment.payment_date)  # Find the open accounting period.
 
-    entry = JournalEntry.objects.create(  # Create the vendor payment journal header.
-        entity=payment.entity, branch=payment.branch,  # Continue the structured value.
-        date=payment.payment_date, period=period,  # Continue the structured value.
-        source=JournalSource.BANK, currency=payment.currency,  # Continue the structured value.
+    entry = JournalEntry.objects.create(
+        entity=payment.entity, branch=payment.branch,
+        date=payment.payment_date, period=period,
+        source=JournalSource.BANK, currency=payment.currency,
         narration=payment.narration or f"Vendor payment {payment.document_number or ''}".strip(),
-        reference=payment.reference, created_by=actor_user,  # Continue the structured value.
-    )  # Close the grouped expression.
+        reference=payment.reference, created_by=actor_user,
+    )
     line_no = 1  # First journal line is the AP debit.
-    JournalLine.objects.create(  # Debit AP for the gross amount being settled.
-        entry=entry, account=ap_account, debit=payment.gross_amount, credit=0,  # Continue the structured value.
+    JournalLine.objects.create(
+        entry=entry, account=ap_account, debit=payment.gross_amount, credit=0,
         description=f"AP: {vendor.code}", line_no=line_no,
-    )  # Close the grouped expression.
+    )
     line_no += 1  # Second line is the bank/cash credit.
-    JournalLine.objects.create(  # Credit cash/bank for the net amount actually paid.
-        entry=entry, account=payment.payment_account, debit=0, credit=payment.net_amount,  # Continue the structured value.
+    JournalLine.objects.create(
+        entry=entry, account=payment.payment_account, debit=0, credit=payment.net_amount,
         description=f"Payment: {vendor.code}", line_no=line_no,
-    )  # Close the grouped expression.
+    )
     if payment.wht_amount:  # Withholding tax creates a payable instead of leaving cash.
         wht_account = (  # Prefer the tax-code account when configured.
-            payment.wht_tax_code.collected_account  # Execute the module statement.
+            payment.wht_tax_code.collected_account
             if (payment.wht_tax_code_id and payment.wht_tax_code.collected_account_id)  # Branch on the current domain condition.
             else resolve_account(payment.entity, WHT_PAYABLE_CODE, label="WHT payable")
-        )  # Close the grouped expression.
+        )
         line_no += 1  # Third line is the WHT payable credit.
-        JournalLine.objects.create(  # Credit WHT payable for the withheld amount.
-            entry=entry, account=wht_account, debit=0, credit=payment.wht_amount,  # Continue the structured value.
+        JournalLine.objects.create(
+            entry=entry, account=wht_account, debit=0, credit=payment.wht_amount,
             description="WHT withheld", line_no=line_no,
-        )  # Close the grouped expression.
+        )
 
     post_journal(entry, actor_user=actor_user)  # Validate and post the payment journal.
 
     payment.journal = entry  # Link the payment to the posted journal.
     payment.status = DocumentStatus.POSTED  # Mark the payment posted.
-    payment.save(update_fields=["journal", "net_amount", "status", "updated_at"])  # Persist posting fields.
+    payment.save(update_fields=["journal", "net_amount", "status", "updated_at"])
 
     record(  # Log the successful vendor payment post.
-        entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_POSTED,  # Continue the structured value.
-        actor_user=actor_user, target=payment,  # Continue the structured value.
+        entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_POSTED,
+        actor_user=actor_user, target=payment,
         message=f"Paid {vendor.code} ({payment.net_amount} kobo net, {payment.wht_amount} WHT).",
-        journal_id=entry.pk, gross=payment.gross_amount,  # Continue the structured value.
-        net=payment.net_amount, wht=payment.wht_amount,  # Continue the structured value.
-    )  # Close the grouped expression.
+        journal_id=entry.pk, gross=payment.gross_amount,
+        net=payment.net_amount, wht=payment.wht_amount,
+    )
 
     if allocations:  # Explicit allocations override auto allocation.
         allocate_vendor_payment(payment, allocations=allocations, actor_user=actor_user)  # Apply the explicit plan.
@@ -337,8 +343,9 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
     return payment  # Return the posted vendor payment.
 
 
-@transaction.atomic  # Apply the decorator to this callable.
-def allocate_vendor_payment(payment, *, allocations=None, actor_user=None):  # Define the callable used by this module.
+@transaction.atomic
+# Handle the allocate vendor payment workflow.
+def allocate_vendor_payment(payment, *, allocations=None, actor_user=None):
     """Apply a posted vendor payment's unallocated gross to bills.
 
     ``allocations`` is an optional list of ``(vendor_invoice, gross_amount_kobo)``;
@@ -346,7 +353,7 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None):  # D
     then invoice date). Never allocates past a bill's balance due or the payment's
     remaining gross. Returns the list of created allocation rows.
     """
-    from .models import VendorInvoice, VendorPaymentAllocation  # Bill and allocation models.
+    from .models import VendorInvoice, VendorPaymentAllocation
 
     if payment.status != DocumentStatus.POSTED:  # Only posted payments can be allocated.
         raise PostingError("Only a posted vendor payment can be allocated.")
@@ -356,11 +363,11 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None):  # D
 
     if allocations is None:  # Build an oldest-first plan when no explicit plan is supplied.
         open_invoices = (  # Posted vendor bills that still have a balance.
-            VendorInvoice.objects  # Execute the module statement.
-            .filter(vendor=payment.vendor, status=DocumentStatus.POSTED)  # Store the intermediate module value.
-            .exclude(payment_status=InvoicePaymentStatus.PAID)  # Store the intermediate module value.
+            VendorInvoice.objects
+            .filter(vendor=payment.vendor, status=DocumentStatus.POSTED)
+            .exclude(payment_status=InvoicePaymentStatus.PAID)
             .order_by("due_date", "invoice_date", "id")
-        )  # Close the grouped expression.
+        )
         plan = [(inv, inv.balance_due) for inv in open_invoices]  # Allocate up to each bill's current balance.
     else:  # Caller supplied an explicit allocation split.
         plan = list(allocations)  # Normalize the iterable to a list.
@@ -370,28 +377,28 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None):  # D
             break  # Exit the current loop.
         apply_amount = min(int(requested), invoice.balance_due, remaining)  # Cap allocation at requested, bill balance, and remaining payment.
         if apply_amount <= 0:  # Skip zero-value allocations.
-            continue  # Skip to the next loop iteration.
-        alloc, _ = VendorPaymentAllocation.objects.get_or_create(  # Reuse an existing allocation row when present.
+            continue
+        alloc, _ = VendorPaymentAllocation.objects.get_or_create(
             payment=payment, vendor_invoice=invoice, defaults={"amount": 0},
-        )  # Close the grouped expression.
+        )
         alloc.amount += apply_amount  # Increase the allocation amount.
-        alloc.save(update_fields=["amount", "updated_at"])  # Persist the allocation.
+        alloc.save(update_fields=["amount", "updated_at"])
 
         invoice.amount_paid += apply_amount  # Increase the bill's paid amount.
         invoice.refresh_payment_status(save=False)  # Recompute paid/partial/unpaid state.
-        invoice.save(update_fields=["amount_paid", "payment_status", "updated_at"])  # Persist the bill settlement fields.
+        invoice.save(update_fields=["amount_paid", "payment_status", "updated_at"])
 
         remaining -= apply_amount  # Reduce the unallocated gross payment amount.
         created.append(alloc)  # Track the allocation row for the return value.
 
     payment.allocated_amount = payment.gross_amount - remaining  # Store the total gross amount allocated.
-    payment.save(update_fields=["allocated_amount", "updated_at"])  # Persist the payment allocation total.
+    payment.save(update_fields=["allocated_amount", "updated_at"])
 
     if created:  # Log only when at least one bill was allocated.
         record(  # Write the allocation audit event.
-            entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_ALLOCATED,  # Continue the structured value.
-            actor_user=actor_user, target=payment,  # Continue the structured value.
+            entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_ALLOCATED,
+            actor_user=actor_user, target=payment,
             message=f"Allocated {payment.allocated_amount} kobo across {len(created)} bill(s).",
-            allocated=payment.allocated_amount, unallocated=payment.unallocated_amount,  # Continue the structured value.
-        )  # Close the grouped expression.
+            allocated=payment.allocated_amount, unallocated=payment.unallocated_amount,
+        )
     return created  # Return allocation rows touched by this call.

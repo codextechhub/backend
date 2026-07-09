@@ -4,20 +4,21 @@ Kept deliberately small and in one place so the whole network surface of the pay
 clients is a single, easily-mocked function (:func:`request_json`). Tests patch this
 rather than opening sockets, so the suite never makes a live provider call.  # Centralize HTTP and make it mockable.
 """
-from __future__ import annotations  # Defer annotation evaluation for forward references.
+from __future__ import annotations
 
-import json  # Used to encode requests and decode JSON responses.
-import urllib.error  # Standard-library transport errors.
-import urllib.request  # Standard-library HTTPS client.
+import json
+import urllib.error
+import urllib.request
 
-from ..exceptions import ProviderError  # Raised when provider requests fail or return invalid data.
+from ..exceptions import ProviderError
 
 DEFAULT_TIMEOUT = 20  # Conservative timeout so provider calls fail fast.
 
 
-def request_json(method: str, url: str, *, headers: dict | None = None,  # Define the callable used by this module.
+# Handle the request json workflow.
+def request_json(method: str, url: str, *, headers: dict | None = None,
                  body: dict | None = None, provider: str = "",
-                 timeout: int = DEFAULT_TIMEOUT) -> dict:  # Start the nested execution block.
+                 timeout: int = DEFAULT_TIMEOUT) -> dict:
     """Make an HTTP request and parse a JSON response, or raise :class:`ProviderError`.
 
     A non-2xx status, a transport failure, or a non-JSON body all surface as a typed
@@ -35,17 +36,17 @@ def request_json(method: str, url: str, *, headers: dict | None = None,  # Defin
             payload = resp.read().decode("utf-8")  # Decode the raw response body as UTF-8.
     except urllib.error.HTTPError as exc:  # Provider returned a 4xx/5xx response.
         detail = exc.read().decode("utf-8", "replace")[:500] if exc.fp else ""  # Capture a short error body when available.
-        raise ProviderError(  # Raise the domain error for this path.
+        raise ProviderError(
             f"{provider or 'Provider'} returned HTTP {exc.code}: {detail}",  # Include status and response snippet.
             provider=provider, provider_code=str(exc.code),  # Attach provider metadata for diagnostics.
-        )  # Close the grouped expression.
+        )
     except urllib.error.URLError as exc:  # DNS, connection, or timeout failure.
-        raise ProviderError(  # Raise the domain error for this path.
+        raise ProviderError(
             f"Could not reach {provider or 'provider'}: {exc.reason}", provider=provider,  # Surface the network reason.
-        )  # Close the grouped expression.
+        )
     try:  # Successful responses still need to be valid JSON.
         return json.loads(payload) if payload else {}  # Parse JSON, or return an empty dict for empty responses.
     except json.JSONDecodeError:  # Non-JSON bodies are not usable by the provider adapters.
-        raise ProviderError(  # Raise the domain error for this path.
+        raise ProviderError(
             f"{provider or 'Provider'} returned a non-JSON response.", provider=provider,  # Signal a bad upstream response shape.
-        )  # Close the grouped expression.
+        )

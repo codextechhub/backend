@@ -6,25 +6,26 @@ reimbursement and so on. They look those accounts up *by code* through this sing
 helper rather than hard-coding ids, so an entity with a customised chart fails loudly
 (a clear :class:`MissingAccountError`) instead of posting into the wrong place.
 """
-from __future__ import annotations  # Defer annotation evaluation for lightweight imports.
+from __future__ import annotations
 
-from .exceptions import MissingAccountError  # Raised when a required posting account is unavailable.
+from .exceptions import MissingAccountError
 
 
-def resolve_account(entity, code: str, *, label: str = ""):  # Resolve a configured chart account by code.
+# Resolve a configured chart account by code.
+def resolve_account(entity, code: str, *, label: str = ""):
     """Return the active, postable :class:`Account` with ``code`` for ``entity``.
 
     Raises :class:`~vs_finance.exceptions.MissingAccountError` when the account is
     absent, inactive or a non-postable header — a misconfigured chart should never
     silently swallow a posting.
     """
-    from .models import Account  # Import lazily to avoid loading finance models at module import time.
+    from .models import Account
 
     account = (  # Query only usable accounts for the requested entity and code.
-        Account.objects  # Start from the account manager.
-        .filter(entity=entity, code=code, is_active=True, is_postable=True)  # Require active postable leaf account.
-        .first()  # Return one matching account or None.
-    )  # Close the grouped expression.
+        Account.objects
+        .filter(entity=entity, code=code, is_active=True, is_postable=True)
+        .first()
+    )
     if account is None:  # Missing or unusable accounts are configuration errors.
-        raise MissingAccountError(code, label=label)  # Raise the domain error for this path.
+        raise MissingAccountError(code, label=label)
     return account  # Return the resolved posting account.

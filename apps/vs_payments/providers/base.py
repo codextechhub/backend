@@ -10,18 +10,19 @@ own status vocabulary (``CollectionStatus`` / ``PayoutStatus`` string values), s
 services and the ledger never learn a provider's wire format. The raw provider payload is
 always preserved on ``.raw`` for audit.  # Keep provider-specific details out of the core flow.
 """
-from __future__ import annotations  # Defer evaluation of annotations for forward references.
+from __future__ import annotations
 
-import abc  # Abstract base classes define the provider contract.
-from dataclasses import dataclass, field  # Result containers used by the payment service layer.
+import abc
+from dataclasses import dataclass, field
 
 
 # --------------------------------------------------------------------------- #  # Group provider-neutral result types here.
 # Neutral result types                                                        #  # Shared dataclasses for PSP responses.
 # --------------------------------------------------------------------------- #  # End result section.
 
-@dataclass  # Apply the decorator to this callable.
-class CheckoutResult:  # Define the class used by this module.
+@dataclass
+# Group behavior for Checkout Result.
+class CheckoutResult:
     """Outcome of creating a hosted checkout / redirect collection."""
 
     reference: str  # Merchant reference used to correlate this checkout.
@@ -32,8 +33,9 @@ class CheckoutResult:  # Define the class used by this module.
     raw: dict = field(default_factory=dict)  # Unmodified PSP payload for audit/debugging.
 
 
-@dataclass  # Apply the decorator to this callable.
-class VirtualAccountResult:  # Define the class used by this module.
+@dataclass
+# Group behavior for Virtual Account Result.
+class VirtualAccountResult:
     """Outcome of provisioning a dedicated virtual NUBAN."""
 
     account_number: str  # Virtual account number issued by the PSP.
@@ -43,8 +45,9 @@ class VirtualAccountResult:  # Define the class used by this module.
     raw: dict = field(default_factory=dict)  # Raw provider response for traceability.
 
 
-@dataclass  # Apply the decorator to this callable.
-class CollectionStatusResult:  # Define the class used by this module.
+@dataclass
+# Define Collection Status Result values.
+class CollectionStatusResult:
     """Outcome of verifying a collection (poll or post-webhook confirm)."""
 
     reference: str  # Merchant reference for the collection.
@@ -54,13 +57,15 @@ class CollectionStatusResult:  # Define the class used by this module.
     currency: str = "NGN"  # Settlement currency code.
     raw: dict = field(default_factory=dict)  # Full provider payload preserved verbatim.
 
-    @property  # Apply the decorator to this callable.
-    def paid(self) -> bool:  # Define the callable used by this module.
+    @property
+    # Handle the paid workflow.
+    def paid(self) -> bool:
         return self.status == "SUCCEEDED"  # Only succeeded collections count as paid.
 
 
-@dataclass  # Apply the decorator to this callable.
-class TransferResult:  # Define the class used by this module.
+@dataclass
+# Group behavior for Transfer Result.
+class TransferResult:
     """Outcome of creating or verifying a payout/transfer."""
 
     reference: str  # Merchant reference for the payout.
@@ -70,13 +75,15 @@ class TransferResult:  # Define the class used by this module.
     failure_reason: str = ""  # Human-readable failure explanation, if any.
     raw: dict = field(default_factory=dict)  # Raw PSP response payload.
 
-    @property  # Apply the decorator to this callable.
-    def paid(self) -> bool:  # Define the callable used by this module.
+    @property
+    # Handle the paid workflow.
+    def paid(self) -> bool:
         return self.status == "PAID"  # PAID is the success state for outbound transfers.
 
 
-@dataclass  # Apply the decorator to this callable.
-class WebhookParseResult:  # Define the class used by this module.
+@dataclass
+# Group behavior for Webhook Parse Result.
+class WebhookParseResult:
     """Normalised view of an inbound webhook event.
 
     ``direction`` is ``"COLLECTION"`` or ``"PAYOUT"``; ``status`` is the matching neutral
@@ -98,58 +105,69 @@ class WebhookParseResult:  # Define the class used by this module.
 # Capability interfaces                                                        #  # Abstract contracts for concrete adapters.
 # --------------------------------------------------------------------------- #  # End interface section.
 
-class WebhookCapable(abc.ABC):  # Define the class used by this module.
+# Group behavior for Webhook Capable.
+class WebhookCapable(abc.ABC):
     """Signature verification + event normalisation for inbound webhooks."""
 
-    @abc.abstractmethod  # Apply the decorator to this callable.
-    def verify_signature(self, *, raw_body: bytes, headers: dict) -> bool:  # Define the callable used by this module.
+    @abc.abstractmethod
+    # Handle the verify signature workflow.
+    def verify_signature(self, *, raw_body: bytes, headers: dict) -> bool:
         """Return True iff ``raw_body`` carries a valid signature for this provider."""  # Reject forged events.
 
-    @abc.abstractmethod  # Apply the decorator to this callable.
-    def parse_webhook(self, *, payload: dict, raw_body: bytes, headers: dict) -> WebhookParseResult:  # Define the callable used by this module.
+    @abc.abstractmethod
+    # Handle the parse webhook workflow.
+    def parse_webhook(self, *, payload: dict, raw_body: bytes, headers: dict) -> WebhookParseResult:
         """Normalise a verified webhook body into a :class:`WebhookParseResult`."""  # Map provider payloads to our neutral shape.
 
 
-class CollectionProvider(WebhookCapable):  # Define the class used by this module.
+# Group behavior for Collection Provider.
+class CollectionProvider(WebhookCapable):
     """Pull money in."""
 
     name: str = ""  # Human-readable provider name.
 
-    @abc.abstractmethod  # Apply the decorator to this callable.
-    def create_checkout(self, *, reference: str, amount: int, currency: str,  # Define the callable used by this module.
+    @abc.abstractmethod
+    # Handle the create checkout workflow.
+    def create_checkout(self, *, reference: str, amount: int, currency: str,
                         customer_email: str = "", customer_name: str = "",
                         narration: str = "", callback_url: str = "",
-                        metadata: dict | None = None) -> CheckoutResult:  # Start the nested execution block.
+                        metadata: dict | None = None) -> CheckoutResult:
         ...  # Create a hosted checkout session.
 
-    @abc.abstractmethod  # Apply the decorator to this callable.
-    def create_virtual_account(self, *, reference: str, customer_name: str,  # Define the callable used by this module.
+    @abc.abstractmethod
+    # Handle the create virtual account workflow.
+    def create_virtual_account(self, *, reference: str, customer_name: str,
                                customer_email: str = "", bank_code: str = "",
-                               metadata: dict | None = None) -> VirtualAccountResult:  # Start the nested execution block.
+                               metadata: dict | None = None) -> VirtualAccountResult:
         ...  # Provision a dedicated collection account.
 
-    @abc.abstractmethod  # Apply the decorator to this callable.
-    def verify_collection(self, *, reference: str,  # Define the callable used by this module.
+    @abc.abstractmethod
+    # Handle the verify collection workflow.
+    def verify_collection(self, *, reference: str,
                           provider_reference: str = "") -> CollectionStatusResult:
         ...  # Re-check collection status with the PSP.
 
 
-class PayoutProvider(WebhookCapable):  # Define the class used by this module.
+# Group behavior for Payout Provider.
+class PayoutProvider(WebhookCapable):
     """Push money out."""
 
     name: str = ""  # Human-readable provider name.
 
-    @abc.abstractmethod  # Apply the decorator to this callable.
-    def create_transfer(self, *, reference: str, amount: int, currency: str,  # Define the callable used by this module.
+    @abc.abstractmethod
+    # Handle the create transfer workflow.
+    def create_transfer(self, *, reference: str, amount: int, currency: str,
                         account_number: str, bank_code: str, account_name: str = "",
                         narration: str = "", metadata: dict | None = None) -> TransferResult:
         ...  # Initiate a bank transfer.
 
-    @abc.abstractmethod  # Apply the decorator to this callable.
-    def verify_transfer(self, *, reference: str,  # Define the callable used by this module.
+    @abc.abstractmethod
+    # Handle the verify transfer workflow.
+    def verify_transfer(self, *, reference: str,
                         provider_reference: str = "") -> TransferResult:
         ...  # Re-check transfer status with the PSP.
 
 
-class Provider(CollectionProvider, PayoutProvider):  # Define the class used by this module.
+# Group behavior for Provider.
+class Provider(CollectionProvider, PayoutProvider):
     """A provider that can do both directions (OPay, Paystack, Fake all do)."""

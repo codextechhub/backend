@@ -6,25 +6,26 @@ Signatures use HMAC-SHA512 over the raw body with :attr:`secret` (mirrors the re
 providers' scheme), and :meth:`build_webhook` produces a correctly-signed event body a
 test can feed straight into the webhook ingestion path.  # Keep tests fully offline and predictable.
 """
-from __future__ import annotations  # Defer annotation evaluation for forward references.
+from __future__ import annotations
 
-import hashlib  # Used to generate fake webhook signatures.
-import hmac  # Used to compare signatures securely.
-import json  # Used to build webhook payloads.
+import hashlib
+import hmac
+import json
 
-from .base import (  # Import project symbols used by this module.
-    CheckoutResult,  # Neutral checkout result.
-    CollectionStatusResult,  # Neutral collection verification result.
-    Provider,  # Combined provider contract.
-    TransferResult,  # Neutral transfer result.
-    VirtualAccountResult,  # Neutral virtual account result.
-    WebhookParseResult,  # Neutral webhook parse result.
-)  # Close the grouped expression.
+from .base import (
+    CheckoutResult,
+    CollectionStatusResult,
+    Provider,
+    TransferResult,
+    VirtualAccountResult,
+    WebhookParseResult,
+)
 
 SIGNATURE_HEADER = "x-fake-signature"  # Header name used by the fake webhook verifier.
 
 
-class FakeProvider(Provider):  # Define the class used by this module.
+# Group behavior for Fake Provider.
+class FakeProvider(Provider):
     """A deterministic, network-free provider implementation."""
 
     name = "FAKE"  # Registry key for the fake provider.
@@ -33,7 +34,7 @@ class FakeProvider(Provider):  # Define the class used by this module.
         self.secret = secret  # HMAC secret used to sign fake webhooks.
         self.bank_name = bank_name  # Display bank name used for virtual accounts.
         # Lets a test force the next verify result without a webhook round-trip.  # Override verification outcomes.
-        self.forced_status: dict[str, str] = {}  # Store the intermediate module value.
+        self.forced_status: dict[str, str] = {}
 
     # -- collection --------------------------------------------------------- #  # Money-in behavior.
     def create_checkout(self, *, reference, amount, currency, customer_email="",
@@ -45,7 +46,7 @@ class FakeProvider(Provider):  # Define the class used by this module.
             authorization_code=f"AUTH-{reference}",  # Predictable authorization code.
             status="PENDING",  # Fake checkout starts pending.
             raw={"amount": amount, "currency": currency, "metadata": metadata or {}},  # Preserve core request fields.
-        )  # Close the grouped expression.
+        )
 
     def create_virtual_account(self, *, reference, customer_name, customer_email="",
                                bank_code="", metadata=None):
@@ -57,19 +58,20 @@ class FakeProvider(Provider):  # Define the class used by this module.
             account_name=customer_name,  # Use the customer name as the account name.
             provider_reference=f"FAKE-VA-{reference}",  # Fake provider reference for the virtual account.
             raw={"reference": reference},  # Keep the seed reference for traceability.
-        )  # Close the grouped expression.
+        )
 
     def verify_collection(self, *, reference, provider_reference=""):
-        status = self.forced_status.get(reference, "PENDING")  # Use a forced status when tests set one.
+        status = self.forced_status.get(reference, "PENDING")
         return CollectionStatusResult(  # Return a deterministic verification result.
             reference=reference,  # Merchant reference being verified.
             provider_reference=provider_reference or f"FAKE-{reference}",  # Provide a predictable provider reference.
             status=status,  # Return the forced or default status.
             raw={"forced": status},  # Show where the verification status came from.
-        )  # Close the grouped expression.
+        )
 
     # -- payout ------------------------------------------------------------- #  # Money-out behavior.
-    def create_transfer(self, *, reference, amount, currency, account_number, bank_code,  # Define the callable used by this module.
+    # Handle the create transfer workflow.
+    def create_transfer(self, *, reference, amount, currency, account_number, bank_code,
                         account_name="", narration="", metadata=None):
         return TransferResult(  # Return a deterministic transfer response.
             reference=reference,  # Merchant payout reference.
@@ -77,22 +79,24 @@ class FakeProvider(Provider):  # Define the class used by this module.
             status="PROCESSING",  # Transfers start in flight.
             recipient_code=f"RCP-{account_number}",  # Predictable recipient code.
             raw={"amount": amount, "account_number": account_number},  # Keep core transfer inputs.
-        )  # Close the grouped expression.
+        )
 
     def verify_transfer(self, *, reference, provider_reference=""):
-        status = self.forced_status.get(reference, "PROCESSING")  # Use a forced payout status when provided.
+        status = self.forced_status.get(reference, "PROCESSING")
         return TransferResult(  # Return a deterministic transfer verification result.
             reference=reference,  # Merchant payout reference.
             provider_reference=provider_reference or f"FAKE-TR-{reference}",  # Predictable fake transfer id.
             status=status,  # Forced or default transfer status.
             raw={"forced": status},  # Show the origin of the returned state.
-        )  # Close the grouped expression.
+        )
 
     # -- webhooks ----------------------------------------------------------- #  # Webhook signature and parsing.
-    def _sign(self, raw_body: bytes) -> str:  # Define the callable used by this module.
+    # Support the sign workflow.
+    def _sign(self, raw_body: bytes) -> str:
         return hmac.new(self.secret.encode(), raw_body, hashlib.sha512).hexdigest()  # Mirror real-provider HMAC signing.
 
-    def verify_signature(self, *, raw_body: bytes, headers: dict) -> bool:  # Define the callable used by this module.
+    # Handle the verify signature workflow.
+    def verify_signature(self, *, raw_body: bytes, headers: dict) -> bool:
         sent = ""  # Hold the supplied signature if we find one.
         for key, value in (headers or {}).items():  # Walk headers case-insensitively.
             if key.lower() == SIGNATURE_HEADER:  # Look for the fake signature header.
@@ -100,24 +104,26 @@ class FakeProvider(Provider):  # Define the class used by this module.
                 break  # Exit the current loop.
         return bool(sent) and hmac.compare_digest(sent, self._sign(raw_body))  # Compare supplied and expected signatures.
 
-    def parse_webhook(self, *, payload, raw_body, headers):  # Define the callable used by this module.
-        data = payload.get("data", payload)  # Allow tests to pass either wrapped or flat payloads.
-        direction = "PAYOUT" if payload.get("event", "").startswith("transfer") else "COLLECTION"  # Infer direction from event name.
-        status = data.get("status", "")  # Reuse the payload status verbatim.
+    # Handle the parse webhook workflow.
+    def parse_webhook(self, *, payload, raw_body, headers):
+        data = payload.get("data", payload)
+        direction = "PAYOUT" if payload.get("event", "").startswith("transfer") else "COLLECTION"
+        status = data.get("status", "")
         return WebhookParseResult(  # Return a neutral parse result for the webhook pipeline.
-            event_type=payload.get("event", ""),  # Preserve the fake event type.
+            event_type=payload.get("event", ""),
             direction=direction,  # Route to the collection or payout flow.
-            reference=data.get("reference", ""),  # Merchant reference if present.
-            provider_reference=str(data.get("id", "")),  # Fake provider event id.
+            reference=data.get("reference", ""),
+            provider_reference=str(data.get("id", "")),
             status=status,  # Fake status value.
-            amount=int(data.get("amount", 0)),  # Amount in kobo.
-            currency=data.get("currency", "NGN"),  # Currency code.
-            dedupe_key=f"FAKE:{payload.get('event', '')}:{data.get('reference', '')}",  # Stable fake dedupe key.
+            amount=int(data.get("amount", 0)),
+            currency=data.get("currency", "NGN"),
+            dedupe_key=f"FAKE:{payload.get('event', '')}:{data.get('reference', '')}",
             raw=payload,  # Preserve the original payload.
-        )  # Close the grouped expression.
+        )
 
     # -- test helper -------------------------------------------------------- #  # Utilities used in tests.
-    def build_webhook(self, *, event: str, reference: str, status: str,  # Define the callable used by this module.
+    # Handle the build webhook workflow.
+    def build_webhook(self, *, event: str, reference: str, status: str,
                       amount: int = 0, currency: str = "NGN", provider_id: str = "1"):
         """Return ``(raw_body: bytes, headers: dict)`` for a correctly-signed event."""
         body = json.dumps({  # Build the webhook body in the same shape the parser expects.
@@ -125,6 +131,6 @@ class FakeProvider(Provider):  # Define the class used by this module.
             "data": {
                 "reference": reference, "status": status, "amount": amount,  # Core event fields.
                 "currency": currency, "id": provider_id,  # Provider id used by the parser.
-            },  # Close the grouped value.
+            },
         }).encode()  # Encode the JSON payload as bytes for the webhook pipeline.
         return body, {SIGNATURE_HEADER: self._sign(body)}  # Return the body and matching fake signature.

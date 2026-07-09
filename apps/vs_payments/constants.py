@@ -7,12 +7,13 @@ services (``vs_finance.receivables.post_payment`` for receipts;
 ``vs_procurement.payables.post_vendor_payment`` for payouts). Money is always integer
 **kobo** here too — never float.  # Keep gateway values aligned with the ledger.
 """
-from __future__ import annotations  # Defer annotation evaluation for forward references.
+from __future__ import annotations
 
-from django.db import models  # Django text choices power the explicit state enums below.
+from django.db import models
 
 
-class PaymentProvider(models.TextChoices):  # Define the class used by this module.
+# Group behavior for Payment Provider.
+class PaymentProvider(models.TextChoices):
     """The external payment service providers we integrate with."""
 
     OPAY = "OPAY", "OPay"  # OPay live provider.
@@ -20,14 +21,16 @@ class PaymentProvider(models.TextChoices):  # Define the class used by this modu
     FAKE = "FAKE", "Fake (testing)"  # In-memory test provider.
 
 
-class PaymentDirection(models.TextChoices):  # Define the class used by this module.
+# Group behavior for Payment Direction.
+class PaymentDirection(models.TextChoices):
     """Which way money flows relative to the ledger entity."""
 
     COLLECTION = "COLLECTION", "Collection (money in)"  # Incoming money.
     PAYOUT = "PAYOUT", "Payout (money out)"  # Outgoing money.
 
 
-class CollectionChannel(models.TextChoices):  # Define the class used by this module.
+# Group behavior for Collection Channel.
+class CollectionChannel(models.TextChoices):
     """How a collection is presented to the payer."""
 
     CHECKOUT = "CHECKOUT", "Hosted checkout / redirect"  # Redirect-style checkout.
@@ -37,7 +40,8 @@ class CollectionChannel(models.TextChoices):  # Define the class used by this mo
     USSD = "USSD", "USSD"  # USSD-based payment flow.
 
 
-class CollectionStatus(models.TextChoices):  # Define the class used by this module.
+# Define Collection Status values.
+class CollectionStatus(models.TextChoices):
     """Lifecycle of a collection intent.
 
     ``PENDING`` → created locally, payer not yet acted; ``PROCESSING`` → provider
@@ -54,13 +58,14 @@ class CollectionStatus(models.TextChoices):  # Define the class used by this mod
 
 
 #: Collection states past which no further automatic transition happens.  # Terminal collection states.
-COLLECTION_TERMINAL = frozenset(  # Continue the structured value.
-    {CollectionStatus.SUCCEEDED, CollectionStatus.FAILED,  # Continue the structured value.
-     CollectionStatus.ABANDONED, CollectionStatus.REFUNDED}  # Execute the module statement.
-)  # Close the grouped expression.
+COLLECTION_TERMINAL = frozenset(
+    {CollectionStatus.SUCCEEDED, CollectionStatus.FAILED,
+     CollectionStatus.ABANDONED, CollectionStatus.REFUNDED}
+)
 
 
-class PayoutStatus(models.TextChoices):  # Define the class used by this module.
+# Define Payout Status values.
+class PayoutStatus(models.TextChoices):
     """Lifecycle of a payout instruction (money leaving the entity)."""
 
     PENDING = "PENDING", "Pending"  # Created locally, not yet sent.
@@ -71,12 +76,13 @@ class PayoutStatus(models.TextChoices):  # Define the class used by this module.
 
 
 #: Payout states past which no further automatic transition happens.  # Terminal payout states.
-PAYOUT_TERMINAL = frozenset(  # Continue the structured value.
-    {PayoutStatus.PAID, PayoutStatus.FAILED, PayoutStatus.REVERSED}  # Execute the module statement.
-)  # Close the grouped expression.
+PAYOUT_TERMINAL = frozenset(
+    {PayoutStatus.PAID, PayoutStatus.FAILED, PayoutStatus.REVERSED}
+)
 
 
-class PayoutBatchStatus(models.TextChoices):  # Define the class used by this module.
+# Define Payout Batch Status values.
+class PayoutBatchStatus(models.TextChoices):
     """Lifecycle of a bulk-disbursement batch grouping many payout instructions.
 
     ``DRAFT`` → created locally with child instructions but not yet submitted;
@@ -94,18 +100,20 @@ class PayoutBatchStatus(models.TextChoices):  # Define the class used by this mo
 
 
 #: Batch states past which no further automatic transition happens.  # Terminal batch states.
-PAYOUT_BATCH_TERMINAL = frozenset(  # Continue the structured value.
-    {PayoutBatchStatus.COMPLETED, PayoutBatchStatus.PARTIALLY_COMPLETED,  # Continue the structured value.
-     PayoutBatchStatus.FAILED}  # Execute the module statement.
-)  # Close the grouped expression.
+PAYOUT_BATCH_TERMINAL = frozenset(
+    {PayoutBatchStatus.COMPLETED, PayoutBatchStatus.PARTIALLY_COMPLETED,
+     PayoutBatchStatus.FAILED}
+)
 
 
-class VirtualAccountStatus(models.TextChoices):  # Define the class used by this module.
+# Define Virtual Account Status values.
+class VirtualAccountStatus(models.TextChoices):
     ACTIVE = "ACTIVE", "Active"  # Available for incoming transfers.
     INACTIVE = "INACTIVE", "Inactive"  # No longer offered for new transfers.
 
 
-class WebhookStatus(models.TextChoices):  # Define the class used by this module.
+# Define Webhook Status values.
+class WebhookStatus(models.TextChoices):
     """Processing state of a raw inbound webhook event."""
 
     RECEIVED = "RECEIVED", "Received"  # Stored but not yet dispatched.
@@ -114,7 +122,8 @@ class WebhookStatus(models.TextChoices):  # Define the class used by this module
     FAILED = "FAILED", "Failed"  # Dispatch failed after storage.
 
 
-class PaymentAuditAction(models.TextChoices):  # Define the class used by this module.
+# Define Payment Audit Action values.
+class PaymentAuditAction(models.TextChoices):
     """Durable action log for the gateway layer (separate from ledger postings)."""
 
     COLLECTION_INITIATED = "COLLECTION_INITIATED", "Collection initiated"  # Money-in request created.

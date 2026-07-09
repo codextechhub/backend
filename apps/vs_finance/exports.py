@@ -8,22 +8,23 @@ describe its columns once, and a new format only has to be written once.
 Money is rendered as human-facing naira strings in exports (the JSON API carries the
 exact kobo); callers pass already-formatted strings in the cells.
 """
-from __future__ import annotations  # Defer annotations for lightweight imports.
+from __future__ import annotations
 
-import csv  # Standard CSV writer for comma-separated exports.
-import io  # In-memory text and byte buffers for generated files.
-from dataclasses import dataclass, field  # Compact table data container.
+import csv
+import io
+from dataclasses import dataclass, field
 
 #: Supported export formats → (extension, MIME content type).
 EXPORT_FORMATS = {  # Public map of supported export format metadata.
     "csv": ("csv", "text/csv"),  # CSV extension and MIME type.
     "xlsx": ("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),  # Excel extension and MIME type.
     "pdf": ("pdf", "application/pdf"),  # PDF extension and MIME type.
-}  # Close the grouped expression.
+}
 
 
-@dataclass  # Apply the decorator to this callable.
-class ReportTable:  # Renderer-neutral table representation.
+@dataclass
+# Renderer-neutral table representation.
+class ReportTable:
     """A renderer-neutral rectangular report.
 
     ``rows`` and ``summary_rows`` are lists of cells (str/number); ``summary_rows`` are
@@ -37,12 +38,14 @@ class ReportTable:  # Renderer-neutral table representation.
     summary_rows: list[list] = field(default_factory=list)  # Emphasized total/summary rows.
     subtitle: str = ""  # Optional second heading line.
 
-    @property  # Apply the decorator to this callable.
-    def all_rows(self) -> list[list]:  # Combine body and summary rows for renderers.
+    @property
+    # Combine body and summary rows for renderers.
+    def all_rows(self) -> list[list]:
         return list(self.rows) + list(self.summary_rows)  # Return copies to avoid mutating source lists.
 
 
-def to_csv(table: ReportTable) -> bytes:  # Render a report table to UTF-8 CSV bytes.
+# Render a report table to UTF-8 CSV bytes.
+def to_csv(table: ReportTable) -> bytes:
     buf = io.StringIO()  # Hold CSV text before encoding.
     writer = csv.writer(buf)  # Use Python's CSV escaping rules.
     writer.writerow([table.title])  # First row is the report title.
@@ -59,9 +62,10 @@ def to_csv(table: ReportTable) -> bytes:  # Render a report table to UTF-8 CSV b
     return buf.getvalue().encode("utf-8")  # Return encoded bytes for HTTP response.
 
 
-def to_xlsx(table: ReportTable) -> bytes:  # Render a report table to Excel workbook bytes.
-    from openpyxl import Workbook  # Imported lazily so CSV users do not require openpyxl at import.
-    from openpyxl.styles import Font  # Used for title, header, and summary emphasis.
+# Render a report table to Excel workbook bytes.
+def to_xlsx(table: ReportTable) -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
 
     wb = Workbook()  # Create a single-workbook export.
     ws = wb.active  # Use the default worksheet.
@@ -88,31 +92,32 @@ def to_xlsx(table: ReportTable) -> bytes:  # Render a report table to Excel work
 
     # Roughly autosize columns to their widest cell.  # Improves readability without complex layout.
     for idx, _col in enumerate(table.columns, start=1):  # Walk each report column.
-        from openpyxl.utils import get_column_letter  # Imported lazily with xlsx rendering.
+        from openpyxl.utils import get_column_letter
         letter = get_column_letter(idx)  # Convert 1-based index to Excel column letter.
         widest = max(  # Compute the widest visible value in this column.
             [len(str(table.columns[idx - 1]))]  # Include header width.
             + [len(str(r[idx - 1])) for r in table.all_rows if idx - 1 < len(r)]  # Include row cell widths when present.
             or [10]  # Defensive fallback width.
-        )  # Close the grouped expression.
+        )
         ws.column_dimensions[letter].width = min(max(widest + 2, 10), 48)  # Clamp to a usable width range.
 
     out = io.BytesIO()  # Store workbook bytes in memory.
-    wb.save(out)  # Serialize workbook into the byte buffer.
+    wb.save(out)
     return out.getvalue()  # Return xlsx bytes for HTTP response.
 
 
-def to_pdf(table: ReportTable) -> bytes:  # Render a report table to PDF bytes.
-    from reportlab.lib import colors  # Color constants and helpers for table styling.
-    from reportlab.lib.pagesizes import A4, landscape  # Landscape A4 report page.
-    from reportlab.lib.styles import getSampleStyleSheet  # Built-in paragraph styles.
-    from reportlab.platypus import (  # Flowable document building blocks.
-        Paragraph,  # Text block flowable.
-        SimpleDocTemplate,  # Minimal PDF document wrapper.
-        Spacer,  # Vertical spacing flowable.
-        Table,  # Tabular PDF flowable.
-        TableStyle,  # Table styling descriptor.
-    )  # Close the grouped expression.
+# Render a report table to PDF bytes.
+def to_pdf(table: ReportTable) -> bytes:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import (
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
 
     out = io.BytesIO()  # Store PDF bytes in memory.
     doc = SimpleDocTemplate(out, pagesize=landscape(A4), title=table.title)  # Configure landscape PDF document.
@@ -131,7 +136,7 @@ def to_pdf(table: ReportTable) -> bytes:  # Render a report table to PDF bytes.
         ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#d1d5db")),  # Light grid around cells.
         ("FONTSIZE", (0, 0), (-1, -1), 8),  # Compact report font size.
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f3f4f6")]),  # Alternating body backgrounds.
-    ]  # Close the grouped expression.
+    ]
     # Bold the summary rows at the bottom.  # Makes totals stand out.
     n_summary = len(table.summary_rows)  # Count summary rows for bottom styling.
     if n_summary:  # Apply summary styling only when summary rows exist.
@@ -148,7 +153,8 @@ def to_pdf(table: ReportTable) -> bytes:  # Render a report table to PDF bytes.
 _RENDERERS = {"csv": to_csv, "xlsx": to_xlsx, "pdf": to_pdf}  # Dispatch table for supported renderers.
 
 
-def render(table: ReportTable, fmt: str) -> tuple[bytes, str, str]:  # Render a report in the requested format.
+# Render a report in the requested format.
+def render(table: ReportTable, fmt: str) -> tuple[bytes, str, str]:
     """Render ``table`` in ``fmt`` → ``(body, content_type, file_extension)``.
 
     Raises :class:`ValueError` for an unsupported format (the view turns this into a
@@ -156,8 +162,8 @@ def render(table: ReportTable, fmt: str) -> tuple[bytes, str, str]:  # Render a 
     """
     fmt = (fmt or "").lower()  # Normalize missing and mixed-case format values.
     if fmt not in _RENDERERS:  # Reject unsupported export formats early.
-        raise ValueError(  # Raise the domain error for this path.
+        raise ValueError(
             f"Unsupported export format '{fmt}'. Choose one of: {', '.join(EXPORT_FORMATS)}."
-        )  # Close the grouped expression.
+        )
     extension, content_type = EXPORT_FORMATS[fmt]  # Look up HTTP metadata for this format.
     return _RENDERERS[fmt](table), content_type, extension  # Render and return body plus metadata.

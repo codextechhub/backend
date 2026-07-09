@@ -1,328 +1,355 @@
 """Tax obligations and filings.
 """
-from __future__ import annotations  # Import dependency used by this finance module.
+from __future__ import annotations
 
 
-from rest_framework.exceptions import NotFound, ValidationError  # Import dependency used by this finance module.
+from rest_framework.exceptions import NotFound, ValidationError
 
-from core.response import success_response  # Import dependency used by this finance module.
+from core.response import success_response
 
-from ..money import format_naira  # Import dependency used by this finance module.
-from ..views import resolve_entity  # Import dependency used by this finance module.
-from ..models import (  # Import dependency used by this finance module.
-    TaxFiling,  # Finance processing step.
-    TaxObligation,  # Finance processing step.
-)  # Continue structured finance payload.
-from ..serializers import (  # Import dependency used by this finance module.
-    TaxFilingSerializer,  # Finance processing step.
-    TaxObligationSerializer,  # Finance processing step.
-)  # Continue structured finance payload.
+from ..money import format_naira
+from ..views import resolve_entity
+from ..models import (
+    TaxFiling,
+    TaxObligation,
+)
+from ..serializers import (
+    TaxFilingSerializer,
+    TaxObligationSerializer,
+)
 
 
-from .base import (  # Import dependency used by this finance module.
-    _FinanceBase,  # Finance processing step.
-    _bool,  # Finance processing step.
-    _date,  # Finance processing step.
-    _int,  # Finance processing step.
-    _money,  # Finance processing step.
-    _resolve_account,  # Finance processing step.
-    _resolve_bank_account,  # Finance processing step.
-    _resolve_currency,  # Finance processing step.
-)  # Continue structured finance payload.
+from .base import (
+    _FinanceBase,
+    _bool,
+    _date,
+    _int,
+    _money,
+    _resolve_account,
+    _resolve_bank_account,
+    _resolve_currency,
+)
 
 # --------------------------------------------------------------------------- #
 # Tax remittance / filing                                                     #
 # --------------------------------------------------------------------------- #
 
-class TaxObligationListCreateView(_FinanceBase):  # Class groups related finance API or service behavior.
+# Group endpoint behavior for Tax Obligation List Create View.
+class TaxObligationListCreateView(_FinanceBase):
     """GET (list) / POST (create) statutory tax obligations for an entity.
 
     docstring-name: Tax obligations
     """
 
-    @property  # Decorator configures the following callable.
-    def rbac_permission(self):  # Function handles this finance operation.
+    @property
+    # Handle the rbac permission workflow.
+    def rbac_permission(self):
         return "finance.tax.manage" if self.request.method == "POST" \
-            else "finance.tax.view"  # Finance processing step.
+            else "finance.tax.view"
 
-    def get(self, request):  # Function handles this finance operation.
-        entity = resolve_entity(request)  # Store intermediate finance value.
-        qs = TaxObligation.objects.filter(entity=entity).select_related(  # Query finance data from the database.
-            "liability_account", "recoverable_account")  # Finance processing step.
-        if (active := request.query_params.get("is_active")) in ("true", "false"):  # Branch when this finance condition is true.
-            qs = qs.filter(is_active=active == "true")  # Store intermediate finance value.
-        return success_response(  # Return the computed finance response.
-            "Tax obligations retrieved.",  # Finance processing step.
-            data=TaxObligationSerializer(qs.order_by("code"), many=True).data,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
+    # Handle GET requests for this endpoint.
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = TaxObligation.objects.filter(entity=entity).select_related(
+            "liability_account", "recoverable_account")
+        if (active := request.query_params.get("is_active")) in ("true", "false"):
+            qs = qs.filter(is_active=active == "true")
+        return success_response(
+            "Tax obligations retrieved.",
+            data=TaxObligationSerializer(qs.order_by("code"), many=True).data,
+        )
 
-    def post(self, request):  # Function handles this finance operation.
-        entity = resolve_entity(request)  # Store intermediate finance value.
-        body = request.data or {}  # Store intermediate finance value.
-        if not body.get("code"):  # Branch when this finance condition is true.
-            raise ValidationError({"code": "An obligation code is required."})  # Surface validation or finance error.
-        if not body.get("obligation_type"):  # Branch when this finance condition is true.
-            raise ValidationError({"obligation_type": "An obligation type is required."})  # Surface validation or finance error.
-        obligation = TaxObligation.objects.create(  # Query finance data from the database.
-            entity=entity, code=body["code"], name=body.get("name", body["code"]),  # Store intermediate finance value.
-            obligation_type=body["obligation_type"],  # Store intermediate finance value.
-            liability_account=_resolve_account(  # Store intermediate finance value.
-                entity, body.get("liability_account"), "liability_account", required=True),  # Store intermediate finance value.
-            recoverable_account=_resolve_account(  # Store intermediate finance value.
-                entity, body.get("recoverable_account"), "recoverable_account"),  # Finance processing step.
-            authority_name=body.get("authority_name", ""),  # Store intermediate finance value.
-            frequency=body.get("frequency", "MONTHLY"),  # Store intermediate finance value.
-            filing_day=_int(body.get("filing_day", 21), "filing_day", minimum=1),  # Store intermediate finance value.
-            is_active=_bool(body.get("is_active", True), default=True),  # Store intermediate finance value.
-        )  # Continue structured finance payload.
-        return success_response(  # Return the computed finance response.
-            "Tax obligation created.",  # Finance processing step.
-            data=TaxObligationSerializer(obligation).data, status=201,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
+    # Handle POST requests for this endpoint.
+    def post(self, request):
+        entity = resolve_entity(request)
+        body = request.data or {}
+        if not body.get("code"):
+            raise ValidationError({"code": "An obligation code is required."})
+        if not body.get("obligation_type"):
+            raise ValidationError({"obligation_type": "An obligation type is required."})
+        obligation = TaxObligation.objects.create(
+            entity=entity, code=body["code"], name=body.get("name", body["code"]),
+            obligation_type=body["obligation_type"],
+            liability_account=_resolve_account(
+                entity, body.get("liability_account"), "liability_account", required=True),
+            recoverable_account=_resolve_account(
+                entity, body.get("recoverable_account"), "recoverable_account"),
+            authority_name=body.get("authority_name", ""),
+            frequency=body.get("frequency", "MONTHLY"),
+            filing_day=_int(body.get("filing_day", 21), "filing_day", minimum=1),
+            is_active=_bool(body.get("is_active", True), default=True),
+        )
+        return success_response(
+            "Tax obligation created.",
+            data=TaxObligationSerializer(obligation).data, status=201,
+        )
 
 
-class TaxObligationDetailView(_FinanceBase):  # Class groups related finance API or service behavior.
+# Group endpoint behavior for Tax Obligation Detail View.
+class TaxObligationDetailView(_FinanceBase):
     """docstring-name: Tax obligations"""
-    @property  # Decorator configures the following callable.
-    def rbac_permission(self):  # Function handles this finance operation.
+    @property
+    # Handle the rbac permission workflow.
+    def rbac_permission(self):
         return "finance.tax.manage" if self.request.method == "PATCH" \
-            else "finance.tax.view"  # Finance processing step.
+            else "finance.tax.view"
 
-    def _obligation(self, request, pk):  # Function handles this finance operation.
-        entity = resolve_entity(request)  # Store intermediate finance value.
-        obligation = TaxObligation.objects.filter(entity=entity, pk=pk).first()  # Query finance data from the database.
-        if obligation is None:  # Branch when this finance condition is true.
-            raise NotFound("Tax obligation not found for this entity.")  # Surface validation or finance error.
-        return entity, obligation  # Return the computed finance response.
+    # Support the obligation workflow.
+    def _obligation(self, request, pk):
+        entity = resolve_entity(request)
+        obligation = TaxObligation.objects.filter(entity=entity, pk=pk).first()
+        if obligation is None:
+            raise NotFound("Tax obligation not found for this entity.")
+        return entity, obligation
 
-    def get(self, request, pk):  # Function handles this finance operation.
-        _, obligation = self._obligation(request, pk)  # Store intermediate finance value.
-        return success_response(  # Return the computed finance response.
-            "Tax obligation retrieved.", data=TaxObligationSerializer(obligation).data,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
+    # Handle GET requests for this endpoint.
+    def get(self, request, pk):
+        _, obligation = self._obligation(request, pk)
+        return success_response(
+            "Tax obligation retrieved.", data=TaxObligationSerializer(obligation).data,
+        )
 
-    def patch(self, request, pk):  # Function handles this finance operation.
-        entity, obligation = self._obligation(request, pk)  # Store intermediate finance value.
-        body = request.data or {}  # Store intermediate finance value.
-        if "name" in body:  # Branch when this finance condition is true.
-            obligation.name = body["name"]  # Store intermediate finance value.
-        if "liability_account" in body:  # Branch when this finance condition is true.
-            obligation.liability_account = _resolve_account(  # Store intermediate finance value.
-                entity, body.get("liability_account"), "liability_account", required=True)  # Store intermediate finance value.
-        if "recoverable_account" in body:  # Branch when this finance condition is true.
-            obligation.recoverable_account = _resolve_account(  # Store intermediate finance value.
-                entity, body.get("recoverable_account"), "recoverable_account")  # Finance processing step.
-        if "authority_name" in body:  # Branch when this finance condition is true.
-            obligation.authority_name = body["authority_name"]  # Store intermediate finance value.
-        if "frequency" in body:  # Branch when this finance condition is true.
-            obligation.frequency = body["frequency"]  # Store intermediate finance value.
-        if "filing_day" in body:  # Branch when this finance condition is true.
-            obligation.filing_day = _int(body["filing_day"], "filing_day", minimum=1)  # Store intermediate finance value.
-        if "is_active" in body:  # Branch when this finance condition is true.
-            obligation.is_active = _bool(body["is_active"])  # Store intermediate finance value.
-        obligation.save()  # Finance processing step.
-        return success_response(  # Return the computed finance response.
-            "Tax obligation updated.", data=TaxObligationSerializer(obligation).data,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
+    # Handle PATCH requests for this endpoint.
+    def patch(self, request, pk):
+        entity, obligation = self._obligation(request, pk)
+        body = request.data or {}
+        if "name" in body:
+            obligation.name = body["name"]
+        if "liability_account" in body:
+            obligation.liability_account = _resolve_account(
+                entity, body.get("liability_account"), "liability_account", required=True)
+        if "recoverable_account" in body:
+            obligation.recoverable_account = _resolve_account(
+                entity, body.get("recoverable_account"), "recoverable_account")
+        if "authority_name" in body:
+            obligation.authority_name = body["authority_name"]
+        if "frequency" in body:
+            obligation.frequency = body["frequency"]
+        if "filing_day" in body:
+            obligation.filing_day = _int(body["filing_day"], "filing_day", minimum=1)
+        if "is_active" in body:
+            obligation.is_active = _bool(body["is_active"])
+        obligation.save()
+        return success_response(
+            "Tax obligation updated.", data=TaxObligationSerializer(obligation).data,
+        )
 
 
-class TaxObligationOutstandingView(_FinanceBase):  # Class groups related finance API or service behavior.
+# Group endpoint behavior for Tax Obligation Outstanding View.
+class TaxObligationOutstandingView(_FinanceBase):
     """GET — per-obligation unremitted balance sitting in each control account.
 
     docstring-name: Outstanding tax obligations
     """
 
-    rbac_permission = "finance.tax.view"  # Store intermediate finance value.
+    rbac_permission = "finance.tax.view"
 
-    def get(self, request):  # Function handles this finance operation.
-        from ..tax_filing import outstanding_obligations  # Import dependency used by this finance module.
+    # Handle GET requests for this endpoint.
+    def get(self, request):
+        from ..tax_filing import outstanding_obligations
 
-        entity = resolve_entity(request)  # Store intermediate finance value.
-        rows = outstanding_obligations(entity)  # Store intermediate finance value.
-        return success_response(  # Return the computed finance response.
-            "Outstanding tax obligations retrieved.",  # Finance processing step.
-            data={  # Store intermediate finance value.
-                "entity": entity.code,  # Finance processing step.
-                "rows": [  # Finance processing step.
-                    {  # Continue structured finance payload.
-                        **r,  # Finance processing step.
-                        "payable_balance": {"kobo": r["payable_balance"], "naira": format_naira(r["payable_balance"])},  # Finance processing step.
-                        "recoverable_balance": {"kobo": r["recoverable_balance"], "naira": format_naira(r["recoverable_balance"])},  # Finance processing step.
-                        "net_outstanding": {"kobo": r["net_outstanding"], "naira": format_naira(r["net_outstanding"])},  # Finance processing step.
-                    }  # Continue structured finance payload.
-                    for r in rows  # Iterate through finance records.
-                ],  # Continue structured finance payload.
-            },  # Continue structured finance payload.
-        )  # Continue structured finance payload.
+        entity = resolve_entity(request)
+        rows = outstanding_obligations(entity)
+        return success_response(
+            "Outstanding tax obligations retrieved.",
+            data={
+                "entity": entity.code,
+                "rows": [
+                    {
+                        **r,
+                        "payable_balance": {"kobo": r["payable_balance"], "naira": format_naira(r["payable_balance"])},
+                        "recoverable_balance": {"kobo": r["recoverable_balance"], "naira": format_naira(r["recoverable_balance"])},
+                        "net_outstanding": {"kobo": r["net_outstanding"], "naira": format_naira(r["net_outstanding"])},
+                    }
+                    for r in rows
+                ],
+            },
+        )
 
 
-class TaxFilingSummaryView(_FinanceBase):  # Class groups related finance API or service behavior.
+# Group endpoint behavior for Tax Filing Summary View.
+class TaxFilingSummaryView(_FinanceBase):
     """GET — header KPIs over **all** tax filings (accurate under pagination).
 
     docstring-name: Tax filings
     """
 
-    rbac_permission = "finance.tax.view"  # Store intermediate finance value.
+    rbac_permission = "finance.tax.view"
 
-    def get(self, request):  # Function handles this finance operation.
-        from django.db.models import Count, F, Q, Sum  # Import dependency used by this finance module.
-        from django.db.models.functions import Coalesce  # Import dependency used by this finance module.
+    # Handle GET requests for this endpoint.
+    def get(self, request):
+        from django.db.models import Count, F, Q, Sum
+        from django.db.models.functions import Coalesce
 
-        from ..constants import TaxFilingStatus  # Import dependency used by this finance module.
+        from ..constants import TaxFilingStatus
 
-        entity = resolve_entity(request)  # Store intermediate finance value.
-        agg = TaxFiling.objects.filter(entity=entity).aggregate(  # Query finance data from the database.
-            outstanding=Coalesce(  # Store intermediate finance value.
-                Sum(F("amount_due") - F("amount_paid"),  # Finance processing step.
-                    filter=~Q(filing_status=TaxFilingStatus.PAID)), 0),  # Store intermediate finance value.
-            open=Count("id", filter=Q(filing_status=TaxFilingStatus.DRAFT)),  # Store intermediate finance value.
-            filed=Count("id", filter=Q(filing_status=TaxFilingStatus.FILED)),  # Store intermediate finance value.
-            paid=Count("id", filter=Q(filing_status=TaxFilingStatus.PAID)),  # Store intermediate finance value.
-        )  # Continue structured finance payload.
-        return success_response("Tax filing summary retrieved.", data=agg)  # Return the computed finance response.
+        entity = resolve_entity(request)
+        agg = TaxFiling.objects.filter(entity=entity).aggregate(
+            outstanding=Coalesce(
+                Sum(F("amount_due") - F("amount_paid"),
+                    filter=~Q(filing_status=TaxFilingStatus.PAID)), 0),
+            open=Count("id", filter=Q(filing_status=TaxFilingStatus.DRAFT)),
+            filed=Count("id", filter=Q(filing_status=TaxFilingStatus.FILED)),
+            paid=Count("id", filter=Q(filing_status=TaxFilingStatus.PAID)),
+        )
+        return success_response("Tax filing summary retrieved.", data=agg)
 
 
-class TaxFilingListCreateView(_FinanceBase):  # Class groups related finance API or service behavior.
+# Group endpoint behavior for Tax Filing List Create View.
+class TaxFilingListCreateView(_FinanceBase):
     """GET (list) / POST (prepare from GL) tax filings for an entity.
 
     docstring-name: Tax filings
     """
 
-    @property  # Decorator configures the following callable.
-    def rbac_permission(self):  # Function handles this finance operation.
+    @property
+    # Handle the rbac permission workflow.
+    def rbac_permission(self):
         return "finance.tax.file" if self.request.method == "POST" \
-            else "finance.tax.view"  # Finance processing step.
+            else "finance.tax.view"
 
-    def get(self, request):  # Function handles this finance operation.
-        entity = resolve_entity(request)  # Store intermediate finance value.
-        qs = TaxFiling.objects.filter(entity=entity).select_related("obligation")  # Query finance data from the database.
-        if (ob := request.query_params.get("obligation")):  # Branch when this finance condition is true.
-            qs = qs.filter(obligation_id=ob)  # Store intermediate finance value.
-        if (status_val := request.query_params.get("filing_status")):  # Branch when this finance condition is true.
-            qs = qs.filter(filing_status=status_val)  # Store intermediate finance value.
-        return self.paginate(  # Return the computed finance response.
-            request, qs.order_by("-period_end", "-id"), TaxFilingSerializer)  # Finance processing step.
+    # Handle GET requests for this endpoint.
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = TaxFiling.objects.filter(entity=entity).select_related("obligation")
+        if (ob := request.query_params.get("obligation")):
+            qs = qs.filter(obligation_id=ob)
+        if (status_val := request.query_params.get("filing_status")):
+            qs = qs.filter(filing_status=status_val)
+        return self.paginate(
+            request, qs.order_by("-period_end", "-id"), TaxFilingSerializer)
 
-    def post(self, request):  # Function handles this finance operation.
-        from ..tax_filing import prepare_filing  # Import dependency used by this finance module.
+    # Handle POST requests for this endpoint.
+    def post(self, request):
+        from ..tax_filing import prepare_filing
 
-        entity = resolve_entity(request)  # Store intermediate finance value.
-        body = request.data or {}  # Store intermediate finance value.
-        ref = body.get("obligation")  # Store intermediate finance value.
-        if ref in (None, ""):  # Branch when this finance condition is true.
-            raise ValidationError({"obligation": "A tax obligation is required."})  # Surface validation or finance error.
-        obligation = TaxObligation.objects.filter(entity=entity, pk=ref).first()  # Query finance data from the database.
-        if obligation is None:  # Branch when this finance condition is true.
-            raise ValidationError({"obligation": f"No tax obligation '{ref}' in this entity."})  # Surface validation or finance error.
-        filing = prepare_filing(  # Store intermediate finance value.
-            obligation,  # Finance processing step.
-            period_start=_date(body.get("period_start"), "period_start", required=True),  # Store intermediate finance value.
-            period_end=_date(body.get("period_end"), "period_end", required=True),  # Store intermediate finance value.
-            due_date=_date(body.get("due_date"), "due_date"),  # Store intermediate finance value.
-            currency=_resolve_currency(body.get("currency")),  # Store intermediate finance value.
-            actor_user=request.user,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
-        return success_response(  # Return the computed finance response.
-            f"Tax filing {filing.document_number} prepared.",  # Finance processing step.
-            data=TaxFilingSerializer(filing).data, status=201,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
-
-
-class _TaxFilingActionBase(_FinanceBase):  # Class groups related finance API or service behavior.
-    def _filing(self, request, pk):  # Function handles this finance operation.
-        entity = resolve_entity(request)  # Store intermediate finance value.
-        filing = TaxFiling.objects.filter(entity=entity, pk=pk).select_related(  # Query finance data from the database.
-            "obligation").first()  # Finance processing step.
-        if filing is None:  # Branch when this finance condition is true.
-            raise NotFound("Tax filing not found for this entity.")  # Surface validation or finance error.
-        return entity, filing  # Return the computed finance response.
+        entity = resolve_entity(request)
+        body = request.data or {}
+        ref = body.get("obligation")
+        if ref in (None, ""):
+            raise ValidationError({"obligation": "A tax obligation is required."})
+        obligation = TaxObligation.objects.filter(entity=entity, pk=ref).first()
+        if obligation is None:
+            raise ValidationError({"obligation": f"No tax obligation '{ref}' in this entity."})
+        filing = prepare_filing(
+            obligation,
+            period_start=_date(body.get("period_start"), "period_start", required=True),
+            period_end=_date(body.get("period_end"), "period_end", required=True),
+            due_date=_date(body.get("due_date"), "due_date"),
+            currency=_resolve_currency(body.get("currency")),
+            actor_user=request.user,
+        )
+        return success_response(
+            f"Tax filing {filing.document_number} prepared.",
+            data=TaxFilingSerializer(filing).data, status=201,
+        )
 
 
-class TaxFilingDetailView(_TaxFilingActionBase):  # Class groups related finance API or service behavior.
+# Define Tax Filing Action Base values.
+class _TaxFilingActionBase(_FinanceBase):
+    # Support the filing workflow.
+    def _filing(self, request, pk):
+        entity = resolve_entity(request)
+        filing = TaxFiling.objects.filter(entity=entity, pk=pk).select_related(
+            "obligation").first()
+        if filing is None:
+            raise NotFound("Tax filing not found for this entity.")
+        return entity, filing
+
+
+# Group endpoint behavior for Tax Filing Detail View.
+class TaxFilingDetailView(_TaxFilingActionBase):
     """docstring-name: Tax filings"""
-    rbac_permission = "finance.tax.view"  # Store intermediate finance value.
+    rbac_permission = "finance.tax.view"
 
-    def get(self, request, pk):  # Function handles this finance operation.
-        _, filing = self._filing(request, pk)  # Store intermediate finance value.
-        return success_response(  # Return the computed finance response.
-            "Tax filing retrieved.", data=TaxFilingSerializer(filing).data,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
+    # Handle GET requests for this endpoint.
+    def get(self, request, pk):
+        _, filing = self._filing(request, pk)
+        return success_response(
+            "Tax filing retrieved.", data=TaxFilingSerializer(filing).data,
+        )
 
 
-class TaxFilingFileView(_TaxFilingActionBase):  # Class groups related finance API or service behavior.
+# Group endpoint behavior for Tax Filing File View.
+class TaxFilingFileView(_TaxFilingActionBase):
     """POST — submit a draft return (net input VAT, book any penalty).
 
     docstring-name: File a tax return
     """
 
-    rbac_permission = "finance.tax.file"  # Store intermediate finance value.
+    rbac_permission = "finance.tax.file"
 
-    def post(self, request, pk):  # Function handles this finance operation.
-        from ..tax_filing import file_filing  # Import dependency used by this finance module.
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        from ..tax_filing import file_filing
 
-        entity, filing = self._filing(request, pk)  # Store intermediate finance value.
-        body = request.data or {}  # Store intermediate finance value.
-        adjustment = body.get("adjustment_amount")  # Store intermediate finance value.
-        file_filing(  # Finance processing step.
-            filing,  # Finance processing step.
-            filed_date=_date(body.get("filed_date"), "filed_date", required=True),  # Store intermediate finance value.
-            filing_reference=body.get("filing_reference", ""),  # Store intermediate finance value.
-            adjustment_amount=_money(adjustment, "adjustment_amount") if adjustment not in (None, "") else 0,  # Store intermediate finance value.
-            adjustment_account=_resolve_account(  # Store intermediate finance value.
-                entity, body.get("adjustment_account"), "adjustment_account"),  # Finance processing step.
-            actor_user=request.user,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
-        filing.refresh_from_db()  # Finance processing step.
-        return success_response(  # Return the computed finance response.
-            f"Tax filing {filing.document_number} filed.",  # Finance processing step.
-            data=TaxFilingSerializer(filing).data,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
+        entity, filing = self._filing(request, pk)
+        body = request.data or {}
+        adjustment = body.get("adjustment_amount")
+        file_filing(
+            filing,
+            filed_date=_date(body.get("filed_date"), "filed_date", required=True),
+            filing_reference=body.get("filing_reference", ""),
+            adjustment_amount=_money(adjustment, "adjustment_amount") if adjustment not in (None, "") else 0,
+            adjustment_account=_resolve_account(
+                entity, body.get("adjustment_account"), "adjustment_account"),
+            actor_user=request.user,
+        )
+        filing.refresh_from_db()
+        return success_response(
+            f"Tax filing {filing.document_number} filed.",
+            data=TaxFilingSerializer(filing).data,
+        )
 
 
-class TaxFilingUnfileView(_TaxFilingActionBase):  # Class groups related finance API or service behavior.
+# Group endpoint behavior for Tax Filing Unfile View.
+class TaxFilingUnfileView(_TaxFilingActionBase):
     """POST — revert a filed return to draft (reverse its netting/penalty journal).
 
     docstring-name: Un-file a tax return
     """
 
-    rbac_permission = "finance.tax.file"  # Store intermediate finance value.
+    rbac_permission = "finance.tax.file"
 
-    def post(self, request, pk):  # Function handles this finance operation.
-        from ..tax_filing import unfile_filing  # Import dependency used by this finance module.
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        from ..tax_filing import unfile_filing
 
-        _, filing = self._filing(request, pk)  # Store intermediate finance value.
-        unfile_filing(filing, actor_user=request.user)  # Store intermediate finance value.
-        filing.refresh_from_db()  # Finance processing step.
-        return success_response(  # Return the computed finance response.
-            f"Tax filing {filing.document_number} un-filed.",  # Finance processing step.
-            data=TaxFilingSerializer(filing).data,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
+        _, filing = self._filing(request, pk)
+        unfile_filing(filing, actor_user=request.user)
+        filing.refresh_from_db()
+        return success_response(
+            f"Tax filing {filing.document_number} un-filed.",
+            data=TaxFilingSerializer(filing).data,
+        )
 
 
-class TaxFilingPayView(_TaxFilingActionBase):  # Class groups related finance API or service behavior.
+# Group endpoint behavior for Tax Filing Pay View.
+class TaxFilingPayView(_TaxFilingActionBase):
     """POST — remit a filed return (Dr liability, Cr bank).
 
     docstring-name: Pay a tax filing
     """
 
-    rbac_permission = "finance.tax.pay"  # Store intermediate finance value.
+    rbac_permission = "finance.tax.pay"
 
-    def post(self, request, pk):  # Function handles this finance operation.
-        from ..tax_filing import pay_filing  # Import dependency used by this finance module.
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        from ..tax_filing import pay_filing
 
-        entity, filing = self._filing(request, pk)  # Store intermediate finance value.
-        body = request.data or {}  # Store intermediate finance value.
-        bank = _resolve_bank_account(entity, body.get("bank_account"))  # Store intermediate finance value.
-        amount = _money(body["amount"], "amount") if body.get("amount") not in (None, "") else None  # Store intermediate finance value.
-        pay_filing(  # Finance processing step.
-            filing, bank_account=bank,  # Store intermediate finance value.
-            pay_date=_date(body.get("pay_date"), "pay_date", required=True),  # Store intermediate finance value.
-            amount=amount, actor_user=request.user,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
-        filing.refresh_from_db()  # Finance processing step.
-        return success_response(  # Return the computed finance response.
-            f"Tax filing {filing.document_number} remitted.",  # Finance processing step.
-            data=TaxFilingSerializer(filing).data,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
+        entity, filing = self._filing(request, pk)
+        body = request.data or {}
+        bank = _resolve_bank_account(entity, body.get("bank_account"))
+        amount = _money(body["amount"], "amount") if body.get("amount") not in (None, "") else None
+        pay_filing(
+            filing, bank_account=bank,
+            pay_date=_date(body.get("pay_date"), "pay_date", required=True),
+            amount=amount, actor_user=request.user,
+        )
+        filing.refresh_from_db()
+        return success_response(
+            f"Tax filing {filing.document_number} remitted.",
+            data=TaxFilingSerializer(filing).data,
+        )
 
 

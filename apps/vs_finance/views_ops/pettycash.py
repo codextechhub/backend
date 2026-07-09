@@ -1,387 +1,417 @@
 """Petty cash funds and vouchers.
 """
-from __future__ import annotations  # Import dependency used by this finance module.
+from __future__ import annotations
 
 
-from django.db import transaction  # Import dependency used by this finance module.
-from rest_framework.exceptions import NotFound, ValidationError  # Import dependency used by this finance module.
+from django.db import transaction
+from rest_framework.exceptions import NotFound, ValidationError
 
-from core.response import success_response  # Import dependency used by this finance module.
+from core.response import success_response
 
-from ..constants import DocumentStatus  # Import dependency used by this finance module.
-from ..money import format_naira  # Import dependency used by this finance module.
-from ..views import resolve_entity  # Import dependency used by this finance module.
-from ..models import (  # Import dependency used by this finance module.
-    JournalLine,  # Finance processing step.
-    PettyCashFund,  # Finance processing step.
-    PettyCashVoucher,  # Finance processing step.
-    PettyCashVoucherLine,  # Finance processing step.
-)  # Continue structured finance payload.
-from ..serializers import (  # Import dependency used by this finance module.
-    PettyCashFundSerializer,  # Finance processing step.
-    PettyCashVoucherSerializer,  # Finance processing step.
-)  # Continue structured finance payload.
+from ..constants import DocumentStatus
+from ..money import format_naira
+from ..views import resolve_entity
+from ..models import (
+    JournalLine,
+    PettyCashFund,
+    PettyCashVoucher,
+    PettyCashVoucherLine,
+)
+from ..serializers import (
+    PettyCashFundSerializer,
+    PettyCashVoucherSerializer,
+)
 
 
-from .base import (  # Import dependency used by this finance module.
-    _FinanceBase,  # Finance processing step.
-    _bool,  # Finance processing step.
-    _date,  # Finance processing step.
-    _dec,  # Finance processing step.
-    _int,  # Finance processing step.
-    _money,  # Finance processing step.
-    _require_lines,  # Finance processing step.
-    _resolve_account,  # Finance processing step.
-    _resolve_bank_account,  # Finance processing step.
-    _resolve_cost_center,  # Finance processing step.
-    _resolve_currency,  # Finance processing step.
-    _resolve_tax,  # Finance processing step.
-)  # Continue structured finance payload.
+from .base import (
+    _FinanceBase,
+    _bool,
+    _date,
+    _dec,
+    _int,
+    _money,
+    _require_lines,
+    _resolve_account,
+    _resolve_bank_account,
+    _resolve_cost_center,
+    _resolve_currency,
+    _resolve_tax,
+)
 
 # --------------------------------------------------------------------------- #
 # Petty cash                                                                  #
 # --------------------------------------------------------------------------- #
 
-def _resolve_user(ref, field):  # Function handles this finance operation.
+# Support the resolve user workflow.
+def _resolve_user(ref, field):
     """Resolve a platform user by id (or return None for a blank ref)."""
-    if ref in (None, ""):  # Branch when this finance condition is true.
-        return None  # Return the computed finance response.
-    from django.contrib.auth import get_user_model  # Import dependency used by this finance module.
+    if ref in (None, ""):
+        return None
+    from django.contrib.auth import get_user_model
 
-    user = get_user_model().objects.filter(pk=ref).first()  # Query finance data from the database.
-    if user is None:  # Branch when this finance condition is true.
-        raise ValidationError({field: f"No user '{ref}'."})  # Surface validation or finance error.
-    return user  # Return the computed finance response.
+    user = get_user_model().objects.filter(pk=ref).first()
+    if user is None:
+        raise ValidationError({field: f"No user '{ref}'."})
+    return user
 
 
-class PettyCashFundListCreateView(_FinanceBase):  # Class groups related finance API or service behavior.
+# Group endpoint behavior for Petty Cash Fund List Create View.
+class PettyCashFundListCreateView(_FinanceBase):
     """GET (list) / POST (create) petty-cash funds for an entity.
 
     docstring-name: Petty cash funds
     """
 
-    @property  # Decorator configures the following callable.
-    def rbac_permission(self):  # Function handles this finance operation.
+    @property
+    # Handle the rbac permission workflow.
+    def rbac_permission(self):
         return "finance.pettycash.create" if self.request.method == "POST" \
-            else "finance.pettycash.view"  # Finance processing step.
+            else "finance.pettycash.view"
 
-    def get(self, request):  # Function handles this finance operation.
-        entity = resolve_entity(request)  # Store intermediate finance value.
-        qs = PettyCashFund.objects.filter(entity=entity).select_related("gl_account")  # Query finance data from the database.
-        if (active := request.query_params.get("is_active")) in ("true", "false"):  # Branch when this finance condition is true.
-            qs = qs.filter(is_active=active == "true")  # Store intermediate finance value.
-        return success_response(  # Return the computed finance response.
-            "Petty cash funds retrieved.",  # Finance processing step.
-            data=PettyCashFundSerializer(qs.order_by("name"), many=True).data,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
+    # Handle GET requests for this endpoint.
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = PettyCashFund.objects.filter(entity=entity).select_related("gl_account")
+        if (active := request.query_params.get("is_active")) in ("true", "false"):
+            qs = qs.filter(is_active=active == "true")
+        return success_response(
+            "Petty cash funds retrieved.",
+            data=PettyCashFundSerializer(qs.order_by("name"), many=True).data,
+        )
 
-    def post(self, request):  # Function handles this finance operation.
-        entity = resolve_entity(request)  # Store intermediate finance value.
-        body = request.data or {}  # Store intermediate finance value.
-        if not body.get("name"):  # Branch when this finance condition is true.
-            raise ValidationError({"name": "A fund name is required."})  # Surface validation or finance error.
-        fund = PettyCashFund.objects.create(  # Query finance data from the database.
-            entity=entity, name=body["name"],  # Store intermediate finance value.
-            gl_account=_resolve_account(entity, body.get("gl_account"), "gl_account", required=True),  # Store intermediate finance value.
-            custodian=_resolve_user(body.get("custodian"), "custodian"),  # Store intermediate finance value.
-            custodian_name=body.get("custodian_name", ""),  # Store intermediate finance value.
-            float_amount=_money(body.get("float_amount", 0), "float_amount"),  # Store intermediate finance value.
-            currency=_resolve_currency(body.get("currency")),  # Store intermediate finance value.
-            is_active=_bool(body.get("is_active", True), default=True),  # Store intermediate finance value.
-        )  # Continue structured finance payload.
-        return success_response(  # Return the computed finance response.
-            "Petty cash fund created.",  # Finance processing step.
-            data=PettyCashFundSerializer(fund).data, status=201,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
-
-
-class _PettyCashFundActionBase(_FinanceBase):  # Class groups related finance API or service behavior.
-    def _fund(self, request, pk):  # Function handles this finance operation.
-        entity = resolve_entity(request)  # Store intermediate finance value.
-        fund = PettyCashFund.objects.filter(entity=entity, pk=pk).first()  # Query finance data from the database.
-        if fund is None:  # Branch when this finance condition is true.
-            raise NotFound("Petty cash fund not found for this entity.")  # Surface validation or finance error.
-        return entity, fund  # Return the computed finance response.
+    # Handle POST requests for this endpoint.
+    def post(self, request):
+        entity = resolve_entity(request)
+        body = request.data or {}
+        if not body.get("name"):
+            raise ValidationError({"name": "A fund name is required."})
+        fund = PettyCashFund.objects.create(
+            entity=entity, name=body["name"],
+            gl_account=_resolve_account(entity, body.get("gl_account"), "gl_account", required=True),
+            custodian=_resolve_user(body.get("custodian"), "custodian"),
+            custodian_name=body.get("custodian_name", ""),
+            float_amount=_money(body.get("float_amount", 0), "float_amount"),
+            currency=_resolve_currency(body.get("currency")),
+            is_active=_bool(body.get("is_active", True), default=True),
+        )
+        return success_response(
+            "Petty cash fund created.",
+            data=PettyCashFundSerializer(fund).data, status=201,
+        )
 
 
-class PettyCashFundDetailView(_PettyCashFundActionBase):  # Class groups related finance API or service behavior.
+# Define Petty Cash Fund Action Base values.
+class _PettyCashFundActionBase(_FinanceBase):
+    # Support the fund workflow.
+    def _fund(self, request, pk):
+        entity = resolve_entity(request)
+        fund = PettyCashFund.objects.filter(entity=entity, pk=pk).first()
+        if fund is None:
+            raise NotFound("Petty cash fund not found for this entity.")
+        return entity, fund
+
+
+# Group endpoint behavior for Petty Cash Fund Detail View.
+class PettyCashFundDetailView(_PettyCashFundActionBase):
     """docstring-name: Petty cash funds"""
-    @property  # Decorator configures the following callable.
-    def rbac_permission(self):  # Function handles this finance operation.
+    @property
+    # Handle the rbac permission workflow.
+    def rbac_permission(self):
         return "finance.pettycash.update" if self.request.method == "PATCH" \
-            else "finance.pettycash.view"  # Finance processing step.
+            else "finance.pettycash.view"
 
-    def _register(self, fund, *, limit=80):  # Function handles this finance operation.
+    # Support the register workflow.
+    def _register(self, fund, *, limit=80):
         """The fund's GL ledger as a movement register, newest first, running balance.
 
         ``in``/``out`` are the petty-cash debit/credit. ``category`` is derived from
         the journal's counter line: 'Top-up' for cash coming in, else the expense
         account's name for a spend.
         """
-        lines = list(  # Store intermediate finance value.
-            JournalLine.objects  # Query finance data from the database.
-            .filter(account=fund.gl_account, entry__status=DocumentStatus.POSTED)  # Store intermediate finance value.
-            .select_related("entry")  # Finance processing step.
-            .prefetch_related("entry__lines__account")  # Finance processing step.
-            .order_by("-entry__date", "-id")[:limit]  # Finance processing step.
-        )  # Continue structured finance payload.
-        running = fund.current_balance  # Store intermediate finance value.
-        out = []  # Store intermediate finance value.
-        for ln in lines:  # Iterate through finance records.
-            inflow, outflow = int(ln.debit or 0), int(ln.credit or 0)  # Store intermediate finance value.
-            if inflow:  # Branch when this finance condition is true.
-                category = "Top-up"  # Store intermediate finance value.
-            else:  # Fallback finance branch.
-                counter = next((l for l in ln.entry.lines.all()  # Store intermediate finance value.
-                                if l.account_id != fund.gl_account_id and (l.debit or 0)), None)  # Branch when this finance condition is true.
-                category = counter.account.name if counter else "—"  # Store intermediate finance value.
-            out.append({  # Finance processing step.
-                "id": ln.id, "date": ln.entry.date,  # Finance processing step.
-                "description": ln.description or ln.entry.narration or "—",  # Finance processing step.
-                "category": category, "in": inflow, "out": outflow,  # Finance processing step.
-                "balance": int(running),  # Finance processing step.
-            })  # Continue structured finance payload.
-            running -= (inflow - outflow)  # Store intermediate finance value.
-        return out  # Return the computed finance response.
+        lines = list(
+            JournalLine.objects
+            .filter(account=fund.gl_account, entry__status=DocumentStatus.POSTED)
+            .select_related("entry")
+            .prefetch_related("entry__lines__account")
+            .order_by("-entry__date", "-id")[:limit]
+        )
+        running = fund.current_balance
+        out = []
+        for ln in lines:
+            inflow, outflow = int(ln.debit or 0), int(ln.credit or 0)
+            if inflow:
+                category = "Top-up"
+            else:
+                counter = next((l for l in ln.entry.lines.all()
+                                if l.account_id != fund.gl_account_id and (l.debit or 0)), None)
+                category = counter.account.name if counter else "—"
+            out.append({
+                "id": ln.id, "date": ln.entry.date,
+                "description": ln.description or ln.entry.narration or "—",
+                "category": category, "in": inflow, "out": outflow,
+                "balance": int(running),
+            })
+            running -= (inflow - outflow)
+        return out
 
-    def get(self, request, pk):  # Function handles this finance operation.
-        import datetime  # Import dependency used by this finance module.
+    # Handle GET requests for this endpoint.
+    def get(self, request, pk):
+        import datetime
 
-        _, fund = self._fund(request, pk)  # Store intermediate finance value.
-        week_ago = datetime.date.today() - datetime.timedelta(days=7)  # Store intermediate finance value.
-        spent_week = sum(  # Store intermediate finance value.
-            v.total for v in PettyCashVoucher.objects.filter(  # Query finance data from the database.
-                fund=fund, status=DocumentStatus.POSTED, voucher_date__gte=week_ago))  # Store intermediate finance value.
-        data = PettyCashFundSerializer(fund).data  # Store intermediate finance value.
-        data["spent_this_week"] = int(spent_week)  # Store intermediate finance value.
-        data["register"] = self._register(fund)  # Store intermediate finance value.
-        return success_response("Petty cash fund retrieved.", data=data)  # Return the computed finance response.
+        _, fund = self._fund(request, pk)
+        week_ago = datetime.date.today() - datetime.timedelta(days=7)
+        spent_week = sum(
+            v.total for v in PettyCashVoucher.objects.filter(
+                fund=fund, status=DocumentStatus.POSTED, voucher_date__gte=week_ago))
+        data = PettyCashFundSerializer(fund).data
+        data["spent_this_week"] = int(spent_week)
+        data["register"] = self._register(fund)
+        return success_response("Petty cash fund retrieved.", data=data)
 
-    def patch(self, request, pk):  # Function handles this finance operation.
-        entity, fund = self._fund(request, pk)  # Store intermediate finance value.
-        body = request.data or {}  # Store intermediate finance value.
-        if "name" in body:  # Branch when this finance condition is true.
-            fund.name = body["name"]  # Store intermediate finance value.
-        if "custodian" in body:  # Branch when this finance condition is true.
-            fund.custodian = _resolve_user(body.get("custodian"), "custodian")  # Store intermediate finance value.
-        if "custodian_name" in body:  # Branch when this finance condition is true.
-            fund.custodian_name = body["custodian_name"]  # Store intermediate finance value.
-        if "float_amount" in body:  # Branch when this finance condition is true.
-            fund.float_amount = _money(body.get("float_amount", 0), "float_amount")  # Store intermediate finance value.
-        if "is_active" in body:  # Branch when this finance condition is true.
-            fund.is_active = _bool(body["is_active"])  # Store intermediate finance value.
-        fund.save()  # Finance processing step.
-        return success_response(  # Return the computed finance response.
-            "Petty cash fund updated.", data=PettyCashFundSerializer(fund).data,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
+    # Handle PATCH requests for this endpoint.
+    def patch(self, request, pk):
+        entity, fund = self._fund(request, pk)
+        body = request.data or {}
+        if "name" in body:
+            fund.name = body["name"]
+        if "custodian" in body:
+            fund.custodian = _resolve_user(body.get("custodian"), "custodian")
+        if "custodian_name" in body:
+            fund.custodian_name = body["custodian_name"]
+        if "float_amount" in body:
+            fund.float_amount = _money(body.get("float_amount", 0), "float_amount")
+        if "is_active" in body:
+            fund.is_active = _bool(body["is_active"])
+        fund.save()
+        return success_response(
+            "Petty cash fund updated.", data=PettyCashFundSerializer(fund).data,
+        )
 
 
-class PettyCashFundEstablishView(_PettyCashFundActionBase):  # Class groups related finance API or service behavior.
+# Group endpoint behavior for Petty Cash Fund Establish View.
+class PettyCashFundEstablishView(_PettyCashFundActionBase):
     """POST — move cash from a bank account into the tin (Dr petty cash, Cr bank).
 
     docstring-name: Establish a petty cash fund
     """
 
-    rbac_permission = "finance.pettycash.establish"  # Store intermediate finance value.
+    rbac_permission = "finance.pettycash.establish"
 
-    def post(self, request, pk):  # Function handles this finance operation.
-        from ..petty_cash import establish_fund  # Import dependency used by this finance module.
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        from ..petty_cash import establish_fund
 
-        entity, fund = self._fund(request, pk)  # Store intermediate finance value.
-        body = request.data or {}  # Store intermediate finance value.
-        bank = _resolve_bank_account(entity, body.get("bank_account"))  # Store intermediate finance value.
-        establish_fund(  # Finance processing step.
-            fund, bank_account=bank,  # Store intermediate finance value.
-            amount=_money(body.get("amount"), "amount"),  # Store intermediate finance value.
-            date=_date(body.get("date"), "date", required=True),  # Store intermediate finance value.
-            actor_user=request.user,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
-        fund.refresh_from_db()  # Finance processing step.
-        return success_response(  # Return the computed finance response.
-            f"Established cash into petty cash '{fund.name}'.",  # Finance processing step.
-            data=PettyCashFundSerializer(fund).data,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
+        entity, fund = self._fund(request, pk)
+        body = request.data or {}
+        bank = _resolve_bank_account(entity, body.get("bank_account"))
+        establish_fund(
+            fund, bank_account=bank,
+            amount=_money(body.get("amount"), "amount"),
+            date=_date(body.get("date"), "date", required=True),
+            actor_user=request.user,
+        )
+        fund.refresh_from_db()
+        return success_response(
+            f"Established cash into petty cash '{fund.name}'.",
+            data=PettyCashFundSerializer(fund).data,
+        )
 
 
-class PettyCashFundReplenishView(_PettyCashFundActionBase):  # Class groups related finance API or service behavior.
+# Group endpoint behavior for Petty Cash Fund Replenish View.
+class PettyCashFundReplenishView(_PettyCashFundActionBase):
     """POST — top the tin back up to its float (Dr petty cash, Cr bank).
 
     docstring-name: Replenish a petty cash fund
     """
 
-    rbac_permission = "finance.pettycash.replenish"  # Store intermediate finance value.
+    rbac_permission = "finance.pettycash.replenish"
 
-    def post(self, request, pk):  # Function handles this finance operation.
-        from ..petty_cash import replenish_fund  # Import dependency used by this finance module.
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        from ..petty_cash import replenish_fund
 
-        entity, fund = self._fund(request, pk)  # Store intermediate finance value.
-        body = request.data or {}  # Store intermediate finance value.
-        bank = _resolve_bank_account(entity, body.get("bank_account"))  # Store intermediate finance value.
-        amount = _money(body["amount"], "amount") if body.get("amount") not in (None, "") else None  # Store intermediate finance value.
-        replenish_fund(  # Finance processing step.
-            fund, bank_account=bank,  # Store intermediate finance value.
-            date=_date(body.get("date"), "date", required=True),  # Store intermediate finance value.
-            amount=amount, actor_user=request.user,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
-        fund.refresh_from_db()  # Finance processing step.
-        return success_response(  # Return the computed finance response.
-            f"Replenished petty cash '{fund.name}'.",  # Finance processing step.
-            data=PettyCashFundSerializer(fund).data,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
+        entity, fund = self._fund(request, pk)
+        body = request.data or {}
+        bank = _resolve_bank_account(entity, body.get("bank_account"))
+        amount = _money(body["amount"], "amount") if body.get("amount") not in (None, "") else None
+        replenish_fund(
+            fund, bank_account=bank,
+            date=_date(body.get("date"), "date", required=True),
+            amount=amount, actor_user=request.user,
+        )
+        fund.refresh_from_db()
+        return success_response(
+            f"Replenished petty cash '{fund.name}'.",
+            data=PettyCashFundSerializer(fund).data,
+        )
 
 
-class PettyCashStatusView(_FinanceBase):  # Class groups related finance API or service behavior.
+# Group endpoint behavior for Petty Cash Status View.
+class PettyCashStatusView(_FinanceBase):
     """GET — per-fund cash position + low-balance flags (replenishment alerts).
 
     docstring-name: Petty cash status
     """
 
-    rbac_permission = "finance.pettycash.view"  # Store intermediate finance value.
+    rbac_permission = "finance.pettycash.view"
 
-    def get(self, request):  # Function handles this finance operation.
-        from ..petty_cash import fund_status  # Import dependency used by this finance module.
+    # Handle GET requests for this endpoint.
+    def get(self, request):
+        from ..petty_cash import fund_status
 
-        entity = resolve_entity(request)  # Store intermediate finance value.
-        threshold = _int(  # Store intermediate finance value.
-            request.query_params.get("threshold_bps", 2500), "threshold_bps", minimum=0,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
-        rows = fund_status(entity, threshold_bps=threshold)  # Store intermediate finance value.
-        return success_response(  # Return the computed finance response.
-            "Petty cash status retrieved.",  # Finance processing step.
-            data={  # Store intermediate finance value.
-                "entity": entity.code,  # Finance processing step.
-                "rows": [  # Finance processing step.
-                    {  # Continue structured finance payload.
-                        **r,  # Finance processing step.
-                        "float_amount": {"kobo": r["float_amount"], "naira": format_naira(r["float_amount"])},  # Finance processing step.
-                        "current_balance": {"kobo": r["current_balance"], "naira": format_naira(r["current_balance"])},  # Finance processing step.
-                        "shortfall": {"kobo": r["shortfall"], "naira": format_naira(r["shortfall"])},  # Finance processing step.
-                        "last_replenished_at": str(r["last_replenished_at"]) if r["last_replenished_at"] else None,  # Finance processing step.
-                    }  # Continue structured finance payload.
-                    for r in rows  # Iterate through finance records.
-                ],  # Continue structured finance payload.
-            },  # Continue structured finance payload.
-        )  # Continue structured finance payload.
+        entity = resolve_entity(request)
+        threshold = _int(
+            request.query_params.get("threshold_bps", 2500), "threshold_bps", minimum=0,
+        )
+        rows = fund_status(entity, threshold_bps=threshold)
+        return success_response(
+            "Petty cash status retrieved.",
+            data={
+                "entity": entity.code,
+                "rows": [
+                    {
+                        **r,
+                        "float_amount": {"kobo": r["float_amount"], "naira": format_naira(r["float_amount"])},
+                        "current_balance": {"kobo": r["current_balance"], "naira": format_naira(r["current_balance"])},
+                        "shortfall": {"kobo": r["shortfall"], "naira": format_naira(r["shortfall"])},
+                        "last_replenished_at": str(r["last_replenished_at"]) if r["last_replenished_at"] else None,
+                    }
+                    for r in rows
+                ],
+            },
+        )
 
 
-class PettyCashVoucherListCreateView(_FinanceBase):  # Class groups related finance API or service behavior.
+# Group endpoint behavior for Petty Cash Voucher List Create View.
+class PettyCashVoucherListCreateView(_FinanceBase):
     """GET (list) / POST (create draft + lines) petty-cash vouchers.
 
     docstring-name: Petty cash vouchers
     """
 
-    @property  # Decorator configures the following callable.
-    def rbac_permission(self):  # Function handles this finance operation.
+    @property
+    # Handle the rbac permission workflow.
+    def rbac_permission(self):
         return "finance.pettycashvoucher.create" if self.request.method == "POST" \
-            else "finance.pettycashvoucher.view"  # Finance processing step.
+            else "finance.pettycashvoucher.view"
 
-    def get(self, request):  # Function handles this finance operation.
-        entity = resolve_entity(request)  # Store intermediate finance value.
-        qs = PettyCashVoucher.objects.filter(entity=entity).prefetch_related("lines__expense_account")  # Query finance data from the database.
-        if (fund := request.query_params.get("fund")):  # Branch when this finance condition is true.
-            qs = qs.filter(fund_id=fund)  # Store intermediate finance value.
-        if (status_val := request.query_params.get("status")):  # Branch when this finance condition is true.
-            qs = qs.filter(status=status_val)  # Store intermediate finance value.
-        return self.paginate(  # Return the computed finance response.
-            request, qs.order_by("-voucher_date", "-id"), PettyCashVoucherSerializer)  # Finance processing step.
+    # Handle GET requests for this endpoint.
+    def get(self, request):
+        entity = resolve_entity(request)
+        qs = PettyCashVoucher.objects.filter(entity=entity).prefetch_related("lines__expense_account")
+        if (fund := request.query_params.get("fund")):
+            qs = qs.filter(fund_id=fund)
+        if (status_val := request.query_params.get("status")):
+            qs = qs.filter(status=status_val)
+        return self.paginate(
+            request, qs.order_by("-voucher_date", "-id"), PettyCashVoucherSerializer)
 
-    @transaction.atomic  # Decorator configures the following callable.
-    def post(self, request):  # Function handles this finance operation.
-        from ..petty_cash import price_voucher  # Import dependency used by this finance module.
+    @transaction.atomic
+    # Handle POST requests for this endpoint.
+    def post(self, request):
+        from ..petty_cash import price_voucher
 
-        entity = resolve_entity(request)  # Store intermediate finance value.
-        body = request.data or {}  # Store intermediate finance value.
-        lines = _require_lines(body)  # Store intermediate finance value.
-        fund_ref = body.get("fund")  # Store intermediate finance value.
-        if fund_ref in (None, ""):  # Branch when this finance condition is true.
-            raise ValidationError({"fund": "A petty cash fund is required."})  # Surface validation or finance error.
-        fund = PettyCashFund.objects.filter(entity=entity, pk=fund_ref).first()  # Query finance data from the database.
-        if fund is None:  # Branch when this finance condition is true.
-            raise ValidationError({"fund": f"No petty cash fund '{fund_ref}' in this entity."})  # Surface validation or finance error.
-        voucher = PettyCashVoucher.objects.create(  # Query finance data from the database.
-            entity=entity, fund=fund,  # Store intermediate finance value.
-            voucher_date=_date(body.get("voucher_date"), "voucher_date", required=True),  # Store intermediate finance value.
-            payee=body.get("payee", ""),  # Store intermediate finance value.
-            spent_by=_resolve_user(body.get("spent_by"), "spent_by"),  # Store intermediate finance value.
-            narration=body.get("narration", ""),  # Store intermediate finance value.
-            reference=body.get("reference", ""),  # Store intermediate finance value.
-            currency=_resolve_currency(body.get("currency")) or fund.currency,  # Store intermediate finance value.
-            created_by=request.user,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
-        for i, ln in enumerate(lines, start=1):  # Iterate through finance records.
-            PettyCashVoucherLine.objects.create(  # Query finance data from the database.
-                voucher=voucher, line_no=i,  # Store intermediate finance value.
-                description=ln.get("description", ""),  # Store intermediate finance value.
-                expense_account=_resolve_account(  # Store intermediate finance value.
-                    entity, ln.get("expense_account"),  # Finance processing step.
-                    f"lines[{i}].expense_account", required=True),  # Store intermediate finance value.
-                quantity=_dec(ln.get("quantity", 1), f"lines[{i}].quantity"),  # Store intermediate finance value.
-                unit_price=_money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),  # Store intermediate finance value.
-                tax_code=_resolve_tax(entity, ln.get("tax_code"), f"lines[{i}].tax_code"),  # Store intermediate finance value.
-                cost_center=_resolve_cost_center(  # Store intermediate finance value.
-                    entity, ln.get("cost_center"), f"lines[{i}].cost_center"),  # Finance processing step.
-            )  # Continue structured finance payload.
-        price_voucher(voucher)  # Finance processing step.
-        voucher.refresh_from_db()  # Finance processing step.
-        return success_response(  # Return the computed finance response.
-            f"Petty cash voucher {voucher.document_number} created.",  # Finance processing step.
-            data=PettyCashVoucherSerializer(voucher).data, status=201,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
-
-
-class _PettyCashVoucherActionBase(_FinanceBase):  # Class groups related finance API or service behavior.
-    def _voucher(self, request, pk):  # Function handles this finance operation.
-        entity = resolve_entity(request)  # Store intermediate finance value.
-        voucher = PettyCashVoucher.objects.filter(entity=entity, pk=pk).first()  # Query finance data from the database.
-        if voucher is None:  # Branch when this finance condition is true.
-            raise NotFound("Petty cash voucher not found for this entity.")  # Surface validation or finance error.
-        return entity, voucher  # Return the computed finance response.
+        entity = resolve_entity(request)
+        body = request.data or {}
+        lines = _require_lines(body)
+        fund_ref = body.get("fund")
+        if fund_ref in (None, ""):
+            raise ValidationError({"fund": "A petty cash fund is required."})
+        fund = PettyCashFund.objects.filter(entity=entity, pk=fund_ref).first()
+        if fund is None:
+            raise ValidationError({"fund": f"No petty cash fund '{fund_ref}' in this entity."})
+        voucher = PettyCashVoucher.objects.create(
+            entity=entity, fund=fund,
+            voucher_date=_date(body.get("voucher_date"), "voucher_date", required=True),
+            payee=body.get("payee", ""),
+            spent_by=_resolve_user(body.get("spent_by"), "spent_by"),
+            narration=body.get("narration", ""),
+            reference=body.get("reference", ""),
+            currency=_resolve_currency(body.get("currency")) or fund.currency,
+            created_by=request.user,
+        )
+        for i, ln in enumerate(lines, start=1):
+            PettyCashVoucherLine.objects.create(
+                voucher=voucher, line_no=i,
+                description=ln.get("description", ""),
+                expense_account=_resolve_account(
+                    entity, ln.get("expense_account"),
+                    f"lines[{i}].expense_account", required=True),
+                quantity=_dec(ln.get("quantity", 1), f"lines[{i}].quantity"),
+                unit_price=_money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),
+                tax_code=_resolve_tax(entity, ln.get("tax_code"), f"lines[{i}].tax_code"),
+                cost_center=_resolve_cost_center(
+                    entity, ln.get("cost_center"), f"lines[{i}].cost_center"),
+            )
+        price_voucher(voucher)
+        voucher.refresh_from_db()
+        return success_response(
+            f"Petty cash voucher {voucher.document_number} created.",
+            data=PettyCashVoucherSerializer(voucher).data, status=201,
+        )
 
 
-class PettyCashVoucherDetailView(_PettyCashVoucherActionBase):  # Class groups related finance API or service behavior.
+# Define Petty Cash Voucher Action Base values.
+class _PettyCashVoucherActionBase(_FinanceBase):
+    # Support the voucher workflow.
+    def _voucher(self, request, pk):
+        entity = resolve_entity(request)
+        voucher = PettyCashVoucher.objects.filter(entity=entity, pk=pk).first()
+        if voucher is None:
+            raise NotFound("Petty cash voucher not found for this entity.")
+        return entity, voucher
+
+
+# Group endpoint behavior for Petty Cash Voucher Detail View.
+class PettyCashVoucherDetailView(_PettyCashVoucherActionBase):
     """docstring-name: Petty cash vouchers"""
-    rbac_permission = "finance.pettycashvoucher.view"  # Store intermediate finance value.
+    rbac_permission = "finance.pettycashvoucher.view"
 
-    def get(self, request, pk):  # Function handles this finance operation.
-        _, voucher = self._voucher(request, pk)  # Store intermediate finance value.
-        return success_response(  # Return the computed finance response.
-            "Petty cash voucher retrieved.",  # Finance processing step.
-            data=PettyCashVoucherSerializer(voucher).data,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
+    # Handle GET requests for this endpoint.
+    def get(self, request, pk):
+        _, voucher = self._voucher(request, pk)
+        return success_response(
+            "Petty cash voucher retrieved.",
+            data=PettyCashVoucherSerializer(voucher).data,
+        )
 
 
-class PettyCashVoucherPostView(_PettyCashVoucherActionBase):  # Class groups related finance API or service behavior.
+# Group endpoint behavior for Petty Cash Voucher Post View.
+class PettyCashVoucherPostView(_PettyCashVoucherActionBase):
     """docstring-name: Post a petty cash voucher"""
-    rbac_permission = "finance.pettycashvoucher.post"  # Store intermediate finance value.
+    rbac_permission = "finance.pettycashvoucher.post"
 
-    def post(self, request, pk):  # Function handles this finance operation.
-        from ..petty_cash import post_voucher  # Import dependency used by this finance module.
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        from ..petty_cash import post_voucher
 
-        _, voucher = self._voucher(request, pk)  # Store intermediate finance value.
-        post_voucher(voucher, actor_user=request.user)  # Store intermediate finance value.
-        voucher.refresh_from_db()  # Finance processing step.
-        return success_response(  # Return the computed finance response.
-            f"Petty cash voucher {voucher.document_number} posted.",  # Finance processing step.
-            data=PettyCashVoucherSerializer(voucher).data,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
+        _, voucher = self._voucher(request, pk)
+        post_voucher(voucher, actor_user=request.user)
+        voucher.refresh_from_db()
+        return success_response(
+            f"Petty cash voucher {voucher.document_number} posted.",
+            data=PettyCashVoucherSerializer(voucher).data,
+        )
 
 
-class PettyCashVoucherVoidView(_PettyCashVoucherActionBase):  # Class groups related finance API or service behavior.
+# Group endpoint behavior for Petty Cash Voucher Void View.
+class PettyCashVoucherVoidView(_PettyCashVoucherActionBase):
     """POST — void a posted voucher (reverses its journal, returns the cash to the tin).
 
     docstring-name: Void a petty cash voucher
     """
-    rbac_permission = "finance.pettycashvoucher.post"  # Store intermediate finance value.
+    rbac_permission = "finance.pettycashvoucher.post"
 
-    def post(self, request, pk):  # Function handles this finance operation.
-        from ..petty_cash import void_voucher  # Import dependency used by this finance module.
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        from ..petty_cash import void_voucher
 
-        _, voucher = self._voucher(request, pk)  # Store intermediate finance value.
-        void_voucher(voucher, actor_user=request.user)  # Store intermediate finance value.
-        voucher.refresh_from_db()  # Finance processing step.
-        return success_response(  # Return the computed finance response.
-            f"Petty cash voucher {voucher.document_number} voided.",  # Finance processing step.
-            data=PettyCashVoucherSerializer(voucher).data,  # Store intermediate finance value.
-        )  # Continue structured finance payload.
+        _, voucher = self._voucher(request, pk)
+        void_voucher(voucher, actor_user=request.user)
+        voucher.refresh_from_db()
+        return success_response(
+            f"Petty cash voucher {voucher.document_number} voided.",
+            data=PettyCashVoucherSerializer(voucher).data,
+        )
 
 
