@@ -19,10 +19,10 @@ EXPORT_FORMATS = {  # Public map of supported export format metadata.
     "csv": ("csv", "text/csv"),  # CSV extension and MIME type.
     "xlsx": ("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),  # Excel extension and MIME type.
     "pdf": ("pdf", "application/pdf"),  # PDF extension and MIME type.
-}
+}  # Close the grouped expression.
 
 
-@dataclass
+@dataclass  # Apply the decorator to this callable.
 class ReportTable:  # Renderer-neutral table representation.
     """A renderer-neutral rectangular report.
 
@@ -37,7 +37,7 @@ class ReportTable:  # Renderer-neutral table representation.
     summary_rows: list[list] = field(default_factory=list)  # Emphasized total/summary rows.
     subtitle: str = ""  # Optional second heading line.
 
-    @property
+    @property  # Apply the decorator to this callable.
     def all_rows(self) -> list[list]:  # Combine body and summary rows for renderers.
         return list(self.rows) + list(self.summary_rows)  # Return copies to avoid mutating source lists.
 
@@ -94,7 +94,7 @@ def to_xlsx(table: ReportTable) -> bytes:  # Render a report table to Excel work
             [len(str(table.columns[idx - 1]))]  # Include header width.
             + [len(str(r[idx - 1])) for r in table.all_rows if idx - 1 < len(r)]  # Include row cell widths when present.
             or [10]  # Defensive fallback width.
-        )
+        )  # Close the grouped expression.
         ws.column_dimensions[letter].width = min(max(widest + 2, 10), 48)  # Clamp to a usable width range.
 
     out = io.BytesIO()  # Store workbook bytes in memory.
@@ -112,7 +112,7 @@ def to_pdf(table: ReportTable) -> bytes:  # Render a report table to PDF bytes.
         Spacer,  # Vertical spacing flowable.
         Table,  # Tabular PDF flowable.
         TableStyle,  # Table styling descriptor.
-    )
+    )  # Close the grouped expression.
 
     out = io.BytesIO()  # Store PDF bytes in memory.
     doc = SimpleDocTemplate(out, pagesize=landscape(A4), title=table.title)  # Configure landscape PDF document.
@@ -131,7 +131,7 @@ def to_pdf(table: ReportTable) -> bytes:  # Render a report table to PDF bytes.
         ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#d1d5db")),  # Light grid around cells.
         ("FONTSIZE", (0, 0), (-1, -1), 8),  # Compact report font size.
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f3f4f6")]),  # Alternating body backgrounds.
-    ]
+    ]  # Close the grouped expression.
     # Bold the summary rows at the bottom.  # Makes totals stand out.
     n_summary = len(table.summary_rows)  # Count summary rows for bottom styling.
     if n_summary:  # Apply summary styling only when summary rows exist.
@@ -156,8 +156,8 @@ def render(table: ReportTable, fmt: str) -> tuple[bytes, str, str]:  # Render a 
     """
     fmt = (fmt or "").lower()  # Normalize missing and mixed-case format values.
     if fmt not in _RENDERERS:  # Reject unsupported export formats early.
-        raise ValueError(
+        raise ValueError(  # Raise the domain error for this path.
             f"Unsupported export format '{fmt}'. Choose one of: {', '.join(EXPORT_FORMATS)}."
-        )
+        )  # Close the grouped expression.
     extension, content_type = EXPORT_FORMATS[fmt]  # Look up HTTP metadata for this format.
     return _RENDERERS[fmt](table), content_type, extension  # Render and return body plus metadata.
