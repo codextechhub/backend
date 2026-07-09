@@ -33,17 +33,17 @@ from . import reconciliation, services, webhooks  # Reconciliation, business ser
 from .constants import VirtualAccountStatus  # Local lifecycle enums.
 from .exceptions import DuplicateWebhookError  # Raised when a webhook has already been processed.
 from .models import CollectionIntent, PaymentEvent, PayoutBatch, PayoutInstruction, VirtualAccount  # Gateway records.
-from .serializers import (
+from .serializers import (  # Import project symbols used by this module.
     CollectionIntentSerializer,  # Collection read serializer.
     PaymentEventSerializer,  # Gateway audit log serializer.
     PayoutBatchSerializer,  # Batch detail serializer.
     PayoutBatchSummarySerializer,  # Batch list serializer.
     PayoutInstructionSerializer,  # Payout detail serializer.
     VirtualAccountSerializer,  # Virtual account serializer.
-)
+)  # Close the grouped expression.
 
 
-def _paginate(request, qs, serializer_cls, view, **ser_kwargs):
+def _paginate(request, qs, serializer_cls, view, **ser_kwargs):  # Define the callable used by this module.
     """Paginate a queryset through the platform's XVSPagination envelope ({pagination, data}).
     Page size is a fixed 25 (override per-request with ?page_size=, capped at 100)."""
     paginator = XVSPagination()  # Build the shared pagination helper.
@@ -52,12 +52,12 @@ def _paginate(request, qs, serializer_cls, view, **ser_kwargs):
     return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)  # Wrap the serialized page.
 
 
-def _entity_obj(entity, model, ref, field):
+def _entity_obj(entity, model, ref, field):  # Define the callable used by this module.
     """Fetch ``model`` within ``entity`` by numeric pk, or by ``code`` for models
     that have one (so the UI pickers, which emit codes, resolve too). Raises a
     400 ValidationError when nothing matches."""
     if ref in (None, ""):  # Blank inputs are allowed to resolve to nothing.
-        return None
+        return None  # Return the computed module result.
     qs = model.objects.filter(entity=entity)  # Scope the lookup to the current entity.
     has_code = any(getattr(f, "name", None) == "code" for f in model._meta.get_fields())  # Check whether the model exposes a code field.
     obj = None  # Hold the resolved object if any lookup succeeds.
@@ -77,15 +77,15 @@ def _entity_obj(entity, model, ref, field):
 # --------------------------------------------------------------------------- #
 
 # Console status groups → underlying CollectionStatus values (the UI filters by group).  # Keep UI filters aligned with storage.
-COLLECTION_GROUPS = {
+COLLECTION_GROUPS = {  # Continue the structured value.
     "PENDING": ["PENDING", "PROCESSING"],
     "PAID": ["SUCCEEDED"],
     "FAILED": ["FAILED", "ABANDONED"],
     "REFUNDED": ["REFUNDED"],
-}
+}  # Close the grouped expression.
 
 
-class CollectionListCreateView(APIView):
+class CollectionListCreateView(APIView):  # Define the class used by this module.
     """GET (list) / POST (initiate) collections for an entity.
 
     docstring-name: Collections
@@ -93,17 +93,17 @@ class CollectionListCreateView(APIView):
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Authenticated tenant users with RBAC only.
 
-    @property
-    def rbac_permission(self):
+    @property  # Apply the decorator to this callable.
+    def rbac_permission(self):  # Define the callable used by this module.
         # POST (initiate) needs the stronger 'create'; GET (list) needs only 'view'.  # Split read/write permission.
         return "payments.collection.create" if self.request.method == "POST" \
             else "payments.collection.view"
 
-    def get(self, request):
+    def get(self, request):  # Define the callable used by this module.
         entity = resolve_entity(request)  # Resolve the tenant entity from the request.
         qs = CollectionIntent.objects.filter(entity=entity).select_related(  # Pull the collection records and related links.
             "customer", "payment",
-        )
+        )  # Close the grouped expression.
         if (group := request.query_params.get("group")) in COLLECTION_GROUPS:  # Support grouped UI filters.
             qs = qs.filter(status__in=COLLECTION_GROUPS[group])  # Expand group into underlying statuses.
         elif (status_ := request.query_params.get("status")):  # Allow direct status filtering too.
@@ -114,7 +114,7 @@ class CollectionListCreateView(APIView):
             qs = qs.filter(virtual_account_id=va)  # Narrow to one virtual account.
         return _paginate(request, qs.order_by("-created_at", "-id"), CollectionIntentSerializer, self)  # Return the paginated result.
 
-    def post(self, request):
+    def post(self, request):  # Define the callable used by this module.
         entity = resolve_entity(request)  # Resolve the entity before creating the intent.
         body = request.data  # Read the posted payload once.
         amount = int(body.get("amount") or 0)  # Normalize amount to kobo.
@@ -124,18 +124,18 @@ class CollectionListCreateView(APIView):
         invoice = _entity_obj(entity, Invoice, body.get("invoice"), "invoice")  # Resolve the optional invoice input.
         deposit = _entity_obj(entity, Account, body.get("deposit_account"), "deposit_account")  # Resolve the optional deposit account.
         intent = services.initiate_collection(  # Hand off to the business service for PSP initiation.
-            entity=entity, amount=amount, customer=customer, invoice=invoice,
+            entity=entity, amount=amount, customer=customer, invoice=invoice,  # Continue the structured value.
             deposit_account=deposit, channel=body.get("channel"),
             provider=body.get("provider"), payer_email=body.get("payer_email", ""),
             payer_name=body.get("payer_name", ""), narration=body.get("narration", ""),
             metadata=body.get("metadata") or {}, actor_user=request.user,
-        )
+        )  # Close the grouped expression.
         return success_response(  # Return the hydrated intent in the standard success envelope.
             "Collection initiated.", data=CollectionIntentSerializer(intent).data, status=201,
-        )
+        )  # Close the grouped expression.
 
 
-class CollectionSummaryView(APIView):
+class CollectionSummaryView(APIView):  # Define the class used by this module.
     """GET /payments/collections/summary/ — KPI totals (kobo) + status-group counts over
     ALL rows, so the header stays accurate while the list paginates. Honors ?provider.
 
@@ -145,7 +145,7 @@ class CollectionSummaryView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Read-only tenant access.
     rbac_permission = "payments.collection.view"  # Collections summary uses view permission only.
 
-    def get(self, request):
+    def get(self, request):  # Define the callable used by this module.
         from django.db.models import Count, Q, Sum  # Aggregate counts and totals in SQL.
         from django.db.models.functions import Coalesce  # Replace NULL aggregates with zero.
 
@@ -163,7 +163,7 @@ class CollectionSummaryView(APIView):
             pending_c=Count("id", filter=Q(status__in=g["PENDING"])),  # Count of pending rows.
             failed_c=Count("id", filter=Q(status__in=g["FAILED"])),  # Count of failed rows.
             refunded_c=Count("id", filter=Q(status__in=g["REFUNDED"])),  # Count of refunded rows.
-        )
+        )  # Close the grouped expression.
         terminal = agg["paid_c"] + agg["failed_c"]  # Only terminal outcomes belong in the success-rate denominator.
         rate = round(agg["paid_c"] * 100 / terminal) if terminal else None  # Compute a simple success rate when possible.
         return success_response("Collections summary retrieved.", data={  # Return the KPI payload.
@@ -175,11 +175,11 @@ class CollectionSummaryView(APIView):
             "group_counts": {
                 "PAID": agg["paid_c"], "PENDING": agg["pending_c"],
                 "FAILED": agg["failed_c"], "REFUNDED": agg["refunded_c"],
-            },
-        })
+            },  # Close the grouped value.
+        })  # Execute the module statement.
 
 
-class CollectionDetailView(APIView):
+class CollectionDetailView(APIView):  # Define the class used by this module.
     """GET a collection; ``?verify=1`` polls the provider and confirms if settled.
 
     docstring-name: Collections
@@ -188,7 +188,7 @@ class CollectionDetailView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Tenant-scoped read access.
     rbac_permission = "payments.collection.view"  # View permission is enough to read/verify.
 
-    def get(self, request, pk):
+    def get(self, request, pk):  # Define the callable used by this module.
         entity = resolve_entity(request)  # Resolve the tenant entity.
         intent = CollectionIntent.objects.filter(entity=entity, pk=pk).first()  # Look up the collection within the entity.
         if intent is None:  # Return 404 when the record does not exist in this tenant.
@@ -198,7 +198,7 @@ class CollectionDetailView(APIView):
         return success_response("Collection retrieved.", data=CollectionIntentSerializer(intent).data)  # Return serialized details.
 
 
-class VirtualAccountListCreateView(APIView):
+class VirtualAccountListCreateView(APIView):  # Define the class used by this module.
     """GET (list) / POST (provision) dedicated virtual accounts for an entity.
 
     GET is paginated with filters (``status``, ``provider``, ``customer``,
@@ -211,15 +211,15 @@ class VirtualAccountListCreateView(APIView):
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Authenticated tenant access only.
 
-    @property
-    def rbac_permission(self):
+    @property  # Apply the decorator to this callable.
+    def rbac_permission(self):  # Define the callable used by this module.
         return (  # Use create permission for POST, view permission otherwise.
             "payments.virtual_account.create"
             if self.request.method == "POST"
             else "payments.virtual_account.view"
-        )
+        )  # Close the grouped expression.
 
-    def get(self, request):
+    def get(self, request):  # Define the callable used by this module.
         entity = resolve_entity(request)  # Resolve the tenant entity.
         base = VirtualAccount.objects.filter(entity=entity)  # Start from all entity virtual accounts.
         kpis = {  # Compute the summary KPIs used by the list header.
@@ -227,7 +227,7 @@ class VirtualAccountListCreateView(APIView):
             "active": base.filter(status=VirtualAccountStatus.ACTIVE).count(),  # Active accounts.
             "inactive": base.filter(status=VirtualAccountStatus.INACTIVE).count(),  # Inactive accounts.
             "providers": base.values("provider").distinct().count(),  # Distinct providers in use.
-        }
+        }  # Close the grouped expression.
         qs = base.select_related("customer", "deposit_account", "currency")  # Prefetch related display data.
         if (status_ := request.query_params.get("status")):  # Optional status filter.
             qs = qs.filter(status=status_.upper())  # Compare using the enum value.
@@ -236,15 +236,15 @@ class VirtualAccountListCreateView(APIView):
         if (customer := request.query_params.get("customer")):  # Optional customer filter.
             qs = qs.filter(customer__code__iexact=customer)  # Allow case-insensitive customer code matching.
         if (search := request.query_params.get("search")):  # Optional broad search across display fields.
-            qs = qs.filter(
-                Q(customer__name__icontains=search) | Q(customer__code__icontains=search)
-                | Q(account_number__icontains=search) | Q(bank_name__icontains=search))
+            qs = qs.filter(  # Continue the structured value.
+                Q(customer__name__icontains=search) | Q(customer__code__icontains=search)  # Store the intermediate module value.
+                | Q(account_number__icontains=search) | Q(bank_name__icontains=search))  # Store the intermediate module value.
         resp = _paginate(request, qs.order_by("-created_at"), VirtualAccountSerializer, self,  # Return the paginated list.
                          context={"request": request})
         resp.data["kpis"] = kpis  # Attach KPI data to the pagination envelope.
         return resp  # Return the paginated response.
 
-    def post(self, request):
+    def post(self, request):  # Define the callable used by this module.
         entity = resolve_entity(request)  # Resolve the tenant entity.
         customer = _entity_obj(entity, Customer, request.data.get("customer"), "customer")  # Resolve the customer input.
         if customer is None:  # Virtual accounts are always customer-specific in this flow.
@@ -253,15 +253,15 @@ class VirtualAccountListCreateView(APIView):
         va = services.create_virtual_account(  # Delegate provisioning to the service layer.
             entity=entity, customer=customer, provider=request.data.get("provider"),
             deposit_account=deposit, bank_code=request.data.get("bank_code", ""),
-            actor_user=request.user,
-        )
+            actor_user=request.user,  # Continue the structured value.
+        )  # Close the grouped expression.
         return success_response(  # Return the created account in the standard envelope.
             "Virtual account created.",
             data=VirtualAccountSerializer(va, context={"request": request}).data, status=201,
-        )
+        )  # Close the grouped expression.
 
 
-class VirtualAccountDetailView(APIView):
+class VirtualAccountDetailView(APIView):  # Define the class used by this module.
     """GET one virtual account, or PATCH its status (activate / deactivate).
 
     docstring-name: Virtual accounts
@@ -269,30 +269,30 @@ class VirtualAccountDetailView(APIView):
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Tenant-authenticated access only.
 
-    @property
-    def rbac_permission(self):
+    @property  # Apply the decorator to this callable.
+    def rbac_permission(self):  # Define the callable used by this module.
         return (  # Use manage permission for PATCH, view permission otherwise.
             "payments.virtual_account.manage"
             if self.request.method == "PATCH"
             else "payments.virtual_account.view"
-        )
+        )  # Close the grouped expression.
 
-    def _get(self, request, pk):
+    def _get(self, request, pk):  # Define the callable used by this module.
         entity = resolve_entity(request)  # Resolve the tenant entity.
         va = (VirtualAccount.objects  # Look up the virtual account within the tenant.
-              .filter(entity=entity, pk=pk)
+              .filter(entity=entity, pk=pk)  # Store the intermediate module value.
               .select_related("customer", "deposit_account", "currency").first())
         if va is None:  # Return 404 when the record doesn't belong to this entity.
             raise NotFound("No virtual account matches this id for the entity.")
         return entity, va  # Return the resolved pair for reuse by GET/PATCH.
 
-    def get(self, request, pk):
+    def get(self, request, pk):  # Define the callable used by this module.
         _, va = self._get(request, pk)  # Reuse the shared entity-scoped lookup.
         return success_response(  # Return the serialized account.
             "Virtual account retrieved.",
             data=VirtualAccountSerializer(va, context={"request": request}).data)
 
-    def patch(self, request, pk):
+    def patch(self, request, pk):  # Define the callable used by this module.
         _, va = self._get(request, pk)  # Fetch the account first.
         status_ = str(request.data.get("status", "")).upper()  # Normalize the requested status.
         services.set_virtual_account_status(va, status=status_, actor_user=request.user)  # Delegate the lifecycle change.
@@ -306,14 +306,14 @@ class VirtualAccountDetailView(APIView):
 # --------------------------------------------------------------------------- #
 
 # Console status groups → underlying PayoutStatus values (PAID shows as "Settled").
-PAYOUT_GROUPS = {
+PAYOUT_GROUPS = {  # Continue the structured value.
     "PENDING": ["PENDING", "PROCESSING"],
     "PAID": ["PAID"],
     "FAILED": ["FAILED", "REVERSED"],
-}
+}  # Close the grouped expression.
 
 
-class PayoutListCreateView(APIView):
+class PayoutListCreateView(APIView):  # Define the class used by this module.
     """GET (list) / POST (initiate) payouts for an entity.
 
     docstring-name: Payouts
@@ -321,15 +321,15 @@ class PayoutListCreateView(APIView):
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Tenant-authenticated access only.
 
-    @property
-    def rbac_permission(self):
+    @property  # Apply the decorator to this callable.
+    def rbac_permission(self):  # Define the callable used by this module.
         return (  # POST needs create permission; GET needs view permission.
             "payments.payout.create"
             if self.request.method == "POST"
             else "payments.payout.view"
-        )
+        )  # Close the grouped expression.
 
-    def get(self, request):
+    def get(self, request):  # Define the callable used by this module.
         entity = resolve_entity(request)  # Resolve the tenant entity.
         qs = PayoutInstruction.objects.filter(entity=entity)  # Start from all payout instructions.
         if (group := request.query_params.get("group")) in PAYOUT_GROUPS:  # Support grouped UI filters.
@@ -340,7 +340,7 @@ class PayoutListCreateView(APIView):
             qs = qs.filter(provider=provider)  # Narrow to one PSP.
         return _paginate(request, qs.order_by("-created_at", "-id"), PayoutInstructionSerializer, self)  # Return paginated rows.
 
-    def post(self, request):
+    def post(self, request):  # Define the callable used by this module.
         entity = resolve_entity(request)  # Resolve the tenant entity.
         body = request.data  # Read the incoming payload once.
         amount = int(body.get("amount") or 0)  # Normalize amount to integer kobo.
@@ -368,13 +368,13 @@ class PayoutListCreateView(APIView):
             source_account=source, provider=body.get("provider"),
             narration=body.get("narration", ""), wht_amount=int(body.get("wht_amount") or 0),
             metadata=body.get("metadata") or {}, actor_user=request.user,
-        )
+        )  # Close the grouped expression.
         return success_response(  # Return the created payout in the standard envelope.
             "Payout initiated.", data=PayoutInstructionSerializer(payout).data, status=201,
-        )
+        )  # Close the grouped expression.
 
 
-class PayoutSummaryView(APIView):
+class PayoutSummaryView(APIView):  # Define the class used by this module.
     """GET /payments/payouts/summary/ — KPI totals + status-group counts over ALL rows.
     Honors ?provider.
 
@@ -384,7 +384,7 @@ class PayoutSummaryView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Read-only tenant access.
     rbac_permission = "payments.payout.view"  # Payout summary is view-only.
 
-    def get(self, request):
+    def get(self, request):  # Define the callable used by this module.
         import datetime  # Needed for the 7-day cutoff.
 
         from django.db.models import Count, Q, Sum  # Aggregate helper functions.
@@ -402,17 +402,17 @@ class PayoutSummaryView(APIView):
             paid_c=Count("id", filter=Q(status__in=PAYOUT_GROUPS["PAID"])),  # Count of paid rows.
             pending_c=Count("id", filter=Q(status__in=PAYOUT_GROUPS["PENDING"])),  # Count of pending rows.
             failed_c=Count("id", filter=Q(status__in=PAYOUT_GROUPS["FAILED"])),  # Count of failed rows.
-        )
+        )  # Close the grouped expression.
         return success_response("Payouts summary retrieved.", data={  # Return the KPI payload.
             "total": agg["total"],
             "settled7d": {"kobo": agg["settled7d"], "naira": format_naira(agg["settled7d"])},
             "pending": {"kobo": agg["pending"], "naira": format_naira(agg["pending"])},
             "failed": agg["failed_c"],
             "group_counts": {"PAID": agg["paid_c"], "PENDING": agg["pending_c"], "FAILED": agg["failed_c"]},
-        })
+        })  # Execute the module statement.
 
 
-class PayoutBatchListCreateView(APIView):
+class PayoutBatchListCreateView(APIView):  # Define the class used by this module.
     """GET (list) / POST (assemble a bulk batch of payouts) for an entity.
 
     POST creates the batch and its child instructions in ``DRAFT`` — it does **not**
@@ -423,22 +423,22 @@ class PayoutBatchListCreateView(APIView):
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Tenant-authenticated access only.
 
-    @property
-    def rbac_permission(self):
+    @property  # Apply the decorator to this callable.
+    def rbac_permission(self):  # Define the callable used by this module.
         return (  # POST needs create permission; GET needs view permission.
             "payments.payout.create"
             if self.request.method == "POST"
             else "payments.payout.view"
-        )
+        )  # Close the grouped expression.
 
-    def get(self, request):
+    def get(self, request):  # Define the callable used by this module.
         entity = resolve_entity(request)  # Resolve the tenant entity.
         qs = PayoutBatch.objects.filter(entity=entity)  # Start from all batches in the entity.
         if (status_ := request.query_params.get("status")):  # Optional status filter.
             qs = qs.filter(status=status_)  # Narrow by batch status.
         return _paginate(request, qs.order_by("-created_at", "-id"), PayoutBatchSummarySerializer, self)  # Return paginated summaries.
 
-    def post(self, request):
+    def post(self, request):  # Define the callable used by this module.
         entity = resolve_entity(request)  # Resolve the tenant entity.
         body = request.data  # Read the incoming batch payload.
         raw_items = body.get("items")  # Extract the raw item list.
@@ -464,7 +464,7 @@ class PayoutBatchListCreateView(APIView):
             vendor = Vendor.objects.filter(entity=entity).filter(vlookup).first()  # Resolve the vendor within the entity.
             if vendor is None:  # Reject unknown vendors.
                 raise ValidationError({f"items[{idx}].vendor": "No such vendor in this entity."})
-            items.append({
+            items.append({  # Continue the structured value.
                 "amount": amount,  # Normalized line amount.
                 "beneficiary_name": raw["beneficiary_name"],  # Beneficiary display name.
                 "beneficiary_account_number": raw["beneficiary_account_number"],  # Beneficiary account number.
@@ -478,15 +478,15 @@ class PayoutBatchListCreateView(APIView):
             entity=entity, items=items, provider=body.get("provider"),
             source_account=source, title=body.get("title", ""),
             narration=body.get("narration", ""), actor_user=request.user,
-        )
+        )  # Close the grouped expression.
         if body.get("submit") in (True, "1", "true", "True"):  # Optional immediate submission flag.
             batch = services.submit_payout_batch(batch, actor_user=request.user)  # Submit the draft batch immediately.
         return success_response(  # Return the batch in the standard envelope.
             "Payout batch created.", data=PayoutBatchSerializer(batch).data, status=201,
-        )
+        )  # Close the grouped expression.
 
 
-class PayoutBatchSummaryView(APIView):
+class PayoutBatchSummaryView(APIView):  # Define the class used by this module.
     """GET /payments/payout-batches/summary/ — batch KPI totals over ALL rows.
 
     docstring-name: Payout batches summary
@@ -495,7 +495,7 @@ class PayoutBatchSummaryView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Read-only tenant access.
     rbac_permission = "payments.payout.view"  # View permission is enough for batch summaries.
 
-    def get(self, request):
+    def get(self, request):  # Define the callable used by this module.
         import datetime  # Needed for the 7-day completion window.
 
         from django.db.models import Count, Q, Sum  # Aggregate helpers.
@@ -509,16 +509,16 @@ class PayoutBatchSummaryView(APIView):
             queued=Coalesce(Sum("total_amount", filter=Q(status__in=["DRAFT", "PROCESSING"])), 0),  # Amount queued in draft/processing.
             completed7d=Count("id", filter=Q(status="COMPLETED", submitted_at__gte=cutoff)),  # Completed in the last 7 days.
             drafts=Count("id", filter=Q(status="DRAFT")),  # Draft batch count.
-        )
+        )  # Close the grouped expression.
         return success_response("Payout batches summary retrieved.", data={  # Return the batch KPI payload.
             "total": agg["total"],
             "queued": {"kobo": agg["queued"], "naira": format_naira(agg["queued"])},
             "completed7d": agg["completed7d"],
             "drafts": agg["drafts"],
-        })
+        })  # Execute the module statement.
 
 
-class PayoutBatchDetailView(APIView):
+class PayoutBatchDetailView(APIView):  # Define the class used by this module.
     """GET a batch with its items; POST submits the batch's pending instructions.
 
     docstring-name: Payout batches
@@ -526,24 +526,24 @@ class PayoutBatchDetailView(APIView):
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Tenant-authenticated access only.
 
-    @property
-    def rbac_permission(self):
+    @property  # Apply the decorator to this callable.
+    def rbac_permission(self):  # Define the callable used by this module.
         return (  # POST submits a batch; GET only views it.
             "payments.payout.create"
             if self.request.method == "POST"
             else "payments.payout.view"
-        )
+        )  # Close the grouped expression.
 
-    def get(self, request, pk):
+    def get(self, request, pk):  # Define the callable used by this module.
         entity = resolve_entity(request)  # Resolve the tenant entity.
         batch = PayoutBatch.objects.filter(entity=entity, pk=pk).first()  # Look up the batch within the tenant.
         if batch is None:  # Return 404 when the batch does not belong to this tenant.
             raise NotFound("No such payout batch in this entity.")
         return success_response(  # Return the serialized batch details.
             "Payout batch retrieved.", data=PayoutBatchSerializer(batch).data,
-        )
+        )  # Close the grouped expression.
 
-    def post(self, request, pk):
+    def post(self, request, pk):  # Define the callable used by this module.
         entity = resolve_entity(request)  # Resolve the tenant entity.
         batch = PayoutBatch.objects.filter(entity=entity, pk=pk).first()  # Look up the batch within the tenant.
         if batch is None:  # Return 404 when the batch does not belong to this tenant.
@@ -551,14 +551,14 @@ class PayoutBatchDetailView(APIView):
         batch = services.submit_payout_batch(batch, actor_user=request.user)  # Submit pending instructions.
         return success_response(  # Return the updated batch after submission.
             "Payout batch submitted.", data=PayoutBatchSerializer(batch).data,
-        )
+        )  # Close the grouped expression.
 
 
 # --------------------------------------------------------------------------- #
 # Settlement reconciliation (read-side report)                                #
 # --------------------------------------------------------------------------- #
 
-class SettlementReconciliationView(APIView):
+class SettlementReconciliationView(APIView):  # Define the class used by this module.
     """GET a settlement reconciliation of gateway records vs. imported bank lines.
 
     Query: ``?entity=``, optional ``?start_date=&end_date=`` (YYYY-MM-DD, inclusive) and
@@ -570,24 +570,24 @@ class SettlementReconciliationView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Read-only tenant access.
     rbac_permission = "payments.report.view"  # Reporting permission.
 
-    def get(self, request):
+    def get(self, request):  # Define the callable used by this module.
         import datetime  # Needed for ISO date parsing.
 
         entity = resolve_entity(request)  # Resolve the tenant entity.
 
-        def _date(name):
+        def _date(name):  # Define the callable used by this module.
             raw = request.query_params.get(name)  # Read the query-string date.
             if not raw:  # Missing dates stay unset.
-                return None
+                return None  # Return the computed module result.
             try:  # Parse ISO dates only.
-                return datetime.date.fromisoformat(raw)
+                return datetime.date.fromisoformat(raw)  # Return the computed module result.
             except ValueError:  # Surface a clear validation error for bad input.
                 raise ValidationError({name: "Expected an ISO date (YYYY-MM-DD)."})
 
         recon = reconciliation.settlement_reconciliation(  # Build the read-only reconciliation snapshot.
             entity, start_date=_date("start_date"), end_date=_date("end_date"),
             provider=request.query_params.get("provider"),
-        )
+        )  # Close the grouped expression.
         data = {  # Convert the dataclass into a JSON-safe response payload.
             "entity_code": recon.entity_code,
             "start_date": recon.start_date.isoformat() if recon.start_date else None,
@@ -602,9 +602,9 @@ class SettlementReconciliationView(APIView):
                 "unsettled_total": recon.unsettled_total,
                 "unmatched_bank_total": recon.unmatched_bank_total,
                 "unmatched_bank_count": len(recon.unmatched_bank_lines),
-            },
+            },  # Close the grouped value.
             "rows": [
-                {
+                {  # Continue the structured value.
                     "kind": r.kind, "gateway_id": r.gateway_id, "reference": r.reference,
                     "provider": r.provider, "provider_reference": r.provider_reference,
                     "amount": r.amount, "amount_naira": r.amount_naira,
@@ -615,23 +615,23 @@ class SettlementReconciliationView(APIView):
                     "settlement_reference": r.settlement_reference,
                     "settlement_date": r.settlement_date.isoformat() if r.settlement_date else None,
                     "settlement_description": r.settlement_description,
-                }
-                for r in recon.rows
-            ],
+                }  # Close the grouped expression.
+                for r in recon.rows  # Iterate through the relevant records.
+            ],  # Close the grouped value.
             "unmatched_bank_lines": [
-                {
+                {  # Continue the structured value.
                     "bank_line_id": b.bank_line_id, "bank_account_id": b.bank_account_id,
                     "txn_date": b.txn_date.isoformat(), "description": b.description,
                     "reference": b.reference, "amount": b.amount,
                     "amount_naira": b.amount_naira,
-                }
-                for b in recon.unmatched_bank_lines
-            ],
-        }
+                }  # Close the grouped expression.
+                for b in recon.unmatched_bank_lines  # Iterate through the relevant records.
+            ],  # Close the grouped value.
+        }  # Close the grouped expression.
         return success_response("Settlement reconciliation retrieved.", data=data)  # Return the reconciliation data.
 
 
-class TransactionsLogView(APIView):
+class TransactionsLogView(APIView):  # Define the class used by this module.
     """GET the append-only gateway action log (the transactions log) for an entity.
 
     Reads :class:`~vs_payments.models.PaymentEvent` — the immutable record of every
@@ -645,7 +645,7 @@ class TransactionsLogView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Read-only tenant access.
     rbac_permission = "payments.report.view"  # Reporting permission.
 
-    def get(self, request):
+    def get(self, request):  # Define the callable used by this module.
         entity = resolve_entity(request)  # Resolve the tenant entity.
         qs = PaymentEvent.objects.filter(entity=entity).select_related("actor_user")  # Query the immutable audit log.
         if (action := request.query_params.get("action")):  # Optional action filter.
@@ -665,20 +665,20 @@ class TransactionsLogView(APIView):
 # --------------------------------------------------------------------------- #
 
 # Unified status groups across both gateways (collections + payouts).  # Shared movement filters.
-MOVEMENT_GROUPS = {
+MOVEMENT_GROUPS = {  # Continue the structured value.
     "SETTLED": (["SUCCEEDED"], ["PAID"]),
     "PENDING": (["PENDING", "PROCESSING"], ["PENDING", "PROCESSING"]),
     "FAILED": (["FAILED", "ABANDONED"], ["FAILED", "REVERSED"]),
     "REFUNDED": (["REFUNDED"], []),
-}
+}  # Close the grouped expression.
 _MOVEMENT_COLS = [  # Common projection shape for the movements feed.
     "kind", "gateway_id", "reference", "created_at", "direction", "party", "provider",
     "amount", "status", "narration", "provider_reference", "confirmed_at", "linked_id",
     "email", "account_code", "account_name", "beneficiary_account",
-]
+]  # Close the grouped expression.
 
 
-def _movement_querysets(entity, *, provider=None, group=None):
+def _movement_querysets(entity, *, provider=None, group=None):  # Define the callable used by this module.
     """The collection (in) + payout (out) value-querysets projected to a common shape."""
     from django.db.models import CharField, F, Value  # Used to annotate common projection columns.
     from django.db.models.functions import Coalesce  # Used to prefer customer name over payer name.
@@ -700,18 +700,18 @@ def _movement_querysets(entity, *, provider=None, group=None):
         linked_id=F("payment_id"), email=F("payer_email"),
         account_code=F("deposit_account__code"), account_name=F("deposit_account__name"),
         beneficiary_account=Value("", output_field=CharField()),
-    ).values(*_MOVEMENT_COLS)
+    ).values(*_MOVEMENT_COLS)  # Execute the module statement.
     pv = pos.annotate(  # Project payouts into the same shape.
         kind=Value("payout", output_field=CharField()), gateway_id=F("id"),
         direction=Value("out", output_field=CharField()), party=F("beneficiary_name"),
         linked_id=F("vendor_payment_id"), email=Value("", output_field=CharField()),
         account_code=F("source_account__code"), account_name=F("source_account__name"),
         beneficiary_account=F("beneficiary_account_number"),
-    ).values(*_MOVEMENT_COLS)
+    ).values(*_MOVEMENT_COLS)  # Execute the module statement.
     return cv, pv  # Return both common-shape querysets for the feed.
 
 
-class MovementsView(APIView):
+class MovementsView(APIView):  # Define the class used by this module.
     """GET /payments/movements/ — unified, paginated money-movement feed: confirmed-or-
     pending collections (in) + payouts (out), newest first. Filters: ``?direction=in|out``,
     ``?group=SETTLED|PENDING|FAILED|REFUNDED``, ``?provider=``. Payout beneficiary
@@ -723,7 +723,7 @@ class MovementsView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Read-only tenant access.
     rbac_permission = "payments.report.view"  # Reporting permission.
 
-    def get(self, request):
+    def get(self, request):  # Define the callable used by this module.
         entity = resolve_entity(request)  # Resolve the tenant entity.
         provider = request.query_params.get("provider")  # Optional provider filter.
         group = request.query_params.get("group")  # Optional status-group filter.
@@ -754,7 +754,7 @@ class MovementsView(APIView):
         return paginator.get_paginated_response(rows)  # Return the paginated feed.
 
 
-class MovementsSummaryView(APIView):
+class MovementsSummaryView(APIView):  # Define the class used by this module.
     """GET /payments/movements/summary/ — money-in (7d) / money-out (7d) / pending / failed
     across both gateways, for the Transactions Log header.
 
@@ -764,7 +764,7 @@ class MovementsSummaryView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Read-only tenant access.
     rbac_permission = "payments.report.view"  # Reporting permission.
 
-    def get(self, request):
+    def get(self, request):  # Define the callable used by this module.
         import datetime  # Needed for the 7-day summary window.
 
         from django.db.models import Count, Q, Sum  # Aggregate helpers.
@@ -782,25 +782,25 @@ class MovementsSummaryView(APIView):
             in7d=Coalesce(Sum("amount", filter=Q(status="SUCCEEDED", confirmed_at__gte=cutoff)), 0),  # Collections settled in 7 days.
             pending=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["PENDING"][0])),  # Pending collection count.
             failed=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["FAILED"][0])),  # Failed collection count.
-        )
+        )  # Close the grouped expression.
         p = pos.aggregate(  # Compute payout-side KPIs.
             out7d=Coalesce(Sum("amount", filter=Q(status="PAID", confirmed_at__gte=cutoff)), 0),  # Payouts settled in 7 days.
             pending=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["PENDING"][1])),  # Pending payout count.
             failed=Count("id", filter=Q(status__in=MOVEMENT_GROUPS["FAILED"][1])),  # Failed payout count.
-        )
+        )  # Close the grouped expression.
         return success_response("Movements summary retrieved.", data={  # Return the combined KPI payload.
             "in7d": {"kobo": c["in7d"], "naira": format_naira(c["in7d"])},
             "out7d": {"kobo": p["out7d"], "naira": format_naira(p["out7d"])},
             "pending": c["pending"] + p["pending"],
             "failed": c["failed"] + p["failed"],
-        })
+        })  # Execute the module statement.
 
 
 # --------------------------------------------------------------------------- #
 # Webhook receiver (public, signature-verified)                               #
 # --------------------------------------------------------------------------- #
 
-class WebhookView(APIView):
+class WebhookView(APIView):  # Define the class used by this module.
     """POST /webhooks/<provider>/ — raw signed PSP event. No JWT; signature is the auth.
 
     docstring-name: PSP webhook receiver
@@ -809,14 +809,14 @@ class WebhookView(APIView):
     authentication_classes: list = []  # Webhooks authenticate by signature, not session/JWT.
     permission_classes = [AllowAny]  # Public endpoint for PSP callbacks.
 
-    def post(self, request, provider):
+    def post(self, request, provider):  # Define the callable used by this module.
         try:  # Duplicate events are expected and should be acknowledged.
             event = webhooks.ingest_webhook(  # Hand the raw signed request to the webhook ingestion layer.
-                provider=provider, raw_body=request.body, headers=dict(request.headers),
-            )
+                provider=provider, raw_body=request.body, headers=dict(request.headers),  # Continue the structured value.
+            )  # Close the grouped expression.
         except DuplicateWebhookError:  # Already processed; acknowledge so the provider stops retrying.
             # Already handled — acknowledge so the provider stops retrying.
             return success_response("Duplicate event ignored.", data={"duplicate": True})
         return success_response(  # Return the processed webhook id and status.
             "Webhook processed.", data={"id": event.id, "status": event.status},
-        )
+        )  # Close the grouped expression.
