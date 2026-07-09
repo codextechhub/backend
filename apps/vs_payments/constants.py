@@ -1,40 +1,40 @@
-"""Enumerations and well-known constants for vs_payments.
+"""Enumerations and well-known constants for vs_payments.  # Shared payment state and provider identifiers.
 
 The payments app is the *gateway* layer that sits in front of the ledger: it talks to
 external PSPs (OPay, Paystack) to **collect** money from customers and **pay out** money
 to vendors/beneficiaries, then hands the confirmed cash movement to the existing finance
 services (``vs_finance.receivables.post_payment`` for receipts;
 ``vs_procurement.payables.post_vendor_payment`` for payouts). Money is always integer
-**kobo** here too — never float.
+**kobo** here too — never float.  # Keep gateway values aligned with the ledger.
 """
-from __future__ import annotations
+from __future__ import annotations  # Defer annotation evaluation for forward references.
 
-from django.db import models
+from django.db import models  # Django text choices power the explicit state enums below.
 
 
 class PaymentProvider(models.TextChoices):
     """The external payment service providers we integrate with."""
 
-    OPAY = "OPAY", "OPay"
-    PAYSTACK = "PAYSTACK", "Paystack"
-    FAKE = "FAKE", "Fake (testing)"
+    OPAY = "OPAY", "OPay"  # OPay live provider.
+    PAYSTACK = "PAYSTACK", "Paystack"  # Paystack live provider.
+    FAKE = "FAKE", "Fake (testing)"  # In-memory test provider.
 
 
 class PaymentDirection(models.TextChoices):
     """Which way money flows relative to the ledger entity."""
 
-    COLLECTION = "COLLECTION", "Collection (money in)"
-    PAYOUT = "PAYOUT", "Payout (money out)"
+    COLLECTION = "COLLECTION", "Collection (money in)"  # Incoming money.
+    PAYOUT = "PAYOUT", "Payout (money out)"  # Outgoing money.
 
 
 class CollectionChannel(models.TextChoices):
     """How a collection is presented to the payer."""
 
-    CHECKOUT = "CHECKOUT", "Hosted checkout / redirect"
-    VIRTUAL_ACCOUNT = "VIRTUAL_ACCOUNT", "Dedicated virtual account (NUBAN)"
-    CARD = "CARD", "Card"
-    BANK_TRANSFER = "BANK_TRANSFER", "Bank transfer"
-    USSD = "USSD", "USSD"
+    CHECKOUT = "CHECKOUT", "Hosted checkout / redirect"  # Redirect-style checkout.
+    VIRTUAL_ACCOUNT = "VIRTUAL_ACCOUNT", "Dedicated virtual account (NUBAN)"  # Unique account for bank transfer.
+    CARD = "CARD", "Card"  # Card-present or card-not-present capture.
+    BANK_TRANSFER = "BANK_TRANSFER", "Bank transfer"  # Manual or virtual-account bank transfer.
+    USSD = "USSD", "USSD"  # USSD-based payment flow.
 
 
 class CollectionStatus(models.TextChoices):
@@ -45,15 +45,15 @@ class CollectionStatus(models.TextChoices):
     receipt); ``FAILED``/``ABANDONED`` → terminal, no money; ``REFUNDED`` → reversed.
     """
 
-    PENDING = "PENDING", "Pending"
-    PROCESSING = "PROCESSING", "Processing"
-    SUCCEEDED = "SUCCEEDED", "Succeeded"
-    FAILED = "FAILED", "Failed"
-    ABANDONED = "ABANDONED", "Abandoned"
-    REFUNDED = "REFUNDED", "Refunded"
+    PENDING = "PENDING", "Pending"  # Created locally, not yet settled.
+    PROCESSING = "PROCESSING", "Processing"  # Provider acknowledged but not final.
+    SUCCEEDED = "SUCCEEDED", "Succeeded"  # Final success, books a receipt.
+    FAILED = "FAILED", "Failed"  # Final failure, no cash movement.
+    ABANDONED = "ABANDONED", "Abandoned"  # Payer never completed the flow.
+    REFUNDED = "REFUNDED", "Refunded"  # Previously succeeded then reversed.
 
 
-#: Collection states past which no further automatic transition happens.
+#: Collection states past which no further automatic transition happens.  # Terminal collection states.
 COLLECTION_TERMINAL = frozenset(
     {CollectionStatus.SUCCEEDED, CollectionStatus.FAILED,
      CollectionStatus.ABANDONED, CollectionStatus.REFUNDED}
@@ -63,14 +63,14 @@ COLLECTION_TERMINAL = frozenset(
 class PayoutStatus(models.TextChoices):
     """Lifecycle of a payout instruction (money leaving the entity)."""
 
-    PENDING = "PENDING", "Pending"
-    PROCESSING = "PROCESSING", "Processing"
-    PAID = "PAID", "Paid"
-    FAILED = "FAILED", "Failed"
-    REVERSED = "REVERSED", "Reversed"
+    PENDING = "PENDING", "Pending"  # Created locally, not yet sent.
+    PROCESSING = "PROCESSING", "Processing"  # Sent to provider, awaiting final settlement.
+    PAID = "PAID", "Paid"  # Final success, books the vendor payment.
+    FAILED = "FAILED", "Failed"  # Final failure, no settlement.
+    REVERSED = "REVERSED", "Reversed"  # Settled then reversed.
 
 
-#: Payout states past which no further automatic transition happens.
+#: Payout states past which no further automatic transition happens.  # Terminal payout states.
 PAYOUT_TERMINAL = frozenset(
     {PayoutStatus.PAID, PayoutStatus.FAILED, PayoutStatus.REVERSED}
 )
@@ -86,14 +86,14 @@ class PayoutBatchStatus(models.TextChoices):
     ``FAILED`` → every child failed to submit/settle.
     """
 
-    DRAFT = "DRAFT", "Draft"
-    PROCESSING = "PROCESSING", "Processing"
-    COMPLETED = "COMPLETED", "Completed"
-    PARTIALLY_COMPLETED = "PARTIALLY_COMPLETED", "Partially completed"
-    FAILED = "FAILED", "Failed"
+    DRAFT = "DRAFT", "Draft"  # Created locally, not yet submitted.
+    PROCESSING = "PROCESSING", "Processing"  # At least one child is in flight.
+    COMPLETED = "COMPLETED", "Completed"  # Every child reached PAID.
+    PARTIALLY_COMPLETED = "PARTIALLY_COMPLETED", "Partially completed"  # Mixed success/failure.
+    FAILED = "FAILED", "Failed"  # Every child failed.
 
 
-#: Batch states past which no further automatic transition happens.
+#: Batch states past which no further automatic transition happens.  # Terminal batch states.
 PAYOUT_BATCH_TERMINAL = frozenset(
     {PayoutBatchStatus.COMPLETED, PayoutBatchStatus.PARTIALLY_COMPLETED,
      PayoutBatchStatus.FAILED}
@@ -101,38 +101,38 @@ PAYOUT_BATCH_TERMINAL = frozenset(
 
 
 class VirtualAccountStatus(models.TextChoices):
-    ACTIVE = "ACTIVE", "Active"
-    INACTIVE = "INACTIVE", "Inactive"
+    ACTIVE = "ACTIVE", "Active"  # Available for incoming transfers.
+    INACTIVE = "INACTIVE", "Inactive"  # No longer offered for new transfers.
 
 
 class WebhookStatus(models.TextChoices):
     """Processing state of a raw inbound webhook event."""
 
-    RECEIVED = "RECEIVED", "Received"
-    PROCESSED = "PROCESSED", "Processed"
-    IGNORED = "IGNORED", "Ignored"
-    FAILED = "FAILED", "Failed"
+    RECEIVED = "RECEIVED", "Received"  # Stored but not yet dispatched.
+    PROCESSED = "PROCESSED", "Processed"  # Successfully handled.
+    IGNORED = "IGNORED", "Ignored"  # Valid but unmatched or unsupported.
+    FAILED = "FAILED", "Failed"  # Dispatch failed after storage.
 
 
 class PaymentAuditAction(models.TextChoices):
     """Durable action log for the gateway layer (separate from ledger postings)."""
 
-    COLLECTION_INITIATED = "COLLECTION_INITIATED", "Collection initiated"
-    COLLECTION_CONFIRMED = "COLLECTION_CONFIRMED", "Collection confirmed"
-    COLLECTION_FAILED = "COLLECTION_FAILED", "Collection failed"
-    VIRTUAL_ACCOUNT_CREATED = "VIRTUAL_ACCOUNT_CREATED", "Virtual account created"
-    VIRTUAL_ACCOUNT_STATUS_CHANGED = "VIRTUAL_ACCOUNT_STATUS_CHANGED", "Virtual account status changed"
-    PAYOUT_INITIATED = "PAYOUT_INITIATED", "Payout initiated"
-    PAYOUT_CONFIRMED = "PAYOUT_CONFIRMED", "Payout confirmed"
-    PAYOUT_FAILED = "PAYOUT_FAILED", "Payout failed"
-    PAYOUT_BATCH_CREATED = "PAYOUT_BATCH_CREATED", "Payout batch created"
-    PAYOUT_BATCH_SUBMITTED = "PAYOUT_BATCH_SUBMITTED", "Payout batch submitted"
-    WEBHOOK_RECEIVED = "WEBHOOK_RECEIVED", "Webhook received"
-    WEBHOOK_REJECTED = "WEBHOOK_REJECTED", "Webhook rejected"
+    COLLECTION_INITIATED = "COLLECTION_INITIATED", "Collection initiated"  # Money-in request created.
+    COLLECTION_CONFIRMED = "COLLECTION_CONFIRMED", "Collection confirmed"  # Receipt booked.
+    COLLECTION_FAILED = "COLLECTION_FAILED", "Collection failed"  # Money-in failed or abandoned.
+    VIRTUAL_ACCOUNT_CREATED = "VIRTUAL_ACCOUNT_CREATED", "Virtual account created"  # Dedicated account provisioned.
+    VIRTUAL_ACCOUNT_STATUS_CHANGED = "VIRTUAL_ACCOUNT_STATUS_CHANGED", "Virtual account status changed"  # Local status flipped.
+    PAYOUT_INITIATED = "PAYOUT_INITIATED", "Payout initiated"  # Money-out request created.
+    PAYOUT_CONFIRMED = "PAYOUT_CONFIRMED", "Payout confirmed"  # Vendor payment booked.
+    PAYOUT_FAILED = "PAYOUT_FAILED", "Payout failed"  # Money-out failed or reversed.
+    PAYOUT_BATCH_CREATED = "PAYOUT_BATCH_CREATED", "Payout batch created"  # Bulk payout draft created.
+    PAYOUT_BATCH_SUBMITTED = "PAYOUT_BATCH_SUBMITTED", "Payout batch submitted"  # Bulk payout sent to provider.
+    WEBHOOK_RECEIVED = "WEBHOOK_RECEIVED", "Webhook received"  # Valid inbound provider event stored.
+    WEBHOOK_REJECTED = "WEBHOOK_REJECTED", "Webhook rejected"  # Signature or authenticity failure.
 
 
-#: Default currency (matches the ledger default).
+#: Default currency (matches the ledger default).  # Use naira by default.
 DEFAULT_CURRENCY = "NGN"
 
-#: Prefix for locally-generated provider references (our idempotency key on the way out).
+#: Prefix for locally-generated provider references (our idempotency key on the way out).  # Shared outbound reference prefix.
 REFERENCE_PREFIX = "CXP"
