@@ -17,22 +17,22 @@ from .exceptions import BudgetError  # Domain error for invalid budget operation
 
 def _ensure_editable(budget):  # Guard writes to approved/locked budgets.
     if budget.is_locked:  # Approved budgets are frozen.
-        raise BudgetError(
+        raise BudgetError(  # Raise the domain error for this path.
             f"Budget '{budget.name}' is '{budget.status}' and can no longer be edited.",
-        )
+        )  # Close the grouped expression.
 
 
 def _ensure_pl_account(account):  # Validate that a budget line targets P&L.
     """A budget line is only meaningful for an income/expense account — variance is
     measured against P&L movement, so balance-sheet accounts are rejected."""
     if account.account_type not in (AccountType.INCOME, AccountType.EXPENSE):  # Balance-sheet accounts are not budgeted.
-        raise BudgetError(
+        raise BudgetError(  # Raise the domain error for this path.
             f"Budgets cover income and expense accounts only — "
             f"'{account.code} {account.name}' is {account.get_account_type_display()}.",
-        )
+        )  # Close the grouped expression.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def create_budget(entity, *, name, fiscal_year, lines=None, actor_user=None):  # Create a draft budget document.
     """Create a draft budget with an auto-allocated code, optionally with its lines.
 
@@ -44,16 +44,16 @@ def create_budget(entity, *, name, fiscal_year, lines=None, actor_user=None):  #
 
     code = next_document_number(  # Allocate a unique budget code for the fiscal year.
         entity=entity, branch=None, doc_type=DocType.BUDGET, fiscal_year=fiscal_year.year,  # Budget numbers are entity-scoped.
-    )
+    )  # Close the grouped expression.
     budget = Budget.objects.create(  # Create the draft budget header.
         entity=entity, code=code, fiscal_year=fiscal_year, name=name,  # Persist entity, document code, year, and name.
-    )
+    )  # Close the grouped expression.
     if lines:  # Optional initial line payload.
         set_budget_lines(budget, lines)  # Replace draft budget lines with the supplied lines.
     return budget  # Return the created draft budget.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def update_budget(budget, *, name=None, actor_user=None):  # Rename a draft budget.
     """Rename a draft budget. Refuses once approved/locked."""
     _ensure_editable(budget)  # Refuse edits to locked budgets.
@@ -63,7 +63,7 @@ def update_budget(budget, *, name=None, actor_user=None):  # Rename a draft budg
     return budget  # Return the updated budget.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def add_budget_line(budget, *, account, period_no, amount, cost_center=None):  # Upsert one budget cell.
     """Add or update one (account, cost-centre, period) cell of a draft budget.
 
@@ -80,11 +80,11 @@ def add_budget_line(budget, *, account, period_no, amount, cost_center=None):  #
     line, _ = BudgetLine.objects.update_or_create(  # Create or replace this account/cost-center/period amount.
         budget=budget, account=account, cost_center=cost_center, period_no=int(period_no),  # Unique budget cell coordinates.
         defaults={"amount": int(amount)},  # Store amount in integer kobo.
-    )
+    )  # Close the grouped expression.
     return line  # Return the created or updated budget line.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def set_budget_lines(budget, lines):  # Replace all draft budget lines in one operation.
     """Replace a draft budget's lines wholesale with ``lines``.
 
@@ -105,22 +105,22 @@ def set_budget_lines(budget, lines):  # Replace all draft budget lines in one op
             raise BudgetError(f"lines[{i}].period_no must be between 1 and 12.")
         key = (account.id, cost_center.id if cost_center else None, period_no)  # Unique cell identity.
         if key in seen:  # Duplicate cells would overwrite each other.
-            raise BudgetError(
+            raise BudgetError(  # Raise the domain error for this path.
                 f"Duplicate line for {account.code} / period {period_no} — "
                 f"each account × cost centre × period appears once.",
-            )
+            )  # Close the grouped expression.
         seen.add(key)  # Remember this cell to catch later duplicates.
         rows.append(BudgetLine(  # Stage a new budget line for bulk insertion.
             budget=budget, account=account, cost_center=cost_center,  # Store budget, account, and optional cost center.
             period_no=period_no, amount=int(ln.get("amount", 0)),  # Store period and integer kobo amount.
-        ))
+        ))  # Execute the module statement.
     budget.lines.all().delete()  # Clear old lines only after the replacement payload validates.
     if rows:  # Avoid unnecessary bulk_create call for an empty budget.
         BudgetLine.objects.bulk_create(rows)  # Insert replacement lines efficiently.
     return budget  # Return the budget with replaced lines.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def delete_budget_line(budget, line_id):  # Remove one line from an editable budget.
     """Remove one line from a draft budget."""
     _ensure_editable(budget)  # Refuse edits to locked budgets.
@@ -128,7 +128,7 @@ def delete_budget_line(budget, line_id):  # Remove one line from an editable bud
     return budget  # Return the parent budget.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def delete_budget(budget, *, actor_user=None):  # Delete a draft budget and audit it.
     """Delete a DRAFT budget (its lines cascade). Refuses an approved/locked budget.
 
@@ -145,18 +145,18 @@ def delete_budget(budget, *, actor_user=None):  # Delete a draft budget and audi
         actor_user=actor_user, target=budget,  # Actor and target context.
         message=f"Deleted budget '{name}' for FY{fiscal_year}.",  # Human-readable audit message.
         budget_id=budget_id,  # Structured id for later traceability.
-    )
+    )  # Close the grouped expression.
     budget.delete()  # Delete the budget; related lines cascade.
     return budget  # Return the now-deleted budget instance for caller context.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def approve_budget(budget, *, actor_user=None):  # Approve and lock a draft budget.
     """Approve a draft budget, locking its lines against further edits."""
     if budget.status != BudgetStatus.DRAFT:  # Only draft budgets can enter approval.
-        raise BudgetError(
+        raise BudgetError(  # Raise the domain error for this path.
             f"Budget '{budget.name}' is '{budget.status}'; only a draft can be approved.",
-        )
+        )  # Close the grouped expression.
     budget.status = BudgetStatus.APPROVED  # Move budget to approved lifecycle state.
     budget.approved_at = timezone.now()  # Stamp approval time.
     budget.approved_by = actor_user  # Store approving user.
@@ -167,5 +167,5 @@ def approve_budget(budget, *, actor_user=None):  # Approve and lock a draft budg
         actor_user=actor_user, target=budget,  # Actor and target context.
         message=f"Approved budget '{budget.name}' for FY{budget.fiscal_year.year}.",  # Human-readable audit message.
         budget_id=budget.id,  # Structured budget id.
-    )
+    )  # Close the grouped expression.
     return budget  # Return the approved budget.
