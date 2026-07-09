@@ -41,6 +41,7 @@ from typing import Any
 from rest_framework import serializers
 
 
+# Enforce opt-in field grants for serializers carrying sensitive RBAC-protected data.
 class FieldSecurityMixin:
     """
     Mixin for ``serializers.Serializer`` / ``serializers.ModelSerializer``.
@@ -59,6 +60,7 @@ class FieldSecurityMixin:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    # Resolve the permission snapshot used for all protected fields on this request.
     def _resolve_user_permissions(self) -> set[str] | None:
         """
         Return the user's effective permission set for this request.
@@ -66,7 +68,7 @@ class FieldSecurityMixin:
         Returns ``None`` when there is no usable request context, which signals
         callers to skip FLS entirely (allow all fields).
         """
-        request = self.context.get("request")  # type: ignore[attr-defined]
+        request = self.context.get("request")
         if not request:
             return None
 
@@ -86,12 +88,14 @@ class FieldSecurityMixin:
             school = getattr(user, "school", None)
             request._fls_permissions = get_effective_permissions(user, school=school)
 
-        return request._fls_permissions  # type: ignore[return-value]
+        return request._fls_permissions
 
+    # Check whether a response field should be exposed.
     def _can_read(self, field: str, user_perms: set[str]) -> bool:
         perm = self.read_permissions.get(field)
         return perm is None or perm in user_perms
 
+    # Check whether an incoming field may be changed.
     def _can_write(self, field: str, user_perms: set[str]) -> bool:
         perm = self.write_permissions.get(field)
         return perm is None or perm in user_perms
@@ -100,8 +104,9 @@ class FieldSecurityMixin:
     # DRF hooks
     # ------------------------------------------------------------------
 
+    # Strip unreadable fields before the serializer response leaves the API.
     def to_representation(self, instance: Any) -> dict:
-        data = super().to_representation(instance)  # type: ignore[misc]
+        data = super().to_representation(instance)
 
         if not self.read_permissions:
             return data
@@ -117,10 +122,11 @@ class FieldSecurityMixin:
                 stripped.append(field)
 
         if stripped:
-            data["_stripped_fields"] = stripped
+            data["_stripped_fields"] = stripped  # Tell clients which sensitive fields were withheld.
 
         return data
 
+    # Reject unauthorized writes with per-field errors.
     def to_internal_value(self, data: Any) -> dict:
         if self.write_permissions:
             user_perms = self._resolve_user_permissions()
@@ -133,4 +139,4 @@ class FieldSecurityMixin:
                 if errors:
                     raise serializers.ValidationError(errors)
 
-        return super().to_internal_value(data)  # type: ignore[misc]
+        return super().to_internal_value(data)

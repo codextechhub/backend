@@ -45,7 +45,9 @@ from django.db.models import Q
 from core.thread_locals import get_current_school
 
 
+# Support explicit tenant scoping when code cannot rely on request context.
 class TenantAwareQuerySet(models.QuerySet):
+    # Apply the requested school scope across direct-school and branch-owned models.
     def for_school(self, school):
         """Scope this queryset to *school*.
 
@@ -63,12 +65,15 @@ class TenantAwareQuerySet(models.QuerySet):
         return self
 
 
+# Enforce ambient school scoping for ordinary ORM access.
 class TenantAwareManager(models.Manager.from_queryset(TenantAwareQuerySet)):
+    # Configure per-model tenant lookup rules.
     def __init__(self, *, tenant_field: str | None = None, include_global: bool = False):
         super().__init__()
         self.tenant_field = tenant_field
         self.include_global = include_global
 
+    # Resolve the model field path that represents school ownership.
     def _tenant_lookup(self) -> str | None:
         if self.tenant_field:
             return self.tenant_field
@@ -79,19 +84,22 @@ class TenantAwareManager(models.Manager.from_queryset(TenantAwareQuerySet)):
             return "branch__school"
         return None
 
+    # Attach the current school filter before callers add their own conditions.
     def get_queryset(self):
         qs = super().get_queryset()
         school = get_current_school()
-        if school is None:
+        if school is None:  # Platform jobs and Vision staff remain explicitly unscoped.
             return qs
         lookup = self._tenant_lookup()
         if lookup is None:
             return qs
         condition = Q(**{lookup: school})
         if self.include_global:
+            # School users also see platform-wide template rows when the model opts in.
             condition |= Q(**{f"{lookup}__isnull": True})
         return qs.filter(condition)
 
+    # Bypass ambient context when platform code intentionally targets one school.
     def for_school(self, school):
         """Explicitly scope to *school*, IGNORING the ambient request context.
 

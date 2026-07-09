@@ -14,6 +14,7 @@ from django.core.exceptions import ValidationError
 from .models import GroupPermission, Permission, PermissionDependency
 
 
+# Validate role permission sets against the dependency graph.
 class PermissionDependencyValidator:
     """
     Validates permission dependencies before role assignment.
@@ -23,10 +24,12 @@ class PermissionDependencyValidator:
         validator.validate_permission_set(permission_keys=['finance.invoice.approve'])
     """
     
+    # Load dependencies once so a role change can validate many keys cheaply.
     def __init__(self):
         self._dependency_cache: Dict[str, Set[str]] = {}
         self._load_dependencies()
     
+    # Build an in-memory permission -> required-permissions map.
     def _load_dependencies(self):
         """Load all dependencies into memory for fast validation."""
         dependencies = PermissionDependency.objects.select_related(
@@ -42,10 +45,12 @@ class PermissionDependencyValidator:
             
             self._dependency_cache[perm_key].add(depends_key)
     
+    # Return prerequisites directly attached to one permission.
     def get_dependencies(self, permission_key: str) -> Set[str]:
         """Get all direct dependencies for a permission."""
         return self._dependency_cache.get(permission_key, set())
     
+    # Resolve the full prerequisite chain for one permission.
     def get_all_dependencies(self, permission_key: str, visited: Set[str] = None) -> Set[str]:
         """
         Recursively get all dependencies (direct + transitive).
@@ -56,7 +61,7 @@ class PermissionDependencyValidator:
             visited = set()
         
         if permission_key in visited:
-            # Circular dependency detected
+            # A cycle would make the permission impossible to satisfy safely.
             raise ValidationError(
                 f"Circular dependency detected for permission: {permission_key}"
             )
@@ -68,11 +73,12 @@ class PermissionDependencyValidator:
         
         for dep_key in direct_deps:
             all_deps.add(dep_key)
-            # Recursively get transitive dependencies
+            # Transitive dependencies must be granted too, not just the direct parent.
             all_deps.update(self.get_all_dependencies(dep_key, visited.copy()))
         
         return all_deps
     
+    # Check a proposed role grant set before it can be persisted.
     def validate_permission_set(self, permission_keys: List[str]) -> Dict[str, any]:
         """
         Validate that a set of permissions satisfies all dependencies.
@@ -108,6 +114,7 @@ class PermissionDependencyValidator:
             'errors': errors,
         }
     
+    # Scan the whole dependency graph for configuration mistakes.
     def detect_circular_dependencies(self) -> List[str]:
         """
         Detect all circular dependencies in the permission graph.
@@ -125,6 +132,7 @@ class PermissionDependencyValidator:
         return errors
 
 
+# Combine direct grants with group-derived grants before dependency validation.
 def flatten_permission_keys(
     permission_keys: List[str] | None = None,
     group_ids: List = None,
@@ -137,6 +145,7 @@ def flatten_permission_keys(
     result: Set[str] = set(permission_keys or [])
 
     if group_ids:
+        # Group grants count toward dependency satisfaction just like direct grants.
         result.update(
             GroupPermission.objects.filter(group_id__in=group_ids).values_list(
                 "permission_id", flat=True
@@ -146,6 +155,7 @@ def flatten_permission_keys(
     return sorted(result)
 
 
+# Fail a role update when its effective permission set is incomplete.
 def validate_role_permissions(
     permission_keys: List[str] | None = None,
     group_ids: List = None,
@@ -162,7 +172,7 @@ def validate_role_permissions(
     effective_keys = flatten_permission_keys(permission_keys, group_ids)
 
     if not effective_keys:
-        return
+        return  # Empty roles are valid; there is no permission dependency to satisfy.
 
     validator = PermissionDependencyValidator()
     result = validator.validate_permission_set(effective_keys)

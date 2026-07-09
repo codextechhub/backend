@@ -24,11 +24,12 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from core.thread_locals import set_current_school
 
 
+# Bridge SimpleJWT authentication into the tenant context used by RBAC managers.
 class TenantJWTAuthentication(JWTAuthentication):
 
     def authenticate(self, request):
         result = super().authenticate(request)
-        if result is None:
+        if result is None:  # No token or invalid auth class match: leave tenant context untouched.
             return None
 
         user, validated_token = result

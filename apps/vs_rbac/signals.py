@@ -23,6 +23,7 @@ from .models import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+# Snapshot status before save so lifecycle receivers can audit real transitions.
 def _capture_old_status(sender, instance, **kwargs):
     """Attach the pre-save status to the instance so post_save can diff it."""
     if not instance.pk:
@@ -34,6 +35,7 @@ def _capture_old_status(sender, instance, **kwargs):
         instance._pre_save_status = None
 
 
+# Snapshot active state before save so deactivation audits can show the prior value.
 def _capture_old_is_active(sender, instance, **kwargs):
     """Attach the pre-save is_active flag to the instance for diff checks."""
     if not instance.pk:
@@ -51,6 +53,7 @@ def _capture_old_is_active(sender, instance, **kwargs):
 # ---------------------------------------------------------------------------
 
 @receiver(post_save, sender=PlatformUserRoleAssignment)
+# Mirror the active platform role onto User.role for legacy consumers.
 def sync_user_role_on_platform_assignment(sender, instance, **kwargs):
     """Keep User.role in sync with the user's active platform role assignment."""
     user = instance.user
@@ -71,6 +74,7 @@ def sync_user_role_on_platform_assignment(sender, instance, **kwargs):
 
 
 @receiver(post_save, sender=PlatformUserRoleAssignment)
+# Audit platform role assignments and status changes.
 def audit_platform_role_assignment(sender, instance, created, **kwargs):
     """Emit an AuditEvent whenever a platform role is assigned or its status changes."""
     from vs_audit.models import AuditActionType, AuditModuleKey
@@ -121,6 +125,7 @@ def audit_platform_role_assignment(sender, instance, created, **kwargs):
 # ---------------------------------------------------------------------------
 
 @receiver(post_save, sender=SchoolUserRoleAssignment)
+# Audit school-scoped role assignment and revocation events.
 def audit_school_role_assignment(sender, instance, created, **kwargs):
     """Emit an audit event when a school role is assigned or revoked."""
     from vs_audit.models import AuditActionType, AuditModuleKey
@@ -179,6 +184,7 @@ pre_save.connect(_capture_old_is_active, sender=Permission)
 
 
 @receiver(post_save, sender=Permission)
+# Audit creation and deactivation of permission keys.
 def audit_permission_change(sender, instance, created, **kwargs):
     """Emit an audit event when a permission is created or deactivated."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
@@ -221,6 +227,7 @@ def audit_permission_change(sender, instance, created, **kwargs):
 # ---------------------------------------------------------------------------
 
 @receiver(post_save, sender=PermissionDependency)
+# Audit newly introduced permission prerequisites.
 def audit_permission_dependency_created(sender, instance, created, **kwargs):
     """Emit an audit event when a permission dependency is created."""
     if not created:
@@ -245,6 +252,7 @@ def audit_permission_dependency_created(sender, instance, created, **kwargs):
 
 
 @receiver(post_delete, sender=PermissionDependency)
+# Audit removal of permission prerequisites.
 def audit_permission_dependency_removed(sender, instance, **kwargs):
     """Emit an audit event when a permission dependency is removed."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
@@ -270,6 +278,7 @@ def audit_permission_dependency_removed(sender, instance, **kwargs):
 # ---------------------------------------------------------------------------
 
 @receiver(post_save, sender=GroupPermission)
+# Audit permission grants added through reusable groups.
 def audit_group_permission_added(sender, instance, created, **kwargs):
     """Emit an audit event when a permission is added to a group."""
     if not created:
@@ -292,6 +301,7 @@ def audit_group_permission_added(sender, instance, created, **kwargs):
 
 
 @receiver(post_delete, sender=GroupPermission)
+# Audit permission grants removed from reusable groups.
 def audit_group_permission_removed(sender, instance, **kwargs):
     """Emit an audit event when a permission is removed from a group."""
     from vs_audit.models import AuditActionType, AuditModuleKey
@@ -318,6 +328,7 @@ pre_save.connect(_capture_old_status, sender=SchoolRoleTemplate)
 
 
 @receiver(post_save, sender=SchoolRoleTemplate)
+# Audit school role template creation and lifecycle status changes.
 def audit_school_role_template(sender, instance, created, **kwargs):
     """Emit an audit event when a school role template is created or its status changes."""
     from vs_audit.models import AuditActionType, AuditModuleKey
@@ -361,6 +372,7 @@ pre_save.connect(_capture_old_status, sender=PlatformRoleTemplate)
 
 
 @receiver(post_save, sender=PlatformRoleTemplate)
+# Audit platform role template creation and lifecycle status changes.
 def audit_platform_role_template(sender, instance, created, **kwargs):
     """Emit an audit event when a platform role template is created or its status changes."""
     from vs_audit.models import AuditActionType, AuditModuleKey
@@ -397,6 +409,7 @@ def audit_platform_role_template(sender, instance, created, **kwargs):
 # ---------------------------------------------------------------------------
 
 @receiver(post_save, sender=SchoolRoleGroup)
+# Audit permission groups attached to school roles.
 def audit_school_role_group_attached(sender, instance, created, **kwargs):
     """Emit an audit event when a permission group is attached to a school role."""
     if not created:
@@ -420,6 +433,7 @@ def audit_school_role_group_attached(sender, instance, created, **kwargs):
 
 
 @receiver(post_delete, sender=SchoolRoleGroup)
+# Audit permission groups detached from school roles.
 def audit_school_role_group_detached(sender, instance, **kwargs):
     """Emit an audit event when a permission group is detached from a school role."""
     from vs_audit.models import AuditActionType, AuditModuleKey
@@ -443,6 +457,7 @@ def audit_school_role_group_detached(sender, instance, **kwargs):
 # ---------------------------------------------------------------------------
 
 @receiver(post_save, sender=PlatformRoleGroup)
+# Audit permission groups attached to platform roles.
 def audit_platform_role_group_attached(sender, instance, created, **kwargs):
     """Emit an audit event when a permission group is attached to a platform role."""
     if not created:
@@ -466,6 +481,7 @@ def audit_platform_role_group_attached(sender, instance, created, **kwargs):
 
 
 @receiver(post_delete, sender=PlatformRoleGroup)
+# Audit permission groups detached from platform roles.
 def audit_platform_role_group_detached(sender, instance, **kwargs):
     """Emit an audit event when a permission group is detached from a platform role."""
     from vs_audit.models import AuditActionType, AuditModuleKey
@@ -493,6 +509,7 @@ pre_save.connect(_capture_old_status, sender=SchoolRoleChangeRequest)
 
 
 @receiver(post_save, sender=SchoolRoleChangeRequest)
+# Audit school role change request submission and failed/denied outcomes.
 def audit_school_role_change_request(sender, instance, created, **kwargs):
     """Emit audit events for school role change request lifecycle transitions."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity, AuditStatus
@@ -567,6 +584,7 @@ pre_save.connect(_capture_old_status, sender=PlatformRoleChangeRequest)
 
 
 @receiver(post_save, sender=PlatformRoleChangeRequest)
+# Audit platform role change request submission and failed/denied outcomes.
 def audit_platform_role_change_request(sender, instance, created, **kwargs):
     """Emit audit events for platform role change request lifecycle transitions."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity, AuditStatus
@@ -633,6 +651,7 @@ pre_save.connect(_capture_old_is_active, sender=PermissionModule)
 
 
 @receiver(post_save, sender=PermissionModule)
+# Audit module-level permission vocabulary changes.
 def audit_permission_module(sender, instance, created, **kwargs):
     """Emit an audit event on PermissionModule create or is_active change."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
@@ -671,6 +690,7 @@ def audit_permission_module(sender, instance, created, **kwargs):
 
 
 @receiver(post_delete, sender=PermissionModule)
+# Audit hard deletion of a permission module and its cascade impact.
 def audit_permission_module_deleted(sender, instance, **kwargs):
     """Emit an audit event when a PermissionModule is hard-deleted."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
@@ -696,6 +716,7 @@ pre_save.connect(_capture_old_is_active, sender=PermissionResource)
 
 
 @receiver(post_save, sender=PermissionResource)
+# Audit resource-level permission vocabulary changes.
 def audit_permission_resource(sender, instance, created, **kwargs):
     """Emit an audit event on PermissionResource create or is_active change."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
@@ -736,6 +757,7 @@ def audit_permission_resource(sender, instance, created, **kwargs):
 
 
 @receiver(post_delete, sender=PermissionResource)
+# Audit hard deletion of a permission resource and its cascade impact.
 def audit_permission_resource_deleted(sender, instance, **kwargs):
     """Emit an audit event when a PermissionResource is hard-deleted."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
@@ -762,6 +784,7 @@ pre_save.connect(_capture_old_is_active, sender=PermissionAction)
 
 
 @receiver(post_save, sender=PermissionAction)
+# Audit action-verb permission vocabulary changes.
 def audit_permission_action(sender, instance, created, **kwargs):
     """Emit an audit event on PermissionAction create or is_active change."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity
@@ -800,6 +823,7 @@ def audit_permission_action(sender, instance, created, **kwargs):
 
 
 @receiver(post_delete, sender=PermissionAction)
+# Audit hard deletion of a permission action and its cascade impact.
 def audit_permission_action_deleted(sender, instance, **kwargs):
     """Emit an audit event when a PermissionAction is hard-deleted."""
     from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity

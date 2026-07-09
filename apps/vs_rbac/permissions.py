@@ -6,10 +6,12 @@ from rest_framework.permissions import BasePermission, SAFE_METHODS
 from .evaluator import _group_permission_keys, has_permission, has_all_permissions
 
 
+# Read the DRF request user through one helper so permission classes stay consistent.
 def _get_user(obj, request):
     return getattr(request, "user", None)
 
 
+# Check the platform super-admin assignment used for privileged RBAC bypasses.
 def is_vision_super_admin(user):
     """Return True if *user* currently holds an active xvs_super_admin role.
 
@@ -21,7 +23,7 @@ def is_vision_super_admin(user):
         return False
     cached = getattr(user, "_is_xvs_super_admin", None)
     if cached is not None:
-        return cached
+        return cached  # Reuse the request-local assignment check.
     from .models import PlatformUserRoleAssignment
     result = PlatformUserRoleAssignment.objects.filter(
         user=user,
@@ -35,6 +37,7 @@ def is_vision_super_admin(user):
     return result
 
 
+# Check a raw permission key against active school or platform role assignments.
 def user_has_rbac_permission(user, permission_key, school=None):
     """
     Check whether *user* holds *permission_key* through any active role.
@@ -56,7 +59,7 @@ def user_has_rbac_permission(user, permission_key, school=None):
 
     user_type = getattr(user, "user_type", "")
 
-    # Vision staff: check platform roles
+    # Vision staff use platform roles because they are not scoped to a school.
     if user_type == "CX_STAFF":
         return PlatformRolePermission.objects.filter(
             role__user_assignments__user=user,
@@ -82,6 +85,7 @@ def user_has_rbac_permission(user, permission_key, school=None):
     ).exists()
 
 
+# Enforce login plus non-terminal account status before RBAC is evaluated.
 class IsAuthenticatedAndActive(BasePermission):
     """
     Minimal guardrail:
@@ -105,6 +109,7 @@ class IsAuthenticatedAndActive(BasePermission):
         return True
 
 
+# Allow only Vision staff into platform-owned RBAC administration surfaces.
 class IsVisionStaff(BasePermission):
     """
     Vision staff can manage global permission registry + approve/deny requests.
@@ -118,6 +123,7 @@ class IsVisionStaff(BasePermission):
         return getattr(u, "user_type", "") == "CX_STAFF"
 
 
+# Allow only the active xvs_super_admin role holder into top-level controls.
 class IsVisionSuperAdmin(BasePermission):
     """
     Grants access only to the active Vision Super Admin —
@@ -128,6 +134,7 @@ class IsVisionSuperAdmin(BasePermission):
         return is_vision_super_admin(request.user)
 
 
+# Allow school admins to manage school-local RBAC configuration.
 class IsSchoolAdmin(BasePermission):
     """
     School admin can manage roles within their school.
@@ -142,6 +149,7 @@ class IsSchoolAdmin(BasePermission):
         return getattr(u, "user_type", "") == "SCHOOL_ADMIN"
 
 
+# Evaluate the permission keys declared by a DRF view.
 class HasRBACPermission(BasePermission):
     """
     DRF permission that checks the user's RBAC roles for a specific key.
@@ -182,7 +190,7 @@ class HasRBACPermission(BasePermission):
         rbac_perms = getattr(view, "rbac_permission", None)
         rbac_group_perms = getattr(view, "rbac_group_permission", None)
 
-        passed = True
+        passed = True  # Both direct-key and group-key checks must remain satisfied.
         school = getattr(request, "school", None)
 
         if rbac_perms is not None and rbac_perms != "":
@@ -192,6 +200,7 @@ class HasRBACPermission(BasePermission):
                 )
             if isinstance(rbac_perms, str):
                 rbac_perms = [rbac_perms]
+            # Direct permissions are any-of so views can accept equivalent operation grants.
             if not any(
                 has_permission(u, perm_key, school=school)
                 for perm_key in rbac_perms
@@ -206,7 +215,7 @@ class HasRBACPermission(BasePermission):
             if isinstance(rbac_group_perms, str):
                 rbac_group_perms = [rbac_group_perms]
             
-            perm_keys = _group_permission_keys(rbac_group_perms)
+            perm_keys = _group_permission_keys(rbac_group_perms)  # Group checks require every key in the bundle.
 
             if not has_all_permissions(u, perm_keys, school=school):
                 passed = False
@@ -215,6 +224,7 @@ class HasRBACPermission(BasePermission):
 
 
 
+# Allow branch admins into branch-scoped management surfaces.
 class IsBranchAdmin(BasePermission):
     """
     Grants access only to users with user_type == BRANCH_ADMIN.
@@ -227,6 +237,7 @@ class IsBranchAdmin(BasePermission):
         return getattr(u, "user_type", "") == "BRANCH_ADMIN"
 
 
+# Permit safe HTTP methods on read-only endpoints.
 class ReadOnly(BasePermission):
     def has_permission(self, request, view):
         return request.method in SAFE_METHODS

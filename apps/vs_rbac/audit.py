@@ -16,6 +16,7 @@ from __future__ import annotations
 from .models import RBACAuditLog
 
 
+# Record RBAC changes durably before the central activity mirror runs.
 def record_rbac_audit(
     *,
     action_type: str,
@@ -37,6 +38,7 @@ def record_rbac_audit(
     durable write (by design — the caller's transaction must roll back with
     it). The central mirror never raises.
     """
+    # Preserve tenant context even when the target row changes.
     school_id = str((metadata or {}).get("school_id", "") or "")
 
     log = RBACAuditLog.objects.create(
@@ -74,7 +76,7 @@ def record_rbac_audit(
             diff_data=diff_data,
             metadata=metadata,
         )
-    except Exception:  # pragma: no cover - defensive
+    except Exception:
         import logging
 
         logging.getLogger("vs_rbac.audit").warning(

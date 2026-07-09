@@ -54,6 +54,7 @@ from .permissions import (
 # Permission vocabulary — Module / Resource / Action (Vision-owned)
 # -----------------------------------------------------------------------------
 
+# List and create permission modules in the Vision-owned vocabulary.
 class PermissionModuleListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """docstring-name: Permission modules"""
     queryset = PermissionModule.objects.all()
@@ -74,6 +75,7 @@ class PermissionModuleListCreateView(CreateModelMixin, generics.ListCreateAPIVie
         return qs
 
     def get_permissions(self):
+        # Creating vocabulary is stricter than reading it.
         if self.request.method == "POST":
             self.rbac_permission = "platform.permissions.create"
         else:
@@ -81,6 +83,7 @@ class PermissionModuleListCreateView(CreateModelMixin, generics.ListCreateAPIVie
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
 
+# Retrieve or mutate one permission module by its stable name.
 class PermissionModuleDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
     """docstring-name: Permission modules"""
     queryset = PermissionModule.objects.all()
@@ -97,6 +100,7 @@ class PermissionModuleDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMo
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
 
+# List and create resources within a permission module.
 class PermissionResourceListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """docstring-name: Permission resources"""
     queryset = PermissionResource.objects.select_related("module").all()
@@ -126,6 +130,7 @@ class PermissionResourceListCreateView(CreateModelMixin, generics.ListCreateAPIV
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
 
+# Retrieve or mutate one permission resource.
 class PermissionResourceDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
     """docstring-name: Permission resources"""
     queryset = PermissionResource.objects.select_related("module").annotate(permissions_count=Count("permissions", distinct=True))
@@ -141,6 +146,7 @@ class PermissionResourceDetailView(RetrieveModelMixin, UpdateModelMixin, Destroy
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
 
+# List and create action verbs used when composing permission keys.
 class PermissionActionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """docstring-name: Permission actions"""
     queryset = PermissionAction.objects.all()
@@ -168,6 +174,7 @@ class PermissionActionListCreateView(CreateModelMixin, generics.ListCreateAPIVie
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
 
+# Retrieve or mutate one action verb by name.
 class PermissionActionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
     """docstring-name: Permission actions"""
     queryset = PermissionAction.objects.annotate(permissions_count=Count("permissions", distinct=True))
@@ -187,6 +194,7 @@ class PermissionActionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMo
 # -----------------------------------------------------------------------------
 # Global Permission Registry (Vision-owned)
 # -----------------------------------------------------------------------------
+# List and create concrete permission keys from module/resource/action vocabulary.
 class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """docstring-name: Permissions"""
     queryset = Permission.objects.select_related("module", "resource", "action").order_by("-updated_at", "module", "action", "key")
@@ -194,6 +202,7 @@ class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     pagination_class = XVSPagination
 
     def get_permissions(self):
+        # Registry writes use create rights; list views require only read access.
         if self.request.method == "POST":
             self.rbac_permission = "platform.permissions.create"
         else:
@@ -228,6 +237,7 @@ class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
         return qs
 
 
+# Retrieve, update, or delete one concrete permission key.
 class PermissionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
     """docstring-name: Permissions"""
     queryset = Permission.objects.prefetch_related(
@@ -236,6 +246,7 @@ class PermissionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMix
     lookup_field = "key"
 
     def get_serializer_class(self):
+        # Detail reads include dependencies and group membership; writes use the lean serializer.
         if self.request.method == "GET":
             return PermissionDetailSerializer
         return PermissionSerializer
@@ -278,6 +289,7 @@ class PermissionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMix
             new_key = f"{new_module.pk}.{new_resource.name}.{new_action.pk}"
 
             if new_key != instance.key:
+                # Updating module/resource/action changes the natural key used by role grants.
                 Permission.objects.filter(key=instance.key).update(key=new_key)
                 instance.key = new_key
 
@@ -315,6 +327,7 @@ class PermissionDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMix
         return success_response(message="Permission deleted successfully.")
 
 
+# List and create dependency rules between permission keys.
 class PermissionDependencyListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """docstring-name: Permission dependencies"""
     queryset = PermissionDependency.objects.select_related("permission", "depends_on").all()
@@ -329,6 +342,7 @@ class PermissionDependencyListCreateView(CreateModelMixin, generics.ListCreateAP
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
 
+# Retrieve or remove one dependency rule.
 class PermissionDependencyDetailView(RetrieveModelMixin, DestroyModelMixin, generics.RetrieveDestroyAPIView):
     """docstring-name: Permission dependencies"""
     queryset = PermissionDependency.objects.select_related("permission", "depends_on").all()
@@ -346,6 +360,7 @@ class PermissionDependencyDetailView(RetrieveModelMixin, DestroyModelMixin, gene
 # -----------------------------------------------------------------------------
 # Permission Groups (Vision-owned, shared across school + platform roles)
 # -----------------------------------------------------------------------------
+# List and create reusable permission bundles.
 class PermissionGroupListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     Vision-facing:
@@ -392,11 +407,13 @@ class PermissionGroupListCreateView(CreateModelMixin, generics.ListCreateAPIView
         return qs
 
     def get_serializer_class(self):
+        # Create accepts permission_keys, while list keeps the payload compact.
         if self.request.method == "POST":
             return PermissionGroupDetailSerializer
         return PermissionGroupListSerializer
 
 
+# Retrieve, update, or delete one permission bundle.
 class PermissionGroupDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
     """
     Vision-facing:
@@ -422,6 +439,7 @@ class PermissionGroupDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMod
     def delete(self, request, *args, **kwargs):
         instance = self.get_object()
         if instance.is_system:
+            # System bundles may back shipped roles, so they are not user-deletable.
             return error_response(
                 message="System permission groups cannot be deleted.",
                 status=status.HTTP_403_FORBIDDEN,
@@ -432,6 +450,7 @@ class PermissionGroupDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMod
 # -----------------------------------------------------------------------------
 # School Role Templates
 # -----------------------------------------------------------------------------
+# List and create role templates inside one school boundary.
 class SchoolRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     School-facing:
@@ -447,6 +466,7 @@ class SchoolRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIV
         school_slug = self.kwargs["school_slug"]
         qp = self.request.query_params
 
+        # Tenant filtering is URL-driven so school admins cannot list another school's roles.
         qs = (
             SchoolRoleTemplate.objects.filter(school__slug=school_slug)
             .annotate(
@@ -476,9 +496,11 @@ class SchoolRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIV
         return SchoolRoleTemplateListSerializer
 
     def perform_create(self, serializer):
+        # Bind the new role to the school in the URL, not client-submitted data.
         serializer.save(school=School.objects.get(slug=self.kwargs["school_slug"]))
 
 
+# Retrieve or mutate one school role template.
 class SchoolRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
     """
     School-facing:
@@ -506,11 +528,13 @@ class SchoolRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, Destroy
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
         if instance.is_locked:
+            # Locked roles are provisioned for consistency and cannot be edited locally.
             return error_response(
                 message="This role is locked and cannot be modified.",
                 status=status.HTTP_403_FORBIDDEN,
             )
         if instance.is_system_role:
+            # System roles are Vision-owned even though they are visible inside the school.
             return error_response(
                 message="System roles cannot be modified.",
                 status=status.HTTP_403_FORBIDDEN,
@@ -535,6 +559,7 @@ class SchoolRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, Destroy
 # -----------------------------------------------------------------------------
 # School User Role Assignments
 # -----------------------------------------------------------------------------
+# List and create school-scoped role assignments.
 class SchoolUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     School-facing:
@@ -570,9 +595,11 @@ class SchoolUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCrea
         return qs
 
     def perform_create(self, serializer):
+        # Assignment creation is pinned to the school route to prevent cross-school grants.
         serializer.save(school=School.objects.get(slug=self.kwargs["school_slug"]))
 
 
+# Retrieve or update one school-scoped role assignment.
 class SchoolUserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin, generics.RetrieveUpdateAPIView):
     """
     School-facing:
@@ -596,6 +623,7 @@ class SchoolUserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin, g
 # -----------------------------------------------------------------------------
 # School Role Change Requests (school-internal approval)
 # -----------------------------------------------------------------------------
+# List and create school-internal role change requests.
 class SchoolRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     School-facing:
@@ -628,9 +656,11 @@ class SchoolRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCreat
         return qs
 
     def perform_create(self, serializer):
+        # The request school is route-owned so approval queues stay tenant-local.
         serializer.save(school=School.objects.get(slug=self.kwargs["school_slug"]))
 
 
+# List role change requests that school admins can review.
 class SchoolRoleChangeRequestApprovalQueueView(generics.ListAPIView):
     """
     School-admin-facing:
@@ -662,6 +692,7 @@ class SchoolRoleChangeRequestApprovalQueueView(generics.ListAPIView):
         return qs
 
 
+# Retrieve one school role change request for review.
 class SchoolRoleChangeRequestApprovalDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     """
     School-admin-facing:
@@ -682,6 +713,7 @@ class SchoolRoleChangeRequestApprovalDetailView(RetrieveModelMixin, generics.Ret
         )
 
 
+# Decide a school role change request and apply approved permission deltas.
 class SchoolRoleChangeRequestDecisionView(APIView):
     """
     School-admin decision endpoint for school role change requests.
@@ -711,6 +743,7 @@ class SchoolRoleChangeRequestDecisionView(APIView):
             )
 
         if obj.status != SchoolRoleChangeRequest.Status.PENDING:
+            # A decided request must not be applied or denied twice.
             return error_response(
                 message=f"Request already decided ({obj.status}).",
                 status=status.HTTP_409_CONFLICT,
@@ -724,6 +757,7 @@ class SchoolRoleChangeRequestDecisionView(APIView):
                 )
 
             obj.mark_denied(reviewer=request.user, notes=notes)
+            # Denial is a terminal workflow state with reviewer notes preserved for audit.
             obj.save(
                 update_fields=[
                     "status",
@@ -741,7 +775,7 @@ class SchoolRoleChangeRequestDecisionView(APIView):
         if action == "APPROVE":
             try:
                 with transaction.atomic():
-                    # USE SERVICE LAYER
+                    # The service layer validates dependencies, applies grants, and writes audit.
                     from .services import apply_school_role_change_request
                     apply_school_role_change_request(
                         obj=obj,
@@ -750,6 +784,7 @@ class SchoolRoleChangeRequestDecisionView(APIView):
                     )
 
             except Exception as exc:
+                # Preserve failed approvals as review history instead of leaving them pending.
                 obj.mark_apply_failed(reviewer=request.user, notes=str(exc))
                 obj.save(
                     update_fields=[
@@ -780,6 +815,7 @@ class SchoolRoleChangeRequestDecisionView(APIView):
 # -----------------------------------------------------------------------------
 # Platform Role Templates (Vision/internal)
 # -----------------------------------------------------------------------------
+# List and create platform-wide role templates.
 class PlatformRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     Vision-facing:
@@ -847,6 +883,7 @@ class PlatformRoleTemplateListCreateView(CreateModelMixin, generics.ListCreateAP
         return PlatformRoleTemplateListSerializer
 
 
+# Retrieve or mutate one platform role template.
 class PlatformRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMixin, generics.RetrieveUpdateDestroyAPIView):
     """
     Vision-facing:
@@ -881,6 +918,7 @@ class PlatformRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, Destr
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
         if not is_vision_super_admin(request.user):
+            # Only the super admin can override platform lock/system-role protections.
             if instance.is_locked:
                 return error_response(
                     message="This platform role is locked and cannot be modified.",
@@ -896,6 +934,7 @@ class PlatformRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, Destr
     def delete(self, request, *args, **kwargs):
         instance = self.get_object()
         if not is_vision_super_admin(request.user):
+            # System and locked platform roles are protected from ordinary Vision staff deletion.
             if instance.is_system_role:
                 return error_response(
                     message="System platform roles cannot be deleted.",
@@ -912,6 +951,7 @@ class PlatformRoleTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, Destr
 # -----------------------------------------------------------------------------
 # Platform User Role Assignments
 # -----------------------------------------------------------------------------
+# List and create platform role assignments for internal users.
 class PlatformUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     Vision-facing:
@@ -962,6 +1002,7 @@ class PlatformUserRoleAssignmentListCreateView(CreateModelMixin, generics.ListCr
         serializer.save()
 
 
+# Retrieve or update one platform role assignment.
 class PlatformUserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin, generics.RetrieveUpdateAPIView):
     """
     Vision-facing:
@@ -987,6 +1028,7 @@ class PlatformUserRoleAssignmentDetailView(RetrieveModelMixin, UpdateModelMixin,
         )
 
 
+# Revoke a platform role assignment with an audit reason.
 class PlatformUserRoleAssignmentRevokeView(APIView):
     """
     Vision-facing revoke endpoint for platform role assignments.
@@ -1022,12 +1064,14 @@ class PlatformUserRoleAssignmentRevokeView(APIView):
             )
 
         if assignment.assignment_status == PlatformUserRoleAssignment.AssignmentStatus.REVOKED:
+            # Revocation is terminal; repeated revoke calls should not rewrite audit context.
             return error_response(
                 message="This assignment has already been revoked.",
                 status=status.HTTP_409_CONFLICT,
             )
 
         assignment.revoke(by_user=request.user, reason=reason)
+        # Save the explicit revocation fields so signals can audit the status change.
         assignment.save(update_fields=[
             "assignment_status",
             "revoked_at",
@@ -1045,6 +1089,7 @@ class PlatformUserRoleAssignmentRevokeView(APIView):
 # -----------------------------------------------------------------------------
 # Platform Role Change Requests
 # -----------------------------------------------------------------------------
+# List and create platform role change requests.
 class PlatformRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCreateAPIView):
     """
     Vision-facing:
@@ -1082,6 +1127,7 @@ class PlatformRoleChangeRequestListCreateView(CreateModelMixin, generics.ListCre
         return qs
 
 
+# Retrieve one platform role change request.
 class PlatformRoleChangeRequestDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
     """docstring-name: Platform role change requests"""
     serializer_class = PlatformRoleChangeRequestSerializer
@@ -1097,6 +1143,7 @@ class PlatformRoleChangeRequestDetailView(RetrieveModelMixin, generics.RetrieveA
         )
 
 
+# Decide a platform role change request and apply approved permission deltas.
 class PlatformRoleChangeRequestDecisionView(APIView):
     """
     Vision-facing decision endpoint for platform role change requests.
@@ -1125,6 +1172,7 @@ class PlatformRoleChangeRequestDecisionView(APIView):
             )
 
         if obj.status != PlatformRoleChangeRequest.Status.PENDING:
+            # Platform role changes are single-decision requests.
             return error_response(
                 message=f"Request already decided ({obj.status}).",
                 status=status.HTTP_409_CONFLICT,
@@ -1138,6 +1186,7 @@ class PlatformRoleChangeRequestDecisionView(APIView):
                 )
 
             obj.mark_denied(reviewer=request.user, notes=notes)
+            # Denial records reviewer notes and stops the request lifecycle.
             obj.save(
                 update_fields=[
                     "status",
@@ -1155,6 +1204,7 @@ class PlatformRoleChangeRequestDecisionView(APIView):
         if action == "APPROVE":
             try:
                 with transaction.atomic():
+                    # The service layer owns dependency validation, grant replacement, and audit.
                     from .services import apply_platform_role_change_request
                     apply_platform_role_change_request(
                         obj=obj,
@@ -1163,6 +1213,7 @@ class PlatformRoleChangeRequestDecisionView(APIView):
                     )
 
             except Exception as exc:
+                # Failed application is stored as a terminal review outcome for follow-up.
                 obj.mark_apply_failed(reviewer=request.user, notes=str(exc))
                 obj.save(
                     update_fields=[
@@ -1194,6 +1245,7 @@ class PlatformRoleChangeRequestDecisionView(APIView):
 # Super Admin Transfer
 # -----------------------------------------------------------------------------
 
+# Transfer the singleton Vision super-admin role to another Vision staff user.
 class TransferSuperAdminView(APIView):
     """
     POST platform/transfer-super-admin/
@@ -1231,6 +1283,7 @@ class TransferSuperAdminView(APIView):
             )
 
         try:
+            # The service owns demotion, revocation of existing roles, and audit.
             transfer_super_admin(from_user=request.user, to_user=new_user)
         except ValueError as exc:
             return error_response(message=str(exc), error={})

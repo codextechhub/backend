@@ -34,6 +34,7 @@ from .models import (
 from .validators import validate_role_permissions
 
 
+# Provision a locked school role from Vision's prebuilt role library.
 def provision_role_from_prebuilt(*, school, branch=None, prebuilt_key: str, created_by=None):
     """
     Get or create a SchoolRoleTemplate from a PrebuiltRoleTemplate, copying
@@ -64,6 +65,7 @@ def provision_role_from_prebuilt(*, school, branch=None, prebuilt_key: str, crea
     )
 
     if created:
+        # Copy the template grants once; later school-specific edits happen on the role.
         prebuilt_perms = PrebuiltRolePermission.objects.filter(
             prebuilt_role=prebuilt
         ).select_related("permission")
@@ -83,6 +85,7 @@ def provision_role_from_prebuilt(*, school, branch=None, prebuilt_key: str, crea
     return role
 
 
+# Apply an approved school role permission-change request.
 def apply_school_role_change_request(obj: SchoolRoleChangeRequest, reviewer, notes: str = ""):
     """
     Apply approved school role change request.
@@ -99,16 +102,16 @@ def apply_school_role_change_request(obj: SchoolRoleChangeRequest, reviewer, not
     with transaction.atomic():
         target_role = obj.target_role
         
-        # Get current permission keys — snapshot before any changes are applied
+        # Snapshot current grants so the durable audit shows the exact before/after set.
         current_keys = set(
             SchoolRolePermission.objects.filter(
                 role=target_role,
                 granted=True
             ).values_list('permission_id', flat=True)
         )
-        before_keys = sorted(current_keys)  # captured before mutations
+        before_keys = sorted(current_keys)
 
-        # Apply delta items
+        # Replay the requested delta in memory before replacing stored grants.
         delta_items = obj.delta_items.select_related('permission').all()
 
         for item in delta_items:
@@ -129,7 +132,7 @@ def apply_school_role_change_request(obj: SchoolRoleChangeRequest, reviewer, not
             group_ids=attached_group_ids,
         )  # Raises ValidationError if invalid
 
-        # Apply changes
+        # Replace direct grants atomically so removed permissions cannot linger.
         SchoolRolePermission.objects.filter(role=target_role).delete()
         
         perms = Permission.objects.filter(key__in=final_keys)
@@ -144,11 +147,11 @@ def apply_school_role_change_request(obj: SchoolRoleChangeRequest, reviewer, not
             for perm in perms
         ])
         
-        # Bump role version to invalidate caches
+        # Version bump invalidates downstream effective-permission caches.
         target_role.bump_version()
         target_role.save(update_fields=['version', 'updated_at'])
         
-        # Mark request as approved
+        # Mark the approval only after validation and grant replacement succeed.
         obj.mark_approved(reviewer=reviewer, notes=notes)
         obj.save(update_fields=[
             'status',
@@ -175,6 +178,7 @@ def apply_school_role_change_request(obj: SchoolRoleChangeRequest, reviewer, not
         )
 
 
+# Apply an approved platform role permission-change request.
 def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer, notes: str = ""):
     """
     Apply approved platform role change request.
@@ -184,16 +188,16 @@ def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer,
     with transaction.atomic():
         target_role = obj.target_role
         
-        # Get current permission keys — snapshot before any changes are applied
+        # Snapshot platform grants before mutating them for audit reconstruction.
         current_keys = set(
             PlatformRolePermission.objects.filter(
                 role=target_role,
                 granted=True
             ).values_list('permission_id', flat=True)
         )
-        before_keys = sorted(current_keys)  # captured before mutations
+        before_keys = sorted(current_keys)
 
-        # Apply delta items
+        # Replay ADD/REMOVE operations in memory, then persist the final grant set.
         delta_items = obj.delta_items.select_related('permission').all()
 
         for item in delta_items:
@@ -202,7 +206,7 @@ def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer,
             elif item.operation == PlatformRoleChangeDeltaItem.Operation.REMOVE:
                 current_keys.discard(item.permission_id)
 
-        # Validate final permission set (includes group-derived permissions)
+        # Include group-derived permissions so dependency checks see the effective role.
         final_keys = sorted(current_keys)
         attached_group_ids = list(
             PlatformRoleGroup.objects.filter(role=target_role).values_list(
@@ -214,7 +218,7 @@ def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer,
             group_ids=attached_group_ids,
         )
 
-        # Apply changes
+        # Replace direct grants as one transaction to avoid partial permission changes.
         PlatformRolePermission.objects.filter(role=target_role).delete()
         
         perms = Permission.objects.filter(key__in=final_keys)
@@ -229,11 +233,11 @@ def apply_platform_role_change_request(obj: PlatformRoleChangeRequest, reviewer,
             for perm in perms
         ])
         
-        # Bump version
+        # Version bump invalidates cached platform-role permission results.
         target_role.bump_version()
         target_role.save(update_fields=['version', 'updated_at'])
         
-        # Mark approved
+        # Mark approved only after the platform role has been updated.
         obj.mark_approved(reviewer=reviewer, notes=notes)
         obj.save(update_fields=[
             'status',
@@ -264,6 +268,7 @@ SUPER_ADMIN_ROLE_ID   = "xvs_super_admin"
 PLATFORM_ADMIN_ROLE_ID = "xvs_platform_admin"
 
 
+# Transfer the single Vision super-admin assignment and demote the previous holder.
 @transaction.atomic
 def transfer_super_admin(from_user, to_user):
     """
@@ -288,7 +293,7 @@ def transfer_super_admin(from_user, to_user):
     if getattr(to_user, "user_type", None) != "CX_STAFF":
         raise ValueError("The new super admin must be a Vision Staff member.")
 
-    # Verify from_user actually holds the super admin role.
+    # Guard the transfer authority with the active super-admin assignment itself.
     active_assignment = PlatformUserRoleAssignment.objects.filter(
         user=from_user,
         role_id=SUPER_ADMIN_ROLE_ID,
@@ -305,11 +310,11 @@ def transfer_super_admin(from_user, to_user):
 
     now = timezone.now()
 
-    # Revoke from_user's super admin.
+    # Revoke the old super-admin assignment before issuing replacements.
     active_assignment.revoke(by_user=from_user, reason="Super admin role transferred to another user.")
     active_assignment.save(update_fields=["assignment_status", "revoked_at", "revoked_by", "reason_note", "updated_at"])
 
-    # Revoke any existing active platform role on to_user.
+    # Clear existing platform roles so the new holder has exactly the super-admin role.
     PlatformUserRoleAssignment.objects.filter(
         user=to_user,
         assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
@@ -320,21 +325,21 @@ def transfer_super_admin(from_user, to_user):
         reason_note="Role revoked as part of super admin transfer.",
     )
 
-    # Assign from_user to platform admin.
+    # Keep the previous holder in platform administration after demotion.
     PlatformUserRoleAssignment.objects.create(
         user=from_user,
         role=platform_admin_role,
         assigned_by=from_user,
     )
 
-    # Assign to_user to super admin.
+    # Grant the sole super-admin role to the incoming Vision staff user.
     PlatformUserRoleAssignment.objects.create(
         user=to_user,
         role=super_admin_role,
         assigned_by=from_user,
     )
 
-    # Sync is_superuser flag.
+    # Keep Django's coarse superuser flag aligned with RBAC ownership.
     UserModel.objects.filter(pk=from_user.pk).update(is_superuser=False)
     UserModel.objects.filter(pk=to_user.pk).update(is_superuser=True)
 
@@ -351,6 +356,7 @@ def transfer_super_admin(from_user, to_user):
 
 
 @transaction.atomic
+# Create a school-local role from a prebuilt suggestion.
 def create_role_from_suggestion(suggestion_key: str, school, created_by) -> SchoolRoleTemplate:
     """
     Creates a SchoolRoleTemplate for a school based on a PrebuiltRoleTemplate.
@@ -377,6 +383,7 @@ def create_role_from_suggestion(suggestion_key: str, school, created_by) -> Scho
         created_by=created_by,
     )
 
+    # Copy grants, not the template row, so the school can own later role edits.
     default_permissions = suggestion.default_permissions.select_related('permission').all()
     SchoolRolePermission.objects.bulk_create([
         SchoolRolePermission(role=role, permission=dp.permission)

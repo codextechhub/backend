@@ -13,6 +13,7 @@ from vs_schools.models import School
 from core.thread_locals import set_current_school, clear_current_school
 
 
+# Resolve the school boundary that should constrain this request.
 def _get_school_from_request(request: HttpRequest):
     """
     Extract school from request context.
@@ -22,18 +23,18 @@ def _get_school_from_request(request: HttpRequest):
     2. User's default school (if school-scoped user)
     3. Vision staff can access all schools (no filter)
     """
-    # If already resolved in this request
+    # Reuse the resolved school so middleware, auth and permissions agree.
     if hasattr(request, "_cached_school"):
         return request._cached_school
     
     user = getattr(request, "user", None)
     
-    # Unauthenticated or no user
+    # Anonymous requests stay unscoped until the auth layer rejects or allows them.
     if not user or not user.is_authenticated:
         request._cached_school = None
         return None
     
-    # Vision staff bypass school scoping
+    # Vision staff bypass tenant scoping and rely on platform RBAC instead.
     if getattr(user, "user_type", None) == "CX_STAFF":
         request._cached_school = None
         return None
@@ -50,7 +51,7 @@ def _get_school_from_request(request: HttpRequest):
         except School.DoesNotExist:
             raise PermissionDenied("Invalid school context.")
     
-    # Fall back to user's default school
+    # Fall back to the school attached to the authenticated school-scoped user.
     user_school_id = getattr(user, "school_id", None)
     
     if user_school_id:
@@ -61,11 +62,12 @@ def _get_school_from_request(request: HttpRequest):
         except School.DoesNotExist:
             raise PermissionDenied("User's school does not exist.")
     
-    # No school context available
+    # No school context means later enforcement must fail closed for school users.
     request._cached_school = None
     return None
 
 
+# Maintain request-local tenant state for managers that read thread-local context.
 class TenantContextMiddleware:
     """
     Injects school context into every request.
@@ -77,8 +79,9 @@ class TenantContextMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
     
+    # Establish and always clear the active school around request processing.
     def __call__(self, request: HttpRequest):
-        # Clear any previous school context from thread-local
+        # Clear stale tenant context before resolving this request's school.
         clear_current_school()
 
         try:
@@ -111,6 +114,7 @@ class TenantContextMiddleware:
             clear_current_school()
 
 
+# Reject school-scoped users when no tenant boundary could be established.
 class TenantBoundaryEnforcementMiddleware:
     """
     Enforces tenant boundary checks on sensitive operations.
@@ -124,18 +128,19 @@ class TenantBoundaryEnforcementMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
     
+    # Fail closed for school personas that reach the view without request.school.
     def __call__(self, request: HttpRequest):
         user = getattr(request, "user", None)
         
-        # Skip enforcement for unauthenticated requests (handled by auth layer)
+        # Authentication permissions own anonymous access decisions.
         if not user or not user.is_authenticated:
             return self.get_response(request)
         
-        # Skip enforcement for Vision staff (they can access all schools)
+        # Vision staff are globally scoped, then constrained by platform permissions.
         if getattr(user, "user_type", None) == "CX_STAFF":
             return self.get_response(request)
         
-        # Enforce that school-scoped users have valid school context
+        # School users must carry a resolved tenant before any endpoint logic runs.
         school = getattr(request, "school", None)
         
         if not school:

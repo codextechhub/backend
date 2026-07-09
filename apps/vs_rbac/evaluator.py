@@ -33,6 +33,7 @@ from .models import (
 )
 
 
+# Support permission-group expansion for both school and platform roles.
 def _group_permission_keys(group_ids) -> Set[str]:
     """Return the set of permission keys belonging to the given group ids."""
     if not group_ids:
@@ -44,6 +45,7 @@ def _group_permission_keys(group_ids) -> Set[str]:
     )
 
 
+# Resolve the effective permission set used by API guards, FLS, and workflows.
 def get_effective_permissions(user, school=None) -> Set[str]:
     """
     Compute the full set of granted permission keys for a user.
@@ -66,14 +68,14 @@ def get_effective_permissions(user, school=None) -> Set[str]:
     cache_key = getattr(school, "pk", None) if school is not None else None
     cache = getattr(user, "_rbac_effective_perms", None)
     if cache is not None and cache_key in cache:
-        return cache[cache_key]
+        return cache[cache_key]  # Reuse the request-local snapshot for repeated permission checks.
 
     granted: Set[str] = set()
     denied: Set[str] = set()
 
     user_type = getattr(user, "user_type", "")
 
-    # School-level roles
+    # School roles only apply inside the resolved tenant boundary.
     if school is not None:
         active_role_ids = list(
             SchoolUserRoleAssignment.objects.filter(
@@ -84,7 +86,7 @@ def get_effective_permissions(user, school=None) -> Set[str]:
         )
 
         if active_role_ids:
-            # Direct role↔permission grants (and explicit denies)
+            # Direct role permissions carry both grants and explicit role-level revokes.
             for perm_key, is_granted in SchoolRolePermission.objects.filter(
                 role_id__in=active_role_ids,
             ).values_list("permission_id", "granted"):
@@ -93,13 +95,13 @@ def get_effective_permissions(user, school=None) -> Set[str]:
                 else:
                     denied.add(perm_key)
 
-            # Permissions from attached groups
+            # Group grants are reusable bundles; direct denies below still override them.
             group_ids = SchoolRoleGroup.objects.filter(
                 role_id__in=active_role_ids,
             ).values_list("group_id", flat=True)
             granted.update(_group_permission_keys(group_ids))
 
-    # Platform-level roles (Vision staff)
+    # Platform roles grant global Vision permissions and never depend on a school.
     if user_type == "CX_STAFF":
         active_platform_role_ids = list(
             PlatformUserRoleAssignment.objects.filter(
@@ -122,7 +124,7 @@ def get_effective_permissions(user, school=None) -> Set[str]:
             ).values_list("group_id", flat=True)
             granted.update(_group_permission_keys(group_ids))
 
-    # Explicit denies win over grants
+    # Denies win so a role can remove a sensitive permission inherited from a group.
     effective = granted - denied
 
     try:
@@ -136,23 +138,27 @@ def get_effective_permissions(user, school=None) -> Set[str]:
     return effective
 
 
+# Check one RBAC key for permission classes and service guards.
 def has_permission(user, permission_key: str, school=None) -> bool:
     """Check whether a user holds a specific permission."""
     return permission_key in get_effective_permissions(user, school=school)
 
 
+# Check whether any key in an endpoint's allowed operation set is present.
 def has_any_permission(user, permission_keys: list[str], school=None) -> bool:
     """Check whether a user holds at least one of the given permissions."""
     effective = get_effective_permissions(user, school=school)
     return bool(effective & set(permission_keys))
 
 
+# Check permission bundles where every grant is required.
 def has_all_permissions(user, permission_keys: list[str], school=None) -> bool:
     """Check whether a user holds all of the given permissions."""
     effective = get_effective_permissions(user, school=school)
     return set(permission_keys).issubset(effective)
 
 
+# Resolve workflow approver candidates from role assignments without per-user evaluation.
 def resolve_users_with_permission(school, branch, permission_key: str):
     """Return a QuerySet of active users holding permission_key in the given scope.
 
@@ -167,13 +173,13 @@ def resolve_users_with_permission(school, branch, permission_key: str):
     from django.contrib.auth import get_user_model
     User = get_user_model()
 
-    # Permission keys that grant via a group
+    # Include group-derived grants so approval routing matches runtime permission checks.
     group_ids_with_perm = GroupPermission.objects.filter(
         permission_id=permission_key,
     ).values_list("group_id", flat=True)
 
     if school is None:
-        # Platform scope — look at PlatformUserRoleAssignment
+        # Platform approval queues are limited to active Vision staff assignments.
         role_ids_direct = PlatformRolePermission.objects.filter(
             permission_id=permission_key, granted=True,
         ).values_list("role_id", flat=True)
@@ -195,7 +201,7 @@ def resolve_users_with_permission(school, branch, permission_key: str):
 
         return User.objects.filter(pk__in=user_ids, is_active=True, user_type="CX_STAFF")
 
-    # School / branch scope — look at SchoolUserRoleAssignment
+    # School approval queues honor tenant scope, with branch narrowing when supplied.
     role_ids_direct = SchoolRolePermission.objects.filter(
         permission_id=permission_key, granted=True,
     ).values_list("role_id", flat=True)
