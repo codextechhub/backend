@@ -10,7 +10,7 @@ from rest_framework.views import APIView  # Base class for finance API views.
 
 from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive  # Finance endpoint access controls.
 
-from ..models import (
+from ..models import (  # Import project symbols used by this module.
     Account,  # GL account model.
     BankAccount,  # Bank/cash account model.
     CostCenter,  # Cost-center analytics model.
@@ -18,7 +18,7 @@ from ..models import (
     Dimension,  # Custom analytical dimension model.
     FiscalYear,  # Fiscal year model.
     TaxCode,  # Tax code model.
-)
+)  # Close the grouped expression.
 
 
 
@@ -35,7 +35,7 @@ def _resolve_account(entity, ref, field, *, required=False):  # Resolve account 
     if ref in (None, ""):  # Blank input means no account unless required.
         if required:  # Required account missing.
             raise ValidationError({field: "An account (code or id) is required."})
-        return None
+        return None  # Return the computed module result.
     qs = Account.objects.filter(entity=entity)  # Scope lookup to active entity.
     acc = qs.filter(code=str(ref)).first()  # Prefer account code match.
     if acc is None and str(ref).isdigit():  # Numeric refs may be primary keys.
@@ -47,7 +47,7 @@ def _resolve_account(entity, ref, field, *, required=False):  # Resolve account 
 
 def _resolve_tax(entity, ref, field="tax_code"):  # Resolve tax code reference from request data.
     if ref in (None, ""):  # Tax is optional in most finance line payloads.
-        return None
+        return None  # Return the computed module result.
     qs = TaxCode.objects.filter(entity=entity)  # Scope lookup to entity.
     tc = qs.filter(code=str(ref)).first()  # Prefer tax code.
     if tc is None and str(ref).isdigit():  # Numeric refs may be ids.
@@ -59,7 +59,7 @@ def _resolve_tax(entity, ref, field="tax_code"):  # Resolve tax code reference f
 
 def _resolve_cost_center(entity, ref, field="cost_center"):  # Resolve cost-center reference from request data.
     if ref in (None, ""):  # Cost center is optional.
-        return None
+        return None  # Return the computed module result.
     qs = CostCenter.objects.filter(entity=entity)  # Scope lookup to entity.
     cc = qs.filter(code=str(ref)).first()  # Prefer cost-center code.
     if cc is None and str(ref).isdigit():  # Numeric refs may be ids.
@@ -77,7 +77,7 @@ def _str_list(raw, field):  # Normalize a request value into a unique string lis
     Order is preserved so the first occurrence of each value wins.
     """
     if raw in (None, ""):  # Blank means no allowed values.
-        return []
+        return []  # Return the computed module result.
     if not isinstance(raw, (list, tuple)):  # Only array-like payloads are accepted.
         raise ValidationError({field: "Expected a list of values."})
     seen, out = set(), []  # Track duplicates while preserving first-seen order.
@@ -101,28 +101,28 @@ def _resolve_dimensions(entity, raw, field="dimensions"):  # Validate analytical
     store verbatim on the journal line's ``dimensions`` JSON.
     """
     if raw in (None, ""):  # Blank dimensions become empty map.
-        return {}
+        return {}  # Return the computed module result.
     if not isinstance(raw, dict):  # Dimensions must be an object/map.
         raise ValidationError({field: "Expected a map of {axis: value}."})
     if not raw:  # Empty map is valid.
-        return {}
+        return {}  # Return the computed module result.
 
     allowed = {  # Active dimension code -> allowed values.
         d.code: set(d.allowed_values or [])  # Store allowed values as a set for membership tests.
         for d in Dimension.objects.filter(entity=entity, is_active=True)  # Entity active dimensions only.
-    }
+    }  # Close the grouped expression.
     cleaned = {}  # Cleaned dimensions map for storage.
     for axis, value in raw.items():  # Validate each supplied axis/value.
         axis = str(axis)  # Dimension axis codes are strings.
         if axis not in allowed:  # Axis must exist and be active.
-            raise ValidationError(
+            raise ValidationError(  # Raise the domain error for this path.
                 {field: f"No active dimension '{axis}' in this entity."})
         val = str(value).strip()  # Normalize value.
         if not val:  # Dimension values cannot be blank.
             raise ValidationError({field: f"Dimension '{axis}' needs a value."})
         if val not in allowed[axis]:  # Value must be preconfigured for that axis.
             permitted = ", ".join(sorted(allowed[axis])) or "(none defined)"  # Human-readable allowed values.
-            raise ValidationError(
+            raise ValidationError(  # Raise the domain error for this path.
                 {field: f"'{val}' is not an allowed value for '{axis}'. "
                         f"Allowed: {permitted}."})
         cleaned[axis] = val  # Store cleaned axis value.
@@ -131,7 +131,7 @@ def _resolve_dimensions(entity, raw, field="dimensions"):  # Validate analytical
 
 def _resolve_currency(ref, field="currency"):  # Resolve currency code from request data.
     if ref in (None, ""):  # Currency is optional in many payloads.
-        return None
+        return None  # Return the computed module result.
     cur = Currency.objects.filter(code=str(ref).upper()).first()  # Currency codes are global and uppercase.
     if cur is None:  # Reject unknown currency codes.
         raise ValidationError({field: f"No currency '{ref}'."})
@@ -143,12 +143,12 @@ def _resolve_bank_account(entity, ref, field="bank_account", *, required=True): 
     if ref in (None, ""):  # Blank input means missing bank account.
         if required:  # Most payment endpoints require a bank account.
             raise ValidationError({field: "A bank account (id or name) is required."})
-        return None
+        return None  # Return the computed module result.
     qs = BankAccount.objects.filter(entity=entity)  # Scope lookup to entity.
     ba = (  # Resolve by id for numeric refs, otherwise by name.
         qs.filter(pk=int(ref)).first() if str(ref).isdigit()  # Primary-key lookup.
         else qs.filter(name=str(ref)).first()  # Name lookup.
-    )
+    )  # Close the grouped expression.
     if ba is None:  # Reject missing/cross-entity bank refs.
         raise ValidationError({field: f"No bank account '{ref}' in this entity."})
     return ba  # Return resolved bank account.
@@ -171,7 +171,7 @@ def _date(value, field, *, required=False):  # Parse optional/required ISO date.
     if value in (None, ""):  # Blank date.
         if required:  # Required date missing.
             raise ValidationError({field: "An ISO date (YYYY-MM-DD) is required."})
-        return None
+        return None  # Return the computed module result.
     try:  # Parse strict ISO date.
         return datetime.date.fromisoformat(str(value))  # Return date object.
     except ValueError:  # Invalid date format.
@@ -215,7 +215,7 @@ def _int(value, field, *, required=False, minimum=None):  # Parse integer reques
     if value in (None, ""):  # Blank integer input.
         if required:  # Required integer missing.
             raise ValidationError({field: "An integer is required."})
-        return None
+        return None  # Return the computed module result.
     try:  # Normalize numeric string/int to int.
         out = int(value)  # Parsed integer.
     except (TypeError, ValueError):  # Invalid integer input.
@@ -227,9 +227,9 @@ def _int(value, field, *, required=False, minimum=None):  # Parse integer reques
 
 def _bool(value, default=False):  # Parse common truthy/falsey request values.
     if value in (None, ""):  # Blank input uses caller default.
-        return default
+        return default  # Return the computed module result.
     if isinstance(value, bool):  # Native bool passes through.
-        return value
+        return value  # Return the computed module result.
     return str(value).lower() in ("1", "true", "yes", "on")  # Recognize common truthy strings.
 
 
