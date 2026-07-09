@@ -79,10 +79,10 @@ _ONES = (  # English words for values from 0 through 19.
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",  # Single digits.
     "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",  # Ten through sixteen.
     "seventeen", "eighteen", "nineteen",  # Seventeen through nineteen.
-)
+)  # Close the grouped expression.
 _TENS = (  # English words for tens multiples.
     "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",  # Index matches tens digit.
-)
+)  # Close the grouped expression.
 #: Scale words indexed by thousands-group (index 1 = thousand, 2 = million, …).
 _SCALES = ("", "thousand", "million", "billion", "trillion", "quadrillion")  # Thousand-group scale names.
 
@@ -170,7 +170,7 @@ class MoneyField(models.BigIntegerField):  # Django model field storing money as
         kwargs.setdefault(  # Provide a clear admin/schema help text.
             "help_text",  # Help text keyword argument.
             kwargs.pop("help_text", "") or "Amount in minor units (kobo); integer, never float.",  # Use caller text or default.
-        )
+        )  # Close the grouped expression.
         super().__init__(*args, **kwargs)  # Delegate final field setup to BigIntegerField.
 
     def deconstruct(self):  # Serialize field configuration for Django migrations.
