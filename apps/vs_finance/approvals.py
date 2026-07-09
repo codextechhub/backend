@@ -13,7 +13,7 @@ submit endpoint and the direct-post view read it so they can never disagree.  # 
 from __future__ import annotations  # Defer annotation evaluation for forward references.
 
 
-def approval_required(document) -> bool:
+def approval_required(document) -> bool:  # Define the callable used by this module.
     """Return ``True`` iff ``document`` must go through workflow approval.
 
     True when a published :class:`~vs_workflow.models.WorkflowTemplate` exists for
@@ -27,7 +27,7 @@ def approval_required(document) -> bool:
     """
     document_type = getattr(document, "workflow_document_type", None)  # Read the document type if the model exposes one.
     if not document_type:  # Documents without a workflow type never require approval.
-        return False
+        return False  # Return the computed module result.
 
     from vs_workflow.models import WorkflowTemplate  # Import lazily to avoid app-load cycles.
 
