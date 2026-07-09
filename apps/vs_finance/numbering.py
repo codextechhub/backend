@@ -18,29 +18,29 @@ The counter lives in :class:`~vs_finance.models.DocumentSequence`. Allocation lo
 that row with ``select_for_update`` so concurrent callers serialise and can never be
 handed the same number — the single most common source of duplicate-number bugs.
 """
-from __future__ import annotations
+from __future__ import annotations  # Keep type annotations from importing at runtime.
 
-from django.db import transaction
+from django.db import transaction  # Provides atomic row-locking for sequence increments.
 
-from .constants import DOC_NUMBER_PREFIX
-from .exceptions import DocumentNumberingError
+from .constants import DOC_NUMBER_PREFIX  # Platform-wide document number prefix.
+from .exceptions import DocumentNumberingError  # Raised when numbering cannot proceed safely.
 
 #: Width of the zero-padded sequence segment (00001 … 99999, then it simply grows).
-SEQ_WIDTH = 5
+SEQ_WIDTH = 5  # Minimum width for the numeric suffix.
 
 
-def _branch_token(branch) -> str | None:
+def _branch_token(branch) -> str | None:  # Build the optional branch segment for a document number.
     """Render the optional branch segment: ``B07`` for branch code 7, else ``None``."""
-    if branch is None:
+    if branch is None:  # Entity-level documents omit the branch segment.
         return None
-    code = getattr(branch, "code", None)
-    if not code:
+    code = getattr(branch, "code", None)  # Read branch code defensively from the object.
+    if not code:  # Branches without a code cannot contribute a token.
         return None
-    return f"B{int(code):02d}"
+    return f"B{int(code):02d}"  # Render a zero-padded numeric branch token.
 
 
 @transaction.atomic
-def next_document_number(*, entity, branch, doc_type: str, fiscal_year: int) -> str:
+def next_document_number(*, entity, branch, doc_type: str, fiscal_year: int) -> str:  # Allocate one scoped document number.
     """Allocate the next document number for a scope and return the formatted string.
 
     Locks (or creates) the ``DocumentSequence`` row for
@@ -51,27 +51,27 @@ def next_document_number(*, entity, branch, doc_type: str, fiscal_year: int) -> 
     Raises:
         DocumentNumberingError: if ``entity`` is missing.
     """
-    from .models import DocumentSequence  # local import avoids import cycle at app load
+    from .models import DocumentSequence  # Local import avoids import cycle at app load.
 
-    if entity is None:
+    if entity is None:  # A document number must always belong to a ledger entity.
         raise DocumentNumberingError("Cannot allocate a document number without an entity.")
 
-    # Ensure the row exists, then re-fetch it under a row lock for the increment.
-    DocumentSequence.objects.get_or_create(
-        entity=entity, branch=branch, doc_type=doc_type, fiscal_year=fiscal_year,
-        defaults={"last_number": 0},
+    # Ensure the row exists, then re-fetch it under a row lock for the increment.  # Avoid duplicate sequence rows.
+    DocumentSequence.objects.get_or_create(  # Create the sequence scope on first use.
+        entity=entity, branch=branch, doc_type=doc_type, fiscal_year=fiscal_year,  # Scope sequence by books, branch, type, and year.
+        defaults={"last_number": 0},  # Start before the first allocated number.
     )
-    seq = (
-        DocumentSequence.objects
-        .select_for_update()
-        .get(entity=entity, branch=branch, doc_type=doc_type, fiscal_year=fiscal_year)
+    seq = (  # Reload the same sequence while holding a database row lock.
+        DocumentSequence.objects  # Start from the sequence manager.
+        .select_for_update()  # Serialize concurrent allocators for this exact scope.
+        .get(entity=entity, branch=branch, doc_type=doc_type, fiscal_year=fiscal_year)  # Fetch the locked row.
     )
-    seq.last_number += 1
-    seq.save(update_fields=["last_number", "updated_at"])
+    seq.last_number += 1  # Advance to the next available sequence value.
+    seq.save(update_fields=["last_number", "updated_at"])  # Persist only the changed counter fields.
 
-    parts = [DOC_NUMBER_PREFIX, entity.code]
-    branch_token = _branch_token(branch)
-    if branch_token:
-        parts.append(branch_token)
-    parts.extend([doc_type, str(fiscal_year), f"{seq.last_number:0{SEQ_WIDTH}d}"])
-    return "-".join(parts)
+    parts = [DOC_NUMBER_PREFIX, entity.code]  # Start with platform prefix and entity code.
+    branch_token = _branch_token(branch)  # Compute the optional branch token.
+    if branch_token:  # Branch-scoped sequences include branch in the document number.
+        parts.append(branch_token)  # Insert branch token before document type.
+    parts.extend([doc_type, str(fiscal_year), f"{seq.last_number:0{SEQ_WIDTH}d}"])  # Add type, year, and padded number.
+    return "-".join(parts)  # Return the final human-readable document number.
