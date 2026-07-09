@@ -19,16 +19,16 @@ from django.db import transaction  # Keeps close/reopen/lock mutations atomic.
 from django.utils import timezone  # Supplies close timestamps.
 
 from .audit import record  # Writes finance audit events for period state changes.
-from .constants import (
+from .constants import (  # Import project symbols used by this module.
     AssetStatus,  # Fixed asset lifecycle status.
     DocumentStatus,  # Journal draft/posted lifecycle status.
     FinanceAuditAction,  # Audit action enum values.
     PeriodStatus,  # Accounting period lifecycle statuses.
-)
+)  # Close the grouped expression.
 from .exceptions import PeriodCloseError  # Domain error for period close failures.
 
 
-@dataclass
+@dataclass  # Apply the decorator to this callable.
 class ChecklistItem:  # One close checklist result.
     """One pre-close check: did it pass, and a human-readable detail line."""
 
@@ -38,17 +38,17 @@ class ChecklistItem:  # One close checklist result.
     detail: str = ""  # Human-readable diagnostic text.
 
 
-@dataclass
+@dataclass  # Apply the decorator to this callable.
 class CloseChecklist:  # Collection of period close checks.
     period_id: int  # Fiscal period primary key.
     items: list = field(default_factory=list)  # Checklist items collected during validation.
 
-    @property
+    @property  # Apply the decorator to this callable.
     def passed(self) -> bool:  # Overall close readiness.
         """True when no *blocking* check failed (non-blocking warnings are allowed)."""
         return all(i.passed for i in self.items if i.blocking)  # Ignore non-blocking warnings.
 
-    @property
+    @property  # Apply the decorator to this callable.
     def failures(self) -> list:  # Blocking failed checks only.
         return [i for i in self.items if i.blocking and not i.passed]  # Used in close error details.
 
@@ -75,35 +75,35 @@ def close_checklist(entity, period, *, extra_checks=None) -> CloseChecklist:  # 
     items.append(ChecklistItem(  # Add trial balance check result.
         name="trial_balance_balanced", passed=tb.is_balanced,  # Pass only when debits equal credits.
         detail=f"difference {tb.difference} kobo",  # Include imbalance amount for diagnostics.
-    ))
+    ))  # Execute the module statement.
 
     # 2. No draft journals dated within the period (un-posted work left behind).  # Warning-level close signal.
     draft_count = JournalEntry.objects.filter(  # Count unposted journals in the period.
         entity=entity, status=DocumentStatus.DRAFT,  # Scope to draft journals for this entity.
         date__gte=period.start_date, date__lte=period.end_date,  # Restrict to period dates.
-    ).count()
+    ).count()  # Execute the module statement.
     items.append(ChecklistItem(  # Add draft journal warning result.
         name="no_draft_journals", passed=draft_count == 0, blocking=False,  # Drafts warn but do not block.
         detail=f"{draft_count} draft journal(s) dated in period",  # Include count for the user.
-    ))
+    ))  # Execute the module statement.
 
     # 3. AR sub-ledger reconciles to the AR control account.  # Ensure receivables tie to GL.
     ar = reconcile_ar(entity)  # Compute AR subledger/control reconciliation.
     items.append(ChecklistItem(  # Add AR reconciliation result.
         name="ar_reconciled", passed=ar.is_reconciled,  # Pass only when subledger equals control.
         detail=f"sub-ledger {ar.subledger_total} vs control {ar.control_total} kobo",  # Include both balances.
-    ))
+    ))  # Execute the module statement.
 
     # 4. All due depreciation has been posted up to the period end.  # Avoid closing with missing asset expense.
     unposted = 0  # Count due depreciation charges that are still unposted.
     for asset in FixedAsset.objects.filter(entity=entity, asset_status=AssetStatus.ACTIVE):  # Check active assets only.
         unposted += asset.schedule.filter(  # Count this asset's due unposted schedule rows.
             is_posted=False, depreciation_date__lte=period.end_date,  # Due by period end and not posted.
-        ).count()
+        ).count()  # Execute the module statement.
     items.append(ChecklistItem(  # Add depreciation readiness result.
         name="depreciation_posted", passed=unposted == 0,  # Pass when no due charges remain.
         detail=f"{unposted} due depreciation charge(s) not yet posted",  # Include unposted count.
-    ))
+    ))  # Execute the module statement.
 
     for check in (extra_checks or []):  # Run dependent-app checks injected by caller.
         result = check() if callable(check) else check  # Support callables and precomputed results.
@@ -111,13 +111,13 @@ def close_checklist(entity, period, *, extra_checks=None) -> CloseChecklist:  # 
             items.append(result)  # Add the supplied checklist item.
         else:  # (name, passed, detail) tuple
             name, passed, *rest = result  # Unpack tuple-style check result.
-            items.append(ChecklistItem(name=name, passed=passed,
+            items.append(ChecklistItem(name=name, passed=passed,  # Continue the structured value.
                                        detail=rest[0] if rest else ""))  # Normalize tuple to ChecklistItem.
 
     return CloseChecklist(period_id=period.id, items=items)  # Return checklist summary.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def run_period_depreciation(entity, period, *, actor_user=None):  # Post due depreciation during close.
     """Post all depreciation due on/before this period's end (a close auto-posting).
 
@@ -135,7 +135,7 @@ def run_period_depreciation(entity, period, *, actor_user=None):  # Post due dep
             posted = post_depreciation(  # Post all due depreciation up to period end.
                 asset, up_to_date=period.end_date,  # Period end is the depreciation cutoff.
                 actor_user=actor_user, allow_restricted=True,  # Allow close auto-posting in restricted periods.
-            )
+            )  # Close the grouped expression.
             count += len(posted)  # Add posted schedule count.
     return count  # Return total charges posted.
 
@@ -152,12 +152,12 @@ def _transition(period, new_status, *, actor_user, action, message):  # Apply an
         entity=period.entity, action=action, actor_user=actor_user, target=period,  # Entity, action, actor, target.
         message=message, target_type="FiscalPeriod",  # Human message and explicit target type.
         period=str(period), period_status=new_status,  # Structured period metadata.
-    )
+    )  # Close the grouped expression.
     return period  # Return transitioned period.
 
 
-@transaction.atomic
-def close_period(entity, period, *, actor_user=None, soft=False, force=False,
+@transaction.atomic  # Apply the decorator to this callable.
+def close_period(entity, period, *, actor_user=None, soft=False, force=False,  # Define the callable used by this module.
                  run_depreciation=True, extra_checks=None):  # Close or soft-close a fiscal period.
     """Close ``period`` after running (and optionally enforcing) the checklist.
 
@@ -167,9 +167,9 @@ def close_period(entity, period, *, actor_user=None, soft=False, force=False,
     Returns the period.
     """
     if period.status in (PeriodStatus.CLOSED, PeriodStatus.LOCKED):  # Already sealed periods cannot be closed again.
-        raise PeriodCloseError(
+        raise PeriodCloseError(  # Raise the domain error for this path.
             f"Period '{period}' is already '{period.status}'.",
-        )
+        )  # Close the grouped expression.
 
     if run_depreciation:  # Close can auto-post due depreciation.
         run_period_depreciation(entity, period, actor_user=actor_user)  # Post depreciation before checklist.
@@ -177,10 +177,10 @@ def close_period(entity, period, *, actor_user=None, soft=False, force=False,
     checklist = close_checklist(entity, period, extra_checks=extra_checks)  # Run close integrity checks.
     if not checklist.passed and not force:  # Blocking failures stop the close unless forced.
         failed = ", ".join(f"{i.name} ({i.detail})" for i in checklist.failures)  # Build readable failure summary.
-        raise PeriodCloseError(
+        raise PeriodCloseError(  # Raise the domain error for this path.
             f"Period '{period}' is not ready to close: {failed}.",
             failures=[i.name for i in checklist.failures],  # Provide machine-readable failed check names.
-        )
+        )  # Close the grouped expression.
 
     new_status = PeriodStatus.SOFT_CLOSED if soft else PeriodStatus.CLOSED  # Choose requested close strength.
     _transition(  # Apply the period status transition and audit it.
@@ -188,11 +188,11 @@ def close_period(entity, period, *, actor_user=None, soft=False, force=False,
         action=FinanceAuditAction.PERIOD_CLOSED,  # Audit action for close.
         message=f"Closed period to {new_status}"  # Base audit message.
                 + ("" if checklist.passed else " (forced over checklist failures)"),  # Flag forced closes.
-    )
+    )  # Close the grouped expression.
     return period, checklist  # Return updated period and checklist details.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def reopen_period(entity, period, *, actor_user=None):  # Re-open a closed or soft-closed period.
     """Re-open a CLOSED or SOFT_CLOSED period back to OPEN (audited). LOCKED can't reopen."""
     if period.status == PeriodStatus.LOCKED:  # Locked periods are irreversible.
@@ -207,20 +207,20 @@ def reopen_period(entity, period, *, actor_user=None):  # Re-open a closed or so
         entity=entity, action=FinanceAuditAction.PERIOD_REOPENED,  # Audit action for reopening.
         actor_user=actor_user, target=period, target_type="FiscalPeriod",  # Actor and target context.
         message=f"Re-opened period '{period}'.", period=str(period),  # Human and structured period text.
-    )
+    )  # Close the grouped expression.
     return period  # Return reopened period.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def lock_period(entity, period, *, actor_user=None):  # Permanently lock a closed fiscal period.
     """Permanently seal a CLOSED period (e.g. after statutory filing). Irreversible."""
     if period.status != PeriodStatus.CLOSED:  # Only fully closed periods may be locked.
-        raise PeriodCloseError(
+        raise PeriodCloseError(  # Raise the domain error for this path.
             f"Only a CLOSED period can be locked; '{period}' is '{period.status}'.",
-        )
+        )  # Close the grouped expression.
     _transition(  # Apply irreversible lock transition and audit it.
         period, PeriodStatus.LOCKED, actor_user=actor_user,  # Target locked status and actor.
         action=FinanceAuditAction.PERIOD_LOCKED,  # Audit action for lock.
         message=f"Locked period '{period}' — permanently sealed.",  # Human-readable audit message.
-    )
+    )  # Close the grouped expression.
     return period  # Return locked period.
