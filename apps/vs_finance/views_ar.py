@@ -13,7 +13,9 @@ from __future__ import annotations
 
 from django.db import transaction
 from django.db.models import F, Q
+from django.http import HttpResponse
 from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.response import Response
 
 from core.pagination import XVSPagination
 from core.response import success_response
@@ -740,6 +742,53 @@ class PaymentDetailView(_FinanceBase):
             "open_debit_notes": open_debit_notes,
             "gl_postings": gl_postings,
         })
+
+
+class PaymentReceiptView(_FinanceBase):
+    """GET /finance/payments/<id>/receipt/ — printable HTML payment receipt."""
+
+    rbac_permission = "finance.payment.view"
+
+    def _payment(self, request, pk):
+        from .constants import DocumentStatus
+        from .models import Payment
+
+        entity = resolve_entity(request)
+        payment = (
+            Payment.objects.filter(entity=entity, pk=pk, status=DocumentStatus.POSTED)
+            .select_related("entity__source_school", "branch", "customer")
+            .prefetch_related("allocations__invoice")
+            .first()
+        )
+        if payment is None:
+            raise NotFound("Receipt not found for this entity.")
+        return payment
+
+    def get(self, request, pk):
+        from .documents import render_receipt_document_html
+
+        html = render_receipt_document_html(self._payment(request, pk), request=request)
+        return HttpResponse(html, content_type="text/html; charset=utf-8")
+
+
+class PaymentReceiptPDFView(PaymentReceiptView):
+    """GET /finance/payments/<id>/receipt.pdf — printable PDF payment receipt."""
+
+    def get(self, request, pk):
+        from .documents import DocumentRenderUnavailable, render_receipt_document_pdf
+
+        payment = self._payment(request, pk)
+        try:
+            pdf = render_receipt_document_pdf(payment, request=request)
+        except DocumentRenderUnavailable:
+            return Response(
+                {"detail": "PDF rendering is unavailable on this server."},
+                status=503,
+            )
+        response = HttpResponse(pdf, content_type="application/pdf")
+        filename = f"receipt-{payment.document_number or payment.pk}.pdf"
+        response["Content-Disposition"] = f'inline; filename="{filename}"'
+        return response
 
 
 class PaymentAllocateView(_FinanceBase):

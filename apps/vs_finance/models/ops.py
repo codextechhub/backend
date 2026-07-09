@@ -69,11 +69,21 @@ class BankAccount(TimeStampedModel):
     is_active = models.BooleanField(default=True)
     is_primary = models.BooleanField(
         default=False, help_text="The entity's main operating account (at most one).")
+    is_primary_collection = models.BooleanField(
+        default=False,
+        help_text="The entity's primary fee-collection account — the one printed as "
+                  "'pay to' on customer invoices/receipts. At most one per entity.",
+    )
 
     class Meta:
         constraints = [
             models.UniqueConstraint(
                 fields=["entity", "name"], name="uniq_finance_bank_entity_name",
+            ),
+            # At most one primary collection account per entity (partial unique).
+            models.UniqueConstraint(
+                fields=["entity"], condition=models.Q(is_primary_collection=True),
+                name="uniq_finance_primary_collection_per_entity",
             ),
         ]
         indexes = [models.Index(fields=["entity", "is_active"])]

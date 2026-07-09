@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 
+from django.db import transaction
 from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
@@ -63,20 +64,29 @@ class BankAccountListCreateView(_FinanceBase):
         name = str(body.get("name", "")).strip()
         if not name:
             raise ValidationError({"name": "A bank account name is required."})
+        if BankAccount.objects.filter(entity=entity, name=name).exists():
+            raise ValidationError({"name": f"A bank account named '{name}' already exists."})
         gl_account = _resolve_account(entity, body.get("gl_account"), "gl_account", required=True)
         is_primary = _bool(body.get("is_primary", False), default=False)
-        bank = BankAccount.objects.create(
-            entity=entity, name=name,
-            bank_name=body.get("bank_name", ""),
-            account_number=body.get("account_number", ""),
-            gl_account=gl_account,
-            currency=_resolve_currency(body.get("currency")),
-            is_active=_bool(body.get("is_active", True), default=True),
-            is_primary=is_primary,
-        )
-        if is_primary:  # at most one primary per entity
-            BankAccount.objects.filter(entity=entity, is_primary=True).exclude(
-                pk=bank.pk).update(is_primary=False)
+        is_primary_collection = _bool(body.get("is_primary_collection", False), default=False)
+        currency = _resolve_currency(body.get("currency"))
+        with transaction.atomic():
+            if is_primary_collection:
+                BankAccount.objects.filter(entity=entity, is_primary_collection=True).update(
+                    is_primary_collection=False)
+            bank = BankAccount.objects.create(
+                entity=entity, name=name,
+                bank_name=body.get("bank_name", ""),
+                account_number=body.get("account_number", ""),
+                gl_account=gl_account,
+                currency=currency,
+                is_active=_bool(body.get("is_active", True), default=True),
+                is_primary=is_primary,
+                is_primary_collection=is_primary_collection,
+            )
+            if is_primary:  # at most one primary per entity
+                BankAccount.objects.filter(entity=entity, is_primary=True).exclude(
+                    pk=bank.pk).update(is_primary=False)
         return success_response(
             f"Bank account '{name}' created.",
             data=BankAccountSerializer(bank).data, status=201,
@@ -151,6 +161,10 @@ class BankAccountDetailView(_FinanceBase):
     def patch(self, request, pk):
         bank = self._bank(request, pk)
         body = request.data or {}
+        if "name" in body:
+            new_name = str(body["name"]).strip()
+            if BankAccount.objects.filter(entity=bank.entity, name=new_name).exclude(pk=bank.pk).exists():
+                raise ValidationError({"name": f"A bank account named '{new_name}' already exists."})
         for field in ("name", "bank_name", "account_number"):
             if field in body:
                 setattr(bank, field, str(body[field]).strip())
@@ -164,7 +178,20 @@ class BankAccountDetailView(_FinanceBase):
             if make_primary:  # at most one primary per entity
                 BankAccount.objects.filter(entity=bank.entity, is_primary=True).exclude(
                     pk=bank.pk).update(is_primary=False)
-        bank.save()
+        if "is_primary_collection" in body:
+            make_primary_collection = _bool(
+                body.get("is_primary_collection"), default=bank.is_primary_collection)
+            bank.is_primary_collection = make_primary_collection
+            if make_primary_collection:
+                with transaction.atomic():
+                    BankAccount.objects.filter(
+                        entity=bank.entity, is_primary_collection=True).exclude(
+                        pk=bank.pk).update(is_primary_collection=False)
+                    bank.save()
+            else:
+                bank.save()
+        else:
+            bank.save()
         return success_response(
             f"Bank account '{bank.name}' updated.", data=BankAccountSerializer(bank).data)
 
@@ -498,5 +525,3 @@ class BankStatementLineIgnoreView(_StatementLineActionBase):
         return success_response(
             "Statement line updated.", data=BankStatementLineSerializer(line).data,
         )
-
-

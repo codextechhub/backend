@@ -13,6 +13,7 @@ from __future__ import annotations
 from django.http import HttpResponse
 from rest_framework import generics
 from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.mixins import RetrieveModelMixin
@@ -947,6 +948,51 @@ class InvoiceDetailView(APIView):
                 "activity": activity,
             },
         )
+
+
+class InvoiceDocumentView(APIView):
+    """GET /finance/invoices/<id>/document/ — printable HTML invoice."""
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.invoice.view"
+
+    def _invoice(self, request, pk):
+        entity = resolve_entity(request)
+        inv = (
+            Invoice.objects.filter(entity=entity, pk=pk)
+            .select_related("entity__source_school", "branch", "customer")
+            .prefetch_related("lines__revenue_account", "lines__tax_code", "lines__cost_center")
+            .first()
+        )
+        if inv is None:
+            raise NotFound("No such invoice in this entity.")
+        return inv
+
+    def get(self, request, pk):
+        from .documents import render_invoice_document_html
+
+        html = render_invoice_document_html(self._invoice(request, pk), request=request)
+        return HttpResponse(html, content_type="text/html; charset=utf-8")
+
+
+class InvoiceDocumentPDFView(InvoiceDocumentView):
+    """GET /finance/invoices/<id>/document.pdf — printable PDF invoice."""
+
+    def get(self, request, pk):
+        from .documents import DocumentRenderUnavailable, render_invoice_document_pdf
+
+        invoice = self._invoice(request, pk)
+        try:
+            pdf = render_invoice_document_pdf(invoice, request=request)
+        except DocumentRenderUnavailable:
+            return Response(
+                {"detail": "PDF rendering is unavailable on this server."},
+                status=503,
+            )
+        response = HttpResponse(pdf, content_type="application/pdf")
+        filename = f"invoice-{invoice.document_number or invoice.pk}.pdf"
+        response["Content-Disposition"] = f'inline; filename="{filename}"'
+        return response
 
 
 # --------------------------------------------------------------------------- #

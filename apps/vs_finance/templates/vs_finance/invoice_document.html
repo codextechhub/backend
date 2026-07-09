@@ -1,0 +1,275 @@
+{% load static %}<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Invoice {{ invoice.document_number }} — {{ issuer.name }}</title>
+<style>
+  :root{
+    --navy:        #1B2A4A;
+    --accent:      #0E4D92;
+    --rule-gold:   #B08D57;
+    --ink:         #20242c;
+    --muted:       #6b7280;
+    --hairline:    #d4d8e0;
+    --band:        #f4f6fa;
+    --paper:       #ffffff;
+
+    --paid-fg:#1d7a4d; --paid-bg:#e6f4ec; --paid-bd:#bfe3cd;
+    --part-fg:#94670a; --part-bg:#fdf3d6; --part-bd:#f0dca2;
+    --unpd-fg:#b3261e; --unpd-bg:#fbe9e7; --unpd-bd:#f2c5bf;
+
+    --serif: "Hoefler Text","Garamond",Georgia,"Times New Roman",serif;
+    --label: Georgia,"Times New Roman",serif;
+  }
+
+  *{ box-sizing:border-box; margin:0; padding:0; }
+
+  html,body{ background:#e9ebf0; color:var(--ink); font-family:var(--serif); }
+  body{ padding:24px; -webkit-font-smoothing:antialiased; }
+
+  .page{
+    width:210mm; min-height:297mm; margin:0 auto;
+    background:var(--paper); padding:18mm 16mm 14mm;
+    box-shadow:0 6px 28px rgba(20,30,60,.16);
+    display:flex; flex-direction:column;
+  }
+
+  /* ---------- LETTERHEAD ---------- */
+  .letterhead{ display:flex; justify-content:space-between; align-items:flex-start;
+    padding-bottom:14px; border-bottom:2px solid var(--navy); }
+  .lh-left{ display:flex; gap:14px; align-items:flex-start; }
+  .crest{ width:54px; height:60px; flex:0 0 auto; }
+  .crest-logo{ width:54px; height:60px; flex:0 0 auto; object-fit:contain; }
+  .school-name{ font-size:25px; font-weight:700; letter-spacing:.3px; color:var(--navy);
+    line-height:1.05; }
+  .school-tag{ font-family:var(--label); font-size:10px; letter-spacing:3px;
+    text-transform:uppercase; color:var(--rule-gold); margin-top:4px; }
+  .issuer-meta{ margin-top:9px; font-size:10.5px; line-height:1.55; color:var(--muted); }
+  .lh-right{ text-align:right; }
+  .doc-kind{ font-size:21px; letter-spacing:5px; color:var(--navy); font-weight:700;
+    text-transform:uppercase; }
+  .doc-kind-sub{ font-family:var(--label); font-size:9.5px; letter-spacing:2px;
+    text-transform:uppercase; color:var(--muted); margin-top:3px; }
+  .docnum{ margin-top:12px; font-family:var(--label); font-size:13px; font-weight:700;
+    color:var(--ink); letter-spacing:.4px; }
+  .gold-rule{ height:2px; background:var(--rule-gold); margin-top:2px; opacity:.85; }
+
+  /* ---------- META + BILL-TO ---------- */
+  .meta-grid{ display:grid; grid-template-columns:1.15fr 1fr; gap:26px; margin-top:18px; }
+  .block-title{ font-family:var(--label); font-size:9.5px; letter-spacing:2.4px;
+    text-transform:uppercase; color:var(--accent); border-bottom:1px solid var(--hairline);
+    padding-bottom:5px; margin-bottom:8px; }
+  .kv{ display:flex; justify-content:space-between; gap:12px; font-size:11.5px;
+    padding:3px 0; line-height:1.4; }
+  .kv .k{ color:var(--muted); }
+  .kv .v{ font-weight:700; color:var(--ink); text-align:right;
+    font-variant-numeric:tabular-nums; }
+  .billto .name{ font-size:15px; font-weight:700; color:var(--navy); margin-bottom:2px; }
+  .billto .line{ font-size:11.5px; color:var(--muted); line-height:1.55; }
+
+  .badge{ display:inline-block; padding:4px 12px; border-radius:2px; font-family:var(--label);
+    font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase;
+    border:1px solid; }
+  .badge.partial{ color:var(--part-fg); background:var(--part-bg); border-color:var(--part-bd); }
+  .badge.paid{ color:var(--paid-fg); background:var(--paid-bg); border-color:var(--paid-bd); }
+  .badge.unpaid{ color:var(--unpd-fg); background:var(--unpd-bg); border-color:var(--unpd-bd); }
+
+  /* ---------- LINE ITEMS ---------- */
+  table.items{ width:100%; border-collapse:collapse; margin-top:22px; font-size:11.5px; }
+  table.items thead th{ background:var(--navy); color:#fff; font-family:var(--label);
+    font-size:9.5px; letter-spacing:1.6px; text-transform:uppercase; font-weight:700;
+    padding:9px 12px; text-align:left; }
+  table.items thead th.num{ text-align:right; }
+  table.items tbody td{ padding:11px 12px; border-bottom:1px solid var(--hairline);
+    vertical-align:top; }
+  table.items tbody td.num{ text-align:right; font-variant-numeric:tabular-nums;
+    white-space:nowrap; }
+  .it-desc{ font-weight:700; color:var(--ink); }
+  .it-sub{ font-size:10px; color:var(--muted); margin-top:2px; }
+  .vat-tag{ font-family:var(--label); font-size:9px; letter-spacing:1px; text-transform:uppercase;
+    color:var(--muted); }
+  .exempt{ color:var(--accent); }
+
+  /* ---------- TOTALS ---------- */
+  .totals-wrap{ display:flex; justify-content:flex-end; margin-top:18px; }
+  .totals{ width:58%; font-size:12px; }
+  .totals .row{ display:flex; justify-content:space-between; padding:6px 12px;
+    font-variant-numeric:tabular-nums; }
+  .totals .row .lbl{ color:var(--muted); }
+  .totals .row .amt{ font-weight:700; }
+  .totals .sep{ border-top:1px solid var(--hairline); }
+  .totals .grand{ background:var(--band); border-top:1.5px solid var(--navy);
+    border-bottom:1.5px solid var(--navy); }
+  .totals .grand .lbl{ color:var(--navy); font-weight:700; font-family:var(--label);
+    letter-spacing:1px; text-transform:uppercase; font-size:11px; }
+  .totals .grand .amt{ color:var(--navy); font-size:15px; }
+  .totals .balance{ margin-top:9px; background:var(--navy); color:#fff; padding:11px 12px;
+    display:flex; justify-content:space-between; align-items:center; }
+  .totals .balance .lbl{ font-family:var(--label); letter-spacing:1.5px; text-transform:uppercase;
+    font-size:11px; }
+  .totals .balance .amt{ font-size:18px; font-weight:700; font-variant-numeric:tabular-nums; }
+
+  /* ---------- PAY-TO ---------- */
+  .payto{ display:grid; grid-template-columns:1.3fr 1fr; gap:26px; margin-top:24px;
+    padding-top:16px; border-top:1px solid var(--hairline); }
+  .pay-bank .pb-row{ display:flex; gap:8px; font-size:11.5px; padding:2.5px 0; }
+  .pay-bank .pb-k{ color:var(--muted); width:118px; flex:0 0 auto; }
+  .pay-bank .pb-v{ font-weight:700; font-variant-numeric:tabular-nums; }
+  .paystack{ font-size:11.5px; color:var(--ink); line-height:1.6; }
+  .paystack .chip{ display:inline-block; margin-top:6px; padding:6px 12px; border:1px solid var(--accent);
+    color:var(--accent); border-radius:2px; font-family:var(--label); font-size:10.5px;
+    letter-spacing:1px; text-transform:uppercase; }
+
+  /* ---------- FOOTER ---------- */
+  .footer{ margin-top:auto; padding-top:16px; border-top:2px solid var(--navy);
+    display:flex; justify-content:space-between; align-items:flex-end; gap:20px; }
+  .foot-notes{ font-size:10.5px; color:var(--muted); line-height:1.6; max-width:62%; }
+  .foot-notes .thanks{ font-style:italic; color:var(--navy); font-size:12.5px; margin-top:8px; }
+  .qr{ text-align:center; flex:0 0 auto; }
+  .qr-label{ font-family:var(--label); font-size:8px; letter-spacing:1px; text-transform:uppercase;
+    color:var(--muted); margin-top:4px; }
+
+  @media print{
+    html,body{ background:#fff; padding:0; }
+    .page{ box-shadow:none; margin:0; width:auto; min-height:auto;
+      padding:14mm 14mm 10mm; }
+    @page{ size:A4 portrait; margin:0; }
+    .totals .balance, table.items thead th, .totals .grand{ -webkit-print-color-adjust:exact;
+      print-color-adjust:exact; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ============ LETTERHEAD ============ -->
+  <header class="letterhead">
+    <div class="lh-left">
+      {% if issuer.logo %}
+      <img class="crest-logo" src="{{ issuer.logo }}" alt="{{ issuer.name }} logo">
+      {% else %}
+      <svg class="crest" viewBox="0 0 54 60" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="{{ issuer.name }} crest">
+        <path d="M27 0 L54 8 V32 C54 47 42 56 27 60 C12 56 0 47 0 32 V8 Z" fill="#1B2A4A"/>
+        <path d="M27 4 L50 11 V32 C50 44.5 39.6 52.8 27 56.4 C14.4 52.8 4 44.5 4 32 V11 Z" fill="none" stroke="#B08D57" stroke-width="1.2"/>
+        <text x="27" y="30" text-anchor="middle" font-family="Georgia, serif" font-size="16" font-weight="700" fill="#ffffff" letter-spacing="1">{{ issuer.name|slice:":2"|upper }}</text>
+        <line x1="14" y1="35" x2="40" y2="35" stroke="#B08D57" stroke-width="1"/>
+      </svg>
+      {% endif %}
+      <div>
+        <div class="school-name">{{ issuer.name }}</div>
+        {% if issuer.tag %}<div class="school-tag">{{ issuer.tag }}</div>{% endif %}
+        <div class="issuer-meta">
+          {% if issuer.address %}{{ issuer.address }}<br>{% endif %}
+          {% if issuer.email %}{{ issuer.email }}{% endif %}{% if issuer.email and issuer.phone %} &middot; {% endif %}{% if issuer.phone %}{{ issuer.phone }}{% endif %}
+        </div>
+      </div>
+    </div>
+    <div class="lh-right">
+      <div class="doc-kind">Tax Invoice</div>
+      <div class="doc-kind-sub">Original for recipient</div>
+      <div class="docnum">{{ invoice.document_number }}</div>
+      <div class="gold-rule"></div>
+    </div>
+  </header>
+
+  <!-- ============ META + BILL-TO ============ -->
+  <section class="meta-grid">
+    <div class="invoice-meta">
+      <div class="block-title">Invoice details</div>
+      <div class="kv"><span class="k">Invoice date</span><span class="v">{{ invoice.invoice_date }}</span></div>
+      <div class="kv"><span class="k">Due date</span><span class="v">{{ invoice.due_date }}</span></div>
+      {% if invoice.reference %}<div class="kv"><span class="k">Reference</span><span class="v">{{ invoice.reference }}</span></div>{% endif %}
+      <div class="kv"><span class="k">Status</span><span class="v"><span class="badge {{ invoice.payment_status_badge }}">{{ invoice.payment_status }}</span></span></div>
+    </div>
+    <div class="billto">
+      <div class="block-title">Billed to</div>
+      <div class="name">{{ customer.customer_name }}</div>
+      <div class="line">Account &middot; {{ customer.customer_code }}</div>
+      {% if customer.email %}<div class="line">{{ customer.email }}</div>{% endif %}
+      {% if customer.phone %}<div class="line">{{ customer.phone }}</div>{% endif %}
+      {% if customer.address %}<div class="line">{{ customer.address }}</div>{% endif %}
+    </div>
+  </section>
+
+  <!-- ============ LINE ITEMS ============ -->
+  <table class="items">
+    <thead>
+      <tr>
+        <th>Description</th>
+        <th class="num">Qty</th>
+        <th class="num">Unit price</th>
+        <th class="num">VAT</th>
+        <th class="num">Amount</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for line in invoice.line_items %}
+      <tr>
+        <td>
+          <div class="it-desc">{{ line.description }}</div>
+          {% if line.sub %}<div class="it-sub">{{ line.sub }}</div>{% endif %}
+        </td>
+        <td class="num">{{ line.quantity }}</td>
+        <td class="num">{{ line.unit_price }}</td>
+        <td class="num">{% if line.is_exempt %}<span class="vat-tag exempt">Exempt</span>{% else %}{{ line.tax_amount }}{% endif %}</td>
+        <td class="num">{{ line.net_amount }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- ============ TOTALS ============ -->
+  <div class="totals-wrap">
+    <div class="totals">
+      <div class="row"><span class="lbl">Subtotal (net)</span><span class="amt">{{ invoice.subtotal }}</span></div>
+      {% if invoice.has_tax %}<div class="row sep"><span class="lbl">VAT</span><span class="amt">{{ invoice.tax_total }}</span></div>{% endif %}
+      <div class="row grand"><span class="lbl">Total</span><span class="amt">{{ invoice.total }}</span></div>
+      <div class="row"><span class="lbl">Amount paid</span><span class="amt">&minus;&nbsp;{{ invoice.amount_paid }}</span></div>
+      <div class="balance"><span class="lbl">Balance due</span><span class="amt">{{ invoice.balance_due }}</span></div>
+    </div>
+  </div>
+
+  <!-- ============ PAY-TO ============ -->
+  <section class="payto">
+    <div class="pay-bank">
+      <div class="block-title">Payment by bank transfer</div>
+      <div class="pb-row"><span class="pb-k">Bank</span><span class="pb-v">{{ issuer.bank.bank_name }}</span></div>
+      <div class="pb-row"><span class="pb-k">Account name</span><span class="pb-v">{{ issuer.bank.account_name }}</span></div>
+      <div class="pb-row"><span class="pb-k">Account number</span><span class="pb-v">{{ issuer.bank.account_number }}</span></div>
+      <div class="pb-row"><span class="pb-k">Use reference</span><span class="pb-v">{{ invoice.document_number }}</span></div>
+    </div>
+    <div class="paystack">
+      <div class="block-title">Or pay online</div>
+      Settle instantly with card, transfer or USSD.
+      <br><span class="chip">Pay online</span>
+      <div style="margin-top:8px;color:var(--muted);font-size:10.5px;">
+        Please pay on or before the due date, <strong>{{ invoice.due_date }}</strong>.
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ FOOTER ============ -->
+  <footer class="footer">
+    <div class="foot-notes">
+      {% if invoice.narration %}<strong>Notes:</strong> {{ invoice.narration }}{% endif %}
+      <div class="thanks">Thank you.</div>
+    </div>
+    <div class="qr">
+      <svg width="74" height="74" viewBox="0 0 74 74" xmlns="http://www.w3.org/2000/svg" aria-label="Verification QR placeholder">
+        <rect width="74" height="74" fill="#fff" stroke="#1B2A4A" stroke-width="1.4"/>
+        <g fill="#1B2A4A">
+          <rect x="8" y="8" width="18" height="18"/><rect x="11" y="11" width="12" height="12" fill="#fff"/><rect x="14" y="14" width="6" height="6"/>
+          <rect x="48" y="8" width="18" height="18"/><rect x="51" y="11" width="12" height="12" fill="#fff"/><rect x="54" y="14" width="6" height="6"/>
+          <rect x="8" y="48" width="18" height="18"/><rect x="11" y="51" width="12" height="12" fill="#fff"/><rect x="14" y="54" width="6" height="6"/>
+          <rect x="32" y="10" width="4" height="4"/><rect x="38" y="14" width="4" height="4"/><rect x="32" y="20" width="4" height="4"/>
+          <rect x="44" y="32" width="4" height="4"/><rect x="32" y="32" width="4" height="4"/><rect x="38" y="38" width="4" height="4"/>
+        </g>
+      </svg>
+      <div class="qr-label">{{ invoice.qr_payload }}</div>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>

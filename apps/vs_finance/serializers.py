@@ -689,7 +689,7 @@ class BankAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         fields = [
             "id", "name", "bank_name", "account_number",
             "gl_account", "gl_account_name", "gl_account_id", "currency",
-            "is_active", "is_primary",
+            "is_active", "is_primary", "is_primary_collection",
             "book_balance", "book_balance_naira", "unreconciled_count",
             "last_reconciled_at",
         ]

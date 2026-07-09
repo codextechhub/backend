@@ -4843,6 +4843,168 @@ class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
         self.assertIn("Write-off", labels)
 
 
+class FinanceDocumentEndpointTests(_ARFixtureMixin, TestCase):
+    """Printable invoice and receipt document endpoints."""
+
+    def _user(self, email="finance-docs@test.com"):
+        from django.contrib.auth import get_user_model
+        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+
+        u = get_user_model().objects.create_user(
+            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Finance", last_name="Docs",
+        )
+        role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
+        PlatformUserRoleAssignment.objects.create(user=u, role=role, assignment_status="ACTIVE")
+        return u
+
+    def _request(self, path, entity, user):
+        from rest_framework.test import APIRequestFactory, force_authenticate
+
+        req = APIRequestFactory().get(path, {"entity": entity.code})
+        force_authenticate(req, user=user)
+        return req
+
+    def test_invoice_document_renders_html_with_collection_account(self):
+        from vs_finance.documents import primary_collection_account
+        from vs_finance.views import InvoiceDocumentView
+
+        entity, period, customer, vat = self.build_ar()
+        BankAccount.objects.create(
+            entity=entity, name="Operations Account",
+            bank_name="Access Bank",
+            account_number="111",
+            gl_account=Account.objects.get(entity=entity, code="1100"),
+            is_active=True,
+        )
+        collection = BankAccount.objects.create(
+            entity=entity, name="Collections Account",
+            bank_name="GTBank",
+            account_number="222",
+            gl_account=Account.objects.get(entity=entity, code="1100"),
+            is_active=True,
+            is_primary_collection=True,
+        )
+        inv = self.make_invoice(
+            entity, customer, lines=[("4100", 1, 100000, None)],
+            due=datetime.date(2026, 1, 31),
+        )
+        post_invoice(inv)
+
+        self.assertEqual(primary_collection_account(entity), collection)
+        req = self._request(f"/v1/finance/invoices/{inv.pk}/document/", entity, self._user())
+        resp = InvoiceDocumentView.as_view()(req, pk=inv.pk)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "text/html; charset=utf-8")
+        html = resp.content.decode()
+        self.assertIn("Tax Invoice", html)
+        self.assertIn(inv.document_number, html)
+        self.assertIn("Acme Ltd", html)
+        self.assertIn("GTBank", html)
+        self.assertIn("222", html)
+
+    def test_receipt_document_renders_html(self):
+        from vs_finance.views_ar import PaymentReceiptView
+
+        entity, period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
+        post_invoice(inv)
+        payment = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 15),
+            amount=40000, deposit_account=Account.objects.get(entity=entity, code="1100"),
+        )
+        post_payment(payment)
+        payment.refresh_from_db()
+
+        req = self._request(f"/v1/finance/payments/{payment.pk}/receipt/", entity, self._user("receipt-docs@test.com"))
+        resp = PaymentReceiptView.as_view()(req, pk=payment.pk)
+
+        self.assertEqual(resp.status_code, 200)
+        html = resp.content.decode()
+        self.assertIn("Receipt", html)
+        self.assertIn(payment.document_number, html)
+        self.assertIn(inv.document_number, html)
+        self.assertIn("Four hundred naira only", html)
+
+    def test_pdf_endpoint_uses_weasyprint_renderer_when_available(self):
+        from unittest.mock import patch
+
+        from vs_finance.views import InvoiceDocumentPDFView
+
+        entity, period, customer, vat = self.build_ar()
+        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
+        post_invoice(inv)
+
+        req = self._request(f"/v1/finance/invoices/{inv.pk}/document.pdf", entity, self._user("invoice-pdf@test.com"))
+        with patch("vs_finance.documents.render_document_pdf", return_value=b"%PDF-1.7 fake") as renderer:
+            resp = InvoiceDocumentPDFView.as_view()(req, pk=inv.pk)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp["Content-Type"], "application/pdf")
+        self.assertEqual(resp.content, b"%PDF-1.7 fake")
+        self.assertIn(inv.document_number, resp["Content-Disposition"])
+        self.assertTrue(renderer.called)
+
+    def test_pdf_endpoint_returns_503_when_renderer_unavailable(self):
+        from unittest.mock import patch
+
+        from vs_finance.documents import DocumentRenderUnavailable
+        from vs_finance.views_ar import PaymentReceiptPDFView
+
+        entity, period, customer, vat = self.build_ar()
+        payment = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 15),
+            amount=40000, deposit_account=Account.objects.get(entity=entity, code="1100"),
+        )
+        post_payment(payment)
+        payment.refresh_from_db()
+
+        req = self._request(f"/v1/finance/payments/{payment.pk}/receipt.pdf", entity, self._user("receipt-pdf@test.com"))
+        with patch(
+            "vs_finance.documents.render_document_pdf",
+            side_effect=DocumentRenderUnavailable("missing native libs"),
+        ):
+            resp = PaymentReceiptPDFView.as_view()(req, pk=payment.pk)
+            resp.render()
+
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.data["detail"], "PDF rendering is unavailable on this server.")
+
+    def test_primary_collection_account_falls_back_to_first_active_account(self):
+        from vs_finance.documents import primary_collection_account
+
+        entity, period, customer, vat = self.build_ar()
+        inactive = BankAccount.objects.create(
+            entity=entity, name="Inactive",
+            gl_account=Account.objects.get(entity=entity, code="1100"),
+            is_active=False,
+        )
+        active = BankAccount.objects.create(
+            entity=entity, name="Active Collections",
+            gl_account=Account.objects.get(entity=entity, code="1100"),
+            is_active=True,
+        )
+
+        self.assertEqual(primary_collection_account(entity), active)
+        inactive.is_primary_collection = True
+        inactive.save(update_fields=["is_primary_collection", "updated_at"])
+        self.assertEqual(primary_collection_account(entity), inactive)
+
+
+class FinanceMigrationStateTests(TestCase):
+    def test_bank_account_primary_collection_column_exists(self):
+        from django.db import connection
+
+        with connection.cursor() as cursor:
+            columns = {
+                col.name
+                for col in connection.introspection.get_table_description(
+                    cursor, BankAccount._meta.db_table)
+            }
+        self.assertIn("is_primary_collection", columns)
+
+
 class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
     """POST /finance/invoices/ raises (and posts) a manual invoice, gated on create."""
 
