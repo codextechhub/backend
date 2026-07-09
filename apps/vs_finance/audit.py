@@ -1,32 +1,32 @@
-"""Finance audit service.
+"""Finance audit service.  # Authoritative finance audit trail plus central mirror.
 
 The module keeps its **own** authoritative audit trail (the append-only
 :class:`~vs_finance.models.FinanceAuditLog`) rather than relying on the central
-``vs_audit`` system, for two reasons finance can't compromise on:
+``vs_audit`` system, for two reasons finance can't compromise on:  # Finance log is system-of-record.
 
 * the audit row is written **transactionally** with the action (a posting can't
-  commit without it), and a failure to write it is **not** swallowed; whereas
+  commit without it), and a failure to write it is **not** swallowed; whereas  # Must commit with the action.
 * central ``vs_audit`` is best-effort by contract (it never raises, so it may drop
-  events) — perfect as a platform-wide *mirror*, wrong as the system of record.
+  events) — perfect as a platform-wide *mirror*, wrong as the system of record.  # Mirror only, never source of truth.
 
 :func:`record` writes the authoritative row and then mirrors a copy to ``vs_audit``
-best-effort, so the global activity view stays complete without becoming load-bearing.
+best-effort, so the global activity view stays complete without becoming load-bearing.  # Keep the mirror non-blocking.
 """
-from __future__ import annotations
+from __future__ import annotations  # Defer annotation evaluation for forward references.
 
-from django.db import transaction
+from django.db import transaction  # Used to persist rejection logs in a new atomic block.
 
-from .constants import FinanceAuditStatus
+from .constants import FinanceAuditStatus  # Success/failed status values for finance audits.
 
 
 def _mirror_to_central(*, action, actor_user, entity, target_type, target_id,
                        document_number, status, message, metadata):
     """Best-effort copy into central vs_audit. Never raises — the in-app log is truth."""
-    try:
-        from vs_audit.services import emit_audit_event
-        from vs_audit.models import AuditModuleKey, AuditActionType
+    try:  # Mirroring must never block the primary finance write.
+        from vs_audit.services import emit_audit_event  # Central audit emitter.
+        from vs_audit.models import AuditModuleKey, AuditActionType  # Central audit enums.
 
-        emit_audit_event(
+        emit_audit_event(  # Mirror the finance event into the platform audit log.
             module_key=AuditModuleKey.FINANCE,
             action_type=AuditActionType.FINANCIAL_TRANSACTION,
             entity_type=f"vs_finance.{target_type}" if target_type else "vs_finance",
@@ -39,7 +39,7 @@ def _mirror_to_central(*, action, actor_user, entity, target_type, target_id,
             metadata={"finance_action": str(action), **(metadata or {})},
         )
     except Exception:  # pragma: no cover - mirror is best-effort
-        pass
+        pass  # Swallow mirror failures so the authoritative finance log stays intact.
 
 
 def record(*, entity, action, actor_user=None, target=None, target_type="",
@@ -55,14 +55,14 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
     ``target`` may be passed instead of ``target_type``/``target_id`` for convenience;
     its class name and pk are used. Returns the created row.
     """
-    from .models import FinanceAuditLog
+    from .models import FinanceAuditLog  # Import lazily to avoid model import cycles.
 
-    if target is not None:
-        target_type = target_type or type(target).__name__
-        target_id = target_id or str(target.pk)
-        document_number = document_number or getattr(target, "document_number", "") or ""
+    if target is not None:  # Allow callers to pass a model instance instead of manual identifiers.
+        target_type = target_type or type(target).__name__  # Derive the target type from the instance.
+        target_id = target_id or str(target.pk)  # Derive the target id from the instance pk.
+        document_number = document_number or getattr(target, "document_number", "") or ""  # Pull document number when available.
 
-    log = FinanceAuditLog.objects.create(
+    log = FinanceAuditLog.objects.create(  # Write the authoritative audit row.
         entity=entity,
         actor=actor_user,
         action=action,
@@ -76,14 +76,14 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
         metadata=metadata or {},
     )
 
-    if mirror:
-        _mirror_to_central(
+    if mirror:  # Optionally mirror the event into the platform-wide audit log.
+        _mirror_to_central(  # Copy the finance event into the central audit system.
             action=action, actor_user=actor_user, entity=entity,
             target_type=target_type, target_id=target_id,
             document_number=document_number, status=status,
             message=message, metadata=metadata,
         )
-    return log
+    return log  # Return the authoritative finance audit row.
 
 
 def record_rejection(*, entity, action, exc, actor_user=None, target=None,
@@ -95,10 +95,10 @@ def record_rejection(*, entity, action, exc, actor_user=None, target=None,
     a failure to log the rejection must not mask the original business error the
     caller is about to re-raise.
     """
-    error_code = getattr(exc, "error_code", type(exc).__name__)
-    try:
-        with transaction.atomic():
-            record(
+    error_code = getattr(exc, "error_code", type(exc).__name__)  # Preserve a stable error code when possible.
+    try:  # Rejection logging must not mask the original exception.
+        with transaction.atomic():  # Write the rejection in a fresh transaction.
+            record(  # Persist the failed finance action.
                 entity=entity, action=action, actor_user=actor_user,
                 target=target, target_type=target_type, target_id=target_id,
                 document_number=document_number,
@@ -108,4 +108,4 @@ def record_rejection(*, entity, action, exc, actor_user=None, target=None,
                 **metadata,
             )
     except Exception:  # pragma: no cover - never mask the real error
-        pass
+        pass  # Swallow logging failures so the original business error still surfaces.
