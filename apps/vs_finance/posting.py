@@ -17,28 +17,28 @@ from typing import Iterable, Protocol  # Iterable for line sums; Protocol for pe
 from django.db import transaction  # Keeps posting/reversal writes atomic.
 from django.utils import timezone  # Supplies posted/reversal dates and timestamps.
 
-from .constants import (
+from .constants import (  # Import project symbols used by this module.
     DocumentStatus,  # Journal lifecycle status enum.
     FinanceAuditAction,  # Audit action enum values.
     JournalSource,  # Journal source enum values.
     PERIOD_POSTING_BLOCKED,  # Period statuses that never accept postings.
     PERIOD_POSTING_RESTRICTED,  # Period statuses that require privileged posting.
     PeriodStatus,  # Fiscal period lifecycle status enum.
-)
-from .exceptions import (
+)  # Close the grouped expression.
+from .exceptions import (  # Import project symbols used by this module.
     FinanceError,  # Base finance error caught for durable rejection audit.
     InactiveAccountError,  # Raised when a line account cannot receive postings.
     PeriodClosedError,  # Raised when posting period is blocked.
     PostingError,  # Generic posting domain error.
     UnbalancedJournalError,  # Raised when debit and credit totals differ.
-)
+)  # Close the grouped expression.
 
 
 class _PeriodLike(Protocol):  # Structural type for period guard inputs.
     status: str  # Period-like objects must expose a status.
 
     def __str__(self) -> str:  # pragma: no cover - structural typing only  # Human period label for errors.
-        ...
+        ...  # Execute the module statement.
 
 
 def ensure_period_open(period: _PeriodLike, *, allow_restricted: bool = False) -> None:  # Guard posting period availability.
@@ -61,10 +61,10 @@ def ensure_period_open(period: _PeriodLike, *, allow_restricted: bool = False) -
     label = str(period)  # Human-readable period label for errors.
 
     if status in PERIOD_POSTING_BLOCKED:  # Closed/locked periods reject all postings.
-        raise PeriodClosedError(period_label=label, status=str(status))
+        raise PeriodClosedError(period_label=label, status=str(status))  # Raise the domain error for this path.
 
     if status in PERIOD_POSTING_RESTRICTED and not allow_restricted:  # Soft-closed periods require privileged posting.
-        raise PeriodClosedError(period_label=label, status=str(status))
+        raise PeriodClosedError(period_label=label, status=str(status))  # Raise the domain error for this path.
 
     if status != PeriodStatus.OPEN and status not in PERIOD_POSTING_RESTRICTED:  # Anything unknown must fail closed.
         # Unknown / unset status — fail closed rather than guess.  # Prevent silent posting into invalid state.
@@ -78,12 +78,12 @@ def _period_accepts_posting(period, *, allow_restricted: bool = False) -> bool: 
     selection) can *test* a period and pick an alternative rather than fail.
     """
     if period is None:  # Missing period cannot accept postings.
-        return False
+        return False  # Return the computed module result.
     status = getattr(period, "status", None)  # Read status defensively.
     if status in PERIOD_POSTING_BLOCKED:  # Closed/locked periods reject postings.
-        return False
+        return False  # Return the computed module result.
     if status in PERIOD_POSTING_RESTRICTED:  # Restricted periods depend on caller privilege.
-        return allow_restricted
+        return allow_restricted  # Return the computed module result.
     return status == PeriodStatus.OPEN  # Only open periods accept ordinary postings.
 
 
@@ -94,7 +94,7 @@ def ensure_balanced(debit_kobo: int, credit_kobo: int) -> None:  # Guard exact d
     and none is wanted: a ledger that is off by one kobo is wrong.
     """
     if debit_kobo != credit_kobo:  # Even one kobo imbalance is invalid.
-        raise UnbalancedJournalError(debit=debit_kobo, credit=credit_kobo)
+        raise UnbalancedJournalError(debit=debit_kobo, credit=credit_kobo)  # Raise the domain error for this path.
 
 
 def sum_sides(lines: Iterable) -> tuple[int, int]:  # Sum debit and credit sides over journal-like lines.
@@ -137,7 +137,7 @@ def resolve_period(entity, date):  # Find the fiscal period covering a document 
         .filter(entity=entity, start_date__lte=date, end_date__gte=date)  # Date must fall within period boundaries.
         .order_by("period_no")  # Stable order if data is malformed/overlapping.
         .first()  # Return one period or None.
-    )
+    )  # Close the grouped expression.
 
 
 def _apply_to_balances(entry, *, sign: int) -> None:  # Apply or remove journal amounts from account balances.
@@ -155,7 +155,7 @@ def _apply_to_balances(entry, *, sign: int) -> None:  # Apply or remove journal 
     for line in entry.lines.select_related("account").all():  # Apply every line in the journal.
         balance, _ = AccountBalance.objects.select_for_update().get_or_create(  # Lock/create aggregate row.
             account=line.account, period=period,  # One balance row per account and period.
-        )
+        )  # Close the grouped expression.
         balance.debit_total += sign * (line.debit or 0)  # Add/remove debit amount.
         balance.credit_total += sign * (line.credit or 0)  # Add/remove credit amount.
         balance.save(update_fields=["debit_total", "credit_total", "updated_at"])  # Persist aggregate totals.
@@ -177,17 +177,17 @@ def post_journal(entry, *, actor_user=None, allow_restricted: bool = False):  # 
     try:  # Atomic core may roll back; wrapper logs rejection after rollback.
         return _post_journal_atomic(  # Perform the actual posting.
             entry, actor_user=actor_user, allow_restricted=allow_restricted,  # Actor and period privilege.
-        )
+        )  # Close the grouped expression.
     except FinanceError as exc:  # Finance-domain errors get durable rejection audit.
         record_rejection(  # Record failed posting attempt.
             entity=entry.entity,  # Entity being posted into.
             action=FinanceAuditAction.JOURNAL_POST_REJECTED,  # Audit action for rejected journal post.
             exc=exc, actor_user=actor_user, target=entry,  # Error, actor, and target context.
-        )
+        )  # Close the grouped expression.
         raise  # Preserve original posting exception.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def _post_journal_atomic(entry, *, actor_user=None, allow_restricted: bool = False):  # Transactional journal posting implementation.
     """The posting work proper, all in one transaction.
 
@@ -210,15 +210,15 @@ def _post_journal_atomic(entry, *, actor_user=None, allow_restricted: bool = Fal
     locked_status = (  # Re-read status while holding the journal row lock.
         JournalEntry.objects.select_for_update()  # Lock this journal row.
         .values_list("status", flat=True).get(pk=entry.pk)  # Fetch only current status.
-    )
+    )  # Close the grouped expression.
     if locked_status == DocumentStatus.POSTED:  # Posted journals must not be posted twice.
-        raise PostingError(
+        raise PostingError(  # Raise the domain error for this path.
             f"Journal {entry.document_number or entry.pk} is already posted.",
-        )
+        )  # Close the grouped expression.
     if locked_status in (DocumentStatus.REVERSED, DocumentStatus.CANCELLED):  # Terminal journals cannot post.
-        raise PostingError(
+        raise PostingError(  # Raise the domain error for this path.
             f"Journal {entry.document_number or entry.pk} is '{locked_status}' and cannot be posted.",
-        )
+        )  # Close the grouped expression.
 
     ensure_period_open(entry.period, allow_restricted=allow_restricted)  # Guard period status.
 
@@ -232,7 +232,7 @@ def _post_journal_atomic(entry, *, actor_user=None, allow_restricted: bool = Fal
     for line in lines:  # Validate every account touched by the journal.
         account = line.account  # Account on this line.
         if not (account.is_active and account.is_postable):  # Inactive/header accounts cannot post.
-            raise InactiveAccountError(account_code=account.code)
+            raise InactiveAccountError(account_code=account.code)  # Raise the domain error for this path.
 
     _apply_to_balances(entry, sign=+1)  # Add line amounts to per-period balances.
 
@@ -248,11 +248,11 @@ def _post_journal_atomic(entry, *, actor_user=None, allow_restricted: bool = Fal
         message=f"Posted into {entry.period}.",  # Human-readable audit message.
         after={"status": DocumentStatus.POSTED, "posted_at": entry.posted_at.isoformat()},  # Post-state snapshot.
         debit=total_debit, credit=total_credit,  # Structured totals.
-    )
+    )  # Close the grouped expression.
     return entry  # Return posted journal.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool = False):  # Reverse a posted journal.
     """Reverse a posted journal by raising a mirror-image entry that nets it to zero.
 
@@ -266,14 +266,14 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
     from .models import JournalEntry, JournalLine  # Journal models for reversal entry and lines.
 
     if entry.status != DocumentStatus.POSTED:  # Only posted journals can be reversed.
-        raise PostingError(
+        raise PostingError(  # Raise the domain error for this path.
             f"Only a posted journal can be reversed; {entry.document_number or entry.pk} "
             f"is '{entry.status}'.",
-        )
+        )  # Close the grouped expression.
     if hasattr(entry, "reversed_by") and entry.reversed_by is not None:  # Prevent duplicate reversals.
-        raise PostingError(
+        raise PostingError(  # Raise the domain error for this path.
             f"Journal {entry.document_number or entry.pk} has already been reversed.",
-        )
+        )  # Close the grouped expression.
 
     # Resolve the reversal's date and period from that date (an old bug pinned the
     # reversal to the original's period regardless of the date passed). Prefer the
@@ -299,7 +299,7 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
         reference=entry.reference,  # Preserve reference.
         created_by=actor_user,  # Attribute reversal to actor.
         reverses=entry,  # Link reversal back to original.
-    )
+    )  # Close the grouped expression.
     for line in entry.lines.all():  # Mirror every original journal line.
         JournalLine.objects.create(  # Create swapped-side reversal line.
             entry=reversal,  # Attach to reversal journal.
@@ -310,7 +310,7 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
             cost_center=line.cost_center,  # Preserve analytics.
             dimensions=line.dimensions,  # Preserve dimensions.
             line_no=line.line_no,  # Preserve line order.
-        )
+        )  # Close the grouped expression.
 
     post_journal(reversal, actor_user=actor_user, allow_restricted=allow_restricted)  # Post mirror journal.
 
@@ -325,11 +325,11 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
         message=f"Reversed by {reversal.document_number or reversal.pk}.",  # Human-readable audit message.
         after={"status": DocumentStatus.REVERSED},  # Original journal final status.
         reversal_id=reversal.pk, reversal_number=reversal.document_number,  # Link to reversal journal.
-    )
+    )  # Close the grouped expression.
     return reversal  # Return the posted reversal journal.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
                       actor_user=None):  # Create and post a raw direct journal entry.
     """Post a direct journal entry — money/balances seated into the books with no source doc.
@@ -364,14 +364,14 @@ def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
             FiscalPeriod.objects.filter(entity=entity)  # Periods for this entity.
             .order_by("start_date").values_list("start_date", flat=True).first()  # Earliest available start date.
             or timezone.now().date()  # Fallback to today.
-        )
+        )  # Close the grouped expression.
 
     entry = JournalEntry.objects.create(  # Create draft direct journal header.
         entity=entity, date=date, period=resolve_period(entity, date),  # Entity, date, and resolved period.
         source=JournalSource.OPENING,  # Direct entries use opening/sourceless source.
         narration=narration or "Opening balances",  # Default narration.
         reference=reference, created_by=actor_user,  # External reference and actor.
-    )
+    )  # Close the grouped expression.
     for i, row in enumerate(rows, start=1):  # Create journal lines in input order.
         # optional 4th element: cost_center, optional 5th: dimensions JSON map  # Extra tuple values carry analytics.
         account, debit, credit, *rest = row  # Unpack mandatory and optional line values.
@@ -382,7 +382,7 @@ def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
             entry=entry, account=acct,  # Attach line to entry and account.
             debit=int(debit or 0), credit=int(credit or 0),  # Store integer kobo side amounts.
             cost_center=cost_center, dimensions=dimensions or {}, line_no=i,  # Store analytics and line number.
-        )
+        )  # Close the grouped expression.
 
     post_journal(entry, actor_user=actor_user)  # Run normal posting guards and balance updates.
     entry.refresh_from_db()  # Reload posted fields and document number.
