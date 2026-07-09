@@ -78,7 +78,7 @@ class _FinancePostOnApprove(BaseWorkflowHandler):  # Shared handler for finance 
             .select_related("actor")  # Load actor for return without extra query.
             .order_by("-acted_at", "-id")  # Latest action wins.
             .first()  # Return one action or None.
-        )
+        )  # Close the grouped expression.
         return action.actor if action is not None else instance.requested_by  # Fallback to requester for auto-skipped flows.
 
     # --- engine entry points ------------------------------------------------ #
@@ -136,20 +136,20 @@ class _FinancePostOnApprove(BaseWorkflowHandler):  # Shared handler for finance 
 
     # --- document-type hooks (subclasses implement) ------------------------- #
     def preflight(self, document) -> None:  # pragma: no cover - abstract  # Subclasses validate without writes.
-        raise NotImplementedError
+        raise NotImplementedError  # Raise the domain error for this path.
 
     def post(self, document, *, actor_user):  # pragma: no cover - abstract  # Subclasses perform the real posting.
-        raise NotImplementedError
+        raise NotImplementedError  # Raise the domain error for this path.
 
     def summary(self, document) -> dict:  # pragma: no cover - abstract  # Subclasses shape approval summary data.
-        raise NotImplementedError
+        raise NotImplementedError  # Raise the domain error for this path.
 
 
 @register_handler("finance.journal")
 class JournalHandler(_FinancePostOnApprove):  # Workflow handler for manual journal approvals.
     """Approval handler for a manual :class:`~vs_finance.models.JournalEntry`."""
 
-    @property
+    @property  # Apply the decorator to this callable.
     def document_model(self):  # Concrete model for finance.journal instances.
         from .models import JournalEntry  # Local import avoids model import cycles.
         return JournalEntry  # Return journal model class.
@@ -178,7 +178,7 @@ class JournalHandler(_FinancePostOnApprove):  # Workflow handler for manual jour
             account = line.account  # Account on this journal line.
             if not (account.is_active and account.is_postable):  # Posting requires active leaf accounts.
                 from .exceptions import InactiveAccountError  # Local import keeps error dependency narrow.
-                raise InactiveAccountError(account_code=account.code)
+                raise InactiveAccountError(account_code=account.code)  # Raise the domain error for this path.
 
     def post(self, document, *, actor_user) -> None:  # Post an approved journal.
         from .posting import post_journal  # Real journal posting service.
@@ -193,16 +193,16 @@ class JournalHandler(_FinancePostOnApprove):  # Workflow handler for manual jour
                 {"label": "Date", "value": document.date.isoformat()},  # Journal date.
                 {"label": "Narration", "value": document.narration or "—"},  # Journal narration.
                 {"label": "Total", "value": format_naira(document.total_debit_kobo)},  # Journal total.
-            ],
+            ],  # Close the grouped value.
             "link": f"/finance/journals/{document.pk}/",  # Frontend deep link.
-        }
+        }  # Close the grouped expression.
 
 
 @register_handler("finance.refund")
 class RefundHandler(_FinancePostOnApprove):  # Workflow handler for customer refund approvals.
     """Approval handler for a customer :class:`~vs_finance.models.Refund` (cash out)."""
 
-    @property
+    @property  # Apply the decorator to this callable.
     def document_model(self):  # Concrete model for finance.refund instances.
         from .models import Refund  # Local import avoids model import cycles.
         return Refund  # Return refund model class.
@@ -235,14 +235,14 @@ class RefundHandler(_FinancePostOnApprove):  # Workflow handler for customer ref
 
         available = customer_credit_balance(document.customer)  # Current customer credit balance.
         if document.amount > available:  # Cannot refund more than available credit.
-            raise PostingError(
+            raise PostingError(  # Raise the domain error for this path.
                 f"Refund of {document.amount} kobo exceeds {document.customer.code}'s "
                 f"available credit ({available} kobo).",
-            )
+            )  # Close the grouped expression.
 
         deposit = document.deposit_account or (  # Resolve source account for cash out.
             document.bank_account.gl_account if document.bank_account_id else None  # Fallback to bank GL account.
-        )
+        )  # Close the grouped expression.
         if deposit is None:  # Refund cannot post without a bank/deposit account.
             raise PostingError("Refund has no bank/deposit account to pay from.")
 
@@ -259,9 +259,9 @@ class RefundHandler(_FinancePostOnApprove):  # Workflow handler for customer ref
                 {"label": "Date", "value": document.refund_date.isoformat()},  # Refund date.
                 {"label": "Customer", "value": document.customer.code},  # Customer code.
                 {"label": "Amount", "value": format_naira(document.amount)},  # Refund amount.
-            ],
+            ],  # Close the grouped value.
             "link": f"/finance/refunds/{document.pk}/",  # Frontend deep link.
-        }
+        }  # Close the grouped expression.
 
 
 @register_handler("finance.write_off")
@@ -274,7 +274,7 @@ class WriteOffHandler(_FinancePostOnApprove):  # Workflow handler for bad-debt w
     request — so no DRAFT-override is needed.
     """
 
-    @property
+    @property  # Apply the decorator to this callable.
     def document_model(self):  # Concrete model for finance.write_off instances.
         from .models import WriteOffRequest  # Local import avoids model import cycles.
         return WriteOffRequest  # Return write-off request model class.
@@ -291,10 +291,10 @@ class WriteOffHandler(_FinancePostOnApprove):  # Workflow handler for bad-debt w
 
         invoice = document.invoice  # Invoice targeted by the write-off request.
         if invoice.status != DocumentStatus.POSTED:  # Only posted invoices have AR balances.
-            raise PostingError(
+            raise PostingError(  # Raise the domain error for this path.
                 f"Invoice {invoice.document_number or invoice.pk} is '{invoice.status}'; "
                 f"only a posted invoice can be written off.",
-            )
+            )  # Close the grouped expression.
 
         balance = invoice.balance_due  # Current outstanding invoice balance.
         if balance <= 0:  # Fully settled invoices cannot be written off.
@@ -304,15 +304,15 @@ class WriteOffHandler(_FinancePostOnApprove):  # Workflow handler for bad-debt w
         if amount <= 0:  # Write-off amount must reduce a real balance.
             raise PostingError("Write-off amount must be positive.")
         if amount > balance:  # Cannot write off more than the invoice balance.
-            raise PostingError(
+            raise PostingError(  # Raise the domain error for this path.
                 f"Write-off amount ({amount} kobo) exceeds the outstanding balance "
                 f"({balance} kobo).",
-            )
+            )  # Close the grouped expression.
 
         if invoice.customer.receivable_account is None:  # AR control account is required for the reversal.
-            raise PostingError(
+            raise PostingError(  # Raise the domain error for this path.
                 f"Customer {invoice.customer.code} has no receivable (AR control) account set.",
-            )
+            )  # Close the grouped expression.
 
     def post(self, document, *, actor_user) -> None:  # Post an approved write-off request.
         from .credit_notes import post_write_off_request  # Real write-off posting service.
@@ -330,6 +330,6 @@ class WriteOffHandler(_FinancePostOnApprove):  # Workflow handler for bad-debt w
                 {"label": "Customer", "value": invoice.customer.code},  # Customer code.
                 {"label": "Amount", "value": format_naira(amount)},  # Write-off amount.
                 {"label": "Reason", "value": document.reason or "—"},  # Request reason.
-            ],
+            ],  # Close the grouped value.
             "link": f"/finance/write-offs/{document.pk}/",  # Frontend deep link.
-        }
+        }  # Close the grouped expression.
