@@ -9,16 +9,16 @@ from core.response import success_response  # Shared success response envelope.
 from vs_finance.views import resolve_entity  # Resolve the current finance entity from the request.
 
 from .. import payables  # Procurement payable posting and allocation service functions.
-from ..models import (
+from ..models import (  # Import project symbols used by this module.
     VendorInvoice,  # Vendor bill model used when explicit allocations are posted.
     VendorPayment,  # Vendor payment model managed by these endpoints.
-)
-from ..serializers import (
+)  # Close the grouped expression.
+from ..serializers import (  # Import project symbols used by this module.
     VendorPaymentSerializer,  # Response serializer for vendor payment payloads.
-)
+)  # Close the grouped expression.
 
 
-from .base import (
+from .base import (  # Import project symbols used by this module.
     _ProcBase,  # Procurement API base class with RBAC and pagination helpers.
     _date,  # Parse request dates consistently.
     _money,  # Parse integer kobo request amounts consistently.
@@ -26,7 +26,7 @@ from .base import (
     _resolve_currency,  # Resolve currency codes for the entity.
     _resolve_tax,  # Resolve tax code identifiers for withholding tax.
     _resolve_vendor,  # Resolve vendor identifiers for the entity.
-)
+)  # Close the grouped expression.
 
 # --------------------------------------------------------------------------- #
 # Vendor payments                                                             #
@@ -38,7 +38,7 @@ class VendorPaymentListCreateView(_ProcBase):  # List vendor payments and create
     docstring-name: Vendor payments
     """
 
-    @property
+    @property  # Apply the decorator to this callable.
     def rbac_permission(self):  # Choose permission dynamically by HTTP method.
         return "procurement.vendor_payment.create" if self.request.method == "POST" \
             else "procurement.vendor_payment.view"  # Read permission is enough for GET.
@@ -71,10 +71,10 @@ class VendorPaymentListCreateView(_ProcBase):  # List vendor payments and create
             wht_tax_code=_resolve_tax(entity, body.get("wht_tax_code"), "wht_tax_code"),  # Optional withholding tax code.
             reference=body.get("reference", ""), narration=body.get("narration", ""),  # Preserve optional audit fields.
             created_by=request.user if request.user.is_authenticated else None,  # Attribute creation when authenticated.
-        )
+        )  # Close the grouped expression.
         return success_response(  # Return the created draft payment.
             "Vendor payment created.", data=VendorPaymentSerializer(payment).data, status=201,  # Serialize with HTTP 201.
-        )
+        )  # Close the grouped expression.
 
 
 class VendorPaymentDetailView(_ProcBase):  # Retrieve one vendor payment.
@@ -113,7 +113,7 @@ class VendorPaymentPostView(_ProcBase):  # Post and optionally allocate a vendor
             for item in request.data["allocations"]:  # Validate each requested bill allocation.
                 inv = VendorInvoice.objects.filter(entity=entity, pk=item.get("vendor_invoice")).first()  # Resolve bill in entity.
                 if inv is None:  # Explicit allocations cannot reference missing bills.
-                    raise ValidationError(
+                    raise ValidationError(  # Raise the domain error for this path.
                         {"allocations": f"No such vendor invoice {item.get('vendor_invoice')}."})
                 allocations.append((inv, _money(item.get("amount", 0), "amount")))  # Store bill and kobo amount.
 
@@ -121,10 +121,10 @@ class VendorPaymentPostView(_ProcBase):  # Post and optionally allocate a vendor
             payment, actor_user=request.user,  # Attribute posting to the current user.
             auto_allocate=bool(request.data.get("auto_allocate", True)),  # Default to auto allocation.
             allocations=allocations,  # Pass explicit allocation tuples when supplied.
-        )
+        )  # Close the grouped expression.
         payment.refresh_from_db()  # Reload status, journal, and allocation totals after service updates.
         return success_response(  # Return the posted payment.
             f"Vendor payment {payment.document_number} posted.",  # Include the document number in the response message.
             data=VendorPaymentSerializer(payment).data,  # Serialize the final persisted state.
-        )
+        )  # Close the grouped expression.
 
