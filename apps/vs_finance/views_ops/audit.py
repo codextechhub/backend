@@ -6,17 +6,17 @@ from core.response import success_response  # Shared API success response envelo
 
 from ..views import resolve_entity  # Resolve active finance entity from the request.
 from ..constants import FinanceAuditAction  # Audit action choices for display labels.
-from ..models import (
+from ..models import (  # Import project symbols used by this module.
     FinanceAuditLog,  # Append-only finance audit log model.
-)
-from ..serializers import (
+)  # Close the grouped expression.
+from ..serializers import (  # Import project symbols used by this module.
     FinanceAuditLogSerializer,  # Serializer for audit log rows.
-)
+)  # Close the grouped expression.
 
 
-from .base import (
+from .base import (  # Import project symbols used by this module.
     _FinanceBase,  # Shared finance ops base view with RBAC/pagination helpers.
-)
+)  # Close the grouped expression.
 
 # --------------------------------------------------------------------------- #
 # Audit trail                                                                 #
@@ -73,13 +73,13 @@ class FinanceAuditFacetsView(_FinanceBase):  # Return filter facet values for au
             .values("actor_id", "actor__email")  # Return id and email only.
             .distinct()  # Collapse duplicate actors.
             .order_by("actor__email")  # Sort for dropdown readability.
-        )
+        )  # Close the grouped expression.
         target_types = (  # Distinct target type strings.
             qs.exclude(target_type="")  # Ignore blank target types.
             .values_list("target_type", flat=True)  # Return raw type strings.
             .distinct()  # Collapse duplicates.
             .order_by("target_type")  # Sort alphabetically.
-        )
+        )  # Close the grouped expression.
         labels = dict(FinanceAuditAction.choices)  # Map action code to human label.
         # .order_by("action") clears the model's default -created_at ordering, which
         # would otherwise be pulled into the SELECT and break .distinct() (dup codes).  # Avoid duplicate facet values.
@@ -87,7 +87,7 @@ class FinanceAuditFacetsView(_FinanceBase):  # Return filter facet values for au
         actions = sorted(  # Convert codes to value/label dictionaries and sort by label.
             ({"value": a, "label": labels.get(a, a)} for a in action_codes),  # Use enum label when known.
             key=lambda x: x["label"],  # Sort by human label.
-        )
+        )  # Close the grouped expression.
 
         return success_response(  # Return facet payload.
             "Audit filters retrieved.",  # Response message.
@@ -95,5 +95,5 @@ class FinanceAuditFacetsView(_FinanceBase):  # Return filter facet values for au
                 "actors": [{"id": a["actor_id"], "email": a["actor__email"]} for a in actors],  # Actor options.
                 "target_types": list(target_types),  # Target type options.
                 "actions": actions,  # Action options.
-            },
-        )
+            },  # Close the grouped value.
+        )  # Close the grouped expression.
