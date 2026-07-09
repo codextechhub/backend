@@ -27,8 +27,8 @@ from .constants import CollectionStatus, PayoutStatus  # Gateway lifecycle statu
 from .models import CollectionIntent, PayoutInstruction  # Gateway records to reconcile.
 
 
-@dataclass
-class SettlementRow:
+@dataclass  # Apply the decorator to this callable.
+class SettlementRow:  # Define the class used by this module.
     """One gateway-confirmed movement and the bank line (if any) it settled to."""
 
     kind: str                       # "COLLECTION" | "PAYOUT"  # Direction of the gateway movement.
@@ -46,20 +46,20 @@ class SettlementRow:
     settlement_date: datetime.date | None = None   # the matched bank line's txn date  # Bank-side transaction date.
     settlement_description: str = ""               # the matched bank line's description  # Bank-side description.
 
-    @property
-    def amount_naira(self) -> str:
+    @property  # Apply the decorator to this callable.
+    def amount_naira(self) -> str:  # Define the callable used by this module.
         return format_naira(self.amount)  # Render the signed amount for display.
 
-    @property
-    def fee_amount(self) -> int:
+    @property  # Apply the decorator to this callable.
+    def fee_amount(self) -> int:  # Define the callable used by this module.
         """Gross (gateway) minus net (bank) — the PSP fee, in absolute kobo."""
         if self.settled_amount is None:  # No settlement means we cannot derive a fee yet.
-            return 0
+            return 0  # Return the computed module result.
         return abs(self.amount) - abs(self.settled_amount)  # Fee is the absolute difference between gross and net.
 
 
-@dataclass
-class UnmatchedBankLine:
+@dataclass  # Apply the decorator to this callable.
+class UnmatchedBankLine:  # Define the class used by this module.
     """A bank statement line with no corresponding gateway record."""
 
     bank_line_id: int  # Primary key of the unmatched bank line.
@@ -69,13 +69,13 @@ class UnmatchedBankLine:
     reference: str  # Bank reference string.
     amount: int                     # signed kobo  # Signed bank amount.
 
-    @property
-    def amount_naira(self) -> str:
+    @property  # Apply the decorator to this callable.
+    def amount_naira(self) -> str:  # Define the callable used by this module.
         return format_naira(self.amount)  # Render the signed amount for display.
 
 
-@dataclass
-class SettlementReconciliation:
+@dataclass  # Apply the decorator to this callable.
+class SettlementReconciliation:  # Define the class used by this module.
     """The full picture for an entity over a date window."""
 
     entity_id: int  # Entity being reconciled.
@@ -86,37 +86,37 @@ class SettlementReconciliation:
     rows: list = field(default_factory=list)  # Matched gateway rows.
     unmatched_bank_lines: list = field(default_factory=list)  # Bank lines with no gateway match.
 
-    @property
-    def settled_count(self) -> int:
+    @property  # Apply the decorator to this callable.
+    def settled_count(self) -> int:  # Define the callable used by this module.
         return sum(1 for r in self.rows if r.settled)  # Count rows that matched a bank line.
 
-    @property
-    def unsettled_count(self) -> int:
+    @property  # Apply the decorator to this callable.
+    def unsettled_count(self) -> int:  # Define the callable used by this module.
         return sum(1 for r in self.rows if not r.settled)  # Count rows still unmatched.
 
-    @property
-    def gateway_total(self) -> int:
+    @property  # Apply the decorator to this callable.
+    def gateway_total(self) -> int:  # Define the callable used by this module.
         return sum(r.amount for r in self.rows)  # Total signed gateway movement.
 
-    @property
-    def settled_total(self) -> int:
+    @property  # Apply the decorator to this callable.
+    def settled_total(self) -> int:  # Define the callable used by this module.
         return sum(r.amount for r in self.rows if r.settled)  # Total signed amount already settled.
 
-    @property
-    def unsettled_total(self) -> int:
+    @property  # Apply the decorator to this callable.
+    def unsettled_total(self) -> int:  # Define the callable used by this module.
         return sum(r.amount for r in self.rows if not r.settled)  # Total signed amount still open.
 
-    @property
-    def unmatched_bank_total(self) -> int:
+    @property  # Apply the decorator to this callable.
+    def unmatched_bank_total(self) -> int:  # Define the callable used by this module.
         return sum(b.amount for b in self.unmatched_bank_lines)  # Total signed amount on unexplained bank lines.
 
-    @property
-    def is_reconciled(self) -> bool:
+    @property  # Apply the decorator to this callable.
+    def is_reconciled(self) -> bool:  # Define the callable used by this module.
         """True iff every gateway record settled and no bank line is left unexplained."""
         return self.unsettled_count == 0 and not self.unmatched_bank_lines  # Full reconciliation means no open items.
 
 
-def settlement_reconciliation(entity, *, start_date=None, end_date=None, provider=None):
+def settlement_reconciliation(entity, *, start_date=None, end_date=None, provider=None):  # Define the callable used by this module.
     """Reconcile gateway-confirmed movements against ``entity``'s imported bank lines.
 
     ``start_date``/``end_date`` bound both the gateway confirmation date and the bank line
@@ -126,37 +126,37 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
     rows: list[SettlementRow] = []  # Collect gateway movements into reconciliation rows.
 
     collections = CollectionIntent.objects.filter(  # Start from succeeded collections.
-        entity=entity, status=CollectionStatus.SUCCEEDED,
-    )
+        entity=entity, status=CollectionStatus.SUCCEEDED,  # Continue the structured value.
+    )  # Close the grouped expression.
     payouts = PayoutInstruction.objects.filter(  # Start from paid payouts.
-        entity=entity, status=PayoutStatus.PAID,
-    )
+        entity=entity, status=PayoutStatus.PAID,  # Continue the structured value.
+    )  # Close the grouped expression.
     if provider:  # Optional PSP filter narrows the report to one provider.
         collections = collections.filter(provider=provider)  # Limit collections to the chosen provider.
         payouts = payouts.filter(provider=provider)  # Limit payouts to the chosen provider.
 
     for ci in collections.only(  # Iterate only over the fields needed for the report.
         "id", "reference", "provider", "provider_reference", "amount", "confirmed_at",
-    ):
+    ):  # Start the nested execution block.
         confirmed = ci.confirmed_at  # Confirmation timestamp for the collection.
         if not _date_in_window(confirmed, start_date, end_date):  # Skip rows outside the window.
-            continue
+            continue  # Skip to the next loop iteration.
         rows.append(SettlementRow(  # Collections are positive signed movements.
             kind="COLLECTION", gateway_id=ci.id, reference=ci.reference,
-            provider=ci.provider, provider_reference=ci.provider_reference,
-            amount=int(ci.amount), confirmed_at=confirmed,
-        ))
+            provider=ci.provider, provider_reference=ci.provider_reference,  # Continue the structured value.
+            amount=int(ci.amount), confirmed_at=confirmed,  # Continue the structured value.
+        ))  # Execute the module statement.
     for po in payouts.only(  # Iterate over paid payouts using only the required columns.
         "id", "reference", "provider", "provider_reference", "amount", "confirmed_at",
-    ):
+    ):  # Start the nested execution block.
         confirmed = po.confirmed_at  # Confirmation timestamp for the payout.
         if not _date_in_window(confirmed, start_date, end_date):  # Skip rows outside the window.
-            continue
+            continue  # Skip to the next loop iteration.
         rows.append(SettlementRow(  # Payouts are negative signed movements.
             kind="PAYOUT", gateway_id=po.id, reference=po.reference,
-            provider=po.provider, provider_reference=po.provider_reference,
-            amount=-int(po.amount), confirmed_at=confirmed,
-        ))
+            provider=po.provider, provider_reference=po.provider_reference,  # Continue the structured value.
+            amount=-int(po.amount), confirmed_at=confirmed,  # Continue the structured value.
+        ))  # Execute the module statement.
 
     bank_qs = BankStatementLine.objects.filter(bank_account__entity=entity)  # Fetch bank lines for the same entity.
     if start_date is not None:  # Apply the start date filter only when provided.
@@ -165,7 +165,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
         bank_qs = bank_qs.filter(txn_date__lte=end_date)  # Inclusive upper bound.
     bank_lines = list(bank_qs.only(  # Materialize the bank lines for matching.
         "id", "bank_account_id", "txn_date", "description", "reference", "amount",
-    ))
+    ))  # Execute the module statement.
 
     # Index bank lines by reference and by signed amount for two-pass matching.  # Build lookup tables up front.
     by_reference: dict[str, list] = {}  # Reference -> candidate lines.
@@ -177,7 +177,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
 
     consumed: set[int] = set()  # Bank line ids already matched.
 
-    def _take(candidates):
+    def _take(candidates):  # Define the callable used by this module.
         for cand in candidates:  # Walk candidate matches in order.
             if cand.id not in consumed:  # Skip already matched bank lines.
                 consumed.add(cand.id)  # Mark the line as used.
@@ -202,7 +202,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
     # Pass 2: exact signed-amount match for anything still open.  # Fall back to amount matching.
     for row in rows:  # Revisit only the rows still unmatched.
         if row.settled:  # Skip rows already resolved by reference.
-            continue
+            continue  # Skip to the next loop iteration.
         cand = _take(by_amount.get(row.amount, []))  # Find a bank line with the exact signed amount.
         if cand is not None:  # Amount match found.
             row.matched_bank_line_id = cand.id  # Link the bank line.
@@ -214,28 +214,28 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
             row.settlement_description = cand.description  # Store the bank description.
 
     unmatched = [  # Any bank line not consumed by the two passes remains unexplained.
-        UnmatchedBankLine(
-            bank_line_id=line.id, bank_account_id=line.bank_account_id,
-            txn_date=line.txn_date, description=line.description,
-            reference=line.reference, amount=int(line.amount),
-        )
+        UnmatchedBankLine(  # Continue the structured value.
+            bank_line_id=line.id, bank_account_id=line.bank_account_id,  # Continue the structured value.
+            txn_date=line.txn_date, description=line.description,  # Continue the structured value.
+            reference=line.reference, amount=int(line.amount),  # Continue the structured value.
+        )  # Close the grouped expression.
         for line in bank_lines if line.id not in consumed  # Preserve only unmatched bank lines.
-    ]
+    ]  # Close the grouped expression.
 
     return SettlementReconciliation(  # Return the full reconciliation snapshot.
-        entity_id=entity.id, entity_code=entity.code,
+        entity_id=entity.id, entity_code=entity.code,  # Continue the structured value.
         start_date=start_date, end_date=end_date, provider=provider or "",
-        rows=rows, unmatched_bank_lines=unmatched,
-    )
+        rows=rows, unmatched_bank_lines=unmatched,  # Continue the structured value.
+    )  # Close the grouped expression.
 
 
-def _date_in_window(value, start_date, end_date):
+def _date_in_window(value, start_date, end_date):  # Define the callable used by this module.
     """True if a (datetime) confirmation falls within the inclusive date window."""
     if value is None:  # Missing dates only match when the caller supplied no window.
-        return start_date is None and end_date is None
+        return start_date is None and end_date is None  # Return the computed module result.
     day = value.date() if hasattr(value, "date") else value  # Normalize datetimes to plain dates.
     if start_date is not None and day < start_date:  # Respect the lower bound when provided.
-        return False
+        return False  # Return the computed module result.
     if end_date is not None and day > end_date:  # Respect the upper bound when provided.
-        return False
+        return False  # Return the computed module result.
     return True  # The date falls within the inclusive window.
