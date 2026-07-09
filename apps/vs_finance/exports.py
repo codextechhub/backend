@@ -8,22 +8,22 @@ describe its columns once, and a new format only has to be written once.
 Money is rendered as human-facing naira strings in exports (the JSON API carries the
 exact kobo); callers pass already-formatted strings in the cells.
 """
-from __future__ import annotations
+from __future__ import annotations  # Defer annotations for lightweight imports.
 
-import csv
-import io
-from dataclasses import dataclass, field
+import csv  # Standard CSV writer for comma-separated exports.
+import io  # In-memory text and byte buffers for generated files.
+from dataclasses import dataclass, field  # Compact table data container.
 
 #: Supported export formats → (extension, MIME content type).
-EXPORT_FORMATS = {
-    "csv": ("csv", "text/csv"),
-    "xlsx": ("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-    "pdf": ("pdf", "application/pdf"),
+EXPORT_FORMATS = {  # Public map of supported export format metadata.
+    "csv": ("csv", "text/csv"),  # CSV extension and MIME type.
+    "xlsx": ("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),  # Excel extension and MIME type.
+    "pdf": ("pdf", "application/pdf"),  # PDF extension and MIME type.
 }
 
 
 @dataclass
-class ReportTable:
+class ReportTable:  # Renderer-neutral table representation.
     """A renderer-neutral rectangular report.
 
     ``rows`` and ``summary_rows`` are lists of cells (str/number); ``summary_rows`` are
@@ -31,133 +31,133 @@ class ReportTable:
     optional second heading line (e.g. the entity + period).
     """
 
-    title: str
-    columns: list[str]
-    rows: list[list] = field(default_factory=list)
-    summary_rows: list[list] = field(default_factory=list)
-    subtitle: str = ""
+    title: str  # Main report heading.
+    columns: list[str]  # Column labels shared by all renderers.
+    rows: list[list] = field(default_factory=list)  # Body rows.
+    summary_rows: list[list] = field(default_factory=list)  # Emphasized total/summary rows.
+    subtitle: str = ""  # Optional second heading line.
 
     @property
-    def all_rows(self) -> list[list]:
-        return list(self.rows) + list(self.summary_rows)
+    def all_rows(self) -> list[list]:  # Combine body and summary rows for renderers.
+        return list(self.rows) + list(self.summary_rows)  # Return copies to avoid mutating source lists.
 
 
-def to_csv(table: ReportTable) -> bytes:
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow([table.title])
-    if table.subtitle:
-        writer.writerow([table.subtitle])
-    writer.writerow([])
-    writer.writerow(table.columns)
-    for row in table.rows:
-        writer.writerow(row)
-    if table.summary_rows:
-        writer.writerow([])
-        for row in table.summary_rows:
-            writer.writerow(row)
-    return buf.getvalue().encode("utf-8")
+def to_csv(table: ReportTable) -> bytes:  # Render a report table to UTF-8 CSV bytes.
+    buf = io.StringIO()  # Hold CSV text before encoding.
+    writer = csv.writer(buf)  # Use Python's CSV escaping rules.
+    writer.writerow([table.title])  # First row is the report title.
+    if table.subtitle:  # Include subtitle only when provided.
+        writer.writerow([table.subtitle])  # Second row is the subtitle.
+    writer.writerow([])  # Blank separator before headers.
+    writer.writerow(table.columns)  # Write column headers.
+    for row in table.rows:  # Write normal body rows.
+        writer.writerow(row)  # Preserve caller-supplied cell values.
+    if table.summary_rows:  # Add a visual break before totals.
+        writer.writerow([])  # Blank separator before summary rows.
+        for row in table.summary_rows:  # Write emphasized rows without CSV styling.
+            writer.writerow(row)  # CSV cannot carry bold style, so values only.
+    return buf.getvalue().encode("utf-8")  # Return encoded bytes for HTTP response.
 
 
-def to_xlsx(table: ReportTable) -> bytes:
-    from openpyxl import Workbook
-    from openpyxl.styles import Font
+def to_xlsx(table: ReportTable) -> bytes:  # Render a report table to Excel workbook bytes.
+    from openpyxl import Workbook  # Imported lazily so CSV users do not require openpyxl at import.
+    from openpyxl.styles import Font  # Used for title, header, and summary emphasis.
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = (table.title[:28] or "Report")
+    wb = Workbook()  # Create a single-workbook export.
+    ws = wb.active  # Use the default worksheet.
+    ws.title = (table.title[:28] or "Report")  # Excel sheet names are limited; keep a safe title.
 
-    bold = Font(bold=True)
-    ws.append([table.title])
-    ws["A1"].font = bold
-    if table.subtitle:
-        ws.append([table.subtitle])
-    ws.append([])
+    bold = Font(bold=True)  # Reusable bold font style.
+    ws.append([table.title])  # First row is the report title.
+    ws["A1"].font = bold  # Emphasize the title.
+    if table.subtitle:  # Include subtitle only when provided.
+        ws.append([table.subtitle])  # Second row is the subtitle.
+    ws.append([])  # Blank separator before headers.
 
-    header_row = ws.max_row + 1
-    ws.append(table.columns)
-    for cell in ws[header_row]:
-        cell.font = bold
+    header_row = ws.max_row + 1  # Capture the row index that will hold headers.
+    ws.append(table.columns)  # Write column labels.
+    for cell in ws[header_row]:  # Style every header cell.
+        cell.font = bold  # Make headers bold.
 
-    for row in table.rows:
-        ws.append(row)
-    for row in table.summary_rows:
-        ws.append(row)
-        for cell in ws[ws.max_row]:
-            cell.font = bold
+    for row in table.rows:  # Append body rows.
+        ws.append(row)  # Preserve caller-supplied values.
+    for row in table.summary_rows:  # Append total/summary rows.
+        ws.append(row)  # Add summary row values.
+        for cell in ws[ws.max_row]:  # Style the row just appended.
+            cell.font = bold  # Emphasize summary rows.
 
-    # Roughly autosize columns to their widest cell.
-    for idx, _col in enumerate(table.columns, start=1):
-        from openpyxl.utils import get_column_letter
-        letter = get_column_letter(idx)
-        widest = max(
-            [len(str(table.columns[idx - 1]))]
-            + [len(str(r[idx - 1])) for r in table.all_rows if idx - 1 < len(r)]
-            or [10]
+    # Roughly autosize columns to their widest cell.  # Improves readability without complex layout.
+    for idx, _col in enumerate(table.columns, start=1):  # Walk each report column.
+        from openpyxl.utils import get_column_letter  # Imported lazily with xlsx rendering.
+        letter = get_column_letter(idx)  # Convert 1-based index to Excel column letter.
+        widest = max(  # Compute the widest visible value in this column.
+            [len(str(table.columns[idx - 1]))]  # Include header width.
+            + [len(str(r[idx - 1])) for r in table.all_rows if idx - 1 < len(r)]  # Include row cell widths when present.
+            or [10]  # Defensive fallback width.
         )
-        ws.column_dimensions[letter].width = min(max(widest + 2, 10), 48)
+        ws.column_dimensions[letter].width = min(max(widest + 2, 10), 48)  # Clamp to a usable width range.
 
-    out = io.BytesIO()
-    wb.save(out)
-    return out.getvalue()
+    out = io.BytesIO()  # Store workbook bytes in memory.
+    wb.save(out)  # Serialize workbook into the byte buffer.
+    return out.getvalue()  # Return xlsx bytes for HTTP response.
 
 
-def to_pdf(table: ReportTable) -> bytes:
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import (
-        Paragraph,
-        SimpleDocTemplate,
-        Spacer,
-        Table,
-        TableStyle,
+def to_pdf(table: ReportTable) -> bytes:  # Render a report table to PDF bytes.
+    from reportlab.lib import colors  # Color constants and helpers for table styling.
+    from reportlab.lib.pagesizes import A4, landscape  # Landscape A4 report page.
+    from reportlab.lib.styles import getSampleStyleSheet  # Built-in paragraph styles.
+    from reportlab.platypus import (  # Flowable document building blocks.
+        Paragraph,  # Text block flowable.
+        SimpleDocTemplate,  # Minimal PDF document wrapper.
+        Spacer,  # Vertical spacing flowable.
+        Table,  # Tabular PDF flowable.
+        TableStyle,  # Table styling descriptor.
     )
 
-    out = io.BytesIO()
-    doc = SimpleDocTemplate(out, pagesize=landscape(A4), title=table.title)
-    styles = getSampleStyleSheet()
-    story = [Paragraph(table.title, styles["Title"])]
-    if table.subtitle:
-        story.append(Paragraph(table.subtitle, styles["Normal"]))
-    story.append(Spacer(1, 12))
+    out = io.BytesIO()  # Store PDF bytes in memory.
+    doc = SimpleDocTemplate(out, pagesize=landscape(A4), title=table.title)  # Configure landscape PDF document.
+    styles = getSampleStyleSheet()  # Load ReportLab default text styles.
+    story = [Paragraph(table.title, styles["Title"])]  # Start document with title.
+    if table.subtitle:  # Include subtitle only when provided.
+        story.append(Paragraph(table.subtitle, styles["Normal"]))  # Add subtitle under the title.
+    story.append(Spacer(1, 12))  # Add spacing before the table.
 
-    data = [table.columns] + [[str(c) for c in r] for r in table.all_rows]
-    pdf_table = Table(data, repeatRows=1)
-    style = [
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#d1d5db")),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f3f4f6")]),
+    data = [table.columns] + [[str(c) for c in r] for r in table.all_rows]  # Convert all cells to PDF-safe strings.
+    pdf_table = Table(data, repeatRows=1)  # Repeat headers across pages.
+    style = [  # Base table style.
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1f2937")),  # Dark header background.
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),  # White header text.
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),  # Bold header font.
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#d1d5db")),  # Light grid around cells.
+        ("FONTSIZE", (0, 0), (-1, -1), 8),  # Compact report font size.
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f3f4f6")]),  # Alternating body backgrounds.
     ]
-    # Bold the summary rows at the bottom.
-    n_summary = len(table.summary_rows)
-    if n_summary:
-        first = len(data) - n_summary
-        style.append(("FONTNAME", (0, first), (-1, -1), "Helvetica-Bold"))
-        style.append(("LINEABOVE", (0, first), (-1, first), 0.8, colors.black))
-    pdf_table.setStyle(TableStyle(style))
-    story.append(pdf_table)
+    # Bold the summary rows at the bottom.  # Makes totals stand out.
+    n_summary = len(table.summary_rows)  # Count summary rows for bottom styling.
+    if n_summary:  # Apply summary styling only when summary rows exist.
+        first = len(data) - n_summary  # First summary row index in the PDF table.
+        style.append(("FONTNAME", (0, first), (-1, -1), "Helvetica-Bold"))  # Bold every summary cell.
+        style.append(("LINEABOVE", (0, first), (-1, first), 0.8, colors.black))  # Draw separator above totals.
+    pdf_table.setStyle(TableStyle(style))  # Attach style instructions to the table.
+    story.append(pdf_table)  # Add the table to the PDF story.
 
-    doc.build(story)
-    return out.getvalue()
-
-
-_RENDERERS = {"csv": to_csv, "xlsx": to_xlsx, "pdf": to_pdf}
+    doc.build(story)  # Render the PDF document into the buffer.
+    return out.getvalue()  # Return PDF bytes for HTTP response.
 
 
-def render(table: ReportTable, fmt: str) -> tuple[bytes, str, str]:
+_RENDERERS = {"csv": to_csv, "xlsx": to_xlsx, "pdf": to_pdf}  # Dispatch table for supported renderers.
+
+
+def render(table: ReportTable, fmt: str) -> tuple[bytes, str, str]:  # Render a report in the requested format.
     """Render ``table`` in ``fmt`` → ``(body, content_type, file_extension)``.
 
     Raises :class:`ValueError` for an unsupported format (the view turns this into a
     400). The filename is the caller's concern; only the extension is returned here.
     """
-    fmt = (fmt or "").lower()
-    if fmt not in _RENDERERS:
+    fmt = (fmt or "").lower()  # Normalize missing and mixed-case format values.
+    if fmt not in _RENDERERS:  # Reject unsupported export formats early.
         raise ValueError(
             f"Unsupported export format '{fmt}'. Choose one of: {', '.join(EXPORT_FORMATS)}."
         )
-    extension, content_type = EXPORT_FORMATS[fmt]
-    return _RENDERERS[fmt](table), content_type, extension
+    extension, content_type = EXPORT_FORMATS[fmt]  # Look up HTTP metadata for this format.
+    return _RENDERERS[fmt](table), content_type, extension  # Render and return body plus metadata.
