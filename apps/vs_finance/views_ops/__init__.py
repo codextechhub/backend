@@ -19,7 +19,7 @@ from .base import (  # noqa: F401  — underscore helpers used by views_ar.py  #
     _resolve_fiscal_year,  # Fiscal year resolver helper.
     _resolve_tax,  # Tax code resolver helper.
     _signed_money,  # Signed kobo/money request parser.
-)
+)  # Close the grouped expression.
 from .masterdata import *  # noqa: F401,F403  # Re-export master-data endpoints.
 from .banking import *     # noqa: F401,F403  # Re-export banking endpoints.
 from .expenses import *    # noqa: F401,F403  # Re-export expense endpoints.
