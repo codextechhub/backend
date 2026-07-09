@@ -27,7 +27,7 @@ from django.db import transaction  # Keeps AR adjustment mutations atomic.
 
 from .accounts import resolve_account  # Resolves default control/expense accounts.
 from .audit import record, record_rejection  # Finance audit helpers.
-from .constants import (
+from .constants import (  # Import project symbols used by this module.
     BAD_DEBT_EXPENSE_CODE,  # Default bad-debt/write-off expense account code.
     CUSTOMER_CREDIT_CODE,  # Customer credit liability account code.
     CreditNoteKind,  # Credit/debit note kind enum.
@@ -35,7 +35,7 @@ from .constants import (
     FinanceAuditAction,  # Audit action enum values.
     InvoicePaymentStatus,  # Invoice settlement status enum.
     JournalSource,  # Journal source enum values.
-)
+)  # Close the grouped expression.
 from .exceptions import FinanceError, PostingError  # Base finance and posting errors.
 from .posting import post_journal, resolve_period  # GL posting and period resolution helpers.
 from .receivables import _build_invoice_plan, compute_line_net, compute_tax  # AR allocation and pricing helpers.
@@ -76,20 +76,20 @@ def post_credit_note(note, *, actor_user=None, auto_allocate=False, allocations=
         return _post_credit_note_atomic(  # Post the note.
             note, actor_user=actor_user,  # Acting user.
             auto_allocate=auto_allocate, allocations=allocations,  # Allocation mode.
-        )
+        )  # Close the grouped expression.
     except FinanceError as exc:  # Failed notes should be auditable.
         action = (  # Choose audit action based on note direction.
             FinanceAuditAction.DEBIT_NOTE_POSTED if note.kind == CreditNoteKind.DEBIT  # Debit-note failure action.
             else FinanceAuditAction.CREDIT_NOTE_POSTED  # Credit-note failure action.
-        )
+        )  # Close the grouped expression.
         record_rejection(  # Record durable rejection.
             entity=note.entity, action=action,  # Entity and selected action.
             exc=exc, actor_user=actor_user, target=note,  # Error, actor, and target context.
-        )
+        )  # Close the grouped expression.
         raise  # Preserve original finance exception.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allocations=None):  # Transactional note posting.
     """Post a draft credit/debit note: raise its AR journal (and, for a credit, settle
     invoices) in one transaction.
@@ -132,17 +132,17 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
     from .models import JournalEntry, JournalLine  # Journal models used for AR adjustment.
 
     if note.status != DocumentStatus.DRAFT:  # Only draft notes can post.
-        raise PostingError(
+        raise PostingError(  # Raise the domain error for this path.
             f"Credit note {note.document_number or note.pk} is '{note.status}', "
             f"only a draft note can be posted.",
-        )
+        )  # Close the grouped expression.
 
     customer = note.customer  # Customer drives AR control account.
     ar_account = customer.receivable_account  # Customer AR account.
     if ar_account is None:  # AR side cannot post without a control account.
-        raise PostingError(
+        raise PostingError(  # Raise the domain error for this path.
             f"Customer {customer.code} has no receivable (AR control) account set.",
-        )
+        )  # Close the grouped expression.
 
     price_credit_note(note)  # Ensure note totals are current before posting.
     if note.total <= 0:  # Note must move a positive amount.
@@ -157,7 +157,7 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
         source=JournalSource.SALES, currency=note.currency,  # Sales-side AR adjustment.
         narration=note.reason or f"{label} {note.document_number or ''}".strip(),  # Reason/narration.
         reference=note.reference, created_by=actor_user,  # External reference and actor.
-    )
+    )  # Close the grouped expression.
 
     # Group revenue + tax by account so the journal stays tidy.
     # Revenue grouped by (account, cost centre) so the cost-centre split survives into
@@ -168,17 +168,17 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
     tax_objs: dict[int, object] = {}  # Tax account objects.
     for line in note.lines.select_related(  # Load posting targets for each note line.
         "revenue_account", "tax_code__collected_account", "cost_center",  # Revenue, tax, and analytics relations.
-    ):
+    ):  # Start the nested execution block.
         key = (line.revenue_account_id, line.cost_center_id)  # Revenue grouping key.
         revenue_by_key[key] += line.net_amount  # Accumulate net amount.
         revenue_objs[key] = (line.revenue_account, line.cost_center)  # Store objects for journal lines.
         if line.tax_amount:  # Tax-bearing lines require output tax account.
             tax_acc = line.tax_code.collected_account if line.tax_code_id else None  # Resolve output tax account.
             if tax_acc is None:  # Cannot post tax without a collected account.
-                raise PostingError(
+                raise PostingError(  # Raise the domain error for this path.
                     f"Tax code '{line.tax_code.code}' has no collected (output) account set."
                     if line.tax_code_id else "Tax amount present without a tax code.",
-                )
+                )  # Close the grouped expression.
             tax_by_account[tax_acc.id] += line.tax_amount  # Accumulate output tax amount.
             tax_objs[tax_acc.id] = tax_acc  # Store tax account object.
 
@@ -189,22 +189,22 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
         JournalLine.objects.create(  # Debit AR for gross note total.
             entry=entry, account=ar_account, debit=note.total, credit=0,  # Dr receivables.
             description=f"AR: {customer.code}", line_no=line_no,  # Label and order.
-        )
+        )  # Close the grouped expression.
         for (acc_id, cc_id), amount in revenue_by_key.items():  # Emit grouped revenue credits.
             if amount == 0:  # Skip empty groups.
-                continue
+                continue  # Skip to the next loop iteration.
             line_no += 1  # Advance line number.
             revenue_account, cost_center = revenue_objs[(acc_id, cc_id)]  # Retrieve posting objects.
             JournalLine.objects.create(  # Credit revenue.
                 entry=entry, account=revenue_account, debit=0, credit=amount,  # Cr revenue.
                 description="Revenue", cost_center=cost_center, line_no=line_no,  # Preserve cost center.
-            )
+            )  # Close the grouped expression.
         for acc_id, amount in tax_by_account.items():  # Emit grouped output tax credits.
             line_no += 1  # Advance line number.
             JournalLine.objects.create(  # Credit output tax payable.
                 entry=entry, account=tax_objs[acc_id], debit=0, credit=amount,  # Cr output tax.
                 description="Output tax", line_no=line_no,  # Label and order.
-            )
+            )  # Close the grouped expression.
         applied = 0  # Debit notes are never allocated to invoices.
     else:  # Credit note gives value back.
         # Dr revenue/returns + Dr output tax — give value back. The credit settles
@@ -212,19 +212,19 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
         # customer-credit liability (Cr 2140) so AR never carries a credit balance.  # Keep AR non-negative.
         for (acc_id, cc_id), amount in revenue_by_key.items():  # Emit grouped revenue/return debits.
             if amount == 0:  # Skip empty groups.
-                continue
+                continue  # Skip to the next loop iteration.
             line_no += 1  # Advance line number.
             revenue_account, cost_center = revenue_objs[(acc_id, cc_id)]  # Retrieve posting objects.
             JournalLine.objects.create(  # Debit revenue/returns.
                 entry=entry, account=revenue_account, debit=amount, credit=0,  # Dr revenue/returns.
                 description="Revenue / returns", cost_center=cost_center, line_no=line_no,  # Preserve cost center.
-            )
+            )  # Close the grouped expression.
         for acc_id, amount in tax_by_account.items():  # Emit grouped tax reversals.
             line_no += 1  # Advance line number.
             JournalLine.objects.create(  # Debit output tax payable.
                 entry=entry, account=tax_objs[acc_id], debit=amount, credit=0,  # Dr output tax.
                 description="Output tax reversal", line_no=line_no,  # Label and order.
-            )
+            )  # Close the grouped expression.
         plan = _build_invoice_plan(customer, allocations) if (allocations is not None or auto_allocate) else []  # Build allocation plan.
         applied, _created = _apply_creditnote_subledger(note, plan, remaining=note.total)  # Apply credit to invoices.
         excess = note.total - applied  # Unapplied credit becomes customer-credit liability.
@@ -233,13 +233,13 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
             JournalLine.objects.create(  # Credit AR for applied portion.
                 entry=entry, account=ar_account, debit=0, credit=applied,  # Cr receivables.
                 description=f"AR: {customer.code}", line_no=line_no,  # Label and order.
-            )
+            )  # Close the grouped expression.
         if excess > 0:  # Unapplied credit creates a liability.
             line_no += 1  # Advance line number.
             JournalLine.objects.create(  # Credit customer-credit liability.
                 entry=entry, account=resolve_account(note.entity, CUSTOMER_CREDIT_CODE, label="customer credit"),  # Resolve liability account.
                 debit=0, credit=excess, description=f"Customer credit: {customer.code}", line_no=line_no,  # Cr customer credit.
-            )
+            )  # Close the grouped expression.
 
     post_journal(entry, actor_user=actor_user)  # Validate and post note journal.
 
@@ -258,7 +258,7 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
         actor_user=actor_user, target=note,  # Actor and target context.
         message=f"Posted {label.lower()} for {customer.code} ({note.total} kobo).",  # Summary.
         journal_id=entry.pk, total=note.total, note_kind=note.kind,  # Structured metadata.
-    )
+    )  # Close the grouped expression.
     return note  # Return posted note.
 
 
@@ -271,13 +271,13 @@ def _apply_creditnote_subledger(note, plan, *, remaining):  # Apply credit-note 
     applied, created = 0, []  # Track total applied and touched allocation rows.
     for invoice, requested in plan:  # Walk requested allocation plan.
         if remaining <= 0:  # Stop when note value is exhausted.
-            break
+            break  # Exit the current loop.
         apply_amount = min(int(requested), invoice.balance_due, remaining)  # Cap by request, balance, and remaining credit.
         if apply_amount <= 0:  # Skip zero/negative allocations.
-            continue
+            continue  # Skip to the next loop iteration.
         alloc, _was = CreditNoteAllocation.objects.get_or_create(  # Reuse existing allocation row when present.
             note=note, invoice=invoice, defaults={"amount": 0},  # Unique note/invoice allocation.
-        )
+        )  # Close the grouped expression.
         alloc.amount += apply_amount  # Increase allocated amount.
         alloc.save(update_fields=["amount", "updated_at"])  # Persist allocation row.
 
@@ -294,7 +294,7 @@ def _apply_creditnote_subledger(note, plan, *, remaining):  # Apply credit-note 
     return applied, created  # Return applied total and allocation rows.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def allocate_credit_note(note, *, allocations=None, actor_user=None):  # Allocate stored credit-note liability to invoices.
     """Apply a posted CREDIT note's **stored customer credit** to invoices.
 
@@ -312,12 +312,12 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):  # Allocat
 
     remaining = note.unallocated_amount  # Customer-credit liability still available.
     if remaining <= 0:  # Nothing left to allocate.
-        return []
+        return []  # Return the computed module result.
 
     plan = _build_invoice_plan(note.customer, allocations)  # Build explicit or oldest-first invoice plan.
     applied, created = _apply_creditnote_subledger(note, plan, remaining=remaining)  # Apply credit to invoices.
     if applied <= 0:  # No invoice received value.
-        return []
+        return []  # Return the computed module result.
 
     customer = note.customer  # Customer whose credit is applied.
     period = resolve_period(note.entity, note.note_date)  # Resolve allocation period.
@@ -327,15 +327,15 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):  # Allocat
         source=JournalSource.SALES, currency=note.currency,  # Sales-side reclassification.
         narration=f"Apply customer credit: {customer.code}",  # Journal narration.
         reference=note.reference, created_by=actor_user,  # Reference and actor.
-    )
+    )  # Close the grouped expression.
     JournalLine.objects.create(  # Debit customer-credit liability.
         entry=entry, account=resolve_account(note.entity, CUSTOMER_CREDIT_CODE, label="customer credit"),  # Resolve liability account.
         debit=applied, credit=0, description=f"Customer credit applied: {customer.code}", line_no=1,  # Dr customer credit.
-    )
+    )  # Close the grouped expression.
     JournalLine.objects.create(  # Credit AR to settle invoices.
         entry=entry, account=customer.receivable_account, debit=0, credit=applied,  # Cr receivables.
         description=f"AR: {customer.code}", line_no=2,  # Label and order.
-    )
+    )  # Close the grouped expression.
     post_journal(entry, actor_user=actor_user)  # Validate and post allocation journal.
 
     note.allocated_amount += applied  # Increase allocated credit-note amount.
@@ -346,7 +346,7 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):  # Allocat
         actor_user=actor_user, target=note,  # Actor and target context.
         message=f"Applied {applied} kobo customer credit across {len(created)} invoice(s).",  # Summary.
         journal_id=entry.pk, allocated=note.allocated_amount, unallocated=note.unallocated_amount,  # Structured metadata.
-    )
+    )  # Close the grouped expression.
     return created  # Return allocation rows touched.
 
 
@@ -367,11 +367,11 @@ def post_refund(refund, *, actor_user=None):  # Public wrapper for customer refu
         record_rejection(  # Record durable rejection.
             entity=refund.entity, action=FinanceAuditAction.REFUND_POSTED,  # Audit action.
             exc=exc, actor_user=actor_user, target=refund,  # Error, actor, and target context.
-        )
+        )  # Close the grouped expression.
         raise  # Preserve original finance exception.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def _post_refund_atomic(refund, *, actor_user=None):  # Transactional customer refund implementation.
     """Post a draft refund: raise its bank journal and mark it POSTED.
     Steps:
@@ -384,10 +384,10 @@ def _post_refund_atomic(refund, *, actor_user=None):  # Transactional customer r
     from .models import JournalEntry, JournalLine  # Journal models used for refund entry.
 
     if refund.status != DocumentStatus.DRAFT:  # Only draft refunds can post.
-        raise PostingError(
+        raise PostingError(  # Raise the domain error for this path.
             f"Refund {refund.document_number or refund.pk} is '{refund.status}', "
             f"only a draft refund can be posted.",
-        )
+        )  # Close the grouped expression.
     if refund.amount <= 0:  # Refund must pay a positive amount.
         raise PostingError("A refund must have a positive amount to post.")
 
@@ -396,14 +396,14 @@ def _post_refund_atomic(refund, *, actor_user=None):  # Transactional customer r
     from .receivables import customer_credit_balance  # Local import avoids broader dependency at module import.
     available = customer_credit_balance(customer)  # Current refundable credit balance.
     if refund.amount > available:  # Refund cannot exceed stored customer credit.
-        raise PostingError(
+        raise PostingError(  # Raise the domain error for this path.
             f"Refund of {refund.amount} kobo exceeds {customer.code}'s available "
             f"credit ({available} kobo).",
-        )
+        )  # Close the grouped expression.
 
     deposit = refund.deposit_account or (  # Resolve bank/deposit account to credit.
         refund.bank_account.gl_account if refund.bank_account_id else None  # Fallback from selected bank account.
-    )
+    )  # Close the grouped expression.
     if deposit is None:  # Refund needs a payment source account.
         raise PostingError("Refund has no bank/deposit account to pay from.")
 
@@ -414,15 +414,15 @@ def _post_refund_atomic(refund, *, actor_user=None):  # Transactional customer r
         source=JournalSource.BANK, currency=refund.currency,  # Bank-source cash payment.
         narration=refund.narration or f"Refund {refund.document_number or ''}".strip(),  # Narration.
         reference=refund.reference, created_by=actor_user,  # Reference and actor.
-    )
+    )  # Close the grouped expression.
     JournalLine.objects.create(  # Debit customer-credit liability.
         entry=entry, account=resolve_account(refund.entity, CUSTOMER_CREDIT_CODE, label="customer credit"),  # Resolve liability.
         debit=refund.amount, credit=0, description=f"Refund: {customer.code}", line_no=1,  # Dr customer credit.
-    )
+    )  # Close the grouped expression.
     JournalLine.objects.create(  # Credit bank/deposit account.
         entry=entry, account=deposit, debit=0, credit=refund.amount,  # Cr cash/bank.
         description=f"Refund paid: {customer.code}", line_no=2,  # Label and order.
-    )
+    )  # Close the grouped expression.
     post_journal(entry, actor_user=actor_user)  # Validate and post refund journal.
 
     refund.journal = entry  # Link refund to journal.
@@ -435,7 +435,7 @@ def _post_refund_atomic(refund, *, actor_user=None):  # Transactional customer r
         actor_user=actor_user, target=refund,  # Actor and target context.
         message=f"Refunded {refund.amount} kobo to {customer.code}.",  # Summary.
         journal_id=entry.pk, amount=refund.amount,  # Structured metadata.
-    )
+    )  # Close the grouped expression.
     return refund  # Return posted refund.
 
 
@@ -443,7 +443,7 @@ def _post_refund_atomic(refund, *, actor_user=None):  # Transactional customer r
 # Bad-debt write-off                                                           #
 # --------------------------------------------------------------------------- #
 
-def write_off_invoice(invoice, *, amount=None, write_off_account=None,
+def write_off_invoice(invoice, *, amount=None, write_off_account=None,  # Define the callable used by this module.
                       write_off_date=None, narration="", actor_user=None):  # Public wrapper for invoice write-off.
     """Write off an uncollectable invoice balance as bad debt.
 
@@ -456,25 +456,25 @@ def write_off_invoice(invoice, *, amount=None, write_off_account=None,
         return _write_off_invoice_atomic(  # Write off invoice balance.
             invoice, amount=amount, write_off_account=write_off_account,  # Amount and optional account.
             write_off_date=write_off_date, narration=narration, actor_user=actor_user,  # Date, narration, actor.
-        )
+        )  # Close the grouped expression.
     except FinanceError as exc:  # Failed write-offs should be auditable.
         record_rejection(  # Record durable rejection.
             entity=invoice.entity, action=FinanceAuditAction.INVOICE_WRITTEN_OFF,  # Audit action.
             exc=exc, actor_user=actor_user, target=invoice,  # Error, actor, and target context.
-        )
+        )  # Close the grouped expression.
         raise  # Preserve original finance exception.
 
 
-@transaction.atomic
-def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
+@transaction.atomic  # Apply the decorator to this callable.
+def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,  # Define the callable used by this module.
                               write_off_date=None, narration="", actor_user=None):  # Transactional bad-debt write-off.
     from .models import JournalEntry, JournalLine  # Journal models used for write-off entry.
 
     if invoice.status != DocumentStatus.POSTED:  # Only posted invoices have AR balances.
-        raise PostingError(
+        raise PostingError(  # Raise the domain error for this path.
             f"Invoice {invoice.document_number or invoice.pk} is '{invoice.status}'; "
             f"only a posted invoice can be written off.",
-        )
+        )  # Close the grouped expression.
 
     balance = invoice.balance_due  # Current outstanding invoice balance.
     if balance <= 0:  # Fully settled invoices cannot be written off.
@@ -483,10 +483,10 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
     if amount <= 0:  # Write-off must clear a positive amount.
         raise PostingError("Write-off amount must be positive.")
     if amount > balance:  # Cannot write off more than outstanding.
-        raise PostingError(
+        raise PostingError(  # Raise the domain error for this path.
             f"Write-off amount ({amount} kobo) exceeds the outstanding balance "
             f"({balance} kobo).",
-        )
+        )  # Close the grouped expression.
 
     customer = invoice.customer  # Customer controls AR account.
     ar_account = customer.receivable_account  # AR control account.
@@ -495,7 +495,7 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
 
     expense = write_off_account or resolve_account(  # Use explicit write-off account or default.
         invoice.entity, BAD_DEBT_EXPENSE_CODE, label="bad-debt expense",  # Resolve bad-debt expense account.
-    )
+    )  # Close the grouped expression.
     when = write_off_date or invoice.invoice_date  # Default write-off date to invoice date.
     period = resolve_period(invoice.entity, when)  # Resolve write-off period.
     entry = JournalEntry.objects.create(  # Create bad-debt journal header.
@@ -503,15 +503,15 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
         date=when, period=period, source=JournalSource.SALES,  # Sales-side AR adjustment.
         narration=narration or f"Write-off {invoice.document_number or ''}".strip(),  # Narration.
         created_by=actor_user,  # Posting actor.
-    )
+    )  # Close the grouped expression.
     JournalLine.objects.create(  # Debit bad-debt/write-off expense.
         entry=entry, account=expense, debit=amount, credit=0,  # Dr bad debt.
         description=f"Bad debt: {customer.code}", line_no=1,  # Label and order.
-    )
+    )  # Close the grouped expression.
     JournalLine.objects.create(  # Credit AR to clear invoice balance.
         entry=entry, account=ar_account, debit=0, credit=amount,  # Cr receivables.
         description=f"AR write-off: {customer.code}", line_no=2,  # Label and order.
-    )
+    )  # Close the grouped expression.
     post_journal(entry, actor_user=actor_user)  # Validate and post write-off journal.
 
     invoice.amount_credited += amount  # Increase non-cash settlement.
@@ -528,7 +528,7 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
                 f"for {customer.code}.",  # Customer context.
         journal_id=entry.pk, amount=amount, balance_after=invoice.balance_due,  # Journal and balance metadata.
         narration=narration or "", customer_code=customer.code, customer_name=customer.name,  # Extra audit context.
-    )
+    )  # Close the grouped expression.
     return entry  # Return posted write-off journal.
 
 
@@ -548,10 +548,10 @@ def post_write_off_request(wor, *, actor_user=None):  # Post an approved/draft w
     path that rollback leaves the request non-POSTED for a retry. Returns the request.
     """
     if wor.status not in (DocumentStatus.DRAFT, DocumentStatus.APPROVED):  # Request must be direct-postable or workflow-approved.
-        raise PostingError(
+        raise PostingError(  # Raise the domain error for this path.
             f"Write-off {wor.document_number or wor.pk} is '{wor.status}'; "
             f"only a draft or approved write-off request can be posted.",
-        )
+        )  # Close the grouped expression.
 
     entry = write_off_invoice(  # Delegate GL/accounting work to invoice write-off service.
         wor.invoice,  # Target invoice.
@@ -560,7 +560,7 @@ def post_write_off_request(wor, *, actor_user=None):  # Post an approved/draft w
         write_off_date=wor.write_off_date,  # Optional write-off date.
         narration=wor.narration,  # Request narration.
         actor_user=actor_user,  # Posting actor.
-    )
+    )  # Close the grouped expression.
 
     wor.journal = entry  # Link request to write-off journal.
     wor.status = DocumentStatus.POSTED  # Mark request posted.
