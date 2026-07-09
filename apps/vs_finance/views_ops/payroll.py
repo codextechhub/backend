@@ -478,8 +478,11 @@ class SalaryStructureDetailView(_FinanceBase):  # Class groups related finance A
             name = str(body["name"]).strip()  # Store intermediate finance value.
             if not name:  # Branch when this finance condition is true.
                 raise ValidationError({"name": "A structure name is required."})  # Surface validation or finance error.
-            if SalaryStructure.objects.filter(entity=entity, name__iexact=name) \
-                    .exclude(pk=structure.pk).exists():  # Store intermediate finance value.
+            if (  # Check whether another salary structure already uses this name.
+                SalaryStructure.objects.filter(entity=entity, name__iexact=name)  # Query matching salary structures.
+                .exclude(pk=structure.pk)  # Ignore the current salary structure.
+                .exists()  # Test whether a duplicate structure remains.
+            ):  # Start the duplicate-name validation block.
                 raise ValidationError({"name": "A structure with this name already exists."})  # Surface validation or finance error.
             structure.name = name  # Store intermediate finance value.
         if "description" in body:  # Branch when this finance condition is true.
