@@ -39,7 +39,7 @@ def notify_invoice_issued(invoice, *, actor_user=None):  # Send best-effort invo
     """
     try:  # Notification failures must never roll back invoice posting.
         if invoice.source == InvoiceSource.OPENING:  # Opening balance invoices are migration artefacts.
-            return None
+            return None  # Return the computed module result.
 
         from django.conf import settings  # Import lazily because notification config is optional.
         from vs_notifications.notify import send_notification, UnregisteredRecipient  # Platform notification API.
@@ -54,7 +54,7 @@ def notify_invoice_issued(invoice, *, actor_user=None):  # Send best-effort invo
             "school_name": school.name if school else "",  # Optional school name.
             # No standing hosted pay page yet; fall back to the configured callback.  # Keep link configurable.
             "payment_link": getattr(settings, "PAYMENTS_CALLBACK_URL", "") or "",  # Optional payment URL.
-        }
+        }  # Close the grouped expression.
         return send_notification(  # Delegate delivery to vs_notifications.
             event_key="billing.invoice_issued",  # Event key configured in notification templates.
             context=context,  # Render data for the notification template.
@@ -62,13 +62,13 @@ def notify_invoice_issued(invoice, *, actor_user=None):  # Send best-effort invo
             school=school,  # Optional school scoping for notification configuration.
             unregistered_recipients=[  # Billing emails can receive without portal accounts.
                 UnregisteredRecipient(email=customer.billing_email or "", name=customer.name),  # Customer email/name payload.
-            ],
-        )
+            ],  # Close the grouped value.
+        )  # Close the grouped expression.
     except Exception:  # best-effort — never break the posting
         logger.warning(  # Log failure with stack trace for operations.
             "invoice_issued notification failed for invoice %s",  # Include invoice primary key.
             getattr(invoice, "pk", None), exc_info=True,  # Avoid attribute errors while logging.
-        )
+        )  # Close the grouped expression.
         return None  # Swallow failures so ledger posting remains committed.
 
 
@@ -93,7 +93,7 @@ def notify_payment_received(payment, *, actor_user=None):  # Send best-effort pa
             "payment_date": payment.payment_date.isoformat() if payment.payment_date else "—",  # ISO date or dash.
             "receipt_number": payment.document_number,  # Posted receipt document number.
             "school_name": school.name if school else "",  # Optional school name.
-        }
+        }  # Close the grouped expression.
         return send_notification(  # Delegate delivery to vs_notifications.
             event_key="billing.payment_received",  # Event key configured in notification templates.
             context=context,  # Render data for the notification template.
@@ -101,11 +101,11 @@ def notify_payment_received(payment, *, actor_user=None):  # Send best-effort pa
             school=school,  # Optional school scoping for notification configuration.
             unregistered_recipients=[  # Billing emails can receive without portal accounts.
                 UnregisteredRecipient(email=customer.billing_email or "", name=customer.name),  # Customer email/name payload.
-            ],
-        )
+            ],  # Close the grouped value.
+        )  # Close the grouped expression.
     except Exception:  # best-effort — never break the posting
         logger.warning(  # Log failure with stack trace for operations.
             "payment_received notification failed for payment %s",  # Include payment primary key.
             getattr(payment, "pk", None), exc_info=True,  # Avoid attribute errors while logging.
-        )
+        )  # Close the grouped expression.
         return None  # Swallow failures so ledger posting remains committed.
