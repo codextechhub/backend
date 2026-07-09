@@ -22,7 +22,7 @@ from django.utils import timezone  # Supplies posted timestamps and default date
 
 from .accounts import resolve_account  # Resolves default asset control accounts by code.
 from .audit import record, record_rejection  # Finance audit helpers.
-from .constants import (
+from .constants import (  # Import project symbols used by this module.
     ACCUM_DEPRECIATION_CODE,  # Default accumulated depreciation account code.
     AssetStatus,  # Fixed-asset lifecycle statuses.
     DEPRECIATION_EXPENSE_CODE,  # Default depreciation expense account code.
@@ -31,7 +31,7 @@ from .constants import (
     FinanceAuditAction,  # Audit action enum values.
     JournalSource,  # Journal source enum values.
     PPE_ACCOUNT_CODE,  # Default property/plant/equipment account code.
-)
+)  # Close the grouped expression.
 from .exceptions import DepreciationError, FinanceError  # Asset-domain and base finance errors.
 from .posting import post_journal, resolve_period  # GL posting and period resolution helpers.
 
@@ -55,10 +55,10 @@ def _asset_accounts(asset):  # Resolve the three GL accounts used by asset accou
     ppe = asset.asset_account or resolve_account(entity, PPE_ACCOUNT_CODE, label="PP&E")  # Asset cost account.
     accum = asset.accumulated_depreciation_account or resolve_account(  # Contra-asset accumulated depreciation account.
         entity, ACCUM_DEPRECIATION_CODE, label="accumulated depreciation",  # Resolve default accumulated depreciation account.
-    )
+    )  # Close the grouped expression.
     expense = asset.depreciation_expense_account or resolve_account(  # Depreciation expense account.
         entity, DEPRECIATION_EXPENSE_CODE, label="depreciation expense",  # Resolve default depreciation expense account.
-    )
+    )  # Close the grouped expression.
     return ppe, accum, expense  # Return cost, contra-asset, and expense accounts.
 
 
@@ -99,7 +99,7 @@ def _declining_balance_amounts(cost: int, salvage: int, months: int) -> list[int
     return amounts  # Return exact monthly charges.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def build_depreciation_schedule(asset):  # Build or rebuild the asset depreciation schedule.
     """(Re)build the :class:`DepreciationSchedule` for ``asset`` (straight-line or
     declining-balance, per ``asset.method``).
@@ -111,9 +111,9 @@ def build_depreciation_schedule(asset):  # Build or rebuild the asset depreciati
     from .models import DepreciationSchedule  # Local import avoids model import cycles.
 
     if asset.schedule.filter(is_posted=True).exists():  # Posted rows make the schedule immutable.
-        raise DepreciationError(
+        raise DepreciationError(  # Raise the domain error for this path.
             "Cannot rebuild a schedule once depreciation has started posting.",
-        )
+        )  # Close the grouped expression.
     asset.schedule.all().delete()  # Clear unposted schedule rows before rebuilding.
 
     months = asset.useful_life_months  # Useful life determines number of monthly rows.
@@ -130,14 +130,14 @@ def build_depreciation_schedule(asset):  # Build or rebuild the asset depreciati
             asset=asset, seq=seq,  # Link asset and sequence number.
             depreciation_date=_add_months(asset.acquisition_date, seq),  # Date each charge one month apart.
             amount=amount,  # Monthly charge in kobo.
-        )
+        )  # Close the grouped expression.
         for seq, amount in enumerate(amounts, start=1)  # Pair sequence numbers with amounts.
-    ]
+    ]  # Close the grouped expression.
     DepreciationSchedule.objects.bulk_create(rows)  # Insert schedule rows efficiently.
     return list(asset.schedule.all())  # Return persisted schedule rows.
 
 
-def acquire_asset(asset, *, credit_account=None, bank_account=None, actor_user=None,
+def acquire_asset(asset, *, credit_account=None, bank_account=None, actor_user=None,  # Define the callable used by this module.
                   build_schedule=True):  # Public wrapper for asset acquisition posting.
     """Capitalise an asset (``Dr PP&E, Cr bank/payable``) and lay down its schedule.
 
@@ -149,25 +149,25 @@ def acquire_asset(asset, *, credit_account=None, bank_account=None, actor_user=N
         return _acquire_asset_atomic(  # Capitalize asset and optionally build schedule.
             asset, credit_account=credit_account, bank_account=bank_account,  # Funding source options.
             actor_user=actor_user, build_schedule=build_schedule,  # Actor and schedule toggle.
-        )
+        )  # Close the grouped expression.
     except FinanceError as exc:  # Failed acquisitions should be auditable.
         record_rejection(  # Record durable rejection outside rolled-back posting work.
             entity=asset.entity, action=FinanceAuditAction.ASSET_ACQUIRED,  # Existing asset acquisition audit action.
             exc=exc, actor_user=actor_user, target=asset,  # Error, actor, and target context.
-        )
+        )  # Close the grouped expression.
         raise  # Preserve original finance exception.
 
 
-@transaction.atomic
-def _acquire_asset_atomic(asset, *, credit_account=None, bank_account=None,
+@transaction.atomic  # Apply the decorator to this callable.
+def _acquire_asset_atomic(asset, *, credit_account=None, bank_account=None,  # Define the callable used by this module.
                           actor_user=None, build_schedule=True):  # Transactional asset acquisition implementation.
     from .models import JournalEntry, JournalLine  # Journal models used for acquisition entry.
 
     if asset.asset_status != AssetStatus.DRAFT:  # Only draft assets can be acquired.
-        raise DepreciationError(
+        raise DepreciationError(  # Raise the domain error for this path.
             f"Asset {asset.document_number or asset.pk} is '{asset.asset_status}', "
             f"only a draft can be acquired.",
-        )
+        )  # Close the grouped expression.
     if asset.cost <= 0:  # Capitalized assets must have positive cost.
         raise DepreciationError("An asset must have a positive cost.")
 
@@ -181,15 +181,15 @@ def _acquire_asset_atomic(asset, *, credit_account=None, bank_account=None,
         entity=asset.entity, branch=asset.branch,  # Scope entity and optional branch.
         date=asset.acquisition_date, period=period, source=JournalSource.PURCHASE,  # Acquisition date/period/source.
         narration=f"Acquire {asset.name}", created_by=actor_user,  # Journal narration and actor.
-    )
+    )  # Close the grouped expression.
     JournalLine.objects.create(  # Debit PP&E for capitalized cost.
         entry=entry, account=ppe, debit=asset.cost, credit=0,  # Dr asset cost account.
         description=asset.name, line_no=1,  # Line description and order.
-    )
+    )  # Close the grouped expression.
     JournalLine.objects.create(  # Credit funding account for the acquisition.
         entry=entry, account=credit, debit=0, credit=asset.cost,  # Cr bank/payable/source account.
         description=f"Acquire {asset.name}", line_no=2,  # Line description and order.
-    )
+    )  # Close the grouped expression.
     post_journal(entry, actor_user=actor_user)  # Validate and post acquisition journal.
 
     asset.acquisition_journal = entry  # Link asset to acquisition journal.
@@ -201,7 +201,7 @@ def _acquire_asset_atomic(asset, *, credit_account=None, bank_account=None,
     asset.save(update_fields=[  # Persist acquisition state fields.
         "acquisition_journal", "asset_account", "accumulated_depreciation_account",  # Journal and balance-sheet accounts.
         "depreciation_expense_account", "asset_status", "status", "updated_at",  # Expense account and statuses.
-    ])
+    ])  # Execute the module statement.
 
     if build_schedule:  # Caller can skip schedule creation when needed.
         build_depreciation_schedule(asset)  # Lay down depreciation schedule.
@@ -211,7 +211,7 @@ def _acquire_asset_atomic(asset, *, credit_account=None, bank_account=None,
         actor_user=actor_user, target=asset,  # Actor and target context.
         message=f"Capitalised {asset.name} ({asset.cost} kobo).",  # Human-readable audit message.
         journal_id=entry.pk, cost=asset.cost,  # Structured audit metadata.
-    )
+    )  # Close the grouped expression.
     return asset  # Return acquired asset.
 
 
@@ -227,51 +227,51 @@ def post_depreciation(asset, *, up_to_date, actor_user=None, allow_restricted=Fa
         return _post_depreciation_atomic(  # Post depreciation for one asset.
             asset, up_to_date=up_to_date, actor_user=actor_user,  # Cutoff date and actor.
             allow_restricted=allow_restricted,  # Period-close privilege flag.
-        )
+        )  # Close the grouped expression.
     except FinanceError as exc:  # Failed depreciation should be auditable.
         record_rejection(  # Record durable rejection.
             entity=asset.entity, action=FinanceAuditAction.DEPRECIATION_POSTED,  # Existing depreciation audit action.
             exc=exc, actor_user=actor_user, target=asset,  # Error, actor, and target context.
-        )
+        )  # Close the grouped expression.
         raise  # Preserve original finance exception.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def _post_depreciation_atomic(asset, *, up_to_date, actor_user=None, allow_restricted=False):  # Transactional per-asset depreciation.
     from .models import JournalEntry, JournalLine  # Journal models used for depreciation entries.
 
     if asset.asset_status != AssetStatus.ACTIVE:  # Only active assets can depreciate.
-        raise DepreciationError(
+        raise DepreciationError(  # Raise the domain error for this path.
             f"Asset {asset.document_number or asset.pk} is '{asset.asset_status}'; "
             f"only an ACTIVE asset can be depreciated.",
-        )
+        )  # Close the grouped expression.
 
     _, accum, expense = _asset_accounts(asset)  # Resolve contra and expense accounts.
     due = list(  # Load due unposted schedule rows.
         asset.schedule.filter(is_posted=False, depreciation_date__lte=up_to_date)  # Due by cutoff and unposted.
         .order_by("seq")  # Post in schedule sequence.
-    )
+    )  # Close the grouped expression.
     posted = []  # Non-zero rows posted with journals.
     for row in due:  # Process each due schedule row.
         if row.amount <= 0:  # Zero rows need no journal.
             row.is_posted = True  # Mark schedule row complete.
             row.posted_at = timezone.now()  # Stamp completion time.
             row.save(update_fields=["is_posted", "posted_at", "updated_at"])  # Persist zero row.
-            continue
+            continue  # Skip to the next loop iteration.
         period = resolve_period(asset.entity, row.depreciation_date)  # Find depreciation period.
         entry = JournalEntry.objects.create(  # Create depreciation journal header.
             entity=asset.entity, branch=asset.branch,  # Scope entity and optional branch.
             date=row.depreciation_date, period=period, source=JournalSource.CLOSING,  # Closing-source depreciation entry.
             narration=f"Depreciation {asset.name} #{row.seq}", created_by=actor_user,  # Narration and actor.
-        )
+        )  # Close the grouped expression.
         JournalLine.objects.create(  # Debit depreciation expense.
             entry=entry, account=expense, debit=row.amount, credit=0,  # Dr depreciation expense.
             description="Depreciation", line_no=1,  # Line label and order.
-        )
+        )  # Close the grouped expression.
         JournalLine.objects.create(  # Credit accumulated depreciation.
             entry=entry, account=accum, debit=0, credit=row.amount,  # Cr accumulated depreciation.
             description="Accumulated depreciation", line_no=2,  # Line label and order.
-        )
+        )  # Close the grouped expression.
         post_journal(entry, actor_user=actor_user, allow_restricted=allow_restricted)  # Post depreciation journal.
 
         row.is_posted = True  # Mark schedule row posted.
@@ -293,7 +293,7 @@ def _post_depreciation_atomic(asset, *, up_to_date, actor_user=None, allow_restr
             charges=len(posted),  # Count of posted charges.
             total=sum(r.amount for r in posted),  # Total depreciation posted.
             accumulated=asset.accumulated_depreciation,  # New accumulated depreciation balance.
-        )
+        )  # Close the grouped expression.
     return posted  # Return non-zero schedule rows posted.
 
 
@@ -306,11 +306,11 @@ def _due_depreciation(entity, up_to_date):  # Load all due unposted depreciation
         .filter(  # Restrict to due active-asset rows.
             asset__entity=entity, is_posted=False, depreciation_date__lte=up_to_date,  # Entity, unposted, and due cutoff.
             asset__asset_status=AssetStatus.ACTIVE,  # Only active assets depreciate.
-        )
+        )  # Close the grouped expression.
         .select_related("asset", "asset__depreciation_expense_account",  # Load asset and expense account.
                         "asset__accumulated_depreciation_account")  # Load contra-asset account.
         .order_by("asset_id", "seq")  # Stable asset/schedule order.
-    )
+    )  # Close the grouped expression.
 
 
 def preview_period_depreciation(entity, *, up_to_date):  # Summarize due depreciation without posting.
@@ -323,7 +323,7 @@ def preview_period_depreciation(entity, *, up_to_date):  # Summarize due depreci
     asset_ids, total = set(), 0  # Track affected assets and total due amount.
     for row in _due_depreciation(entity, up_to_date):  # Walk due schedule rows.
         if row.amount <= 0:  # Zero rows do not affect preview journal totals.
-            continue
+            continue  # Skip to the next loop iteration.
         _, accum_acct, expense_acct = _asset_accounts(row.asset)  # Resolve posting accounts.
         expense[expense_acct] = expense.get(expense_acct, 0) + row.amount  # Group expense debit.
         accum[accum_acct] = accum.get(accum_acct, 0) + row.amount  # Group accumulated depreciation credit.
@@ -352,11 +352,11 @@ def run_period_depreciation(entity, *, up_to_date, actor_user=None):  # Public w
         record_rejection(  # Record durable rejection for the entity.
             entity=entity, action=FinanceAuditAction.DEPRECIATION_POSTED,  # Existing depreciation audit action.
             exc=exc, actor_user=actor_user, target=None,  # Error and actor context; no single target asset.
-        )
+        )  # Close the grouped expression.
         raise  # Preserve original finance exception.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):  # Transactional compound depreciation run.
     from .models import JournalEntry, JournalLine  # Journal models used for depreciation run entries.
 
@@ -375,10 +375,10 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):  # 
             period = resolve_period(entity, row.depreciation_date)  # Find period covering charge date.
             if period is None:  # Missing fiscal period is a configuration error.
                 # Fail closed with a typed error rather than grouping under None.  # Avoid later AttributeError/invalid post.
-                raise DepreciationError(
+                raise DepreciationError(  # Raise the domain error for this path.
                     f"No fiscal period covers {row.depreciation_date}; create the "
                     f"fiscal year before running depreciation.",
-                )
+                )  # Close the grouped expression.
             period_cache[row.depreciation_date] = period  # Cache resolved period.
         bucket = groups.setdefault(period, {"rows": [], "latest_date": row.depreciation_date})  # Get period bucket.
         bucket["rows"].append(row)  # Add charge row to period bucket.
@@ -400,15 +400,15 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):  # 
             entity=entity, date=bucket["latest_date"], period=period,  # Entity, in-period date, and period.
             source=JournalSource.CLOSING,  # Depreciation run is a closing-source entry.
             narration=f"Depreciation run for {period.name}", created_by=actor_user,  # Narration and actor.
-        )
+        )  # Close the grouped expression.
         line_no = 0  # Journal line counter.
         for acct, amount in expense.items():  # Emit grouped expense debit lines.
             line_no += 1  # Advance line order.
-            JournalLine.objects.create(entry=entry, account=acct, debit=amount, credit=0,
+            JournalLine.objects.create(entry=entry, account=acct, debit=amount, credit=0,  # Continue the structured value.
                                        description="Depreciation", line_no=line_no)  # Dr depreciation expense.
         for acct, amount in accum.items():  # Emit grouped accumulated depreciation credit lines.
             line_no += 1  # Advance line order.
-            JournalLine.objects.create(entry=entry, account=acct, debit=0, credit=amount,
+            JournalLine.objects.create(entry=entry, account=acct, debit=0, credit=amount,  # Continue the structured value.
                                        description="Accumulated depreciation", line_no=line_no)  # Cr accumulated depreciation.
         post_journal(entry, actor_user=actor_user)  # Validate and post compound journal.
         journal_ids.append(entry.pk)  # Track posted journal id.
@@ -438,13 +438,13 @@ def _run_period_depreciation_atomic(entity, *, up_to_date, actor_user=None):  # 
                 f"in {len(journal_ids)} period(s).",  # Include period count.
         journal_id=journal_ids[0], journal_ids=journal_ids, charges=len(charges),  # Journal and charge metadata.
         total=total, assets=len(by_asset), period_count=len(journal_ids),  # Aggregate metadata.
-    )
+    )  # Close the grouped expression.
     return {"journal_id": journal_ids[0], "journal_ids": journal_ids,  # Return primary and all journal ids.
             "period_count": len(journal_ids), "total": total,  # Return period count and total.
             "charge_count": len(charges), "asset_count": len(by_asset)}  # Return row and asset counts.
 
 
-def dispose_asset(asset, *, disposal_date, proceeds=0, bank_account=None,
+def dispose_asset(asset, *, disposal_date, proceeds=0, bank_account=None,  # Define the callable used by this module.
                   gain_loss_account=None, actor_user=None):  # Public wrapper for asset disposal.
     """Retire/sell an asset: clear its cost + accumulated depreciation, book proceeds and
     the gain/loss. ``Dr accum dep, Dr bank (proceeds), Dr loss | Cr gain, Cr asset cost``."""
@@ -452,38 +452,38 @@ def dispose_asset(asset, *, disposal_date, proceeds=0, bank_account=None,
         return _dispose_asset_atomic(  # Dispose asset and post gain/loss journal.
             asset, disposal_date=disposal_date, proceeds=proceeds,  # Disposal date and proceeds.
             bank_account=bank_account, gain_loss_account=gain_loss_account, actor_user=actor_user,  # Accounts and actor.
-        )
+        )  # Close the grouped expression.
     except FinanceError as exc:  # Failed disposal should be auditable.
         record_rejection(  # Record durable rejection.
             entity=asset.entity, action=FinanceAuditAction.ASSET_DISPOSED,  # Audit action.
             exc=exc, actor_user=actor_user, target=asset,  # Error, actor, and target context.
-        )
+        )  # Close the grouped expression.
         raise  # Preserve original finance exception.
 
 
-@transaction.atomic
-def _dispose_asset_atomic(asset, *, disposal_date, proceeds=0, bank_account=None,
+@transaction.atomic  # Apply the decorator to this callable.
+def _dispose_asset_atomic(asset, *, disposal_date, proceeds=0, bank_account=None,  # Define the callable used by this module.
                           gain_loss_account=None, actor_user=None):  # Transactional asset disposal implementation.
     from .models import JournalEntry, JournalLine  # Journal models used for disposal entry.
 
     if asset.asset_status not in (AssetStatus.ACTIVE, AssetStatus.FULLY_DEPRECIATED):  # Only live/depreciated assets can be disposed.
-        raise DepreciationError(
+        raise DepreciationError(  # Raise the domain error for this path.
             f"Asset {asset.document_number or asset.pk} is '{asset.asset_status}'; "
             f"only an active or fully-depreciated asset can be disposed.",
-        )
+        )  # Close the grouped expression.
     # Refuse to dispose while depreciation due up to the disposal date is still unposted:
     # the disposal journal would otherwise strip the cost/accum before those charges land,
     # understating the loss. Charges dated AFTER the disposal date are fine to orphan
     # (the asset's life is simply cut short).  # Preserve correct net book value at disposal.
     unposted_due = asset.schedule.filter(  # Count due depreciation not yet posted.
         is_posted=False, depreciation_date__lte=disposal_date,  # Due on/before disposal date.
-    ).count()
+    ).count()  # Execute the module statement.
     if unposted_due:  # Disposal requires depreciation to be current through disposal date.
-        raise DepreciationError(
+        raise DepreciationError(  # Raise the domain error for this path.
             f"Asset {asset.document_number or asset.pk} has {unposted_due} unposted "
             f"depreciation charge(s) due on or before {disposal_date}; post depreciation "
             f"up to the disposal date before disposing.",
-        )
+        )  # Close the grouped expression.
     proceeds = int(proceeds or 0)  # Normalize proceeds to integer kobo.
     nbv = asset.cost - asset.accumulated_depreciation  # Net book value at disposal.
     gain_loss = proceeds - nbv  # >0 gain, <0 loss
@@ -498,26 +498,26 @@ def _dispose_asset_atomic(asset, *, disposal_date, proceeds=0, bank_account=None
         entity=asset.entity, branch=asset.branch, date=disposal_date,  # Scope and date.
         period=period, source=JournalSource.BANK,  # Disposal source and period.
         narration=f"Disposal of {asset.name}", created_by=actor_user,  # Narration and actor.
-    )
+    )  # Close the grouped expression.
     line_no = 0  # Journal line counter.
     if asset.accumulated_depreciation > 0:  # Accumulated depreciation must be cleared.
         line_no += 1  # Advance line order.
-        JournalLine.objects.create(entry=entry, account=accum, debit=asset.accumulated_depreciation,
+        JournalLine.objects.create(entry=entry, account=accum, debit=asset.accumulated_depreciation,  # Continue the structured value.
                                    credit=0, description="Accumulated depreciation written back", line_no=line_no)  # Dr accum depreciation.
     if proceeds > 0:  # Cash proceeds are debited to bank.
         line_no += 1  # Advance line order.
-        JournalLine.objects.create(entry=entry, account=bank_account.gl_account, debit=proceeds,
+        JournalLine.objects.create(entry=entry, account=bank_account.gl_account, debit=proceeds,  # Continue the structured value.
                                    credit=0, description="Disposal proceeds", line_no=line_no)  # Dr bank for proceeds.
     if gain_loss < 0:  # Proceeds below NBV create a loss.
         line_no += 1  # Advance line order.
-        JournalLine.objects.create(entry=entry, account=gain_loss_account, debit=-gain_loss,
+        JournalLine.objects.create(entry=entry, account=gain_loss_account, debit=-gain_loss,  # Continue the structured value.
                                    credit=0, description="Loss on disposal", line_no=line_no)  # Dr loss account.
     elif gain_loss > 0:  # Proceeds above NBV create a gain.
         line_no += 1  # Advance line order.
-        JournalLine.objects.create(entry=entry, account=gain_loss_account, debit=0,
+        JournalLine.objects.create(entry=entry, account=gain_loss_account, debit=0,  # Continue the structured value.
                                    credit=gain_loss, description="Gain on disposal", line_no=line_no)  # Cr gain account.
     line_no += 1  # Final line removes asset cost.
-    JournalLine.objects.create(entry=entry, account=ppe, debit=0, credit=asset.cost,
+    JournalLine.objects.create(entry=entry, account=ppe, debit=0, credit=asset.cost,  # Continue the structured value.
                                description="Asset cost removed", line_no=line_no)  # Cr PP&E cost.
     post_journal(entry, actor_user=actor_user)  # Validate and post disposal journal.
 
@@ -531,5 +531,5 @@ def _dispose_asset_atomic(asset, *, disposal_date, proceeds=0, bank_account=None
         actor_user=actor_user, target=asset,  # Actor and target context.
         message=f"Disposed {asset.name}: proceeds {proceeds}, {'gain' if gain_loss >= 0 else 'loss'} {abs(gain_loss)} kobo.",  # Summary.
         journal_id=entry.pk, proceeds=proceeds, gain_loss=gain_loss, nbv=nbv,  # Structured disposal metadata.
-    )
+    )  # Close the grouped expression.
     return entry  # Return posted disposal journal.
