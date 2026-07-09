@@ -22,17 +22,17 @@ from django.db import transaction  # Wrap webhook dispatch in a transaction when
 from django.utils import timezone  # Timestamp webhook processing consistently.
 
 from . import audit, services  # Audit the inbound event and dispatch it to the payment service layer.
-from .constants import (
+from .constants import (  # Import project symbols used by this module.
     PaymentAuditAction,  # Audit action identifiers for webhook lifecycle events.
     PaymentDirection,  # Direction distinguishes collections from payouts.
     WebhookStatus,  # Local webhook state machine.
-)
+)  # Close the grouped expression.
 from .exceptions import DuplicateWebhookError, WebhookSignatureError  # Error types surfaced to the caller.
 from .models import CollectionIntent, PayoutInstruction, WebhookEvent  # Models used to resolve and persist webhook work.
 from .providers.registry import get_provider  # Resolve the configured PSP provider implementation.
 
 
-def ingest_webhook(*, provider: str, raw_body: bytes, headers: dict | None = None) -> WebhookEvent:
+def ingest_webhook(*, provider: str, raw_body: bytes, headers: dict | None = None) -> WebhookEvent:  # Define the callable used by this module.
     """Verify, store and process one inbound webhook. Returns the stored event.
 
     Raises :class:`WebhookSignatureError` (401) on a bad signature and
@@ -44,49 +44,49 @@ def ingest_webhook(*, provider: str, raw_body: bytes, headers: dict | None = Non
 
     if not client.verify_signature(raw_body=raw_body, headers=headers):  # Reject events that fail authenticity checks.
         audit.record(  # Write a rejection event so signature failures are visible in audit logs.
-            action=PaymentAuditAction.WEBHOOK_REJECTED, provider=provider, succeeded=False,
+            action=PaymentAuditAction.WEBHOOK_REJECTED, provider=provider, succeeded=False,  # Continue the structured value.
             message="Signature verification failed.",
-        )
+        )  # Close the grouped expression.
         raise WebhookSignatureError(provider=provider)  # Surface a 401-style failure to the caller.
 
     try:  # Providers occasionally send malformed JSON bodies even when the signature is valid.
         payload = json.loads(raw_body or b"{}")  # Parse the body for provider-specific interpretation.
     except json.JSONDecodeError:  # Fall back to an empty payload if the body is not valid JSON.
-        payload = {}
+        payload = {}  # Store the intermediate module value.
     parsed = client.parse_webhook(payload=payload, raw_body=raw_body, headers=headers)  # Normalize provider-specific fields.
     dedupe_key = parsed.dedupe_key or f"{provider}:{hashlib.sha256(raw_body).hexdigest()}"  # Build a stable fallback idempotency key.
 
     # Persist-or-find atomically; the unique dedupe_key is the idempotency backbone.
     event, created = WebhookEvent.objects.get_or_create(  # Reuse the existing event when the PSP retries the webhook.
-        dedupe_key=dedupe_key,
+        dedupe_key=dedupe_key,  # Continue the structured value.
         defaults=dict(  # Store the raw inbound event data on first sight.
             provider=provider, event_type=parsed.event_type,  # Record who sent it and what it claims to be.
             provider_reference=parsed.provider_reference or parsed.reference,  # Preserve the provider-side lookup key.
             signature=_signature(headers), verified=True,  # Capture the signature and the verification result.
             status=WebhookStatus.RECEIVED, headers=_jsonable(headers),  # Store metadata with the initial received state.
             payload=payload, raw_body=raw_body.decode("utf-8", "replace"),  # Keep both parsed and raw representations.
-        ),
-    )
+        ),  # Close the grouped value.
+    )  # Close the grouped expression.
     if not created and event.status == WebhookStatus.PROCESSED:  # A processed event is a true duplicate retry.
         raise DuplicateWebhookError()  # Signal the caller that nothing new happened.
 
     audit.record(  # Record that a valid webhook arrived, even if later dispatch ignores it.
-        action=PaymentAuditAction.WEBHOOK_RECEIVED, provider=provider,
+        action=PaymentAuditAction.WEBHOOK_RECEIVED, provider=provider,  # Continue the structured value.
         reference=parsed.reference, message=f"{parsed.event_type} ({parsed.direction}).",
-    )
+    )  # Close the grouped expression.
 
     try:  # Dispatch can fail after the webhook is safely stored.
-        _dispatch(event, parsed)
+        _dispatch(event, parsed)  # Execute the module statement.
     except Exception as exc:  # Processing failed, but the event should remain stored for replay/debugging.
         event.status = WebhookStatus.FAILED  # Mark the event failed so it can be retried explicitly.
         event.error = str(getattr(exc, "message", exc))[:255]  # Keep a short error string for operators.
         event.save(update_fields=["status", "error", "updated_at"])  # Persist the failure state.
-        raise
+        raise  # Execute the module statement.
 
     return event  # Return the stored webhook event after processing.
 
 
-def _dispatch(event: WebhookEvent, parsed) -> None:
+def _dispatch(event: WebhookEvent, parsed) -> None:  # Define the callable used by this module.
     """Route a verified event to the matching confirm service and mark it processed.
 
     SECURITY: a valid signature proves the event *came from* the provider, but we do
@@ -123,32 +123,32 @@ def _dispatch(event: WebhookEvent, parsed) -> None:
     event.processed_at = timezone.now()  # Stamp the completion time regardless of outcome.
     event.save(update_fields=[  # Persist all changed linkage and status fields.
         "collection", "payout", "status", "error", "processed_at", "updated_at",
-    ])
+    ])  # Execute the module statement.
 
 
-def _find_collection(parsed):
+def _find_collection(parsed):  # Define the callable used by this module.
     qs = CollectionIntent.objects.all()  # Start with all collection intents in the current entity scope.
     if parsed.reference:  # Prefer the merchant/provider reference when present.
         intent = qs.filter(reference=parsed.reference).first()  # Look up by our own idempotency key first.
         if intent:  # Return immediately on an exact match.
-            return intent
+            return intent  # Return the computed module result.
     if parsed.provider_reference:  # Fall back to the PSP reference if needed.
         return qs.filter(provider_reference=parsed.provider_reference).first()  # Resolve by provider transaction id.
     return None  # No local collection matched the webhook.
 
 
-def _find_payout(parsed):
+def _find_payout(parsed):  # Define the callable used by this module.
     qs = PayoutInstruction.objects.all()  # Start with all payout instructions in scope.
     if parsed.reference:  # Prefer the merchant/provider reference when present.
         payout = qs.filter(reference=parsed.reference).first()  # Look up by our own payout reference first.
         if payout:  # Return immediately on an exact match.
-            return payout
+            return payout  # Return the computed module result.
     if parsed.provider_reference:  # Fall back to the PSP reference if the merchant reference is missing.
         return qs.filter(provider_reference=parsed.provider_reference).first()  # Resolve by provider transaction id.
     return None  # No local payout matched the webhook.
 
 
-def _signature(headers: dict) -> str:
+def _signature(headers: dict) -> str:  # Define the callable used by this module.
     for key in ("x-paystack-signature", "Authorization", "x-fake-signature"):  # Check the known signature header names.
         for hk, hv in (headers or {}).items():  # Walk the received header mapping.
             if hk.lower() == key.lower():  # Compare case-insensitively because header casing varies by server.
@@ -156,5 +156,5 @@ def _signature(headers: dict) -> str:
     return ""  # No known signature header was present.
 
 
-def _jsonable(headers: dict) -> dict:
+def _jsonable(headers: dict) -> dict:  # Define the callable used by this module.
     return {str(k): str(v) for k, v in (headers or {}).items()}  # Normalize headers into JSON-safe strings.
