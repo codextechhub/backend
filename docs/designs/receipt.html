@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Receipt CFX-CREST-RCP-2026-00041 — Crestfield Academy</title>
+<style>
+  /* ============================================================
+     THEME 1 — CLASSIC / CORPORATE  ·  RECEIPT
+     Shares the invoice's tokens & letterhead language.
+     ============================================================ */
+  :root{
+    --navy:#1B2A4A; --accent:#0E4D92; --rule-gold:#B08D57;
+    --ink:#20242c; --muted:#6b7280; --hairline:#d4d8e0; --band:#f4f6fa; --paper:#fff;
+    --paid-fg:#1d7a4d; --paid-bg:#e6f4ec; --paid-bd:#bfe3cd;
+    --serif:"Hoefler Text","Garamond",Georgia,"Times New Roman",serif;
+    --label:Georgia,"Times New Roman",serif;
+  }
+  *{ box-sizing:border-box; margin:0; padding:0; }
+  html,body{ background:#e9ebf0; color:var(--ink); font-family:var(--serif); }
+  body{ padding:24px; -webkit-font-smoothing:antialiased; }
+
+  .page{
+    width:210mm; min-height:160mm; margin:0 auto; background:var(--paper);
+    padding:18mm 16mm 14mm; box-shadow:0 6px 28px rgba(20,30,60,.16);
+    display:flex; flex-direction:column; position:relative; overflow:hidden;
+  }
+
+  /* watermark stamp */
+  .stamp{ position:absolute; right:14mm; top:54mm; transform:rotate(-14deg);
+    border:3px double var(--paid-fg); color:var(--paid-fg); border-radius:6px;
+    padding:7px 18px; font-family:var(--label); font-size:26px; font-weight:700;
+    letter-spacing:6px; text-transform:uppercase; opacity:.16; pointer-events:none; }
+
+  .letterhead{ display:flex; justify-content:space-between; align-items:flex-start;
+    padding-bottom:14px; border-bottom:2px solid var(--navy); }
+  .lh-left{ display:flex; gap:14px; align-items:flex-start; }
+  .crest{ width:54px; height:60px; flex:0 0 auto; }
+  .school-name{ font-size:25px; font-weight:700; letter-spacing:.3px; color:var(--navy); line-height:1.05; }
+  .school-tag{ font-family:var(--label); font-size:10px; letter-spacing:3px; text-transform:uppercase; color:var(--rule-gold); margin-top:4px; }
+  .issuer-meta{ margin-top:9px; font-size:10.5px; line-height:1.55; color:var(--muted); }
+  .lh-right{ text-align:right; }
+  .doc-kind{ font-size:21px; letter-spacing:5px; color:var(--paid-fg); font-weight:700; text-transform:uppercase; }
+  .doc-kind-sub{ font-family:var(--label); font-size:9.5px; letter-spacing:2px; text-transform:uppercase; color:var(--muted); margin-top:3px; }
+  .docnum{ margin-top:12px; font-family:var(--label); font-size:13px; font-weight:700; letter-spacing:.4px; }
+  .gold-rule{ height:2px; background:var(--rule-gold); margin-top:2px; opacity:.85; }
+
+  .meta-grid{ display:grid; grid-template-columns:1fr 1fr; gap:26px; margin-top:18px; }
+  .block-title{ font-family:var(--label); font-size:9.5px; letter-spacing:2.4px; text-transform:uppercase;
+    color:var(--accent); border-bottom:1px solid var(--hairline); padding-bottom:5px; margin-bottom:8px; }
+  .kv{ display:flex; justify-content:space-between; gap:12px; font-size:11.5px; padding:3px 0; line-height:1.4; }
+  .kv .k{ color:var(--muted); }
+  .kv .v{ font-weight:700; text-align:right; font-variant-numeric:tabular-nums; }
+  .recv .name{ font-size:15px; font-weight:700; color:var(--navy); margin-bottom:2px; }
+  .recv .line{ font-size:11.5px; color:var(--muted); line-height:1.55; }
+
+  /* amount hero */
+  .amount-hero{ margin-top:22px; border:1.5px solid var(--navy); border-radius:3px;
+    display:flex; align-items:center; justify-content:space-between; padding:16px 22px;
+    background:linear-gradient(180deg,#fbfcfe,var(--band)); }
+  .ah-label{ font-family:var(--label); font-size:10px; letter-spacing:2.4px; text-transform:uppercase; color:var(--accent); }
+  .ah-amount{ font-size:38px; font-weight:700; color:var(--navy); font-variant-numeric:tabular-nums; line-height:1; }
+  .ah-words{ font-style:italic; font-size:12px; color:var(--muted); margin-top:6px; }
+  .ah-right{ text-align:right; }
+  .ah-badge{ display:inline-block; padding:5px 14px; border-radius:2px; font-family:var(--label);
+    font-size:12px; font-weight:700; letter-spacing:2px; text-transform:uppercase;
+    color:var(--paid-fg); background:var(--paid-bg); border:1px solid var(--paid-bd); }
+
+  /* allocation */
+  table.alloc{ width:100%; border-collapse:collapse; margin-top:24px; font-size:11.5px; }
+  table.alloc thead th{ background:var(--navy); color:#fff; font-family:var(--label); font-size:9.5px;
+    letter-spacing:1.6px; text-transform:uppercase; padding:9px 12px; text-align:left; }
+  table.alloc thead th.num{ text-align:right; }
+  table.alloc td{ padding:11px 12px; border-bottom:1px solid var(--hairline); }
+  table.alloc td.num{ text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .inv-ref{ font-weight:700; color:var(--accent); }
+
+  .after{ display:flex; justify-content:flex-end; margin-top:14px; }
+  .after-box{ background:var(--navy); color:#fff; padding:11px 16px; display:flex; gap:18px; align-items:center; }
+  .after-box .lbl{ font-family:var(--label); font-size:10px; letter-spacing:1.5px; text-transform:uppercase; opacity:.85; }
+  .after-box .amt{ font-size:16px; font-weight:700; font-variant-numeric:tabular-nums; }
+
+  .footer{ margin-top:auto; padding-top:18px; border-top:2px solid var(--navy);
+    display:flex; justify-content:space-between; align-items:flex-end; gap:24px; }
+  .sign{ text-align:center; }
+  .sign-line{ width:200px; border-top:1px solid var(--ink); margin-bottom:5px; }
+  .sign-label{ font-family:var(--label); font-size:9.5px; letter-spacing:1.5px; text-transform:uppercase; color:var(--muted); }
+  .gen-note{ font-size:10px; color:var(--muted); line-height:1.6; max-width:54%; }
+  .gen-note .thanks{ font-style:italic; color:var(--navy); font-size:12px; margin-top:6px; }
+
+  @media print{
+    html,body{ background:#fff; padding:0; }
+    .page{ box-shadow:none; margin:0; width:auto; padding:14mm; }
+    @page{ size:A4 portrait; margin:0; }
+    .amount-hero, table.alloc thead th, .after-box, .ah-badge{ -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- {{receipt.settled_stamp}} -->
+  <div class="stamp">Received</div>
+
+  <header class="letterhead">
+    <div class="lh-left">
+      <!-- {{issuer.logo}} -->
+      <svg class="crest" viewBox="0 0 54 60" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Crestfield Academy crest">
+        <path d="M27 0 L54 8 V32 C54 47 42 56 27 60 C12 56 0 47 0 32 V8 Z" fill="#1B2A4A"/>
+        <path d="M27 4 L50 11 V32 C50 44.5 39.6 52.8 27 56.4 C14.4 52.8 4 44.5 4 32 V11 Z" fill="none" stroke="#B08D57" stroke-width="1.2"/>
+        <text x="27" y="28" text-anchor="middle" font-family="Georgia, serif" font-size="20" font-weight="700" fill="#fff" letter-spacing="1">CA</text>
+        <line x1="14" y1="35" x2="40" y2="35" stroke="#B08D57" stroke-width="1"/>
+        <text x="27" y="46" text-anchor="middle" font-family="Georgia, serif" font-size="6.5" fill="#cdd6e6" letter-spacing="2">EST. 1998</text>
+      </svg>
+      <div>
+        <!-- {{issuer.name}} -->
+        <div class="school-name">Crestfield Academy</div>
+        <div class="school-tag">Knowledge &middot; Character &middot; Service</div>
+        <div class="issuer-meta">
+          14 Awolowo Road, Ikoyi, Lagos, Nigeria<br>
+          bursary@crestfield.example &middot; +234 802 114 9300
+        </div>
+      </div>
+    </div>
+    <div class="lh-right">
+      <div class="doc-kind">Receipt</div>
+      <div class="doc-kind-sub">Payment received</div>
+      <!-- {{receipt.document_number}} -->
+      <div class="docnum">CFX-CREST-RCP-2026-00041</div>
+      <div class="gold-rule"></div>
+    </div>
+  </header>
+
+  <section class="meta-grid">
+    <div>
+      <div class="block-title">Payment details</div>
+      <!-- {{receipt.payment_date}} -->
+      <div class="kv"><span class="k">Payment date</span><span class="v">12 September 2026</span></div>
+      <!-- {{receipt.method}} -->
+      <div class="kv"><span class="k">Method</span><span class="v">Online (Paystack)</span></div>
+      <!-- {{receipt.provider_reference}} -->
+      <div class="kv"><span class="k">Provider ref.</span><span class="v">PSK-7H2K9</span></div>
+    </div>
+    <div class="recv">
+      <div class="block-title">Received from</div>
+      <!-- {{customer.customer_name}} -->
+      <div class="name">Mrs. Bello</div>
+      <!-- {{customer.customer_code}} -->
+      <div class="line">Parent account &middot; PAR-204</div>
+    </div>
+  </section>
+
+  <!-- ============ AMOUNT RECEIVED ============ -->
+  <section class="amount-hero">
+    <div>
+      <div class="ah-label">Amount received</div>
+      <!-- {{receipt.amount}} (10000000 kobo) -->
+      <div class="ah-amount">₦100,000.00</div>
+      <!-- {{receipt.amount_in_words}} -->
+      <div class="ah-words">One hundred thousand naira only</div>
+    </div>
+    <div class="ah-right">
+      <span class="ah-badge">Paid</span>
+    </div>
+  </section>
+
+  <!-- ============ ALLOCATION ============ -->
+  <table class="alloc">
+    <thead>
+      <tr>
+        <th>Applied to invoice</th>
+        <th class="num">Amount applied</th>
+        <th class="num">Invoice balance</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- {{receipt.allocations[]}} -->
+      <tr>
+        <td><span class="inv-ref">CFX-CREST-INV-2026-00001</span><br>
+            <span style="color:var(--muted);font-size:10px;">Term 1 fees &middot; JSS1</span></td>
+        <!-- {{allocation.amount_applied}} (10000000 kobo) -->
+        <td class="num">₦100,000.00</td>
+        <!-- {{allocation.invoice_balance_after}} (9300000 kobo) -->
+        <td class="num">₦93,000.00</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="after">
+    <div class="after-box">
+      <span class="lbl">Customer balance after payment</span>
+      <!-- {{customer.balance_after}} (9300000 kobo) -->
+      <span class="amt">₦93,000.00</span>
+    </div>
+  </div>
+
+  <!-- ============ FOOTER ============ -->
+  <footer class="footer">
+    <div class="gen-note">
+      This is a computer-generated receipt and is valid without a physical signature.
+      Retain it as proof of payment.
+      <div class="thanks">Thank you &mdash; your payment has been received and applied.</div>
+    </div>
+    <div class="sign">
+      <div class="sign-line"></div>
+      <div class="sign-label">Authorised by &middot; Bursary</div>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>
