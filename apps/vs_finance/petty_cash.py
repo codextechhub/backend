@@ -29,11 +29,11 @@ from django.db import transaction  # Keeps petty-cash mutations atomic.
 
 from .accounts import resolve_account  # Imported for account resolution consistency in finance services.
 from .audit import record, record_rejection  # Finance audit helpers.
-from .constants import (
+from .constants import (  # Import project symbols used by this module.
     DocumentStatus,  # Finance document lifecycle statuses.
     FinanceAuditAction,  # Audit action enum values.
     JournalSource,  # Journal source enum values.
-)
+)  # Close the grouped expression.
 from .exceptions import FinanceError, PettyCashError, PettyCashOverdrawError  # Petty-cash and base finance errors.
 from .posting import post_journal, resolve_period  # GL posting and period resolution helpers.
 from .receivables import compute_line_net, compute_tax  # Shared line pricing/tax helpers.
@@ -67,16 +67,16 @@ def establish_fund(fund, *, bank_account, amount, date, actor_user=None):  # Pub
         return _establish_fund_atomic(  # Move cash into petty cash.
             fund, bank_account=bank_account, amount=amount, date=date,  # Funding bank, amount, and date.
             actor_user=actor_user,  # Acting user for posting/audit.
-        )
+        )  # Close the grouped expression.
     except FinanceError as exc:  # Failed establishment should be auditable.
         record_rejection(  # Record durable rejection.
             entity=fund.entity, action=FinanceAuditAction.PETTY_CASH_ESTABLISHED,  # Audit action.
             exc=exc, actor_user=actor_user, target=fund,  # Error, actor, and target context.
-        )
+        )  # Close the grouped expression.
         raise  # Preserve original finance exception.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def _establish_fund_atomic(fund, *, bank_account, amount, date, actor_user=None):  # Transactional float establishment.
     from .models import JournalEntry, JournalLine  # Journal models used for cash transfer.
 
@@ -92,15 +92,15 @@ def _establish_fund_atomic(fund, *, bank_account, amount, date, actor_user=None)
         source=JournalSource.BANK, currency=fund.currency,  # Bank-source cash movement.
         narration=f"Establish petty cash float: {fund.name}",  # Journal narration.
         created_by=actor_user,  # Posting actor.
-    )
+    )  # Close the grouped expression.
     JournalLine.objects.create(  # Debit petty cash asset.
         entry=entry, account=fund.gl_account, debit=amount, credit=0,  # Dr petty cash.
         description=f"Petty cash float: {fund.name}", line_no=1,  # Line label and order.
-    )
+    )  # Close the grouped expression.
     JournalLine.objects.create(  # Credit bank account.
         entry=entry, account=bank_account.gl_account, debit=0, credit=amount,  # Cr bank.
         description=f"Cash to petty cash: {fund.name}", line_no=2,  # Line label and order.
-    )
+    )  # Close the grouped expression.
     post_journal(entry, actor_user=actor_user)  # Validate and post transfer journal.
 
     fund.current_balance = gl_cash_on_hand(fund)  # re-sync from the GL (truth)
@@ -111,7 +111,7 @@ def _establish_fund_atomic(fund, *, bank_account, amount, date, actor_user=None)
         actor_user=actor_user, target=fund,  # Actor and target context.
         message=f"Established {amount} kobo into petty cash '{fund.name}'.",  # Summary.
         journal_id=entry.pk, amount=amount,  # Structured metadata.
-    )
+    )  # Close the grouped expression.
     return entry  # Return posted transfer journal.
 
 
@@ -130,7 +130,7 @@ def price_voucher(voucher) -> None:  # Recalculate voucher line and header total
         if line.net_amount != net or line.tax_amount != tax:  # Avoid unnecessary writes.
             PettyCashVoucherLine.objects.filter(pk=line.pk).update(  # Persist recalculated amounts.
                 net_amount=net, tax_amount=tax,  # Updated line totals.
-            )
+            )  # Close the grouped expression.
     voucher.recompute_totals(save=True)  # Roll line totals up to voucher header.
 
 
@@ -145,19 +145,19 @@ def post_voucher(voucher, *, actor_user=None):  # Public wrapper for petty-cash 
         record_rejection(  # Record durable rejection.
             entity=voucher.entity, action=FinanceAuditAction.PETTY_CASH_VOUCHER_REJECTED,  # Rejection action.
             exc=exc, actor_user=actor_user, target=voucher,  # Error, actor, and target context.
-        )
+        )  # Close the grouped expression.
         raise  # Preserve original finance exception.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def _post_voucher_atomic(voucher, *, actor_user=None):  # Transactional voucher posting implementation.
     from .models import JournalEntry, JournalLine, PettyCashFund  # Journal and fund models.
 
     if voucher.status != DocumentStatus.DRAFT:  # Only draft vouchers can post.
-        raise PettyCashError(
+        raise PettyCashError(  # Raise the domain error for this path.
             f"Voucher {voucher.document_number or voucher.pk} is '{voucher.status}', "
             f"only a draft can be posted.",
-        )
+        )  # Close the grouped expression.
 
     price_voucher(voucher)  # Ensure voucher line amounts and totals are current.
     if voucher.total <= 0:  # Voucher must spend a positive amount.
@@ -171,9 +171,9 @@ def _post_voucher_atomic(voucher, *, actor_user=None):  # Transactional voucher 
     # drifted mirror can never over- or under-authorise a payout.  # GL balance is authoritative.
     on_hand = gl_cash_on_hand(fund)  # Live petty-cash balance.
     if voucher.total > on_hand:  # Reject spends beyond cash on hand.
-        raise PettyCashOverdrawError(
-            fund_name=fund.name, requested=voucher.total, on_hand=on_hand,
-        )
+        raise PettyCashOverdrawError(  # Raise the domain error for this path.
+            fund_name=fund.name, requested=voucher.total, on_hand=on_hand,  # Continue the structured value.
+        )  # Close the grouped expression.
 
     period = resolve_period(voucher.entity, voucher.voucher_date)  # Resolve voucher period.
     entry = JournalEntry.objects.create(  # Create voucher journal header.
@@ -182,7 +182,7 @@ def _post_voucher_atomic(voucher, *, actor_user=None):  # Transactional voucher 
         source=JournalSource.BANK, currency=voucher.currency,  # Bank/cash source and currency.
         narration=voucher.narration or f"Petty cash voucher {voucher.document_number or ''}".strip(),  # Narration.
         reference=voucher.reference, created_by=actor_user,  # External reference and actor.
-    )
+    )  # Close the grouped expression.
 
     line_no = 0  # Journal line counter.
     # Dr expense, grouped by (account, cost centre) so the cost-centre split survives into
@@ -194,40 +194,40 @@ def _post_voucher_atomic(voucher, *, actor_user=None):  # Transactional voucher 
     tax_objs: dict[int, object] = {}  # Tax account objects.
     for line in voucher.lines.select_related(  # Load posting targets for each voucher line.
         "expense_account", "tax_code__paid_account", "cost_center",  # Expense, tax, and analytics relations.
-    ):
+    ):  # Start the nested execution block.
         key = (line.expense_account_id, line.cost_center_id)  # Group identity for expense line.
         expense_by_key[key] += line.net_amount  # Accumulate net expense amount.
         expense_objs[key] = (line.expense_account, line.cost_center)  # Store objects for journal creation.
         if line.tax_amount:  # Tax-bearing lines require an input tax account.
             tax_acc = line.tax_code.paid_account if line.tax_code_id else None  # Resolve input tax account.
             if tax_acc is None:  # Cannot post tax without an input account.
-                raise PettyCashError(
+                raise PettyCashError(  # Raise the domain error for this path.
                     f"Tax code '{line.tax_code.code}' has no paid (input) account set."
                     if line.tax_code_id else "Tax amount present without a tax code.",
-                )
+                )  # Close the grouped expression.
             tax_by_account[tax_acc.id] += line.tax_amount  # Accumulate tax amount.
             tax_objs[tax_acc.id] = tax_acc  # Store tax account.
 
     for (acc_id, cc_id), amount in expense_by_key.items():  # Emit grouped expense debits.
         if amount == 0:  # Skip empty groups.
-            continue
+            continue  # Skip to the next loop iteration.
         line_no += 1  # Advance line number.
         expense_account, cost_center = expense_objs[(acc_id, cc_id)]  # Retrieve objects for this group.
         JournalLine.objects.create(  # Debit expense account.
             entry=entry, account=expense_account, debit=amount, credit=0,  # Dr expense.
             description="Petty cash expense", cost_center=cost_center, line_no=line_no,  # Label and analytics.
-        )
+        )  # Close the grouped expression.
     for acc_id, amount in tax_by_account.items():  # Emit grouped input-tax debits.
         line_no += 1  # Advance line number.
         JournalLine.objects.create(  # Debit input tax account.
             entry=entry, account=tax_objs[acc_id], debit=amount, credit=0,  # Dr input tax.
             description="Input tax", line_no=line_no,  # Label and order.
-        )
+        )  # Close the grouped expression.
     line_no += 1  # Final line credits petty cash.
     JournalLine.objects.create(  # Credit petty cash for voucher total.
         entry=entry, account=fund.gl_account, debit=0, credit=voucher.total,  # Cr petty cash.
         description=f"Petty cash: {fund.name}", line_no=line_no,  # Label and order.
-    )
+    )  # Close the grouped expression.
 
     post_journal(entry, actor_user=actor_user)  # Validate and post voucher journal.
 
@@ -243,11 +243,11 @@ def _post_voucher_atomic(voucher, *, actor_user=None):  # Transactional voucher 
         actor_user=actor_user, target=voucher,  # Actor and target context.
         message=f"Posted petty cash voucher ({voucher.total} kobo from '{fund.name}').",  # Summary.
         journal_id=entry.pk, total=voucher.total, tax=voucher.tax_total,  # Structured metadata.
-    )
+    )  # Close the grouped expression.
     return voucher  # Return posted voucher.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def void_voucher(voucher, *, actor_user=None):  # Reverse a posted petty-cash voucher.
     """Void a **posted** petty-cash voucher: reverse its journal and put the cash back.
 
@@ -259,9 +259,9 @@ def void_voucher(voucher, *, actor_user=None):  # Reverse a posted petty-cash vo
     from .models import PettyCashFund  # Local import avoids model import cycles.
 
     if voucher.status != DocumentStatus.POSTED:  # Only posted vouchers have journals to reverse.
-        raise PettyCashError(
+        raise PettyCashError(  # Raise the domain error for this path.
             f"Only a posted voucher can be voided (this is '{voucher.status}').",
-        )
+        )  # Close the grouped expression.
     if voucher.journal_id is None:  # Posted voucher should always have a posting journal.
         raise PettyCashError("Voucher has no posting journal to reverse.")
 
@@ -284,7 +284,7 @@ def void_voucher(voucher, *, actor_user=None):  # Reverse a posted petty-cash vo
                 f"(reversed journal {voucher.journal_id}); {voucher.total} kobo back to "  # Reversal and amount.
                 f"'{fund.name}'.",  # Fund name.
         journal_id=voucher.journal_id, total=voucher.total,  # Structured metadata.
-    )
+    )  # Close the grouped expression.
     return voucher  # Return voided voucher.
 
 
@@ -302,16 +302,16 @@ def replenish_fund(fund, *, bank_account, date, amount=None, actor_user=None):  
         return _replenish_fund_atomic(  # Move cash from bank to petty cash.
             fund, bank_account=bank_account, date=date, amount=amount,  # Bank, date, and optional amount.
             actor_user=actor_user,  # Acting user.
-        )
+        )  # Close the grouped expression.
     except FinanceError as exc:  # Failed replenishments should be auditable.
         record_rejection(  # Record durable rejection.
             entity=fund.entity, action=FinanceAuditAction.PETTY_CASH_REPLENISHED,  # Audit action.
             exc=exc, actor_user=actor_user, target=fund,  # Error, actor, and target context.
-        )
+        )  # Close the grouped expression.
         raise  # Preserve original finance exception.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def _replenish_fund_atomic(fund, *, bank_account, date, amount=None, actor_user=None):  # Transactional replenishment.
     from .models import JournalEntry, JournalLine, PettyCashFund  # Journal and fund models.
 
@@ -324,10 +324,10 @@ def _replenish_fund_atomic(fund, *, bank_account, date, amount=None, actor_user=
     fund.current_balance = gl_cash_on_hand(fund)  # Refresh denormalized balance before calculating shortfall.
     top_up = fund.shortfall if amount is None else int(amount)  # Use automatic shortfall or explicit amount.
     if top_up <= 0:  # Nothing valid to replenish.
-        raise PettyCashError(
+        raise PettyCashError(  # Raise the domain error for this path.
             "Nothing to replenish — the fund is already at (or above) its float."
             if amount is None else "Replenishment amount must be positive.",
-        )
+        )  # Close the grouped expression.
 
     period = resolve_period(fund.entity, date)  # Resolve replenishment period.
     entry = JournalEntry.objects.create(  # Create replenishment journal header.
@@ -335,15 +335,15 @@ def _replenish_fund_atomic(fund, *, bank_account, date, amount=None, actor_user=
         source=JournalSource.BANK, currency=fund.currency,  # Bank-source cash movement.
         narration=f"Replenish petty cash float: {fund.name}",  # Narration.
         created_by=actor_user,  # Posting actor.
-    )
+    )  # Close the grouped expression.
     JournalLine.objects.create(  # Debit petty cash account.
         entry=entry, account=fund.gl_account, debit=top_up, credit=0,  # Dr petty cash.
         description=f"Replenish petty cash: {fund.name}", line_no=1,  # Line label and order.
-    )
+    )  # Close the grouped expression.
     JournalLine.objects.create(  # Credit bank account.
         entry=entry, account=bank_account.gl_account, debit=0, credit=top_up,  # Cr bank.
         description=f"Cash to petty cash: {fund.name}", line_no=2,  # Line label and order.
-    )
+    )  # Close the grouped expression.
     post_journal(entry, actor_user=actor_user)  # Validate and post replenishment journal.
 
     fund.current_balance = gl_cash_on_hand(fund)  # re-sync from the GL (truth)
@@ -355,7 +355,7 @@ def _replenish_fund_atomic(fund, *, bank_account, date, amount=None, actor_user=
         actor_user=actor_user, target=fund,  # Actor and target context.
         message=f"Replenished {top_up} kobo into petty cash '{fund.name}'.",  # Summary.
         journal_id=entry.pk, amount=top_up,  # Structured metadata.
-    )
+    )  # Close the grouped expression.
     return entry  # Return posted replenishment journal.
 
 
@@ -377,7 +377,7 @@ def fund_status(entity, *, threshold_bps=2500) -> list:  # Return active petty-c
         .filter(entity=entity, is_active=True)  # Only active funds in entity.
         .select_related("gl_account")  # Load GL account for balance and code.
         .order_by("name")  # Stable display order.
-    )
+    )  # Close the grouped expression.
     for fund in qs:  # Build status for each fund.
         threshold = int(fund.float_amount) * threshold_bps // 10000  # Low-balance threshold in kobo.
         on_hand = gl_cash_on_hand(fund)  # live GL truth, so alerts can't be misled by drift
@@ -390,5 +390,5 @@ def fund_status(entity, *, threshold_bps=2500) -> list:  # Return active petty-c
             "shortfall": shortfall,  # Replenishment shortfall.
             "needs_replenish": on_hand <= threshold,  # Low-balance flag.
             "last_replenished_at": fund.last_replenished_at,  # Last replenishment date.
-        })
+        })  # Execute the module statement.
     return rows  # Return active fund statuses.
