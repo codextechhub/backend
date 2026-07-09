@@ -24,7 +24,7 @@ def resolve_account(entity, code: str, *, label: str = ""):  # Resolve a configu
         Account.objects  # Start from the account manager.
         .filter(entity=entity, code=code, is_active=True, is_postable=True)  # Require active postable leaf account.
         .first()  # Return one matching account or None.
-    )
+    )  # Close the grouped expression.
     if account is None:  # Missing or unusable accounts are configuration errors.
-        raise MissingAccountError(code, label=label)
+        raise MissingAccountError(code, label=label)  # Raise the domain error for this path.
     return account  # Return the resolved posting account.
