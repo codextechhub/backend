@@ -32,14 +32,14 @@ SEQ_WIDTH = 5  # Minimum width for the numeric suffix.
 def _branch_token(branch) -> str | None:  # Build the optional branch segment for a document number.
     """Render the optional branch segment: ``B07`` for branch code 7, else ``None``."""
     if branch is None:  # Entity-level documents omit the branch segment.
-        return None
+        return None  # Return the computed module result.
     code = getattr(branch, "code", None)  # Read branch code defensively from the object.
     if not code:  # Branches without a code cannot contribute a token.
-        return None
+        return None  # Return the computed module result.
     return f"B{int(code):02d}"  # Render a zero-padded numeric branch token.
 
 
-@transaction.atomic
+@transaction.atomic  # Apply the decorator to this callable.
 def next_document_number(*, entity, branch, doc_type: str, fiscal_year: int) -> str:  # Allocate one scoped document number.
     """Allocate the next document number for a scope and return the formatted string.
 
@@ -60,12 +60,12 @@ def next_document_number(*, entity, branch, doc_type: str, fiscal_year: int) -> 
     DocumentSequence.objects.get_or_create(  # Create the sequence scope on first use.
         entity=entity, branch=branch, doc_type=doc_type, fiscal_year=fiscal_year,  # Scope sequence by books, branch, type, and year.
         defaults={"last_number": 0},  # Start before the first allocated number.
-    )
+    )  # Close the grouped expression.
     seq = (  # Reload the same sequence while holding a database row lock.
         DocumentSequence.objects  # Start from the sequence manager.
         .select_for_update()  # Serialize concurrent allocators for this exact scope.
         .get(entity=entity, branch=branch, doc_type=doc_type, fiscal_year=fiscal_year)  # Fetch the locked row.
-    )
+    )  # Close the grouped expression.
     seq.last_number += 1  # Advance to the next available sequence value.
     seq.save(update_fields=["last_number", "updated_at"])  # Persist only the changed counter fields.
 
