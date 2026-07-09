@@ -519,8 +519,11 @@ def customer_statement(customer, *, start_date=None, end_date=None) -> CustomerS
         statement.total_debits += debit  # Store intermediate finance value.
         statement.total_credits += credit  # Store intermediate finance value.
 
-    statement.closing_balance = statement.opening_balance + \
-        statement.total_debits - statement.total_credits  # Finance processing step.
+    statement.closing_balance = (  # Store the computed statement closing balance.
+        statement.opening_balance  # Start from the opening balance.
+        + statement.total_debits  # Add period debit movement.
+        - statement.total_credits  # Subtract period credit movement.
+    )  # Close the closing-balance calculation.
 
     # Aging of the customer's still-open invoices as at end_date.
     for inv in (  # Iterate through finance records.
