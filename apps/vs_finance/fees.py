@@ -18,8 +18,8 @@ from .exceptions import FinanceError, PostingError  # Domain errors for invalid 
 from .receivables import post_invoice  # Posts generated invoices through the normal AR engine.
 
 
-@transaction.atomic
-def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
+@transaction.atomic  # Apply the decorator to this callable.
+def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,  # Define the callable used by this module.
                       actor_user=None):  # Generate posted invoices from a fee structure.
     """Raise one posted invoice per customer from ``structure``'s fee items.
 
@@ -42,14 +42,14 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
 
     for customer in customers:  # Generate at most one invoice per selected customer.
         if customer.entity_id != structure.entity_id:  # Cross-entity billing would corrupt books.
-            raise FinanceError(
+            raise FinanceError(  # Raise the domain error for this path.
                 f"Customer {customer.code} is not in entity {structure.entity.code}.")
         # Idempotency: don't double-bill the same structure to the same customer.  # Re-runs are safe.
         if Invoice.objects.filter(  # Look for an already posted invoice for this structure/customer.
             entity=structure.entity, customer=customer, reference=reference,  # Match the same entity, customer, and fee reference.
             status="POSTED",  # Only posted invoices count as already billed.
         ).exists():  # Skip this customer when already billed.
-            continue
+            continue  # Skip to the next loop iteration.
 
         invoice = Invoice.objects.create(  # Create the draft customer invoice header.
             entity=structure.entity, customer=customer,  # Scope invoice to the structure entity and customer.
@@ -57,7 +57,7 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
             source="MANUAL", reference=reference,  # Mark source and idempotency reference.
             narration=f"{structure.name} ({structure.code})",  # Describe the generated fee bill.
             created_by=actor_user,  # Attribute creation to the caller.
-        )
+        )  # Close the grouped expression.
         for item in items:  # Materialize each fee item as an invoice line.
             InvoiceLine.objects.create(  # Create one invoice line for the fee item.
                 invoice=invoice, line_no=item.line_no or 0,  # Preserve configured line ordering.
@@ -65,7 +65,7 @@ def generate_invoices(structure, customers, *, invoice_date=None, due_date=None,
                 revenue_account=item.revenue_account,  # Copy the revenue posting account.
                 quantity=1, unit_price=item.amount,  # Bill one unit at the configured kobo amount.
                 tax_code=item.tax_code,  # Copy configured output tax code.
-            )
+            )  # Close the grouped expression.
         post_invoice(invoice, actor_user=actor_user)  # Price, validate, and post the invoice to AR/GL.
         invoice.refresh_from_db()  # Reload posted status, totals, journal, and document number.
         created.append(invoice)  # Include the posted invoice in the result list.
