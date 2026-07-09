@@ -11,25 +11,25 @@ A bank-statement ``amount`` is **signed from our perspective**: positive is mone
 cash-account line's signed contribution is therefore ``debit - credit``, and a line
 matches a statement line when those equal. All amounts are integer kobo.
 """
-from __future__ import annotations
+from __future__ import annotations  # Defer annotation evaluation for forward references.
 
-from django.db import transaction
-from django.utils import timezone
+from django.db import transaction  # Wrap bank matching and adjustment writes atomically.
+from django.utils import timezone  # Timestamp reconciliation operations.
 
-from .accounts import resolve_account
-from .audit import record
+from .accounts import resolve_account  # Resolve GL accounts from entity-scoped codes.
+from .audit import record  # Write finance audit events for reconciliation actions.
 from .constants import (
-    BankLineStatus,
-    BankMatchSource,
-    BankReconStatus,
-    BankStatementStatus,
-    DocumentStatus,
-    FinanceAuditAction,
-    JournalSource,
-    NormalBalance,
+    BankLineStatus,  # Lifecycle of imported statement lines.
+    BankMatchSource,  # Indicates whether a match was manual, automatic, or adjustment-driven.
+    BankReconStatus,  # Overall reconciliation status snapshot.
+    BankStatementStatus,  # Lifecycle of a bank statement.
+    DocumentStatus,  # Posted/draft lifecycle for journal lines.
+    FinanceAuditAction,  # Audit action enum for banking events.
+    JournalSource,  # Journal origin indicator.
+    NormalBalance,  # Controls how signed balances are interpreted.
 )
-from .exceptions import BankReconciliationError
-from .posting import post_journal, resolve_period, reverse_journal
+from .exceptions import BankReconciliationError  # Raised for reconciliation and matching violations.
+from .posting import post_journal, resolve_period, reverse_journal  # Post, period-check, and reverse journals.
 
 
 # --------------------------------------------------------------------------- #
@@ -38,15 +38,15 @@ from .posting import post_journal, resolve_period, reverse_journal
 
 def gl_account_balance(account) -> int:
     """Net posted balance of a GL ``account`` in kobo, signed to its normal side."""
-    from django.db.models import Sum
-    from .models import AccountBalance
+    from django.db.models import Sum  # Aggregate debit and credit totals in SQL.
+    from .models import AccountBalance  # Stored balance snapshot table.
 
-    agg = AccountBalance.objects.filter(account=account).aggregate(
+    agg = AccountBalance.objects.filter(account=account).aggregate(  # Pull the posted debit/credit totals.
         d=Sum("debit_total"), c=Sum("credit_total"))
-    net = (agg["d"] or 0) - (agg["c"] or 0)
-    if account.normal_balance != NormalBalance.DEBIT:
+    net = (agg["d"] or 0) - (agg["c"] or 0)  # Compute the raw net balance.
+    if account.normal_balance != NormalBalance.DEBIT:  # Flip sign when the account's normal side is credit.
         net = -net
-    return int(net)
+    return int(net)  # Return a signed integer kobo balance.
 
 
 @transaction.atomic
@@ -71,22 +71,22 @@ def import_statement_lines(bank_account, rows, *, statement_date=None, period_la
     Two genuinely identical same-day transactions in one *fresh* batch are both kept
     (the check is against already-stored lines, not within the batch).
     """
-    from .models import BankStatement, BankStatementLine
+    from .models import BankStatement, BankStatementLine  # Import lazily to avoid model cycles.
 
-    rows = list(rows)
-    created = []
-    suspected = []
-    movement = 0
-    for row in rows:
-        external_id = (row.get("external_id") or "").strip()
-        if external_id and BankStatementLine.objects.filter(
+    rows = list(rows)  # Materialize the iterable so we can scan it once.
+    created = []  # New statement lines to insert.
+    suspected = []  # Duplicate-looking rows held back unless force is set.
+    movement = 0  # Running signed movement across the imported batch.
+    for row in rows:  # Normalize each raw row into a statement line.
+        external_id = (row.get("external_id") or "").strip()  # Clean up the optional external id.
+        if external_id and BankStatementLine.objects.filter(  # Skip exact duplicates by external id.
             bank_account=bank_account, external_id=external_id,
         ).exists():
-            continue
-        amount = int(row["amount"])
-        description = row.get("description", "")
-        reference = row.get("reference", "")
-        if (not force and not external_id and BankStatementLine.objects.filter(
+            continue  # Ignore already-imported rows with the same external id.
+        amount = int(row["amount"])  # Normalize the signed amount to integer kobo.
+        description = row.get("description", "")  # Optional bank memo/description.
+        reference = row.get("reference", "")  # Optional bank reference.
+        if (not force and not external_id and BankStatementLine.objects.filter(  # Heuristic duplicate detection when no external id exists.
             bank_account=bank_account, txn_date=row["txn_date"], amount=amount,
             description=description, reference=reference,
         ).exists()):
@@ -94,8 +94,8 @@ def import_statement_lines(bank_account, rows, *, statement_date=None, period_la
                 "txn_date": row["txn_date"], "amount": amount,
                 "description": description, "reference": reference,
             })
-            continue
-        created.append(BankStatementLine(
+            continue  # Hold suspicious duplicates back unless the caller forces the import.
+        created.append(BankStatementLine(  # Create the unsaved statement line object.
             bank_account=bank_account,
             txn_date=row["txn_date"],
             amount=amount,
@@ -103,25 +103,25 @@ def import_statement_lines(bank_account, rows, *, statement_date=None, period_la
             reference=reference,
             external_id=external_id,
         ))
-        movement += amount
+        movement += amount  # Keep a running total of the signed statement movement.
 
-    if not created:
+    if not created:  # Nothing new survived the dedupe checks.
         return None, [], suspected
 
-    opening_balance = int(opening_balance or 0)
-    if closing_balance is None:
-        closing_balance = opening_balance + movement
-    statement = BankStatement.objects.create(
+    opening_balance = int(opening_balance or 0)  # Normalize the provided opening balance.
+    if closing_balance is None:  # Derive the closing balance when the caller did not supply one.
+        closing_balance = opening_balance + movement  # Opening plus signed movements equals closing.
+    statement = BankStatement.objects.create(  # Create the imported statement header.
         bank_account=bank_account,
         statement_date=statement_date or max(l.txn_date for l in created),
         period_label=period_label or "",
         opening_balance=opening_balance, closing_balance=int(closing_balance),
         status=BankStatementStatus.UPLOADED, imported_by=actor_user,
     )
-    for line in created:
-        line.statement = statement
-    BankStatementLine.objects.bulk_create(created)
-    return statement, list(BankStatementLine.objects.filter(statement=statement)), suspected
+    for line in created:  # Attach the new rows to the statement header before saving.
+        line.statement = statement  # Set the foreign key on each line.
+    BankStatementLine.objects.bulk_create(created)  # Bulk insert the imported statement lines.
+    return statement, list(BankStatementLine.objects.filter(statement=statement)), suspected  # Return the statement and stored rows.
 
 
 # --------------------------------------------------------------------------- #
@@ -137,7 +137,7 @@ _GROUP_AUTO_MATCH_POOL_CAP = 12
 
 def _signed_gl(line) -> int:
     """A cash-account journal line's signed contribution in kobo (debit - credit)."""
-    return (line.debit or 0) - (line.credit or 0)
+    return (line.debit or 0) - (line.credit or 0)  # Positive means cash in; negative means cash out.
 
 
 def _unique_summing_subset(lines, target, *, max_size):
@@ -146,29 +146,29 @@ def _unique_summing_subset(lines, target, *, max_size):
     (ambiguous). Conservative on purpose: auto-grouping only fires when there's a single
     unambiguous answer.
     """
-    from itertools import combinations
+    from itertools import combinations  # Generate subsets to test sums.
 
-    found = None
-    for size in range(2, min(max_size, len(lines)) + 1):
-        for combo in combinations(lines, size):
-            if sum(_signed_gl(gl) for gl in combo) == target:
-                if found is not None:
-                    return None  # more than one subset fits → ambiguous
-                found = combo
-    return found
+    found = None  # Hold the single unambiguous subset when one exists.
+    for size in range(2, min(max_size, len(lines)) + 1):  # Search subsets from size 2 up to the limit.
+        for combo in combinations(lines, size):  # Try every combination of the current size.
+            if sum(_signed_gl(gl) for gl in combo) == target:  # Check whether the subset sums exactly.
+                if found is not None:  # More than one answer means the match is ambiguous.
+                    return None  # Reject ambiguous group matches.
+                found = combo  # Save the first unique matching subset.
+    return found  # Return the unique subset or None when no answer exists.
 
 
 def _unmatched_gl_lines(bank_account):
     """Posted cash-account journal lines not yet paired to a statement line."""
-    from .models import JournalLine
+    from .models import JournalLine  # Import lazily to avoid model cycles.
 
-    return (
+    return (  # Find posted cash-account journal lines that are still unpaired.
         JournalLine.objects
         .filter(
             account=bank_account.gl_account,
             entry__status=DocumentStatus.POSTED,
         )
-        # Not paired either 1:1 (matched_line) or as part of a group match.
+        # Not paired either 1:1 (matched_line) or as part of a group match.  # Exclude already matched lines.
         .filter(bank_statement_lines__isnull=True, bank_line_matches__isnull=True)
         .select_related("entry")
         .order_by("entry__date", "id")
@@ -192,88 +192,88 @@ def auto_reconcile(bank_account, *, tolerance_days=4, group=True,
     large (ambiguity/cost). Each GL line is consumed at most once. Returns the statement
     lines newly matched.
     """
-    from .models import BankLineMatch, BankStatementLine
+    from .models import BankLineMatch, BankStatementLine  # Load reconciliation models lazily.
 
-    pending = list(
+    pending = list(  # Statement lines that still need matching.
         BankStatementLine.objects
         .filter(bank_account=bank_account, status=BankLineStatus.UNMATCHED)
         .order_by("txn_date", "id")
     )
-    gl_lines = list(_unmatched_gl_lines(bank_account))
-    consumed: set[int] = set()
-    matched = []
+    gl_lines = list(_unmatched_gl_lines(bank_account))  # Unpaired GL cash lines eligible for matching.
+    consumed: set[int] = set()  # GL line ids already consumed by a match.
+    matched = []  # Statement lines matched by this run.
 
     def _mark(sline):
-        sline.status = BankLineStatus.MATCHED
-        sline.match_source = BankMatchSource.AUTO
-        sline.reconciled_at = timezone.now()
+        sline.status = BankLineStatus.MATCHED  # Mark the statement line matched.
+        sline.match_source = BankMatchSource.AUTO  # Record that the match was automatic.
+        sline.reconciled_at = timezone.now()  # Timestamp the match.
 
-    for sline in pending:
-        candidates = [
+    for sline in pending:  # First pass: exact 1:1 amount matching.
+        candidates = [  # Find all GL lines that match by amount and date window.
             gl for gl in gl_lines
             if gl.id not in consumed
             and _signed_gl(gl) == sline.amount
             and abs((gl.entry.date - sline.txn_date).days) <= tolerance_days
         ]
-        if len(candidates) != 1:
+        if len(candidates) != 1:  # Ambiguous or absent matches stay for manual review.
             continue  # 0 = no match; >1 = ambiguous, leave it for a human
-        gl = candidates[0]
-        sline.matched_line = gl
-        _mark(sline)
-        sline.save(update_fields=["matched_line", "status", "match_source", "reconciled_at", "updated_at"])
-        consumed.add(gl.id)
-        matched.append(sline)
+        gl = candidates[0]  # The only unambiguous candidate.
+        sline.matched_line = gl  # Link the statement line to the GL line.
+        _mark(sline)  # Mark the line as automatically matched.
+        sline.save(update_fields=["matched_line", "status", "match_source", "reconciled_at", "updated_at"])  # Persist the match.
+        consumed.add(gl.id)  # Prevent this GL line from being reused.
+        matched.append(sline)  # Record the match for the return value.
 
-    if group:
+    if group:  # Optional second pass: group multiple GL lines into a single bank line.
         # Second pass: group several GL lines that SUM to a still-unmatched bank line.
-        for sline in pending:
-            if sline.status != BankLineStatus.UNMATCHED:
+        for sline in pending:  # Revisit only the still-unmatched statement lines.
+            if sline.status != BankLineStatus.UNMATCHED:  # Skip anything already matched in pass one.
                 continue
-            pool = [
+            pool = [  # Candidate GL pool for a possible group match.
                 gl for gl in gl_lines
                 if gl.id not in consumed
                 and (_signed_gl(gl) > 0) == (sline.amount > 0)  # same direction
                 and abs((gl.entry.date - sline.txn_date).days) <= tolerance_days
             ]
-            if not (2 <= len(pool) <= _GROUP_AUTO_MATCH_POOL_CAP):
+            if not (2 <= len(pool) <= _GROUP_AUTO_MATCH_POOL_CAP):  # Require a bounded candidate pool.
                 continue
-            subset = _unique_summing_subset(pool, sline.amount, max_size=max_group)
-            if subset is None:
+            subset = _unique_summing_subset(pool, sline.amount, max_size=max_group)  # Find a unique subset sum.
+            if subset is None:  # Ambiguous or absent group match.
                 continue
-            BankLineMatch.objects.bulk_create(
+            BankLineMatch.objects.bulk_create(  # Create one row per paired statement/journal line.
                 [BankLineMatch(statement_line=sline, journal_line=gl) for gl in subset],
             )
-            _mark(sline)
-            sline.save(update_fields=["status", "match_source", "reconciled_at", "updated_at"])
-            consumed.update(gl.id for gl in subset)
-            matched.append(sline)
+            _mark(sline)  # Mark the statement line matched.
+            sline.save(update_fields=["status", "match_source", "reconciled_at", "updated_at"])  # Persist the group match.
+            consumed.update(gl.id for gl in subset)  # Prevent reused GL lines.
+            matched.append(sline)  # Include the matched statement line in the result.
 
-    if matched:
-        record(
+    if matched:  # Emit an audit event only when something matched.
+        record(  # Log the automatic reconciliation run.
             entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
             actor_user=actor_user, target=bank_account,
             message=f"Auto-matched {len(matched)} line(s) on {bank_account.name}.",
             matched=len(matched), bank_account_id=bank_account.id,
         )
-        _record_reconciliation(bank_account, matched_count=len(matched), actor_user=actor_user)
-    return matched
+        _record_reconciliation(bank_account, matched_count=len(matched), actor_user=actor_user)  # Snapshot the new state.
+    return matched  # Return the statement lines that matched in this run.
 
 
 def statement_balance(bank_account) -> int | None:
     """The most recent imported statement's closing balance (kobo), or None."""
-    latest = bank_account.statements.order_by("-statement_date", "-id").first()
-    return int(latest.closing_balance) if latest else None
+    latest = bank_account.statements.order_by("-statement_date", "-id").first()  # Pick the latest statement.
+    return int(latest.closing_balance) if latest else None  # Return its closing balance or None when absent.
 
 
 def _record_reconciliation(bank_account, *, matched_count, actor_user=None):
     """Snapshot book vs statement balance after a reconcile, and close clean statements."""
-    from .models import BankReconciliation
+    from .models import BankReconciliation  # Snapshot model for reconciliation results.
 
-    book = gl_account_balance(bank_account.gl_account)
-    stmt = statement_balance(bank_account)
-    stmt_val = stmt if stmt is not None else book
-    difference = book - stmt_val
-    recon = BankReconciliation.objects.create(
+    book = gl_account_balance(bank_account.gl_account)  # Current GL cash balance.
+    stmt = statement_balance(bank_account)  # Latest statement closing balance.
+    stmt_val = stmt if stmt is not None else book  # Fall back to book balance when no statement exists.
+    difference = book - stmt_val  # Difference between ledger and statement.
+    recon = BankReconciliation.objects.create(  # Persist the reconciliation snapshot.
         bank_account=bank_account, as_of_date=timezone.now().date(),
         book_balance=book, statement_balance=stmt_val, difference=difference,
         matched_count=matched_count,
@@ -281,53 +281,53 @@ def _record_reconciliation(bank_account, *, matched_count, actor_user=None):
         performed_by=actor_user,
         statement=bank_account.statements.order_by("-statement_date", "-id").first(),
     )
-    # A statement with no remaining unmatched lines is fully reconciled.
-    for st in bank_account.statements.filter(status=BankStatementStatus.UPLOADED):
-        if not st.lines.filter(status=BankLineStatus.UNMATCHED).exists() and st.lines.exists():
-            st.status = BankStatementStatus.RECONCILED
-            st.save(update_fields=["status", "updated_at"])
-    return recon
+    # A statement with no remaining unmatched lines is fully reconciled.  # Mark clean statements reconciled.
+    for st in bank_account.statements.filter(status=BankStatementStatus.UPLOADED):  # Check each uploaded statement.
+        if not st.lines.filter(status=BankLineStatus.UNMATCHED).exists() and st.lines.exists():  # Fully matched statement.
+            st.status = BankStatementStatus.RECONCILED  # Promote it to reconciled.
+            st.save(update_fields=["status", "updated_at"])  # Persist the new status.
+    return recon  # Return the reconciliation snapshot.
 
 
 @transaction.atomic
 def complete_reconciliation(bank_account, *, actor_user=None):
     """Finalise a reconciliation — record a snapshot of the account's current state."""
-    from .models import BankStatementLine
+    from .models import BankStatementLine  # Statement line model for the matched count.
 
-    matched = BankStatementLine.objects.filter(
+    matched = BankStatementLine.objects.filter(  # Count already-matched lines on this bank account.
         bank_account=bank_account, status=BankLineStatus.MATCHED).count()
-    recon = _record_reconciliation(bank_account, matched_count=matched, actor_user=actor_user)
-    record(
+    recon = _record_reconciliation(bank_account, matched_count=matched, actor_user=actor_user)  # Snapshot the state.
+    record(  # Log the reconciliation completion.
         entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
         actor_user=actor_user, target=bank_account,
         message=f"Reconciliation completed on {bank_account.name} "
                 f"(diff {recon.difference} kobo).",
         bank_account_id=bank_account.id, difference=recon.difference,
     )
-    return recon
+    return recon  # Return the completed reconciliation snapshot.
 
 
 @transaction.atomic
 def match_line(statement_line, journal_line, *, actor_user=None):
     """Manually pair a statement line to a specific cash-account journal line."""
-    bank_account = statement_line.bank_account
-    if journal_line.account_id != bank_account.gl_account_id:
+    bank_account = statement_line.bank_account  # Resolve the owning bank account once.
+    if journal_line.account_id != bank_account.gl_account_id:  # The journal must sit on the cash account.
         raise BankReconciliationError(
             "The journal line is not on this bank account's GL cash account.",
         )
-    if _signed_gl(journal_line) != statement_line.amount:
+    if _signed_gl(journal_line) != statement_line.amount:  # Amounts must match exactly in signed form.
         raise BankReconciliationError(
             f"Amount mismatch: statement {statement_line.amount} kobo vs journal line "
             f"{_signed_gl(journal_line)} kobo.",
         )
-    statement_line.matched_line = journal_line
-    statement_line.status = BankLineStatus.MATCHED
-    statement_line.match_source = BankMatchSource.MANUAL
-    statement_line.reconciled_at = timezone.now()
-    statement_line.save(
+    statement_line.matched_line = journal_line  # Link the manual match target.
+    statement_line.status = BankLineStatus.MATCHED  # Mark the line reconciled.
+    statement_line.match_source = BankMatchSource.MANUAL  # Record the manual source.
+    statement_line.reconciled_at = timezone.now()  # Timestamp the match.
+    statement_line.save(  # Persist the manual match fields.
         update_fields=["matched_line", "status", "match_source", "reconciled_at", "updated_at"],
     )
-    return statement_line
+    return statement_line  # Return the matched statement line.
 
 
 @transaction.atomic
@@ -341,58 +341,58 @@ def group_match(statement_line, journal_lines, *, actor_user=None):
     a :class:`~vs_finance.models.BankLineMatch` per pair — no ledger effect. Returns the
     statement line.
     """
-    from .models import BankLineMatch
+    from .models import BankLineMatch  # Join table for group matches.
 
-    if statement_line.status != BankLineStatus.UNMATCHED:
+    if statement_line.status != BankLineStatus.UNMATCHED:  # Only unmatched lines can be grouped.
         raise BankReconciliationError(
             f"Statement line is '{statement_line.status}', only an unmatched line can be matched.",
         )
-    lines = list(journal_lines)
-    if len(lines) < 2:
+    lines = list(journal_lines)  # Materialize the candidate journal lines.
+    if len(lines) < 2:  # Group matching needs more than one line.
         raise BankReconciliationError(
             "A group match needs at least two journal lines (use match for a single line).",
         )
 
-    bank_account = statement_line.bank_account
-    seen: set[int] = set()
-    total = 0
-    for jl in lines:
-        if jl.id in seen:
+    bank_account = statement_line.bank_account  # Resolve the owning bank account once.
+    seen: set[int] = set()  # Prevent duplicate journal lines in the same group.
+    total = 0  # Running signed total of the candidate lines.
+    for jl in lines:  # Validate every candidate journal line.
+        if jl.id in seen:  # Reject duplicates in the input list.
             raise BankReconciliationError("A journal line appears twice in the group.")
-        seen.add(jl.id)
-        if jl.account_id != bank_account.gl_account_id:
+        seen.add(jl.id)  # Mark this journal line as seen.
+        if jl.account_id != bank_account.gl_account_id:  # Every line must be on the cash account.
             raise BankReconciliationError(
                 "A journal line is not on this bank account's GL cash account.",
             )
-        if jl.entry.status != DocumentStatus.POSTED:
+        if jl.entry.status != DocumentStatus.POSTED:  # Only posted journal lines can be matched.
             raise BankReconciliationError("Only posted journal lines can be matched.")
-        if jl.bank_statement_lines.exists() or jl.bank_line_matches.exists():
+        if jl.bank_statement_lines.exists() or jl.bank_line_matches.exists():  # Reject already-matched lines.
             raise BankReconciliationError(f"Journal line {jl.id} is already matched.")
-        total += _signed_gl(jl)
+        total += _signed_gl(jl)  # Accumulate the signed contribution.
 
-    if total != statement_line.amount:
+    if total != statement_line.amount:  # The group must sum exactly to the statement amount.
         raise BankReconciliationError(
             f"Group total {total} kobo does not equal the statement line "
             f"{statement_line.amount} kobo.",
         )
 
-    BankLineMatch.objects.bulk_create(
+    BankLineMatch.objects.bulk_create(  # Persist one link row per journal line.
         [BankLineMatch(statement_line=statement_line, journal_line=jl) for jl in lines],
     )
-    statement_line.status = BankLineStatus.MATCHED
-    statement_line.match_source = BankMatchSource.MANUAL
-    statement_line.reconciled_at = timezone.now()
-    statement_line.save(
+    statement_line.status = BankLineStatus.MATCHED  # Mark the statement line reconciled.
+    statement_line.match_source = BankMatchSource.MANUAL  # Record that a human applied the group match.
+    statement_line.reconciled_at = timezone.now()  # Timestamp the match.
+    statement_line.save(  # Persist the statement line state.
         update_fields=["status", "match_source", "reconciled_at", "updated_at"],
     )
-    record(
+    record(  # Write a reconciliation audit event.
         entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
         actor_user=actor_user, target=bank_account,
         message=f"Group-matched a statement line to {len(lines)} journal line(s) "
                 f"on {bank_account.name}.",
         bank_account_id=bank_account.id, journal_lines=len(lines),
     )
-    return statement_line
+    return statement_line  # Return the matched statement line.
 
 
 @transaction.atomic
@@ -406,60 +406,60 @@ def split_match(journal_line, statement_lines, *, actor_user=None):
     :class:`~vs_finance.models.BankLineMatch` per statement line — no ledger effect.
     Unmatching any one of them later frees just that line (see :func:`unmatch_line`).
     """
-    from .models import BankLineMatch
+    from .models import BankLineMatch  # Join table for split matches.
 
-    slines = list(statement_lines)
-    if len(slines) < 2:
+    slines = list(statement_lines)  # Materialize the statement lines.
+    if len(slines) < 2:  # Split matching needs more than one statement line.
         raise BankReconciliationError(
             "A split match needs at least two statement lines (use match for one).",
         )
-    bank_account = slines[0].bank_account
-    if journal_line.account_id != bank_account.gl_account_id:
+    bank_account = slines[0].bank_account  # All statement lines must belong to the same bank account.
+    if journal_line.account_id != bank_account.gl_account_id:  # The journal must sit on the same cash account.
         raise BankReconciliationError(
             "The journal line is not on this bank account's GL cash account.",
         )
-    if journal_line.entry.status != DocumentStatus.POSTED:
+    if journal_line.entry.status != DocumentStatus.POSTED:  # Only posted journal lines can be matched.
         raise BankReconciliationError("Only a posted journal line can be matched.")
-    if journal_line.bank_statement_lines.exists() or journal_line.bank_line_matches.exists():
+    if journal_line.bank_statement_lines.exists() or journal_line.bank_line_matches.exists():  # Reject already-matched lines.
         raise BankReconciliationError(f"Journal line {journal_line.id} is already matched.")
 
-    seen: set[int] = set()
-    total = 0
-    for sl in slines:
-        if sl.id in seen:
+    seen: set[int] = set()  # Prevent duplicate statement lines in the input.
+    total = 0  # Running signed sum of the statement lines.
+    for sl in slines:  # Validate every statement line.
+        if sl.id in seen:  # Reject duplicates in the input list.
             raise BankReconciliationError("A statement line appears twice in the split.")
-        seen.add(sl.id)
-        if sl.bank_account_id != bank_account.id:
+        seen.add(sl.id)  # Mark the statement line as seen.
+        if sl.bank_account_id != bank_account.id:  # All lines must belong to the same bank account.
             raise BankReconciliationError("All statement lines must belong to the same bank account.")
-        if sl.status != BankLineStatus.UNMATCHED:
+        if sl.status != BankLineStatus.UNMATCHED:  # Only unmatched lines can participate.
             raise BankReconciliationError(
                 f"Statement line {sl.id} is '{sl.status}', only an unmatched line can be matched.",
             )
-        total += sl.amount
+        total += sl.amount  # Accumulate the statement amounts.
 
-    if total != _signed_gl(journal_line):
+    if total != _signed_gl(journal_line):  # The split must equal the journal line exactly.
         raise BankReconciliationError(
             f"Statement lines sum to {total} kobo, not the journal line's "
             f"{_signed_gl(journal_line)} kobo.",
         )
 
-    BankLineMatch.objects.bulk_create(
+    BankLineMatch.objects.bulk_create(  # Create one match row per statement line.
         [BankLineMatch(statement_line=sl, journal_line=journal_line) for sl in slines],
     )
-    now = timezone.now()
-    for sl in slines:
-        sl.status = BankLineStatus.MATCHED
-        sl.match_source = BankMatchSource.MANUAL
-        sl.reconciled_at = now
-        sl.save(update_fields=["status", "match_source", "reconciled_at", "updated_at"])
-    record(
+    now = timezone.now()  # Share one timestamp across the matched rows.
+    for sl in slines:  # Mark each statement line matched.
+        sl.status = BankLineStatus.MATCHED  # Update the status.
+        sl.match_source = BankMatchSource.MANUAL  # Record manual intervention.
+        sl.reconciled_at = now  # Apply the same reconciliation timestamp.
+        sl.save(update_fields=["status", "match_source", "reconciled_at", "updated_at"])  # Persist the state.
+    record(  # Log the split match in the audit trail.
         entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
         actor_user=actor_user, target=bank_account,
         message=f"Split-matched journal line {journal_line.id} across {len(slines)} "
                 f"statement line(s) on {bank_account.name}.",
         bank_account_id=bank_account.id, statement_lines=len(slines),
     )
-    return slines
+    return slines  # Return the matched statement lines.
 
 
 @transaction.atomic
@@ -470,31 +470,31 @@ def unmatch_line(statement_line, *, actor_user=None):
     an adjusting journal reverses that journal (a mirror entry that nets to zero),
     so unmatching never silently leaves the ledger out of step.
     """
-    if statement_line.status != BankLineStatus.MATCHED:
+    if statement_line.status != BankLineStatus.MATCHED:  # Only matched lines can be reversed.
         raise BankReconciliationError("Only a matched line can be unmatched.")
-    bank_account = statement_line.bank_account
-    adj = statement_line.adjusting_journal
-    if adj is not None:
-        reverse_journal(adj, actor_user=actor_user)
-    # Drop any group-match links (many-to-one); these carry no ledger effect.
-    statement_line.line_matches.all().delete()
-    statement_line.matched_line = None
-    statement_line.adjusting_journal = None
-    statement_line.status = BankLineStatus.UNMATCHED
-    statement_line.match_source = ""
-    statement_line.reconciled_at = None
-    statement_line.save(update_fields=[
+    bank_account = statement_line.bank_account  # Resolve the owning bank account.
+    adj = statement_line.adjusting_journal  # Capture any adjusting journal before clearing it.
+    if adj is not None:  # Reverse the adjusting journal when one exists.
+        reverse_journal(adj, actor_user=actor_user)  # Post a reversing journal to neutralize the adjustment.
+    # Drop any group-match links (many-to-one); these carry no ledger effect.  # Remove many-to-one links.
+    statement_line.line_matches.all().delete()  # Clear group-match links.
+    statement_line.matched_line = None  # Remove the direct match link.
+    statement_line.adjusting_journal = None  # Remove the adjustment link.
+    statement_line.status = BankLineStatus.UNMATCHED  # Restore the unmatched status.
+    statement_line.match_source = ""  # Clear the match source.
+    statement_line.reconciled_at = None  # Clear the reconciliation timestamp.
+    statement_line.save(update_fields=[  # Persist the unmatch state.
         "matched_line", "adjusting_journal", "status", "match_source",
         "reconciled_at", "updated_at",
     ])
-    record(
+    record(  # Log the unmatch in the audit trail.
         entity=bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
         actor_user=actor_user, target=bank_account,
         message=f"Unmatched a statement line on {bank_account.name}"
                 + (f" and reversed adjusting journal {adj.pk}." if adj else "."),
         bank_account_id=bank_account.id,
     )
-    return statement_line
+    return statement_line  # Return the unmatched statement line.
 
 
 @transaction.atomic
@@ -506,25 +506,25 @@ def set_line_ignored(statement_line, *, ignored=True, reason="", actor_user=None
     only counts ``UNMATCHED``), so a statement of MATCHED + IGNORED lines can still
     reconcile. Only unmatched↔ignored transitions are allowed.
     """
-    if ignored:
-        if statement_line.status != BankLineStatus.UNMATCHED:
+    if ignored:  # Move an unmatched line into ignored state.
+        if statement_line.status != BankLineStatus.UNMATCHED:  # Only unmatched lines can be ignored.
             raise BankReconciliationError(
                 f"Statement line is '{statement_line.status}', only an unmatched line can be ignored.",
             )
-        statement_line.status = BankLineStatus.IGNORED
-    else:
-        if statement_line.status != BankLineStatus.IGNORED:
+        statement_line.status = BankLineStatus.IGNORED  # Mark the line ignored.
+    else:  # Restore an ignored line back to unmatched.
+        if statement_line.status != BankLineStatus.IGNORED:  # Only ignored lines can be restored.
             raise BankReconciliationError("Only an ignored line can be un-ignored.")
-        statement_line.status = BankLineStatus.UNMATCHED
-    statement_line.save(update_fields=["status", "updated_at"])
-    record(
+        statement_line.status = BankLineStatus.UNMATCHED  # Restore the unmatched state.
+    statement_line.save(update_fields=["status", "updated_at"])  # Persist the status change.
+    record(  # Log the ignore/un-ignore action.
         entity=statement_line.bank_account.entity, action=FinanceAuditAction.BANK_RECONCILED,
         actor_user=actor_user, target=statement_line.bank_account,
         message=(f"{'Ignored' if ignored else 'Un-ignored'} a statement line on "
                  f"{statement_line.bank_account.name}." + (f" Reason: {reason}" if reason else "")),
         bank_account_id=statement_line.bank_account_id,
     )
-    return statement_line
+    return statement_line  # Return the updated statement line.
 
 
 # --------------------------------------------------------------------------- #
@@ -545,70 +545,70 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
     * outflow (amount < 0): ``Dr counter (expense), Cr cash``
     * inflow  (amount > 0): ``Dr cash, Cr counter (income/contra)``
     """
-    from .constants import BANK_CHARGES_CODE
-    from .models import JournalEntry, JournalLine
+    from .constants import BANK_CHARGES_CODE  # Default code for bank charges.
+    from .models import JournalEntry, JournalLine  # Journal models for the adjustment posting.
 
-    bank_account = statement_line.bank_account
-    entity = bank_account.entity
-    if statement_line.status != BankLineStatus.UNMATCHED:
+    bank_account = statement_line.bank_account  # Resolve the owning bank account.
+    entity = bank_account.entity  # Resolve the owning entity.
+    if statement_line.status != BankLineStatus.UNMATCHED:  # Only unmatched lines can be adjusted.
         raise BankReconciliationError(
             f"Statement line is '{statement_line.status}', only an unmatched line can be adjusted.",
         )
-    if statement_line.amount == 0:
+    if statement_line.amount == 0:  # Zero-amount lines do not require adjustments.
         raise BankReconciliationError("Cannot adjust a zero-amount statement line.")
 
-    if counter_account is None:
-        counter_account = resolve_account(
+    if counter_account is None:  # Resolve a default counter account when one is not supplied.
+        counter_account = resolve_account(  # Default to bank charges if the caller didn't specify a code.
             entity, counter_code or BANK_CHARGES_CODE, label="bank charge counter",
         )
 
-    period = resolve_period(entity, statement_line.txn_date)
-    cash = bank_account.gl_account
-    magnitude = abs(statement_line.amount)
-    inflow = statement_line.amount > 0
+    period = resolve_period(entity, statement_line.txn_date)  # Find the open accounting period for the line date.
+    cash = bank_account.gl_account  # The bank account's GL cash account.
+    magnitude = abs(statement_line.amount)  # Use the absolute amount for the adjustment journal.
+    inflow = statement_line.amount > 0  # Positive means bank credit/inflow.
 
-    entry = JournalEntry.objects.create(
+    entry = JournalEntry.objects.create(  # Create the adjusting journal header.
         entity=entity, branch=bank_account.branch,
         date=statement_line.txn_date, period=period,
         source=JournalSource.BANK,
         narration=narration or statement_line.description or "Bank adjustment",
         reference=statement_line.reference, created_by=actor_user,
     )
-    if inflow:
-        cash_line = JournalLine.objects.create(
+    if inflow:  # Bank credited us, so cash is debited and the counter account is credited.
+        cash_line = JournalLine.objects.create(  # Debit the cash account for the inflow.
             entry=entry, account=cash, debit=magnitude, credit=0,
             description="Bank credit", line_no=1,
         )
-        JournalLine.objects.create(
+        JournalLine.objects.create(  # Credit the counter account for the offset.
             entry=entry, account=counter_account, debit=0, credit=magnitude,
             description=statement_line.description or "Bank credit", line_no=2,
         )
-    else:
-        JournalLine.objects.create(
+    else:  # Bank charged us, so the counter account is debited and cash is credited.
+        JournalLine.objects.create(  # Debit the counter account for the expense.
             entry=entry, account=counter_account, debit=magnitude, credit=0,
             description=statement_line.description or "Bank charge", line_no=1,
         )
-        cash_line = JournalLine.objects.create(
+        cash_line = JournalLine.objects.create(  # Credit the cash account for the bank charge.
             entry=entry, account=cash, debit=0, credit=magnitude,
             description="Bank charge", line_no=2,
         )
 
-    post_journal(entry, actor_user=actor_user)
+    post_journal(entry, actor_user=actor_user)  # Validate and post the adjusting journal.
 
-    statement_line.adjusting_journal = entry
-    statement_line.matched_line = cash_line
-    statement_line.status = BankLineStatus.MATCHED
-    statement_line.match_source = BankMatchSource.ADJUSTMENT
-    statement_line.reconciled_at = timezone.now()
-    statement_line.save(update_fields=[
+    statement_line.adjusting_journal = entry  # Link the adjustment journal.
+    statement_line.matched_line = cash_line  # Treat the generated cash line as the match target.
+    statement_line.status = BankLineStatus.MATCHED  # Mark the statement line matched.
+    statement_line.match_source = BankMatchSource.ADJUSTMENT  # Record that the match came from an adjustment.
+    statement_line.reconciled_at = timezone.now()  # Timestamp the adjustment match.
+    statement_line.save(update_fields=[  # Persist the adjusted statement line state.
         "adjusting_journal", "matched_line", "status", "match_source",
         "reconciled_at", "updated_at",
     ])
 
-    record(
+    record(  # Log the bank adjustment in the audit trail.
         entity=entity, action=FinanceAuditAction.BANK_CHARGE_POSTED,
         actor_user=actor_user, target=bank_account,
         message=f"Booked bank adjustment {magnitude} kobo on {bank_account.name}.",
         journal_id=entry.pk, amount=statement_line.amount,
     )
-    return entry
+    return entry  # Return the posted adjusting journal entry.
