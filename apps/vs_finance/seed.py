@@ -16,7 +16,7 @@ DEFAULT_CURRENCIES = [  # Currency rows created by seed_currencies.
     {"code": "USD", "name": "US Dollar", "symbol": "$", "minor_unit": 2},  # US dollar.
     {"code": "GBP", "name": "Pound Sterling", "symbol": "£", "minor_unit": 2},  # Pound sterling.
     {"code": "EUR", "name": "Euro", "symbol": "€", "minor_unit": 2},  # Euro.
-]
+]  # Close the grouped expression.
 
 #: (code, name, type, is_postable, is_contra). Header rows (is_postable=False) give
 #: the tree its sections; leaves take postings.
@@ -58,7 +58,7 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("5300", "General & Administrative", AccountType.EXPENSE, True, False),  # General admin expense.
     ("5400", "Depreciation Expense", AccountType.EXPENSE, True, False),  # Depreciation expense.
     ("5500", "Bank Charges", AccountType.EXPENSE, True, False),  # Bank charges expense.
-]
+]  # Close the grouped expression.
 
 #: Starter statutory tax obligations for a Nigerian entity. Each row maps a tax to
 #: the liability control account it drains (and, for VAT, the recoverable input
@@ -73,7 +73,7 @@ DEFAULT_TAX_OBLIGATIONS = [  # Starter statutory obligations.
      "State Internal Revenue Service", TaxFilingFrequency.MONTHLY, 10),  # PAYE authority and due day.
     ("PENSION", "Pension Contributions", TaxObligationType.PENSION, "2320", None,  # Pension payable account.
      "Pension Fund Administrator", TaxFilingFrequency.MONTHLY, 7),  # Pension authority and due day.
-]
+]  # Close the grouped expression.
 
 #: IFRS-for-SMEs presentation line for each default-chart account code. Lets the
 #: statutory export pack regroup the raw chart into the lines a FIRS / CAC filing
@@ -98,7 +98,7 @@ DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory present
     "5100": IFRSLine.COST_OF_SALES, "5150": IFRSLine.COST_OF_SALES,  # Cost of sales lines.
     "5200": IFRSLine.ADMIN_EXPENSES, "5300": IFRSLine.ADMIN_EXPENSES,  # Admin expenses.
     "5400": IFRSLine.ADMIN_EXPENSES, "5500": IFRSLine.FINANCE_COSTS,  # Depreciation and finance costs.
-}
+}  # Close the grouped expression.
 
 #: parent_code by child_code — wires the tree after the flat create.
 _PARENTS = {  # Parent account code by child account code.
@@ -110,7 +110,7 @@ _PARENTS = {  # Parent account code by child account code.
     "4100": "4000", "4900": "4000", "4910": "4000",  # Income children.
     "5100": "5000", "5150": "5000", "5200": "5000", "5300": "5000",  # Expense children.
     "5400": "5000", "5500": "5000",  # More expense children.
-}
+}  # Close the grouped expression.
 
 
 def seed_currencies():  # Create or update platform default currencies.
@@ -143,8 +143,8 @@ def seed_chart_of_accounts(entity):  # Create or update the starter chart for on
                 "is_postable": postable,  # Whether journals may post directly here.
                 "is_contra": contra,  # Whether normal balance is contra to account type.
                 "ifrs_line": ifrs_line,  # Statutory presentation line.
-            },
-        )
+            },  # Close the grouped value.
+        )  # Close the grouped expression.
         # Backfill the IFRS line on a pre-existing account that hasn't been mapped yet
         # (e.g. a chart seeded before statutory packs existed); never override a line
         # an operator has set deliberately.  # Preserve manual chart customization.
@@ -203,8 +203,8 @@ def seed_fiscal_year(entity, year=None, start_month=1):  # Create a fiscal year 
         defaults={  # Dates used only on first creation.
             "start_date": datetime.date(first_y, first_m, 1),  # First fiscal period start.
             "end_date": datetime.date(after_y, after_m, 1) - datetime.timedelta(days=1),  # Last fiscal period end.
-        },
-    )
+        },  # Close the grouped value.
+    )  # Close the grouped expression.
 
     periods = []  # Periods returned to caller.
     for i in range(12):  # Create twelve monthly periods.
@@ -219,8 +219,8 @@ def seed_fiscal_year(entity, year=None, start_month=1):  # Create a fiscal year 
                 "name": f"{py}-{pm:02d}",  # Period display name.
                 "start_date": start,  # Period start date.
                 "end_date": end,  # Period end date.
-            },
-        )
+            },  # Close the grouped value.
+        )  # Close the grouped expression.
         periods.append(period)  # Preserve period order.
     return fiscal_year, periods  # Return fiscal year and its periods.
 
@@ -241,7 +241,7 @@ def seed_tax_obligations(entity):  # Create statutory tax obligations for one en
         if liability is None:  # Skip obligations missing mandatory posting account.
             # Without its control account the obligation can't post; skip rather
             # than create an orphan that would fail at filing time.  # Avoid broken seed rows.
-            continue
+            continue  # Skip to the next loop iteration.
         TaxObligation.objects.get_or_create(  # Idempotently create tax obligation.
             entity=entity, code=code,  # Unique obligation identity.
             defaults={  # Fields used only on first creation.
@@ -252,7 +252,7 @@ def seed_tax_obligations(entity):  # Create statutory tax obligations for one en
                 "authority_name": authority,  # Filing authority.
                 "frequency": freq,  # Filing frequency.
                 "filing_day": day,  # Day of month due.
-            },
-        )
+            },  # Close the grouped value.
+        )  # Close the grouped expression.
 
     return list(TaxObligation.objects.filter(entity=entity).order_by("code"))  # Return seeded obligations in code order.
