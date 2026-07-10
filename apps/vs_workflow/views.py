@@ -40,18 +40,21 @@ from vs_workflow.services.approvers import resolve_approvers
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+# Apply school scope only when the request has one.
 def _filter_by_school(qs, school):
     if school is not None:
         return qs.filter(school=school)
     return qs
 
 
+# Apply branch scope only when the user is branch-scoped.
 def _filter_by_branch(qs, branch):
     if branch is not None:
         return qs.filter(branch=branch)
     return qs
 
 
+# Resolve school/branch context once for all workflow views.
 class SchoolScopedMixin:
     def get_school(self):
         return getattr(self.request, "_cached_school", None)
@@ -69,10 +72,12 @@ class WorkflowTemplateViewSet(
     serializer_class = WorkflowTemplateReadSerializer
 
     def get_permissions(self):
+        # Publishing templates requires manage rights; read endpoints use view rights.
         self.rbac_permission = PERM_TEMPLATE_MANAGE if self.action == "publish" else PERM_TEMPLATE_VIEW
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
+        # Templates are explicitly scoped; global manager context is not trusted here.
         qs = _filter_by_school(WorkflowTemplate.objects.all(), self.get_school())
         qs = _filter_by_branch(qs, self.get_branch())
         return qs.prefetch_related("stages", "routes")
@@ -141,6 +146,7 @@ class WorkflowTemplateViewSet(
         p = WorkflowTemplatePublishSerializer(data=request.data)
         p.is_valid(raise_exception=True)
         d = p.validated_data
+        # Template publishing replaces stage/route configuration through the service layer.
         t = templates_svc.publish_template(
             school=self.get_school(),
             branch=self.get_branch(),
@@ -167,7 +173,7 @@ class WorkflowInstanceViewSet(
         elif self.action in ("list", "retrieve"):
             self.rbac_permission = PERM_INSTANCE_VIEW
         else:
-            # withdraw, resubmit, record_action — actor-level, no extra RBAC key
+            # Actor-level actions are guarded by ownership/eligibility in the service layer.
             return [IsAuthenticatedAndActive()]
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
@@ -175,6 +181,7 @@ class WorkflowInstanceViewSet(
         return WorkflowInstanceDetailSerializer if self.action == "retrieve" else WorkflowInstanceListSerializer
 
     def get_queryset(self):
+        # Instance lists are tenant-scoped before any user-supplied filters apply.
         qs = (_filter_by_school(WorkflowInstance.objects.all(), self.get_school())
               .select_related("template", "current_stage")
               .prefetch_related("stage_instances__stage", "stage_instances__actions",
@@ -200,6 +207,7 @@ class WorkflowInstanceViewSet(
                 "message": "The referenced document was not found.",
                 "error": {"code": "DOCUMENT_NOT_FOUND", "detail": {}},
             }, status=status.HTTP_404_NOT_FOUND)
+        # Submission service validates the document handler, template, and initial routing.
         instance = submission_svc.submit_for_approval(
             document=document, requested_by=request.user,
             template_code=d.get("template_code") or None,
@@ -251,6 +259,7 @@ class ReverseActionView(SchoolScopedMixin, APIView):
             raise NotFound("Action not found.")
         school = self.get_school()
         if school is not None and row.stage_instance.instance.school_id != school.pk:
+            # Hide cross-school action existence behind the same 404.
             raise NotFound("Action not found.")
         reversal = actions_svc.reverse_action(action_id, request.user, p.validated_data["reason"])
         return Response({"reversal_action_id": str(reversal.id)})
@@ -268,6 +277,7 @@ class PendingApprovalsView(SchoolScopedMixin, APIView):
     def get(self, request):
         school = self.get_school()
         user = request.user
+        # Start from approver snapshots so delegated approvals are included.
         snaps_qs = WorkflowStageApprover.objects.filter(
             user=user,
             stage_instance__status="ACTIVE",
@@ -284,8 +294,10 @@ class PendingApprovalsView(SchoolScopedMixin, APIView):
             ).values_list("stage_instance_id", "attempt"))
         results = []
         for snap in snaps:
+            # Hide stages where the actor already voted in the current attempt.
             if (snap.stage_instance_id, snap.stage_instance.attempt) in already_acted:
                 continue
+            # Ignore stale approver snapshots from previous attempts.
             if snap.attempt != snap.stage_instance.attempt:
                 continue
             inst = snap.stage_instance.instance
@@ -305,6 +317,7 @@ class MySubmissionsView(SchoolScopedMixin, APIView):
     permission_classes = [IsAuthenticatedAndActive]
 
     def get(self, request):
+        # Submitter dashboard is restricted to the caller's own submitted instances.
         qs = (_filter_by_school(WorkflowInstance.objects.all(), self.get_school())
               .filter(requested_by=request.user)
               .select_related("template", "current_stage")
@@ -324,6 +337,7 @@ class TeamLoadView(SchoolScopedMixin, APIView):
 
     def get(self, request):
         school = self.get_school()
+        # Count active stage instances by document type/stage for operational load.
         base = WorkflowStageInstance.objects.filter(status="ACTIVE")
         if school is not None:
             base = base.filter(instance__school=school)
@@ -354,10 +368,12 @@ class ApprovalDelegationViewSet(SchoolScopedMixin, ModelViewSet):
         school = self.get_school()
         qs = _filter_by_school(ApprovalDelegation.objects.all(), school)
         if not user_has_rbac_permission(user, PERM_TEMPLATE_MANAGE, school=school):
+            # Non-admin users can only see delegations they created or receive.
             qs = qs.filter(Q(delegator=user) | Q(delegate=user))
         return qs.order_by("-starts_at")
 
     def perform_create(self, serializer):
+        # Delegations are always created by the current user within the active school scope.
         serializer.save(school=self.get_school(), delegator=self.request.user)
 
     @action(detail=True, methods=["post"])
@@ -371,6 +387,7 @@ class ApprovalDelegationViewSet(SchoolScopedMixin, ModelViewSet):
                 "message": "You do not have permission to revoke this delegation.",
                 "error": {"code": "PERMISSION_DENIED", "detail": {}},
             }, status=status.HTTP_403_FORBIDDEN)
+        # Revocation is timestamped instead of deleting the delegation record.
         delegation.revoked_at = timezone.now()
         delegation.save(update_fields=["revoked_at"])
         return Response(ApprovalDelegationSerializer(delegation).data)

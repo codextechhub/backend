@@ -28,6 +28,7 @@ from vs_workflow.services import routing as routing_service
 logger = logging.getLogger(__name__)
 
 
+# Run document-specific side effects after the workflow state change succeeds.
 def _run_handler_callback(instance, method: str, context: dict) -> None:
     """Invoke a document handler lifecycle callback (on_cancelled, on_withdrawn,
     …) without letting a missing handler block the engine's own state change.
@@ -47,6 +48,7 @@ def _run_handler_callback(instance, method: str, context: dict) -> None:
     getattr(handler, method)(instance, context)
 
 
+# Lock a workflow instance before mutating state.
 def _lock_instance(instance_id) -> WorkflowInstance:
     """Fetch the instance under a row-level write lock (SELECT FOR UPDATE).
 
@@ -58,6 +60,7 @@ def _lock_instance(instance_id) -> WorkflowInstance:
     return WorkflowInstance.objects.select_for_update().get(pk=instance_id)
 
 
+# Locate the active stage attempt that should receive the next action.
 def _active_stage_instance(instance: WorkflowInstance) -> WorkflowStageInstance:
     """Return the single ACTIVE WorkflowStageInstance for the current stage.
 
@@ -76,6 +79,7 @@ def _active_stage_instance(instance: WorkflowInstance) -> WorkflowStageInstance:
     return si
 
 
+# Verify the actor belongs to the frozen approver snapshot.
 def _check_eligibility(stage_instance, actor) -> WorkflowStageApprover:
     """Verify the actor is in the frozen approver snapshot for this stage attempt.
 
@@ -91,6 +95,7 @@ def _check_eligibility(stage_instance, actor) -> WorkflowStageApprover:
     return snap
 
 
+# Determine whether the current stage has enough approvals to advance.
 def _stage_fully_approved(stage_instance: WorkflowStageInstance) -> bool:
     """Check whether the stage's advance_rule threshold has been met.
 
@@ -113,6 +118,7 @@ def _stage_fully_approved(stage_instance: WorkflowStageInstance) -> bool:
     return eligible_count > 0 and approved_count >= eligible_count
 
 
+# Record one approver decision and advance or terminate the workflow as needed.
 def record_action(instance_id, actor, action: str, comment: str = "") -> WorkflowInstance:
     """Record an approver vote: APPROVED, REJECTED, or RETURNED."""
     if action not in {StageActionEnum.APPROVED, StageActionEnum.REJECTED, StageActionEnum.RETURNED}:
@@ -132,7 +138,7 @@ def record_action(instance_id, actor, action: str, comment: str = "") -> Workflo
         si = _active_stage_instance(instance)
         snap = _check_eligibility(si, actor)
 
-        # Duplicate vote check.
+        # One active vote per actor per attempt keeps quorum math stable.
         if WorkflowStageAction.objects.filter(
             stage_instance=si, actor=actor, attempt=si.attempt,
             is_reversal_of__isnull=True, reversed_at__isnull=True).exists():
@@ -148,12 +154,14 @@ def record_action(instance_id, actor, action: str, comment: str = "") -> Workflo
                                      "attempt": si.attempt, "action_id": str(action_row.id)})
 
         if action == StageActionEnum.RETURNED:
+            # RETURNED pauses the workflow and hands control back to the requester.
             si.status = WorkflowStageStatus.RETURNED
             si.resolved_at = timezone.now()
             si.save(update_fields=["status", "resolved_at"])
             return routing_service._return_to_requester(instance, actor, comment, si.stage_id)
 
         if action == StageActionEnum.REJECTED:
+            # Rejection either terminates the workflow or returns it based on stage policy.
             si.status = WorkflowStageStatus.REJECTED
             si.resolved_at = timezone.now()
             si.save(update_fields=["status", "resolved_at"])
@@ -163,7 +171,7 @@ def record_action(instance_id, actor, action: str, comment: str = "") -> Workflo
                 return routing_service._terminate_rejected(instance, actor, comment)
             return routing_service._return_to_requester(instance, actor, comment, si.stage_id)
 
-        # APPROVED — check advance rule.
+        # Approval advances only after the stage's configured threshold is met.
         if _stage_fully_approved(si):
             si.status = WorkflowStageStatus.APPROVED
             si.resolved_at = timezone.now()
@@ -173,6 +181,7 @@ def record_action(instance_id, actor, action: str, comment: str = "") -> Workflo
         return instance
 
 
+# Let the requester stop a non-terminal workflow they submitted.
 def withdraw(instance_id, requester) -> WorkflowInstance:
     """Requester withdraws their submission. Always permitted until final approval."""
     with transaction.atomic():
@@ -181,6 +190,7 @@ def withdraw(instance_id, requester) -> WorkflowInstance:
             raise InstanceTerminalError(instance=str(instance.id), status=instance.status)
         if requester.pk != instance.requested_by_id:
             raise InvalidInstanceStateError("Only the requester can withdraw.")
+        # Withdrawal is terminal and clears the active stage pointer.
         instance.status = WorkflowInstanceStatus.WITHDRAWN
         instance.current_stage = None
         instance.completed_at = timezone.now()
@@ -192,6 +202,7 @@ def withdraw(instance_id, requester) -> WorkflowInstance:
         return instance
 
 
+# Let an admin terminally cancel a stuck or invalid workflow.
 def cancel(instance_id, admin, reason: str) -> WorkflowInstance:
     """Admin cancels a stuck instance. Terminal; requester starts over."""
     if not reason.strip():
@@ -200,6 +211,7 @@ def cancel(instance_id, admin, reason: str) -> WorkflowInstance:
         instance = _lock_instance(instance_id)
         if instance.is_terminal:
             raise InstanceTerminalError(instance=str(instance.id), status=instance.status)
+        # Cancellation is terminal; a requester must submit a fresh instance.
         instance.status = WorkflowInstanceStatus.CANCELLED
         instance.current_stage = None
         instance.completed_at = timezone.now()
@@ -213,6 +225,7 @@ def cancel(instance_id, admin, reason: str) -> WorkflowInstance:
         return instance
 
 
+# Reverse a prior approver action and reopen its stage when needed.
 def reverse_action(action_id, admin, reason: str) -> WorkflowStageAction:
     """Admin reverses a recorded approver vote. Re-activates the stage."""
     if not reason.strip():
@@ -252,6 +265,7 @@ def reverse_action(action_id, admin, reason: str) -> WorkflowStageAction:
             si.save(update_fields=["status", "resolved_at"])
             instance.current_stage = si.stage
             if instance.status == WorkflowInstanceStatus.APPROVED:
+                # Reopening a fully approved instance puts it back into active review.
                 instance.status = WorkflowInstanceStatus.IN_PROGRESS
                 instance.completed_at = None
             instance.state_version += 1
@@ -260,6 +274,7 @@ def reverse_action(action_id, admin, reason: str) -> WorkflowStageAction:
         return reversal
 
 
+# Resume a returned workflow from the returning stage with a fresh attempt.
 def resubmit(instance_id, requester) -> WorkflowInstance:
     """Requester resubmits after RETURNED. Resumes from returning stage, new attempt."""
     with transaction.atomic():
@@ -298,6 +313,7 @@ def resubmit(instance_id, requester) -> WorkflowInstance:
 
         eligible = approvers_service.resolve_approvers(returning_stage, instance)
         if not eligible and returning_stage.skip_if_no_approvers:
+            # A returned stage can still auto-skip if no approvers are eligible anymore.
             routing_service._skip_stage(instance, returning_stage, next_attempt,
                                          AuditEventType.STAGE_SKIPPED_NO_APPROVER,
                                          "zero_eligible_on_resubmit")

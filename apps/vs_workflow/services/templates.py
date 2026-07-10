@@ -8,6 +8,7 @@ from django.utils import timezone
 from vs_workflow.models import WorkflowInstance, WorkflowTemplate
 
 
+# Resolve organogram position references without requiring vs_user in RBAC-only installs.
 def _resolve_position(code: Optional[str]):
     """Resolve a CX organogram Position by its code, or None.
 
@@ -23,6 +24,7 @@ def _resolve_position(code: Optional[str]):
     return Position.objects.filter(code=code).first()
 
 
+# Publish one workflow template definition atomically.
 @transaction.atomic
 def publish_template(*, school, branch=None, document_type: str, code: str, name: str,
                      description: str = "", notification_events: Optional[dict] = None,
@@ -46,6 +48,7 @@ def publish_template(*, school, branch=None, document_type: str, code: str, name
     )
 
     if not created:
+        # Top-level template metadata is updated in place so references remain stable.
         template.name = name
         template.description = description
         template.notification_events = notification_events or {}
@@ -78,7 +81,7 @@ def publish_template(*, school, branch=None, document_type: str, code: str, name
             "on_rejection": s.get("on_rejection", "TERMINAL"),
             "skip_if_no_approvers": s.get("skip_if_no_approvers", True),
             "inclusion_condition": s.get("inclusion_condition"),
-            "retired_at": None,  # (re)including a code reactivates it
+            "retired_at": None,  # Re-including a stage code reactivates it for future routing.
         }
         stage, _ = WorkflowStage.objects.update_or_create(
             template=template, code=s["code"], defaults=defaults,
@@ -107,6 +110,7 @@ def publish_template(*, school, branch=None, document_type: str, code: str, name
     return template
 
 
+# Find non-terminal work still tied to a template.
 def active_instances_for_template(template: WorkflowTemplate) -> "QuerySet[WorkflowInstance]":
     """Return all non-terminal instances currently running against this template.
 

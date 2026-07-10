@@ -14,6 +14,7 @@ from vs_workflow.services import audit as audit_service
 from vs_workflow.services import routing as routing_service
 
 
+# Create an approval instance and activate its first approvable stage.
 def submit_for_approval(document, requested_by, *,
                          template_code: Optional[str] = None) -> WorkflowInstance:
     """Create a WorkflowInstance for document and activate its first stage.
@@ -31,6 +32,7 @@ def submit_for_approval(document, requested_by, *,
             "Document must declare workflow_document_type attribute.")
 
     handler = get_handler(document_type)
+    # The document handler owns domain-specific submit guards.
     handler.validate_document(document, requested_by)
 
     code = template_code or handler.resolve_default_template_code(document)
@@ -61,6 +63,7 @@ def submit_for_approval(document, requested_by, *,
         )
 
     try:
+        # Summary is best-effort display metadata; approval should not fail on it.
         document_summary = handler.get_document_summary(document) or {}
         if not isinstance(document_summary, dict):
             document_summary = {}
@@ -68,6 +71,7 @@ def submit_for_approval(document, requested_by, *,
         document_summary = {}
 
     with transaction.atomic():
+        # Instance creation, audit, document callback, and first routing commit together.
         ct = ContentType.objects.get_for_model(type(document))
         instance = WorkflowInstance.objects.create(
             school=school, branch=branch, template=template,

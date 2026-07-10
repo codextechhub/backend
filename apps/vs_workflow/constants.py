@@ -1,6 +1,7 @@
 """Constants, enums, and permission keys for vs_workflow."""
 from django.db import models
 
+# Persisted lifecycle states for a workflow instance.
 class WorkflowInstanceStatus(models.TextChoices):
     DRAFT       = "DRAFT",       "Draft"
     SUBMITTED   = "SUBMITTED",   "Submitted"
@@ -11,11 +12,13 @@ class WorkflowInstanceStatus(models.TextChoices):
     WITHDRAWN   = "WITHDRAWN",   "Withdrawn"
     CANCELLED   = "CANCELLED",   "Cancelled (Admin)"
 
+# Instance statuses after which no normal approver action may continue.
 WORKFLOW_TERMINAL_STATUSES = {
     WorkflowInstanceStatus.APPROVED, WorkflowInstanceStatus.REJECTED,
     WorkflowInstanceStatus.WITHDRAWN, WorkflowInstanceStatus.CANCELLED,
 }
 
+# Persisted lifecycle states for a single stage attempt.
 class WorkflowStageStatus(models.TextChoices):
     PENDING  = "PENDING",  "Pending"
     ACTIVE   = "ACTIVE",   "Active"
@@ -24,26 +27,31 @@ class WorkflowStageStatus(models.TextChoices):
     RETURNED = "RETURNED", "Returned to Requester"
     SKIPPED  = "SKIPPED",  "Skipped"
 
+# Approver/requester actions recorded against a stage.
 class WorkflowStageAction(models.TextChoices):
     APPROVED  = "APPROVED",  "Approved"
     REJECTED  = "REJECTED",  "Rejected"
     RETURNED  = "RETURNED",  "Returned to Requester"
     WITHDRAWN = "WITHDRAWN", "Withdrawn by Requester"
 
+# Rules for deciding when an approval stage is complete.
 class StageAdvanceRule(models.TextChoices):
     UNANIMOUS = "UNANIMOUS", "Unanimous (all must approve)"
     QUORUM    = "QUORUM",    "Quorum (N of M must approve)"
     ANY       = "ANY",       "Any one approver"
 
+# Rejection handling policy for an approval stage.
 class StageOnRejection(models.TextChoices):
     TERMINAL            = "TERMINAL",            "Rejection terminates the workflow"
     RETURN_TO_REQUESTER = "RETURN_TO_REQUESTER", "Rejection returns to requester"
 
+# Scope used when resolving RBAC permission-based approvers.
 class ApproverScope(models.TextChoices):
     BRANCH   = "BRANCH",   "Branch-scoped"
     SCHOOL   = "SCHOOL",   "School-scoped"
     PLATFORM = "PLATFORM", "Platform-scoped"
 
+# Audit event vocabulary written by workflow services.
 class AuditEventType(models.TextChoices):
     INSTANCE_SUBMITTED        = "INSTANCE_SUBMITTED",        "Instance submitted"
     INSTANCE_WITHDRAWN        = "INSTANCE_WITHDRAWN",        "Instance withdrawn by requester"
@@ -61,6 +69,7 @@ class AuditEventType(models.TextChoices):
     ACTION_REVERSED           = "ACTION_REVERSED",           "Admin reversed an approver action"
     ROUTE_EVALUATED           = "ROUTE_EVALUATED",           "Route recomputed at stage transition"
 
+# Stage categories used by routing.
 class StageKind(models.TextChoices):
     APPROVAL = "APPROVAL", "Approval"
     BRANCH   = "BRANCH",   "Branch"
@@ -85,6 +94,7 @@ class OrganogramTarget(models.TextChoices):
     SPECIFIC_POSITION = "SPECIFIC_POSITION", "Holder(s) of a specific position"
 
 # Permission keys (vs_rbac contract)
+# RBAC keys that protect workflow template and instance operations.
 PERM_TEMPLATE_MANAGE = "workflow.template.manage"
 PERM_TEMPLATE_VIEW   = "workflow.template.view"
 PERM_INSTANCE_SUBMIT = "workflow.instance.submit"
@@ -93,6 +103,7 @@ PERM_INSTANCE_CANCEL = "workflow.instance.cancel"
 PERM_ACTION_REVERSE  = "workflow.action.reverse"
 
 # Notification event keys
+# Notification event keys emitted for workflow lifecycle transitions.
 NOTIF_EVENT_SUBMITTED       = "workflow.submitted"
 NOTIF_EVENT_STAGE_ACTIVATED = "workflow.stage_activated"
 NOTIF_EVENT_STAGE_APPROVED  = "workflow.stage_approved"
@@ -109,6 +120,7 @@ NOTIF_EVENT_KEYS = [
 ]
 
 # Condition operators (fixed set)
+# Condition operators supported by route evaluation.
 CONDITION_OP_EQ       = "eq"
 CONDITION_OP_NE       = "ne"
 CONDITION_OP_GT       = "gt"

@@ -11,6 +11,7 @@ from vs_workflow.conditions.registry import get_condition_function
 
 _MISSING = object()
 
+# Resolve dotted paths across dicts and model-like objects without raising.
 def _extract_field(document: Any, path: str) -> Any:
     current = document
     for segment in path.split("."):
@@ -22,6 +23,7 @@ def _extract_field(document: Any, path: str) -> Any:
             current = getattr(current, segment, _MISSING)
     return current
 
+# Normalize numeric values so JSON numbers compare cleanly with Decimal model fields.
 def _normalise(value: Any) -> Any:
     if isinstance(value, bool):
         return value
@@ -29,6 +31,7 @@ def _normalise(value: Any) -> Any:
         return Decimal(str(value))
     return value
 
+# Apply one supported comparison operator.
 def _apply_op(op: str, left: Any, right: Any) -> bool:
     if op == CONDITION_OP_EQ:    return _normalise(left) == _normalise(right)
     if op == CONDITION_OP_NE:    return _normalise(left) != _normalise(right)
@@ -43,12 +46,14 @@ def _apply_op(op: str, left: Any, right: Any) -> bool:
         return right in left
     raise UnknownOperatorError(f"Unknown operator '{op}'", op=op)
 
+# Convert trace values into JSON-safe output for audit/debug payloads.
 def _safe(v: Any):
     if isinstance(v, Decimal): return str(v)
     try:
         import json; json.dumps(v); return v
     except (TypeError, ValueError): return str(v)
 
+# Evaluate a route condition and return both the boolean result and trace.
 def evaluate_condition(condition: Any, document: Any) -> Tuple[bool, Dict]:
     if condition in (None, {}):
         return True, {"kind": "empty", "result": True}
@@ -79,6 +84,7 @@ def evaluate_condition(condition: Any, document: Any) -> Tuple[bool, Dict]:
         try:
             result = bool(fn(document, args))
         except Exception as exc:
+            # Custom condition failures fail closed but keep the error visible in the trace.
             return False, {"kind": "fn", "fn": key, "args": args, "result": False,
                            "error": f"{type(exc).__name__}: {exc}"}
         return result, {"kind": "fn", "fn": key, "args": args, "result": result}
@@ -91,6 +97,7 @@ def evaluate_condition(condition: Any, document: Any) -> Tuple[bool, Dict]:
             raise TemplateInvalidError("Operator condition missing 'field'")
         value = condition.get("value")
         extracted = _extract_field(document, field_path)
+        # Missing fields compare as None so the trace stays explicit.
         left = None if extracted is _MISSING else extracted
         try:
             result = _apply_op(op, left, value)

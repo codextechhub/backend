@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from django.contrib.auth.base_user import AbstractBaseUser
 
 
+# Store one eligible actor and any delegation context for the stage snapshot.
 @dataclass
 class EligibleApprover:
     """Carries one resolved approver and, when delegation is active, who they act for.
@@ -33,6 +34,7 @@ class EligibleApprover:
     on_behalf_of: Optional[AbstractBaseUser] = None
 
 
+# Resolve RBAC permission holders for a stage.
 def _users_with_permission(school, branch, permission_key: str, scope: ApproverScope):
     """Resolve the set of users holding permission_key in the given scope via vs_rbac.
 
@@ -56,6 +58,7 @@ def _users_with_permission(school, branch, permission_key: str, scope: ApproverS
         return qs
 
     if scope == ApproverScope.PLATFORM:
+        # Platform approvers are global; school and branch scope are intentionally removed.
         school_arg, branch_arg = None, None
     elif scope == ApproverScope.BRANCH:
         school_arg, branch_arg = school, branch
@@ -66,6 +69,7 @@ def _users_with_permission(school, branch, permission_key: str, scope: ApproverS
     )
 
 
+# Resolve organogram-based approvers relative to the requester.
 def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> list:
     """Resolve base approvers by climbing the CX organogram relative to the requester.
 
@@ -98,6 +102,7 @@ def _organogram_base_users(stage: WorkflowStage, instance: WorkflowInstance) -> 
     return []
 
 
+# Build the frozen approver snapshot for a stage activation.
 def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[EligibleApprover]:
     """Build the full eligible approver list for a stage at the moment it activates.
 
@@ -117,6 +122,7 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     appears twice — once per delegator — because the on_behalf_of field differs.
     """
     if stage.approver_source == ApproverSource.ORGANOGRAM:
+        # Organogram approvers are already relative to the requester; still exclude self-approval.
         base_users = [
             u for u in _organogram_base_users(stage, instance)
             if u and u.pk != instance.requested_by_id
@@ -124,6 +130,7 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     else:
         if not stage.approver_permission_key:
             return []
+        # RBAC approvers are resolved at activation time and then frozen.
         base_qs = _users_with_permission(
             school=instance.school,
             branch=instance.branch,
@@ -136,6 +143,7 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     base_ids = {u.pk for u in base_users}
 
     now = timezone.now()
+    # Delegations only apply while active, unrevoked, and matching this document type.
     delegations = ApprovalDelegation.objects.filter(
         school=instance.school,
         starts_at__lte=now, ends_at__gte=now,
@@ -147,6 +155,7 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
 
     result: List[EligibleApprover] = []
     seen = set()
+    # Exclusive delegation removes the delegator from the active approver list.
     excluded_delegators = {d.delegator_id for d in delegations if d.exclusive}
 
     for u in base_users:
@@ -159,6 +168,7 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
         result.append(EligibleApprover(user=u, on_behalf_of=None))
 
     for d in delegations:
+        # Keep one row per delegate/delegator pair for audit clarity.
         key = (d.delegate_id, d.delegator_id)
         if key in seen:
             continue

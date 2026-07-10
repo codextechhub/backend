@@ -24,6 +24,7 @@ from vs_workflow.services import approvers as approvers_service
 from vs_workflow.services import audit as audit_service
 
 
+# Choose the next stage using route paths first, then linear stage order.
 def _pick_next_stage(instance: WorkflowInstance,
                      from_stage: Optional[WorkflowStage]) -> Optional[WorkflowStage]:
     """Return the next stage or None (terminate APPROVED)."""
@@ -37,6 +38,7 @@ def _pick_next_stage(instance: WorkflowInstance,
         chosen = None
         evaluations = []
         for route in route_qs:
+            # Routes are evaluated in configured order; first match wins.
             matches, trace = evaluate_condition(route.condition, document)
             evaluations.append({
                 "route_id": str(route.id),
@@ -58,7 +60,7 @@ def _pick_next_stage(instance: WorkflowInstance,
             )
         if chosen is not None:
             return chosen.to_stage
-        # Fall through to linear logic if no routes matched (empty route_qs).
+        # Empty route sets fall back to linear progression.
 
     stages = list(template.stages.order_by("order"))
     if not stages:
@@ -72,6 +74,7 @@ def _pick_next_stage(instance: WorkflowInstance,
                                stage=from_stage.code, template=str(template.id))
 
 
+# Preview the next route without writing route-audit entries.
 def _readonly_next_stage(template, document, from_stage, stages, has_routes):
     """Pure (no-write) sibling of _pick_next_stage for previews.
 
@@ -99,6 +102,7 @@ def _readonly_next_stage(template, document, from_stage, stages, has_routes):
     return None
 
 
+# Preview the next approval stage label for UI copy.
 def preview_next_approval_stage(instance: WorkflowInstance):
     """Read-only, best-effort preview of the next APPROVAL stage that would run
     once the current stage completes.
@@ -124,6 +128,7 @@ def preview_next_approval_stage(instance: WorkflowInstance):
         for _ in range(50):  # mirror advance_instance's MAX_HOPS cycle guard
             nxt = _readonly_next_stage(template, document, cursor, stages, has_routes)
             if nxt is None:
+                # No next stage means the current approval would complete the workflow.
                 return {"label": None, "is_final": True}
             if nxt.retired_at is not None:
                 cursor = nxt
@@ -142,6 +147,7 @@ def preview_next_approval_stage(instance: WorkflowInstance):
         return {"label": None, "is_final": False}
 
 
+# Activate a stage and persist its approver snapshot.
 def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
                     attempt: int) -> WorkflowStageInstance:
     """Activate a stage and snapshot the current eligible approver list.
@@ -162,6 +168,7 @@ def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
         stage_instance.save(update_fields=["status", "activated_at", "resolved_at"])
 
     eligible = approvers_service.resolve_approvers(stage, instance)
+    # Freeze eligibility so later RBAC or org-chart changes do not alter this attempt.
     WorkflowStageApprover.objects.bulk_create([
         WorkflowStageApprover(stage_instance=stage_instance, user=ea.user,
                               on_behalf_of=ea.on_behalf_of, attempt=attempt)
@@ -177,6 +184,7 @@ def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
     return stage_instance
 
 
+# Record a skipped stage with an audit reason.
 def _skip_stage(instance: WorkflowInstance, stage: WorkflowStage, attempt: int,
                 reason_event: AuditEventType, reason_detail: str = "") -> WorkflowStageInstance:
     """Mark a stage as SKIPPED and write an audit entry explaining why.
@@ -202,6 +210,7 @@ def _skip_stage(instance: WorkflowInstance, stage: WorkflowStage, attempt: int,
     return si
 
 
+# Advance the workflow until it reaches an approval stage or terminal approval.
 def advance_instance(instance: WorkflowInstance, *, current_attempt: int = 1) -> WorkflowInstance:
     """Move the instance forward, looping through auto-skip stages."""
     if instance.is_terminal:
@@ -217,6 +226,7 @@ def advance_instance(instance: WorkflowInstance, *, current_attempt: int = 1) ->
                                        template=str(instance.template_id))
         next_stage = _pick_next_stage(instance, from_stage)
         if next_stage is None:
+            # No remaining stage means the workflow is fully approved.
             return _terminate_approved(instance)
 
         # Skip stages retired from the template (works for both linear order and
@@ -263,6 +273,7 @@ def advance_instance(instance: WorkflowInstance, *, current_attempt: int = 1) ->
         return instance
 
 
+# Mark the workflow approved and run the document approval callback.
 def _terminate_approved(instance: WorkflowInstance) -> WorkflowInstance:
     """Finalise the instance as fully APPROVED and fire the handler callback.
 
@@ -283,6 +294,7 @@ def _terminate_approved(instance: WorkflowInstance) -> WorkflowInstance:
     return instance
 
 
+# Mark the workflow rejected and run the document rejection callback.
 def _terminate_rejected(instance: WorkflowInstance, actor, comment: str) -> WorkflowInstance:
     """Finalise the instance as terminally REJECTED and fire the handler callback.
 
@@ -302,6 +314,7 @@ def _terminate_rejected(instance: WorkflowInstance, actor, comment: str) -> Work
     return instance
 
 
+# Return the workflow to the requester while remembering the stage to resume.
 def _return_to_requester(instance: WorkflowInstance, actor, comment: str,
                           returning_stage_id) -> WorkflowInstance:
     """Move the instance to RETURNED so the requester can revise and resubmit.
@@ -318,5 +331,4 @@ def _return_to_requester(instance: WorkflowInstance, actor, comment: str,
     })
     get_handler(instance.document_type).on_returned(instance, {"comment": comment})
     return instance
-
 
