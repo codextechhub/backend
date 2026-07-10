@@ -7362,3 +7362,98 @@ class InvoiceNotificationTests(_GLFixtureMixin, TestCase):
         inv.refresh_from_db()
         self.assertEqual(inv.status, DocumentStatus.POSTED)
         self.assertTrue(self._issued().filter(unregistered_email="pp@example.com").exists())
+
+
+# Group tests for Year-End Close (income-summary → retained earnings).
+class YearEndCloseTests(_GLFixtureMixin, TestCase):
+    """The formal fiscal-year close: zero P&L into Retained Earnings, seal the year."""
+
+    def _soft_close(self, period):
+        period.status = PeriodStatus.SOFT_CLOSED
+        period.save(update_fields=["status"])
+
+    def test_close_year_rolls_profit_to_retained_earnings(self):
+        from vs_finance.close import close_fiscal_year
+
+        entity, jan = self.build_ledger()
+        # Revenue ₦1,000 and expense ₦400 → net profit ₦600 (all in kobo).
+        post_journal(self.make_entry(entity, jan, [("1100", 100000, 0), ("4100", 0, 100000)]))
+        post_journal(self.make_entry(entity, jan, [("5200", 40000, 0), ("1100", 0, 40000)]))
+        self._soft_close(jan)
+
+        entry, net_income = close_fiscal_year(
+            entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
+
+        self.assertIsNotNone(entry)
+        self.assertEqual(net_income, 60000)
+        self.assertEqual(entry.source, "CLOSING")
+        jan.fiscal_year.refresh_from_db()
+        self.assertEqual(jan.fiscal_year.status, PeriodStatus.CLOSED)
+        # P&L accounts now read flat; the ₦600 net sits in Retained Earnings.
+        rev = AccountBalance.objects.get(account__code="4100", period=jan)
+        self.assertEqual(rev.debit_total, 100000)
+        self.assertEqual(rev.credit_total, 100000)
+        exp = AccountBalance.objects.get(account__code="5200", period=jan)
+        self.assertEqual(exp.debit_total, 40000)
+        self.assertEqual(exp.credit_total, 40000)
+        re = AccountBalance.objects.get(account__code="3200", period=jan)
+        self.assertEqual(re.credit_total, 60000)
+        self.assertEqual(re.debit_total, 0)
+
+    def test_close_year_rolls_loss_to_retained_earnings(self):
+        from vs_finance.close import close_fiscal_year
+
+        entity, jan = self.build_ledger()
+        # Revenue ₦400, expense ₦1,000 → net loss ₦600.
+        post_journal(self.make_entry(entity, jan, [("1100", 40000, 0), ("4100", 0, 40000)]))
+        post_journal(self.make_entry(entity, jan, [("5200", 100000, 0), ("1100", 0, 100000)]))
+        self._soft_close(jan)
+
+        entry, net_income = close_fiscal_year(
+            entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
+
+        self.assertEqual(net_income, -60000)
+        re = AccountBalance.objects.get(account__code="3200", period=jan)
+        self.assertEqual(re.debit_total, 60000)   # a loss debits equity
+        self.assertEqual(re.credit_total, 0)
+
+    def test_closing_an_already_closed_year_is_refused(self):
+        from vs_finance.close import close_fiscal_year
+        from vs_finance.exceptions import PeriodCloseError
+
+        entity, jan = self.build_ledger()
+        post_journal(self.make_entry(entity, jan, [("1100", 100000, 0), ("4100", 0, 100000)]))
+        self._soft_close(jan)
+        close_fiscal_year(entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
+        with self.assertRaises(PeriodCloseError):
+            close_fiscal_year(entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
+
+    def test_open_period_blocks_close_unless_forced(self):
+        from vs_finance.close import close_fiscal_year
+        from vs_finance.exceptions import PeriodCloseError
+
+        entity, jan = self.build_ledger()  # Jan left OPEN.
+        post_journal(self.make_entry(entity, jan, [("1100", 100000, 0), ("4100", 0, 100000)]))
+        with self.assertRaises(PeriodCloseError):
+            close_fiscal_year(entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
+        # force posts into the still-open period and seals the year.
+        entry, net = close_fiscal_year(
+            entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31),
+            require_periods_closed=False)
+        self.assertEqual(net, 100000)
+        jan.fiscal_year.refresh_from_db()
+        self.assertEqual(jan.fiscal_year.status, PeriodStatus.CLOSED)
+
+    def test_close_year_with_no_pl_activity_posts_no_journal(self):
+        from vs_finance.close import close_fiscal_year
+
+        entity, jan = self.build_ledger()
+        # Only a balance-sheet entry (capital injection) — no income/expense.
+        post_journal(self.make_entry(entity, jan, [("1100", 500000, 0), ("3100", 0, 500000)]))
+        self._soft_close(jan)
+        entry, net = close_fiscal_year(
+            entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31))
+        self.assertIsNone(entry)
+        self.assertEqual(net, 0)
+        jan.fiscal_year.refresh_from_db()
+        self.assertEqual(jan.fiscal_year.status, PeriodStatus.CLOSED)

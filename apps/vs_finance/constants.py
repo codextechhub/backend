@@ -483,6 +483,7 @@ class FinanceAuditAction(models.TextChoices):
     DEPRECIATION_POSTED = "DEPRECIATION_POSTED", "Depreciation posted"
     ASSET_DISPOSED = "ASSET_DISPOSED", "Fixed asset disposed"
     PERIOD_LOCKED = "PERIOD_LOCKED", "Period locked"
+    FISCAL_YEAR_CLOSED = "FISCAL_YEAR_CLOSED", "Fiscal year closed"
     TAX_FILING_PREPARED = "TAX_FILING_PREPARED", "Tax filing prepared"
     TAX_FILING_FILED = "TAX_FILING_FILED", "Tax filing submitted to authority"
     TAX_FILING_UNFILED = "TAX_FILING_UNFILED", "Tax filing un-filed (reverted to draft)"

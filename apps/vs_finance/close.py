@@ -235,3 +235,119 @@ def lock_period(entity, period, *, actor_user=None):
         message=f"Locked period '{period}' — permanently sealed.",  # Human-readable audit message.
     )
     return period  # Return locked period.
+
+
+@transaction.atomic
+# Post the year-end closing journal and seal the fiscal year.
+def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None,
+                      require_periods_closed=True):
+    """Post the year-end closing journal and mark ``fiscal_year`` CLOSED.
+
+    The closing entry zeroes every postable income and expense account for the year
+    and rolls the net (profit or loss) into Retained Earnings (3200) — the formal
+    year-end close that the live "current-year earnings" figure in the reports only
+    anticipates. After it posts, the P&L accounts read zero and the year's result is
+    permanently in equity.
+
+    * ``closing_date`` defaults to the year's ``end_date``; its period must still accept
+      a posting (OPEN, or SOFT_CLOSED via the privileged close path), so run the year
+      close while the final period is still open/soft-closed, before hard-locking it.
+    * ``require_periods_closed`` (default) refuses while any period in the year is still
+      OPEN — draft/late entries should be posted and the months soft-/closed first.
+
+    Idempotent: refuses a year already CLOSED/LOCKED. Returns ``(entry, net_income)`` —
+    the closing journal (``None`` when the year had no P&L activity) and the net result
+    in kobo (positive = profit).
+    """
+    from django.db.models import Sum  # Aggregate per-account movement.
+
+    from .accounts import resolve_account  # Resolve the Retained Earnings account.
+    from .constants import (  # Enums used only here.
+        AccountType, JournalSource, RETAINED_EARNINGS_CODE,
+    )
+    from .models import Account, AccountBalance, FiscalPeriod, JournalEntry, JournalLine
+    from .posting import _period_accepts_posting, post_journal, resolve_period
+
+    if fiscal_year.status in (PeriodStatus.CLOSED, PeriodStatus.LOCKED):  # Never close a year twice.
+        raise PeriodCloseError(
+            f"Fiscal year {fiscal_year.year} is already '{fiscal_year.status}'.")
+
+    if require_periods_closed:  # Months must be settled before the year is sealed.
+        open_count = FiscalPeriod.objects.filter(  # Count periods still fully open.
+            fiscal_year=fiscal_year, status=PeriodStatus.OPEN,
+        ).count()
+        if open_count:  # Refuse while any month is still OPEN.
+            raise PeriodCloseError(
+                f"{open_count} period(s) in FY{fiscal_year.year} are still OPEN; "
+                f"close or soft-close them before closing the year (or pass force).")
+
+    # Net movement per P&L account over the year (summed across its periods' balances).
+    rows = (
+        AccountBalance.objects
+        .filter(period__fiscal_year=fiscal_year,  # Only this year's balances.
+                account__is_postable=True,  # Header accounts never take a line.
+                account__account_type__in=[AccountType.INCOME, AccountType.EXPENSE])
+        .values("account")
+        .annotate(d=Sum("debit_total"), c=Sum("credit_total"))  # Movement per account.
+    )
+    net_by_account = {  # account_id → (Σdebit, Σcredit); drop already-flat accounts.
+        r["account"]: (int(r["d"] or 0), int(r["c"] or 0))
+        for r in rows if int(r["d"] or 0) != int(r["c"] or 0)
+    }
+    accounts = {a.id: a for a in Account.objects.filter(id__in=net_by_account)}  # Load once.
+
+    closing_lines = []  # (account, debit, credit) — each line zeroes one P&L account.
+    net_income = 0  # Σ(credit − debit) over P&L = revenue minus expense = profit.
+    for acc_id, (d, c) in net_by_account.items():  # Build one closing line per account.
+        acc = accounts[acc_id]
+        if c > d:  # Net credit balance (typical revenue) → debit it flat.
+            closing_lines.append((acc, c - d, 0))
+        else:  # Net debit balance (typical expense / contra-revenue) → credit it flat.
+            closing_lines.append((acc, 0, d - c))
+        net_income += c - d  # Revenue adds; expense (d>c) subtracts.
+
+    if not closing_lines:  # No P&L activity — seal the year with no journal.
+        fiscal_year.status = PeriodStatus.CLOSED  # Mark the year closed.
+        fiscal_year.save(update_fields=["status", "updated_at"])
+        record(  # Audit the (empty) close.
+            entity=entity, action=FinanceAuditAction.FISCAL_YEAR_CLOSED,
+            actor_user=actor_user, target=fiscal_year, target_type="FiscalYear",
+            message=f"Closed FY{fiscal_year.year} (no P&L activity).",
+            fiscal_year=fiscal_year.year, net_income=0,
+        )
+        return None, 0
+
+    # Balance the entry to Retained Earnings: a profit credits equity, a loss debits it.
+    retained = resolve_account(entity, RETAINED_EARNINGS_CODE, label="retained earnings")
+    if net_income > 0:  # Profit → credit Retained Earnings.
+        closing_lines.append((retained, 0, net_income))
+    else:  # Loss (or break-even handled above) → debit Retained Earnings.
+        closing_lines.append((retained, -net_income, 0))
+
+    closing_date = closing_date or fiscal_year.end_date  # Default to the last day of the year.
+    period = resolve_period(entity, closing_date)  # The period the closing entry posts into.
+    if not _period_accepts_posting(period, allow_restricted=True):  # Must be OPEN or SOFT_CLOSED.
+        raise PeriodCloseError(
+            f"The closing date {closing_date} has no open/soft-closed period to post "
+            f"into; keep the final period open until the year is closed.")
+
+    entry = JournalEntry.objects.create(  # The year-end closing journal.
+        entity=entity, date=closing_date, period=period, source=JournalSource.CLOSING,
+        narration=f"Year-end close FY{fiscal_year.year}", created_by=actor_user,
+    )
+    for i, (acc, debit, credit) in enumerate(closing_lines, start=1):  # Write each closing line.
+        JournalLine.objects.create(
+            entry=entry, account=acc, debit=debit, credit=credit,
+            description=f"Year-end close FY{fiscal_year.year}", line_no=i,
+        )
+    post_journal(entry, actor_user=actor_user, allow_restricted=True)  # Privileged close posting.
+
+    fiscal_year.status = PeriodStatus.CLOSED  # Seal the year.
+    fiscal_year.save(update_fields=["status", "updated_at"])
+    record(  # Audit the close with the net result + journal id.
+        entity=entity, action=FinanceAuditAction.FISCAL_YEAR_CLOSED,
+        actor_user=actor_user, target=fiscal_year, target_type="FiscalYear",
+        message=f"Closed FY{fiscal_year.year}: net {net_income} kobo rolled to retained earnings.",
+        journal_id=entry.pk, fiscal_year=fiscal_year.year, net_income=net_income,
+    )
+    return entry, net_income

@@ -1305,6 +1305,58 @@ class PeriodLockView(APIView):
         )
 
 
+# Group endpoint behavior for Fiscal Year Close View.
+class FiscalYearCloseView(APIView):
+    """POST /finance/fiscal-years/<id>/close/?entity= — post the year-end closing entry.
+
+    Zeroes every income/expense account for the year and rolls the net profit or loss
+    into Retained Earnings (3200), then marks the fiscal year CLOSED. Body (optional):
+    ``{"closing_date": ISO, "force": bool}`` — ``force`` closes the year even while some
+    periods are still OPEN. The final period must still accept a posting (open or
+    soft-closed) so the closing entry can be booked.
+
+    docstring-name: Close a fiscal year
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Tenant-authenticated access.
+    rbac_permission = "finance.period.close"  # Same right that closes periods seals the year.
+
+    # Handle POST requests for this endpoint.
+    def post(self, request, id):
+        import datetime
+
+        from .close import close_fiscal_year
+        from .models import FiscalYear
+
+        entity = resolve_entity(request)  # Resolve the tenant entity.
+        fy = FiscalYear.objects.filter(entity=entity, id=id).first()  # Load the year.
+        if fy is None:  # 404 when the year is not in this entity.
+            raise NotFound("Fiscal year not found for this entity.")
+        body = request.data or {}  # Optional close options.
+        raw_date = body.get("closing_date")  # Optional explicit closing date.
+        closing_date = None
+        if raw_date:  # Parse the ISO date when supplied.
+            try:
+                closing_date = datetime.date.fromisoformat(str(raw_date))
+            except ValueError:
+                raise ValidationError({"closing_date": "Expected an ISO date (YYYY-MM-DD)."})
+        entry, net_income = close_fiscal_year(  # Post the closing entry + seal the year.
+            entity, fy, actor_user=request.user, closing_date=closing_date,
+            require_periods_closed=not bool(body.get("force", False)),
+        )
+        fy.refresh_from_db()  # Pick up the CLOSED status.
+        return success_response(
+            message=f"Fiscal year {fy.year} closed.",
+            data={
+                "fiscal_year": FiscalYearSerializer(fy).data,  # The sealed year.
+                "closing_journal": (  # The closing journal (None when no P&L activity).
+                    JournalEntryDetailSerializer(entry).data if entry is not None else None
+                ),
+                "net_income": _money(net_income),  # Net result rolled to equity.
+            },
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Reports / financial statements                                              #
 # --------------------------------------------------------------------------- #
