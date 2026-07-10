@@ -1,3 +1,4 @@
+# RBAC keys that protect configuration catalogue, value, and capability operations.
 class ConfigPermissions:
     DEFINITION_VIEW = "config.definition.view"
     DEFINITION_CREATE = "config.definition.create"
@@ -14,6 +15,7 @@ class ConfigPermissions:
     AUDIT_VIEW = "config.audit.view"
     EXPORT_CREATE = "config.export.create"
 
+    # Seeding uses this list as the complete RBAC contract for the config module.
     ALL = [
         DEFINITION_VIEW, DEFINITION_CREATE, DEFINITION_UPDATE, DEFINITION_ARCHIVE,
         VALUE_VIEW, VALUE_UPDATE, CAPABILITY_VIEW, CAPABILITY_MANAGE,
@@ -22,6 +24,7 @@ class ConfigPermissions:
     ]
 
 
+# Scope names used to build inheritance and override keys.
 PLATFORM_SCOPE = "platform"
 SCHOOL_SCOPE = "school"
 BRANCH_SCOPE = "branch"

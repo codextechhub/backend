@@ -9,19 +9,23 @@ from .audit import record_configuration_event
 from .scopes import normalize_scope, scope_name
 
 
+# Hide secret-reference values from audit payloads and effective-value responses.
 def _redacted(definition, value):
     if definition.sensitivity == ConfigurationDefinition.Sensitivity.SECRET_REFERENCE:
         return "[REDACTED]" if value is not None else None
     return value
 
 
+# Enforce the type and rule contract stored on a configuration definition.
 def validate_value(definition, value):
     kind = definition.value_type
     try:
         if kind in {definition.ValueType.STRING, definition.ValueType.SECRET_REFERENCE}:
+            # Empty strings are treated as unset because config values drive runtime behavior.
             if not isinstance(value, str) or not value.strip():
                 raise ValueError
         elif kind == definition.ValueType.INTEGER:
+            # bool is an int subclass in Python, but it is not a valid integer config value.
             if isinstance(value, bool) or not isinstance(value, int):
                 raise ValueError
         elif kind == definition.ValueType.DECIMAL:
@@ -29,6 +33,7 @@ def validate_value(definition, value):
         elif kind == definition.ValueType.BOOLEAN and not isinstance(value, bool):
             raise ValueError
         elif kind == definition.ValueType.CHOICE:
+            # Choices are definition-owned so admins can evolve enumerations without code changes.
             if value not in definition.validation_rules.get("choices", []):
                 raise ValueError
         elif kind == definition.ValueType.JSON and not isinstance(value, (dict, list)):
@@ -39,6 +44,7 @@ def validate_value(definition, value):
             extra={"key": definition.key},
         )
 
+    # Bounds are definition-specific and run after type coercion succeeds.
     rules = definition.validation_rules or {}
     if "min" in rules or "max" in rules:
         # DECIMAL values may arrive as strings; compare numerically, and turn
@@ -65,8 +71,10 @@ def validate_value(definition, value):
     return value
 
 
+# Resolve the effective value using branch, school, then platform inheritance.
 def resolve_value(definition, *, school=None, branch=None):
     school, branch = normalize_scope(school=school, branch=branch)
+    # Search scopes from most specific to least specific.
     scopes = []
     if branch is not None:
         scopes.append(f"branch:{branch.pk}")
@@ -81,25 +89,31 @@ def resolve_value(definition, *, school=None, branch=None):
     }
     for key in scopes:
         if key in rows:
+            # Return the first physical row in inheritance order as the source of truth.
             return rows[key].value, rows[key]
+    # No override exists at any layer, so the definition default is effective.
     return definition.default_value, None
 
 
+# Persist a scoped configuration value and record its redacted audit trail.
 @transaction.atomic
 def set_value(*, definition, value, actor, school=None, branch=None, reason=""):
     school, branch = normalize_scope(school=school, branch=branch)
     requested_scope = scope_name(school, branch)
+    # Definitions explicitly control which tenant level may override them.
     if requested_scope not in set(definition.allowed_scopes or []):
         raise InvalidConfigurationScope(
             f"'{definition.key}' cannot be configured at {requested_scope} scope."
         )
     validate_value(definition, value)
+    # The persisted scope_key mirrors resolve_value's inheritance keys.
     scope_key = (
         f"branch:{branch.pk}" if branch else f"school:{school.pk}" if school else "platform"
     )
     current = ConfigurationValue.all_objects.filter(
         definition=definition, scope_key=scope_key
     ).first()
+    # Capture the prior value before overwriting so audit entries show the change.
     before = current.value if current else None
     row, _ = ConfigurationValue.all_objects.update_or_create(
         definition=definition,

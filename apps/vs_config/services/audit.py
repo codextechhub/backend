@@ -15,6 +15,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# Persist the local audit event first, then mirror it into the platform audit stream.
 def record_configuration_event(
     *, action, target, actor, school=None, branch=None, before=None, after=None,
     reason="", metadata=None,
@@ -22,8 +23,10 @@ def record_configuration_event(
     """Write the authoritative immutable local event and mirror it centrally."""
     from ..models import ConfigurationAuditEvent
 
+    # Branch-scoped audit rows also carry school for tenant filtering.
     if branch is not None and school is None:
         school = branch.school
+    # The local row is authoritative because it is committed with the config change.
     event = ConfigurationAuditEvent(
         action=action,
         target_type=target.__class__.__name__,
@@ -37,6 +40,7 @@ def record_configuration_event(
         metadata=metadata or {},
     )
     event.save()
+    # Central audit mirroring is best-effort and must not block config changes.
     write_audit_log(
         actor=actor,
         action=action,
@@ -48,6 +52,7 @@ def record_configuration_event(
     return event
 
 
+# Send configuration changes to the shared audit module when it is installed.
 def write_audit_log(
     actor,
     action: str,
@@ -77,6 +82,7 @@ def write_audit_log(
         from vs_audit.services import emit_audit_event
 
         metadata = dict(detail or {})
+        # Preserve the config action inside the shared audit payload for downstream filters.
         metadata["config_action"] = action
         if branch is not None:
             metadata["branch_id"] = str(branch.id)
