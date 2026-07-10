@@ -1622,7 +1622,20 @@ class InvoiceWriteOffView(_FinanceBase):
 
 # Support the writeoff rows workflow.
 def _writeoff_rows(entity, *, limit=1000):
-    """Normalised bad-debt write-off rows from the finance audit log."""
+    """Normalised bad-debt write-off rows, from two disjoint sources.
+
+    * POSTED write-offs come from the finance audit log (``INVOICE_WRITTEN_OFF``
+      SUCCESS). This covers legacy bare-invoice write-offs *and* posted
+      ``WriteOffRequest`` documents — posting one runs ``write_off_invoice``,
+      which writes that log. Always reported "POSTED".
+    * Non-posted ``WriteOffRequest`` documents (DRAFT / PENDING_APPROVAL /
+      APPROVED) come from the table itself, carrying their real status and
+      ``write_off_id`` so the UI can submit / post them. The audit log never
+      captures these, so without this they are invisible on the screen.
+
+    The two sources are disjoint (posted ⇒ audit log; non-posted ⇒ table), so no
+    write-off is double-counted.
+    """
     logs = list(
         FinanceAuditLog.objects.filter(
             entity=entity, action=FinanceAuditAction.INVOICE_WRITTEN_OFF,
@@ -1643,7 +1656,23 @@ def _writeoff_rows(entity, *, limit=1000):
             "customer_name": l.metadata.get("customer_name") or (inv.customer.name if inv else "—"),
             "reason": l.metadata.get("narration") or "Bad-debt write-off",
             "amount": int(l.metadata.get("amount") or 0), "amount_naira": format_naira(int(l.metadata.get("amount") or 0)),
-            "status": "POSTED", "refund_id": None,
+            "status": "POSTED", "refund_id": None, "write_off_id": None,
+        })
+
+    # Non-posted write-off requests (drafts + awaiting approval). The audit log
+    # only records POSTED write-offs, so these would otherwise never surface.
+    for w in (WriteOffRequest.objects
+              .filter(entity=entity).exclude(status=DocumentStatus.POSTED)
+              .select_related("invoice", "invoice__customer")
+              .order_by("-id")[:limit]):
+        wo_date = w.write_off_date or w.created_at.date()
+        rows.append({
+            "key": f"WR{w.id}", "kind": "WRITEOFF", "reference": w.document_number,
+            "date": wo_date.isoformat(),
+            "customer_code": w.invoice.customer.code, "customer_name": w.invoice.customer.name,
+            "reason": w.reason or w.narration or "Bad-debt write-off",
+            "amount": w.amount, "amount_naira": format_naira(w.amount),
+            "status": w.status, "refund_id": None, "write_off_id": w.id,
         })
     return rows
 
@@ -1685,8 +1714,16 @@ class ARAdjustmentListView(_FinanceBase):
 
         # KPI totals — from the full sets, independent of the type filter / page.
         year = timezone.now().year
-        written_off_ytd = sum(w["amount"] for w in writeoff_rows if w["date"][:4] == str(year))
-        pending = Refund.objects.filter(entity=entity).exclude(status=DocumentStatus.POSTED).count()
+        # "Written off YTD" is money actually written off → POSTED rows only
+        # (writeoff_rows now also carries non-posted requests).
+        written_off_ytd = sum(
+            w["amount"] for w in writeoff_rows
+            if w["status"] == "POSTED" and w["date"][:4] == str(year))
+        # "Pending" spans both adjustment kinds awaiting posting/approval.
+        pending = (
+            Refund.objects.filter(entity=entity).exclude(status=DocumentStatus.POSTED).count()
+            + WriteOffRequest.objects.filter(entity=entity).exclude(status=DocumentStatus.POSTED).count()
+        )
 
         rows = []
         if type_f in ("", "refund"):
