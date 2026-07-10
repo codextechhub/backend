@@ -17,32 +17,16 @@ from django.template.loader import render_to_string
 from .money import format_naira, naira_in_words
 
 
-# Signals optional document rendering dependency failure.
-class DocumentRenderUnavailable(Exception):
-    """Raised when an optional document renderer dependency is unavailable."""
-
-
 # Render a document template to HTML.
 def render_document_html(template_name: str, context: dict, *, request=None) -> str:
-    """Render a printable finance document template to HTML."""
-    return render_to_string(template_name, context, request=request)  # Delegate rendering to Django templates.
+    """Render a printable finance document template to HTML.
 
-
-# Convert rendered document HTML to PDF bytes.
-def render_document_pdf(html: str, *, base_url: str | None = None) -> bytes:
-    """Render document HTML to PDF using WeasyPrint, imported lazily.
-
-    WeasyPrint depends on native libraries in many environments. Keeping the import
-    here prevents missing libraries from breaking Django startup or unrelated tests.
+    PDF is produced client-side: the frontend opens this print-ready HTML (the
+    templates carry ``@media print`` / ``@page A4`` rules) and the browser's
+    print-to-PDF renders it. There is no server-side PDF path, so nothing here
+    depends on native rendering libraries.
     """
-    try:  # WeasyPrint is optional and may fail on hosts without native libraries.
-        from weasyprint import HTML
-    except Exception as exc:  # pragma: no cover - exact failure depends on host libs
-        raise DocumentRenderUnavailable("PDF rendering is unavailable.") from exc
-    try:  # Rendering itself can fail due to native or template asset issues.
-        return HTML(string=html, base_url=base_url).write_pdf()  # Render HTML into PDF bytes.
-    except Exception as exc:  # pragma: no cover - renderer/native-library failure
-        raise DocumentRenderUnavailable("PDF rendering failed.") from exc
+    return render_to_string(template_name, context, request=request)  # Delegate rendering to Django templates.
 
 
 # Resolve the bank account printed on finance documents.
@@ -228,13 +212,6 @@ def render_invoice_document_html(invoice, *, request=None) -> str:
     )
 
 
-# Render an invoice document to PDF.
-def render_invoice_document_pdf(invoice, *, request=None) -> bytes:
-    html = render_invoice_document_html(invoice, request=request)  # Render HTML first.
-    base_url = request.build_absolute_uri("/") if request is not None else None  # Resolve relative assets when request exists.
-    return render_document_pdf(html, base_url=base_url)  # Convert HTML to PDF bytes.
-
-
 # --------------------------------------------------------------------------- #
 # Receipt document                                                            #
 # --------------------------------------------------------------------------- #
@@ -295,10 +272,3 @@ def render_receipt_document_html(payment, *, request=None) -> str:
         receipt_document_context(payment),  # Build receipt context.
         request=request,  # Pass request for context processors/static absolute paths.
     )
-
-
-# Render a receipt document to PDF.
-def render_receipt_document_pdf(payment, *, request=None) -> bytes:
-    html = render_receipt_document_html(payment, request=request)  # Render HTML first.
-    base_url = request.build_absolute_uri("/") if request is not None else None  # Resolve relative assets when request exists.
-    return render_document_pdf(html, base_url=base_url)  # Convert HTML to PDF bytes.

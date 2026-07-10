@@ -5257,52 +5257,6 @@ class FinanceDocumentEndpointTests(_ARFixtureMixin, TestCase):
         self.assertIn(inv.document_number, html)
         self.assertIn("Four hundred naira only", html)
 
-    # Verify pdf endpoint uses weasyprint renderer when available behavior.
-    def test_pdf_endpoint_uses_weasyprint_renderer_when_available(self):
-        from unittest.mock import patch
-
-        from vs_finance.views import InvoiceDocumentPDFView
-
-        entity, period, customer, vat = self.build_ar()
-        inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
-        post_invoice(inv)
-
-        req = self._request(f"/v1/finance/invoices/{inv.pk}/document.pdf", entity, self._user("invoice-pdf@test.com"))
-        with patch("vs_finance.documents.render_document_pdf", return_value=b"%PDF-1.7 fake") as renderer:
-            resp = InvoiceDocumentPDFView.as_view()(req, pk=inv.pk)
-
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp["Content-Type"], "application/pdf")
-        self.assertEqual(resp.content, b"%PDF-1.7 fake")
-        self.assertIn(inv.document_number, resp["Content-Disposition"])
-        self.assertTrue(renderer.called)
-
-    # Verify pdf endpoint returns 503 when renderer unavailable behavior.
-    def test_pdf_endpoint_returns_503_when_renderer_unavailable(self):
-        from unittest.mock import patch
-
-        from vs_finance.documents import DocumentRenderUnavailable
-        from vs_finance.views_ar import PaymentReceiptPDFView
-
-        entity, period, customer, vat = self.build_ar()
-        payment = Payment.objects.create(
-            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 15),
-            amount=40000, deposit_account=Account.objects.get(entity=entity, code="1100"),
-        )
-        post_payment(payment)
-        payment.refresh_from_db()
-
-        req = self._request(f"/v1/finance/payments/{payment.pk}/receipt.pdf", entity, self._user("receipt-pdf@test.com"))
-        with patch(
-            "vs_finance.documents.render_document_pdf",
-            side_effect=DocumentRenderUnavailable("missing native libs"),
-        ):
-            resp = PaymentReceiptPDFView.as_view()(req, pk=payment.pk)
-            resp.render()
-
-        self.assertEqual(resp.status_code, 503)
-        self.assertEqual(resp.data["detail"], "PDF rendering is unavailable on this server.")
-
     # Verify primary collection account falls back to first active account behavior.
     def test_primary_collection_account_falls_back_to_first_active_account(self):
         from vs_finance.documents import primary_collection_account

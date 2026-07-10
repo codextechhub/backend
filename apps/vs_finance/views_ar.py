@@ -15,7 +15,6 @@ from django.db import transaction
 from django.db.models import F, Q
 from django.http import HttpResponse
 from rest_framework.exceptions import NotFound, ValidationError
-from rest_framework.response import Response
 
 from core.pagination import XVSPagination
 from core.response import success_response
@@ -802,28 +801,6 @@ class PaymentReceiptView(_FinanceBase):
 
         html = render_receipt_document_html(self._payment(request, pk), request=request)
         return HttpResponse(html, content_type="text/html; charset=utf-8")
-
-
-# Group endpoint behavior for Payment Receipt P D F View.
-class PaymentReceiptPDFView(PaymentReceiptView):
-    """GET /finance/payments/<id>/receipt.pdf — printable PDF payment receipt."""
-
-    # Handle GET requests for this endpoint.
-    def get(self, request, pk):
-        from .documents import DocumentRenderUnavailable, render_receipt_document_pdf
-
-        payment = self._payment(request, pk)
-        try:  # Start protected finance operation.
-            pdf = render_receipt_document_pdf(payment, request=request)
-        except DocumentRenderUnavailable:  # Handle finance operation failure.
-            return Response(
-                {"detail": "PDF rendering is unavailable on this server."},
-                status=503,
-            )
-        response = HttpResponse(pdf, content_type="application/pdf")
-        filename = f"receipt-{payment.document_number or payment.pk}.pdf"
-        response["Content-Disposition"] = f'inline; filename="{filename}"'
-        return response
 
 
 # Group endpoint behavior for Payment Allocate View.

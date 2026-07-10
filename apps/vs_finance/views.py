@@ -13,7 +13,6 @@ from __future__ import annotations
 from django.http import HttpResponse
 from rest_framework import generics
 from rest_framework.exceptions import NotFound, ValidationError
-from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.mixins import RetrieveModelMixin
@@ -1018,28 +1017,6 @@ class InvoiceDocumentView(APIView):
 
         html = render_invoice_document_html(self._invoice(request, pk), request=request)
         return HttpResponse(html, content_type="text/html; charset=utf-8")
-
-
-# Group endpoint behavior for Invoice Document P D F View.
-class InvoiceDocumentPDFView(InvoiceDocumentView):
-    """GET /finance/invoices/<id>/document.pdf — printable PDF invoice."""
-
-    # Handle GET requests for this endpoint.
-    def get(self, request, pk):
-        from .documents import DocumentRenderUnavailable, render_invoice_document_pdf
-
-        invoice = self._invoice(request, pk)
-        try:  # Start protected finance operation.
-            pdf = render_invoice_document_pdf(invoice, request=request)
-        except DocumentRenderUnavailable:  # Handle finance operation failure.
-            return Response(
-                {"detail": "PDF rendering is unavailable on this server."},
-                status=503,
-            )
-        response = HttpResponse(pdf, content_type="application/pdf")
-        filename = f"invoice-{invoice.document_number or invoice.pk}.pdf"
-        response["Content-Disposition"] = f'inline; filename="{filename}"'
-        return response
 
 
 # --------------------------------------------------------------------------- #
