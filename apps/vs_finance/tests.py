@@ -5194,11 +5194,16 @@ class FinanceDocumentEndpointTests(_ARFixtureMixin, TestCase):
         from vs_finance.views import InvoiceDocumentView
 
         entity, period, customer, vat = self.build_ar()
+        # BankAccount.gl_account is unique per entity, so each bank account needs its
+        # own GL cash account.
+        cash_ops = Account.objects.create(
+            entity=entity, code="1101", name="Cash — Operations", account_type="ASSET",
+        )
         BankAccount.objects.create(
             entity=entity, name="Operations Account",
             bank_name="Access Bank",
             account_number="111",
-            gl_account=Account.objects.get(entity=entity, code="1100"),
+            gl_account=cash_ops,
             is_active=True,
         )
         collection = BankAccount.objects.create(
@@ -5303,6 +5308,10 @@ class FinanceDocumentEndpointTests(_ARFixtureMixin, TestCase):
         from vs_finance.documents import primary_collection_account
 
         entity, period, customer, vat = self.build_ar()
+        # BankAccount.gl_account is unique per entity — give each its own GL account.
+        cash2 = Account.objects.create(
+            entity=entity, code="1102", name="Cash — Secondary", account_type="ASSET",
+        )
         inactive = BankAccount.objects.create(
             entity=entity, name="Inactive",
             gl_account=Account.objects.get(entity=entity, code="1100"),
@@ -5310,7 +5319,7 @@ class FinanceDocumentEndpointTests(_ARFixtureMixin, TestCase):
         )
         active = BankAccount.objects.create(
             entity=entity, name="Active Collections",
-            gl_account=Account.objects.get(entity=entity, code="1100"),
+            gl_account=cash2,
             is_active=True,
         )
 
