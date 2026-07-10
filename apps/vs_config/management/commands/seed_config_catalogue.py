@@ -1,8 +1,22 @@
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from vs_config.models import Capability, CapabilityDependency
+from vs_config.models import Capability, CapabilityDependency, ConfigurationDefinition
 
+
+# (key, label, description, value_type, default_value, validation_rules)
+DEFINITIONS = [
+    (
+        "notifications.email_max_retries", "Email Delivery Max Retries",
+        "Maximum delivery attempts for a queued email notification.",
+        "INTEGER", 3, {"min": 0, "max": 10},
+    ),
+    (
+        "notifications.email_retry_backoff_seconds", "Email Retry Backoff Seconds",
+        "Base backoff in seconds between email delivery retries.",
+        "INTEGER", 60, {"min": 1, "max": 3600},
+    ),
+]
 
 CAPABILITIES = [
     ("students", "Students Management", "MODULE", True),
@@ -28,10 +42,19 @@ DEPENDENCIES = {
 
 
 class Command(BaseCommand):
-    help = "Seed the unified module and feature capability catalogue."
+    help = "Seed the capability catalogue and platform configuration definitions."
 
     @transaction.atomic
     def handle(self, *args, **options):
+        for key, label, description, value_type, default, rules in DEFINITIONS:
+            ConfigurationDefinition.objects.get_or_create(
+                key=key,
+                defaults={
+                    "label": label, "description": description,
+                    "value_type": value_type, "default_value": default,
+                    "validation_rules": rules, "allowed_scopes": ["platform"],
+                },
+            )
         rows = {}
         for key, label, kind, requires_entitlement in CAPABILITIES:
             rows[key], _ = Capability.objects.update_or_create(

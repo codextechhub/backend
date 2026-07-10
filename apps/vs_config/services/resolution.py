@@ -40,10 +40,28 @@ def validate_value(definition, value):
         )
 
     rules = definition.validation_rules or {}
-    if "min" in rules and value < rules["min"]:
-        raise InvalidConfigurationValue(f"Value for '{definition.key}' is below the minimum.")
-    if "max" in rules and value > rules["max"]:
-        raise InvalidConfigurationValue(f"Value for '{definition.key}' exceeds the maximum.")
+    if "min" in rules or "max" in rules:
+        # DECIMAL values may arrive as strings; compare numerically, and turn
+        # any type mismatch against the rule bounds into a 422 instead of a 500.
+        is_decimal = kind == definition.ValueType.DECIMAL
+        comparable = Decimal(str(value)) if is_decimal else value
+        try:
+            if "min" in rules:
+                minimum = Decimal(str(rules["min"])) if is_decimal else rules["min"]
+                if comparable < minimum:
+                    raise InvalidConfigurationValue(
+                        f"Value for '{definition.key}' is below the minimum."
+                    )
+            if "max" in rules:
+                maximum = Decimal(str(rules["max"])) if is_decimal else rules["max"]
+                if comparable > maximum:
+                    raise InvalidConfigurationValue(
+                        f"Value for '{definition.key}' exceeds the maximum."
+                    )
+        except TypeError:
+            raise InvalidConfigurationValue(
+                f"Value for '{definition.key}' cannot be compared with its configured bounds."
+            )
     return value
 
 

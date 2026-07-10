@@ -87,6 +87,34 @@ class ConfigurationResolutionTests(TestCase):
         with self.assertRaises(InvalidConfigurationValue):
             set_value(definition=integer_definition, value="three", actor=self.actor)
 
+    def test_min_max_rules_with_mismatched_types_fail_cleanly(self):
+        decimal_definition = ConfigurationDefinition.objects.create(
+            key="finance.rate_cap", label="Rate cap", description="Rate cap.",
+            value_type=ConfigurationDefinition.ValueType.DECIMAL,
+            validation_rules={"min": 1}, allowed_scopes=["platform"],
+        )
+        set_value(definition=decimal_definition, value="2.5", actor=self.actor)
+        with self.assertRaises(InvalidConfigurationValue):
+            set_value(definition=decimal_definition, value="0.5", actor=self.actor)
+
+        string_definition = ConfigurationDefinition.objects.create(
+            key="security.token_prefix", label="Token prefix", description="Prefix.",
+            value_type=ConfigurationDefinition.ValueType.STRING,
+            validation_rules={"min": 3}, allowed_scopes=["platform"],
+        )
+        with self.assertRaises(InvalidConfigurationValue):
+            set_value(definition=string_definition, value="abc", actor=self.actor)
+
+    def test_get_config_public_api(self):
+        from .conf import get_config
+
+        self.assertEqual(get_config("display.timezone"), "UTC")
+        set_value(
+            definition=self.definition, value="Africa/Lagos", actor=self.actor
+        )
+        self.assertEqual(get_config("display.timezone"), "Africa/Lagos")
+        self.assertEqual(get_config("missing.key", default=7), 7)
+
     def test_secret_references_are_redacted_in_audit(self):
         secret = ConfigurationDefinition.objects.create(
             key="payments.secret", label="Payment secret", description="Secret reference.",
@@ -215,6 +243,45 @@ class ConfigurationAPISecurityTests(TestCase):
             "default_value": True, "allowed_scopes": ["platform", "school"],
         }, format="json")
         self.assertEqual(response.status_code, 201, response.data)
+
+    def test_cross_tenant_scope_returns_not_found(self):
+        permission = make_permission("config.value.view")
+        role = make_role(self.school, name="Value Reader")
+        make_role_permission(role, permission)
+        make_assignment(self.school, self.admin, role)
+        other = make_school(slug="other-tenant-school")
+        self.client.force_authenticate(self.admin)
+        response = self.client.get(f"/v1/config/values/?school={other.pk}")
+        self.assertEqual(response.status_code, 404)
+
+    def test_unmapped_http_method_returns_405(self):
+        user = make_vision_user(
+            email="config-method-admin@example.com", super_admin=True
+        )
+        self.client.force_authenticate(user)
+        response = self.client.put("/v1/config/values/", {}, format="json")
+        self.assertEqual(response.status_code, 405)
+
+    def test_capability_archive_is_idempotent(self):
+        user = make_vision_user(
+            email="config-archive-admin@example.com", super_admin=True
+        )
+        Capability.objects.create(
+            key="archive-target", label="Archive target", requires_entitlement=False
+        )
+        self.client.force_authenticate(user)
+        self.assertEqual(
+            self.client.delete("/v1/config/capabilities/archive-target/").status_code, 200
+        )
+        self.assertEqual(
+            self.client.delete("/v1/config/capabilities/archive-target/").status_code, 200
+        )
+        self.assertEqual(
+            ConfigurationAuditEvent.all_objects.filter(
+                action="config.capability.archived"
+            ).count(),
+            1,
+        )
 
     def test_bulk_value_update_is_atomic(self):
         user = make_vision_user(

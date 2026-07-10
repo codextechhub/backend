@@ -66,13 +66,14 @@ class NotificationErrorCode:
 
 
 # ---------------------------------------------------------------------------
-# Config flag keys (read via vs_config FlagService at runtime)
+# Config keys (read via vs_config.conf.get_config at runtime; definitions are
+# seeded by vs_config's seed_config_catalogue command)
 # ---------------------------------------------------------------------------
 
 # Runtime tuning keys for Celery email delivery behavior.
 class NotificationConfigKey:
-    EMAIL_MAX_RETRIES       = "notification_email_max_retries"
-    EMAIL_RETRY_BACKOFF_SEC = "notification_email_retry_backoff_seconds"
+    EMAIL_MAX_RETRIES       = "notifications.email_max_retries"
+    EMAIL_RETRY_BACKOFF_SEC = "notifications.email_retry_backoff_seconds"
 
     DEFAULTS = {
         EMAIL_MAX_RETRIES:       3,

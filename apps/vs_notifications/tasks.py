@@ -187,15 +187,15 @@ def _read_retry_config() -> tuple[int, int]:
     from .constants import NotificationConfigKey
 
     try:
-        from vs_config.services import FlagService
-        max_retries = FlagService.get_int(
+        from vs_config.conf import get_config
+        max_retries = int(get_config(
             NotificationConfigKey.EMAIL_MAX_RETRIES,
             default=NotificationConfigKey.DEFAULTS[NotificationConfigKey.EMAIL_MAX_RETRIES],
-        )
-        retry_backoff = FlagService.get_int(
+        ))
+        retry_backoff = int(get_config(
             NotificationConfigKey.EMAIL_RETRY_BACKOFF_SEC,
             default=NotificationConfigKey.DEFAULTS[NotificationConfigKey.EMAIL_RETRY_BACKOFF_SEC],
-        )
+        ))
     except Exception:
         max_retries = NotificationConfigKey.DEFAULTS[NotificationConfigKey.EMAIL_MAX_RETRIES]
         retry_backoff = NotificationConfigKey.DEFAULTS[NotificationConfigKey.EMAIL_RETRY_BACKOFF_SEC]

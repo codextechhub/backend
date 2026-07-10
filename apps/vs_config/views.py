@@ -1,8 +1,7 @@
 from django.db import transaction
-from django.core.exceptions import ImproperlyConfigured
 from django.shortcuts import get_object_or_404
 from rest_framework import status
-from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.exceptions import MethodNotAllowed, NotFound, PermissionDenied, ValidationError
 from rest_framework.views import APIView
 
 from core.pagination import XVSPagination
@@ -47,9 +46,7 @@ class ConfigAPIView(APIView):
             method = "GET"
         permission = self.permission_map.get(method)
         if not permission:
-            raise ImproperlyConfigured(
-                f"{self.__class__.__name__} has no RBAC permission for {method}."
-            )
+            raise MethodNotAllowed(method)
         return permission
 
     def paginate(self, request, queryset, serializer_class):
@@ -267,15 +264,17 @@ class CapabilityDetailView(ConfigAPIView):
         )
         return success_response("Capability updated.", serializer.data)
 
+    @transaction.atomic
     def delete(self, request, key):
         obj = self.get_object(key)
-        obj.is_active = False
-        obj.save(update_fields=["is_active", "updated_at"])
-        record_configuration_event(
-            action="config.capability.archived", target=obj, actor=request.user,
-            before={"is_active": True}, after={"is_active": False},
-            reason=request.data.get("reason", ""),
-        )
+        if obj.is_active:
+            obj.is_active = False
+            obj.save(update_fields=["is_active", "updated_at"])
+            record_configuration_event(
+                action="config.capability.archived", target=obj, actor=request.user,
+                before={"is_active": True}, after={"is_active": False},
+                reason=request.data.get("reason", ""),
+            )
         return success_response("Capability archived.")
 
 

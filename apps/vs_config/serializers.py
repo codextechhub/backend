@@ -94,12 +94,12 @@ class ConfigurationValueSerializer(serializers.ModelSerializer):
 
 
 class SetConfigurationValueSerializer(serializers.Serializer):
+    # Scope (school/branch) is resolved once per request from the top-level
+    # payload or query string — never per item, so it is not declared here.
     key = serializers.RegexField(
         r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$", max_length=200
     )
     value = serializers.JSONField()
-    school = serializers.CharField(required=False, allow_null=True)
-    branch = serializers.CharField(required=False, allow_null=True)
     reason = serializers.CharField(required=False, allow_blank=True, default="")
 
 

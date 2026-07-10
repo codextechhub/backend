@@ -1,4 +1,5 @@
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from ..exceptions import CapabilityDependencyError, CapabilityNotEntitled
@@ -15,9 +16,12 @@ def _active_entitlement(capability, school):
     if not capability.requires_entitlement:
         return True
     now = timezone.now()
-    candidates = CapabilityEntitlement.all_objects.filter(capability=capability)
-    specific = candidates.filter(school=school).first() if school is not None else None
-    entitlement = specific or candidates.filter(school__isnull=True).first()
+    scope = Q(school__isnull=True)
+    if school is not None:
+        scope |= Q(school=school)
+    rows = list(CapabilityEntitlement.all_objects.filter(capability=capability).filter(scope))
+    specific = next((row for row in rows if row.school_id), None)
+    entitlement = specific or next((row for row in rows if not row.school_id), None)
     if entitlement is None or entitlement.state != entitlement.State.GRANTED:
         return False
     if entitlement.starts_at and entitlement.starts_at > now:
