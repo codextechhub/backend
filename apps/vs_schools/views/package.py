@@ -1,7 +1,8 @@
 # views/package.py
 
 from rest_framework import generics
-from ..models import PackagePlan, XVSModules
+from ..models import PackagePlan
+from vs_config.models import Capability
 from vs_rbac.permissions import IsVisionStaff, IsAuthenticatedAndActive
 from ..serializers import PackagePlanSerializer, XVSModuleSerializer
 
@@ -27,4 +28,6 @@ class XVSModuleListView(generics.ListAPIView):
     """
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = XVSModuleSerializer
-    queryset = XVSModules.objects.filter(is_active=True).order_by("name")
+    queryset = Capability.objects.filter(
+        is_active=True, kind=Capability.Kind.MODULE
+    ).order_by("label")

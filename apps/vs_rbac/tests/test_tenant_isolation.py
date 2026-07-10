@@ -122,22 +122,22 @@ class TenantAwareManagerWaveTwoTests(TestCase):
         names = set(ComplianceRule.objects.values_list("name", flat=True))
         self.assertEqual(names, {"Global rule"})
 
-    def test_config_change_log_uses_institution_field(self):
-        from vs_config.models import ConfigurationChangeLog
+    def test_config_audit_events_include_global_rows(self):
+        from vs_config.models import ConfigurationAuditEvent
 
-        ConfigurationChangeLog.objects.create(
-            institution=self.school_a, change_type="UPDATE",
-            target_key="k", new_value="1",
+        ConfigurationAuditEvent.objects.create(
+            school=self.school_a, action="config.value.updated",
+            target_type="ConfigurationValue", target_id="k",
         )
-        ConfigurationChangeLog.objects.create(
-            institution=None, change_type="UPDATE",
-            target_key="g", new_value="1",
+        ConfigurationAuditEvent.objects.create(
+            action="config.value.updated",
+            target_type="ConfigurationValue", target_id="g",
         )
 
         set_current_school(self.school_b)
-        keys = set(ConfigurationChangeLog.objects.values_list("target_key", flat=True))
+        keys = set(ConfigurationAuditEvent.objects.values_list("target_id", flat=True))
         self.assertEqual(keys, {"g"})
 
         set_current_school(self.school_a)
-        keys = set(ConfigurationChangeLog.objects.values_list("target_key", flat=True))
+        keys = set(ConfigurationAuditEvent.objects.values_list("target_id", flat=True))
         self.assertEqual(keys, {"k", "g"})

@@ -191,7 +191,7 @@ class HasRBACPermission(BasePermission):
         rbac_group_perms = getattr(view, "rbac_group_permission", None)
 
         passed = True  # Both direct-key and group-key checks must remain satisfied.
-        school = getattr(request, "school", None)
+        school = getattr(request, "school", None) or getattr(u, "school", None)
 
         if rbac_perms is not None and rbac_perms != "":
             if isinstance(rbac_perms, list) and not rbac_perms:

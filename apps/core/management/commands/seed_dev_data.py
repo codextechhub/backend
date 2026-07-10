@@ -347,11 +347,18 @@ class Command(BaseCommand):
                     ),
                 )
                 # Enable every module except the finance stack (user scope).
-                from vs_schools.models import XVSModules
-                modules = XVSModules.objects.exclude(
+                from vs_config.models import Capability, CapabilityEntitlement
+                modules = Capability.objects.filter(kind=Capability.Kind.MODULE).exclude(
                     key__in=["finance", "procurement", "payments", "vendors"]
                 )
-                setup.enabled_modules.set(modules)
+                for capability in modules:
+                    CapabilityEntitlement.all_objects.update_or_create(
+                        capability=capability,
+                        scope_key=f"school:{school.pk}",
+                        defaults={
+                            "school": school, "state": "GRANTED", "source": "PACKAGE"
+                        },
+                    )
             contact, _ = ContactInfo.objects.get_or_create(
                 email=f"admin@{spec['slug']}.example.com",
                 defaults=dict(full_name=f"{spec['name']} Administrator", phone="+2348000000000"),

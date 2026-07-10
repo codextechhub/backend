@@ -223,7 +223,8 @@ def _validate_dataset_specific_rules(import_batch) -> list[dict]:
 def _validate_schools_rules(import_batch) -> list[dict]:
     from datetime import date as date_type
     from django.utils.text import slugify
-    from vs_schools.models import RESERVED_TENANT_SLUGS, PackagePlan, School, XVSModules
+    from vs_config.models import Capability
+    from vs_schools.models import RESERVED_TENANT_SLUGS, PackagePlan, School
     from vs_user.models import User
 
     issues = []
@@ -234,7 +235,9 @@ def _validate_schools_rules(import_batch) -> list[dict]:
     # Prefetch valid plans (with limits) and module keys once to avoid per-row DB hits
     active_plans = {p.code: p for p in PackagePlan.objects.filter(is_active=True)}
     valid_plan_codes = set(active_plans.keys())
-    valid_module_keys = set(XVSModules.objects.filter(is_active=True).values_list("key", flat=True))
+    valid_module_keys = set(Capability.objects.filter(
+        is_active=True, kind=Capability.Kind.MODULE
+    ).values_list("key", flat=True))
     existing_slugs = set(School.objects.values_list("slug", flat=True))
     today = timezone.now().date()
 

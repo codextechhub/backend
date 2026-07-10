@@ -1,239 +1,419 @@
-# vs_config/models.py
-#
-# Four models covering the full System Configuration & Feature Flags module:
-#
-#   ConfigurationKey       — global platform-wide key/value settings
-#   BranchFeatureFlag      — per-branch on/off module flags
-#   BranchConfigOverride   — per-branch overrides of permitted keys
-#   ConfigurationChangeLog — append-only audit history for all changes
-#
-# Scoping rules enforced here:
-#   - ConfigurationKey has NO branch FK. It is platform-wide.
-#   - BranchFeatureFlag is scoped to vs_schools.Branch. Querysets MUST always
-#     be filtered by branch in views — never returned unscoped.
-#   - BranchConfigOverride is scoped to vs_schools.Branch. Querysets MUST
-#     always be filtered by branch in views — never returned unscoped.
-#   - ConfigurationChangeLog is append-only. Views must never update or delete
-#     its rows. All writes go through ConfigurationService or FlagService.
+"""Typed configuration, capability, entitlement, override, and audit models."""
 
 import uuid
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.conf import settings
 
-from .constants import ChangeType
 from vs_rbac.managers import TenantAwareManager
 
 
-# ---------------------------------------------------------------------------
-# 1. ConfigurationKey
-#    Global platform-wide settings. No institution FK.
-#    Only Vision Super Admins may create, update, or soft-delete these.
-# ---------------------------------------------------------------------------
-class ConfigurationKey(models.Model):
-    id = models.UUIDField(
-        primary_key=True,
-        default=uuid.uuid4,
-        editable=False,
-    )
-    # Dot-notation key name. Immutable after creation.
-    # Format enforced by ConfigKeyValidator. Example: auth.session_timeout_minutes
-    key = models.CharField(
-        max_length=200,
-        unique=True,
-        db_index=True,
-    )
-    value = models.TextField()
-    description = models.TextField(
-        help_text="Human-readable explanation of what this key controls. Required.",
-    )
-    # Soft-delete flag. Inactive keys are excluded from system lookups
-    # but retained for audit history.
-    is_active = models.BooleanField(default=True, db_index=True)
+class ConfigurationDefinition(models.Model):
+    """Declare one typed setting and the scopes where it may be overridden.
 
+    Args:
+        id: Stable UUID identifier.
+        key: Immutable dotted machine key used by APIs and application code.
+        label: Human-readable setting name.
+        description: Explanation of the behavior controlled by the setting.
+        value_type: Expected data type for defaults and scoped values.
+        default_value: Fallback JSON value used when no scoped value exists.
+        validation_rules: Type-specific rules such as choices, minimum, or maximum.
+        allowed_scopes: Any combination of platform, school, and branch.
+        sensitivity: Visibility classification and secret-reference behavior.
+        is_active: Soft lifecycle flag; inactive definitions do not resolve.
+        created_by: User who created the definition, retained as nullable history.
+        created_at: Creation timestamp.
+        updated_at: Timestamp of the most recent definition change.
+    """
+
+    class ValueType(models.TextChoices):
+        STRING = "STRING", "String"
+        INTEGER = "INTEGER", "Integer"
+        DECIMAL = "DECIMAL", "Decimal"
+        BOOLEAN = "BOOLEAN", "Boolean"
+        JSON = "JSON", "JSON"
+        CHOICE = "CHOICE", "Choice"
+        SECRET_REFERENCE = "SECRET_REFERENCE", "Secret reference"
+
+    class Sensitivity(models.TextChoices):
+        PUBLIC = "PUBLIC", "Public"
+        INTERNAL = "INTERNAL", "Internal"
+        SECRET_REFERENCE = "SECRET_REFERENCE", "Secret reference"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    key = models.CharField(max_length=200, unique=True, db_index=True)
+    label = models.CharField(max_length=160)
+    description = models.TextField()
+    value_type = models.CharField(max_length=24, choices=ValueType.choices)
+    default_value = models.JSONField(null=True, blank=True)
+    validation_rules = models.JSONField(default=dict, blank=True)
+    allowed_scopes = models.JSONField(default=list)
+    sensitivity = models.CharField(
+        max_length=24, choices=Sensitivity.choices, default=Sensitivity.INTERNAL
+    )
+    is_active = models.BooleanField(default=True, db_index=True)
     created_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="config_keys_created",
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="configuration_definitions_created",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["key"]
-        verbose_name = "Configuration Key"
-        verbose_name_plural = "Configuration Keys"
 
     def __str__(self):
-        status = "active" if self.is_active else "archived"
-        return f"{self.key} ({status})"
+        return self.key
 
 
-# ---------------------------------------------------------------------------
-# 2. BranchFeatureFlag
-#    Records the on/off state of a named flag for a specific branch.
-#    Flags not explicitly set default to disabled (is_enabled=False).
-#    Valid flag_key values are defined in constants.FLAG_REGISTRY — not here.
-# ---------------------------------------------------------------------------
-class BranchFeatureFlag(models.Model):
-    id = models.UUIDField(
-        primary_key=True,
-        default=uuid.uuid4,
-        editable=False,
+class ScopedModel(models.Model):
+    """Provide the shared platform, school, and branch scope contract.
+
+    Args:
+        school: Optional school boundary; null with branch null means platform scope.
+        branch: Optional branch boundary; when set it must belong to ``school``.
+        scope_key: Normalized platform/school/branch key used in unique constraints.
+
+    Behavior:
+        A branch automatically supplies its owning school when school is omitted.
+        This model is abstract and creates no table of its own.
+    """
+
+    school = models.ForeignKey(
+        "vs_schools.School", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="+",
     )
     branch = models.ForeignKey(
-        "vs_schools.Branch",
-        on_delete=models.CASCADE,
-        related_name="feature_flags",
+        "vs_schools.Branch", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="+",
     )
-    # Must be a key present in constants.FLAG_REGISTRY.
-    # Validated at service level — not a FK so new flags need no migration.
-    flag_key = models.CharField(max_length=200, db_index=True)
-
-    is_enabled = models.BooleanField(default=False)
-
-    set_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="feature_flags_set",
-    )
-    # auto_now=True so every toggle automatically refreshes the timestamp.
-    set_at = models.DateTimeField(auto_now=True)
+    scope_key = models.CharField(max_length=80, editable=False, db_index=True)
 
     class Meta:
-        unique_together = [["branch", "flag_key"]]
-        indexes = [
-            models.Index(fields=["branch", "is_enabled"]),
-            models.Index(fields=["branch", "flag_key"]),
-        ]
-        verbose_name = "Branch Feature Flag"
-        verbose_name_plural = "Branch Feature Flags"
+        abstract = True
 
-    def __str__(self):
-        state = "ON" if self.is_enabled else "OFF"
-        return f"{self.branch_id} | {self.flag_key} [{state}]"
+    def clean(self):
+        super().clean()
+        if self.branch_id:
+            branch_school_id = self.branch.school_id
+            if self.school_id is None:
+                self.school_id = branch_school_id
+            elif self.school_id != branch_school_id:
+                raise ValidationError({"branch": "Branch must belong to the selected school."})
+
+    def set_scope_key(self):
+        if self.branch_id:
+            self.scope_key = f"branch:{self.branch_id}"
+        elif self.school_id:
+            self.scope_key = f"school:{self.school_id}"
+        else:
+            self.scope_key = "platform"
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        self.set_scope_key()
+        return super().save(*args, **kwargs)
 
 
-# ---------------------------------------------------------------------------
-# 3. BranchConfigOverride
-#    Branch-specific overrides for a controlled subset of global keys.
-#    Branch Admins may only write keys listed in PERMITTED_SELF_SERVICE_KEYS.
-#    Resolution order: override → global key → caller default.
-# ---------------------------------------------------------------------------
-class BranchConfigOverride(models.Model):
-    id = models.UUIDField(
-        primary_key=True,
-        default=uuid.uuid4,
-        editable=False,
+class ConfigurationValue(ScopedModel):
+    """Store one definition value at platform, school, or branch scope.
+
+    Args:
+        id: Stable UUID identifier.
+        definition: Typed definition that validates and describes this value.
+        value: JSON-native value validated against the definition before writing.
+        school: Optional school scope inherited from :class:`ScopedModel`.
+        branch: Optional branch scope inherited from :class:`ScopedModel`.
+        scope_key: Normalized scope identity inherited from :class:`ScopedModel`.
+        updated_by: User who most recently set the value.
+        created_at: Creation timestamp.
+        updated_at: Timestamp of the most recent value change.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    definition = models.ForeignKey(
+        ConfigurationDefinition, on_delete=models.CASCADE, related_name="values"
     )
-    branch = models.ForeignKey(
-        "vs_schools.Branch",
-        on_delete=models.CASCADE,
-        related_name="config_overrides",
-    )
-    # Must be in constants.PERMITTED_SELF_SERVICE_KEYS. Validated at service level.
-    key = models.CharField(max_length=200)
-    value = models.TextField()
-
+    value = models.JSONField()
     updated_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="config_overrides_updated",
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="configuration_values_updated",
     )
+    created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
-    class Meta:
-        unique_together = [["branch", "key"]]
-        indexes = [
-            models.Index(fields=["branch", "key"]),
-        ]
-        verbose_name = "Branch Config Override"
-        verbose_name_plural = "Branch Config Overrides"
-
-    def __str__(self):
-        return f"{self.branch_id} | {self.key} = {self.value[:40]}"
-
-
-# ---------------------------------------------------------------------------
-# 4. ConfigurationChangeLog
-#    Append-only audit log for all configuration and flag changes.
-#    Never updated or deleted — each row is one immutable change event.
-#    All writes must go through ConfigurationService or FlagService,
-#    never directly from views.
-# ---------------------------------------------------------------------------
-class ConfigurationChangeLog(models.Model):
-    id = models.UUIDField(
-        primary_key=True,
-        default=uuid.uuid4,
-        editable=False,
-    )
-    change_type = models.CharField(
-        max_length=20,
-        choices=ChangeType.CHOICES,
-        db_index=True,
-    )
-    # The config key name or flag_key that was changed.
-    target_key = models.CharField(max_length=200, db_index=True)
-
-    # Null for global config changes (no institution scope remains).
-    institution = models.ForeignKey(
-        "vs_schools.School",
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="config_change_logs",
-    )
-    # Set for branch-scoped flag changes and branch config overrides; null for global changes.
-    branch = models.ForeignKey(
-        "vs_schools.Branch",
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="config_change_logs",
-    )
-    # Empty string on new key creation (no prior value).
-    previous_value = models.TextField(blank=True, default="")
-    new_value = models.TextField()
-
-    changed_by = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="config_changes_made",
-    )
-    # auto_now_add makes this immutable — cannot be altered post-creation.
-    changed_at = models.DateTimeField(auto_now_add=True, db_index=True)
-
-    # Optional reason. Required when a Vision staff member disables a flag
-    # on a Live institution (enforced at service level, not DB level).
-    reason = models.TextField(blank=True, default="")
-
-    objects = TenantAwareManager(tenant_field="institution", include_global=True)
+    objects = TenantAwareManager(include_global=True)
     all_objects = models.Manager()
 
     class Meta:
         default_manager_name = "objects"
         base_manager_name = "all_objects"
-        ordering = ["-changed_at"]
-        indexes = [
-            models.Index(fields=["institution", "change_type", "-changed_at"]),
-            models.Index(fields=["target_key", "-changed_at"]),
-            models.Index(fields=["changed_by", "-changed_at"]),
+        constraints = [
+            models.UniqueConstraint(
+                fields=["definition", "scope_key"], name="uniq_config_value_scope"
+            )
         ]
-        verbose_name = "Configuration Change Log"
-        verbose_name_plural = "Configuration Change Logs"
+        indexes = [models.Index(fields=["school", "branch"])]
+
+
+class Capability(models.Model):
+    """Represent one module or feature in the unified capability catalogue.
+
+    Args:
+        id: Stable UUID identifier.
+        key: Immutable slug used by packages, APIs, and runtime checks.
+        label: Human-readable capability name.
+        description: Functional description shown to administrators.
+        kind: Distinguishes a product module from a feature.
+        requires_entitlement: Whether runtime enablement requires a grant.
+        default_enabled: Runtime state when no override applies.
+        is_active: Catalogue lifecycle flag; inactive capabilities never resolve on.
+        metadata: Extensible non-authoritative display or integration metadata.
+        created_at: Creation timestamp.
+        updated_at: Timestamp of the most recent catalogue change.
+    """
+
+    class Kind(models.TextChoices):
+        MODULE = "MODULE", "Module"
+        FEATURE = "FEATURE", "Feature"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    key = models.SlugField(max_length=100, unique=True)
+    label = models.CharField(max_length=160)
+    description = models.TextField(blank=True)
+    kind = models.CharField(max_length=12, choices=Kind.choices, default=Kind.MODULE)
+    requires_entitlement = models.BooleanField(default=True)
+    default_enabled = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True, db_index=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["kind", "label"]
 
     def __str__(self):
-        if self.branch_id:
-            scope = f" | branch:{self.branch_id}"
-        elif self.institution_id:
-            scope = f" | inst:{self.institution_id}"
-        else:
-            scope = ""
-        return f"[{self.change_type}] {self.target_key}{scope} @ {self.changed_at}"
+        return self.label
+
+
+class CapabilityDependency(models.Model):
+    """Require one capability to be effective before another can be effective.
+
+    Args:
+        capability: Dependent capability being evaluated.
+        requires: Prerequisite capability that must resolve as enabled.
+
+    Behavior:
+        Duplicate edges, self-references, and dependency cycles are rejected.
+    """
+
+    capability = models.ForeignKey(
+        Capability, on_delete=models.CASCADE, related_name="dependency_links"
+    )
+    requires = models.ForeignKey(
+        Capability, on_delete=models.CASCADE, related_name="dependent_links"
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["capability", "requires"], name="uniq_capability_dependency"
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(capability=models.F("requires")),
+                name="capability_cannot_require_itself",
+            ),
+        ]
+
+    def clean(self):
+        super().clean()
+        if not self.capability_id or not self.requires_id:
+            return
+        if self.capability_id == self.requires_id:
+            raise ValidationError("A capability cannot depend on itself.")
+        pending = [self.requires_id]
+        seen = set()
+        while pending:
+            current = pending.pop()
+            if current == self.capability_id:
+                raise ValidationError("Capability dependency would create a cycle.")
+            if current in seen:
+                continue
+            seen.add(current)
+            pending.extend(
+                CapabilityDependency.objects.filter(capability_id=current)
+                .values_list("requires_id", flat=True)
+            )
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class CapabilityEntitlement(models.Model):
+    """Record commercial or administrative access to a capability.
+
+    Args:
+        id: Stable UUID identifier.
+        capability: Capability being granted or denied.
+        school: Optional school; null represents a platform-wide entitlement.
+        scope_key: Normalized platform or school key used for uniqueness.
+        state: Explicit granted or denied decision.
+        source: Origin of the decision, such as a package or manual change.
+        starts_at: Optional time from which the decision becomes effective.
+        ends_at: Optional exclusive expiry time.
+        updated_by: User who most recently changed the entitlement.
+        created_at: Creation timestamp.
+        updated_at: Timestamp of the most recent entitlement change.
+    """
+
+    class State(models.TextChoices):
+        GRANTED = "GRANTED", "Granted"
+        DENIED = "DENIED", "Denied"
+
+    class Source(models.TextChoices):
+        PACKAGE = "PACKAGE", "Package"
+        PLATFORM = "PLATFORM", "Platform"
+        MANUAL = "MANUAL", "Manual"
+        IMPORT = "IMPORT", "Import"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    capability = models.ForeignKey(
+        Capability, on_delete=models.CASCADE, related_name="entitlements"
+    )
+    school = models.ForeignKey(
+        "vs_schools.School", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="capability_entitlements",
+    )
+    scope_key = models.CharField(max_length=80, editable=False, db_index=True)
+    state = models.CharField(max_length=12, choices=State.choices)
+    source = models.CharField(max_length=12, choices=Source.choices)
+    starts_at = models.DateTimeField(null=True, blank=True)
+    ends_at = models.DateTimeField(null=True, blank=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="capability_entitlements_updated",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = TenantAwareManager(include_global=True)
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["capability", "scope_key"], name="uniq_capability_entitlement_scope",
+            )
+        ]
+
+    def save(self, *args, **kwargs):
+        self.scope_key = f"school:{self.school_id}" if self.school_id else "platform"
+        return super().save(*args, **kwargs)
+
+
+class CapabilityOverride(ScopedModel):
+    """Control runtime activation without changing commercial entitlement.
+
+    Args:
+        id: Stable UUID identifier.
+        capability: Capability whose runtime state is overridden.
+        school: Optional school scope inherited from :class:`ScopedModel`.
+        branch: Optional branch scope inherited from :class:`ScopedModel`.
+        scope_key: Normalized scope identity inherited from :class:`ScopedModel`.
+        state: Inherit, enabled, or disabled runtime decision.
+        reason: Operator explanation for the override.
+        updated_by: User who most recently changed the override.
+        created_at: Creation timestamp.
+        updated_at: Timestamp of the most recent override change.
+
+    Behavior:
+        An enabled override cannot bypass a denied or missing entitlement.
+    """
+
+    class State(models.TextChoices):
+        INHERIT = "INHERIT", "Inherit"
+        ENABLED = "ENABLED", "Enabled"
+        DISABLED = "DISABLED", "Disabled"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    capability = models.ForeignKey(
+        Capability, on_delete=models.CASCADE, related_name="overrides"
+    )
+    state = models.CharField(max_length=12, choices=State.choices)
+    reason = models.TextField(blank=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="capability_overrides_updated",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    objects = TenantAwareManager(include_global=True)
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["capability", "scope_key"], name="uniq_capability_override_scope"
+            )
+        ]
+
+
+class ConfigurationAuditEvent(ScopedModel):
+    """Persist an immutable configuration or capability mutation event.
+
+    Args:
+        id: Stable UUID identifier.
+        action: Stable action key describing the mutation.
+        target_type: Model or logical resource type that changed.
+        target_id: String identifier of the changed record.
+        actor: User responsible for the mutation, nullable for system work.
+        school: Optional school scope inherited from :class:`ScopedModel`.
+        branch: Optional branch scope inherited from :class:`ScopedModel`.
+        scope_key: Normalized scope identity inherited from :class:`ScopedModel`.
+        before_data: Redacted JSON snapshot before the mutation.
+        after_data: Redacted JSON snapshot after the mutation.
+        reason: Operator-provided explanation.
+        metadata: Additional non-secret request or migration context.
+        created_at: Immutable event timestamp.
+
+    Behavior:
+        Python model guards and database triggers reject updates and deletes.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    action = models.CharField(max_length=80, db_index=True)
+    target_type = models.CharField(max_length=80)
+    target_id = models.CharField(max_length=200, db_index=True)
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="configuration_audit_events",
+    )
+    before_data = models.JSONField(default=dict, blank=True)
+    after_data = models.JSONField(default=dict, blank=True)
+    reason = models.TextField(blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    objects = TenantAwareManager(include_global=True)
+    all_objects = models.Manager()
+
+    class Meta:
+        default_manager_name = "objects"
+        base_manager_name = "all_objects"
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["school", "branch", "-created_at"])]
+
+    def save(self, *args, **kwargs):
+        if self.pk and ConfigurationAuditEvent.all_objects.filter(pk=self.pk).exists():
+            raise ValueError("ConfigurationAuditEvent rows are immutable.")
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        raise ValueError("ConfigurationAuditEvent rows are immutable.")

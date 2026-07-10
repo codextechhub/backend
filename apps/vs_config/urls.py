@@ -2,21 +2,18 @@ from django.urls import path
 
 from . import views
 
+
 urlpatterns = [
-    # Global configuration keys
-    path("keys/", views.ConfigurationKeyListCreateView.as_view(), name="config-key-list-create"),
-    path("keys/<str:key>/restore/", views.ConfigurationKeyRestoreView.as_view(), name="config-key-restore"),
-    path("keys/<str:key>/", views.ConfigurationKeyDetailView.as_view(), name="config-key-detail"),
-
-    # Branch feature flags
-    path("branches/<str:branch_id>/flags/history/", views.BranchFlagHistoryView.as_view(), name="branch-flag-history"),
-    path("branches/<str:branch_id>/flags/<str:flag_key>/", views.BranchFlagToggleView.as_view(), name="branch-flag-toggle"),
-    path("branches/<str:branch_id>/flags/", views.BranchFlagListView.as_view(), name="branch-flag-list"),
-
-    # Branch self-service overrides
-    path("my-branch/overrides/history/", views.BranchOverrideHistoryView.as_view(), name="branch-override-history"),
-    path("my-branch/overrides/", views.BranchOverrideView.as_view(), name="branch-override"),
-
-    # Export
+    path("definitions/", views.DefinitionListCreateView.as_view(), name="config-definition-list"),
+    path("definitions/<str:key>/", views.DefinitionDetailView.as_view(), name="config-definition-detail"),
+    path("values/", views.ValueListSetView.as_view(), name="config-value-list"),
+    path("effective-values/", views.EffectiveValueView.as_view(), name="config-effective-values"),
+    path("effective-values/<str:key>/", views.EffectiveValueView.as_view(), name="config-effective-value"),
+    path("capabilities/", views.CapabilityListCreateView.as_view(), name="config-capability-list"),
+    path("capabilities/<slug:key>/", views.CapabilityDetailView.as_view(), name="config-capability-detail"),
+    path("entitlements/", views.EntitlementListSetView.as_view(), name="config-entitlement-list"),
+    path("overrides/", views.OverrideListSetView.as_view(), name="config-override-list"),
+    path("effective-capabilities/", views.EffectiveCapabilitiesView.as_view(), name="config-effective-capabilities"),
+    path("audit-events/", views.AuditEventListView.as_view(), name="config-audit-list"),
     path("export/", views.ConfigExportView.as_view(), name="config-export"),
 ]

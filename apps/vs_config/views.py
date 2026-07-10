@@ -1,354 +1,391 @@
-
-# vs_config/views.py
-#
-# All views in vs_config delegate business logic to ConfigurationService
-# and FlagService. Views are responsible for:
-#   - Authentication (JWT via IsAuthenticated)
-#   - Permission enforcement (has_platform_permission / has_institution_permission)
-#   - Request parsing and response shaping
-#   - Pagination
-#   - Calling the correct service method
-#
-# Views never touch models directly. No ORM calls belong here.
-#
-# Pagination:
-#   All list views use StandardResultsSetPagination (10 items / page).
-#   Adjust page_size in settings if needed.
-
+from django.db import transaction
+from django.core.exceptions import ImproperlyConfigured
 from django.shortcuts import get_object_or_404
-
 from rest_framework import status
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.pagination import PageNumberPagination
 
-from .models import ConfigurationKey
+from core.pagination import XVSPagination
+from core.response import success_response
+from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+
+from .constants import ConfigPermissions
+from .models import (
+    Capability,
+    CapabilityEntitlement,
+    CapabilityOverride,
+    ConfigurationAuditEvent,
+    ConfigurationDefinition,
+    ConfigurationValue,
+)
 from .serializers import (
-    ConfigurationKeyListSerializer,
-    ConfigurationKeyDetailSerializer,
-    ConfigurationKeyCreateSerializer,
-    ConfigurationKeyUpdateSerializer,
-    FlagToggleSerializer,
-    BranchConfigOverrideSerializer,
-    BranchOverrideBulkUpdateSerializer,
-    ConfigurationChangeLogSerializer,
+    CapabilityEntitlementSerializer,
+    CapabilityOverrideSerializer,
+    CapabilitySerializer,
+    ConfigurationAuditEventSerializer,
+    ConfigurationDefinitionSerializer,
+    ConfigurationValueSerializer,
+    SetConfigurationValueSerializer,
+    SetEntitlementSerializer,
+    SetOverrideSerializer,
 )
-from .constants import ConfigPermissions, FLAG_REGISTRY
-from .services.config import ConfigurationService
-from .services.flags import FlagService
-from .services.audit import write_audit_log, ConfigAuditActions
-
-from vs_rbac.permissions import (
-    IsAuthenticatedAndActive,
-    HasRBACPermission,
-    IsVisionSuperAdmin,
-    IsSchoolAdmin,
-)
+from .services.audit import record_configuration_event
+from .services.capabilities import effective_capability, set_entitlement, set_override
+from .services.resolution import resolve_value, set_value
+from .services.scopes import resolve_request_scope
 
 
-# ---------------------------------------------------------------------------
-# Pagination
-# ---------------------------------------------------------------------------
+class ConfigAPIView(APIView):
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_map = {}
+    platform_methods = set()
 
-class StandardResultsSetPagination(PageNumberPagination):
-    page_size            = 10
-    page_size_query_param = "page_size"
-    max_page_size        = 100
+    @property
+    def rbac_permission(self):
+        method = getattr(self.request, "method", "GET")
+        if method in {"HEAD", "OPTIONS"}:
+            method = "GET"
+        permission = self.permission_map.get(method)
+        if not permission:
+            raise ImproperlyConfigured(
+                f"{self.__class__.__name__} has no RBAC permission for {method}."
+            )
+        return permission
+
+    def paginate(self, request, queryset, serializer_class):
+        paginator = XVSPagination()
+        paginator.page_size = 25
+        page = paginator.paginate_queryset(queryset, request, view=self)
+        return paginator.get_paginated_response(serializer_class(page, many=True).data)
+
+    def check_permissions(self, request):
+        super().check_permissions(request)
+        if request.method in self.platform_methods and request.user.user_type != "CX_STAFF":
+            raise PermissionDenied("This operation is platform-scoped.")
 
 
-# ---------------------------------------------------------------------------
-# Helper: get branch from request (for branch-scoped views)
-# ---------------------------------------------------------------------------
-
-def _get_branch_from_request(request):
-    """
-    Returns the branch associated with the authenticated user.
-    Adjust this to match how vs_schools/vs_users exposes branch on request.user.
-    """
-    return request.user.branch
-
-
-# ---------------------------------------------------------------------------
-# Global Configuration Key Views
-# ---------------------------------------------------------------------------
-
-class ConfigurationKeyListCreateView(APIView):
-    """
-    GET  /api/v1/config/keys/
-         List all active global config keys.
-         ?include_inactive=true includes soft-deleted keys (Super Admin only).
-
-    POST /api/v1/config/keys/
-         Create a new global config key. Super Admin only.
-
-    docstring-name: Configuration keys
-    """
-    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
-    rbac_permission    = ConfigPermissions.SYSTEM_MANAGE
+class DefinitionListCreateView(ConfigAPIView):
+    platform_methods = {"POST"}
+    permission_map = {
+        "GET": ConfigPermissions.DEFINITION_VIEW,
+        "POST": ConfigPermissions.DEFINITION_CREATE,
+    }
 
     def get(self, request):
-        include_inactive = (
-            request.query_params.get("include_inactive", "").lower() == "true"
-        )
-        keys = ConfigurationService.list_active_keys(include_inactive=include_inactive)
-
-        paginator = StandardResultsSetPagination()
-        page = paginator.paginate_queryset(keys, request)
-        serializer = ConfigurationKeyListSerializer(page, many=True)
-        return paginator.get_paginated_response(serializer.data)
+        qs = ConfigurationDefinition.objects.all()
+        if request.query_params.get("include_inactive") != "true":
+            qs = qs.filter(is_active=True)
+        return self.paginate(request, qs, ConfigurationDefinitionSerializer)
 
     def post(self, request):
-        serializer = ConfigurationKeyCreateSerializer(data=request.data)
+        serializer = ConfigurationDefinitionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
-        config_key = ConfigurationService.create_key(
-            key=serializer.validated_data["key"],
-            value=serializer.validated_data["value"],
-            description=serializer.validated_data["description"],
-            actor=request.user,
+        definition = serializer.save(created_by=request.user)
+        record_configuration_event(
+            action="config.definition.created", target=definition, actor=request.user,
+            after=ConfigurationDefinitionSerializer(definition).data,
         )
-
-        return Response(
-            ConfigurationKeyDetailSerializer(config_key).data,
+        return success_response(
+            "Configuration definition created.",
+            ConfigurationDefinitionSerializer(definition).data,
             status=status.HTTP_201_CREATED,
         )
 
 
-class ConfigurationKeyDetailView(APIView):
-    """
-    GET   /api/v1/config/keys/{key}/   Retrieve a single key by dot-notation name.
-    PATCH /api/v1/config/keys/{key}/   Update value and/or description.
-    DELETE /api/v1/config/keys/{key}/  Soft-delete. Blocked if referenced by overrides.
+class DefinitionDetailView(ConfigAPIView):
+    platform_methods = {"PATCH", "DELETE"}
+    permission_map = {
+        "GET": ConfigPermissions.DEFINITION_VIEW,
+        "PATCH": ConfigPermissions.DEFINITION_UPDATE,
+        "DELETE": ConfigPermissions.DEFINITION_ARCHIVE,
+    }
 
-    docstring-name: Configuration keys
-    """
-    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
-    rbac_permission    = ConfigPermissions.SYSTEM_MANAGE
-
-    def _get_key(self, key_name):
-        return get_object_or_404(ConfigurationKey, key=key_name)
+    def get_object(self, key):
+        return get_object_or_404(ConfigurationDefinition, key=key)
 
     def get(self, request, key):
-        config_key = self._get_key(key)
-        return Response(ConfigurationKeyDetailSerializer(config_key).data)
-
-    def patch(self, request, key):
-        config_key = self._get_key(key)
-
-        serializer = ConfigurationKeyUpdateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-
-        updated = ConfigurationService.update_key(
-            config_key=config_key,
-            value=serializer.validated_data.get("value"),
-            description=serializer.validated_data.get("description"),
-            actor=request.user,
+        obj = self.get_object(key)
+        return success_response(
+            "Configuration definition retrieved.",
+            ConfigurationDefinitionSerializer(obj).data,
         )
 
-        return Response(ConfigurationKeyDetailSerializer(updated).data)
+    @transaction.atomic
+    def patch(self, request, key):
+        obj = self.get_object(key)
+        before = ConfigurationDefinitionSerializer(obj).data
+        serializer = ConfigurationDefinitionSerializer(obj, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        record_configuration_event(
+            action="config.definition.updated", target=obj, actor=request.user,
+            before=before, after=serializer.data, reason=request.data.get("reason", ""),
+        )
+        return success_response("Configuration definition updated.", serializer.data)
+
+    @transaction.atomic
+    def delete(self, request, key):
+        obj = self.get_object(key)
+        if obj.is_active:
+            obj.is_active = False
+            obj.save(update_fields=["is_active", "updated_at"])
+            record_configuration_event(
+                action="config.definition.archived", target=obj, actor=request.user,
+                before={"is_active": True}, after={"is_active": False},
+                reason=request.data.get("reason", ""),
+            )
+        return success_response("Configuration definition archived.")
+
+
+class ValueListSetView(ConfigAPIView):
+    permission_map = {
+        "GET": ConfigPermissions.VALUE_VIEW,
+        "POST": ConfigPermissions.VALUE_UPDATE,
+    }
+
+    def get(self, request):
+        school, branch = resolve_request_scope(request)
+        qs = ConfigurationValue.all_objects.select_related("definition", "updated_by")
+        if branch:
+            qs = qs.filter(branch=branch)
+        elif school:
+            qs = qs.filter(school=school, branch__isnull=True)
+        else:
+            qs = qs.filter(school__isnull=True, branch__isnull=True)
+        return self.paginate(request, qs.order_by("definition__key"), ConfigurationValueSerializer)
+
+    @transaction.atomic
+    def post(self, request):
+        raw_items = request.data.get("values")
+        is_bulk = isinstance(raw_items, list)
+        items = raw_items if is_bulk else [request.data]
+        if not items:
+            raise ValidationError({"values": "At least one configuration value is required."})
+        serializers = [SetConfigurationValueSerializer(data=item) for item in items]
+        for serializer in serializers:
+            serializer.is_valid(raise_exception=True)
+        school, branch = resolve_request_scope(request)
+        rows = []
+        for serializer in serializers:
+            definition = get_object_or_404(
+                ConfigurationDefinition,
+                key=serializer.validated_data["key"], is_active=True,
+            )
+            rows.append(set_value(
+                definition=definition,
+                value=serializer.validated_data["value"],
+                actor=request.user,
+                school=school,
+                branch=branch,
+                reason=serializer.validated_data["reason"],
+            ))
+        data = ConfigurationValueSerializer(rows, many=True).data
+        return success_response(
+            "Configuration values saved." if is_bulk else "Configuration value saved.",
+            data if is_bulk else data[0],
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class EffectiveValueView(ConfigAPIView):
+    permission_map = {"GET": ConfigPermissions.VALUE_VIEW}
+
+    def get(self, request, key=None):
+        school, branch = resolve_request_scope(request)
+        definitions = ConfigurationDefinition.objects.filter(is_active=True)
+        if key:
+            definitions = definitions.filter(key=key)
+            if not definitions.exists():
+                raise NotFound("Configuration definition not found.")
+        data = []
+        for definition in definitions:
+            value, source = resolve_value(definition, school=school, branch=branch)
+            if definition.sensitivity == definition.Sensitivity.SECRET_REFERENCE:
+                value = "[REDACTED]" if value is not None else None
+            data.append({
+                "key": definition.key,
+                "value": value,
+                "source": source.scope_key if source else "default",
+            })
+        payload = data[0] if key else data
+        return success_response("Effective configuration retrieved.", payload)
+
+
+class CapabilityListCreateView(ConfigAPIView):
+    platform_methods = {"POST"}
+    permission_map = {
+        "GET": ConfigPermissions.CAPABILITY_VIEW,
+        "POST": ConfigPermissions.CAPABILITY_MANAGE,
+    }
+
+    def get(self, request):
+        qs = Capability.objects.all()
+        if request.query_params.get("include_inactive") != "true":
+            qs = qs.filter(is_active=True)
+        return self.paginate(request, qs, CapabilitySerializer)
+
+    @transaction.atomic
+    def post(self, request):
+        serializer = CapabilitySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        capability = serializer.save()
+        record_configuration_event(
+            action="config.capability.created", target=capability, actor=request.user,
+            after=CapabilitySerializer(capability).data,
+        )
+        return success_response(
+            "Capability created.", CapabilitySerializer(capability).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class CapabilityDetailView(ConfigAPIView):
+    platform_methods = {"PATCH", "DELETE"}
+    permission_map = {
+        "GET": ConfigPermissions.CAPABILITY_VIEW,
+        "PATCH": ConfigPermissions.CAPABILITY_MANAGE,
+        "DELETE": ConfigPermissions.CAPABILITY_MANAGE,
+    }
+
+    def get_object(self, key):
+        return get_object_or_404(Capability, key=key)
+
+    def get(self, request, key):
+        obj = self.get_object(key)
+        return success_response("Capability retrieved.", CapabilitySerializer(obj).data)
+
+    @transaction.atomic
+    def patch(self, request, key):
+        obj = self.get_object(key)
+        before = CapabilitySerializer(obj).data
+        serializer = CapabilitySerializer(obj, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        record_configuration_event(
+            action="config.capability.updated", target=obj, actor=request.user,
+            before=before, after=serializer.data, reason=request.data.get("reason", ""),
+        )
+        return success_response("Capability updated.", serializer.data)
 
     def delete(self, request, key):
-        config_key = self._get_key(key)
-        ConfigurationService.soft_delete_key(config_key=config_key, actor=request.user)
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        obj = self.get_object(key)
+        obj.is_active = False
+        obj.save(update_fields=["is_active", "updated_at"])
+        record_configuration_event(
+            action="config.capability.archived", target=obj, actor=request.user,
+            before={"is_active": True}, after={"is_active": False},
+            reason=request.data.get("reason", ""),
+        )
+        return success_response("Capability archived.")
 
 
-class ConfigurationKeyRestoreView(APIView):
-    """
-    POST /api/v1/config/keys/{key}/restore/
-    Restore a soft-deleted configuration key.
+class EntitlementListSetView(ConfigAPIView):
+    platform_methods = {"POST"}
+    permission_map = {
+        "GET": ConfigPermissions.ENTITLEMENT_VIEW,
+        "POST": ConfigPermissions.ENTITLEMENT_MANAGE,
+    }
 
-    docstring-name: Restore a configuration key
-    """
-    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
-    rbac_permission    = ConfigPermissions.SYSTEM_MANAGE
+    def get(self, request):
+        school, _ = resolve_request_scope(request)
+        qs = CapabilityEntitlement.all_objects.select_related("capability", "updated_by")
+        qs = qs.filter(school=school) if school else qs.filter(school__isnull=True)
+        return self.paginate(request, qs, CapabilityEntitlementSerializer)
 
-    def post(self, request, key):
-        config_key = get_object_or_404(ConfigurationKey, key=key, is_active=False)
-        restored = ConfigurationService.restore_key(config_key=config_key, actor=request.user)
-        return Response(ConfigurationKeyDetailSerializer(restored).data)
-
-
-# ---------------------------------------------------------------------------
-# Feature Flag Views
-# ---------------------------------------------------------------------------
-
-class BranchFlagListView(APIView):
-    """
-    GET /api/v1/config/branches/{branch_id}/flags/
-    Returns all flags in FLAG_REGISTRY annotated with branch state.
-    Never-set flags appear with is_enabled=False.
-
-    docstring-name: Branch feature flags
-    """
-    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
-    rbac_permission    = ConfigPermissions.FLAGS_MANAGE
-
-    def get(self, request, branch_id):
-        from vs_schools.models import Branch
-        branch = get_object_or_404(Branch, id=branch_id)
-
-        flags = FlagService.get_all_flags_for_branch(branch)
-        return Response({"flags": flags})
-
-
-class BranchFlagToggleView(APIView):
-    """
-    PATCH /api/v1/config/branches/{branch_id}/flags/{flag_key}/
-    Toggle a specific flag on or off for a branch.
-
-    docstring-name: Toggle a branch feature flag
-    """
-    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
-    rbac_permission    = ConfigPermissions.FLAGS_MANAGE
-
-    def patch(self, request, branch_id, flag_key):
-        from vs_schools.models import Branch
-        branch = get_object_or_404(Branch, id=branch_id)
-
-        serializer = FlagToggleSerializer(data=request.data)
+    def post(self, request):
+        serializer = SetEntitlementSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
-        flag = FlagService.toggle_flag(
-            branch=branch,
-            flag_key=flag_key,
-            enable=serializer.validated_data["is_enabled"],
-            actor=request.user,
-            reason=serializer.validated_data.get("reason", ""),
+        capability = get_object_or_404(Capability, key=serializer.validated_data["capability"])
+        school, _ = resolve_request_scope(request)
+        row = set_entitlement(
+            capability=capability, school=school,
+            state=serializer.validated_data["state"],
+            source=serializer.validated_data["source"], actor=request.user,
+            reason=serializer.validated_data["reason"],
+        )
+        return success_response(
+            "Capability entitlement saved.", CapabilityEntitlementSerializer(row).data,
+            status=status.HTTP_201_CREATED,
         )
 
-        return Response({
-            "flag_key":   flag.flag_key,
-            "label":      FLAG_REGISTRY.get(flag.flag_key, flag.flag_key),
-            "is_enabled": flag.is_enabled,
-            "set_by":     str(flag.set_by_id) if flag.set_by_id else None,
-            "set_at":     flag.set_at,
-        })
 
-
-class BranchFlagHistoryView(APIView):
-    """
-    GET /api/v1/config/branches/{branch_id}/flags/history/
-    Returns paginated flag change history for a branch.
-    Optional ?flag_key= to filter by a specific flag.
-
-    docstring-name: Branch flag history
-    """
-    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
-    rbac_permission    = ConfigPermissions.FLAGS_MANAGE
-
-    def get(self, request, branch_id):
-        from vs_schools.models import Branch
-        branch = get_object_or_404(Branch, id=branch_id)
-
-        flag_key = request.query_params.get("flag_key")
-        history  = FlagService.get_flag_history(branch, flag_key=flag_key)
-
-        paginator = StandardResultsSetPagination()
-        page = paginator.paginate_queryset(history, request)
-        serializer = ConfigurationChangeLogSerializer(page, many=True)
-        return paginator.get_paginated_response(serializer.data)
-
-
-# ---------------------------------------------------------------------------
-# Branch Self-Service Override Views
-# ---------------------------------------------------------------------------
-
-class BranchOverrideView(APIView):
-    """
-    GET   /api/v1/config/my-branch/overrides/
-          List current override settings for the authenticated Branch Admin's branch.
-
-    PATCH /api/v1/config/my-branch/overrides/
-          Update one or more permitted override keys.
-          Only keys in PERMITTED_SELF_SERVICE_KEYS are accepted.
-
-    docstring-name: Branch configuration overrides
-    """
-    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
-    rbac_permission    = ConfigPermissions.SELF_MANAGE
+class OverrideListSetView(ConfigAPIView):
+    permission_map = {
+        "GET": ConfigPermissions.OVERRIDE_VIEW,
+        "POST": ConfigPermissions.OVERRIDE_MANAGE,
+    }
 
     def get(self, request):
-        branch    = _get_branch_from_request(request)
-        overrides = ConfigurationService.list_branch_overrides(branch)
-        serializer = BranchConfigOverrideSerializer(overrides, many=True)
-        return Response(serializer.data)
+        school, branch = resolve_request_scope(request)
+        qs = CapabilityOverride.all_objects.select_related("capability", "updated_by")
+        if branch:
+            qs = qs.filter(branch=branch)
+        elif school:
+            qs = qs.filter(school=school, branch__isnull=True)
+        else:
+            qs = qs.filter(school__isnull=True, branch__isnull=True)
+        return self.paginate(request, qs, CapabilityOverrideSerializer)
 
-    def patch(self, request):
-        branch = _get_branch_from_request(request)
-
-        serializer = BranchOverrideBulkUpdateSerializer(data=request.data)
+    def post(self, request):
+        serializer = SetOverrideSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
-        results = []
-        for key, value in serializer.validated_data["overrides"].items():
-            override = ConfigurationService.set_branch_override(
-                branch=branch,
-                key=key,
-                value=value,
-                actor=request.user,
-            )
-            results.append(override)
-
-        return Response(
-            BranchConfigOverrideSerializer(results, many=True).data
+        capability = get_object_or_404(Capability, key=serializer.validated_data["capability"])
+        school, branch = resolve_request_scope(request)
+        row = set_override(
+            capability=capability, state=serializer.validated_data["state"],
+            actor=request.user, school=school, branch=branch,
+            reason=serializer.validated_data["reason"],
+        )
+        return success_response(
+            "Capability override saved.", CapabilityOverrideSerializer(row).data,
+            status=status.HTTP_201_CREATED,
         )
 
 
-class BranchOverrideHistoryView(APIView):
-    """
-    GET /api/v1/config/my-branch/overrides/history/
-    Returns paginated change history for the authenticated Branch Admin's overrides.
-
-    docstring-name: Branch override history
-    """
-    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
-    rbac_permission    = ConfigPermissions.SELF_MANAGE
+class EffectiveCapabilitiesView(ConfigAPIView):
+    permission_map = {"GET": ConfigPermissions.CAPABILITY_VIEW}
 
     def get(self, request):
-        branch  = _get_branch_from_request(request)
-        history = ConfigurationService.list_override_history(branch)
+        school, branch = resolve_request_scope(request)
+        data = [
+            {"key": item.key, "enabled": effective_capability(item, school=school, branch=branch)}
+            for item in Capability.objects.filter(is_active=True)
+        ]
+        return success_response("Effective capabilities retrieved.", data)
 
-        paginator = StandardResultsSetPagination()
-        page = paginator.paginate_queryset(history, request)
-        serializer = ConfigurationChangeLogSerializer(page, many=True)
-        return paginator.get_paginated_response(serializer.data)
 
+class AuditEventListView(ConfigAPIView):
+    permission_map = {"GET": ConfigPermissions.AUDIT_VIEW}
 
-# ---------------------------------------------------------------------------
-# Export View
-# ---------------------------------------------------------------------------
-
-class ConfigExportView(APIView):
-    """
-    GET /api/v1/config/export/
-    Export all active global config keys and all branch flag states.
-    Super Admin only. Action is logged to platform audit trail.
-
-    docstring-name: Export configuration
-    """
-    permission_classes = [IsAuthenticatedAndActive, IsVisionSuperAdmin | IsSchoolAdmin | HasRBACPermission]
-    rbac_permission    = ConfigPermissions.SYSTEM_MANAGE
-    
     def get(self, request):
-        from vs_schools.models import Branch
+        school, branch = resolve_request_scope(request)
+        qs = ConfigurationAuditEvent.all_objects.select_related("actor")
+        if branch:
+            qs = qs.filter(branch=branch)
+        elif school:
+            qs = qs.filter(school=school)
+        else:
+            qs = qs.filter(school__isnull=True)
+        return self.paginate(request, qs, ConfigurationAuditEventSerializer)
 
-        global_keys = ConfigurationService.list_active_keys(include_inactive=False)
 
-        branch_flags = {}
-        for branch in Branch.objects.filter(is_active=True):
-            flags = FlagService.get_all_flags_for_branch(branch)
-            branch_flags[branch.slug] = flags
+class ConfigExportView(ConfigAPIView):
+    permission_map = {"GET": ConfigPermissions.EXPORT_CREATE}
 
-        write_audit_log(
-            actor=request.user,
-            action=ConfigAuditActions.CONFIG_EXPORTED,
-            target_type="ConfigExport",
-            target_id="all",
-            detail={"branch_count": len(branch_flags)},
+    def get(self, request):
+        school, branch = resolve_request_scope(request)
+        definitions = ConfigurationDefinition.objects.filter(is_active=True)
+        values = []
+        for definition in definitions:
+            value, source = resolve_value(definition, school=school, branch=branch)
+            if definition.sensitivity == definition.Sensitivity.SECRET_REFERENCE:
+                value = "[REDACTED]" if value is not None else None
+            values.append({"key": definition.key, "value": value, "source": source.scope_key if source else "default"})
+        capabilities = [
+            {"key": item.key, "enabled": effective_capability(item, school=school, branch=branch)}
+            for item in Capability.objects.filter(is_active=True)
+        ]
+        return success_response(
+            "Configuration export generated.",
+            {"values": values, "capabilities": capabilities},
         )
-
-        return Response({
-            "global_config": ConfigurationKeyListSerializer(global_keys, many=True).data,
-            "branch_flags":  branch_flags,
-        })

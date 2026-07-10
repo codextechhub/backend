@@ -9,13 +9,14 @@ def _drop_celery_results_tables(apps, schema_editor):
     Drop its orphaned tables and bookkeeping on databases that had it
     installed; fresh databases never create them (IF EXISTS).
     """
+    cascade = " CASCADE" if schema_editor.connection.vendor == "postgresql" else ""
     with schema_editor.connection.cursor() as cur:
         for table in (
             "django_celery_results_taskresult",
             "django_celery_results_chordcounter",
             "django_celery_results_groupresult",
         ):
-            cur.execute(f'DROP TABLE IF EXISTS "{table}" CASCADE')
+            cur.execute(f'DROP TABLE IF EXISTS "{table}"{cascade}')
         cur.execute(
             "DELETE FROM django_migrations WHERE app = 'django_celery_results'"
         )

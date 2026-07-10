@@ -366,30 +366,6 @@ class SchoolBranding(TimeStampedModel):
     logo = models.ImageField(upload_to="school_logos/", null=True, blank=True)
 
 
-class XVSModules(TimeStampedModel):
-    """
-    Master list of modules that can be enabled for an school.
-    Example: students, staff, finance, procurement, attendance, analytics.
-    This fits your product docs where modules are enabled/disabled per school.
-    """
-    key = models.SlugField(
-        max_length=100,
-        unique=True,
-        help_text="Unique machine key, e.g. students, finance, procurement"
-    )
-    name = models.CharField(max_length=150)
-    description = models.TextField(blank=True)
-    is_active = models.BooleanField(default=True)
-
-    class Meta:
-        ordering = ["name"]
-        verbose_name = "Platform Module"
-        verbose_name_plural = "Platform Modules"
-
-    def __str__(self) -> str:
-        return self.name
-    
-
 class PackagePlan(TimeStampedModel):
     """
     Catalog entry describing an available subscription package.
@@ -443,12 +419,6 @@ class SchoolPackageSetup(TimeStampedModel):
         on_delete=models.PROTECT,
         related_name="school_setups",
     )
-    enabled_modules = models.ManyToManyField(
-        XVSModules,
-        blank=True,
-        related_name="school_package_setups",
-    )
-
     student_capacity = models.PositiveIntegerField()
     teacher_capacity = models.PositiveIntegerField()
     admin_capacity = models.PositiveIntegerField()

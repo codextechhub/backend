@@ -21,10 +21,10 @@ from .models import (
     BranchLifecycle,
     SchoolStatus,
     PackagePlan,
-    XVSModules,
 )
 from vs_audit.models import AuditModuleKey, AuditActionType
 from vs_audit.services import AuditDiffService, emit_audit_event
+from vs_config.models import Capability, CapabilityEntitlement
 
 
 # -----------------------------------------------------------------------------
@@ -135,11 +135,11 @@ class XVSModuleSerializer(serializers.ModelSerializer):
     Used for listing available modules in the Enabled Modules dropdown.
     """
     class Meta:
-        model = XVSModules
+        model = Capability
         fields = [
             "id",
             "key",
-            "name",
+            "label",
             "description",
             "is_active",
         ]
@@ -152,7 +152,7 @@ class SchoolPackageSetupWriteSerializer(serializers.Serializer):
 
     Accepts `package_plan` as the PackagePlan `code` (slug) — more stable
     than a numeric PK and matches what the dropdown naturally emits.
-    Accepts `enabled_modules` as a list of XVSModules `key` strings.
+    Accepts `enabled_modules` as a list of Capability `key` strings.
 
     Validation enforces:
     - package_plan must exist and be active.
@@ -171,7 +171,9 @@ class SchoolPackageSetupWriteSerializer(serializers.Serializer):
     enabled_modules = serializers.ListField(
         child=serializers.SlugRelatedField(
             slug_field="key",
-            queryset=XVSModules.objects.filter(is_active=True),
+            queryset=Capability.objects.filter(
+                is_active=True, kind=Capability.Kind.MODULE
+            ),
         ),
         required=False,
         default=list,
@@ -228,7 +230,16 @@ class SchoolPackageSetupReadSerializer(serializers.ModelSerializer):
     Returned in SchoolDetailSerializer.
     """
     package_plan = PackagePlanSerializer(read_only=True)
-    enabled_modules = XVSModuleSerializer(many=True, read_only=True)
+    enabled_modules = serializers.SerializerMethodField()
+
+    def get_enabled_modules(self, obj):
+        capability_ids = CapabilityEntitlement.all_objects.filter(
+            school=obj.school,
+            state=CapabilityEntitlement.State.GRANTED,
+            source=CapabilityEntitlement.Source.PACKAGE,
+        ).values_list("capability_id", flat=True)
+        capabilities = Capability.objects.filter(pk__in=capability_ids, is_active=True)
+        return XVSModuleSerializer(capabilities, many=True).data
 
     class Meta:
         model = SchoolPackageSetup
@@ -959,9 +970,17 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 **package_setup_data,
             )
 
-            # Assign M2M modules after creation
-            if enabled_modules:
-                setup.enabled_modules.set(enabled_modules)
+            for capability in enabled_modules:
+                CapabilityEntitlement.all_objects.update_or_create(
+                    capability=capability,
+                    scope_key=f"school:{school.pk}",
+                    defaults={
+                        "school": school,
+                        "state": CapabilityEntitlement.State.GRANTED,
+                        "source": CapabilityEntitlement.Source.PACKAGE,
+                        "updated_by": self.context.get("actor_id"),
+                    },
+                )
 
         # --- 6. Audit trail for school ---
         _school_snap = AuditDiffService.from_instances(
