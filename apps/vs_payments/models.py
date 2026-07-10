@@ -184,6 +184,11 @@ class PayoutBatch(TimeStampedModel):
     in sync by the services layer.
     """
 
+    # vs_workflow document-type token. When a WorkflowTemplate exists for it at this
+    # batch's (school, branch) scope, submitting the batch to the provider is gated
+    # behind approval (opt-in by template); otherwise direct submit is unchanged.
+    workflow_document_type = "payments.payout_batch"
+
     entity = models.ForeignKey(
         "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="payout_batches",
     )
@@ -224,6 +229,21 @@ class PayoutBatch(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.reference} · {self.item_count} items · {self.total_amount} kobo · {self.status}"
+
+    @property
+    def school(self):  # Bridges the entity-scoped batch to the school-scoped workflow engine.
+        """School owning this batch's ledger entity (None for platform/product books).
+
+        The vs_workflow approval engine is school-scoped (it reads ``document.school`` /
+        ``document.branch`` to resolve approvers); a payout batch is entity-scoped, so
+        this maps the entity back to its originating school. ``None`` for platform books,
+        which the engine handles as platform-level scoping.
+        """
+        return self.entity.source_school  # The entity's originating school, or None.
+
+    @property
+    def branch(self):  # The engine also reads document.branch; batches have none.
+        return None  # Payout batches are not branch-scoped.
 
     @property
     def is_terminal(self) -> bool:

@@ -14,6 +14,8 @@ urlpatterns = [
     path("payout-batches/", views.PayoutBatchListCreateView.as_view(), name="payments-payout-batches"),
     path("payout-batches/summary/", views.PayoutBatchSummaryView.as_view(), name="payments-payout-batches-summary"),
     path("payout-batches/<int:pk>/", views.PayoutBatchDetailView.as_view(), name="payments-payout-batch-detail"),
+    path("payout-batches/<int:pk>/submit-for-approval/", views.PayoutBatchSubmitForApprovalView.as_view(),
+         name="payments-payout-batch-submit-for-approval"),
     path("reports/settlement-reconciliation/", views.SettlementReconciliationView.as_view(),
          name="payments-settlement-reconciliation"),
     path("transactions/", views.TransactionsLogView.as_view(), name="payments-transactions"),

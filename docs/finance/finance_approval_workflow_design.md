@@ -159,11 +159,18 @@ Two "money-out" documents don't fit the base handler as-is:
   type. The `ARAdjustmentListView`/`_writeoff_rows` reader should later prefer the
   new document over the audit-log reconstruction (backward-compatible: keep reading
   the log for historical write-offs).
-- **Payout batches** (`vs_payments`, gate the PSP *submission* not a GL post) are
-  **deferred** to a follow-up — cross-app and async-confirm shaped.
+- **Payout batches** (`vs_payments`, gate the PSP *submission* not a GL post) —
+  **now built** (2026-07-07): `PayoutBatch` gains `workflow_document_type =
+  "payments.payout_batch"` + a `school`/`branch` bridge; a
+  `vs_payments/workflow_handlers.py` handler whose `on_approved` calls
+  `submit_payout_batch`. The batch has no approval states in its own enum, so the
+  approval phase is tracked in `metadata["approval_status"]` and the batch stays
+  `DRAFT` until approved+submitted (→ `PROCESSING`). New
+  `/payout-batches/<id>/submit-for-approval/` endpoint; direct submit refused when
+  gated. RBAC: `payments.payout_batch.{submit,approve,approve_high_value}`.
 
-So cut-1 approval coverage = **journals (done) → refunds → write-offs (via
-`WriteOffRequest`)**; payout batches later.
+So cut-1 approval coverage = **journals → refunds → write-offs (via
+`WriteOffRequest`) → payout batches** (all done).
 
 **Invoices, customer receipts, and fee-run generation are intentionally NOT
 gated** — they are revenue capture, not disbursement, and gating them would break

@@ -508,10 +508,20 @@ class PayoutBatchListCreateView(APIView):
             source_account=source, title=body.get("title", ""),
             narration=body.get("narration", ""), actor_user=request.user,
         )
-        if body.get("submit") in (True, "1", "true", "True"):
+        # Direct submit only when approval is NOT gated for this batch. When a
+        # payments.payout_batch template exists, submit=true is ignored and the batch
+        # is left DRAFT to be routed via /payout-batches/<id>/submit-for-approval/.
+        from vs_finance.approvals import approval_required
+        wants_submit = body.get("submit") in (True, "1", "true", "True")
+        gated = approval_required(batch)  # True iff a workflow template exists for the batch's scope.
+        if wants_submit and not gated:
             batch = services.submit_payout_batch(batch, actor_user=request.user)  # Submit the draft batch immediately.
+        message = (  # Tell the caller whether they still need to route it for approval.
+            "Payout batch created; submit it for approval."
+            if (wants_submit and gated) else "Payout batch created."
+        )
         return success_response(
-            "Payout batch created.", data=PayoutBatchSerializer(batch).data, status=201,
+            message, data=PayoutBatchSerializer(batch).data, status=201,
         )
 
 
@@ -579,13 +589,49 @@ class PayoutBatchDetailView(APIView):
 
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
+        from vs_finance.approvals import approval_required
+
         entity = resolve_entity(request)  # Resolve the tenant entity.
         batch = PayoutBatch.objects.filter(entity=entity, pk=pk).first()
         if batch is None:  # Return 404 when the batch does not belong to this tenant.
             raise NotFound("No such payout batch in this entity.")
+        if approval_required(batch):  # Direct submit is refused once approval is gated.
+            raise ValidationError({
+                "detail": "This payout batch is approval-gated; submit it for approval "
+                          "instead of submitting directly.",
+            })
         batch = services.submit_payout_batch(batch, actor_user=request.user)  # Submit pending instructions.
         return success_response(
             "Payout batch submitted.", data=PayoutBatchSerializer(batch).data,
+        )
+
+
+# Group endpoint behavior for Payout Batch Submit-For-Approval View.
+class PayoutBatchSubmitForApprovalView(APIView):
+    """POST /payments/payout-batches/<id>/submit-for-approval/ — route a batch through approval.
+
+    Hands the batch to the vs_workflow engine; the handler's ``validate_document``
+    runs the submit preflight (draft batch with pending instructions) and records the
+    batch as awaiting approval. The provider submission fires only on final approval.
+
+    docstring-name: Submit a payout batch for approval
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]  # Tenant-authenticated access only.
+    rbac_permission = "payments.payout_batch.submit"  # Distinct submit-for-approval key.
+
+    # Handle POST requests for this endpoint.
+    def post(self, request, pk):
+        from vs_workflow.services.submission import submit_for_approval
+
+        entity = resolve_entity(request)  # Resolve the tenant entity.
+        batch = PayoutBatch.objects.filter(entity=entity, pk=pk).first()
+        if batch is None:  # Return 404 when the batch does not belong to this tenant.
+            raise NotFound("No such payout batch in this entity.")
+        submit_for_approval(batch, requested_by=request.user)  # Create the workflow instance + activate stage 1.
+        batch.refresh_from_db()  # Pick up the handler's metadata change.
+        return success_response(
+            "Payout batch submitted for approval.", data=PayoutBatchSerializer(batch).data,
         )
 
 

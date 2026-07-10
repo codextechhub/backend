@@ -30,6 +30,9 @@ PAYMENTS_RESOURCES = [
     ("report",          "settlement reports",  [("view", "NORMAL")]),
     ("virtual_account", "virtual accounts",    [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("manage", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
+    # Bulk-payout-batch approval (maker-checker over the highest-risk cash-out path).
+    ("payout_batch",    "bulk payout batches", [("submit", "SENSITIVE"), ("approve", "CRITICAL"),
+                                                ("approve_high_value", "CRITICAL")]),
 ]
 
 

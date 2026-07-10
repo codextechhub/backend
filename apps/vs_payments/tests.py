@@ -808,3 +808,226 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(scoped.status_code, 200)
         rows = scoped.json()["data"]
         self.assertEqual([r["id"] for r in rows], [intent.id])
+
+
+# Group tests for Payout Batch Approval (maker-checker over the cash-out path).
+class PayoutBatchApprovalTests(TestCase):
+    """Approval-gating bulk payout batches via vs_workflow (opt-in by template).
+
+    A payout batch is the highest-risk cash-out path, so — when a
+    ``payments.payout_batch`` template exists for its scope — provider submission
+    happens only after approval; with no template, direct submit is unchanged.
+    """
+
+    APPROVE_KEY = "payments.payout_batch.approve"
+
+    def setUp(self):
+        import io
+        from django.contrib.auth import get_user_model
+        from django.core.management import call_command
+        from rest_framework.test import APIClient
+        from vs_rbac.models import (
+            PlatformRoleTemplate, PlatformUserRoleAssignment,
+            SchoolRolePermission, SchoolRoleTemplate, SchoolUserRoleAssignment,
+        )
+        from vs_schools.models import School
+
+        call_command("seed_payments_permissions", verbosity=0, stdout=io.StringIO())
+
+        self.User = get_user_model()
+        self.SchoolRoleTemplate = SchoolRoleTemplate
+        self.SchoolRolePermission = SchoolRolePermission
+        self.SchoolUserRoleAssignment = SchoolUserRoleAssignment
+
+        # A school-owned entity so batch.school resolves and SCHOOL-scoped approver
+        # resolution has a pool to draw from.
+        self.school = School.objects.create(name="Cedar", slug="cedar-pba", code="CDRPBA")
+        seed_currencies()
+        self.entity = LedgerEntity.objects.create(
+            name="Cedar Books", code="CDRBK", kind=LedgerEntity.Kind.TENANT,
+            source_school=self.school,
+        )
+        seed_chart_of_accounts(self.entity)
+        today = datetime.date.today()
+        year = FiscalYear.objects.create(
+            entity=self.entity, year=today.year,
+            start_date=datetime.date(today.year, 1, 1),
+            end_date=datetime.date(today.year, 12, 31),
+        )
+        for m in range(1, 13):
+            start = datetime.date(today.year, m, 1)
+            end = (datetime.date(today.year, m + 1, 1) if m < 12
+                   else datetime.date(today.year + 1, 1, 1)) - datetime.timedelta(days=1)
+            FiscalPeriod.objects.create(
+                entity=self.entity, fiscal_year=year, period_no=m,
+                name=f"{today.year}-{m:02d}", start_date=start, end_date=end,
+            )
+        self.vendor = Vendor.objects.create(
+            entity=self.entity, code="SUPP1", name="Supplier Ltd",
+            payable_account=Account.objects.get(entity=self.entity, code="2100"),
+            default_expense_account=Account.objects.get(entity=self.entity, code="5300"),
+        )
+        self.fake = FakeProvider(secret="test-secret")
+        registry.register("PAYSTACK", self.fake)
+        registry.register("FAKE", self.fake)
+        self.addCleanup(registry.unregister)
+
+        # Requester: a CX super admin (bypasses the endpoint RBAC gate, sees every
+        # entity). SoD still excludes them from approving their own batch.
+        self.requester = self.User.objects.create_user(
+            email="req-pba@test.com", password="pw", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Req", last_name="Ester",
+        )
+        super_role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
+        PlatformUserRoleAssignment.objects.create(
+            user=self.requester, role=super_role, assignment_status="ACTIVE",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.requester)
+
+    # --- helpers ----------------------------------------------------------- #
+
+    def _draft_batch(self, *amounts):
+        items = [
+            {"amount": a, "beneficiary_name": "Supplier Ltd",
+             "beneficiary_account_number": f"012345678{i}", "beneficiary_bank_code": "058",
+             "vendor": self.vendor}
+            for i, a in enumerate(amounts or (10000,))
+        ]
+        return services.create_payout_batch(entity=self.entity, items=items, title="Run")
+
+    def _publish_template(self, *, on_rejection="RETURN_TO_REQUESTER"):
+        from vs_workflow.services.templates import publish_template
+
+        return publish_template(
+            school=self.school, branch=None,
+            document_type="payments.payout_batch", code="standard",
+            name="Payout batch approval",
+            stages_payload=[{
+                "code": "checker", "label": "Checker approval", "kind": "APPROVAL",
+                "order": 1, "approver_permission_key": self.APPROVE_KEY,
+                "approver_scope": "SCHOOL", "advance_rule": "ANY",
+                "on_rejection": on_rejection, "skip_if_no_approvers": False,
+            }])
+
+    def _make_approver(self, email="apr-pba@test.com"):
+        user = self.User.objects.create_user(
+            email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
+            first_name="Apr", last_name="Over", school=self.school,
+        )
+        role, _ = self.SchoolRoleTemplate.objects.get_or_create(
+            id="pba-checker", defaults={"school": self.school, "name": "Payout Checker"},
+        )
+        self.SchoolRolePermission.objects.get_or_create(
+            role=role, permission_id=self.APPROVE_KEY, defaults={"granted": True},
+        )
+        self.SchoolUserRoleAssignment.objects.create(
+            school=self.school, user=user, role=role, assignment_status="ACTIVE",
+        )
+        return user
+
+    def _submit_for_approval(self, batch):
+        return self.client.post(
+            f"/v1/payments/payout-batches/{batch.pk}/submit-for-approval/?entity={self.entity.code}",
+            {}, format="json")
+
+    def _direct_submit(self, batch):
+        return self.client.post(
+            f"/v1/payments/payout-batches/{batch.pk}/?entity={self.entity.code}", {}, format="json")
+
+    def _instance_for(self, batch):
+        from vs_workflow.models import WorkflowInstance
+        return WorkflowInstance.objects.for_document(batch).first()
+
+    # --- 1. gate off: no template → direct submit works -------------------- #
+
+    def test_gate_off_direct_submit_works(self):
+        from vs_finance.approvals import approval_required
+
+        batch = self._draft_batch(10000, 20000)
+        self.assertFalse(approval_required(batch))
+        resp = self._direct_submit(batch)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+
+    # --- 2. gate on: direct submit refused --------------------------------- #
+
+    def test_gate_on_direct_submit_refused(self):
+        self._publish_template()
+        batch = self._draft_batch(10000)
+        resp = self._direct_submit(batch)
+        self.assertEqual(resp.status_code, 400, resp.content)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+        self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
+
+    # --- 3. submit-for-approval: pending, no provider dispatch ------------- #
+
+    def test_submit_for_approval_marks_pending_and_does_not_dispatch(self):
+        self._publish_template()
+        self._make_approver()  # keep the stage ACTIVE
+        batch = self._draft_batch(10000)
+        resp = self._submit_for_approval(batch)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+        self.assertEqual((batch.metadata or {}).get("approval_status"), "PENDING_APPROVAL")
+        self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
+
+    # --- 4. SoD: requester cannot approve own batch ------------------------ #
+
+    def test_requester_cannot_approve_own_batch(self):
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+        from vs_workflow.exceptions import (
+            NotAnEligibleApproverError, RequesterCannotApproveError,
+        )
+
+        self._publish_template()
+        self._make_approver()
+        batch = self._draft_batch(10000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+        with self.assertRaises((RequesterCannotApproveError, NotAnEligibleApproverError)):
+            wf_actions.record_action(instance.id, self.requester, ActionEnum.APPROVED)
+        batch.refresh_from_db()
+        self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
+
+    # --- 5. happy path: approval dispatches the batch ---------------------- #
+
+    def test_approval_dispatches_batch(self):
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+
+        self._publish_template()
+        approver = self._make_approver()
+        batch = self._draft_batch(10000, 20000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+
+        wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
+
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.PROCESSING)
+        self.assertEqual((batch.metadata or {}).get("approval_status"), "APPROVED")
+        self.assertTrue(all(p.status == PayoutStatus.PROCESSING for p in batch.instructions.all()))
+
+    # --- 6. reject → back to draft, nothing dispatched --------------------- #
+
+    def test_reject_returns_batch_to_draft(self):
+        from vs_workflow.services import actions as wf_actions
+        from vs_workflow.constants import WorkflowStageAction as ActionEnum
+
+        self._publish_template(on_rejection="TERMINAL")
+        approver = self._make_approver()
+        batch = self._draft_batch(10000)
+        self._submit_for_approval(batch)
+        instance = self._instance_for(batch)
+
+        wf_actions.record_action(instance.id, approver, ActionEnum.REJECTED, comment="no")
+
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
+        self.assertEqual((batch.metadata or {}).get("approval_status"), "DRAFT")
+        self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
