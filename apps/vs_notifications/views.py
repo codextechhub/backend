@@ -95,6 +95,7 @@ class NotificationViewSet(viewsets.GenericViewSet):
         Scope to the requesting user's in-app notifications only.
         Prefetch event_type to avoid N+1 on serialization.
         """
+        # Feed access is recipient-owned; email/history rows are excluded here.
         return (
             Notification.objects
             .filter(
@@ -186,6 +187,7 @@ class NotificationViewSet(viewsets.GenericViewSet):
         now = timezone.now()
 
         with transaction.atomic():
+            # Foreign IDs and EMAIL rows are ignored instead of leaking why they failed.
             updated = Notification.objects.filter(
                 id__in=ids,
                 recipient=request.user,
@@ -207,6 +209,7 @@ class NotificationViewSet(viewsets.GenericViewSet):
         now = timezone.now()
 
         with transaction.atomic():
+            # Bulk read state only applies to in-app feed rows for this user.
             updated = Notification.objects.filter(
                 recipient=request.user,
                 channel=ChannelChoices.IN_APP,
@@ -250,6 +253,7 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
         CX staff (no school) see everything.
         """
         user = self.request.user
+        # History uses the unscoped manager so platform rows are visible only when allowed.
         qs = (
             Notification.all_objects
             .select_related("recipient", "event_type")
@@ -280,6 +284,7 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
             raise FilterRequiredError()
 
         if scope == _PLATFORM_SCOPE:
+            # Explicit platform scope means school IS NULL, not every school.
             qs = qs.filter(school__isnull=True)
         elif school_id:
             qs = qs.filter(school_id=school_id)
@@ -523,6 +528,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
                 })
                 continue
             if channel not in ChannelChoices.ALL:
+                # Reject unknown channel strings before checking event-specific support.
                 errors.append({
                     "index": idx,
                     "error_code": NotificationErrorCode.UNKNOWN_CHANNEL,
@@ -530,6 +536,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
                 })
                 continue
             if channel not in et.supported_channels:
+                # A known channel can still be invalid for this event type.
                 errors.append({
                     "index": idx,
                     "error_code": NotificationErrorCode.UNSUPPORTED_CHANNEL,
@@ -537,6 +544,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
                 })
                 continue
             if et.is_transactional:
+                # Must-send events ignore settings rows, so overrides would be misleading.
                 errors.append({
                     "index": idx,
                     "error_code": NotificationErrorCode.TRANSACTIONAL_NOT_CONFIGURABLE,
@@ -547,6 +555,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
                 })
                 continue
             if channel == ChannelChoices.IN_APP and is_enabled is False:
+                # Product policy keeps the in-app audit/feed trail always enabled.
                 errors.append({
                     "index": idx,
                     "error_code": NotificationErrorCode.IN_APP_ALWAYS_ENABLED,
@@ -563,6 +572,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
 
         # All valid — upsert override rows by (school, event_type, channel).
         with transaction.atomic():
+            # The full PATCH is all-or-nothing so settings cannot partially apply.
             for item in updates:
                 et = event_types[item["event_type_key"]]
                 NotificationSetting.all_objects.update_or_create(
@@ -610,6 +620,7 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
     rbac_permission    = NotificationPermission.TEMPLATE_CONFIGURE
 
     def get_queryset(self):
+        # Templates are global catalogue records, not school-scoped rows.
         return (
             NotificationTemplate.objects
             .select_related("event_type", "created_by", "updated_by")
@@ -727,6 +738,7 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
             )
 
         rendered = serializer.render(template)
+        # Preview renders content only; it never creates Notification records or sends mail.
         return success_response("Preview rendered.", data=rendered)
 
 

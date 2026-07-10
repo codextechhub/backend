@@ -42,11 +42,13 @@
 from typing import Optional
 
 from .services.dispatch import NotificationService
-from .services.dispatch import UnregisteredRecipient  # re-export for callers
+# Re-export the invite recipient type so callers do not import service internals.
+from .services.dispatch import UnregisteredRecipient
 
 __all__ = ["send_notification", "UnregisteredRecipient"]
 
 
+# Public notification entrypoint for domain services in other apps.
 def send_notification(
     event_key: str,
     context: dict,

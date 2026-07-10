@@ -13,6 +13,7 @@
 # Channel choices
 # ---------------------------------------------------------------------------
 
+# Persisted delivery channel values used by settings, templates, and notifications.
 class ChannelChoices:
     IN_APP = "in_app"
     EMAIL  = "email"
@@ -29,6 +30,7 @@ class ChannelChoices:
 # Notification status choices
 # ---------------------------------------------------------------------------
 
+# Delivery lifecycle values for individual Notification rows.
 class NotificationStatus:
     PENDING = "PENDING"
     SENT    = "SENT"
@@ -48,6 +50,7 @@ class NotificationStatus:
 # Error codes
 # ---------------------------------------------------------------------------
 
+# Stable API/service error codes returned by notification workflows.
 class NotificationErrorCode:
     UNKNOWN_EVENT_TYPE                    = "UNKNOWN_EVENT_TYPE"
     UNKNOWN_CHANNEL                       = "UNKNOWN_CHANNEL"
@@ -66,6 +69,7 @@ class NotificationErrorCode:
 # Config flag keys (read via vs_config FlagService at runtime)
 # ---------------------------------------------------------------------------
 
+# Runtime tuning keys for Celery email delivery behavior.
 class NotificationConfigKey:
     EMAIL_MAX_RETRIES       = "notification_email_max_retries"
     EMAIL_RETRY_BACKOFF_SEC = "notification_email_retry_backoff_seconds"
@@ -81,6 +85,7 @@ class NotificationConfigKey:
 # (must match entries in the vs_rbac seed — communication.* namespace)
 # ---------------------------------------------------------------------------
 
+# RBAC keys that protect notification administration and history endpoints.
 class NotificationPermission:
     TEMPLATE_CONFIGURE        = "communication.notification_templates.configure"
     BULK_SEND                 = "communication.bulk_notifications.send"
@@ -111,6 +116,7 @@ class NotificationPermission:
 #                       password resets, invites, and similar must-send mail.
 # ---------------------------------------------------------------------------
 
+# Authoritative seed list for NotificationEventType rows.
 EVENT_TYPE_REGISTRY = [
 
     # ── Academic & Student (vs_students) ───────────────────────────────────

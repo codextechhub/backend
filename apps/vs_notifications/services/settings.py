@@ -17,6 +17,7 @@
 # =============================================================================
 
 
+# Resolve channel settings for many event types with one settings query.
 def resolve_channels_bulk(event_types, school=None, rows=None) -> dict:
     """
     Return {event_type_id: {channel: is_enabled}} for every event type given,
@@ -81,12 +82,12 @@ def resolve_channels_bulk(event_types, school=None, rows=None) -> dict:
     for et in event_types:
         supported = list(et.supported_channels)
 
-        # 1. Platform kill switch
+        # Inactive event types suppress every channel, including transactional ones.
         if not et.is_active:
             result[et.id] = {ch: False for ch in supported}
             continue
 
-        # 2. Transactional bypass
+        # Transactional events bypass setting rows so must-send emails cannot be disabled.
         if et.is_transactional:
             result[et.id] = {ch: True for ch in supported}
             continue
@@ -106,6 +107,7 @@ def resolve_channels_bulk(event_types, school=None, rows=None) -> dict:
     return result
 
 
+# Resolve channel settings for one event type through the bulk implementation.
 def resolve_channels(event_type, school=None) -> dict[str, bool]:
     """
     Return {channel: is_enabled} for every channel in event_type.supported_channels.

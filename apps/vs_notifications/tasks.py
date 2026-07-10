@@ -25,6 +25,7 @@ from .signals import notification_sent, notification_failed
 logger = logging.getLogger("vs_notifications.tasks")
 
 
+# Deliver one queued email notification and publish the terminal delivery signal.
 @shared_task(bind=True, name="vs_notifications.deliver_email_notification")
 def deliver_email_notification(self, notification_id: str):
     """
@@ -102,6 +103,7 @@ def deliver_email_notification(self, notification_id: str):
         # Guard defensively for records created by other paths.
         with transaction.atomic():
             notif = Notification.objects.select_for_update().get(id=notification_id)
+            # Missing addresses are terminal failures because no retry can produce a recipient.
             notif.status = NotificationStatus.FAILED
             notif.failure_reason = "NO_EMAIL_ADDRESS"
             notif.save(update_fields=["status", "failure_reason"])
@@ -146,6 +148,7 @@ def deliver_email_notification(self, notification_id: str):
         # Final failure — mark FAILED (terminal) and fire the signal.
         with transaction.atomic():
             notif = Notification.objects.select_for_update().get(id=notification_id)
+            # The retry budget is exhausted, so downstream trackers can treat this as final.
             notif.status = NotificationStatus.FAILED
             notif.save(update_fields=["status"])
         logger.error(
@@ -159,6 +162,7 @@ def deliver_email_notification(self, notification_id: str):
     # ── Success — mark SENT (terminal) and fire the signal ─────────────────
     with transaction.atomic():
         notif = Notification.objects.select_for_update().get(id=notification_id)
+        # Success is terminal; later task duplicates exit through the SENT guard above.
         notif.status = NotificationStatus.SENT
         notif.dispatched_at = timezone.now()
         notif.retry_count += 1
@@ -174,6 +178,7 @@ def deliver_email_notification(self, notification_id: str):
     notification_sent.send(sender=Notification, notification=notif)
 
 
+# Read live retry settings so operators can tune delivery without redeploying.
 def _read_retry_config() -> tuple[int, int]:
     """
     Read max retries and backoff seconds from vs_config.

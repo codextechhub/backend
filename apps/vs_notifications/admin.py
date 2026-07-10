@@ -20,6 +20,7 @@ from .models import (
 # NotificationEventType
 # ---------------------------------------------------------------------------
 
+# Inspect the seeded event catalogue that drives notification dispatch.
 @admin.register(NotificationEventType)
 class NotificationEventTypeAdmin(admin.ModelAdmin):
     list_display  = ["key", "label", "source_module", "is_active", "is_transactional", "default_enabled"]
@@ -46,6 +47,7 @@ class NotificationEventTypeAdmin(admin.ModelAdmin):
 # NotificationTemplate
 # ---------------------------------------------------------------------------
 
+# Inspect and repair templates outside the primary API management surface.
 @admin.register(NotificationTemplate)
 class NotificationTemplateAdmin(admin.ModelAdmin):
     list_display  = ["event_type", "channel", "is_active", "updated_at", "updated_by"]
@@ -78,6 +80,7 @@ class NotificationTemplateAdmin(admin.ModelAdmin):
 # NotificationSetting
 # ---------------------------------------------------------------------------
 
+# Inspect platform and school overrides together for support/debugging.
 @admin.register(NotificationSetting)
 class NotificationSettingAdmin(admin.ModelAdmin):
     # school is nullable — a NULL school is a platform-wide default.
@@ -111,6 +114,7 @@ class NotificationSettingAdmin(admin.ModelAdmin):
 # Notification
 # ---------------------------------------------------------------------------
 
+# Inspect immutable delivery records and internal correlation metadata.
 @admin.register(Notification)
 class NotificationAdmin(admin.ModelAdmin):
     list_display  = [
@@ -130,7 +134,7 @@ class NotificationAdmin(admin.ModelAdmin):
     ]
     ordering = ["-created_at"]
 
-    # Prevent accidental edits — Notification records are append-only
+    # Preserve the append-only delivery trail; corrections go through dispatch/API flows.
     def has_add_permission(self, request):
         return False
 

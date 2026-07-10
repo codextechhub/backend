@@ -22,5 +22,6 @@ import django.dispatch
 
 # Sender is always the Notification model; receivers connect with
 # sender=Notification (or dispatch_uid) and read the `notification` kwarg.
+# These are emitted only after the Notification row has reached its final email state.
 notification_sent = django.dispatch.Signal()
 notification_failed = django.dispatch.Signal()

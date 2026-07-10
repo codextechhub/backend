@@ -14,6 +14,7 @@ from django.template.exceptions import TemplateSyntaxError, TemplateDoesNotExist
 from ..exceptions import InvalidTemplateSyntaxError, TemplateRenderError
 
 
+# Validate template text before admins can save it.
 def validate_template_syntax(text: str, field: str = "body") -> None:
     """
     Validate that `text` is parseable as a Django template.
@@ -35,6 +36,7 @@ def validate_template_syntax(text: str, field: str = "body") -> None:
         ) from exc
 
 
+# Render one template fragment at dispatch or preview time.
 def render_template(template_text: str, context: dict) -> str:
     """
     Render a raw template string with the given context dict.
@@ -53,6 +55,7 @@ def render_template(template_text: str, context: dict) -> str:
     """
     try:
         t = Template(template_text)
+        # Email/template copy is authored by admins; keep rendered HTML unchanged.
         return t.render(Context(context, autoescape=False))
     except (TemplateSyntaxError, TemplateDoesNotExist) as exc:
         # Syntax errors that slipped through validation (e.g. dynamic content)
@@ -65,6 +68,7 @@ def render_template(template_text: str, context: dict) -> str:
         ) from exc
 
 
+# Render all stored template fragments for one notification record.
 def render_notification_template(notification_template, context: dict) -> tuple[str, str, str]:
     """
     High-level helper used by the dispatch service and the preview endpoint.

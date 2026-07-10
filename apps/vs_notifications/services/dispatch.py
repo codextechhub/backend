@@ -42,6 +42,7 @@ logger = logging.getLogger("vs_notifications.dispatch")
 # Used for the user.invited path where no User record exists yet.
 # ---------------------------------------------------------------------------
 
+# Represent email-only recipients before they have a User row.
 @dataclass
 class UnregisteredRecipient:
     """
@@ -72,6 +73,7 @@ class NotificationService:
         )
     """
 
+    # Orchestrate template rendering, record creation, and post-commit delivery.
     @staticmethod
     def send(
         event_key: str,
@@ -147,6 +149,7 @@ class NotificationService:
         all_targets = _build_targets(recipients, unregistered_recipients or [])
 
         for target in all_targets:
+            # Each target gets one record per enabled channel.
             for channel in enabled_channels:
                 template = templates.get(channel)
                 if template is None:
@@ -157,7 +160,7 @@ class NotificationService:
                     )
                     continue
 
-                # Check email address availability before rendering
+                # Email delivery cannot proceed without an address, but history should record the failure.
                 email_addr = _resolve_email(target)
                 if channel == ChannelChoices.EMAIL and not email_addr:
                     # Pre-flight FAILED — no point rendering or queuing.
@@ -195,7 +198,7 @@ class NotificationService:
                     )
                     continue
 
-                # Build the record
+                # In-app notifications are complete once stored; email waits for the delivery task.
                 is_in_app = channel == ChannelChoices.IN_APP
                 notifications_to_create.append(
                     _build_notification(
@@ -245,6 +248,7 @@ class NotificationService:
                     for notif_id in email_ids:
                         deliver_email_notification.delay(notif_id)
                 for notif in preflight_failed:
+                    # Pre-flight failures have no task, so emit the same terminal signal here.
                     notification_failed.send(
                         sender=Notification, notification=notif
                     )
@@ -266,6 +270,7 @@ class NotificationService:
 # Private helpers
 # ---------------------------------------------------------------------------
 
+# Fetch active templates for the channels that actually need dispatch.
 def _fetch_templates(event_type, channels: list) -> dict:
     """
     Return a dict of {channel: NotificationTemplate} for the given channels.
@@ -280,6 +285,7 @@ def _fetch_templates(event_type, channels: list) -> dict:
     return {t.channel: t for t in qs}
 
 
+# Merge registered and email-only recipients into one dispatch target list.
 def _build_targets(recipients: list, unregistered: list) -> list:
     """
     Combine registered User instances and UnregisteredRecipient dataclasses
@@ -288,6 +294,7 @@ def _build_targets(recipients: list, unregistered: list) -> list:
     return list(recipients) + list(unregistered)
 
 
+# Read an email address from either a User-like object or an invite target.
 def _resolve_email(target) -> str:
     """
     Extract the email address from a target, regardless of whether it is a
@@ -298,6 +305,7 @@ def _resolve_email(target) -> str:
     return getattr(target, "email", "") or ""
 
 
+# Build the unsaved record for a successful in-app notification or queued email.
 def _build_notification(
     event_type, channel, school, target, subject, body, html_body,
     metadata, status, dispatched_at,
@@ -322,6 +330,7 @@ def _build_notification(
     )
 
 
+# Build the unsaved record for failures detected before Celery delivery.
 def _build_failed_notification(
     event_type, channel, school, target, failure_reason: str, metadata: dict,
 ) -> Notification:

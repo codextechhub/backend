@@ -15,6 +15,7 @@ from ..constants import EVENT_TYPE_REGISTRY
 logger = logging.getLogger("vs_notifications.seed")
 
 
+# Seed the authoritative event catalogue without deleting retired keys.
 def seed_event_types() -> dict:
     """
     Create or update all NotificationEventType records defined in
@@ -36,6 +37,7 @@ def seed_event_types() -> dict:
     updated_count = 0
 
     for entry in EVENT_TYPE_REGISTRY:
+        # Upsert by stable key so labels/defaults can evolve without duplicate rows.
         _, created = NotificationEventType.objects.update_or_create(
             key=entry["key"],
             defaults={
@@ -62,6 +64,7 @@ def seed_event_types() -> dict:
     return {"created": created_count, "updated": updated_count}
 
 
+# Materialize platform defaults for non-transactional event/channel pairs.
 def seed_platform_settings() -> dict:
     """
     Create the platform-wide (school=NULL) NotificationSetting rows.
@@ -93,6 +96,7 @@ def seed_platform_settings() -> dict:
 
     for event_type in active_event_types:
         for channel in event_type.supported_channels:
+            # Preserve admin changes; only missing platform rows are inserted.
             _, created = NotificationSetting.all_objects.get_or_create(
                 school=None,
                 event_type=event_type,
@@ -111,6 +115,7 @@ def seed_platform_settings() -> dict:
     return {"created": created_count, "skipped": skipped_count}
 
 
+# Materialize school-specific override rows for one school.
 def seed_school_settings(school) -> dict:
     """
     Create school-scoped NotificationSetting override rows for one school.
@@ -141,6 +146,7 @@ def seed_school_settings(school) -> dict:
 
     for event_type in active_event_types:
         for channel in event_type.supported_channels:
+            # Preserve school admin changes; onboarding only fills missing rows.
             _, created = NotificationSetting.all_objects.get_or_create(
                 school=school,
                 event_type=event_type,
@@ -161,6 +167,7 @@ def seed_school_settings(school) -> dict:
     return {"created": created_count, "skipped": skipped_count}
 
 
+# Seed default templates without overwriting Vision Staff customizations.
 def seed_notification_templates() -> dict:
     """
     Create default NotificationTemplate records for all active event types
@@ -189,6 +196,7 @@ def seed_notification_templates() -> dict:
             key = (event_type.key, channel)
             defaults = DEFAULT_TEMPLATES.get(key)
             if defaults is None:
+                # Missing defaults are non-fatal so one absent template does not block all seeding.
                 logger.warning(
                     "No default template defined for event_key=%s channel=%s. Skipping.",
                     event_type.key, channel,
@@ -356,6 +364,7 @@ _PASSWORD_RESET_HTML = """<!doctype html>
 # Default template content
 # ---------------------------------------------------------------------------
 
+# Build default copy for every seeded event/channel template.
 def _build_default_templates() -> dict:
     """
     Returns a dict keyed by (event_key, channel) with subject and body defaults.
