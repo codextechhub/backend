@@ -28,6 +28,7 @@ Seed order
 8. seed_procurement_permissions — vs_procurement permissions → both platform roles
 9. seed_payments_permissions — vs_payments permissions → both platform roles
 10. seed_todo_permissions    — vs_todo permissions → both platform roles
+11. seed_ticket_permissions  — vs_tickets permissions → platform and school roles
 """
 from django.core.management import call_command
 from django.core.management.base import BaseCommand
@@ -46,6 +47,7 @@ SEED_STEPS: list[tuple[str, list]] = [
     ("seed_procurement_permissions", []),
     ("seed_payments_permissions",    []),
     ("seed_todo_permissions",        []),
+    ("seed_ticket_permissions",      []),
 ]
 
 

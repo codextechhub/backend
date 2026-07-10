@@ -376,6 +376,90 @@ def _build_default_templates() -> dict:
 
     return {
 
+        # ── support tickets ─────────────────────────────────────────────────
+        ("ticket.created", C.IN_APP): {
+            "subject": "",
+            "body": "New ticket {{ ticket_number }}: {{ ticket_title }} was created by {{ requester_name }}.",
+        },
+        ("ticket.created", C.EMAIL): {
+            "subject": "New support ticket {{ ticket_number }} — {{ ticket_title }}",
+            "body": (
+                "A new support ticket has been created.\n\n"
+                "Ticket: {{ ticket_number }}\n"
+                "Title: {{ ticket_title }}\n"
+                "Category: {{ ticket_category }}\n"
+                "Priority: {{ ticket_priority }}\n"
+                "Requester: {{ requester_name }}\n\n"
+                "Please log in to CodeX Vision to review it."
+            ),
+        },
+        ("ticket.assigned", C.IN_APP): {
+            "subject": "",
+            "body": "Ticket {{ ticket_number }} has been assigned to you.",
+        },
+        ("ticket.assigned", C.EMAIL): {
+            "subject": "Ticket assigned to you — {{ ticket_number }}",
+            "body": (
+                "A support ticket has been assigned to you.\n\n"
+                "Ticket: {{ ticket_number }}\n"
+                "Title: {{ ticket_title }}\n"
+                "Priority: {{ ticket_priority }}\n"
+                "Requester: {{ requester_name }}\n"
+            ),
+        },
+        ("ticket.status_changed", C.IN_APP): {
+            "subject": "",
+            "body": "Ticket {{ ticket_number }} moved from {{ old_status }} to {{ new_status }}.",
+        },
+        ("ticket.status_changed", C.EMAIL): {
+            "subject": "Ticket status updated — {{ ticket_number }}",
+            "body": "Ticket {{ ticket_number }} ({{ ticket_title }}) moved from {{ old_status }} to {{ new_status }}.",
+        },
+        ("ticket.commented", C.IN_APP): {
+            "subject": "",
+            "body": "{{ actor_name }} commented on ticket {{ ticket_number }}: {{ comment_body }}",
+        },
+        ("ticket.commented", C.EMAIL): {
+            "subject": "New comment on ticket {{ ticket_number }}",
+            "body": (
+                "{{ actor_name }} added a comment to ticket {{ ticket_number }}.\n\n"
+                "Title: {{ ticket_title }}\n"
+                "Comment: {{ comment_body }}"
+            ),
+        },
+        ("ticket.resolved", C.IN_APP): {
+            "subject": "",
+            "body": "Ticket {{ ticket_number }} has been resolved.",
+        },
+        ("ticket.resolved", C.EMAIL): {
+            "subject": "Ticket resolved — {{ ticket_number }}",
+            "body": "Ticket {{ ticket_number }} ({{ ticket_title }}) has been resolved.",
+        },
+        ("ticket.closed", C.IN_APP): {
+            "subject": "",
+            "body": "Ticket {{ ticket_number }} has been closed.",
+        },
+        ("ticket.closed", C.EMAIL): {
+            "subject": "Ticket closed — {{ ticket_number }}",
+            "body": "Ticket {{ ticket_number }} ({{ ticket_title }}) has been closed.",
+        },
+        ("ticket.reopened", C.IN_APP): {
+            "subject": "",
+            "body": "Ticket {{ ticket_number }} has been reopened.",
+        },
+        ("ticket.reopened", C.EMAIL): {
+            "subject": "Ticket reopened — {{ ticket_number }}",
+            "body": "Ticket {{ ticket_number }} ({{ ticket_title }}) has been reopened.",
+        },
+        ("ticket.attachment_added", C.IN_APP): {
+            "subject": "",
+            "body": "{{ actor_name }} attached {{ attachment_name }} to ticket {{ ticket_number }}.",
+        },
+        ("ticket.attachment_added", C.EMAIL): {
+            "subject": "Attachment added to ticket {{ ticket_number }}",
+            "body": "{{ actor_name }} attached {{ attachment_name }} to ticket {{ ticket_number }} ({{ ticket_title }}).",
+        },
+
         # ── student.enrolled ────────────────────────────────────────────────
         ("student.enrolled", C.IN_APP): {
             "subject": "",

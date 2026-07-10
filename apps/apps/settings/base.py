@@ -95,6 +95,7 @@ INSTALLED_APPS = [
     'vs_procurement',
     'vs_payments',
     'vs_todo',
+    'vs_tickets',
     'vs_health',
 ]
 

@@ -119,6 +119,73 @@ class NotificationPermission:
 # Authoritative seed list for NotificationEventType rows.
 EVENT_TYPE_REGISTRY = [
 
+    # ── Support Tickets (vs_tickets) ───────────────────────────────────────
+
+    {
+        "key": "ticket.created",
+        "label": "Ticket created",
+        "description": "Fires when a user creates a support ticket.",
+        "source_module": "vs_tickets",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
+        "key": "ticket.assigned",
+        "label": "Ticket assigned",
+        "description": "Fires when a ticket is assigned to support staff.",
+        "source_module": "vs_tickets",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
+        "key": "ticket.status_changed",
+        "label": "Ticket status changed",
+        "description": "Fires when a ticket changes workflow status.",
+        "source_module": "vs_tickets",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
+        "key": "ticket.commented",
+        "label": "Ticket commented",
+        "description": "Fires when a visible comment is added to a ticket.",
+        "source_module": "vs_tickets",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
+        "key": "ticket.resolved",
+        "label": "Ticket resolved",
+        "description": "Fires when a ticket is marked resolved.",
+        "source_module": "vs_tickets",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
+        "key": "ticket.closed",
+        "label": "Ticket closed",
+        "description": "Fires when a ticket is closed.",
+        "source_module": "vs_tickets",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
+        "key": "ticket.reopened",
+        "label": "Ticket reopened",
+        "description": "Fires when a closed ticket is reopened.",
+        "source_module": "vs_tickets",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
+        "key": "ticket.attachment_added",
+        "label": "Ticket attachment added",
+        "description": "Fires when a file is attached to a ticket.",
+        "source_module": "vs_tickets",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+
     # ── Academic & Student (vs_students) ───────────────────────────────────
 
     {
