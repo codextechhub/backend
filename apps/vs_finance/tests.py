@@ -6,7 +6,7 @@ import datetime
 from decimal import Decimal
 
 from django.db.models import Sum
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from vs_finance.constants import (
     AccountType,
@@ -5327,6 +5327,55 @@ class FinanceDocumentEndpointTests(_ARFixtureMixin, TestCase):
         inactive.is_primary_collection = True
         inactive.save(update_fields=["is_primary_collection", "updated_at"])
         self.assertEqual(primary_collection_account(entity), inactive)
+
+    @override_settings(PLATFORM_ISSUER={
+        "name": "CodeX", "tagline": "Run your school", "address": "12 Marina, Lagos",
+        "email": "billing@codex.example", "phone": "+234 1 000 0000",
+        "website": "codex.example", "logo_url": "",
+    })
+    def test_platform_entity_prints_codex_issuer_details(self):
+        # When the CodeX platform entity bills a customer (a school), the document
+        # letterhead is CodeX's own identity from PLATFORM_ISSUER — not blanks.
+        from vs_finance.views import InvoiceDocumentView
+
+        seed_currencies()
+        platform = LedgerEntity.objects.create(
+            name="CodeX Platform Books", code="PLATX", kind=LedgerEntity.Kind.PLATFORM,
+        )
+        seed_chart_of_accounts(platform)
+        year = FiscalYear.objects.create(
+            entity=platform, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        FiscalPeriod.objects.create(
+            entity=platform, fiscal_year=year, period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+            status=PeriodStatus.OPEN,
+        )
+        customer = Customer.objects.create(
+            entity=platform, code="SCH1", name="Crestfield Academy",
+            receivable_account=Account.objects.get(entity=platform, code="1200"),
+        )
+        inv = Invoice.objects.create(
+            entity=platform, customer=customer,
+            invoice_date=datetime.date(2026, 1, 10), due_date=datetime.date(2026, 1, 25),
+        )
+        InvoiceLine.objects.create(
+            invoice=inv, revenue_account=Account.objects.get(entity=platform, code="4100"),
+            quantity=1, unit_price=5000000, tax_code=None, line_no=1,
+        )
+        post_invoice(inv)
+
+        req = self._request(
+            f"/v1/finance/invoices/{inv.pk}/document/", platform,
+            self._user("codex-doc@test.com"))
+        resp = InvoiceDocumentView.as_view()(req, pk=inv.pk)
+        html = resp.content.decode()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("CodeX", html)                 # CodeX issuer name (not blank)
+        self.assertIn("12 Marina, Lagos", html)       # CodeX address from PLATFORM_ISSUER
+        self.assertIn("Crestfield Academy", html)     # the school is the customer here
 
 
 # Group tests for Finance Migration State Tests.

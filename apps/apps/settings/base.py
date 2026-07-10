@@ -225,6 +225,21 @@ PAYMENTS_CALLBACK_URL = config(
     "PAYMENTS_CALLBACK_URL", default=f"{FRONTEND_BASE_URL}/payments/return"
 )
 
+# Platform (CodeX) issuer identity — the letterhead printed on invoices/receipts the
+# CodeX *platform* entity raises for its own customers (the schools). School-owned
+# entities take their letterhead from the school's own branding instead; this is only
+# the fallback identity for the platform books. The pay-to bank still comes from the
+# platform entity's primary collection BankAccount. Configure per environment.
+PLATFORM_ISSUER = {
+    "name": config("PLATFORM_ISSUER_NAME", default="CodeX"),
+    "tagline": config("PLATFORM_ISSUER_TAGLINE", default=""),
+    "address": config("PLATFORM_ISSUER_ADDRESS", default=""),
+    "email": config("PLATFORM_ISSUER_EMAIL", default=""),
+    "phone": config("PLATFORM_ISSUER_PHONE", default=""),
+    "website": config("PLATFORM_ISSUER_WEBSITE", default=""),
+    "logo_url": config("PLATFORM_ISSUER_LOGO_URL", default=""),
+}
+
 # Paystack — https://api.paystack.co ; Authorization: Bearer <secret_key>.
 PAYSTACK_SECRET_KEY = config("PAYSTACK_SECRET_KEY", default="")
 PAYSTACK_PUBLIC_KEY = config("PAYSTACK_PUBLIC_KEY", default="")

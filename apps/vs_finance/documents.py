@@ -65,47 +65,75 @@ def primary_collection_account(entity):
 # Shared blocks                                                               #
 # --------------------------------------------------------------------------- #
 
-# Build school/entity identity block for document headers.
 def _issuer_block(entity, *, branch=None) -> dict:
-    """Letterhead identity for ``entity`` — school-derived, blanks for platform books."""
-    school = entity.source_school  # School is the branding source when present.
-    logo = ""  # Default to no logo.
-    branch_email = getattr(branch, "email", "") if branch is not None else ""  # Branch email overrides blank.
-    branch_address = getattr(branch, "address", "") if branch is not None else ""  # Branch address overrides school address.
+    """Letterhead identity for the document's issuer — *the entity keeping the books*.
 
-    if school is not None:  # School-backed entities print school branding.
-        branding = getattr(school, "branding", None)  # Branding relation may not exist.
-        if branding is not None and getattr(branding, "logo", None):  # Logo is optional.
-            try:  # Storage backends can fail to produce a URL.
-                logo = branding.logo.url  # Use logo URL when available.
+    The invoice/receipt is a generic document, so the issuer adapts to who is billing:
+
+    * A **school-owned** entity prints the *school's* own branding (name, motto, logo,
+      address, website) — a school billing its parents shows its own letterhead.
+    * The **platform (CodeX)** entity prints CodeX's identity from ``PLATFORM_ISSUER``
+      settings — when CodeX bills a school (its customer), the school sees CodeX's
+      details.
+    * Any other school-less entity falls back to the ledger entity's name.
+
+    The pay-to bank is always the entity's primary collection account regardless of
+    which identity is used.
+    """
+    school = entity.source_school
+    branch_email = getattr(branch, "email", "") if branch is not None else ""
+    branch_address = getattr(branch, "address", "") if branch is not None else ""
+    logo = ""
+    email = branch_email
+    phone = ""
+
+    if school is not None:
+        # School billing its own customers → the school's letterhead.
+        branding = getattr(school, "branding", None)
+        if branding is not None and getattr(branding, "logo", None):
+            try:
+                logo = branding.logo.url
             except Exception:  # pragma: no cover - storage without a URL
-                logo = ""  # Keep logo blank when URL resolution fails.
-        name = school.name  # Display school name.
-        tag = getattr(school, "motto", "") or ""  # Display optional school motto.
-        address = branch_address or getattr(school, "address", "") or ""  # Prefer branch address, fallback to school address.
-        website = getattr(school, "website", "") or ""  # Display optional school website.
-    else:  # Platform/product entities have no school branding.
-        name = entity.name  # Display ledger entity name.
-        tag = ""  # No school motto exists.
-        address = branch_address  # Only branch address is available.
-        website = ""  # No school website exists.
+                logo = ""
+        name = school.name
+        tag = getattr(school, "motto", "") or ""
+        address = branch_address or getattr(school, "address", "") or ""
+        website = getattr(school, "website", "") or ""
+    elif entity.is_platform:
+        # CodeX billing its customers (the schools) → CodeX's own identity.
+        from django.conf import settings
 
-    bank = primary_collection_account(entity)  # Resolve pay-to bank details.
-    bank_block = {  # Template-friendly bank block.
-        "bank_name": getattr(bank, "bank_name", "") or "",  # Bank name or blank.
-        "account_name": getattr(bank, "name", "") or "",  # Account name or blank.
-        "account_number": getattr(bank, "account_number", "") or "",  # Account number or blank.
-    } if bank is not None else {"bank_name": "", "account_name": "", "account_number": ""}  # Blank block when no account.
+        issuer = getattr(settings, "PLATFORM_ISSUER", {}) or {}
+        name = issuer.get("name") or entity.name
+        tag = issuer.get("tagline", "") or ""
+        address = issuer.get("address", "") or branch_address
+        website = issuer.get("website", "") or ""
+        logo = issuer.get("logo_url", "") or ""
+        email = issuer.get("email", "") or branch_email
+        phone = issuer.get("phone", "") or ""
+    else:
+        # Other school-less (e.g. product) entities: just the ledger entity name.
+        name = entity.name
+        tag = ""
+        address = branch_address
+        website = ""
 
-    return {  # Return a flat issuer structure for templates.
-        "name": name,  # Issuer display name.
-        "tag": tag,  # Motto/tagline.
-        "logo": logo,  # Logo URL.
-        "address": address,  # Mailing address.
-        "email": branch_email,  # Branch contact email.
-        "phone": "",  # Phone is currently not sourced.
-        "website": website,  # Website URL.
-        "bank": bank_block,  # Pay-to bank details.
+    bank = primary_collection_account(entity)
+    bank_block = {
+        "bank_name": getattr(bank, "bank_name", "") or "",
+        "account_name": getattr(bank, "name", "") or "",
+        "account_number": getattr(bank, "account_number", "") or "",
+    } if bank is not None else {"bank_name": "", "account_name": "", "account_number": ""}
+
+    return {
+        "name": name,
+        "tag": tag,
+        "logo": logo,
+        "address": address,
+        "email": email,
+        "phone": phone,
+        "website": website,
+        "bank": bank_block,
     }
 
 
