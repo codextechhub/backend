@@ -1,4 +1,31 @@
-"""Typed configuration, capability, entitlement, override, and audit models."""
+"""Typed configuration, capability, entitlement, override, and audit models.
+
+The app is built from two parallel systems that share one scoping contract:
+
+Configuration (settings with values)
+    ConfigurationDefinition declares WHAT a setting is (its key, type,
+    validation rules, and where it may be set). ConfigurationValue stores
+    one concrete value per definition per scope. Reads resolve through the
+    precedence chain: branch value -> school value -> platform value ->
+    definition default.
+
+Capabilities (features that are on or off)
+    Capability declares a switchable unit of product functionality (a
+    module or a feature). CapabilityEntitlement records whether a school
+    is ALLOWED to have it (the commercial grant). CapabilityOverride
+    records whether it is actually TURNED ON at runtime (platform, school,
+    or branch scope). CapabilityDependency links capabilities that require
+    other capabilities. An override can never switch on something that is
+    not entitled.
+
+Both systems write every mutation to ConfigurationAuditEvent, an immutable
+append-only log enforced in Python and by database triggers.
+
+Scoping: models that support platform/school/branch placement inherit
+ScopedModel, which normalizes the scope into a single ``scope_key`` string
+("platform", "school:<id>", or "branch:<id>") used in unique constraints
+and precedence lookups.
+"""
 
 import uuid
 from django.core.exceptions import ValidationError
@@ -9,20 +36,46 @@ from vs_rbac.managers import TenantAwareManager
 
 
 class ConfigurationDefinition(models.Model):
-    """Declare one typed setting and the scopes where it may be overridden.
+    """Declare one typed setting: its key, type, rules, and where it may be set.
 
-    Args:
-        id: Stable UUID identifier.
-        key: Immutable dotted machine key used by APIs and application code.
-        label: Human-readable setting name.
-        description: Explanation of the behavior controlled by the setting.
-        value_type: Expected data type for defaults and scoped values.
-        default_value: Fallback JSON value used when no scoped value exists.
-        validation_rules: Type-specific rules such as choices, minimum, or maximum.
-        allowed_scopes: Any combination of platform, school, and branch.
-        sensitivity: Visibility classification and secret-reference behavior.
-        is_active: Soft lifecycle flag; inactive definitions do not resolve.
-        created_by: User who created the definition, retained as nullable history.
+    This is the SCHEMA half of the configuration system. A definition does
+    not hold any live value itself (other than the fallback default) — it
+    describes a setting so that ConfigurationValue rows can be validated
+    against it and application code can read it through
+    ``vs_config.conf.get_config(key)``.
+
+    Only platform (CX_STAFF) users may create, update, or archive
+    definitions; school users can at most read them and write values where
+    ``allowed_scopes`` permits.
+
+    Fields:
+        id: Stable UUID primary key.
+        key: Immutable dotted machine key, e.g. ``security.retry_limit``.
+            Lowercase dot notation enforced by the serializer; immutable
+            after creation because application code and stored values
+            reference it. Unique across the platform.
+        label: Human-readable name shown in admin UIs.
+        description: Explanation of the behavior the setting controls.
+        value_type: One of STRING, INTEGER, DECIMAL, BOOLEAN, JSON, CHOICE,
+            or SECRET_REFERENCE. Drives ``validate_value()`` type checks for
+            both the default and every scoped value.
+        default_value: Fallback JSON value returned by resolution when no
+            platform/school/branch value exists. May be null.
+        validation_rules: Type-specific constraints as JSON — ``choices``
+            (list) for CHOICE, ``min``/``max`` bounds for numeric types.
+        allowed_scopes: List of scope names ("platform", "school",
+            "branch") where a value may be written. ``set_value()`` rejects
+            writes at any scope not in this list.
+        sensitivity: PUBLIC or INTERNAL values are shown as stored;
+            SECRET_REFERENCE marks the setting as pointing at a secret
+            (e.g. ``env://PAYMENTS_SECRET``) and every serializer, effective
+            read, and audit snapshot redacts it to "[REDACTED]".
+        is_active: Soft-archive flag. Inactive definitions are hidden from
+            default listings and never resolve — ``get_config`` returns the
+            caller's default instead. Archive is the DELETE verb; rows are
+            never hard-deleted because values and audit history point here.
+        created_by: User who created the definition (nullable history;
+            SET_NULL on user deletion).
         created_at: Creation timestamp.
         updated_at: Timestamp of the most recent definition change.
     """
@@ -68,16 +121,41 @@ class ConfigurationDefinition(models.Model):
 
 
 class ScopedModel(models.Model):
-    """Provide the shared platform, school, and branch scope contract.
+    """Abstract base providing the shared platform/school/branch scope contract.
 
-    Args:
-        school: Optional school boundary; null with branch null means platform scope.
-        branch: Optional branch boundary; when set it must belong to ``school``.
-        scope_key: Normalized platform/school/branch key used in unique constraints.
+    Any model that can be placed at one of the three scopes inherits this
+    (ConfigurationValue, CapabilityOverride, ConfigurationAuditEvent).
+    The scope of a row is defined by its two nullable FKs:
+
+        school NULL, branch NULL  -> platform scope (applies everywhere)
+        school set,  branch NULL  -> school scope
+        branch set                -> branch scope (school auto-filled)
+
+    ``scope_key`` is a denormalized string form of that placement —
+    "platform", "school:<uuid>", or "branch:<uuid>" — computed on every
+    save. It exists so that:
+
+    * unique constraints can express "one row per definition per scope"
+      without tripping over NULLs (SQL treats NULL != NULL, so a plain
+      unique on (definition, school, branch) would allow duplicate
+      platform rows), and
+    * precedence lookups can fetch all candidate rows for a scope chain
+      in one query (``scope_key__in=["branch:x", "school:y", "platform"]``).
+
+    Fields:
+        school: Optional school boundary. Null together with branch means
+            platform scope.
+        branch: Optional branch boundary. When set it must belong to
+            ``school``; if school is omitted the branch's own school is
+            filled in automatically (enforced in ``clean()``).
+        scope_key: Normalized scope string described above. Not editable;
+            recomputed by ``save()``.
 
     Behavior:
-        A branch automatically supplies its owning school when school is omitted.
-        This model is abstract and creates no table of its own.
+        ``save()`` always runs ``clean()`` (school/branch consistency) and
+        ``set_scope_key()`` first, so rows can never be persisted with a
+        scope_key that disagrees with their FKs. Abstract — creates no
+        table of its own.
     """
 
     school = models.ForeignKey(
@@ -117,18 +195,40 @@ class ScopedModel(models.Model):
 
 
 class ConfigurationValue(ScopedModel):
-    """Store one definition value at platform, school, or branch scope.
+    """Store one concrete value for a definition at exactly one scope.
 
-    Args:
-        id: Stable UUID identifier.
-        definition: Typed definition that validates and describes this value.
-        value: JSON-native value validated against the definition before writing.
-        school: Optional school scope inherited from :class:`ScopedModel`.
-        branch: Optional branch scope inherited from :class:`ScopedModel`.
-        scope_key: Normalized scope identity inherited from :class:`ScopedModel`.
-        updated_by: User who most recently set the value.
+    This is the DATA half of the configuration system. At most one row may
+    exist per (definition, scope) — enforced by the ``uniq_config_value_scope``
+    constraint on (definition, scope_key) — so writes are upserts
+    (``services.resolution.set_value``) and reads walk the precedence chain
+    (``services.resolution.resolve_value``):
+
+        branch row -> school row -> platform row -> definition.default_value
+
+    Values are never written directly through the ORM by views; they go
+    through ``set_value()``, which checks the definition's allowed_scopes,
+    validates the value against its type and rules, and records an audit
+    event in the same transaction.
+
+    Fields:
+        id: Stable UUID primary key.
+        definition: The ConfigurationDefinition this value belongs to.
+            CASCADE — values die with their definition.
+        value: The JSON-native payload. Its shape is guaranteed by
+            ``validate_value()`` to match ``definition.value_type`` and
+            ``definition.validation_rules`` at write time.
+        school / branch / scope_key: Scope placement inherited from
+            :class:`ScopedModel`.
+        updated_by: User who most recently set the value (nullable,
+            SET_NULL on user deletion).
         created_at: Creation timestamp.
         updated_at: Timestamp of the most recent value change.
+
+    Managers:
+        ``objects`` is tenant-aware (``include_global=True``): school-scoped
+        requests see their own rows plus platform rows automatically.
+        ``all_objects`` is the unscoped escape hatch used by the resolution
+        service and by views that have already authorized an explicit scope.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -158,18 +258,48 @@ class ConfigurationValue(ScopedModel):
 
 
 class Capability(models.Model):
-    """Represent one module or feature in the unified capability catalogue.
+    """One switchable unit of product functionality in the unified catalogue.
 
-    Args:
-        id: Stable UUID identifier.
-        key: Immutable slug used by packages, APIs, and runtime checks.
-        label: Human-readable capability name.
-        description: Functional description shown to administrators.
-        kind: Distinguishes a product module from a feature.
-        requires_entitlement: Whether runtime enablement requires a grant.
-        default_enabled: Runtime state when no override applies.
-        is_active: Catalogue lifecycle flag; inactive capabilities never resolve on.
-        metadata: Extensible non-authoritative display or integration metadata.
+    Replaces the legacy XVSModules + BranchFeatureFlag split: a capability
+    is either a whole product MODULE (finance, attendance, student_portal)
+    or a smaller FEATURE (bulk_import, email_alerts) — the ``kind`` field
+    is the only distinction. Whether a capability is ON for a given
+    school/branch is never stored here; it is computed by
+    ``services.capabilities.effective_capability`` from three inputs:
+
+        1. entitlement — is the school allowed to have it?
+           (CapabilityEntitlement; skipped when ``requires_entitlement``
+           is False)
+        2. dependencies — are all prerequisite capabilities effective?
+           (CapabilityDependency)
+        3. override — has an operator toggled it at branch, school, or
+           platform scope? (CapabilityOverride; most specific scope wins,
+           falling back to ``default_enabled``)
+
+    Application code asks ``vs_config.conf.is_capability_enabled(key, ...)``;
+    the frontend reads GET /v1/config/effective-capabilities/.
+
+    Fields:
+        id: Stable UUID primary key.
+        key: Immutable unique slug (e.g. ``finance``). Referenced by
+            package setups, runtime checks, and URLs, so it never changes
+            after creation.
+        label: Human-readable name shown to administrators.
+        description: Functional description of what the capability unlocks.
+        kind: MODULE (sellable product area) or FEATURE (smaller toggle).
+        requires_entitlement: When True (typical for modules), the school
+            must hold a GRANTED entitlement before the capability can ever
+            be effective. When False (typical for features), only
+            dependencies and overrides apply.
+        default_enabled: The runtime state used when no override exists at
+            any scope in the chain.
+        is_active: Catalogue lifecycle flag. Inactive capabilities never
+            resolve as enabled and are hidden from default listings;
+            archiving is the DELETE verb (no hard deletes — entitlements,
+            overrides, and audit history reference this row).
+        metadata: Free-form, non-authoritative JSON for display or
+            integration hints (icons, ordering, docs links). Never used in
+            enablement decisions.
         created_at: Creation timestamp.
         updated_at: Timestamp of the most recent catalogue change.
     """
@@ -198,14 +328,28 @@ class Capability(models.Model):
 
 
 class CapabilityDependency(models.Model):
-    """Require one capability to be effective before another can be effective.
+    """A prerequisite edge: ``capability`` cannot be ON unless ``requires`` is ON.
 
-    Args:
-        capability: Dependent capability being evaluated.
-        requires: Prerequisite capability that must resolve as enabled.
+    Forms a directed acyclic graph over the catalogue. During evaluation,
+    ``effective_capability`` recursively checks every ``requires`` edge in
+    the SAME scope as the capability being evaluated — so enabling
+    ``procurement`` at a branch demands that ``finance`` also resolves as
+    effective for that branch (entitlement, overrides and all), not merely
+    that it exists.
 
-    Behavior:
-        Duplicate edges, self-references, and dependency cycles are rejected.
+    Example (seeded): procurement -> finance, parent_portal -> student_portal.
+
+    Fields:
+        capability: The dependent capability being evaluated (CASCADE).
+        requires: The prerequisite that must itself resolve as enabled
+            (CASCADE).
+
+    Integrity:
+        Three layers keep the graph sane — a unique constraint rejects
+        duplicate edges, a DB check constraint rejects self-references, and
+        ``clean()`` (always run via ``save()``) walks the existing graph to
+        reject any edge that would create a cycle, since a cycle would make
+        evaluation non-terminating.
     """
 
     capability = models.ForeignKey(
@@ -252,20 +396,51 @@ class CapabilityDependency(models.Model):
 
 
 class CapabilityEntitlement(models.Model):
-    """Record commercial or administrative access to a capability.
+    """The commercial/administrative grant: is a school ALLOWED this capability?
 
-    Args:
-        id: Stable UUID identifier.
-        capability: Capability being granted or denied.
-        school: Optional school; null represents a platform-wide entitlement.
-        scope_key: Normalized platform or school key used for uniqueness.
-        state: Explicit granted or denied decision.
-        source: Origin of the decision, such as a package or manual change.
-        starts_at: Optional time from which the decision becomes effective.
-        ends_at: Optional exclusive expiry time.
-        updated_by: User who most recently changed the entitlement.
+    Answers "did they buy it / were they given it", never "is it switched
+    on". Runtime state lives in CapabilityOverride; the two are kept apart
+    so a school can temporarily disable a module it pays for without losing
+    the grant, and so no branch toggle can ever enable something that was
+    never granted (``set_override`` refuses ENABLED without an active
+    entitlement here).
+
+    Scoping is deliberately narrower than ScopedModel: entitlements exist
+    only at school or platform level (a NULL school means "every school"),
+    because branches don't buy modules — schools do. Hence this model
+    carries its own school FK + scope_key rather than inheriting the
+    three-level contract. A school-specific row always beats the platform
+    row during evaluation, which lets a platform-wide grant carry
+    school-level DENIED exceptions.
+
+    Rows are written by school package setup (source=PACKAGE), platform
+    admins (MANUAL/PLATFORM), or data migration (IMPORT), always through
+    ``services.capabilities.set_entitlement`` so every change is audited.
+
+    Fields:
+        id: Stable UUID primary key.
+        capability: The capability being granted or denied (CASCADE).
+        school: The school the decision applies to; NULL = platform-wide.
+        scope_key: "school:<id>" or "platform", computed on save; unique
+            together with capability, so there is exactly one decision per
+            capability per scope and writes are upserts.
+        state: GRANTED or DENIED. An explicit DENIED row at school level
+            overrides a platform-wide GRANTED.
+        source: Where the decision came from — PACKAGE (school package
+            setup), PLATFORM, MANUAL, or IMPORT (legacy migration).
+        starts_at: Optional activation time; the grant is inert before it.
+        ends_at: Optional exclusive expiry (subscription end); the grant is
+            inert from this moment on, flipping the capability off without
+            any data change.
+        updated_by: User who most recently changed the entitlement
+            (nullable, SET_NULL).
         created_at: Creation timestamp.
         updated_at: Timestamp of the most recent entitlement change.
+
+    Managers:
+        ``objects`` is tenant-aware (schools see their own rows plus
+        platform-wide ones); ``all_objects`` is the unscoped escape hatch
+        used by the evaluation service.
     """
 
     class State(models.TextChoices):
@@ -316,22 +491,47 @@ class CapabilityEntitlement(models.Model):
 
 
 class CapabilityOverride(ScopedModel):
-    """Control runtime activation without changing commercial entitlement.
+    """The runtime toggle: is an entitled capability actually switched ON here?
 
-    Args:
-        id: Stable UUID identifier.
-        capability: Capability whose runtime state is overridden.
-        school: Optional school scope inherited from :class:`ScopedModel`.
-        branch: Optional branch scope inherited from :class:`ScopedModel`.
-        scope_key: Normalized scope identity inherited from :class:`ScopedModel`.
-        state: Inherit, enabled, or disabled runtime decision.
-        reason: Operator explanation for the override.
-        updated_by: User who most recently changed the override.
+    The operational half of the entitlement/override pair — this is what
+    replaced the legacy BranchFeatureFlag. Overrides may sit at any of the
+    three scopes, and evaluation reads the MOST SPECIFIC non-INHERIT row:
+
+        branch override -> school override -> platform override
+        -> capability.default_enabled
+
+    A DISABLED override anywhere in that chain switches the capability off
+    for that scope even though the school remains fully entitled (e.g. a
+    school pausing its parent portal during exams). The reverse is blocked:
+    ``set_override`` raises CapabilityNotEntitled when asked to write
+    ENABLED for a capability the scope's school is not entitled to, so
+    runtime toggles can never widen commercial access.
+
+    At most one override exists per (capability, scope) — the
+    ``uniq_capability_override_scope`` constraint — so writes are upserts
+    through ``services.capabilities.set_override``, which audits every
+    change.
+
+    Fields:
+        id: Stable UUID primary key.
+        capability: The capability whose runtime state is overridden
+            (CASCADE).
+        school / branch / scope_key: Scope placement inherited from
+            :class:`ScopedModel`.
+        state: ENABLED, DISABLED, or INHERIT. INHERIT rows exist to
+            explicitly hand the decision back up the chain (equivalent to
+            no row at this scope) while preserving who set it and why.
+        reason: Operator explanation, stored on the row and in the audit
+            event.
+        updated_by: User who most recently changed the override (nullable,
+            SET_NULL).
         created_at: Creation timestamp.
         updated_at: Timestamp of the most recent override change.
 
-    Behavior:
-        An enabled override cannot bypass a denied or missing entitlement.
+    Managers:
+        ``objects`` is tenant-aware (schools see their own rows plus
+        platform rows); ``all_objects`` is the unscoped escape hatch used
+        by the evaluation service.
     """
 
     class State(models.TextChoices):
@@ -366,25 +566,54 @@ class CapabilityOverride(ScopedModel):
 
 
 class ConfigurationAuditEvent(ScopedModel):
-    """Persist an immutable configuration or capability mutation event.
+    """Append-only record of every configuration and capability mutation.
 
-    Args:
-        id: Stable UUID identifier.
-        action: Stable action key describing the mutation.
-        target_type: Model or logical resource type that changed.
-        target_id: String identifier of the changed record.
-        actor: User responsible for the mutation, nullable for system work.
-        school: Optional school scope inherited from :class:`ScopedModel`.
-        branch: Optional branch scope inherited from :class:`ScopedModel`.
-        scope_key: Normalized scope identity inherited from :class:`ScopedModel`.
-        before_data: Redacted JSON snapshot before the mutation.
-        after_data: Redacted JSON snapshot after the mutation.
-        reason: Operator-provided explanation.
-        metadata: Additional non-secret request or migration context.
-        created_at: Immutable event timestamp.
+    Every write in this app — definition changes, value writes, capability
+    catalogue edits, entitlement and override changes — creates exactly one
+    of these rows inside the same transaction, via
+    ``services.audit.record_configuration_event`` (which also mirrors the
+    event to the platform-wide vs_audit trail; THIS table is the
+    authoritative local history).
 
-    Behavior:
-        Python model guards and database triggers reject updates and deletes.
+    Immutability is enforced twice: ``save()`` refuses to update an
+    existing row and ``delete()`` always raises (Python guard, covers
+    SQLite tests), and migration 0006 installs BEFORE UPDATE / BEFORE
+    DELETE triggers that reject the same operations at the database level
+    on PostgreSQL and MySQL, so even raw SQL and bulk querysets cannot
+    rewrite history.
+
+    Snapshots are redacted BEFORE they are stored: secret-reference values
+    arrive here as "[REDACTED]", so the audit trail can be exposed to
+    config.audit.view holders without leaking secrets.
+
+    Fields:
+        id: Stable UUID primary key.
+        action: Stable dotted action key, e.g. ``config.value.updated``,
+            ``config.capability.archived``; ``legacy.*`` actions come from
+            the 0004 data migration. Indexed for filtering.
+        target_type: Class name of the mutated record (e.g.
+            "ConfigurationValue"). A loose string, not a content-type FK,
+            so history survives model renames and deletions.
+        target_id: String primary key of the mutated record. Indexed.
+        actor: User responsible; NULL for system/migration work
+            (SET_NULL so history outlives user accounts).
+        school / branch / scope_key: Scope the mutation applied to,
+            inherited from :class:`ScopedModel`. School-scoped audit
+            listings filter on these; platform events (both NULL) are
+            visible only to platform staff.
+        before_data: Redacted JSON snapshot of the state before the change
+            (empty dict for creations).
+        after_data: Redacted JSON snapshot of the state after the change.
+        reason: Operator-provided justification, when given.
+        metadata: Extra non-secret context (request info, legacy change
+            ids from migration).
+        created_at: Event timestamp; indexed, and the default ordering is
+            newest first.
+
+    Managers:
+        ``objects`` is tenant-aware (schools see their own events plus
+        global ones); ``all_objects`` is the unscoped escape hatch used by
+        the immutability guard and platform views.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
