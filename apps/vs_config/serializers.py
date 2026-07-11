@@ -211,11 +211,58 @@ class SetOverrideSerializer(serializers.Serializer):
 
 class ConfigurationAuditEventSerializer(serializers.ModelSerializer):
     actor = ActorSerializer(read_only=True)
+    target_label = serializers.SerializerMethodField()
 
     class Meta:
         model = ConfigurationAuditEvent
         fields = [
-            "id", "action", "target_type", "target_id", "school", "branch",
-            "actor", "before_data", "after_data", "reason", "metadata", "created_at",
+            "id", "action", "target_type", "target_id", "target_label", "school",
+            "branch", "actor", "before_data", "after_data", "reason", "metadata",
+            "created_at",
         ]
         read_only_fields = fields
+
+    def get_target_label(self, obj):
+        """Human name for the audited object so raw ids never reach the UI.
+
+        Resolved at read time (event rows are immutable, so a label can't be
+        backfilled onto old events). Deleted targets resolve to "" and the
+        client falls back to the action wording. A per-request memo in the
+        serializer context dedupes lookups across the page.
+        """
+        cache = self.context.setdefault("_target_labels", {})
+        key = (obj.target_type, obj.target_id)
+        if key in cache:
+            return cache[key]
+
+        label = ""
+        try:
+            if obj.target_type == "ConfigurationDefinition":
+                row = ConfigurationDefinition.objects.filter(pk=obj.target_id).first()
+                label = row.label if row else ""
+            elif obj.target_type == "ConfigurationValue":
+                row = (
+                    ConfigurationValue.all_objects.select_related("definition")
+                    .filter(pk=obj.target_id).first()
+                )
+                label = row.definition.label if row else ""
+            elif obj.target_type == "Capability":
+                row = Capability.objects.filter(pk=obj.target_id).first()
+                label = row.label if row else ""
+            elif obj.target_type == "CapabilityEntitlement":
+                row = (
+                    CapabilityEntitlement.all_objects.select_related("capability")
+                    .filter(pk=obj.target_id).first()
+                )
+                label = row.capability.label if row else ""
+            elif obj.target_type == "CapabilityOverride":
+                row = (
+                    CapabilityOverride.all_objects.select_related("capability")
+                    .filter(pk=obj.target_id).first()
+                )
+                label = row.capability.label if row else ""
+        except (ValueError, TypeError):
+            label = ""
+
+        cache[key] = label
+        return label
