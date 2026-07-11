@@ -1,4 +1,4 @@
-"""API views for VIGIL (vs_health).
+"""API views for the Health module (vs_health).
 
 Two flavours:
   * **Analytics endpoints** (APIView) return pre-computed dicts from
@@ -62,7 +62,7 @@ class HealthWriteMixin:
 
 
 def _range(request):
-    return services.parse_range(request.query_params.get("range"))
+    return services.parse_range(request.query_params.get("range"), request.query_params.get("start"), request.query_params.get("end"))
 
 
 def _school_id(request):

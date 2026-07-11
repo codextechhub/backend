@@ -1,4 +1,4 @@
-"""Shared enums and tuning constants for the vs_health (VIGIL) app.
+"""Shared enums and tuning constants for the Health module.
 
 Kept separate from ``models`` so non-model code (middleware, collectors,
 services, tasks) can import status labels and the latency-histogram layout

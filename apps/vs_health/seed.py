@@ -59,19 +59,26 @@ def seed_permissions(stdout=None):
         name="platform", defaults={"description": "Platform-wide capabilities."})
     resource, _ = PermissionResource.objects.get_or_create(
         module=module, name="health",
-        defaults={"description": "VIGIL observability."})
+        defaults={"description": "Platform health and observability."})
+    if resource.description != "Platform health and observability.":
+        resource.description = "Platform health and observability."
+        resource.save(update_fields=["description"])
     for action_name, desc in [("view", "View observability data"),
                               ("manage", "Manage incidents, alerts and deployments")]:
         PermissionAction.objects.get_or_create(name=action_name, defaults={"description": desc})
 
     for key, action, sens in [(PERM_VIEW, "view", "NORMAL"), (PERM_MANAGE, "manage", "SENSITIVE")]:
-        if not Permission.objects.filter(key=key).exists():
-            Permission.objects.create(
+        permission = Permission.objects.filter(key=key).first()
+        if permission is None:
+            permission = Permission.objects.create(
                 module=module, resource=resource,
                 action=PermissionAction.objects.get(name=action),
-                description=f"VIGIL: {action}",
+                description=f"Health: {action}",
                 sensitivity_level=sens,
             )
+        elif permission.description != f"Health: {action}":
+            permission.description = f"Health: {action}"
+            permission.save(update_fields=["description"])
     _log(stdout, f"  permissions: {PERM_VIEW}, {PERM_MANAGE}")
 
 
@@ -228,7 +235,7 @@ def seed_request_metrics(stdout=None, minutes: int = 90):
 
 
 def run(stdout=None):
-    _log(stdout, "Seeding vs_health (VIGIL)…")
+    _log(stdout, "Seeding vs_health")
     seed_permissions(stdout)
     seed_services(stdout)
     seed_checks(stdout)

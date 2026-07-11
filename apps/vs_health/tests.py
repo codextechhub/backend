@@ -1,4 +1,4 @@
-"""Tests for vs_health (VIGIL).
+"""Tests for the Health module (vs_health).
 
 Covers the analytics math (histogram→percentile, golden signals), the alert
 evaluation fire/resolve lifecycle with auto-incidents, the daily rollup, the

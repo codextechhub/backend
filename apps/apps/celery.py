@@ -46,7 +46,7 @@ app.conf.beat_schedule = {
         "schedule": crontab(hour=6, minute=0),
     },
 
-    # --- vs_health (VIGIL observability) ---------------------------------
+    # --- vs_health (platform health) -------------------------------------
     # Synthetic probes, queue snapshots, and alert evaluation. All idempotent
     # and safe to miss in eager environments.
     "health-run-uptime-checks": {

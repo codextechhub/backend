@@ -43,8 +43,15 @@ _RANGES = {
 }
 
 
-def parse_range(key: str | None) -> TimeRange:
+def parse_range(key: str | None, start_raw: str | None = None, end_raw: str | None = None) -> TimeRange:
     """Resolve a ?range= query value into concrete window boundaries."""
+    if start_raw and end_raw:
+        from django.utils.dateparse import parse_datetime
+        start, end = parse_datetime(start_raw), parse_datetime(end_raw)
+        if start and end and start < end and end - start <= timedelta(days=90):
+            duration = end - start
+            return TimeRange(key="custom", start=start, end=end, prev_start=start-duration,
+                             trunc="hour" if duration <= timedelta(days=7) else "day", points=48)
     key = (key or "1h").lower()
     duration, trunc, points = _RANGES.get(key, _RANGES["1h"])
     end = timezone.now()

@@ -22,7 +22,7 @@ class ServiceKind(models.TextChoices):
 
 
 class MonitoredService(TimeStampedModel):
-    """One logical service VIGIL watches (e.g. 'API · DRF', 'Redis').
+    """One logical service monitored by Health (e.g. 'API · DRF', 'Redis').
 
     ``current_status`` is a denormalised cache kept fresh by the uptime/alert
     tasks so the Command Center grid renders without recomputing per request.

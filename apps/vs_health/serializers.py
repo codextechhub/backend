@@ -158,3 +158,4 @@ class TaskRowSerializer(serializers.Serializer):
         if obj.started_at and obj.finished_at:
             return round((obj.finished_at - obj.started_at).total_seconds(), 1)
         return None
+

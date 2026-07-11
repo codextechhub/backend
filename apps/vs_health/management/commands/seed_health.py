@@ -4,7 +4,7 @@ from vs_health import seed
 
 
 class Command(BaseCommand):
-    help = "Seed vs_health (VIGIL): services, checks, alert rules, SLOs, RBAC perms, and synthetic history."
+    help = "Seed Health: services, checks, alert rules, SLOs, RBAC permissions, and synthetic history."
 
     def handle(self, *args, **options):
         seed.run(stdout=self.stdout)

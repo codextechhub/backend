@@ -51,6 +51,7 @@ SEED_STEPS: list[tuple[str, list]] = [
     ("seed_todo_permissions",        []),
     ("seed_ticket_permissions",      []),
     ("seed_notification_permissions", []),
+    ("seed_health", []),
 ]
 
 
