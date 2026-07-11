@@ -66,7 +66,12 @@ def effective_capability(capability, *, school=None, branch=None, _seen=None):
         state = overrides.get(key)
         if state and state != CapabilityOverride.State.INHERIT:
             return state == CapabilityOverride.State.ENABLED
-    # With no concrete override, the catalogue default is the final fallback.
+    # No concrete override. Reaching here means the entitlement gate passed,
+    # so a plan-gated capability is ON — being in the plan is what switches it
+    # on (a DISABLED override is the lever to suppress it). Ungated
+    # capabilities fall back to the catalogue default.
+    if capability.requires_entitlement:
+        return True
     return capability.default_enabled
 
 
