@@ -594,6 +594,9 @@ class SchoolListSerializer(serializers.ModelSerializer):
     class Meta:
         model = School
         fields = [
+            # pk is what scoped endpoints (vs_config entitlements/overrides,
+            # notification settings ?school=) take — pickers need it.
+            "id",
             "name",
             "slug",
             "code",
