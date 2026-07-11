@@ -7,9 +7,12 @@ from django.db import transaction
 from vs_notifications.services.dispatch import NotificationService
 from vs_user.models import User
 
-from ..constants import CommentVisibility, TicketStatus
+from ..constants import CommentVisibility, TicketPermission, TicketStatus
 
 logger = logging.getLogger("vs_tickets.notifications")
+
+# Holding either triage key marks a CX user as working the support queue.
+TRIAGE_PERMISSION_KEYS = (TicketPermission.MANAGE, TicketPermission.ASSIGN)
 
 
 def _unique_recipients(users, *, exclude=None):
@@ -25,7 +28,18 @@ def _unique_recipients(users, *, exclude=None):
 
 
 def support_recipients():
-    return list(User.objects.filter(user_type=User.UserType.CX_STAFF, status=User.Status.ACTIVE))
+    """Active CX staff who hold a ticket triage key through an active platform
+    role — not every CX_STAFF user. Mirrors the platform-role branch of
+    vs_rbac.permissions.user_has_rbac_permission."""
+    return list(
+        User.objects.filter(
+            user_type=User.UserType.CX_STAFF,
+            status=User.Status.ACTIVE,
+            platform_role_assignments__assignment_status="ACTIVE",
+            platform_role_assignments__role__role_permissions__permission_id__in=TRIAGE_PERMISSION_KEYS,
+            platform_role_assignments__role__role_permissions__granted=True,
+        ).distinct()
+    )
 
 
 def context_for(ticket, **extra):

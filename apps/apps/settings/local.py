@@ -14,12 +14,20 @@ REST_FRAMEWORK = {
     ],
 }
 
-# Run Celery tasks synchronously in local dev — no broker needed.
-# Zoho SMTP — port 465 + SSL works where 587/TLS is blocked locally.
+# Email prints to the console by default: with eager Celery every delivery
+# runs inline in the request, so an unreachable SMTP host stalls responses
+# for EMAIL_TIMEOUT × recipient count. Set EMAIL_BACKEND in .env to
+# django.core.mail.backends.smtp.EmailBackend to send real mail
+# (Zoho: port 465 + SSL works where 587/TLS is blocked locally).
+EMAIL_BACKEND = config(
+    "EMAIL_BACKEND",
+    default="django.core.mail.backends.console.EmailBackend",
+)
 EMAIL_PORT    = 465
 EMAIL_USE_SSL = True
 EMAIL_USE_TLS = False
 
+# Run Celery tasks synchronously in local dev — no broker needed.
 CELERY_TASK_ALWAYS_EAGER     = True
 CELERY_TASK_EAGER_PROPAGATES = True
 
