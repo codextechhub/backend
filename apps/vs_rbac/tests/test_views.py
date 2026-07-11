@@ -93,6 +93,15 @@ class PermissionListCreateViewTests(_AuthMixin, TestCase):
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertEqual(len(resp.data["data"]), 2)
 
+    def test_search_permissions_across_related_fields(self):
+        make_permission("platform.health.view")
+        make_permission("finance.invoice.approve")
+
+        resp = self._vision_client().get(self.url, {"search": "health"})
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual([row["key"] for row in resp.data["data"]], ["platform.health.view"])
+
     def test_create_permission_as_vision(self):
         from vs_rbac.models import PermissionAction, PermissionModule, PermissionResource
         module, _ = PermissionModule.objects.get_or_create(name="hr")

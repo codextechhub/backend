@@ -217,6 +217,12 @@ class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
             qs = qs.filter(module_id=module_key)
         if action_key := qp.get("action"):
             qs = qs.filter(action_id=action_key)
+        if is_active := qp.get("is_active"):
+            lowered = is_active.lower()
+            if lowered in {"true", "1"}:
+                qs = qs.filter(is_active=True)
+            elif lowered in {"false", "0"}:
+                qs = qs.filter(is_active=False)
         if is_restricted := qp.get("is_restricted"):
             lowered = is_restricted.lower()
             if lowered in {"true", "1"}:
@@ -228,9 +234,9 @@ class PermissionListCreateView(CreateModelMixin, generics.ListCreateAPIView):
         if search := qp.get("search"):
             qs = qs.filter(
                 Q(key__icontains=search) |
-                Q(module_id__icontains=search) |
+                Q(module__name__icontains=search) |
                 Q(resource__name__icontains=search) |
-                Q(action_id__icontains=search) |
+                Q(action__name__icontains=search) |
                 Q(description__icontains=search)
             )
 
