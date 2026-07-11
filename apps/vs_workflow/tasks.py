@@ -18,15 +18,23 @@ def dispatch_notification(*, instance_id: str, event_key: str,
         instance = WorkflowInstance.objects.select_related("template").get(pk=instance_id)
     except WorkflowInstance.DoesNotExist:
         return
-    # Templates opt into each lifecycle notification separately.
-    if not (instance.template.notification_events or {}).get(event_key, False):
+    # Template opt-in: an untouched template ({} — never configured) notifies
+    # for every wired event; once the author has configured ANY key, the dict
+    # is exact intent and missing keys mean off.
+    events = instance.template.notification_events or {}
+    if events and not events.get(event_key, False):
+        return
+
+    from django.contrib.auth import get_user_model
+    recipients = list(get_user_model().objects.filter(pk__in=recipient_user_ids))
+    if not recipients:
         return
     try:
         # Notification dispatch is best-effort; the workflow state is already committed.
         from vs_notifications.services.dispatch import NotificationService
         NotificationService.send(
             event_key=event_key,
-            recipients=recipient_user_ids,
+            recipients=recipients,
             school=instance.school,
             context={"workflow_instance_id": str(instance.id),
                      "document_type": instance.document_type,

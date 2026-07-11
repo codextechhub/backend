@@ -47,7 +47,8 @@ def seed_event_types() -> dict:
                 "supported_channels": entry["supported_channels"],
                 "default_enabled":    entry.get("default_enabled", True),
                 "is_transactional":   entry.get("is_transactional", False),
-                "is_active":          True,
+                # Registry-driven: events stay inactive until a module emits them.
+                "is_active":          entry.get("is_active", True),
             },
         )
         if created:
@@ -542,6 +543,27 @@ def _build_default_templates() -> dict:
                 "Batch ID: {{ batch_id }}\n\n"
                 "Log in to Vision to review flagged students.\n\n"
                 "{{ school_name }} via CodeX Vision"
+            ),
+        },
+
+        # ── workflow.stage_activated ────────────────────────────────────────
+        ("workflow.stage_activated", C.IN_APP): {
+            "subject": "",
+            "body": (
+                "Approval required: {{ document_title }} submitted by "
+                "{{ submitter_name }} is awaiting your decision at stage '{{ stage_name }}'."
+            ),
+        },
+        ("workflow.stage_activated", C.EMAIL): {
+            "subject": "Action required: {{ document_type }} awaiting your approval",
+            "body": (
+                "A document is awaiting your approval.\n\n"
+                "Document type: {{ document_type }}\n"
+                "Title: {{ document_title }}\n"
+                "Submitted by: {{ submitter_name }}\n"
+                "Current stage: {{ stage_name }}\n\n"
+                "Please log in to CodeX Vision to review and act on this request.\n\n"
+                "CodeX Vision"
             ),
         },
 

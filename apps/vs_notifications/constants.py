@@ -115,6 +115,11 @@ class NotificationPermission:
 #                       NotificationSetting checks; the event always dispatches
 #                       on its supported channels (is_active still wins). Use for
 #                       password resets, invites, and similar must-send mail.
+#   is_active         — (optional, default True) False registers the event but
+#                       keeps it OUT of the settings matrix, the admin catalogue
+#                       and dispatch. Honesty flag: an event stays inactive until
+#                       a domain module actually emits it — flip it on in the
+#                       same change that adds the send_notification call.
 # ---------------------------------------------------------------------------
 
 # Authoritative seed list for NotificationEventType rows.
@@ -196,6 +201,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_students",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "is_active": False,  # no vs_students emitter yet
     },
     {
         "key": "student.deactivated",
@@ -204,6 +210,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_students",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "is_active": False,  # no vs_students emitter yet
     },
     {
         "key": "student.class_transferred",
@@ -212,6 +219,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_students",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "is_active": False,  # no vs_students emitter yet
     },
     {
         "key": "student.promoted",
@@ -220,10 +228,22 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_students",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "is_active": False,  # no vs_students emitter yet
     },
 
     # ── Workflow Approval (vs_workflow) ────────────────────────────────────
+    # Wired lifecycle points (services/routing.py): stage_activated → the
+    # stage's approvers; returned / rejected / final_approved → the requester.
+    # The rest are registered inactive until the engine emits them.
 
+    {
+        "key": "workflow.stage_activated",
+        "label": "Approval awaiting your decision",
+        "description": "Fires when an approval stage becomes active and you are one of its approvers.",
+        "source_module": "vs_workflow",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
     {
         "key": "workflow.submitted",
         "label": "Workflow submitted",
@@ -231,6 +251,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_workflow",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "is_active": False,  # superseded by workflow.stage_activated (first stage)
     },
     {
         "key": "workflow.approved",
@@ -239,6 +260,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_workflow",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "is_active": False,  # superseded by workflow.stage_activated (next stage)
     },
     {
         "key": "workflow.rejected",
@@ -271,6 +293,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_workflow",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "is_active": False,  # engine has no escalation emitter yet
     },
 
     # ── Finance & Billing (vs_billing) ─────────────────────────────────────
@@ -306,6 +329,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_billing",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "is_active": False,  # refund flow does not emit yet
     },
 
     # ── Onboarding & System (vs_onboarding / vs_import / vs_users) ─────────
@@ -317,6 +341,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_onboarding",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "is_active": False,  # no vs_onboarding emitter yet
     },
     {
         "key": "onboarding.go_live_ready",
@@ -325,6 +350,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_onboarding",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "is_active": False,  # no vs_onboarding emitter yet
     },
     {
         "key": "user.invited",
@@ -357,6 +383,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_users",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "is_active": False,  # lockout flow does not emit yet
     },
     {
         "key": "import.completed",
@@ -365,6 +392,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_import",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "is_active": False,  # imports report via task.completed instead
     },
     {
         "key": "import.failed",
@@ -373,6 +401,7 @@ EVENT_TYPE_REGISTRY = [
         "source_module": "vs_import",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
         "default_enabled": True,
+        "is_active": False,  # imports report via task.failed instead
     },
 
     # ── Background tasks (core) ────────────────────────────────────────────

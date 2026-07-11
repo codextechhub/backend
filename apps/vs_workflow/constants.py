@@ -113,10 +113,22 @@ NOTIF_EVENT_APPROVED        = "workflow.approved"
 NOTIF_EVENT_REJECTED        = "workflow.rejected"
 NOTIF_EVENT_WITHDRAWN       = "workflow.withdrawn"
 NOTIF_EVENT_CANCELLED       = "workflow.cancelled"
+NOTIF_EVENT_FINAL_APPROVED  = "workflow.final_approved"
 NOTIF_EVENT_KEYS = [
     NOTIF_EVENT_SUBMITTED, NOTIF_EVENT_STAGE_ACTIVATED, NOTIF_EVENT_STAGE_APPROVED,
     NOTIF_EVENT_STAGE_REJECTED, NOTIF_EVENT_RETURNED, NOTIF_EVENT_APPROVED,
     NOTIF_EVENT_REJECTED, NOTIF_EVENT_WITHDRAWN, NOTIF_EVENT_CANCELLED,
+    NOTIF_EVENT_FINAL_APPROVED,
+]
+
+# The lifecycle points the engine actually emits (routing.py). The other keys
+# above stay reserved for future wiring; dispatch_notification refuses keys
+# outside NOTIF_EVENT_KEYS either way.
+NOTIF_WIRED_EVENT_KEYS = [
+    NOTIF_EVENT_STAGE_ACTIVATED,   # → the activated stage's approvers
+    NOTIF_EVENT_RETURNED,          # → requester
+    NOTIF_EVENT_REJECTED,          # → requester
+    NOTIF_EVENT_FINAL_APPROVED,    # → requester
 ]
 
 # Condition operators (fixed set)

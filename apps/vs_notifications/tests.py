@@ -127,7 +127,7 @@ class _NotifFixture(TestCase):
 class ResolveChannelsTests(_NotifFixture):
 
     def test_default_when_no_rows(self):
-        et = self._event("student.enrolled")
+        et = self._event("ticket.created")
         NotificationSetting.all_objects.filter(event_type=et).delete()
         resolved = resolve_channels(et, school=self.school_a)
         self.assertEqual(
@@ -136,7 +136,7 @@ class ResolveChannelsTests(_NotifFixture):
         )
 
     def test_platform_row_wins_over_default(self):
-        et = self._event("student.enrolled")
+        et = self._event("ticket.created")
         NotificationSetting.all_objects.filter(
             event_type=et, channel=ChannelChoices.EMAIL, school__isnull=True,
         ).update(is_enabled=False)
@@ -144,7 +144,7 @@ class ResolveChannelsTests(_NotifFixture):
         self.assertFalse(resolved[ChannelChoices.EMAIL])
 
     def test_school_row_beats_platform(self):
-        et = self._event("student.enrolled")
+        et = self._event("ticket.created")
         NotificationSetting.all_objects.filter(
             event_type=et, channel=ChannelChoices.EMAIL, school__isnull=True,
         ).update(is_enabled=False)
@@ -177,9 +177,9 @@ class ResolveChannelsBulkTests(_NotifFixture):
 
     def test_layering_across_multiple_event_types_one_call(self):
         """school beats platform beats default — for several event types at once."""
-        et_school = self._event("student.enrolled")       # school override wins
-        et_platform = self._event("student.deactivated")  # platform row wins
-        et_default = self._event("student.promoted")      # no rows → default
+        et_school = self._event("ticket.created")       # school override wins
+        et_platform = self._event("ticket.assigned")      # platform row wins
+        et_default = self._event("ticket.resolved")       # no rows → default
         et_tx = self._event("user.password_reset")        # transactional bypass
 
         # et_school: platform says off, school A says on → school wins.
@@ -226,7 +226,7 @@ class ResolveChannelsBulkTests(_NotifFixture):
         self.assertTrue(matrix)
 
     def test_single_resolve_delegates_to_bulk(self):
-        et = self._event("student.enrolled")
+        et = self._event("ticket.created")
         self.assertEqual(
             resolve_channels(et, school=self.school_a),
             resolve_channels_bulk([et], school=self.school_a)[et.id],
@@ -251,7 +251,7 @@ class DispatchTests(_NotifFixture):
         with mock.patch("vs_notifications.tasks.deliver_email_notification.delay") as delay:
             with self.captureOnCommitCallbacks(execute=True):
                 ids = NotificationService.send(
-                    event_key="student.enrolled",
+                    event_key="ticket.created",
                     context={"student_first_name": "Sam", "student_last_name": "Doe"},
                     recipients=[rcpt],
                     # no school → platform scope
@@ -269,7 +269,7 @@ class DispatchTests(_NotifFixture):
         rcpt = self._recipient()
         with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
             ids = NotificationService.send(
-                event_key="student.enrolled",
+                event_key="ticket.created",
                 context={"student_first_name": "Sam"},
                 recipients=[rcpt],
                 metadata={"activation_key": "abc123"},
@@ -321,11 +321,11 @@ class DispatchTests(_NotifFixture):
         self.assertEqual(received[0].id, n.id)
 
     def test_all_channels_disabled_returns_empty(self):
-        et = self._event("student.enrolled")
+        et = self._event("ticket.created")
         NotificationSetting.all_objects.filter(event_type=et).update(is_enabled=False)
         rcpt = self._recipient()
         ids = NotificationService.send(
-            event_key="student.enrolled",
+            event_key="ticket.created",
             context={"student_first_name": "Sam"},
             recipients=[rcpt],
             school=self.school_a,
@@ -342,7 +342,7 @@ class DispatchTests(_NotifFixture):
 class DeliveryTaskTests(_NotifFixture):
 
     def _pending_email(self, html=""):
-        et = self._event("student.enrolled")
+        et = self._event("ticket.created")
         return Notification.objects.create(
             school=None, recipient=None, unregistered_email="dest@test.com",
             event_type=et, channel=ChannelChoices.EMAIL, subject="Hi",
@@ -385,7 +385,7 @@ class DeliveryTaskTests(_NotifFixture):
 
     def test_from_name_metadata_sets_from_header(self):
         from .tasks import deliver_email_notification
-        et = self._event("student.enrolled")
+        et = self._event("ticket.created")
         notif = Notification.objects.create(
             school=None, recipient=None, unregistered_email="dest@test.com",
             event_type=et, channel=ChannelChoices.EMAIL, subject="Hi",
@@ -432,7 +432,7 @@ class DeliveryTaskTests(_NotifFixture):
 class FeedRetrieveTests(_NotifFixture):
 
     def test_retrieve_other_users_notification_is_404(self):
-        et = self._event("student.enrolled")
+        et = self._event("ticket.created")
         mine = Notification.objects.create(
             school=self.school_a, recipient=self.admin_a, event_type=et,
             channel=ChannelChoices.IN_APP, body="x", status=NotificationStatus.SENT,
@@ -484,29 +484,29 @@ class SettingsApiTests(_NotifFixture):
     def test_patch_upsert_creates_override_row(self):
         resp = self._client(self.cx).patch(
             "/v1/notify/settings/update/",
-            {"updates": [{"event_type_key": "student.enrolled",
+            {"updates": [{"event_type_key": "ticket.created",
                           "channel": "email", "is_enabled": False}]},
             format="json",
         )
         self.assertEqual(resp.status_code, 200, resp.content)
         row = NotificationSetting.all_objects.get(
-            school__isnull=True, event_type__key="student.enrolled", channel="email",
+            school__isnull=True, event_type__key="ticket.created", channel="email",
         )
         self.assertFalse(row.is_enabled)
         entries = resp.json()["data"]
-        self.assertEqual(entries[0]["event_type_key"], "student.enrolled")
+        self.assertEqual(entries[0]["event_type_key"], "ticket.created")
         self.assertFalse(entries[0]["is_enabled"])
 
     def test_patch_school_scoped_writes_school_row(self):
         self._client(self.admin_a).patch(
             f"/v1/notify/settings/update/?school={self.school_a.id}",
-            {"updates": [{"event_type_key": "student.enrolled",
+            {"updates": [{"event_type_key": "ticket.created",
                           "channel": "email", "is_enabled": False}]},
             format="json",
         )
         self.assertTrue(
             NotificationSetting.all_objects.filter(
-                school=self.school_a, event_type__key="student.enrolled",
+                school=self.school_a, event_type__key="ticket.created",
                 channel="email", is_enabled=False,
             ).exists()
         )
@@ -514,7 +514,7 @@ class SettingsApiTests(_NotifFixture):
     def test_patch_reject_disable_in_app(self):
         resp = self._client(self.cx).patch(
             "/v1/notify/settings/update/",
-            {"updates": [{"event_type_key": "student.enrolled",
+            {"updates": [{"event_type_key": "ticket.created",
                           "channel": "in_app", "is_enabled": False}]},
             format="json",
         )
@@ -556,7 +556,7 @@ class HistoryScopingTests(_NotifFixture):
         _grant_school_permission(
             self.admin_a, self.school_a, NotificationPermission.AUDIT_ACTIVITY,
         )
-        et = self._event("student.enrolled")
+        et = self._event("ticket.created")
         self.n_a = Notification.objects.create(
             school=self.school_a, recipient=self.admin_a, event_type=et,
             channel=ChannelChoices.IN_APP, body="a", status=NotificationStatus.SENT,
@@ -573,7 +573,7 @@ class HistoryScopingTests(_NotifFixture):
 
     def test_school_admin_sees_only_own_school(self):
         resp = self._client(self.admin_a).get(
-            "/v1/notify/history/?event_type_key=student.enrolled"
+            "/v1/notify/history/?event_type_key=ticket.created"
         )
         self.assertEqual(resp.status_code, 200, resp.content)
         ids = {r["id"] for r in resp.json()["data"]}

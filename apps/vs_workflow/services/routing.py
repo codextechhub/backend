@@ -12,6 +12,8 @@ from django.utils import timezone
 
 from vs_workflow.conditions import evaluate_condition
 from vs_workflow.constants import (
+    NOTIF_EVENT_FINAL_APPROVED, NOTIF_EVENT_REJECTED, NOTIF_EVENT_RETURNED,
+    NOTIF_EVENT_STAGE_ACTIVATED,
     AuditEventType, StageKind, WorkflowInstanceStatus, WorkflowStageStatus,
 )
 from vs_workflow.exceptions import TemplateInvalidError
@@ -22,6 +24,27 @@ from vs_workflow.models import (
 )
 from vs_workflow.services import approvers as approvers_service
 from vs_workflow.services import audit as audit_service
+
+
+# Enqueue a lifecycle notification after the surrounding transaction commits,
+# so a rolled-back transition never notifies. Dispatch itself is best-effort
+# (vs_workflow/tasks.py) and Celery runs eagerly outside production.
+def _notify(instance: WorkflowInstance, event_key: str,
+            recipient_user_ids: list, context: dict) -> None:
+    if not recipient_user_ids:
+        return
+    from vs_workflow.tasks import dispatch_notification
+    instance_id = str(instance.id)
+    # Templates reference {{ document_title }}; instances carry no title, so
+    # give them the same "Type #shortid" handle the console UI uses.
+    context = {
+        "document_title": f"{instance.document_type} #{str(instance.document_object_id)[:8]}",
+        **context,
+    }
+    transaction.on_commit(lambda: dispatch_notification.delay(
+        instance_id=instance_id, event_key=event_key,
+        recipient_user_ids=recipient_user_ids, context=context,
+    ))
 
 
 # Choose the next stage using route paths first, then linear stage order.
@@ -181,6 +204,11 @@ def _activate_stage(instance: WorkflowInstance, stage: WorkflowStage,
                             "stage_code": stage.code, "stage_label": stage.label,
                             "attempt": attempt, "eligible_count": len(eligible),
                         })
+    # Tell the stage's approvers their decision is awaited (bell + inbox).
+    _notify(instance, NOTIF_EVENT_STAGE_ACTIVATED,
+            recipient_user_ids=list({str(ea.user.id) for ea in eligible}),
+            context={"stage_name": stage.label, "stage_label": stage.label,
+                     "submitter_name": instance.requested_by.full_name})
     return stage_instance
 
 
@@ -291,6 +319,10 @@ def _terminate_approved(instance: WorkflowInstance) -> WorkflowInstance:
     audit_service.write(instance, AuditEventType.INSTANCE_APPROVED)
     handler = get_handler(instance.document_type)
     handler.on_approved(instance, {"template": instance.template.code})
+    # Tell the requester their submission is fully approved.
+    _notify(instance, NOTIF_EVENT_FINAL_APPROVED,
+            recipient_user_ids=[str(instance.requested_by_id)],
+            context={})
     return instance
 
 
@@ -311,6 +343,11 @@ def _terminate_rejected(instance: WorkflowInstance, actor, comment: str) -> Work
     audit_service.write(instance, AuditEventType.INSTANCE_REJECTED,
                         actor=actor, context={"comment": comment})
     get_handler(instance.document_type).on_rejected(instance, {"comment": comment})
+    # Tell the requester their submission was terminally rejected.
+    _notify(instance, NOTIF_EVENT_REJECTED,
+            recipient_user_ids=[str(instance.requested_by_id)],
+            context={"rejected_by_name": getattr(actor, "full_name", ""),
+                     "rejection_reason": comment})
     return instance
 
 
@@ -330,5 +367,10 @@ def _return_to_requester(instance: WorkflowInstance, actor, comment: str,
         "comment": comment, "returning_stage_id": str(returning_stage_id),
     })
     get_handler(instance.document_type).on_returned(instance, {"comment": comment})
+    # Tell the requester their submission needs changes and resubmission.
+    _notify(instance, NOTIF_EVENT_RETURNED,
+            recipient_user_ids=[str(instance.requested_by_id)],
+            context={"returned_by_name": getattr(actor, "full_name", ""),
+                     "return_comment": comment})
     return instance
 
