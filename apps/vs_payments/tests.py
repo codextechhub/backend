@@ -518,6 +518,30 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(recon.rows[0].match_basis, "amount")
         self.assertTrue(recon.is_reconciled)
 
+    # Verify amount-only matches are flagged for review; reference matches are not.
+    def test_amount_only_matches_are_flagged_needs_review(self):
+        entity, customer, vendor = self.build()
+        # A reference-matched collection — trusted, not flagged.
+        c = services.initiate_collection(entity=entity, amount=40000, customer=customer)
+        services.confirm_collection(c, status=CollectionStatus.SUCCEEDED)
+        c.refresh_from_db()
+        # An amount-only-matched payout — ambiguous, flagged.
+        p = services.initiate_payout(
+            entity=entity, amount=15000, beneficiary_name="Supplier Ltd",
+            beneficiary_account_number="0123456789", beneficiary_bank_code="058",
+            vendor=vendor,
+        )
+        services.confirm_payout(p, status=PayoutStatus.PAID)
+        ba = self._bank_account(entity)
+        self._bank_line(ba, amount=40000, reference=c.reference)     # reference match
+        self._bank_line(ba, amount=-15000, reference="GTB-REF-XYZ")  # amount-only match
+
+        recon = reconciliation.settlement_reconciliation(entity)
+        by_basis = {r.match_basis: r for r in recon.rows}
+        self.assertFalse(by_basis["reference"].needs_review)
+        self.assertTrue(by_basis["amount"].needs_review)
+        self.assertEqual(recon.needs_review_count, 1)
+
     # Verify unsettled gateway and unexplained bank line break reconciliation behavior.
     def test_unsettled_gateway_and_unexplained_bank_line_break_reconciliation(self):
         entity, customer, _ = self.build()

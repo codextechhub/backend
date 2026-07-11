@@ -60,6 +60,17 @@ class SettlementRow:
             return 0
         return abs(self.amount) - abs(self.settled_amount)  # Fee is the absolute difference between gross and net.
 
+    @property
+    # Flag amount-only matches for a human to confirm.
+    def needs_review(self) -> bool:
+        """True when this row settled on **amount alone** (no shared reference).
+
+        Reference matching is exact; the amount-only fallback can cross-pair two
+        different movements that happen to share a signed amount in the window, so a
+        human should confirm the pairing before trusting it.
+        """
+        return self.settled and self.match_basis == "amount"  # Amount-basis matches are ambiguous.
+
 
 @dataclass
 # Define Unmatched Bank Line values.
@@ -116,6 +127,11 @@ class SettlementReconciliation:
     # Handle the unsettled total workflow.
     def unsettled_total(self) -> int:
         return sum(r.amount for r in self.rows if not r.settled)  # Total signed amount still open.
+
+    @property
+    # Count amount-only matches a human should confirm.
+    def needs_review_count(self) -> int:
+        return sum(1 for r in self.rows if r.needs_review)  # Rows matched on amount alone.
 
     @property
     # Handle the unmatched bank total workflow.

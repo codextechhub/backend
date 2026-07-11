@@ -686,6 +686,7 @@ class SettlementReconciliationView(APIView):
                 "unsettled_total": recon.unsettled_total,
                 "unmatched_bank_total": recon.unmatched_bank_total,
                 "unmatched_bank_count": len(recon.unmatched_bank_lines),
+                "needs_review_count": recon.needs_review_count,  # Amount-only matches to confirm.
             },
             "rows": [
                 {
@@ -694,6 +695,7 @@ class SettlementReconciliationView(APIView):
                     "amount": r.amount, "amount_naira": r.amount_naira,
                     "confirmed_at": r.confirmed_at.isoformat() if r.confirmed_at else None,
                     "settled": r.settled, "match_basis": r.match_basis,
+                    "needs_review": r.needs_review,  # Matched on amount alone → confirm.
                     "matched_bank_line_id": r.matched_bank_line_id,
                     "settled_amount": r.settled_amount, "fee_amount": r.fee_amount,
                     "settlement_reference": r.settlement_reference,
