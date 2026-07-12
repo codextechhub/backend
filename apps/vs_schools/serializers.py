@@ -134,6 +134,11 @@ class XVSModuleSerializer(serializers.ModelSerializer):
     Read-only representation of a platform module.
     Used for listing available modules in the Enabled Modules dropdown.
     """
+    # A module with an unmet dependency stays OFF even when granted, so the
+    # picker needs the required keys to warn the operator (e.g. procurement
+    # needs finance).
+    dependencies = serializers.SerializerMethodField()
+
     class Meta:
         model = Capability
         fields = [
@@ -141,9 +146,13 @@ class XVSModuleSerializer(serializers.ModelSerializer):
             "key",
             "label",
             "description",
+            "dependencies",
             "is_active",
         ]
         read_only_fields = fields
+
+    def get_dependencies(self, obj):
+        return [link.requires.key for link in obj.dependency_links.all()]
 
 
 class SchoolPackageSetupWriteSerializer(serializers.Serializer):

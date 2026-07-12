@@ -243,7 +243,8 @@ class CapabilityListCreateView(ConfigAPIView):
 
     # Return the capability catalogue, hiding archived gates by default.
     def get(self, request):
-        qs = Capability.objects.all()
+        # Prefetch keeps the serializer's dependency-key read O(1) per page.
+        qs = Capability.objects.prefetch_related("dependency_links__requires")
         if request.query_params.get("include_inactive") != "true":
             # Inactive gates stay hidden unless the catalogue maintainer asks for them.
             qs = qs.filter(is_active=True)

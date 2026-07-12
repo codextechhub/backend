@@ -28,6 +28,9 @@ class XVSModuleListView(generics.ListAPIView):
     """
     permission_classes = [IsAuthenticatedAndActive & IsVisionStaff]
     serializer_class = XVSModuleSerializer
-    queryset = Capability.objects.filter(
-        is_active=True, kind=Capability.Kind.MODULE
-    ).order_by("label")
+    queryset = (
+        Capability.objects.filter(is_active=True, kind=Capability.Kind.MODULE)
+        # Prefetch backs the serializer's dependency-key read without N+1.
+        .prefetch_related("dependency_links__requires")
+        .order_by("label")
+    )
