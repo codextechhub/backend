@@ -149,6 +149,8 @@ class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
 
 class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     full_name    = serializers.SerializerMethodField()
+    role          = serializers.SerializerMethodField()
+    school_name  = serializers.CharField(source='school.name', read_only=True, default=None)
     branch_name  = serializers.CharField(source='branch.name', read_only=True, default=None)
     invited_by_name         = serializers.SerializerMethodField()
     invitation_email_status = serializers.SerializerMethodField()
@@ -164,13 +166,22 @@ class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         model  = User
         fields = (
             'id', 'uid', 'email', 'full_name', 'gender', 'user_type', 'role',
-            'status', 'branch_id', 'branch_name', 'invited_by_name', 'created_at',
+            'status', 'school_id', 'school_name', 'branch_id', 'branch_name',
+            'invited_by_name', 'created_at',
             'invitation_email_status', 'invitation_expires_at',
         )
         read_only_fields = fields
 
     def get_full_name(self, obj) -> str:
         return obj.full_name
+
+    def get_role(self, obj) -> str:
+        assignments = getattr(obj, 'active_school_role_assignments', None)
+        if assignments is not None:
+            names = [assignment.role.name for assignment in assignments]
+            if names:
+                return ', '.join(names)
+        return obj.role or ''
 
     def get_invited_by_name(self, obj) -> str | None:
         if obj.invited_by:
@@ -949,5 +960,3 @@ class OrgTreeNodeSerializer(serializers.Serializer):
     def get_direct_reports(self, obj):
         children = obj.get('direct_reports', [])
         return OrgTreeNodeSerializer(children, many=True, context=self.context).data
-
-

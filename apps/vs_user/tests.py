@@ -14,6 +14,54 @@ from vs_user.models import AccountLockout, AuthAttempt, LoginSession, User
 from vs_user.services.auth import LoginService
 
 
+class UserListScopeTests(TestCase):
+    """Platform user lists keep CX and tenant-bound accounts separate."""
+
+    def setUp(self):
+        from rest_framework.request import Request
+        from rest_framework.test import APIRequestFactory
+        from vs_user.views.accounts import UserAccountViewSet
+
+        self.cx_user = make_cx_user(email="scope-cx@codex.test")
+        school = make_school(name="Scope School", slug="scope-school")
+        self.school_user = make_school_admin(school, email="scope-admin@school.test")
+        from vs_rbac.models import SchoolRoleTemplate, SchoolUserRoleAssignment
+        role = SchoolRoleTemplate.objects.create(school=school, name="School Administrator")
+        SchoolUserRoleAssignment.objects.create(
+            school=school,
+            user=self.school_user,
+            role=role,
+            assignment_status="ACTIVE",
+        )
+        self.request_class = Request
+        self.request_factory = APIRequestFactory()
+        self.view_class = UserAccountViewSet
+
+    def _queryset_for(self, query: str):
+        request = self.request_class(self.request_factory.get(f"/v1/user/users/{query}"))
+        request._user = self.cx_user
+        view = self.view_class()
+        view.request = request
+        return view.get_queryset()
+
+    def test_cx_user_type_filter_returns_only_cx_staff(self):
+        users = self._queryset_for("?user_type=CX_STAFF")
+        self.assertQuerySetEqual(users, [self.cx_user], transform=lambda user: user)
+
+    def test_school_scope_excludes_cx_staff(self):
+        users = self._queryset_for("?scope=school")
+        self.assertQuerySetEqual(users, [self.school_user], transform=lambda user: user)
+
+    def test_school_scope_serializes_placement_and_active_role(self):
+        from vs_user.serializers import UserListSerializer
+
+        user = self._queryset_for("?scope=school").get(pk=self.school_user.pk)
+        data = UserListSerializer(user).data
+
+        self.assertEqual(data["school_name"], "Scope School")
+        self.assertEqual(data["role"], "School Administrator")
+
+
 def make_cx_user(email="staff@codex.test", password="Str0ng!pass123"):
     return User.objects.create_user(
         email=email,

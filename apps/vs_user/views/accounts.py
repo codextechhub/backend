@@ -11,12 +11,13 @@
 #   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet
 
 from __future__ import annotations
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from rest_framework import status, viewsets
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+from vs_rbac.models import SchoolUserRoleAssignment
 from core.mixins import (
     XVSModelViewSetMixin,
 )
@@ -81,7 +82,17 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         user   = self.request.user
         params = self.request.query_params
 
-        qs = User.objects.select_related('school', 'branch', 'invited_by', 'invitation')
+        qs = User.objects.select_related(
+            'school', 'branch', 'invited_by', 'invitation'
+        ).prefetch_related(
+            Prefetch(
+                'role_assignments',
+                queryset=SchoolUserRoleAssignment.objects.filter(
+                    assignment_status=SchoolUserRoleAssignment.AssignmentStatus.ACTIVE,
+                ).select_related('role'),
+                to_attr='active_school_role_assignments',
+            )
+        )
 
         if getattr(user, 'user_type', None) == User.UserType.CX_STAFF:
             pass  # no tenant boundary — sees all users
@@ -98,6 +109,15 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
         if user_type := params.get('user_type'):
             qs = qs.filter(user_type=user_type)
+
+        # The platform console presents tenant-bound accounts separately from
+        # internal CX staff. Keep this filter server-side so pagination totals
+        # and every page are scoped correctly (client-side filtering would not).
+        if params.get('scope') == 'school':
+            qs = qs.exclude(user_type=User.UserType.CX_STAFF)
+
+        if school_id := params.get('school_id'):
+            qs = qs.filter(school_id=school_id)
 
         if branch_id := params.get('branch_id'):
             qs = qs.filter(branch_id=branch_id)
@@ -324,4 +344,3 @@ class UserUnlockView(APIView):
             message="User unlocked successfully.",
             data=UserListSerializer(updated).data,
         )
-
