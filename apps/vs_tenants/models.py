@@ -64,14 +64,6 @@ class Tenant(models.Model):
     def __str__(self):
         return self.slug
 
-    def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
-        if self.status != self.Status.ACTIVE:
-            from vs_admin_console.models import ImpersonationSession
-            ImpersonationSession.objects.filter(
-                tenant=self, status="ACTIVE",
-            ).update(status="ENDED", ended_at=timezone.now())
-
 
 class TenantOwnedModel(models.Model):
     """Abstract contract for rows owned by exactly one tenant."""

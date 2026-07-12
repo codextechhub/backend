@@ -9,3 +9,10 @@ def end_impersonations_for_user(user):
     return ImpersonationSession.objects.filter(
         Q(staff_user=user) | Q(target_user=user), status="ACTIVE",
     ).update(status="ENDED", ended_at=timezone.now())
+
+
+def end_impersonations_for_tenant(tenant):
+    """End every ACTIVE impersonation session scoped to the given tenant."""
+    return ImpersonationSession.objects.filter(
+        tenant=tenant, status="ACTIVE",
+    ).update(status="ENDED", ended_at=timezone.now())

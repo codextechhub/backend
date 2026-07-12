@@ -36,6 +36,9 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     queryset = ImpersonationSession.objects.select_related("staff_user", "target_user", "tenant")
     serializer_class = ImpersonationSessionSerializer
+    # Lets a PLATFORM actor assert ?tenant=<school-slug> to start/list/end
+    # impersonation sessions for that school tenant (see TenantJWTAuthentication).
+    platform_cross_tenant_param = True
 
     def get_permissions(self):
         self.rbac_permission = {

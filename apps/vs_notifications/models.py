@@ -248,7 +248,7 @@ class NotificationSetting(models.Model):
         editable=False,
     )
     tenant = models.ForeignKey(
-        "vs_tenants.Tenant", on_delete=models.CASCADE,
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
         related_name="notification_settings", null=True, blank=True,
         help_text="Null only for platform-wide defaults.",
     )

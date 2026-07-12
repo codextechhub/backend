@@ -157,6 +157,9 @@ class LogoutView(APIView):
     docstring-name: Log out
     """
     permission_classes = [IsAuthenticated]
+    # Logs the caller out of their own session — no tenant-scoped input, so
+    # ?tenant= is not required.
+    tenant_param_required = False
 
     def post(self, request):
         refresh_token = request.data.get('refresh')

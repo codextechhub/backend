@@ -39,6 +39,9 @@ class CurrentUserView(APIView):
     docstring-name: Current user profile
     """
     permission_classes = [IsAuthenticatedAndActive]
+    # Operates purely on request.user — home tenant is derived from the token,
+    # so ?tenant= is not required. request.tenant is still bound by auth.
+    tenant_param_required = False
 
     def get(self, request):
         from vs_rbac.evaluator import get_effective_permissions
@@ -65,6 +68,7 @@ class MySecurityStatsView(APIView):
     docstring-name: My security stats
     """
     permission_classes = [IsAuthenticatedAndActive]
+    tenant_param_required = False
 
     def get(self, request):
         seven_days_ago = timezone.now() - timedelta(days=7)
@@ -89,6 +93,7 @@ class MyPasswordResetsView(APIView):
     docstring-name: My password reset history
     """
     permission_classes = [IsAuthenticatedAndActive]
+    tenant_param_required = False
 
     def get(self, request):
         from ..serializers import MyPasswordResetSerializer

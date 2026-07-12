@@ -243,15 +243,33 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             if self.school_id or self.branch_id:
                 raise ValidationError('Vision Staff must not be assigned to an school or branch.')
 
+    def _derive_tenant(self):
+        """Fill in the canonical home tenant when one wasn't supplied.
+
+        School-bound users inherit their school's tenant; CX Staff fall back to
+        the Codex PLATFORM tenant. Runs from both full_clean() and save() so
+        validation and persistence agree on the derived value.
+        """
+        if self.tenant_id:
+            return
+        if self.school_id:
+            self.tenant_id = self.school.tenant_id
+        elif self.user_type == self.UserType.CX_STAFF:
+            from vs_tenants.models import Tenant
+            self.tenant = Tenant.objects.filter(
+                slug="codex", kind=Tenant.Kind.PLATFORM,
+            ).first()
+
+    def full_clean(self, *args, **kwargs):
+        # Derive the tenant BEFORE super().full_clean(): clean_fields() runs
+        # first inside it and would otherwise collect a spurious
+        # {'tenant': ['This field cannot be null.']}. Setting it in clean()
+        # is too late — clean_fields() has already run by then.
+        self._derive_tenant()
+        super().full_clean(*args, **kwargs)
+
     def save(self, *args, **kwargs):
-        if not self.tenant_id:
-            if self.school_id:
-                self.tenant_id = self.school.tenant_id
-            elif self.user_type == self.UserType.CX_STAFF:
-                from vs_tenants.models import Tenant
-                self.tenant = Tenant.objects.filter(
-                    slug="codex", kind=Tenant.Kind.PLATFORM,
-                ).first()
+        self._derive_tenant()  # backstop for saves that skip full_clean()
         if self.school_id and self.school.tenant_id != self.tenant_id:
             raise ValidationError("User school must belong to the user's tenant.")
         if self.branch_id and self.branch.school.tenant_id != self.tenant_id:

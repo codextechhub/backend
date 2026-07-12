@@ -44,6 +44,9 @@ class PasswordChangeView(APIView):
     docstring-name: Change password
     """
     permission_classes = [IsAuthenticatedAndActive]
+    # Self-service: changes only request.user's own password with no
+    # tenant-scoped input, so ?tenant= is not required.
+    tenant_param_required = False
 
     def post(self, request):
         ser = PasswordChangeSerializer(data=request.data, context={'request': request})
