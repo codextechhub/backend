@@ -212,6 +212,28 @@ class CollectionTests(_PaymentsFixtureMixin, TestCase):
             services.initiate_collection(entity=entity, amount=1000)
         self.assertFalse(CollectionIntent.objects.filter(entity=entity).exists())
 
+    def test_invoice_must_belong_to_selected_customer(self):
+        entity, customer, _ = self.build()
+        other = Customer.objects.create(
+            entity=entity, code="CUST2", name="Other Customer",
+            receivable_account=Account.objects.get(entity=entity, code="1200"),
+        )
+        invoice = self.make_posted_invoice(entity, other, amount=50000)
+        with self.assertRaises(ValidationError):
+            services.initiate_collection(
+                entity=entity, amount=50000, customer=customer, invoice=invoice,
+            )
+        self.assertFalse(CollectionIntent.objects.filter(entity=entity).exists())
+
+    def test_invoice_collection_cannot_exceed_outstanding_balance(self):
+        entity, customer, _ = self.build()
+        invoice = self.make_posted_invoice(entity, customer, amount=50000)
+        with self.assertRaises(ValidationError):
+            services.initiate_collection(
+                entity=entity, amount=50001, customer=customer, invoice=invoice,
+            )
+        self.assertFalse(CollectionIntent.objects.filter(entity=entity).exists())
+
     # Verify one active virtual account per customer provider behavior.
     def test_one_active_virtual_account_per_customer_provider(self):
         entity, customer, _ = self.build()

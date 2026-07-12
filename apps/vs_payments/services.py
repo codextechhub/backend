@@ -79,6 +79,13 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
         customer = invoice.customer  # Pull the customer from the invoice when possible.
     if customer is None:  # The receipt cannot be posted without a customer AR account.
         raise ValidationError({"customer": "A customer is required to book the collection receipt."})
+    if invoice is not None:
+        if invoice.customer_id != customer.id:
+            raise ValidationError({"invoice": "The invoice must belong to the selected customer."})
+        if invoice.status != "POSTED" or invoice.balance_due <= 0:
+            raise ValidationError({"invoice": "Select a posted invoice with an outstanding balance."})
+        if amount > invoice.balance_due:
+            raise ValidationError({"amount": "The collection cannot exceed the invoice balance."})
 
     intent = CollectionIntent.objects.create(
         entity=entity, provider=provider_name, channel=channel, reference=reference,

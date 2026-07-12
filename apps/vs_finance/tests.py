@@ -7297,7 +7297,8 @@ class InvoiceNotificationTests(_GLFixtureMixin, TestCase):
             entity=self.entity, customer=self.customer,
             payment_date=datetime.date(2026, 1, 10), amount=100000, deposit_account=self.bank,
         )
-        post_payment(pay, allocations=[(inv, 100000)])
+        with self.captureOnCommitCallbacks(execute=True):
+            post_payment(pay, allocations=[(inv, 100000)])
         self.assertTrue(self._received().filter(
             channel=ChannelChoices.EMAIL, unregistered_email="payer@example.com").exists())
 
@@ -7324,7 +7325,8 @@ class InvoiceNotificationTests(_GLFixtureMixin, TestCase):
             entity=self.entity, customer=self.customer,
             payment_date=datetime.date(2026, 1, 12), amount=50000, deposit_account=self.bank,
         )
-        post_payment(pay, auto_allocate=False)
+        with self.captureOnCommitCallbacks(execute=True):
+            post_payment(pay, auto_allocate=False)
         self.assertTrue(self._received().exists())
 
     # Verify no school entity posts and delivers behavior.

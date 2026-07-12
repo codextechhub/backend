@@ -18,6 +18,45 @@ from celery import shared_task
 logger = logging.getLogger(__name__)  # Module logger for dunning task events.
 
 
+def queue_payment_received_notification(payment_id, *, actor_user_id=None):
+    """Enqueue receipt-email creation without delaying or breaking payment posting."""
+    try:
+        send_payment_received_notification.delay(
+            payment_id, actor_user_id=actor_user_id,
+            _job_owner_id=str(actor_user_id) if actor_user_id else None,
+            _job_label="Receipt email",
+            _job_kind="email",
+        )
+        return True
+    except Exception:  # Broker availability must never change a posted receipt.
+        logger.exception(
+            "Could not enqueue payment-received notification for payment %s", payment_id,
+        )
+        return False
+
+
+@shared_task(name="vs_finance.send_payment_received_notification")
+def send_payment_received_notification(payment_id, *, actor_user_id=None):
+    """Create the receipt notification; vs_notifications owns delivery and status."""
+    from django.contrib.auth import get_user_model
+
+    from .models import Payment
+    from .notifications import notify_payment_received
+
+    payment = Payment.objects.select_related(
+        "customer", "entity__source_school",
+    ).filter(pk=payment_id).first()
+    if payment is None:
+        logger.warning("Receipt email skipped; payment %s no longer exists", payment_id)
+        return {"queued": False, "reason": "payment_not_found"}
+
+    actor_user = None
+    if actor_user_id:
+        actor_user = get_user_model().objects.filter(pk=actor_user_id).first()
+    notification_ids = notify_payment_received(payment, actor_user=actor_user) or []
+    return {"queued": bool(notification_ids), "notification_ids": notification_ids}
+
+
 @shared_task(name="vs_finance.run_daily_dunning")
 # Generate and dispatch daily finance dunning notices.
 def run_daily_dunning():

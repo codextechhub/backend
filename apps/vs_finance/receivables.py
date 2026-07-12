@@ -261,9 +261,16 @@ def post_payment(payment, *, actor_user=None, auto_allocate=True, allocations=No
             exc=exc, actor_user=actor_user, target=payment,
         )
         raise
-    # Best-effort receipt confirmation (never rolls back the post).  # Notify after a successful post only.
-    from .notifications import notify_payment_received
-    notify_payment_received(payment, actor_user=actor_user)  # Send a receipt/notification if configured.
+    # Queue the receipt confirmation only after the ledger transaction commits.  Email
+    # setup/template rendering must not hold the payment API response open, and a rolled
+    # back payment must never leave behind a customer notification.
+    from django.db import transaction
+    from .tasks import queue_payment_received_notification
+
+    actor_user_id = getattr(actor_user, "pk", None)
+    transaction.on_commit(
+        lambda: queue_payment_received_notification(payment.pk, actor_user_id=actor_user_id),
+    )
     return result  # Return the posted payment.
 
 
