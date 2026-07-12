@@ -215,6 +215,31 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
                 return cand  # Return the first unused candidate.
         return None  # No usable candidate remained.
 
+    # Support the closest-date amount match workflow.
+    def _closest(row, candidates):
+        """Pick the unconsumed equal-amount bank line nearest the row's confirmation date.
+
+        Settlement lands on or just after we confirm, so among same-amount candidates we
+        prefer a bank date on/after confirmation, then the smallest day-distance, then the
+        lowest id — a deterministic, least-surprising tie-break. Still a heuristic (no
+        global optimum), just a far better one than insertion order.
+        """
+        conf = row.confirmed_at.date() if row.confirmed_at else None
+        best, best_key = None, None
+        for cand in candidates:
+            if cand.id in consumed:  # Skip bank lines already matched.
+                continue
+            if conf is None:  # No confirmation date to compare against — fall back to id order.
+                key = (0, 0, cand.id)
+            else:
+                delta = (cand.txn_date - conf).days  # +ve = bank date on/after confirmation.
+                key = (0 if delta >= 0 else 1, abs(delta), cand.id)  # on/after first, then nearest, then id.
+            if best_key is None or key < best_key:
+                best, best_key = cand, key
+        if best is not None:  # Consume the chosen line so no other row can reuse it.
+            consumed.add(best.id)
+        return best
+
     # Pass 1: reference match (our reference or the provider's reference).  # Prefer explicit identifiers.
     for row in rows:  # Examine each gateway row once.
         keys = [k for k in (row.reference, row.provider_reference) if k]  # Try our reference first, then PSP reference.
@@ -234,7 +259,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
     for row in rows:  # Revisit only the rows still unmatched.
         if row.settled:  # Skip rows already resolved by reference.
             continue
-        cand = _take(by_amount.get(row.amount, []))
+        cand = _closest(row, by_amount.get(row.amount, []))
         if cand is not None:  # Amount match found.
             row.matched_bank_line_id = cand.id  # Link the bank line.
             row.match_basis = "amount"  # Record the fallback match basis.

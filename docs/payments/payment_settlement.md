@@ -170,6 +170,9 @@ computed once at assembly (`services.py:408-411`); not recomputed on child failu
 **Reconciliation, signed kobo** (`reconciliation.py`):
 - Gateway sign: collection `+amount`, payout `−amount` (`reconciliation.py:161,172`);
   bank line `amount` is already signed (+in/−out). A correct pairing nets to zero.
+- Matching is two-pass: **reference** first (our ref or the PSP ref), then an exact
+  signed-**amount** fallback that picks the **date-nearest** bank line among equal
+  amounts (`_closest`, `reconciliation.py:218-242`; see §8.4).
 - `fee_amount = |gateway amount| − |settled bank amount|` — the PSP fee
   (`reconciliation.py:57-61`). Example: gross `40 000` settles to a `39 100` bank
   line → fee `900`.
@@ -233,8 +236,8 @@ Batch of two, approval-gated (from `PayoutBatchApprovalTests`,
 
 ## 8. Gotchas / known limitations
 
-> Hardening pass (2026-07-12) closed items 2, 3, 5, 6, 7. Item 1 is tracked as an
-> operational go-live task (`todo.md`); item 4 is accepted as a labelled heuristic.
+> Hardening pass (2026-07-12) closed items 2, 3, 4, 5, 6, 7. Item 1 is tracked as
+> an operational go-live task (`todo.md`).
 
 1. ⚠️ **Maker-checker is opt-in per template — no template means single-actor
    disbursement.** `approval_required(batch)` is false without a published
@@ -261,13 +264,15 @@ Batch of two, approval-gated (from `PayoutBatchApprovalTests`,
    overrides. Tests: `test_payout_adopts_provider_settled_amount`,
    `test_confirm_payout_status_without_amount_keeps_instructed`.
 
-4. ⚠️ **Reconciliation amount-fallback can mis-pair look-alike amounts.** Pass 2
-   matches purely on exact signed amount within the window, first-unconsumed-wins
-   (`reconciliation.py:217-229`) — the backend is **unchanged**. Two same-amount
-   movements + two same-amount bank lines can pair the *wrong* way; harmless
-   (read-only, advisory) but the row's `settlement_*` fields may point at the wrong
-   bank line. **Accepted as a labelled heuristic** — the console flags amount
-   matches (`match_basis == "amount"`) for a human to confirm.
+4. ✅ **Amount-fallback now matches the date-nearest bank line.** Pass 2 no longer
+   takes the first unconsumed same-amount line; `_closest` picks the candidate whose
+   `txn_date` is nearest the gateway row's confirmation, preferring on/after
+   confirmation, then smallest day-distance, then lowest id (`reconciliation.py:218-242`).
+   Deterministic and order-independent for well-separated dates — still an advisory
+   heuristic (no global optimum), and the console still flags `match_basis ==
+   "amount"` rows for a human. Test:
+   `test_amount_match_prefers_the_date_nearest_bank_line`. (Pass 1 reference matching
+   is unchanged.)
 
 5. ✅ **`fee_amount` is clamped at zero.** `max(0, |gross| − |settled|)`
    (`reconciliation.py:61`), so an over-settlement / reversal never displays a
@@ -342,7 +347,7 @@ the same fields manually (`views.py:836-838`).
 
 ## 11. Test coverage & gaps
 
-Baseline after hardening: **54 green** (`python manage.py test vs_payments
+Baseline after hardening: **55 green** (`python manage.py test vs_payments
 --settings=apps.settings.local`). Settlement-relevant:
 - `PayoutTests` (`tests.py:308-354`): initiate→PROCESSING; confirm→books
   `VendorPayment` (gross carried); webhook confirm (re-verify); failed payout books
@@ -365,7 +370,8 @@ Baseline after hardening: **54 green** (`python manage.py test vs_payments
 - Hardening additions: `WebhookTests.test_webhook_received_event_is_attributed_to_the_entity`,
   `PayoutTests.test_payout_adopts_provider_settled_amount` /
   `.test_confirm_payout_status_without_amount_keeps_instructed`,
-  `SettlementReconciliationTests.test_over_settlement_fee_is_clamped_to_zero`.
+  `SettlementReconciliationTests.test_over_settlement_fee_is_clamped_to_zero`,
+  `SettlementReconciliationTests.test_amount_match_prefers_the_date_nearest_bank_line`.
 
 Gaps still open:
 - **403 / permission-denied** — no test that a caller lacking `payout.create` /

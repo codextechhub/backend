@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime
 
 from django.test import TestCase
+from django.utils import timezone
 
 from vs_finance.models import (
     Account,
@@ -602,6 +603,41 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(recon.settled_count, 1)
         self.assertEqual(recon.rows[0].amount, -15000)
         self.assertEqual(recon.rows[0].match_basis, "amount")
+        self.assertTrue(recon.is_reconciled)
+
+    # Verify the amount fallback pairs each row with the date-nearest bank line.
+    def test_amount_match_prefers_the_date_nearest_bank_line(self):
+        """Two same-amount collections and two same-amount, reference-less bank lines: the
+        amount fallback must pair each row with the bank line whose date is nearest its
+        confirmation, not by insertion order."""
+        entity, customer, _ = self.build()
+        intentA = services.initiate_collection(entity=entity, amount=40000, customer=customer)
+        services.confirm_collection(intentA, status=CollectionStatus.SUCCEEDED)
+        intentA.refresh_from_db()
+        intentB = services.initiate_collection(entity=entity, amount=40000, customer=customer)
+        services.confirm_collection(intentB, status=CollectionStatus.SUCCEEDED)
+        intentB.refresh_from_db()
+        # Push the two confirmations well apart so the nearest-date choice is unambiguous.
+        intentA.confirmed_at = timezone.now() - datetime.timedelta(days=5)
+        intentA.save(update_fields=["confirmed_at"])
+        intentB.confirmed_at = timezone.now() - datetime.timedelta(days=1)
+        intentB.save(update_fields=["confirmed_at"])
+
+        ba = self._bank_account(entity)
+        today = datetime.date.today()
+        # No references → forces the amount fallback; one line lands near A, one near B.
+        line_near_a = self._bank_line(ba, amount=40000, day=today - datetime.timedelta(days=5))
+        line_near_b = self._bank_line(ba, amount=40000, day=today - datetime.timedelta(days=1))
+
+        recon = reconciliation.settlement_reconciliation(entity)
+        by_gateway = {r.gateway_id: r for r in recon.rows}
+        row_a = by_gateway[intentA.id]
+        row_b = by_gateway[intentB.id]
+        # Each row takes the bank line nearest its own confirmation date, order-independent.
+        self.assertEqual(row_a.matched_bank_line_id, line_near_a.id)
+        self.assertEqual(row_b.matched_bank_line_id, line_near_b.id)
+        self.assertEqual(row_a.match_basis, "amount")
+        self.assertEqual(row_b.match_basis, "amount")
         self.assertTrue(recon.is_reconciled)
 
     # Verify amount-only matches are flagged for review; reference matches are not.
