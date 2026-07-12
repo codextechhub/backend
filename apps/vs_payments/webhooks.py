@@ -34,10 +34,18 @@ from .providers.registry import get_provider
 
 # Handle the ingest webhook workflow.
 def ingest_webhook(*, provider: str, raw_body: bytes, headers: dict | None = None) -> WebhookEvent:
-    """Verify, store and process one inbound webhook. Returns the stored event.
+    """Verify and store one inbound webhook, then hand processing to a background task.
 
-    Raises :class:`WebhookSignatureError` (401) on a bad signature and
-    :class:`DuplicateWebhookError` (200) when the event was already handled.
+    This is the *fast, synchronous* half of the receiver: verify the signature, persist
+    the event verbatim under its idempotency key, audit its arrival, and enqueue the
+    re-verify/book step for a Celery worker. The PSP only needs a prompt 200 ack — the
+    outbound re-verification (an extra provider round-trip) happens off the request path
+    in :func:`process_stored_event` via ``vs_payments.process_webhook_event``.
+
+    Returns the stored event (now ``RECEIVED``; the worker flips it to
+    ``PROCESSED``/``IGNORED``/``FAILED``). Raises :class:`WebhookSignatureError` (401) on
+    a bad signature and :class:`DuplicateWebhookError` (200) when the event was already
+    fully processed.
     """
     headers = headers or {}  # Treat missing headers as an empty mapping.
     provider = provider.upper()  # Normalize the provider name for lookup and storage.
@@ -71,22 +79,58 @@ def ingest_webhook(*, provider: str, raw_body: bytes, headers: dict | None = Non
     if not created and event.status == WebhookStatus.PROCESSED:  # A processed event is a true duplicate retry.
         raise DuplicateWebhookError()
 
-    record = _find_record(parsed)  # Resolve the target collection/payout once for entity attribution and dispatch reuse.
-    audit.record(  # Record that a valid webhook arrived, even if later dispatch ignores it.
-        action=PaymentAuditAction.WEBHOOK_RECEIVED, provider=provider,
-        entity=getattr(record, "entity", None),  # Attribute the event to the matched record's entity so it shows in that entity's log.
-        reference=parsed.reference, message=f"{parsed.event_type} ({parsed.direction}).",
+    if created:  # Audit-once: only the first sighting emits a WEBHOOK_RECEIVED row (a not-yet-processed
+        record = _find_record(parsed)  # retry re-enters here but must not add a second audit line). Resolve the target once
+        audit.record(  # so the audit row is attributed to the matched record's entity (shows in its log).
+            action=PaymentAuditAction.WEBHOOK_RECEIVED, provider=provider,
+            entity=getattr(record, "entity", None),  # Attribute the event to the matched record's entity.
+            reference=parsed.reference, message=f"{parsed.event_type} ({parsed.direction}).",
+        )
+
+    # Defer the outbound re-verify + booking to a worker; on_commit ensures a rolled-back
+    # store never enqueues a phantom event, and confirm_* stay idempotent under re-delivery.
+    transaction.on_commit(lambda: _enqueue(event.id))
+    return event  # Return the stored (RECEIVED) event; the task moves it to a terminal state.
+
+
+# Support the enqueue workflow.
+def _enqueue(event_id: int) -> None:
+    """Fire the async processing task for a stored event (local import avoids a cycle)."""
+    from .tasks import process_webhook_event  # Import here so tasks.py can import webhooks at module load.
+    process_webhook_event.delay(event_id)  # Under ALWAYS_EAGER this runs inline; in prod a worker picks it up.
+
+
+# Handle the process stored event workflow.
+def process_stored_event(event_id: int) -> WebhookEvent | None:
+    """Re-verify against the PSP and book the receipt/payout for a stored webhook event.
+
+    Idempotent by design: a missing or already-``PROCESSED`` event is a no-op, so a task
+    retry (or a provider re-delivery that lands on the same row) can never double-book.
+    Runs the same :func:`_dispatch` the synchronous path used to; on failure the event is
+    marked ``FAILED`` and the exception is *swallowed* — mirroring the platform's
+    "eager-mode first failure is final": the PSP re-delivers and ``confirm_*`` are
+    idempotent, so re-raising would only surface a spurious 500 to the (already-acked) PSP.
+    """
+    event = WebhookEvent.objects.filter(pk=event_id).first()  # Load the stored event, if it still exists.
+    if event is None or event.status == WebhookStatus.PROCESSED:  # Nothing to do for a gone/handled event.
+        return event  # Idempotent no-op on re-entry.
+
+    client = get_provider(event.provider)  # Resolve the adapter that stored this event.
+    parsed = client.parse_webhook(  # Re-derive the neutral view from the persisted body.
+        payload=event.payload or {},
+        raw_body=(event.raw_body or "").encode(),  # Rebuild the raw bytes the parser may inspect.
+        headers=event.headers or {},
     )
+    record = _find_record(parsed)  # Resolve the target collection/payout for dispatch.
 
     try:  # Dispatch can fail after the webhook is safely stored.
         _dispatch(event, parsed, record)
-    except Exception as exc:  # Processing failed, but the event should remain stored for replay/debugging.
+    except Exception as exc:  # Processing failed, but the event stays stored for replay/debugging.
         event.status = WebhookStatus.FAILED  # Mark the event failed so it can be retried explicitly.
         event.error = str(getattr(exc, "message", exc))[:255]  # Keep a short error string for operators.
         event.save(update_fields=["status", "error", "updated_at"])
-        raise
-
-    return event  # Return the stored webhook event after processing.
+        # Deliberately do NOT re-raise: the PSP is already acked and confirm_* are idempotent.
+    return event  # Return the event in its (now terminal) state.
 
 
 # Support the dispatch workflow.

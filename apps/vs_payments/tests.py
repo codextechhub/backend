@@ -13,6 +13,10 @@ Run from ``apps/``:
 from __future__ import annotations
 
 import datetime
+import hashlib
+import hmac
+import json
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -36,7 +40,13 @@ from rest_framework.exceptions import ValidationError
 
 from . import reconciliation, services, webhooks
 from .constants import CollectionStatus, PayoutBatchStatus, PayoutStatus, VirtualAccountStatus
-from .exceptions import DuplicateWebhookError, PaymentStateError, WebhookSignatureError
+from .exceptions import (
+    DuplicateWebhookError,
+    PaymentStateError,
+    ProviderError,
+    ProviderNotConfiguredError,
+    WebhookSignatureError,
+)
 from .models import (
     CollectionIntent,
     PaymentEvent,
@@ -290,7 +300,11 @@ class WebhookTests(_PaymentsFixtureMixin, TestCase):
         raw, headers = self._signed(
             event="charge.success", reference=intent.reference, status="SUCCEEDED", amount=40000,
         )
-        event = webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
+        # Processing is deferred to an on_commit-enqueued task; fire the callback so the
+        # eager worker re-verifies and books before we assert the terminal state.
+        with self.captureOnCommitCallbacks(execute=True):
+            event = webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
+        event.refresh_from_db()
         self.assertEqual(event.status, "PROCESSED")
         intent.refresh_from_db()
         self.assertEqual(intent.status, CollectionStatus.SUCCEEDED)
@@ -319,8 +333,10 @@ class WebhookTests(_PaymentsFixtureMixin, TestCase):
         raw, headers = self._signed(
             event="charge.success", reference=intent.reference, status="SUCCEEDED", amount=25000,
         )
-        webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
-        # The provider retries the exact same event.
+        # First delivery processes (fire the enqueued task); it flips the event to PROCESSED.
+        with self.captureOnCommitCallbacks(execute=True):
+            webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
+        # The provider retries the exact same event — rejected before enqueue, so no wrapping.
         with self.assertRaises(DuplicateWebhookError):
             webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
         self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)
@@ -336,10 +352,35 @@ class WebhookTests(_PaymentsFixtureMixin, TestCase):
         raw, headers = self._signed(
             event="charge.success", reference=intent.reference, status="SUCCEEDED", amount=30000,
         )
-        webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
+        # Fire the enqueued task so the re-verify actually runs; it returns PENDING (no
+        # forced_status), so despite the signed "SUCCEEDED" claim nothing is booked.
+        with self.captureOnCommitCallbacks(execute=True):
+            webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
         intent.refresh_from_db()
         self.assertNotEqual(intent.status, CollectionStatus.SUCCEEDED)
         self.assertFalse(Payment.objects.filter(entity=entity).exists())
+
+    # Verify re-ingesting the same event audits once and books once.
+    def test_ingest_is_idempotent_and_audits_once(self):
+        # A provider that retries a not-yet-processed event must not add a second
+        # WEBHOOK_RECEIVED audit row (audit-once = `if created`) nor a second receipt.
+        entity, customer, _ = self.build()
+        intent = services.initiate_collection(entity=entity, amount=27000, customer=customer)
+        self.fake.forced_status[intent.reference] = "SUCCEEDED"  # provider verify agrees
+        raw, headers = self._signed(
+            event="charge.success", reference=intent.reference, status="SUCCEEDED", amount=27000,
+        )
+        # Ingest the same signed event twice; the second is a PROCESSED-duplicate short-circuit.
+        with self.captureOnCommitCallbacks(execute=True):
+            webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
+        with self.assertRaises(DuplicateWebhookError):
+            with self.captureOnCommitCallbacks(execute=True):
+                webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
+        received = PaymentEvent.objects.filter(
+            action="WEBHOOK_RECEIVED", reference=intent.reference,
+        )
+        self.assertEqual(received.count(), 1)  # exactly one audit row despite two deliveries
+        self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)  # booked once
 
 
 # Group tests for Payout Tests.
@@ -373,7 +414,9 @@ class PayoutTests(_PaymentsFixtureMixin, TestCase):
         raw, headers = self.fake.build_webhook(
             event="transfer.success", reference=payout.reference, status="PAID", amount=15000,
         )
-        webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
+        # Processing is deferred to an on_commit-enqueued task; fire it before asserting.
+        with self.captureOnCommitCallbacks(execute=True):
+            webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
         payout.refresh_from_db()
         self.assertEqual(payout.status, PayoutStatus.PAID)
         self.assertEqual(VendorPayment.objects.filter(entity=entity).count(), 1)
@@ -766,13 +809,16 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
             event="charge.success", reference=intent.reference, status="SUCCEEDED", amount=33000,
         )
         sig = headers["x-fake-signature"]
-        first = self.client.post(
-            "/v1/payments/webhooks/PAYSTACK/", data=raw,
-            content_type="application/json", HTTP_X_FAKE_SIGNATURE=sig,
-        )
+        # The HTTP response only acks (RECEIVED under a real worker); processing is the
+        # on_commit-enqueued task, so fire the callback and assert the booked state via DB.
+        with self.captureOnCommitCallbacks(execute=True):
+            first = self.client.post(
+                "/v1/payments/webhooks/PAYSTACK/", data=raw,
+                content_type="application/json", HTTP_X_FAKE_SIGNATURE=sig,
+            )
         self.assertEqual(first.status_code, 200)
         self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)
-        # A retry is acknowledged (200) but does not re-book.
+        # A retry is acknowledged (200) but does not re-book (rejected before enqueue).
         second = self.client.post(
             "/v1/payments/webhooks/PAYSTACK/", data=raw,
             content_type="application/json", HTTP_X_FAKE_SIGNATURE=sig,
@@ -1217,3 +1263,183 @@ class PayoutBatchApprovalTests(TestCase):
         self.assertEqual(batch.status, PayoutBatchStatus.DRAFT)
         self.assertEqual((batch.metadata or {}).get("approval_status"), "DRAFT")
         self.assertTrue(all(p.status == PayoutStatus.PENDING for p in batch.instructions.all()))
+
+
+# Group tests for Paystack Adapter Tests (real adapter, network function mocked).
+class PaystackAdapterTests(TestCase):
+    """Drive the real :class:`PaystackProvider` with recorded PSP payloads.
+
+    Every network hop goes through ``vs_payments.providers.http.request_json``, imported
+    into the paystack module as ``request_json`` — so we patch it *there* (at the point of
+    use) and never open a socket. This exercises the adapter's real request/response
+    mapping, signing, and webhook parsing rather than the FakeProvider.
+    """
+
+    # NOTE: paystack.py does `from .http import request_json`, so the name to patch is the
+    # one bound in the paystack module, not http's (patching http would miss this call).
+    PATCH_TARGET = "vs_payments.providers.paystack.request_json"
+
+    # Prepare or verify the setUp test path.
+    def setUp(self):
+        from .providers.paystack import PaystackProvider
+        self.provider = PaystackProvider(secret_key="sk_test_x")  # Real adapter, test secret.
+
+    # Verify create checkout maps the hosted-checkout response behavior.
+    def test_create_checkout_maps_response(self):
+        resp = {"status": True, "data": {
+            "reference": "R1", "authorization_url": "https://pay/x", "access_code": "AC"}}
+        with patch(self.PATCH_TARGET, return_value=resp):
+            result = self.provider.create_checkout(
+                reference="R1", amount=40000, currency="NGN", customer_email="c@x.test")
+        self.assertEqual(result.checkout_url, "https://pay/x")
+        self.assertEqual(result.provider_reference, "R1")
+        self.assertEqual(result.authorization_code, "AC")
+        self.assertEqual(result.status, "PENDING")
+
+    # Verify verify_collection maps the neutral status + kobo amount behavior.
+    def test_verify_collection_maps_status_and_amount(self):
+        resp = {"status": True, "data": {
+            "status": "success", "id": 99, "amount": 40000, "currency": "NGN"}}
+        with patch(self.PATCH_TARGET, return_value=resp):
+            result = self.provider.verify_collection(reference="R1")
+        self.assertEqual(result.status, "SUCCEEDED")
+        self.assertEqual(result.amount, 40000)
+        self.assertEqual(result.provider_reference, "99")
+
+    # Verify create_transfer (recipient + transfer) then verify_transfer behavior.
+    def test_create_and_verify_transfer(self):
+        # create_transfer makes TWO calls: /transferrecipient then /transfer.
+        recipient = {"status": True, "data": {"recipient_code": "RCP"}}
+        transfer = {"status": True, "data": {
+            "status": "success", "transfer_code": "TRF", "amount": 15000}}
+        with patch(self.PATCH_TARGET, side_effect=[recipient, transfer]):
+            created = self.provider.create_transfer(
+                reference="P1", amount=15000, currency="NGN",
+                account_number="0123456789", bank_code="058", account_name="Payee")
+        self.assertEqual(created.status, "PAID")
+        self.assertEqual(created.recipient_code, "RCP")
+        self.assertEqual(created.provider_reference, "TRF")
+        # verify_transfer re-queries a single endpoint and reports the settled kobo amount.
+        with patch(self.PATCH_TARGET, return_value=transfer):
+            verified = self.provider.verify_transfer(reference="P1")
+        self.assertEqual(verified.status, "PAID")
+        self.assertEqual(verified.amount, 15000)
+
+    # Verify a non-ok provider envelope raises ProviderError behavior.
+    def test_non_ok_response_raises(self):
+        with patch(self.PATCH_TARGET, return_value={"status": False, "message": "bad"}):
+            with self.assertRaises(ProviderError):
+                self.provider.verify_collection(reference="R1")
+
+    # Verify HMAC-SHA512 signature verification behavior.
+    def test_verify_signature_roundtrip(self):
+        raw = b'{"event":"charge.success","data":{"reference":"R1"}}'
+        sig = hmac.new(b"sk_test_x", raw, hashlib.sha512).hexdigest()  # The real Paystack scheme.
+        self.assertTrue(self.provider.verify_signature(
+            raw_body=raw, headers={"x-paystack-signature": sig}))
+        # Tamper the body → the stored signature no longer matches.
+        self.assertFalse(self.provider.verify_signature(
+            raw_body=raw + b"x", headers={"x-paystack-signature": sig}))
+
+    # Verify webhook parsing routes collection vs payout events behavior.
+    def test_parse_webhook_routes_by_event(self):
+        charge = {"event": "charge.success", "data": {
+            "reference": "R1", "status": "success", "amount": 40000, "id": 99, "currency": "NGN"}}
+        parsed = self.provider.parse_webhook(payload=charge, raw_body=b"", headers={})
+        self.assertEqual(parsed.direction, "COLLECTION")
+        self.assertEqual(parsed.status, "SUCCEEDED")
+        transfer = {"event": "transfer.success", "data": {
+            "reference": "P1", "status": "success", "transfer_code": "TRF", "amount": 15000}}
+        parsed = self.provider.parse_webhook(payload=transfer, raw_body=b"", headers={})
+        self.assertEqual(parsed.direction, "PAYOUT")
+        self.assertEqual(parsed.status, "PAID")
+
+
+# Group tests for OPay Adapter Tests (real adapter, network function mocked).
+class OPayAdapterTests(TestCase):
+    """Drive the real :class:`OPayProvider` with recorded PSP payloads.
+
+    OPay wraps every result as ``{"code": "00000", "data": {...}}`` and models amounts as a
+    nested ``{"total": <kobo>, ...}`` object; status queries authenticate with the public
+    key. As with Paystack we patch the ``request_json`` bound in the opay module.
+    """
+
+    PATCH_TARGET = "vs_payments.providers.opay.request_json"  # Patch at the point of use.
+
+    # Prepare or verify the setUp test path.
+    def setUp(self):
+        from .providers.opay import OPayProvider
+        self.provider = OPayProvider(
+            merchant_id="M", secret_key="sk", public_key="pk",
+            create_path="/c", status_path="/s", transfer_path="/t", transfer_status_path="/ts")
+
+    # Verify create_checkout maps the cashier response behavior.
+    def test_create_checkout_maps_response(self):
+        resp = {"code": "00000", "data": {"orderNo": "O1", "cashierUrl": "https://opay/x"}}
+        with patch(self.PATCH_TARGET, return_value=resp):
+            result = self.provider.create_checkout(
+                reference="O1", amount=40000, currency="NGN")
+        self.assertEqual(result.checkout_url, "https://opay/x")
+        self.assertEqual(result.provider_reference, "O1")
+
+    # Verify verify_collection unwraps the nested kobo amount behavior.
+    def test_verify_collection_maps_status_and_amount(self):
+        resp = {"code": "00000", "data": {
+            "status": "SUCCESS", "orderNo": "O1", "amount": {"total": 40000, "currency": "NGN"}}}
+        with patch(self.PATCH_TARGET, return_value=resp):
+            result = self.provider.verify_collection(reference="O1")
+        self.assertEqual(result.status, "SUCCEEDED")
+        self.assertEqual(result.amount, 40000)
+
+    # Verify verify_transfer unwraps the nested kobo amount behavior.
+    def test_verify_transfer_maps_status_and_amount(self):
+        resp = {"code": "00000", "data": {
+            "status": "SUCCESS", "orderNo": "O1", "amount": {"total": 15000}}}
+        with patch(self.PATCH_TARGET, return_value=resp):
+            result = self.provider.verify_transfer(reference="P1")
+        self.assertEqual(result.status, "PAID")
+        self.assertEqual(result.amount, 15000)
+
+    # Verify a non-success code raises ProviderError behavior.
+    def test_non_success_code_raises(self):
+        with patch(self.PATCH_TARGET, return_value={"code": "E123", "message": "nope"}):
+            with self.assertRaises(ProviderError):
+                self.provider.verify_collection(reference="O1")
+
+    # Verify virtual-account provisioning is unsupported behavior.
+    def test_create_virtual_account_unsupported(self):
+        # Raises before any network call, so no patch is needed.
+        with self.assertRaises(ProviderError):
+            self.provider.create_virtual_account(reference="O1", customer_name="Acme")
+
+    # Verify the wrapped-body signature scheme behavior.
+    def test_verify_signature_roundtrip(self):
+        inner = {"reference": "O1", "status": "SUCCESS", "orderNo": "O1"}
+        body = {"payload": inner, "sha512": self.provider.sign(inner)}  # OPay signs the inner object.
+        raw = json.dumps(body).encode()
+        self.assertTrue(self.provider.verify_signature(raw_body=raw, headers={}))
+        # A wrong embedded signature fails.
+        bad = json.dumps({"payload": inner, "sha512": "deadbeef"}).encode()
+        self.assertFalse(self.provider.verify_signature(raw_body=bad, headers={}))
+
+    # Verify webhook parsing routes transfer vs collection events behavior.
+    def test_parse_webhook_routes_by_shape(self):
+        payout = {"payload": {
+            "reference": "P1", "status": "SUCCESS", "transferStatus": "SUCCESS",
+            "orderNo": "O2", "amount": {"total": 15000}}}
+        parsed = self.provider.parse_webhook(payload=payout, raw_body=b"", headers={})
+        self.assertEqual(parsed.direction, "PAYOUT")
+        collection = {"payload": {
+            "reference": "O1", "status": "SUCCESS", "orderNo": "O1", "amount": {"total": 40000}}}
+        parsed = self.provider.parse_webhook(payload=collection, raw_body=b"", headers={})
+        self.assertEqual(parsed.direction, "COLLECTION")
+
+
+# Group tests for Webhook Provider Resolution.
+class WebhookProviderResolutionTests(TestCase):
+    """Guard the webhook receiver's provider lookup."""
+
+    # Verify an unknown provider is rejected before any processing behavior.
+    def test_unknown_provider_raises_not_configured(self):
+        with self.assertRaises(ProviderNotConfiguredError):
+            webhooks.ingest_webhook(provider="nope", raw_body=b"{}", headers={})

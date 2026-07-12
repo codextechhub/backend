@@ -33,7 +33,7 @@ This does **NOT**:
   (`views.py:895-916`).
 - trust the event body's status/amount — it re-verifies (§4/§8).
 - book the ledger here — it delegates to `confirm_collection` / `confirm_payout`
-  (slices 1/2).
+  (slices 1/2), and does so **off the request path** on a Celery worker (§4/§8.1).
 - hold per-entity PSP credentials — one platform-level secret per provider (§8).
 - make live network calls in tests — all HTTP funnels through one patchable
   function (`providers/http.py`).
@@ -77,10 +77,12 @@ Notes (`views.py:895-916`):
 
 ## 4. Lifecycle / the ingest pipeline
 
-`ingest_webhook` (`webhooks.py:35-86`) is the single entry point:
+Processing is split into a **fast synchronous receiver** (`ingest_webhook`) and an
+**async worker step** (`process_stored_event`, run by the Celery task
+`vs_payments.process_webhook_event`):
 
 ```
-POST /webhooks/<provider>/
+POST /webhooks/<provider>/          ── ingest_webhook (fast, in-request) ──
       │
       ▼  client = get_provider(provider)                       registry.py:65-70
 1. verify_signature(raw_body, headers) ── false ─► audit WEBHOOK_REJECTED (entity=None) ─► 401
@@ -92,25 +94,33 @@ POST /webhooks/<provider>/
    event, created = WebhookEvent.get_or_create(dedupe_key, defaults=…RECEIVED…)   ← idempotency
       │ not created AND status==PROCESSED ─► DuplicateWebhookError ─► 200
       ▼
-4. record = _find_record(parsed)         (collection or payout, by reference/provider_ref)
-   audit WEBHOOK_RECEIVED (entity = record.entity)                                webhooks.py:74-82
+4. if created:  record = _find_record(parsed);  audit WEBHOOK_RECEIVED (entity=record.entity)   ← audit-once
       ▼
-5. _dispatch(event, parsed, record):
+5. transaction.on_commit(→ process_webhook_event.delay(event.id))   ;  return RECEIVED  ─► 200 ack
+
+── process_stored_event(event_id)  (Celery worker; inline under CELERY_TASK_ALWAYS_EAGER) ──
+   event gone / already PROCESSED ─► no-op (idempotent)
+   re-derive parsed from stored payload/raw_body/headers ; record = _find_record(parsed)
+   _dispatch(event, parsed, record):
       COLLECTION → confirm_collection(intent)   ← NO status ⇒ RE-VERIFY vs PSP     webhooks.py:104-111
       PAYOUT     → confirm_payout(payout)        ← NO status ⇒ RE-VERIFY vs PSP     webhooks.py:112-120
-      no match   → status=IGNORED ("No matching …")
-      unknown dir→ status=IGNORED
+      no match / unknown dir → status=IGNORED
       → status=PROCESSED, processed_at set
-      │ any exception → status=FAILED, error saved, re-raise (kept for replay)     webhooks.py:78-84
+      │ any exception → status=FAILED, error saved, swallowed (PSP re-delivers; confirm_* idempotent)
 ```
 
-The **re-verify** step (4/5) is the security spine: `_dispatch` calls
+The receiver stores-and-acks fast; the outbound PSP re-verify + booking happen off
+the request path on a worker (§8.1). Under `CELERY_TASK_ALWAYS_EAGER` (local/CI, and
+staging until the worker is live) the task runs inline, so behaviour is unchanged
+there; with a real worker the webhook returns `RECEIVED` immediately and the worker
+flips it to `PROCESSED`/`IGNORED`/`FAILED`.
+
+The **re-verify** step is the security spine: `_dispatch` calls
 `confirm_collection(intent)` / `confirm_payout(payout)` with **no** status, so those
 services poll `verify_collection` / `verify_transfer` and act on the PSP's own
 answer — a forged-but-signed `charge.success` (Paystack sets that regardless of the
-inner txn state) can't book money unless the PSP's API also confirms it. This is
-pinned by `test_webhook_does_not_book_when_provider_verify_disagrees`
-(`tests.py:291-304`).
+inner txn state) can't book money unless the PSP's API also confirms it. Pinned by
+`test_webhook_does_not_book_when_provider_verify_disagrees`.
 
 **Matching** (`_find_collection` / `_find_payout`, `webhooks.py:135-160`): by our
 `reference` first, then `provider_reference`; unscoped across entities (safe —
@@ -182,21 +192,23 @@ Paystack collection webhook (from `test_webhook_confirms_collection`,
 
 ## 8. Gotchas / known limitations
 
-1. **Re-verify happens synchronously inside the webhook request.** `_dispatch`
-   makes an outbound `verify_collection`/`verify_transfer` call (a live PSP round
-   trip in production) before responding (`webhooks.py:104-120`). A slow verify
-   slows the webhook response; the PSP may time out and **retry**, adding load
-   (idempotency prevents double-booking, but the work repeats). **Judgment call** —
-   fine at low volume; for scale, store-and-acknowledge-then-process-async would
-   decouple it. Documented so it's a conscious choice.
+> Hardening pass (2026-07-12) closed items 1 (async) and 2 (audit-once).
 
-2. **A retried IGNORED/FAILED event re-emits a `WEBHOOK_RECEIVED` audit row.**
-   `DuplicateWebhookError` fires **only** when the stored event is `PROCESSED`
-   (`webhooks.py:70-71`); an event that was IGNORED (arrived before its intent
-   existed) or FAILED is re-run on the provider's retry — which is good
-   (**self-healing**: it can now match and PROCESS), but each retry writes another
-   `WEBHOOK_RECEIVED` `PaymentEvent`. **Low severity** — minor audit duplication;
-   note if the transactions log looks noisy.
+1. ✅ **Re-verify now runs off the request path.** `ingest_webhook` stores the event
+   and `transaction.on_commit(→ process_webhook_event.delay(id))`, returning a
+   `RECEIVED` 200 ack immediately; the outbound `verify_collection`/`verify_transfer`
+   + booking run in `process_stored_event` on a Celery worker (`webhooks.py:90-129`,
+   `tasks.py`). `process_stored_event` is idempotent (no-op if the event is gone or
+   already `PROCESSED`) and swallows a dispatch failure after marking it `FAILED`
+   (the PSP re-delivers; `confirm_*` are idempotent). Under
+   `CELERY_TASK_ALWAYS_EAGER` (local/CI/pre-worker staging) it still runs inline.
+
+2. ✅ **`WEBHOOK_RECEIVED` is now audited once.** The audit row is written only on
+   `created` (`webhooks.py:82-89`), so a provider retry of a not-yet-processed event
+   no longer adds a second `PaymentEvent`. The self-heal remains: a `DuplicateWebhookError`
+   short-circuit fires only for a `PROCESSED` event, so an IGNORED/FAILED event is
+   still reprocessed (and can now match) on re-delivery — just without the duplicate
+   audit line. Test: `test_ingest_is_idempotent_and_audits_once`.
 
 3. **One platform-level PSP secret per provider — no per-entity credentials.**
    `get_provider(provider)` builds the client from global settings
@@ -248,8 +260,11 @@ Paystack collection webhook (from `test_webhook_confirms_collection`,
 
 ## 10. Code map
 
-- `webhooks.py` — `ingest_webhook` (verify/dedupe/store), `_dispatch`,
-  `_find_record`/`_find_collection`/`_find_payout`.
+- `webhooks.py` — `ingest_webhook` (verify/dedupe/store/enqueue), `_enqueue`,
+  `process_stored_event` (the worker step), `_dispatch`, `_find_record`/
+  `_find_collection`/`_find_payout`.
+- `tasks.py` — `process_webhook_event` Celery task (auto-discovered; enqueued via
+  `on_commit`).
 - `views.py:895-916` — `WebhookView` (public receiver).
 - `providers/base.py` — neutral interface + result dataclasses.
 - `providers/registry.py` — `get_provider` / `register` / `unregister`.
@@ -262,26 +277,29 @@ Paystack collection webhook (from `test_webhook_confirms_collection`,
 
 ## 11. Test coverage & gaps
 
-Baseline: **55 green** (`python manage.py test vs_payments
+Baseline after hardening: **70 green** (`python manage.py test vs_payments
 --settings=apps.settings.local`). Webhook/provider-relevant:
-- `ProviderTests` (`tests.py:111-127`): Fake signature round-trip (tamper →
-  invalid); registry override resolves the Fake over `PAYSTACK`.
-- `WebhookTests` (`tests.py:238-304`): **bad signature rejected + books nothing**;
-  webhook confirms a collection (re-verify path); **duplicate never double-books**;
-  **validly-signed but provider-verify-disagrees books nothing** (the forged-success
-  guard); `WEBHOOK_RECEIVED` attributed to the entity (slice 2 fix).
-- `PaymentsAPITests.test_webhook_endpoint_processes_and_dedupes` (`tests.py:761`) —
-  the public endpoint processes then dedupes to a 200.
+- `ProviderTests`: Fake signature round-trip (tamper → invalid); registry override
+  resolves the Fake over `PAYSTACK`.
+- `WebhookTests`: **bad signature rejected + books nothing**; webhook confirms a
+  collection (re-verify path, async via `captureOnCommitCallbacks`); **duplicate
+  never double-books**; **validly-signed but provider-verify-disagrees books
+  nothing** (forged-success guard); `WEBHOOK_RECEIVED` attributed to the entity;
+  **`test_ingest_is_idempotent_and_audits_once`** (audit-once + one receipt across
+  two deliveries).
+- **`PaystackAdapterTests`** (6) and **`OPayAdapterTests`** (7): drive the real
+  adapters with recorded PSP payloads by patching `request_json` *at the point of
+  use* (`providers.paystack.request_json` / `providers.opay.request_json`, since the
+  adapters bind it via `from .http import`) — checkout, verify collection/transfer,
+  non-ok → `ProviderError`, OPay VA unsupported, signature verify (pos/neg),
+  `parse_webhook` direction routing.
+- `WebhookProviderResolutionTests` (1): unknown provider → `ProviderNotConfiguredError`.
+- `PaymentsAPITests.test_webhook_endpoint_processes_and_dedupes` — the public
+  endpoint processes then dedupes to a 200.
 
 Gaps still open:
-- **OPay / Paystack adapters are not unit-tested against captured fixtures.** The
-  suite runs entirely through `FakeProvider`; the real adapters' request shaping,
-  status maps, and `parse_webhook` field extraction are exercised only by
-  inspection, not by patched-`request_json` tests with recorded PSP payloads.
-  Highest-value gap before either real PSP goes live.
-- **Signature verification of the real adapters** (Paystack `x-paystack-signature`,
-  OPay `sha512`) has no direct positive/negative test.
-- **`ProviderNotConfiguredError` on an unknown `/webhooks/<provider>/`** and the
-  non-JSON / HTTP-error → `ProviderError` transport paths are uncovered.
-- **The IGNORED self-heal-on-retry path** (§8.2/§8.7) is not pinned by a test.
+- **Transport error paths** (`http.request_json`: non-2xx, non-JSON, URLError →
+  `ProviderError`/502) are not directly tested.
+- **The IGNORED self-heal-on-retry path** (§8.7 — an event that matched nothing on
+  first delivery, then succeeds once the intent exists) is not pinned by a test.
 </content>
