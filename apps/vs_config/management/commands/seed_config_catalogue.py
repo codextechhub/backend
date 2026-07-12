@@ -31,13 +31,13 @@ CAPABILITIES = [
     ("parent_portal", "Parent and Guardian Portal", "MODULE", True),
     ("bulk_import", "Bulk Data Import", "FEATURE", False),
     ("data_export", "Data Export and Reporting", "FEATURE", False),
-    ("sms_alerts", "SMS Notification Alerts", "FEATURE", False),
+    # sms_alerts was removed 2026-07-12 — SMS is not part of the product.
+    # Existing rows were archived (is_active=False), not deleted.
     ("email_alerts", "Email Notification Alerts", "FEATURE", False),
 ]
 DEPENDENCIES = {
     "procurement": ["finance"],
     "parent_portal": ["student_portal"],
-    "sms_alerts": ["finance"],
 }
 
 
