@@ -49,8 +49,8 @@ class BackgroundJob(models.Model):
         related_name="background_jobs",
         help_text="Who triggered the task. Null for system/scheduled runs.",
     )
-    school = models.ForeignKey(
-        "vs_schools.School", on_delete=models.SET_NULL, null=True, blank=True,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
         related_name="background_jobs",
     )
     kind = models.CharField(

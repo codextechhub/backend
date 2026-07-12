@@ -60,9 +60,10 @@ class WorkflowTemplate(models.Model):
     """
 
     id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
-    school = models.ForeignKey(
-        "vs_schools.School", on_delete=models.PROTECT,
-        null=True, blank=True, related_name="workflow_templates",
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="workflow_templates", null=True, blank=True,
+        help_text="Null only for global templates.",
     )
     branch = models.ForeignKey(
         "vs_schools.Branch", on_delete=models.PROTECT,
@@ -86,16 +87,24 @@ class WorkflowTemplate(models.Model):
         base_manager_name = "all_objects"
         constraints = [
             models.UniqueConstraint(
-                fields=["school", "branch", "document_type", "code"],
+                fields=["tenant", "branch", "document_type", "code"],
                 name="uniq_workflow_template",
             ),
         ]
         indexes = [
-            models.Index(fields=["school", "branch", "document_type"]),
+            models.Index(fields=["tenant", "branch", "document_type"]),
         ]
 
     def __str__(self):
         return f"{self.code} ({self.document_type})"
+
+    @property
+    def school(self):
+        return getattr(self.tenant, "school_profile", None) if self.tenant_id else None
+
+    @property
+    def school_id(self):
+        return getattr(self.school, "pk", None)
 
 
 class WorkflowStage(models.Model):
@@ -220,7 +229,10 @@ class WorkflowInstanceQuerySet(models.QuerySet):
     """
 
     def for_school(self, school):
-        return self.filter(school=school)
+        return self.filter(tenant=school.tenant)
+
+    def for_tenant(self, tenant):
+        return self.filter(tenant=tenant)
 
     def for_branch(self, branch):
         return self.filter(branch=branch)
@@ -254,8 +266,10 @@ class WorkflowInstance(models.Model):
         state_version: Incremented on every status transition; useful for stale-read detection.
     """
     id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
-    school = models.ForeignKey("vs_schools.School", on_delete=models.PROTECT,
-                                    null=True, blank=True, related_name="workflow_instances")
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="workflow_instances",
+    )
     branch = models.ForeignKey("vs_schools.Branch", on_delete=models.PROTECT,
                                related_name="workflow_instances", null=True, blank=True)
     template = models.ForeignKey(WorkflowTemplate, on_delete=models.PROTECT, related_name="instances")
@@ -287,13 +301,21 @@ class WorkflowInstance(models.Model):
         default_manager_name = "objects"
         base_manager_name = "all_objects"
         indexes = [
-            models.Index(fields=["school", "document_type", "status"]),
+            models.Index(fields=["tenant", "document_type", "status"]),
             models.Index(fields=["document_content_type", "document_object_id"]),
             models.Index(fields=["requested_by", "status"]),
         ]
 
     def __str__(self):
         return f"{self.document_type}#{self.document_object_id} [{self.status}]"
+
+    @property
+    def school(self):
+        return getattr(self.tenant, "school_profile", None)
+
+    @property
+    def school_id(self):
+        return getattr(self.school, "pk", None)
 
     @property
     def is_terminal(self) -> bool:
@@ -427,8 +449,10 @@ class ApprovalDelegation(models.Model):
         revoked_at: Set when an admin or the delegator manually revokes the delegation early.
     """
     id = models.CharField(primary_key=True, max_length=8, default=_short_id, editable=False)
-    school = models.ForeignKey("vs_schools.School", on_delete=models.PROTECT,
-                                    null=True, blank=True, related_name="approval_delegations")
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="approval_delegations",
+    )
     delegator = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
                                    related_name="delegations_granted")
     delegate = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE,
@@ -444,6 +468,14 @@ class ApprovalDelegation(models.Model):
 
     objects = TenantAwareManager()
     all_objects = models.Manager()
+
+    @property
+    def school(self):
+        return getattr(self.tenant, "school_profile", None)
+
+    @property
+    def school_id(self):
+        return getattr(self.school, "pk", None)
 
     class Meta:
         default_manager_name = "objects"

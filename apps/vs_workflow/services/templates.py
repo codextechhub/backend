@@ -26,7 +26,7 @@ def _resolve_position(code: Optional[str]):
 
 # Publish one workflow template definition atomically.
 @transaction.atomic
-def publish_template(*, school, branch=None, document_type: str, code: str, name: str,
+def publish_template(*, tenant, branch=None, document_type: str, code: str, name: str,
                      description: str = "", notification_events: Optional[dict] = None,
                      created_by=None, stages_payload: Optional[list] = None,
                      routes_payload: Optional[list] = None) -> WorkflowTemplate:
@@ -39,7 +39,7 @@ def publish_template(*, school, branch=None, document_type: str, code: str, name
     from vs_workflow.models import WorkflowRoutePath, WorkflowStage
 
     template, created = WorkflowTemplate.objects.select_for_update().get_or_create(
-        school=school, branch=branch, document_type=document_type, code=code,
+        tenant=tenant, branch=branch, document_type=document_type, code=code,
         defaults={
             "name": name, "description": description,
             "notification_events": notification_events or {},

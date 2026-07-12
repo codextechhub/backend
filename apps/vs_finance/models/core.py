@@ -22,6 +22,7 @@ builds on these.
 from __future__ import annotations
 
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import models, transaction
 from django.utils import timezone
 
@@ -96,6 +97,12 @@ class LedgerEntity(TimeStampedModel):
         help_text="Short uppercase code used inside document numbers; e.g. LEKKI, CODEX.",
     )
     kind = models.CharField(max_length=12, choices=Kind.choices, default=Kind.TENANT)
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant",
+        on_delete=models.PROTECT,
+        related_name="ledger_entities",
+        help_text="Canonical owner.",
+    )
     source_school = models.ForeignKey(
         "vs_schools.School", on_delete=models.PROTECT,
         related_name="ledger_entities", null=True, blank=True,
@@ -117,7 +124,22 @@ class LedgerEntity(TimeStampedModel):
         indexes = [
             models.Index(fields=["kind", "is_active"]),
             models.Index(fields=["source_school"]),
+            models.Index(fields=["tenant", "is_active"]),
         ]
+
+    def clean(self):
+        super().clean()
+        if self.source_school_id and self.tenant_id != self.source_school.tenant_id:
+            raise ValidationError("Ledger entity and source school must have the same tenant.")
+
+    def save(self, *args, **kwargs):
+        if not self.tenant_id:
+            if self.source_school_id:
+                self.tenant_id = self.source_school.tenant_id
+            else:
+                from vs_tenants.models import Tenant
+                self.tenant = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+        super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.code} · {self.name}"
@@ -261,5 +283,3 @@ class FinanceDocument(TimeStampedModel):
                 super().save(*args, **kwargs)
             return
         return super().save(*args, **kwargs)
-
-

@@ -1,22 +1,7 @@
-"""
-Runtime permission evaluator for RBAC.
+"""Tenant-scoped RBAC evaluation.
 
-Usage:
-    from vs_rbac.evaluator import has_permission, get_effective_permissions
-
-    if has_permission(request.user, "finance.invoice.approve", school=school):
-        ...
-
-    perms = get_effective_permissions(request.user, school=school)
-
-Resolution chain:
-    User
-      └─ SchoolUserRoleAssignment (active)
-           └─ SchoolRoleTemplate
-                ├─ SchoolRolePermission        → direct grants / explicit denies
-                └─ SchoolRoleGroup → PermissionGroup → GroupPermission  → grants
-
-    Explicit denies from ``SchoolRolePermission`` override every grant source.
+Permission definitions and groups are global; every grant is reached through a
+role and assignment owned by the effective user's active tenant.
 """
 from __future__ import annotations
 
@@ -24,205 +9,121 @@ from typing import Set
 
 from .models import (
     GroupPermission,
-    PlatformRoleGroup,
-    PlatformRolePermission,
-    PlatformUserRoleAssignment,
-    SchoolRoleGroup,
-    SchoolRolePermission,
-    SchoolUserRoleAssignment,
+    TenantRoleGroup,
+    TenantRolePermission,
+    TenantUserRoleAssignment,
 )
 
 
-# Support permission-group expansion for both school and platform roles.
 def _group_permission_keys(group_ids) -> Set[str]:
-    """Return the set of permission keys belonging to the given group ids."""
     if not group_ids:
         return set()
     return set(
         GroupPermission.objects.filter(group_id__in=group_ids).values_list(
-            "permission_id", flat=True
+            "permission_id", flat=True,
         )
     )
 
 
-# Resolve the effective permission set used by API guards, FLS, and workflows.
-def get_effective_permissions(user, school=None) -> Set[str]:
-    """
-    Compute the full set of granted permission keys for a user.
+def _normalize_tenant(user, tenant=None, school=None):
+    # ``school`` remains an internal migration bridge; public APIs do not accept
+    # school as tenant context.
+    if tenant is None and school is not None:
+        tenant = getattr(school, "tenant", None)
+    return tenant or getattr(user, "tenant", None)
 
-    For school-scoped users: resolves permissions from school role assignments,
-    unioning direct ``SchoolRolePermission`` grants with permissions derived from any
-    ``PermissionGroup`` attached to the role.
 
-    For Vision staff: also resolves permissions from platform role assignments
-    the same way.
+def get_effective_permissions(user, tenant=None, branch=None, school=None) -> Set[str]:
+    tenant = _normalize_tenant(user, tenant=tenant, school=school)
+    if not user or not getattr(user, "is_authenticated", False) or tenant is None:
+        return set()
+    if getattr(user, "tenant_id", None) != tenant.pk:
+        return set()
 
-    Explicit denies (``SchoolRolePermission.granted=False`` or
-    ``PlatformRolePermission.granted=False``) override every grant source.
-
-    The result is memoised on the user instance (keyed by school). User
-    objects are re-fetched from the DB on every request, so the cache is
-    naturally request-scoped — permission changes still apply on the next
-    request, but a single request no longer pays 4-6 queries per checked key.
-    """
-    cache_key = getattr(school, "pk", None) if school is not None else None
+    cache_key = (tenant.pk, getattr(branch, "pk", None))
     cache = getattr(user, "_rbac_effective_perms", None)
     if cache is not None and cache_key in cache:
-        return cache[cache_key]  # Reuse the request-local snapshot for repeated permission checks.
+        return cache[cache_key]
 
-    granted: Set[str] = set()
-    denied: Set[str] = set()
+    assignments = TenantUserRoleAssignment.objects.filter(
+        tenant=tenant,
+        user=user,
+        assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+        role__status="ACTIVE",
+    )
+    if branch is None:
+        assignments = assignments.filter(branch__isnull=True)
+    else:
+        assignments = assignments.filter(branch__isnull=True) | assignments.filter(branch=branch)
+    role_ids = list(assignments.values_list("role_id", flat=True))
 
-    user_type = getattr(user, "user_type", "")
+    granted, denied = set(), set()
+    for key, is_granted in TenantRolePermission.objects.filter(
+        role_id__in=role_ids,
+    ).values_list("permission_id", "granted"):
+        (granted if is_granted else denied).add(key)
 
-    # School roles only apply inside the resolved tenant boundary.
-    if school is not None:
-        active_role_ids = list(
-            SchoolUserRoleAssignment.objects.filter(
-                school=school,
-                user=user,
-                assignment_status=SchoolUserRoleAssignment.AssignmentStatus.ACTIVE,
-            ).values_list("role_id", flat=True)
-        )
-
-        if active_role_ids:
-            # Direct role permissions carry both grants and explicit role-level revokes.
-            for perm_key, is_granted in SchoolRolePermission.objects.filter(
-                role_id__in=active_role_ids,
-            ).values_list("permission_id", "granted"):
-                if is_granted:
-                    granted.add(perm_key)
-                else:
-                    denied.add(perm_key)
-
-            # Group grants are reusable bundles; direct denies below still override them.
-            group_ids = SchoolRoleGroup.objects.filter(
-                role_id__in=active_role_ids,
-            ).values_list("group_id", flat=True)
-            granted.update(_group_permission_keys(group_ids))
-
-    # Platform roles grant global Vision permissions and never depend on a school.
-    if user_type == "CX_STAFF":
-        active_platform_role_ids = list(
-            PlatformUserRoleAssignment.objects.filter(
-                user=user,
-                assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
-            ).values_list("role_id", flat=True)
-        )
-
-        if active_platform_role_ids:
-            for perm_key, is_granted in PlatformRolePermission.objects.filter(
-                role_id__in=active_platform_role_ids,
-            ).values_list("permission_id", "granted"):
-                if is_granted:
-                    granted.add(perm_key)
-                else:
-                    denied.add(perm_key)
-
-            group_ids = PlatformRoleGroup.objects.filter(
-                role_id__in=active_platform_role_ids,
-            ).values_list("group_id", flat=True)
-            granted.update(_group_permission_keys(group_ids))
-
-    # Denies win so a role can remove a sensitive permission inherited from a group.
+    group_ids = TenantRoleGroup.objects.filter(role_id__in=role_ids).values_list(
+        "group_id", flat=True,
+    )
+    granted.update(_group_permission_keys(group_ids))
     effective = granted - denied
-
-    try:
-        if cache is None:
-            cache = {}
-            user._rbac_effective_perms = cache
-        cache[cache_key] = effective
-    except AttributeError:
-        pass  # exotic user objects without settable attrs — just skip caching
-
+    if cache is None:
+        cache = {}
+        user._rbac_effective_perms = cache
+    cache[cache_key] = effective
     return effective
 
 
-# Check one RBAC key for permission classes and service guards.
-def has_permission(user, permission_key: str, school=None) -> bool:
-    """Check whether a user holds a specific permission."""
-    return permission_key in get_effective_permissions(user, school=school)
+def has_permission(user, permission_key: str, tenant=None, branch=None, school=None) -> bool:
+    return permission_key in get_effective_permissions(
+        user, tenant=tenant, branch=branch, school=school,
+    )
 
 
-# Check whether any key in an endpoint's allowed operation set is present.
-def has_any_permission(user, permission_keys: list[str], school=None) -> bool:
-    """Check whether a user holds at least one of the given permissions."""
-    effective = get_effective_permissions(user, school=school)
-    return bool(effective & set(permission_keys))
+def has_any_permission(user, permission_keys, tenant=None, branch=None, school=None) -> bool:
+    return bool(
+        get_effective_permissions(user, tenant=tenant, branch=branch, school=school)
+        & set(permission_keys)
+    )
 
 
-# Check permission bundles where every grant is required.
-def has_all_permissions(user, permission_keys: list[str], school=None) -> bool:
-    """Check whether a user holds all of the given permissions."""
-    effective = get_effective_permissions(user, school=school)
-    return set(permission_keys).issubset(effective)
+def has_all_permissions(user, permission_keys, tenant=None, branch=None, school=None) -> bool:
+    return set(permission_keys).issubset(
+        get_effective_permissions(user, tenant=tenant, branch=branch, school=school)
+    )
 
 
-# Resolve workflow approver candidates from role assignments without per-user evaluation.
-def resolve_users_with_permission(school, branch, permission_key: str):
-    """Return a QuerySet of active users holding permission_key in the given scope.
-
-    Used by the workflow engine's approver resolver. Performs a reverse lookup
-    through the RBAC role tables rather than evaluating per-user.
-
-    School scope  → users with an active school role assignment at that school
-                    whose role carries the permission.
-    Platform scope (school=None, branch=None) → CX_STAFF users with an active
-                    platform role assignment whose role carries the permission.
-    """
+def resolve_users_with_permission(tenant, branch, permission_key: str):
+    """Return active users whose tenant assignment grants ``permission_key``."""
     from django.contrib.auth import get_user_model
-    User = get_user_model()
+    from django.db.models import Q
 
-    # Include group-derived grants so approval routing matches runtime permission checks.
-    group_ids_with_perm = GroupPermission.objects.filter(
-        permission_id=permission_key,
-    ).values_list("group_id", flat=True)
+    # Transitional workflow calls may still pass a School instance.
+    tenant = getattr(tenant, "tenant", tenant)
+    if tenant is None:
+        return get_user_model().objects.none()
 
-    if school is None:
-        # Platform approval queues are limited to active Vision staff assignments.
-        role_ids_direct = PlatformRolePermission.objects.filter(
-            permission_id=permission_key, granted=True,
-        ).values_list("role_id", flat=True)
-
-        role_ids_via_groups = PlatformRoleGroup.objects.filter(
-            group_id__in=group_ids_with_perm,
-        ).values_list("role_id", flat=True)
-
-        denied_role_ids = PlatformRolePermission.objects.filter(
-            permission_id=permission_key, granted=False,
-        ).values_list("role_id", flat=True)
-
-        all_role_ids = (set(role_ids_direct) | set(role_ids_via_groups)) - set(denied_role_ids)
-
-        user_ids = PlatformUserRoleAssignment.objects.filter(
-            role_id__in=all_role_ids,
-            assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
-        ).values_list("user_id", flat=True)
-
-        return User.objects.filter(pk__in=user_ids, is_active=True, user_type="CX_STAFF")
-
-    # School approval queues honor tenant scope, with branch narrowing when supplied.
-    role_ids_direct = SchoolRolePermission.objects.filter(
+    group_ids = GroupPermission.objects.filter(permission_id=permission_key).values_list(
+        "group_id", flat=True,
+    )
+    direct = TenantRolePermission.objects.filter(
         permission_id=permission_key, granted=True,
     ).values_list("role_id", flat=True)
-
-    role_ids_via_groups = SchoolRoleGroup.objects.filter(
-        group_id__in=group_ids_with_perm,
-    ).values_list("role_id", flat=True)
-
-    denied_role_ids = SchoolRolePermission.objects.filter(
+    via_group = TenantRoleGroup.objects.filter(group_id__in=group_ids).values_list(
+        "role_id", flat=True,
+    )
+    denied = TenantRolePermission.objects.filter(
         permission_id=permission_key, granted=False,
     ).values_list("role_id", flat=True)
+    role_ids = (set(direct) | set(via_group)) - set(denied)
 
-    all_role_ids = (set(role_ids_direct) | set(role_ids_via_groups)) - set(denied_role_ids)
-
-    assignment_qs = SchoolUserRoleAssignment.objects.filter(
-        school=school,
-        role_id__in=all_role_ids,
-        assignment_status=SchoolUserRoleAssignment.AssignmentStatus.ACTIVE,
+    assignments = TenantUserRoleAssignment.objects.filter(
+        tenant=tenant,
+        role_id__in=role_ids,
+        assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+    ).filter(Q(branch__isnull=True) | Q(branch=branch))
+    user_ids = assignments.values_list("user_id", flat=True)
+    return get_user_model().objects.filter(
+        pk__in=user_ids, is_active=True, tenant=tenant,
     )
-    if branch is not None:
-        assignment_qs = assignment_qs.filter(user__branch=branch)
-
-    user_ids = assignment_qs.values_list("user_id", flat=True)
-    return User.objects.filter(pk__in=user_ids, is_active=True)

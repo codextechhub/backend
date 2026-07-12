@@ -33,7 +33,21 @@ from celery import Task
 
 logger = logging.getLogger(__name__)
 
-_JOB_KWARGS = ("_job_owner_id", "_job_school_id", "_job_label", "_job_kind")
+_JOB_KWARGS = ("_job_owner_id", "_job_tenant_id", "_job_school_id", "_job_label", "_job_kind")
+
+
+def _resolve_job_tenant_id(meta=None):
+    meta = meta or {}
+    if meta.get("_job_tenant_id"):
+        return meta["_job_tenant_id"]
+    if meta.get("_job_school_id"):
+        from vs_schools.models import School
+        return School.objects.only("tenant_id").get(pk=meta["_job_school_id"]).tenant_id
+    if meta.get("_job_owner_id"):
+        from vs_user.models import User
+        return User.objects.only("tenant_id").get(pk=meta["_job_owner_id"]).tenant_id
+    from vs_tenants.models import Tenant
+    return Tenant.objects.only("id").get(slug="codex").pk
 
 
 def _short_kind(task_name: str) -> str:
@@ -67,7 +81,7 @@ class TrackedTask(Task):
                 celery_task_id=task_id,
                 defaults=dict(
                     owner_id=meta["_job_owner_id"] or None,
-                    school_id=meta["_job_school_id"] or None,
+                    tenant_id=_resolve_job_tenant_id(meta),
                     label=meta["_job_label"] or "",
                     kind=meta["_job_kind"] or _short_kind(self.name or ""),
                     task_name=self.name or "",
@@ -89,6 +103,7 @@ class TrackedTask(Task):
             job, _ = BackgroundJob.objects.get_or_create(
                 celery_task_id=task_id,
                 defaults=dict(
+                    tenant_id=_resolve_job_tenant_id(),
                     task_name=self.name or "",
                     kind=_short_kind(self.name or ""),
                 ),
@@ -175,7 +190,7 @@ class TrackedTask(Task):
                     "error": "" if succeeded else job.error[:300],
                 },
                 recipients=[job.owner],
-                school=job.school,
+                tenant=job.tenant,
             )
         except Exception:  # pragma: no cover
             # Best-effort: any failure (including UnknownEventTypeError when the

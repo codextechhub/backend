@@ -19,8 +19,8 @@ class TicketAttachmentInline(admin.TabularInline):
 
 @admin.register(Ticket)
 class TicketAdmin(admin.ModelAdmin):
-    list_display = ("ticket_number", "title", "status", "priority", "category", "requester", "assignee", "school", "created_at")
-    list_filter = ("status", "priority", "category", "source", "school")
+    list_display = ("ticket_number", "title", "status", "priority", "category", "requester", "assignee", "tenant", "created_at")
+    list_filter = ("status", "priority", "category", "source", "tenant")
     search_fields = ("ticket_number", "title", "description", "requester__email", "assignee__email")
     readonly_fields = ("ticket_number", "created_at", "updated_at", "resolved_at", "closed_at")
     inlines = [TicketCommentInline, TicketAttachmentInline]

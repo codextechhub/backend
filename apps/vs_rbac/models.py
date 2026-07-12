@@ -4,6 +4,7 @@ import uuid
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import Q
 
 from django.utils import timezone
 from django.utils.text import slugify
@@ -1116,6 +1117,159 @@ class PlatformUserRoleAssignment(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.user_id}->{self.role_id} ({self.assignment_status})"
+
+
+# -----------------------------------------------------------------------------
+# Unified tenant RBAC (migration target for school + platform role systems)
+# -----------------------------------------------------------------------------
+
+class TenantRoleTemplate(TimeStampedModel):
+    """Role blueprint owned by one tenant, optionally narrowed to a branch."""
+
+    class Status(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        INACTIVE = "INACTIVE", "Inactive"
+        ARCHIVED = "ARCHIVED", "Archived"
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT, related_name="role_templates",
+    )
+    branch = models.ForeignKey(
+        Branch, on_delete=models.PROTECT, related_name="tenant_role_templates",
+        null=True, blank=True,
+    )
+    key = models.SlugField(max_length=120)
+    name = models.CharField(max_length=80)
+    description = models.TextField(blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
+    is_system_role = models.BooleanField(default=False)
+    is_locked = models.BooleanField(default=False)
+    version = models.PositiveIntegerField(default=1)
+    created_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="created_tenant_roles",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["tenant", "key"], name="uq_tenant_role_key"),
+            models.UniqueConstraint(fields=["tenant", "name"], name="uq_tenant_role_name"),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "status"]),
+            models.Index(fields=["tenant", "branch", "status"]),
+        ]
+
+    def clean(self):
+        super().clean()
+        if self.branch_id and self.branch.school.tenant_id != self.tenant_id:
+            raise ValidationError("Role branch must belong to the role tenant.")
+
+    def __str__(self):
+        return f"{self.tenant_id}:{self.name}"
+
+
+class TenantRolePermission(TimeStampedModel):
+    role = models.ForeignKey(
+        TenantRoleTemplate, on_delete=models.CASCADE, related_name="role_permissions",
+    )
+    permission = models.ForeignKey(
+        Permission, to_field="key", db_column="permission_key",
+        on_delete=models.CASCADE, related_name="tenant_role_permissions",
+    )
+    granted = models.BooleanField(default=True)
+    granted_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="granted_tenant_role_permissions",
+    )
+    granted_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["role", "permission"], name="uq_tenant_role_permission"),
+        ]
+        indexes = [
+            models.Index(fields=["role", "granted"]),
+            models.Index(fields=["permission", "granted"]),
+        ]
+
+
+class TenantRoleGroup(TimeStampedModel):
+    role = models.ForeignKey(
+        TenantRoleTemplate, on_delete=models.CASCADE, related_name="role_groups",
+    )
+    group = models.ForeignKey(
+        PermissionGroup, on_delete=models.CASCADE, related_name="tenant_role_attachments",
+    )
+    attached_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="attached_tenant_role_groups",
+    )
+    attached_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["role", "group"], name="uq_tenant_role_group"),
+        ]
+
+
+class TenantUserRoleAssignment(TimeStampedModel):
+    class AssignmentStatus(models.TextChoices):
+        ACTIVE = "ACTIVE", "Active"
+        REVOKED = "REVOKED", "Revoked"
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT, related_name="role_assignments",
+    )
+    branch = models.ForeignKey(
+        Branch, on_delete=models.PROTECT, related_name="tenant_role_assignments",
+        null=True, blank=True,
+    )
+    user = models.ForeignKey(
+        User, on_delete=models.CASCADE, related_name="tenant_role_assignments",
+    )
+    role = models.ForeignKey(
+        TenantRoleTemplate, on_delete=models.PROTECT, related_name="user_assignments",
+    )
+    assignment_status = models.CharField(
+        max_length=12, choices=AssignmentStatus.choices, default=AssignmentStatus.ACTIVE,
+    )
+    assigned_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="assigned_tenant_roles",
+    )
+    assigned_at = models.DateTimeField(default=timezone.now)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revoked_by = models.ForeignKey(
+        User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="revoked_tenant_roles",
+    )
+    reason_note = models.TextField(blank=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "user", "role"],
+                condition=Q(assignment_status="ACTIVE"),
+                name="uq_active_tenant_user_role",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "user", "assignment_status"]),
+            models.Index(fields=["tenant", "role", "assignment_status"]),
+        ]
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.user_id and self.user.tenant_id != self.tenant_id:
+            errors["user"] = "User must belong to the assignment tenant."
+        if self.role_id and self.role.tenant_id != self.tenant_id:
+            errors["role"] = "Role must belong to the assignment tenant."
+        if self.branch_id and self.branch.school.tenant_id != self.tenant_id:
+            errors["branch"] = "Branch must belong to the assignment tenant."
+        if errors:
+            raise ValidationError(errors)
 
     def revoke(self, by_user=None, reason: str = ""):
         if self.assignment_status == self.AssignmentStatus.REVOKED:

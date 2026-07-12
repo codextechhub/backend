@@ -259,14 +259,11 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
             .select_related("recipient", "event_type")
             .order_by("-created_at")
         )
-        if not getattr(user, "is_vision_staff", False):
-            qs = qs.filter(school=user.school)
-        return qs
+        return qs.filter(tenant=self.request.tenant)
 
     def _apply_filters(self, qs, params, is_vision_staff: bool):
         """Apply query param filters to the history queryset."""
         scope           = params.get("scope")
-        school_id       = params.get("school_id")
         recipient_email = params.get("recipient_email")
         event_type_key  = params.get("event_type_key")
         channel         = params.get("channel")
@@ -278,16 +275,13 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
         # must narrow the log with at least one explicit filter, so a school-less
         # CX user cannot dump the entire table unfiltered.
         if not any([
-            scope, school_id, recipient_email, event_type_key,
+            scope, recipient_email, event_type_key,
             channel, status_param, created_after, created_before,
         ]):
             raise FilterRequiredError()
 
         if scope == _PLATFORM_SCOPE:
-            # Explicit platform scope means school IS NULL, not every school.
-            qs = qs.filter(school__isnull=True)
-        elif school_id:
-            qs = qs.filter(school_id=school_id)
+            qs = qs.filter(tenant__kind="PLATFORM")
         if recipient_email:
             qs = qs.filter(recipient__email__icontains=recipient_email)
         if event_type_key:
@@ -378,33 +372,9 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
         404 response by returning it via the caller — here we return either
         (school_or_none, None) on success, or (None, error_response) on denial.
         """
-        user = request.user
-        requested = request.query_params.get("school")
+        return request.tenant, None
 
-        # School-scoped user: locked to their own school.
-        if not getattr(user, "is_vision_staff", False):
-            own = user.school
-            if requested is not None and str(requested) != str(getattr(own, "id", "")):
-                # Never leak another school's existence.
-                return None, error_response(
-                    "Not found.", status=status.HTTP_404_NOT_FOUND,
-                )
-            return own, None
-
-        # CX staff: platform scope unless ?school= is supplied.
-        if requested is None:
-            return None, None
-
-        from vs_schools.models import School
-        try:
-            school = School.objects.get(pk=requested)
-        except (School.DoesNotExist, ValueError, TypeError):
-            return None, error_response(
-                "Not found.", status=status.HTTP_404_NOT_FOUND,
-            )
-        return school, None
-
-    def _build_matrix(self, school):
+    def _build_matrix(self, tenant):
         """
         Build the effective settings matrix for a scope.
 
@@ -423,13 +393,11 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
         # feeds both the provenance sets below and the bulk resolver without
         # re-querying.
         from django.db.models import Q
-        scope_q = Q(school__isnull=True)
-        if school is not None:
-            scope_q |= Q(school=school)
+        scope_q = Q(tenant__isnull=True) | Q(tenant=tenant)
         rows = list(
             NotificationSetting.all_objects.filter(
                 scope_q, event_type__in=event_types,
-            ).values("event_type_id", "channel", "is_enabled", "school_id")
+            ).values("event_type_id", "channel", "is_enabled", "tenant_id")
         )
 
         # Which (event_type_id, channel) have a school row / platform row?
@@ -437,13 +405,13 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
         platform_rows = set()
         for r in rows:
             key = (r["event_type_id"], r["channel"])
-            if r["school_id"] is None:
+            if r["tenant_id"] is None:
                 platform_rows.add(key)
             else:
                 school_rows.add(key)
 
         # Layering rules live in the service — pass the pre-fetched rows through.
-        resolved_by_et = resolve_channels_bulk(event_types, school=school, rows=rows)
+        resolved_by_et = resolve_channels_bulk(event_types, tenant=tenant, rows=rows)
 
         matrix = []
         for et in event_types:
@@ -452,8 +420,8 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
                 key = (et.id, channel)
                 if et.is_transactional or not et.is_active:
                     source = "default"
-                elif school is not None and key in school_rows:
-                    source = "school"
+                elif tenant is not None and key in school_rows:
+                    source = "tenant"
                 elif key in platform_rows:
                     source = "platform"
                 else:
@@ -473,11 +441,11 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
 
     def list(self, request):
         """GET /notifications/settings/ — the effective matrix for the scope."""
-        school, denied = self._resolve_scope(request)
+        tenant, denied = self._resolve_scope(request)
         if denied is not None:
             return denied
 
-        matrix = self._build_matrix(school)
+        matrix = self._build_matrix(tenant)
         return success_response("Settings retrieved.", data=matrix)
 
     # ── Write ──────────────────────────────────────────────────────────────
@@ -492,7 +460,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
           * disabling IN_APP (IN_APP_ALWAYS_ENABLED)
           * toggling a transactional event type (TRANSACTIONAL_NOT_CONFIGURABLE)
         """
-        school, denied = self._resolve_scope(request)
+        tenant, denied = self._resolve_scope(request)
         if denied is not None:
             return denied
 
@@ -576,7 +544,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
             for item in updates:
                 et = event_types[item["event_type_key"]]
                 NotificationSetting.all_objects.update_or_create(
-                    school=school,
+                    tenant=tenant,
                     event_type=et,
                     channel=item["channel"],
                     defaults={
@@ -586,7 +554,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
                 )
 
         # Return the updated effective entries (fresh resolve).
-        matrix = self._build_matrix(school)
+        matrix = self._build_matrix(tenant)
         touched = {(u["event_type_key"], u["channel"]) for u in updates}
         updated_entries = [
             row for row in matrix

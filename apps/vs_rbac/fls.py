@@ -85,8 +85,8 @@ class FieldSecurityMixin:
         # records does not fire 1 000 separate evaluator queries.
         if not hasattr(request, "_fls_permissions"):
             from vs_rbac.evaluator import get_effective_permissions
-            school = getattr(user, "school", None)
-            request._fls_permissions = get_effective_permissions(user, school=school)
+            tenant = getattr(request, "tenant", None) or getattr(user, "tenant", None)
+            request._fls_permissions = get_effective_permissions(user, tenant=tenant)
 
         return request._fls_permissions
 

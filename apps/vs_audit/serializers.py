@@ -63,6 +63,8 @@ class AuditEventListSerializer(serializers.ModelSerializer):
     """
 
     actor_user = UserSlimSerializer(read_only=True)
+    effective_user = UserSlimSerializer(read_only=True)
+    tenant = serializers.SlugRelatedField(slug_field="slug", read_only=True)
     ip_address = serializers.SerializerMethodField()
     entity_user = serializers.SerializerMethodField()
 
@@ -88,6 +90,9 @@ class AuditEventListSerializer(serializers.ModelSerializer):
             "status",
             "actor_type",
             "actor_user",
+            "effective_user",
+            "tenant",
+            "impersonation_session",
             "actor_label",
             "entity_type",
             "entity_id",
@@ -107,6 +112,8 @@ class AuditEventDetailSerializer(serializers.ModelSerializer):
     """
 
     actor_user = UserSlimSerializer(read_only=True)
+    effective_user = UserSlimSerializer(read_only=True)
+    tenant = serializers.SlugRelatedField(slug_field="slug", read_only=True)
 
     class Meta:
         model = AuditEvent
@@ -118,6 +125,9 @@ class AuditEventDetailSerializer(serializers.ModelSerializer):
             "status",
             "actor_type",
             "actor_user",
+            "effective_user",
+            "tenant",
+            "impersonation_session",
             "actor_label",
             "entity_type",
             "entity_id",

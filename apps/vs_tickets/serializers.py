@@ -53,7 +53,7 @@ class TicketCommentSerializer(serializers.ModelSerializer):
 class TicketSerializer(serializers.ModelSerializer):
     requester = TicketUserSerializer(read_only=True)
     assignee = TicketUserSerializer(read_only=True)
-    school_name = serializers.CharField(source="school.name", read_only=True, default="")
+    tenant = serializers.SlugRelatedField(slug_field="slug", read_only=True)
     branch_name = serializers.CharField(source="branch.name", read_only=True, default="")
     comments_count = serializers.IntegerField(read_only=True)
     attachments_count = serializers.IntegerField(read_only=True)
@@ -62,7 +62,7 @@ class TicketSerializer(serializers.ModelSerializer):
         model = Ticket
         fields = [
             "id", "ticket_number", "title", "description", "category", "priority",
-            "status", "source", "requester", "assignee", "school", "school_name",
+            "status", "source", "requester", "assignee", "tenant",
             "branch", "branch_name", "resolved_at", "closed_at", "comments_count",
             "attachments_count", "created_at", "updated_at",
         ]

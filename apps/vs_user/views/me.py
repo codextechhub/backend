@@ -43,12 +43,13 @@ class CurrentUserView(APIView):
     def get(self, request):
         from vs_rbac.evaluator import get_effective_permissions
         permissions = sorted(
-            get_effective_permissions(request.user, school=getattr(request.user, "school", None))
+            get_effective_permissions(request.user, tenant=getattr(request, "tenant", None))
         )
         return success_response(
             message="Current user retrieved successfully.",
             data={
                 "user": UserReadSerializer(request.user).data,
+                "tenant": {"slug": request.tenant.slug, "name": request.tenant.name},
                 "school": school_public_info(getattr(request.user, "school", None), request),
                 "permissions": permissions,
             },
@@ -112,5 +113,4 @@ def _get_date_param(params, key):
     if parsed is None:
         raise ValidationError({key: f'"{raw}" is not a valid date. Use YYYY-MM-DD format.'})
     return parsed
-
 

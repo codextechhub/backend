@@ -79,6 +79,7 @@ class NotificationService:
         event_key: str,
         context: dict,
         recipients: list,
+        tenant=None,
         school=None,
         suppress: bool = False,
         unregistered_recipients: Optional[list[UnregisteredRecipient]] = None,
@@ -114,6 +115,13 @@ class NotificationService:
             logger.debug("Notification suppressed for event_key=%s", event_key)
             return []
 
+        tenant = tenant or getattr(school, "tenant", None)
+        if tenant is None:
+            tenant = next((getattr(r, "tenant", None) for r in recipients if getattr(r, "tenant_id", None)), None)
+        if tenant is None:
+            from vs_tenants.models import Tenant
+            tenant = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+
         metadata = metadata or {}
 
         # ── 1. Resolve event type ──────────────────────────────────────────
@@ -129,7 +137,7 @@ class NotificationService:
 
         # ── 2. Resolve which channels fire (school row → platform → default;
         #        transactional events bypass settings). ──────────────────────
-        channel_enabled = resolve_channels(event_type, school=school)
+        channel_enabled = resolve_channels(event_type, tenant=tenant)
 
         # ── 3. Pre-fetch templates for enabled channels ────────────────────
         enabled_channels = [ch for ch, on in channel_enabled.items() if on]
@@ -168,7 +176,7 @@ class NotificationService:
                         _build_failed_notification(
                             event_type=event_type,
                             channel=channel,
-                            school=school,
+                            tenant=tenant,
                             target=target,
                             failure_reason="NO_EMAIL_ADDRESS",
                             metadata=metadata,
@@ -190,7 +198,7 @@ class NotificationService:
                         _build_failed_notification(
                             event_type=event_type,
                             channel=channel,
-                            school=school,
+                            tenant=tenant,
                             target=target,
                             failure_reason=str(exc),
                             metadata=metadata,
@@ -204,7 +212,7 @@ class NotificationService:
                     _build_notification(
                         event_type=event_type,
                         channel=channel,
-                        school=school,
+                        tenant=tenant,
                         target=target,
                         subject=rendered_subject,
                         body=rendered_body,
@@ -307,7 +315,7 @@ def _resolve_email(target) -> str:
 
 # Build the unsaved record for a successful in-app notification or queued email.
 def _build_notification(
-    event_type, channel, school, target, subject, body, html_body,
+    event_type, channel, tenant, target, subject, body, html_body,
     metadata, status, dispatched_at,
 ) -> Notification:
     """
@@ -318,7 +326,7 @@ def _build_notification(
     return Notification(
         event_type=event_type,
         channel=channel,
-        school=school,
+        tenant=tenant,
         recipient=None if is_unregistered else target,
         unregistered_email=target.email if is_unregistered else "",
         subject=subject,
@@ -332,7 +340,7 @@ def _build_notification(
 
 # Build the unsaved record for failures detected before Celery delivery.
 def _build_failed_notification(
-    event_type, channel, school, target, failure_reason: str, metadata: dict,
+    event_type, channel, tenant, target, failure_reason: str, metadata: dict,
 ) -> Notification:
     """
     Construct an unsaved Notification instance pre-set to FAILED.
@@ -343,7 +351,7 @@ def _build_failed_notification(
     return Notification(
         event_type=event_type,
         channel=channel,
-        school=school,
+        tenant=tenant,
         recipient=None if is_unregistered else target,
         unregistered_email=target.email if is_unregistered else "",
         subject="",

@@ -1,55 +1,75 @@
-"""
-JWT authentication that also establishes the school (tenant) context.
-
-Why this exists
----------------
-Django middleware runs BEFORE DRF authentication. SimpleJWT authenticates
-inside the view layer, so ``TenantContextMiddleware`` only ever sees an
-anonymous user on API requests — ``request.school`` stayed ``None`` and the
-thread-local school used by ``TenantAwareManager`` was never set.
-
-This class closes that gap: the moment a token validates, it resolves the
-user's school, stamps it onto the underlying ``HttpRequest`` and into
-thread-local storage. ``TenantContextMiddleware`` still owns the cleanup —
-its ``finally`` block clears the thread-local after the response has passed
-back through the middleware stack, which also covers context set here.
-
-Wired in via ``REST_FRAMEWORK["DEFAULT_AUTHENTICATION_CLASSES"]``.
-"""
+"""JWT authentication with mandatory tenant assertion and audited impersonation."""
 from __future__ import annotations
 
-from rest_framework.exceptions import AuthenticationFailed
+from django.utils import timezone
+from rest_framework.exceptions import AuthenticationFailed, NotFound, ValidationError
 from rest_framework_simplejwt.authentication import JWTAuthentication
 
-from core.thread_locals import set_current_school
+from vs_tenants.context import set_current_tenant
+from vs_tenants.models import Tenant
 
 
-# Bridge SimpleJWT authentication into the tenant context used by RBAC managers.
+IMPERSONATION_HEADER = "HTTP_X_IMPERSONATION_SESSION"
+def _requested_tenant(request):
+    slug = (request.query_params.get("tenant") or "").strip().lower()
+    if not slug:
+        raise ValidationError({"tenant": "A 'tenant' query parameter is required."})
+    tenant = Tenant.objects.filter(slug=slug, status=Tenant.Status.ACTIVE).first()
+    if tenant is None:
+        raise NotFound("No tenant matches the requested context.")
+    return tenant
+
+
 class TenantJWTAuthentication(JWTAuthentication):
-
     def authenticate(self, request):
         result = super().authenticate(request)
-        if result is None:  # No token or invalid auth class match: leave tenant context untouched.
+        if result is None:
             return None
 
-        user, validated_token = result
+        actor, validated_token = result
+        tenant = _requested_tenant(request)
+        effective_user = actor
+        impersonation = None
+        session_id = request.META.get(IMPERSONATION_HEADER)
 
-        school = None
-        # Vision staff bypass school scoping entirely.
-        if getattr(user, "user_type", None) != "CX_STAFF":
-            school_id = getattr(user, "school_id", None)
-            if school_id:
-                from vs_schools.models import School
+        if session_id:
+            from vs_admin_console.models import ImpersonationSession
 
-                school = School.objects.filter(pk=school_id).first()
-                if school is None:
-                    raise AuthenticationFailed("User's school does not exist.")
+            impersonation = (
+                ImpersonationSession.objects.select_related(
+                    "staff_user__tenant", "target_user__tenant", "tenant",
+                )
+                .filter(pk=session_id, staff_user=actor, status="ACTIVE")
+                .first()
+            )
+            if impersonation is None:
+                raise AuthenticationFailed("Invalid impersonation session.")
+            if impersonation.ends_at <= timezone.now():
+                impersonation.status = "EXPIRED"
+                impersonation.ended_at = timezone.now()
+                impersonation.save(update_fields=["status", "ended_at"])
+                raise AuthenticationFailed("Impersonation session has expired.")
+            if getattr(actor.tenant, "kind", None) != Tenant.Kind.PLATFORM:
+                raise AuthenticationFailed("Only platform tenant users may impersonate.")
+            if impersonation.tenant_id != tenant.pk:
+                raise NotFound("No tenant matches the requested context.")
+            effective_user = impersonation.target_user
+            if not effective_user.is_active or effective_user.status != "ACTIVE":
+                impersonation.end()
+                raise AuthenticationFailed("The impersonated account is not active.")
+        elif actor.tenant_id != tenant.pk:
+            is_impersonation_start = request.path.rstrip("/").endswith("/admin/impersonations/start")
+            if not (is_impersonation_start and getattr(actor.tenant, "kind", None) == Tenant.Kind.PLATFORM):
+                raise NotFound("No tenant matches the requested context.")
 
-        # Stamp the underlying HttpRequest so middleware, permissions and
-        # views all read the same value (the DRF Request proxies to it).
         django_request = getattr(request, "_request", request)
-        django_request.school = school
-        if school is not None:
-            set_current_school(school)
-
-        return user, validated_token
+        django_request.actor_user = actor
+        django_request.effective_user = effective_user
+        django_request.impersonation_session = impersonation
+        django_request.tenant = tenant
+        django_request.rbac_tenant = actor.tenant if impersonation is None else tenant
+        # Internal expand/cutover bridge for domain code that still needs the
+        # School profile object. Tenant selection itself is exclusively ?tenant=.
+        django_request.school = getattr(tenant, "school_profile", None)
+        set_current_tenant(tenant)
+        return effective_user, validated_token

@@ -12,7 +12,10 @@ logger = logging.getLogger(__name__)
 
 from ..models import LoginSession, User, AuthEventLog
 from .audit import log_auth_event, blacklist_all_user_tokens
-from vs_rbac.models import SchoolRoleTemplate, SchoolUserRoleAssignment, PlatformRoleTemplate, PlatformUserRoleAssignment
+from vs_rbac.models import (
+    SchoolRoleTemplate, PlatformRoleTemplate,
+    TenantRoleTemplate, TenantUserRoleAssignment,
+)
 
 
 class UserCreationService:
@@ -36,6 +39,7 @@ class UserCreationService:
             last_name=validated_data['last_name'],
             gender=validated_data['gender'],
             phone=validated_data.get('phone', ''),
+            tenant=(validated_data.get('school').tenant if validated_data.get('school') else requesting_user.tenant),
             user_type=validated_data['user_type'],
             role=validated_data.get('role', ''),
             school=validated_data.get('school') if validated_data.get('school') else None,
@@ -47,14 +51,18 @@ class UserCreationService:
             is_staff=True if validated_data['user_type'] == "CX_STAFF" else False,
         )
 
-        if isinstance(role_instance, PlatformRoleTemplate):
-            PlatformUserRoleAssignment.objects.create(
-                user=user, role=role_instance, assigned_by=requesting_user,
+        role = role_instance
+        if isinstance(role_instance, (PlatformRoleTemplate, SchoolRoleTemplate)):
+            role = TenantRoleTemplate.objects.get(
+                tenant=user.tenant, key=str(role_instance.pk),
             )
-        else:
-            SchoolUserRoleAssignment.objects.create(
-                user=user, role=role_instance, school=user.school, assigned_by=requesting_user,
-            )
+        TenantUserRoleAssignment.objects.create(
+            tenant=user.tenant,
+            branch=user.branch if role.branch_id else None,
+            user=user,
+            role=role,
+            assigned_by=requesting_user,
+        )
 
         if user.user_type == User.UserType.CX_STAFF:
             # If HR fields were supplied, create the profile now and prefill it.

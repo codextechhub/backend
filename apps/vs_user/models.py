@@ -115,6 +115,13 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     # ── Tenant scoping ────────────────────────────────────────────────────────
 
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant",
+        on_delete=models.PROTECT,
+        related_name="users",
+        help_text="Canonical home tenant.",
+    )
+
     school = models.ForeignKey(
         School, on_delete=models.PROTECT,
         related_name='users', null=True, blank=True,
@@ -237,6 +244,18 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
                 raise ValidationError('Vision Staff must not be assigned to an school or branch.')
 
     def save(self, *args, **kwargs):
+        if not self.tenant_id:
+            if self.school_id:
+                self.tenant_id = self.school.tenant_id
+            elif self.user_type == self.UserType.CX_STAFF:
+                from vs_tenants.models import Tenant
+                self.tenant = Tenant.objects.filter(
+                    slug="codex", kind=Tenant.Kind.PLATFORM,
+                ).first()
+        if self.school_id and self.school.tenant_id != self.tenant_id:
+            raise ValidationError("User school must belong to the user's tenant.")
+        if self.branch_id and self.branch.school.tenant_id != self.tenant_id:
+            raise ValidationError("User branch must belong to the user's tenant.")
         if self.uid is None:
             with transaction.atomic():
                 if self.user_type == self.UserType.CX_STAFF:

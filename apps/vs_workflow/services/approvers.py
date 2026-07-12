@@ -35,7 +35,7 @@ class EligibleApprover:
 
 
 # Resolve RBAC permission holders for a stage.
-def _users_with_permission(school, branch, permission_key: str, scope: ApproverScope):
+def _users_with_permission(tenant, branch, permission_key: str, scope: ApproverScope):
     """Resolve the set of users holding permission_key in the given scope via vs_rbac.
 
     This is the single integration boundary between the workflow engine and the
@@ -53,19 +53,13 @@ def _users_with_permission(school, branch, permission_key: str, scope: ApproverS
         from django.contrib.auth import get_user_model
         UserModel = get_user_model()
         qs = UserModel.objects.filter(is_active=True)
-        if school is not None and hasattr(UserModel, "school"):
-            qs = qs.filter(school=school)
+        if tenant is not None:
+            qs = qs.filter(tenant=tenant)
         return qs
 
-    if scope == ApproverScope.PLATFORM:
-        # Platform approvers are global; school and branch scope are intentionally removed.
-        school_arg, branch_arg = None, None
-    elif scope == ApproverScope.BRANCH:
-        school_arg, branch_arg = school, branch
-    else:  # SCHOOL
-        school_arg, branch_arg = school, None
+    branch_arg = branch if scope == ApproverScope.BRANCH else None
     return resolve_users_with_permission(
-        school=school_arg, branch=branch_arg, permission_key=permission_key,
+        tenant=tenant, branch=branch_arg, permission_key=permission_key,
     )
 
 
@@ -132,7 +126,7 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
             return []
         # RBAC approvers are resolved at activation time and then frozen.
         base_qs = _users_with_permission(
-            school=instance.school,
+            tenant=instance.tenant,
             branch=instance.branch,
             permission_key=stage.approver_permission_key,
             scope=ApproverScope(stage.approver_scope),
@@ -145,7 +139,7 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
     now = timezone.now()
     # Delegations only apply while active, unrevoked, and matching this document type.
     delegations = ApprovalDelegation.objects.filter(
-        school=instance.school,
+        tenant=instance.tenant,
         starts_at__lte=now, ends_at__gte=now,
         revoked_at__isnull=True,
         delegator_id__in=base_ids,

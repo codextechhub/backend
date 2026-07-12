@@ -31,7 +31,7 @@ slug_validator = RegexValidator(
 
 RESERVED_TENANT_SLUGS = {
     "admin", "api", "auth", "login", "logout", "www", "root", "static",
-    "media", "health", "status", "support", "system", "internal",
+    "media", "health", "status", "support", "system", "internal", "codex",
 }
 
 
@@ -136,6 +136,12 @@ class School(TimeStampedModel):
         - Use `main_branch` with `select_related` to avoid extra queries.
     """
 
+    tenant = models.OneToOneField(
+        "vs_tenants.Tenant",
+        on_delete=models.PROTECT,
+        related_name="school_profile",
+        help_text="Canonical ownership boundary.",
+    )
     name = models.CharField(max_length=255)
     # The slug WAS the primary key. It's now a unique business identifier
     # over a surrogate BigAuto id (added implicitly via DEFAULT_AUTO_FIELD), so
@@ -184,6 +190,38 @@ class School(TimeStampedModel):
         slug = (self.slug or "").strip().lower()
         if slug in RESERVED_TENANT_SLUGS:
             raise ValidationError({"slug": "This slug is reserved. Choose another."})
+
+    def save(self, *args, **kwargs):
+        # Keep direct ORM/test creation safe as well as the onboarding service:
+        # the pair is committed or rolled back as one unit.
+        with transaction.atomic():
+            if not self.tenant_id:
+                from vs_tenants.models import Tenant
+                status = (
+                    Tenant.Status.ACTIVE
+                    if self.status == SchoolStatus.ACTIVE
+                    else Tenant.Status.PENDING
+                )
+                self.tenant = Tenant.objects.create(
+                    name=self.name,
+                    slug=self.slug,
+                    kind=Tenant.Kind.SCHOOL,
+                    status=status,
+                    activated_at=self.activated_at,
+                )
+            result = super().save(*args, **kwargs)
+            from vs_tenants.models import Tenant
+            tenant_status = {
+                SchoolStatus.ACTIVE: Tenant.Status.ACTIVE,
+                SchoolStatus.INACTIVE: Tenant.Status.INACTIVE,
+            }.get(self.status, Tenant.Status.PENDING)
+            Tenant.objects.filter(pk=self.tenant_id).update(
+                name=self.name,
+                status=tenant_status,
+                activated_at=self.activated_at,
+                deactivated_at=self.deactivated_at,
+            )
+            return result
 
     # --- Branch helpers ---
 

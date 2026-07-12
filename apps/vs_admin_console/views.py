@@ -11,7 +11,6 @@ from core.response import success_response, error_response
 from .models import (
     ImpersonationSession,
 )
-from .permissions import IsVisionStaff
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 from .serializers import (
     DashboardFilterSerializer,
@@ -34,16 +33,25 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     docstring-name: Impersonation sessions
     """
-    permission_classes = [IsVisionStaff]
-    queryset = ImpersonationSession.objects.select_related("staff_user", "target_user")
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    queryset = ImpersonationSession.objects.select_related("staff_user", "target_user", "tenant")
     serializer_class = ImpersonationSessionSerializer
+
+    def get_permissions(self):
+        self.rbac_permission = {
+            "start": "platform.impersonation.start",
+            "end": "platform.impersonation.end",
+            "list": "platform.impersonation.view",
+            "retrieve": "platform.impersonation.view",
+        }.get(self.action, "platform.impersonation.view")
+        return super().get_permissions()
 
     def get_queryset(self):
         qs = super().get_queryset()
-        school_id = self.request.query_params.get("school")
+        tenant = getattr(self.request, "tenant", None)
         status_param = self.request.query_params.get("status")
-        if school_id:
-            qs = qs.filter(school_id=school_id)
+        if tenant:
+            qs = qs.filter(tenant=tenant)
         if status_param:
             qs = qs.filter(status=status_param)
         return qs
@@ -65,10 +73,25 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         ends_at = started_at + timezone.timedelta(minutes=duration)
         
         with transaction.atomic():
+            tenant = request.tenant
+            actor = getattr(request, "actor_user", request.user)
+            if ImpersonationSession.objects.filter(
+                staff_user=actor, status="ACTIVE", ends_at__gt=started_at,
+            ).exists():
+                return error_response(message="End the existing impersonation session first.")
+            from vs_user.models import User
+            target = User.objects.filter(
+                pk=data["target_user"], tenant=tenant, is_active=True, status="ACTIVE",
+            ).first()
+            if target is None:
+                return error_response(
+                    message="Target user was not found in this tenant.",
+                    status=status.HTTP_404_NOT_FOUND,
+                )
             session = ImpersonationSession.objects.create(
-                staff_user=request.user,
-                school_id=data["school"],
-                target_user_id=data["target_user"],
+                staff_user=actor,
+                tenant=tenant,
+                target_user=target,
                 justification=data["justification"],
                 started_at=started_at,
                 ends_at=ends_at,
@@ -92,7 +115,8 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         ser.is_valid(raise_exception=True)
         session_id = ser.validated_data["session_id"]
         
-        session = ImpersonationSession.objects.filter(id=session_id).first()
+        actor = getattr(request, "actor_user", request.user)
+        session = ImpersonationSession.objects.filter(id=session_id, staff_user=actor).first()
         if not session:
             return error_response(message="Impersonation session not found.", status=status.HTTP_404_NOT_FOUND)
         if session.status != 'ACTIVE':
@@ -105,7 +129,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             message="Impersonation session ended.",
             data=ImpersonationSessionSerializer(session).data,
         )
-    
+
 class DashboardViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     GET /dashboard/

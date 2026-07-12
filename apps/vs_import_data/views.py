@@ -342,9 +342,9 @@ class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.L
 
     def get_queryset(self):
         school = self.get_school()
-        queryset = ImportBatch.objects.select_related("school", "uploaded_by", "template").order_by("-created_at")
+        queryset = ImportBatch.objects.select_related("tenant", "uploaded_by", "template").order_by("-created_at")
         if school is not None:
-            queryset = queryset.filter(school=school)
+            queryset = queryset.filter(tenant=self.request.tenant)
 
         status_param = self.request.query_params.get("status")
         if status_param:
@@ -410,13 +410,13 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
 
     def get_queryset(self):
         school = self.get_school()
-        qs = ImportBatch.objects.select_related("school", "uploaded_by", "template").prefetch_related(
+        qs = ImportBatch.objects.select_related("tenant", "uploaded_by", "template").prefetch_related(
             "template__columns",
             "validation_issues",
             "notifications",
         )
         if school is not None:
-            qs = qs.filter(school=school)
+            qs = qs.filter(tenant=self.request.tenant)
         return qs
 
     def get_object(self):
@@ -478,9 +478,9 @@ class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
 
     def get(self, request, **_kwargs):
         school = self.get_school()
-        qs = ImportBatch.objects.only("id", "school", "file", "original_filename")
+        qs = ImportBatch.objects.only("id", "tenant", "file", "original_filename")
         if school is not None:
-            qs = qs.filter(school=school)
+            qs = qs.filter(tenant=self.request.tenant)
         batch = get_object_or_404(qs, id=_kwargs["batch_id"])
 
         if not batch.file:

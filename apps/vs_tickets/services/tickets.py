@@ -27,16 +27,11 @@ from .visibility import (
 )
 
 
-def _school_for_actor(actor):
-    return getattr(actor, "school", None)
-
-
 def _branch_for_actor(actor):
     return getattr(actor, "branch", None)
 
 
-def create_ticket(*, actor, title, description, category, priority, school=None, branch=None) -> Ticket:
-    school = school if school is not None else _school_for_actor(actor)
+def create_ticket(*, actor, title, description, category, priority, branch=None) -> Ticket:
     branch = branch if branch is not None else _branch_for_actor(actor)
     source = TicketSource.INTERNAL if is_support_user(actor) else TicketSource.CUSTOMER
 
@@ -47,7 +42,7 @@ def create_ticket(*, actor, title, description, category, priority, school=None,
             category=category,
             priority=priority,
             requester=actor,
-            school=school,
+            tenant=actor.tenant,
             branch=branch,
             source=source,
         )

@@ -107,6 +107,8 @@ def blacklist_all_user_tokens(user):
     Ends all active sessions cryptographically.
     Called on: suspend, deactivate, force logout, password reset, email change.
     """
+    from vs_admin_console.services import end_impersonations_for_user
+    end_impersonations_for_user(user)
     tokens = OutstandingToken.objects.filter(user=user)
     for token in tokens:
         BlacklistedToken.objects.get_or_create(token=token)

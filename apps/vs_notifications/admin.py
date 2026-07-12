@@ -86,23 +86,23 @@ class NotificationSettingAdmin(admin.ModelAdmin):
     # school is nullable — a NULL school is a platform-wide default.
     list_display  = ["scope_label", "event_type", "channel", "is_enabled", "updated_at"]
     list_filter   = ["channel", "is_enabled", "event_type__source_module"]
-    search_fields = ["school__name", "school__slug", "event_type__key"]
+    search_fields = ["tenant__name", "tenant__slug", "event_type__key"]
     readonly_fields = ["id", "updated_at"]
-    ordering = ["school__name", "event_type__source_module", "event_type__key", "channel"]
+    ordering = ["tenant__name", "event_type__source_module", "event_type__key", "channel"]
 
     # Show platform-wide rows too — the tenant-aware default manager would hide
     # NULL-school rows outside a school context; use the unscoped manager.
     def get_queryset(self, request):
-        return NotificationSetting.all_objects.select_related("school", "event_type")
+        return NotificationSetting.all_objects.select_related("tenant", "event_type")
 
-    @admin.display(description="Scope", ordering="school__name")
+    @admin.display(description="Scope", ordering="tenant__name")
     def scope_label(self, obj):
-        return obj.school.name if obj.school_id else "— platform —"
+        return obj.tenant.name if obj.tenant_id else "— global —"
 
     fieldsets = (
         ("Scope", {
-            "fields": ("id", "school", "event_type", "channel"),
-            "description": "Leave school blank for a platform-wide default.",
+            "fields": ("id", "tenant", "event_type", "channel"),
+            "description": "Leave tenant blank for a global default.",
         }),
         ("Setting", {
             "fields": ("is_enabled", "updated_by", "updated_at"),
@@ -127,7 +127,7 @@ class NotificationAdmin(admin.ModelAdmin):
         "event_type__key", "subject",
     ]
     readonly_fields = [
-        "id", "school", "recipient", "unregistered_email",
+        "id", "tenant", "recipient", "unregistered_email",
         "event_type", "channel", "subject", "body", "html_body", "metadata",
         "status", "failure_reason", "retry_count",
         "is_read", "read_at", "dispatched_at", "created_at",
@@ -143,7 +143,7 @@ class NotificationAdmin(admin.ModelAdmin):
 
     fieldsets = (
         ("Dispatch", {
-            "fields": ("id", "school", "event_type", "channel", "status"),
+            "fields": ("id", "tenant", "event_type", "channel", "status"),
         }),
         ("Recipient", {
             "fields": ("recipient", "unregistered_email"),

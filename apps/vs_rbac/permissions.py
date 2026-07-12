@@ -24,11 +24,13 @@ def is_vision_super_admin(user):
     cached = getattr(user, "_is_xvs_super_admin", None)
     if cached is not None:
         return cached  # Reuse the request-local assignment check.
-    from .models import PlatformUserRoleAssignment
-    result = PlatformUserRoleAssignment.objects.filter(
+    from .models import TenantUserRoleAssignment
+    result = TenantUserRoleAssignment.objects.filter(
         user=user,
-        role_id="xvs_super_admin",
-        assignment_status=PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
+        tenant=getattr(user, "tenant", None),
+        role__key="xvs_super_admin",
+        role__tenant=getattr(user, "tenant", None),
+        assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
     ).exists()
     try:
         user._is_xvs_super_admin = result
@@ -38,7 +40,7 @@ def is_vision_super_admin(user):
 
 
 # Check a raw permission key against active school or platform role assignments.
-def user_has_rbac_permission(user, permission_key, school=None):
+def user_has_rbac_permission(user, permission_key, tenant=None, branch=None, school=None):
     """
     Check whether *user* holds *permission_key* through any active role.
 
@@ -50,39 +52,9 @@ def user_has_rbac_permission(user, permission_key, school=None):
     if not user or not user.is_authenticated:
         return False
 
-    from .models import (
-        SchoolRolePermission,
-        SchoolUserRoleAssignment,
-        PlatformRolePermission,
-        PlatformUserRoleAssignment,
+    return has_permission(
+        user, permission_key, tenant=tenant, branch=branch, school=school,
     )
-
-    user_type = getattr(user, "user_type", "")
-
-    # Vision staff use platform roles because they are not scoped to a school.
-    if user_type == "CX_STAFF":
-        return PlatformRolePermission.objects.filter(
-            role__user_assignments__user=user,
-            role__user_assignments__assignment_status="ACTIVE",
-            permission_id=permission_key,
-            granted=True,
-        ).exists()
-
-    # School-scoped users: check school roles. Without a school we fall back
-    # to the user's own school — NEVER an unscoped check, which would grant a
-    # permission held in any school to every school (fail closed instead).
-    if school is None:
-        school = getattr(user, "school", None)
-        if school is None:
-            return False
-
-    return SchoolRolePermission.objects.filter(
-        role__user_assignments__user=user,
-        role__user_assignments__assignment_status="ACTIVE",
-        role__user_assignments__school=school,
-        permission_id=permission_key,
-        granted=True,
-    ).exists()
 
 
 # Enforce login plus non-terminal account status before RBAC is evaluated.
@@ -120,7 +92,7 @@ class IsVisionStaff(BasePermission):
         u = request.user
         if not u or not u.is_authenticated:
             return False
-        return getattr(u, "user_type", "") == "CX_STAFF"
+        return getattr(getattr(u, "tenant", None), "kind", None) == "PLATFORM"
 
 
 # Allow only the active xvs_super_admin role holder into top-level controls.
@@ -191,7 +163,12 @@ class HasRBACPermission(BasePermission):
         rbac_group_perms = getattr(view, "rbac_group_permission", None)
 
         passed = True  # Both direct-key and group-key checks must remain satisfied.
-        school = getattr(request, "school", None) or getattr(u, "school", None)
+        tenant = (
+            getattr(request, "rbac_tenant", None)
+            or getattr(request, "tenant", None)
+            or getattr(u, "tenant", None)
+        )
+        branch = getattr(request, "branch", None)
 
         if rbac_perms is not None and rbac_perms != "":
             if isinstance(rbac_perms, list) and not rbac_perms:
@@ -202,7 +179,7 @@ class HasRBACPermission(BasePermission):
                 rbac_perms = [rbac_perms]
             # Direct permissions are any-of so views can accept equivalent operation grants.
             if not any(
-                has_permission(u, perm_key, school=school)
+                has_permission(u, perm_key, tenant=tenant, branch=branch)
                 for perm_key in rbac_perms
             ):
                 passed = False
@@ -217,7 +194,7 @@ class HasRBACPermission(BasePermission):
             
             perm_keys = _group_permission_keys(rbac_group_perms)  # Group checks require every key in the bundle.
 
-            if not has_all_permissions(u, perm_keys, school=school):
+            if not has_all_permissions(u, perm_keys, tenant=tenant, branch=branch):
                 passed = False
 
         return passed

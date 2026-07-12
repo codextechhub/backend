@@ -4,53 +4,44 @@ from django.db.models import Q
 
 from vs_rbac.permissions import user_has_rbac_permission
 
-from ..constants import SUPPORT_USER_TYPES, TicketPermission
+from ..constants import TicketPermission
 from ..models import Ticket
 
 
 def is_support_user(user) -> bool:
-    return bool(
-        user
-        and getattr(user, "is_authenticated", False)
-        and getattr(user, "user_type", "") in SUPPORT_USER_TYPES
-    )
+    return bool(user and getattr(user, "is_authenticated", False) and
+                user_has_rbac_permission(user, TicketPermission.MANAGE, tenant=user.tenant))
 
 
-def has_ticket_permission(user, permission_key: str, school=None) -> bool:
-    if is_support_user(user):
-        return True
-    return user_has_rbac_permission(user, permission_key, school=school)
+def has_ticket_permission(user, permission_key: str, tenant=None) -> bool:
+    return user_has_rbac_permission(user, permission_key, tenant=tenant or user.tenant)
 
 
 def visible_tickets_qs(user):
-    qs = Ticket.all_objects.select_related("requester", "assignee", "school", "branch")
+    qs = Ticket.all_objects.select_related("requester", "assignee", "tenant", "branch")
 
     if not user or not getattr(user, "is_authenticated", False):
         return qs.none()
 
-    if is_support_user(user):
-        return qs
+    qs = qs.filter(tenant=user.tenant)
 
     # Requesters and assignees always see their own tickets; school-wide
     # visibility requires the seeded view grant on the user's school.
     visibility = Q(requester=user) | Q(assignee=user)
-    school_id = getattr(user, "school_id", None)
-    if school_id and has_ticket_permission(user, TicketPermission.VIEW, school=user.school):
-        visibility |= Q(school_id=school_id)
+    if has_ticket_permission(user, TicketPermission.VIEW, tenant=user.tenant):
+        visibility |= Q(tenant=user.tenant)
     return qs.filter(visibility)
 
 
 def can_view_ticket(user, ticket: Ticket) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
         return False
-    if is_support_user(user):
-        return True
+    if ticket.tenant_id != user.tenant_id:
+        return False
     if ticket.requester_id == user.pk or ticket.assignee_id == user.pk:
         return True
     return bool(
-        ticket.school_id
-        and ticket.school_id == getattr(user, "school_id", None)
-        and has_ticket_permission(user, TicketPermission.VIEW, school=ticket.school)
+        has_ticket_permission(user, TicketPermission.VIEW, tenant=ticket.tenant)
     )
 
 
@@ -59,7 +50,7 @@ def can_manage_ticket(user, ticket: Ticket) -> bool:
         return True
     if ticket.assignee_id == getattr(user, "pk", None):
         return True
-    return has_ticket_permission(user, TicketPermission.MANAGE, school=ticket.school)
+    return has_ticket_permission(user, TicketPermission.MANAGE, tenant=ticket.tenant)
 
 
 def can_update_ticket_fields(user, ticket: Ticket) -> bool:
@@ -67,13 +58,13 @@ def can_update_ticket_fields(user, ticket: Ticket) -> bool:
         return True
     if ticket.requester_id == getattr(user, "pk", None):
         return True
-    return has_ticket_permission(user, TicketPermission.UPDATE, school=ticket.school)
+    return has_ticket_permission(user, TicketPermission.UPDATE, tenant=ticket.tenant)
 
 
 def can_assign_ticket(user, ticket: Ticket) -> bool:
     if is_support_user(user):
         return True
-    return has_ticket_permission(user, TicketPermission.ASSIGN, school=ticket.school)
+    return has_ticket_permission(user, TicketPermission.ASSIGN, tenant=ticket.tenant)
 
 
 def can_comment_on_ticket(user, ticket: Ticket) -> bool:
@@ -82,7 +73,7 @@ def can_comment_on_ticket(user, ticket: Ticket) -> bool:
     # Participants can always reply on their own thread.
     if is_support_user(user) or ticket.requester_id == user.pk or ticket.assignee_id == user.pk:
         return True
-    return has_ticket_permission(user, TicketPermission.COMMENT, school=ticket.school)
+    return has_ticket_permission(user, TicketPermission.COMMENT, tenant=ticket.tenant)
 
 
 def can_attach_to_ticket(user, ticket: Ticket) -> bool:
@@ -90,13 +81,13 @@ def can_attach_to_ticket(user, ticket: Ticket) -> bool:
         return False
     if is_support_user(user) or ticket.requester_id == user.pk or ticket.assignee_id == user.pk:
         return True
-    return has_ticket_permission(user, TicketPermission.ATTACH, school=ticket.school)
+    return has_ticket_permission(user, TicketPermission.ATTACH, tenant=ticket.tenant)
 
 
 def can_add_internal_note(user, ticket: Ticket) -> bool:
     if is_support_user(user) or ticket.assignee_id == getattr(user, "pk", None):
         return True
-    return has_ticket_permission(user, TicketPermission.INTERNAL_NOTE, school=ticket.school)
+    return has_ticket_permission(user, TicketPermission.INTERNAL_NOTE, tenant=ticket.tenant)
 
 
 def can_view_internal_notes(user, ticket: Ticket) -> bool:
@@ -106,4 +97,4 @@ def can_view_internal_notes(user, ticket: Ticket) -> bool:
 def sees_internal_notes_by_default(user) -> bool:
     """Ticket-independent variant used for list annotations, where per-ticket
     assignee checks don't apply (only support staff can be assignees)."""
-    return has_ticket_permission(user, TicketPermission.INTERNAL_NOTE, school=getattr(user, "school", None))
+    return has_ticket_permission(user, TicketPermission.INTERNAL_NOTE, tenant=user.tenant)

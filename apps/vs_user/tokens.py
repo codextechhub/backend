@@ -44,10 +44,9 @@ class CodeXRefreshToken(RefreshToken):
         """
         token = super().for_user(user)
 
-        # Embed school and branch context
-        token['user_type']      = user.user_type
-        token['school_id'] = str(user.school_id) if user.school_id else None
-        token['school_slug'] = user.school.slug if user.school_id else None
+        # Embed the canonical tenant assertion.
+        token['tenant_id'] = str(user.tenant_id)
+        token['tenant_slug'] = user.tenant.slug
         token['branch_id']      = str(user.branch_id) if user.branch_id else None
         token['account_status'] = user.status
         token['full_name']      = user.full_name

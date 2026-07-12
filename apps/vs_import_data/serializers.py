@@ -772,7 +772,7 @@ class ImportBatchUploadSerializer(serializers.ModelSerializer):
                 "file": f"Could not read file: {exc}. Ensure the file is not corrupted and matches the selected format.",
             })
 
-        validated_data["school"] = self.context.get("school")
+        validated_data["tenant"] = self.context["request"].tenant
         validated_data["branch"] = self.context.get("branch")
         validated_data["uploaded_by"] = self.context["request"].user
         validated_data["template"] = template
@@ -877,5 +877,4 @@ class RollbackImportSerializer(serializers.Serializer):
                 "Only completed, failed, or cancelled jobs can be rolled back."
             )
         return attrs
-
 

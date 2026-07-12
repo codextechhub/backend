@@ -47,7 +47,7 @@ class WorkflowTemplateReadSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkflowTemplate
         fields = [
-            "id", "school", "branch", "document_type", "code",
+            "id", "tenant", "branch", "document_type", "code",
             "name", "description", "notification_events",
             "created_at", "updated_at", "stages", "routes",
         ]

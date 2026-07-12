@@ -18,6 +18,9 @@ from vs_rbac.models import (
     PlatformUserRoleAssignment,
     PlatformRoleChangeRequest,
     PlatformRoleChangeDeltaItem,
+    TenantRoleTemplate,
+    TenantRolePermission,
+    TenantUserRoleAssignment,
 )
 
 
@@ -59,6 +62,14 @@ def make_vision_user(email="vision@test.com", password="testpass123",
         PlatformUserRoleAssignment.objects.get_or_create(
             user=user,
             role=role,
+            defaults={"assignment_status": "ACTIVE"},
+        )
+        tenant_role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=user.tenant, key="xvs_super_admin",
+            defaults={"name": "Vision Super Admin", "status": "ACTIVE"},
+        )
+        TenantUserRoleAssignment.objects.get_or_create(
+            tenant=user.tenant, user=user, role=tenant_role,
             defaults={"assignment_status": "ACTIVE"},
         )
     return user
@@ -133,21 +144,37 @@ def make_dependency(permission_key, depends_on_key):
 def make_role(school, name="Test Role", **kwargs):
     defaults = {"status": "ACTIVE"}
     defaults.update(kwargs)
-    return SchoolRoleTemplate.objects.create(school=school, name=name, **defaults)
+    role = SchoolRoleTemplate.objects.create(school=school, name=name, **defaults)
+    TenantRoleTemplate.objects.create(
+        tenant=school.tenant, branch=role.branch, key=str(role.pk), name=role.name,
+        description=role.description, status=role.status,
+    )
+    return role
 
 
 def make_role_permission(role, permission, granted=True, **kwargs):
-    return SchoolRolePermission.objects.create(
+    result = SchoolRolePermission.objects.create(
         role=role, permission=permission, granted=granted, **kwargs
     )
+    tenant_role = TenantRoleTemplate.objects.get(tenant=role.school.tenant, key=str(role.pk))
+    TenantRolePermission.objects.create(
+        role=tenant_role, permission=permission, granted=granted,
+    )
+    return result
 
 
 def make_assignment(school, user, role, **kwargs):
     defaults = {"assignment_status": "ACTIVE"}
     defaults.update(kwargs)
-    return SchoolUserRoleAssignment.objects.create(
+    result = SchoolUserRoleAssignment.objects.create(
         school=school, user=user, role=role, **defaults
     )
+    tenant_role = TenantRoleTemplate.objects.get(tenant=school.tenant, key=str(role.pk))
+    TenantUserRoleAssignment.objects.create(
+        tenant=school.tenant, user=user, role=tenant_role,
+        branch=tenant_role.branch, assignment_status=defaults["assignment_status"],
+    )
+    return result
 
 
 def make_role_change_request(school, user, role, justification="Test justification", **kwargs):
@@ -165,21 +192,37 @@ def make_role_change_request(school, user, role, justification="Test justificati
 def make_platform_role(name="Platform Role", **kwargs):
     defaults = {"status": "ACTIVE"}
     defaults.update(kwargs)
-    return PlatformRoleTemplate.objects.create(name=name, **defaults)
+    role = PlatformRoleTemplate.objects.create(name=name, **defaults)
+    from vs_tenants.models import Tenant
+    codex = Tenant.objects.get(slug="codex")
+    TenantRoleTemplate.objects.create(
+        tenant=codex, key=str(role.pk), name=role.name,
+        description=role.description, status=role.status, is_system_role=True,
+    )
+    return role
 
 
 def make_platform_role_permission(role, permission, granted=True, **kwargs):
-    return PlatformRolePermission.objects.create(
+    result = PlatformRolePermission.objects.create(
         role=role, permission=permission, granted=granted, **kwargs
     )
+    tenant_role = TenantRoleTemplate.objects.get(tenant__slug="codex", key=str(role.pk))
+    TenantRolePermission.objects.create(role=tenant_role, permission=permission, granted=granted)
+    return result
 
 
 def make_platform_assignment(user, role, **kwargs):
     defaults = {"assignment_status": "ACTIVE"}
     defaults.update(kwargs)
-    return PlatformUserRoleAssignment.objects.create(
+    result = PlatformUserRoleAssignment.objects.create(
         user=user, role=role, **defaults
     )
+    tenant_role = TenantRoleTemplate.objects.get(tenant=user.tenant, key=str(role.pk))
+    TenantUserRoleAssignment.objects.create(
+        tenant=user.tenant, user=user, role=tenant_role,
+        assignment_status=defaults["assignment_status"],
+    )
+    return result
 
 
 def make_platform_change_request(user, role, justification="Test justification", **kwargs):

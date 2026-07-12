@@ -8,7 +8,7 @@ from rest_framework.test import APIRequestFactory
 from rest_framework.exceptions import AuthenticationFailed
 from django.test import TestCase
 
-from core.thread_locals import get_current_school, clear_current_school
+from vs_tenants.context import get_current_tenant, clear_current_tenant
 from vs_rbac.authentication import TenantJWTAuthentication
 from vs_user.tokens import CodeXRefreshToken
 from vs_user.models import User
@@ -20,14 +20,17 @@ class TenantJWTAuthenticationTests(TestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
         self.auth = TenantJWTAuthentication()
-        clear_current_school()
+        clear_current_tenant()
 
     def tearDown(self):
-        clear_current_school()
+        clear_current_tenant()
 
     def _authed_request(self, user):
         token = str(CodeXRefreshToken.for_user(user).access_token)
-        return self.factory.get("/v1/any/", HTTP_AUTHORIZATION=f"Bearer {token}")
+        return self.factory.get(
+            f"/v1/any/?tenant={user.tenant.slug}",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
 
     def test_school_user_gets_school_context(self):
         school = make_school()
@@ -41,9 +44,10 @@ class TenantJWTAuthenticationTests(TestCase):
         authed_user, _ = result
         self.assertEqual(authed_user.pk, user.pk)
         self.assertEqual(request.school, school)
-        self.assertEqual(get_current_school(), school)
+        self.assertEqual(request.tenant, school.tenant)
+        self.assertEqual(get_current_tenant(), school.tenant)
 
-    def test_vision_staff_has_no_school_context(self):
+    def test_platform_staff_gets_codex_tenant_context(self):
         user = User.objects.create_user(
             email="cx@test.com",
             password="testpass123",
@@ -58,9 +62,10 @@ class TenantJWTAuthenticationTests(TestCase):
 
         self.assertIsNotNone(result)
         self.assertIsNone(request.school)
-        self.assertIsNone(get_current_school())
+        self.assertEqual(request.tenant.slug, "codex")
+        self.assertEqual(get_current_tenant(), request.tenant)
 
     def test_unauthenticated_request_untouched(self):
         request = self.factory.get("/v1/any/")
         self.assertIsNone(self.auth.authenticate(request))
-        self.assertIsNone(get_current_school())
+        self.assertIsNone(get_current_tenant())

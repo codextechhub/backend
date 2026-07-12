@@ -61,14 +61,10 @@ def resolve_entity(request):
     raw = request.query_params.get("entity")
     if not raw:
         raise ValidationError({"entity": "An 'entity' query parameter (id or code) is required."})
-    qs = LedgerEntity.objects.all()
-
-    user = getattr(request, "user", None)
-    if getattr(user, "user_type", None) != "CX_STAFF":
-        school = getattr(request, "school", None) or getattr(user, "school", None)
-        if school is None:
-            raise NotFound(f"No ledger entity matches '{raw}'.")
-        qs = qs.filter(source_school=school)
+    tenant = getattr(request, "tenant", None)
+    if tenant is None:
+        raise NotFound(f"No ledger entity matches '{raw}'.")
+    qs = LedgerEntity.objects.filter(tenant=tenant)
 
     entity = (
         qs.filter(pk=int(raw)).first() if str(raw).isdigit()

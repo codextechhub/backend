@@ -43,7 +43,7 @@ from vs_workflow.services.approvers import resolve_approvers
 # Apply school scope only when the request has one.
 def _filter_by_school(qs, school):
     if school is not None:
-        return qs.filter(school=school)
+        return qs.filter(tenant=school.tenant)
     return qs
 
 
@@ -117,7 +117,7 @@ class WorkflowTemplateViewSet(
         # Build a transient instance carrying just the context the resolver reads.
         instance = WorkflowInstance(
             requested_by=requester,
-            school=getattr(requester, "school", None),
+            tenant=requester.tenant,
             branch=getattr(requester, "branch", None),
             document_type=d.get("document_type", "") or "",
         )
@@ -148,7 +148,7 @@ class WorkflowTemplateViewSet(
         d = p.validated_data
         # Template publishing replaces stage/route configuration through the service layer.
         t = templates_svc.publish_template(
-            school=self.get_school(),
+            tenant=request.tenant,
             branch=self.get_branch(),
             document_type=d["document_type"], code=d["code"], name=d["name"],
             description=d.get("description", ""),
@@ -284,7 +284,7 @@ class PendingApprovalsView(SchoolScopedMixin, APIView):
             stage_instance__instance__status="IN_PROGRESS",
         )
         if school is not None:
-            snaps_qs = snaps_qs.filter(stage_instance__instance__school=school)
+            snaps_qs = snaps_qs.filter(stage_instance__instance__tenant=school.tenant)
         snaps = snaps_qs.select_related(
             "stage_instance__instance__template", "stage_instance__stage",
         ).order_by("-stage_instance__activated_at")
@@ -340,7 +340,7 @@ class TeamLoadView(SchoolScopedMixin, APIView):
         # Count active stage instances by document type/stage for operational load.
         base = WorkflowStageInstance.objects.filter(status="ACTIVE")
         if school is not None:
-            base = base.filter(instance__school=school)
+            base = base.filter(instance__tenant=school.tenant)
         qs = (base
               .values("instance__document_type", "stage__code", "stage__label")
               .order_by("instance__document_type", "stage__code"))
@@ -367,21 +367,21 @@ class ApprovalDelegationViewSet(SchoolScopedMixin, ModelViewSet):
         user = self.request.user
         school = self.get_school()
         qs = _filter_by_school(ApprovalDelegation.objects.all(), school)
-        if not user_has_rbac_permission(user, PERM_TEMPLATE_MANAGE, school=school):
+        if not user_has_rbac_permission(user, PERM_TEMPLATE_MANAGE, tenant=user.tenant):
             # Non-admin users can only see delegations they created or receive.
             qs = qs.filter(Q(delegator=user) | Q(delegate=user))
         return qs.order_by("-starts_at")
 
     def perform_create(self, serializer):
         # Delegations are always created by the current user within the active school scope.
-        serializer.save(school=self.get_school(), delegator=self.request.user)
+        serializer.save(tenant=self.request.tenant, delegator=self.request.user)
 
     @action(detail=True, methods=["post"])
     def revoke(self, request, pk=None):
         delegation = self.get_object()
         school = self.get_school()
         if (delegation.delegator_id != request.user.pk and
-                not user_has_rbac_permission(request.user, PERM_TEMPLATE_MANAGE, school=school)):
+                not user_has_rbac_permission(request.user, PERM_TEMPLATE_MANAGE, tenant=request.tenant)):
             return Response({
                 "success": False,
                 "message": "You do not have permission to revoke this delegation.",

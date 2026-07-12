@@ -134,13 +134,14 @@ class LoginService:
         )
 
         from vs_rbac.evaluator import get_effective_permissions
-        permissions = sorted(get_effective_permissions(authed, school=authed.school))
+        permissions = sorted(get_effective_permissions(authed, tenant=authed.tenant))
 
         return {
             'access':      tokens['access'],
             'refresh':     tokens['refresh'],
             'session_id':  session.id,
             'user':        UserReadSerializer(authed).data,
+            'tenant':      {'slug': authed.tenant.slug, 'name': authed.tenant.name},
             'school':      school_public_info(authed.school, request),
             'permissions': permissions,
         }

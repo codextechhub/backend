@@ -247,16 +247,10 @@ class NotificationSetting(models.Model):
         default=uuid.uuid4,
         editable=False,
     )
-    school = models.ForeignKey(
-        "vs_schools.School",
-        on_delete=models.CASCADE,
-        related_name="notification_settings",
-        null=True,
-        blank=True,
-        help_text=(
-            "The school this override applies to. NULL means a platform-wide "
-            "default that applies to every recipient without a school override."
-        ),
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.CASCADE,
+        related_name="notification_settings", null=True, blank=True,
+        help_text="Null only for platform-wide defaults.",
     )
     event_type = models.ForeignKey(
         NotificationEventType,
@@ -295,29 +289,29 @@ class NotificationSetting(models.Model):
         constraints = [
             # A school may hold at most one row per (event_type, channel).
             models.UniqueConstraint(
-                fields=["school", "event_type", "channel"],
-                condition=Q(school__isnull=False),
-                name="uq_notif_setting_school_scoped",
+                fields=["tenant", "event_type", "channel"],
+                condition=Q(tenant__isnull=False),
+                name="uq_notif_setting_tenant_scoped",
             ),
             # At most one platform-wide row per (event_type, channel).
             models.UniqueConstraint(
                 fields=["event_type", "channel"],
-                condition=Q(school__isnull=True),
+                condition=Q(tenant__isnull=True),
                 name="uq_notif_setting_platform",
             ),
         ]
         indexes = [
             # resolve_channels fetches both the school row and the platform row
             # (school IN (<id>, NULL)) for one (event_type) in a single query.
-            models.Index(fields=["event_type", "channel", "school"]),
-            models.Index(fields=["school", "channel", "is_enabled"]),
+            models.Index(fields=["event_type", "channel", "tenant"]),
+            models.Index(fields=["tenant", "channel", "is_enabled"]),
         ]
         verbose_name = "Notification setting"
         verbose_name_plural = "Notification settings"
 
     def __str__(self):
         status = "on" if self.is_enabled else "off"
-        scope = self.school_id if self.school_id else "platform"
+        scope = self.tenant_id if self.tenant_id else "platform"
         return f"{scope} / {self.event_type.key} / {self.channel} ({status})"
 
 
@@ -353,17 +347,9 @@ class Notification(models.Model):
         default=uuid.uuid4,
         editable=False,
     )
-    school = models.ForeignKey(
-        "vs_schools.School",
-        on_delete=models.PROTECT,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
         related_name="notifications",
-        null=True,
-        blank=True,
-        help_text=(
-            "Optional scope for filtering/history. NOT a dispatch requirement — "
-            "notifications are recipient-centric. Null for platform-level "
-            "recipients (CX staff, and any recipient with no school)."
-        ),
     )
     recipient = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -474,8 +460,8 @@ class Notification(models.Model):
             # Primary feed query: user's unread in-app notifications
             models.Index(fields=["recipient", "channel", "is_read", "-created_at"]),
             # Admin history log queries
-            models.Index(fields=["school", "event_type", "status"]),
-            models.Index(fields=["school", "channel", "status", "-created_at"]),
+            models.Index(fields=["tenant", "event_type", "status"]),
+            models.Index(fields=["tenant", "channel", "status", "-created_at"]),
             # Celery task lookup (status=PENDING email notifications)
             models.Index(fields=["status", "channel", "-created_at"]),
         ]

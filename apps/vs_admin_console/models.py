@@ -5,9 +5,6 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from vs_schools.models import School
-
-
 class ImpersonationSession(models.Model):
     """
     Simple time-boxed impersonation record.
@@ -18,6 +15,7 @@ class ImpersonationSession(models.Model):
     STATUS_CHOICES = [
         ("ACTIVE", "Active"),
         ("ENDED", "Ended"),
+        ("EXPIRED", "Expired"),
     ]
 
     staff_user = models.ForeignKey(
@@ -25,8 +23,8 @@ class ImpersonationSession(models.Model):
         on_delete=models.PROTECT,
         related_name="impersonation_sessions_started",
     )
-    school = models.ForeignKey(
-        School,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant",
         on_delete=models.PROTECT,
         related_name="impersonation_sessions",
     )
@@ -48,6 +46,8 @@ class ImpersonationSession(models.Model):
             raise ValidationError("ends_at must be after started_at.")
         if not self.justification.strip():
             raise ValidationError("justification is required.")
+        if self.tenant_id and self.target_user_id and self.target_user.tenant_id != self.tenant_id:
+            raise ValidationError("Target user must belong to the impersonation tenant.")
 
     def end(self):
         """Convenience method."""

@@ -18,7 +18,7 @@
 
 
 # Resolve channel settings for many event types with one settings query.
-def resolve_channels_bulk(event_types, school=None, rows=None) -> dict:
+def resolve_channels_bulk(event_types, tenant=None, rows=None, school=None) -> dict:
     """
     Return {event_type_id: {channel: is_enabled}} for every event type given,
     covering every channel in each event type's supported_channels.
@@ -51,6 +51,7 @@ def resolve_channels_bulk(event_types, school=None, rows=None) -> dict:
                       matrix provenance) can fetch once and pass them in so the
                       whole operation costs a single settings query.
     """
+    tenant = tenant or getattr(school, "tenant", None)
     event_types = list(event_types)
 
     # ── Fetch every relevant row in one query (unless supplied) ────────────
@@ -59,20 +60,20 @@ def resolve_channels_bulk(event_types, school=None, rows=None) -> dict:
         from django.db.models import Q
 
         scope = Q(school__isnull=True)
-        if school is not None:
-            scope |= Q(school=school)
+        if tenant is not None:
+            scope |= Q(tenant=tenant)
 
         rows = NotificationSetting.all_objects.filter(
             scope,
             event_type__in=event_types,
-        ).values("event_type_id", "channel", "is_enabled", "school_id")
+        ).values("event_type_id", "channel", "is_enabled", "tenant_id")
 
     # Split into the two layers so the school row can win per channel.
     school_map = {}
     platform_map = {}
     for row in rows:
         key = (row["event_type_id"], row["channel"])
-        if row["school_id"] is None:
+        if row["tenant_id"] is None:
             platform_map[key] = row["is_enabled"]
         else:
             school_map[key] = row["is_enabled"]
@@ -108,7 +109,7 @@ def resolve_channels_bulk(event_types, school=None, rows=None) -> dict:
 
 
 # Resolve channel settings for one event type through the bulk implementation.
-def resolve_channels(event_type, school=None) -> dict[str, bool]:
+def resolve_channels(event_type, tenant=None, school=None) -> dict[str, bool]:
     """
     Return {channel: is_enabled} for every channel in event_type.supported_channels.
 
@@ -118,4 +119,4 @@ def resolve_channels(event_type, school=None) -> dict[str, bool]:
     Args:
         school:  A School instance, or None for a platform-scope resolve.
     """
-    return resolve_channels_bulk([event_type], school=school)[event_type.id]
+    return resolve_channels_bulk([event_type], tenant=tenant, school=school)[event_type.id]

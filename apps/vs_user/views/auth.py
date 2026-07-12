@@ -188,6 +188,8 @@ class LogoutView(APIView):
                 ended_at=timezone.now(),
                 end_reason='LOGOUT',
             )
+            from vs_admin_console.services import end_impersonations_for_user
+            end_impersonations_for_user(request.user)
 
         log_auth_event(
             actor=request.user,
@@ -411,4 +413,3 @@ class InvitationResendView(APIView):
             return error_response(message=message, error=payload)
 
         return success_response(message="Invitation resent successfully.")
-

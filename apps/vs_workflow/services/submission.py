@@ -36,15 +36,15 @@ def submit_for_approval(document, requested_by, *,
     handler.validate_document(document, requested_by)
 
     code = template_code or handler.resolve_default_template_code(document)
-    school = getattr(document, "school", None)
+    tenant = getattr(document, "tenant", requested_by.tenant)
     branch = getattr(document, "branch", None)
 
     # Cascade: branch-specific → school-wide → platform-wide.
-    scopes = [{"school": school, "branch": branch}]
+    scopes = [{"tenant": tenant, "branch": branch}]
     if branch is not None:
-        scopes.append({"school": school, "branch": None})
-    if school is not None or branch is not None:
-        scopes.append({"school": None, "branch": None})
+        scopes.append({"tenant": tenant, "branch": None})
+    if tenant is not None or branch is not None:
+        scopes.append({"tenant": None, "branch": None})
 
     template = None
     for scope in scopes:
@@ -74,7 +74,7 @@ def submit_for_approval(document, requested_by, *,
         # Instance creation, audit, document callback, and first routing commit together.
         ct = ContentType.objects.get_for_model(type(document))
         instance = WorkflowInstance.objects.create(
-            school=school, branch=branch, template=template,
+            tenant=tenant, branch=branch, template=template,
             document_content_type=ct, document_object_id=str(document.pk),
             document_type=document_type, status=WorkflowInstanceStatus.SUBMITTED,
             requested_by=requested_by, submitted_at=timezone.now(),

@@ -82,6 +82,7 @@ INSTALLED_APPS = [
     "drf_spectacular",
 
     # apps
+    "vs_tenants",
     "vs_schools",
     "vs_admin_console",
     "vs_user",
@@ -108,8 +109,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
 
     # --- Custom middleware for school context and tenant isolation ---
-    'vs_rbac.middleware.TenantContextMiddleware',
-    'vs_rbac.middleware.TenantBoundaryEnforcementMiddleware',
+    'vs_tenants.middleware.TenantContextCleanupMiddleware',
     # Observability: record per-request metrics AFTER tenant context is
     # resolved so the school dimension is available. Self-instrumentation is
     # best-effort and never blocks a request (see vs_health.middleware).

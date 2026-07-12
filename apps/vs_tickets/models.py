@@ -6,7 +6,7 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from vs_rbac.managers import TenantAwareManager
-from vs_schools.models import Branch, School
+from vs_schools.models import Branch
 from vs_user.models import TimeStampedModel
 
 from .constants import (
@@ -76,20 +76,16 @@ class Ticket(TimeStampedModel):
         on_delete=models.PROTECT,
         related_name="requested_tickets",
     )
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
+        related_name="tickets",
+    )
     assignee = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name="assigned_tickets",
-    )
-    school = models.ForeignKey(
-        School,
-        on_delete=models.PROTECT,
-        null=True,
-        blank=True,
-        related_name="tickets",
-        db_index=True,
     )
     branch = models.ForeignKey(
         Branch,
@@ -115,22 +111,34 @@ class Ticket(TimeStampedModel):
             models.Index(fields=["status", "priority"]),
             models.Index(fields=["requester", "status"]),
             models.Index(fields=["assignee", "status"]),
-            models.Index(fields=["school", "status"]),
+            models.Index(fields=["tenant", "status"]),
             models.Index(fields=["category", "created_at"]),
             models.Index(fields=["created_at"]),
         ]
 
     def clean(self):
         super().clean()
-        if self.branch_id and self.school_id and self.branch.school_id != self.school_id:
-            raise ValidationError("Ticket branch must belong to the selected school.")
+        if self.requester_id and self.requester.tenant_id != self.tenant_id:
+            raise ValidationError("Ticket requester must belong to the selected tenant.")
+        if self.branch_id and self.branch.school.tenant_id != self.tenant_id:
+            raise ValidationError("Ticket branch must belong to the selected tenant.")
         if self.status == TicketStatus.ASSIGNED and not self.assignee_id:
             raise ValidationError("Assigned tickets require an assignee.")
 
     def save(self, *args, **kwargs):
+        if not self.tenant_id and self.requester_id:
+            self.tenant_id = self.requester.tenant_id
         if not self.ticket_number:
             self.ticket_number = self._allocate_ticket_number()
         super().save(*args, **kwargs)
+
+    @property
+    def school(self):
+        return getattr(self.tenant, "school_profile", None)
+
+    @property
+    def school_id(self):
+        return getattr(self.school, "pk", None)
 
     @staticmethod
     def _allocate_ticket_number() -> str:

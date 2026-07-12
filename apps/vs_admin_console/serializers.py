@@ -22,7 +22,7 @@ class ImpersonationSessionSerializer(serializers.ModelSerializer):
             "id",
             "staff_user",
             "staff_email",
-            "school",
+            "tenant",
             "target_user",
             "target_email",
             "justification",
@@ -38,7 +38,6 @@ class ImpersonationStartSerializer(serializers.Serializer):
     Simple payload for starting impersonation.
     In your view/service, you'll create an ImpersonationSession object.
     """
-    school = serializers.IntegerField()
     target_user = serializers.IntegerField()
     justification = serializers.CharField()
     duration_minutes = serializers.IntegerField(min_value=5, max_value=240, default=30) # 5 min to 4 hours

@@ -55,7 +55,7 @@ def snapshot_ticket(ticket: Ticket) -> dict:
         "status": ticket.status,
         "requester_id": ticket.requester_id,
         "assignee_id": ticket.assignee_id,
-        "school_id": ticket.school_id,
+        "tenant_id": ticket.tenant_id,
         "branch_id": ticket.branch_id,
         "resolved_at": ticket.resolved_at.isoformat() if ticket.resolved_at else None,
         "closed_at": ticket.closed_at.isoformat() if ticket.closed_at else None,

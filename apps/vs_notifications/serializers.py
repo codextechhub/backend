@@ -148,7 +148,7 @@ class NotificationHistorySerializer(serializers.ModelSerializer):
             "failure_reason",
             "recipient_name",
             "recipient_email",
-            "school",
+            "tenant",
             "dispatched_at",
             "created_at",
         ]

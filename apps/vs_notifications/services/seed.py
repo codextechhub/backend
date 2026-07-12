@@ -99,7 +99,7 @@ def seed_platform_settings() -> dict:
         for channel in event_type.supported_channels:
             # Preserve admin changes; only missing platform rows are inserted.
             _, created = NotificationSetting.all_objects.get_or_create(
-                school=None,
+                tenant=None,
                 event_type=event_type,
                 channel=channel,
                 defaults={"is_enabled": event_type.default_enabled},
@@ -149,7 +149,7 @@ def seed_school_settings(school) -> dict:
         for channel in event_type.supported_channels:
             # Preserve school admin changes; onboarding only fills missing rows.
             _, created = NotificationSetting.all_objects.get_or_create(
-                school=school,
+                tenant=school.tenant,
                 event_type=event_type,
                 channel=channel,
                 defaults={"is_enabled": event_type.default_enabled},

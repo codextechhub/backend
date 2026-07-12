@@ -8,7 +8,6 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from vs_schools.models import School
 from vs_rbac.managers import TenantAwareManager
 
 
@@ -206,6 +205,27 @@ class AuditEvent(models.Model):
         blank=True,
         related_name="performed_audit_events",
     )
+    effective_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="effective_audit_events",
+    )
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="audit_events",
+    )
+    impersonation_session = models.ForeignKey(
+        "vs_admin_console.ImpersonationSession",
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="audit_events",
+    )
     actor_label = models.CharField(
         max_length=255,
         blank=True,
@@ -270,6 +290,8 @@ class AuditEvent(models.Model):
             models.Index(fields=["entity_type", "entity_id", "event_at"]),
             models.Index(fields=["actor_type", "actor_user", "event_at"]),
             models.Index(fields=["severity", "status", "event_at"]),
+            models.Index(fields=["tenant", "event_at"]),
+            models.Index(fields=["impersonation_session", "event_at"]),
         ]
 
     def __str__(self) -> str:
@@ -485,6 +507,11 @@ class ComplianceRule(TimeStampedModel):
         config (JSONField): Arbitrary structured settings for custom logic.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.CASCADE,
+        related_name="compliance_rules", null=True, blank=True,
+        help_text="Null means a global platform rule.",
+    )
 
     name = models.CharField(max_length=150, unique=True)
     description = models.TextField(blank=True)
@@ -496,14 +523,6 @@ class ComplianceRule(TimeStampedModel):
     )
 
     # Scope
-    school = models.ForeignKey(
-        School,
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="audit_compliance_rules",
-        help_text="Null means global rule."
-    )
     module_key = models.CharField(
         max_length=40,
         choices=AuditModuleKey.choices,
@@ -544,7 +563,7 @@ class ComplianceRule(TimeStampedModel):
         ordering = ["name"]
         indexes = [
             models.Index(fields=["rule_type", "is_active"]),
-            models.Index(fields=["school", "rule_type"]),
+            models.Index(fields=["tenant", "rule_type"]),
         ]
 
     def __str__(self) -> str:
@@ -561,7 +580,7 @@ class ComplianceRule(TimeStampedModel):
         if not self.is_active:
             return False
 
-        if self.school_id and str(self.school_id) != str((event.metadata or {}).get("school_id", "")):
+        if self.tenant_id and self.tenant_id != event.tenant_id:
             return False
 
         if self.module_key and event.module_key != self.module_key:

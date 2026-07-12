@@ -98,7 +98,8 @@ def _raise_password_error(exc: DjangoValidationError):
 
 class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     full_name        = serializers.SerializerMethodField()
-    school_name = serializers.CharField(source='school.name', read_only=True, default=None)
+    tenant_slug = serializers.CharField(source='tenant.slug', read_only=True)
+    tenant_name = serializers.CharField(source='tenant.name', read_only=True)
     branch_name      = serializers.CharField(source='branch.name', read_only=True, default=None)
     invited_by_name  = serializers.SerializerMethodField()
 
@@ -122,11 +123,10 @@ class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
             'full_name',
             'gender',
             'phone',
-            'user_type',
             'role',
             'status',
-            'school_id',
-            'school_name',
+            'tenant_slug',
+            'tenant_name',
             'branch_id',
             'branch_name',
             'invited_by_id',

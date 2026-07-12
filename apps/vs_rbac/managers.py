@@ -42,11 +42,23 @@ from __future__ import annotations
 from django.db import models
 from django.db.models import Q
 
-from core.thread_locals import get_current_school
+from vs_tenants.context import get_current_tenant
 
 
 # Support explicit tenant scoping when code cannot rely on request context.
 class TenantAwareQuerySet(models.QuerySet):
+    def for_tenant(self, tenant):
+        if tenant is None:
+            raise ValueError("An explicit tenant is required.")
+        field_names = {f.name for f in self.model._meta.get_fields()}
+        if "tenant" in field_names:
+            return self.filter(tenant=tenant)
+        if "school" in field_names:
+            return self.filter(school__tenant=tenant)
+        if "branch" in field_names:
+            return self.filter(branch__school__tenant=tenant)
+        raise ValueError(f"{self.model._meta.label} has no tenant ownership path.")
+
     # Apply the requested school scope across direct-school and branch-owned models.
     def for_school(self, school):
         """Scope this queryset to *school*.
@@ -56,13 +68,8 @@ class TenantAwareQuerySet(models.QuerySet):
         unfiltered (platform-level data).
         """
         if school is None:
-            return self
-        field_names = {f.name for f in self.model._meta.get_fields()}
-        if "school" in field_names:
-            return self.filter(school=school)
-        if "branch" in field_names:
-            return self.filter(branch__school=school)
-        return self
+            raise ValueError("An explicit school is required.")
+        return self.for_tenant(school.tenant)
 
 
 # Enforce ambient school scoping for ordinary ORM access.
@@ -87,13 +94,17 @@ class TenantAwareManager(models.Manager.from_queryset(TenantAwareQuerySet)):
     # Attach the current school filter before callers add their own conditions.
     def get_queryset(self):
         qs = super().get_queryset()
-        school = get_current_school()
-        if school is None:  # Platform jobs and Vision staff remain explicitly unscoped.
+        tenant = get_current_tenant()
+        if tenant is None:
             return qs
         lookup = self._tenant_lookup()
         if lookup is None:
             return qs
-        condition = Q(**{lookup: school})
+        if lookup == "school":
+            lookup = "school__tenant"
+        elif lookup == "branch__school":
+            lookup = "branch__school__tenant"
+        condition = Q(**{lookup: tenant})
         if self.include_global:
             # School users also see platform-wide template rows when the model opts in.
             condition |= Q(**{f"{lookup}__isnull": True})
@@ -107,3 +118,6 @@ class TenantAwareManager(models.Manager.from_queryset(TenantAwareQuerySet)):
         regardless of who is asking.
         """
         return TenantAwareQuerySet(self.model, using=self._db).for_school(school)
+
+    def for_tenant(self, tenant):
+        return TenantAwareQuerySet(self.model, using=self._db).for_tenant(tenant)
