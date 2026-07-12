@@ -1,21 +1,19 @@
-"""Idempotent seeding for vs_health.
+"""Idempotent seeding for vs_health — CONFIGURATION ONLY.
 
-Creates the service registry, uptime checks, alert rules, SLOs, a couple of
-historical incidents, the RBAC permissions, and backfills synthetic history
-(daily uptime rollups + a recent slice of request metrics) so the dashboards
-render before real traffic and probes have accrued.
+Creates the service registry, uptime checks, alert rules, SLO targets, and
+the RBAC permissions. It never writes telemetry: every measurement on the
+health screens (request metrics, uptime rollups, queue snapshots, incidents,
+alerts) comes exclusively from the live collectors — RequestMetricsMiddleware,
+the celery-beat probe/snapshot tasks, and the alert engine. Screens are
+honestly empty until real traffic and probes have accrued.
 
 Run via ``python manage.py seed_health``. Re-running only fills gaps.
 """
 from __future__ import annotations
 
-import random
-from datetime import timedelta
-
 from django.conf import settings
-from django.utils import timezone
 
-from .constants import HISTOGRAM_SIZE, LATENCY_BUCKETS_MS, PERM_VIEW, PERM_MANAGE
+from .constants import PERM_VIEW, PERM_MANAGE
 
 
 PROBE_BASE = getattr(settings, "HEALTH_PROBE_BASE_URL", "https://api.codexvision.io")
@@ -35,17 +33,6 @@ SERVICES = [
     ("payments", "Payment Gateway", "External", "Ext", "external", 110),
     ("dns", "DNS / SSL", "External", "Ext", "external", 120),
 ]
-
-# Representative routes for the synthetic request-metric backfill.
-SEED_ROUTES = [
-    ("/v1/i/students/", "GET"),
-    ("/v1/user/auth/login/", "POST"),
-    ("/v1/finance/invoices/", "GET"),
-    ("/v1/payments/initialize/", "POST"),
-    ("/v1/import/students/", "POST"),
-    ("/v1/finance/reports/term-sheet/", "GET"),
-]
-
 
 def _log(stdout, msg):
     if stdout:
@@ -154,94 +141,11 @@ def seed_slos(stdout=None):
     _log(stdout, f"  slos: {SLO.objects.count()}")
 
 
-def seed_incidents(stdout=None):
-    from .models import Incident, MonitoredService
-    if Incident.objects.filter(code="INC-2036").exists():
-        return
-    t = timezone.now()
-    inc = Incident.objects.create(
-        code="INC-2036", title="Slow term-sheet report generation",
-        severity=3, status=Incident.Status.RESOLVED, source=Incident.Source.MANUAL,
-        owner_label="D. Bello", team="Reports",
-        summary="PDF compilation N+1 query. Fixed by prefetch + caching.",
-        started_at=t - timedelta(days=2),
-        resolved_at=t - timedelta(days=2) + timedelta(minutes=47),
-    )
-    reports = MonitoredService.objects.filter(key="reports").first()
-    if reports:
-        inc.services.add(reports)
-    inc.add_event(kind="opened", who="Alertmanager", text="p95 on /reports/term-sheet/ > 5s.")
-    inc.add_event(kind="resolved", who="D. Bello", text="Deployed fix in v4.18.2. p95 back to 240ms.")
-    _log(stdout, "  incidents: sample history created")
-
-
-def seed_uptime_history(stdout=None, days: int = 90):
-    from .models import MonitoredService, UptimeDailyRollup
-    from .constants import HealthStatus
-    today = timezone.now().date()
-    written = 0
-    for svc in MonitoredService.objects.all():
-        for offset in range(days):
-            day = today - timedelta(days=offset)
-            if UptimeDailyRollup.objects.filter(service=svc, day=day).exists():
-                continue
-            # Mostly healthy with occasional dips for realism.
-            roll = random.random()
-            if roll < 0.03:
-                uptime, status = round(random.uniform(97.0, 99.4), 4), HealthStatus.WARNING
-            elif roll < 0.01:
-                uptime, status = round(random.uniform(95.0, 98.5), 4), HealthStatus.CRITICAL
-            else:
-                uptime, status = round(random.uniform(99.9, 100.0), 4), HealthStatus.HEALTHY
-            UptimeDailyRollup.objects.create(
-                service=svc, day=day, uptime_pct=uptime, worst_status=status,
-                total_checks=288, failed_checks=int((100 - uptime) / 100 * 288),
-                avg_response_ms=round(random.uniform(60, 240), 1),
-            )
-            written += 1
-    _log(stdout, f"  uptime daily rollups: +{written}")
-
-
-def seed_request_metrics(stdout=None, minutes: int = 90):
-    """Backfill a recent slice of request metrics so KPIs/series have data."""
-    from .models import RequestMetric
-    now = timezone.now().replace(second=0, microsecond=0)
-    created = 0
-    for m in range(minutes):
-        bucket = now - timedelta(minutes=m)
-        for route, method in SEED_ROUTES:
-            if RequestMetric.objects.filter(bucket_start=bucket, route=route,
-                                            method=method, school_id=None).exists():
-                continue
-            count = random.randint(20, 400)
-            errors = max(0, int(count * random.uniform(0, 0.02)))
-            hist = [0] * HISTOGRAM_SIZE
-            sum_ms = 0.0
-            max_ms = 0.0
-            for _ in range(count):
-                lat = random.lognormvariate(4.6, 0.5)  # ~100ms median, long tail
-                sum_ms += lat
-                max_ms = max(max_ms, lat)
-                idx = next((i for i, u in enumerate(LATENCY_BUCKETS_MS) if lat <= u), HISTOGRAM_SIZE - 1)
-                hist[idx] += 1
-            RequestMetric.objects.create(
-                bucket_start=bucket, route=route, method=method, school_id=None,
-                request_count=count, status_2xx=count - errors, status_5xx=errors,
-                latency_sum_ms=round(sum_ms, 1), latency_max_ms=round(max_ms, 1),
-                latency_hist=hist,
-            )
-            created += 1
-    _log(stdout, f"  request metrics: +{created} rows")
-
-
 def run(stdout=None):
-    _log(stdout, "Seeding vs_health")
+    _log(stdout, "Seeding vs_health (configuration only — telemetry comes from live collectors)")
     seed_permissions(stdout)
     seed_services(stdout)
     seed_checks(stdout)
     seed_alert_rules(stdout)
     seed_slos(stdout)
-    seed_incidents(stdout)
-    seed_uptime_history(stdout)
-    seed_request_metrics(stdout)
     _log(stdout, "Done.")

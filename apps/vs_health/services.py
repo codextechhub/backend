@@ -420,12 +420,16 @@ def overall_posture() -> dict:
             "warning": warn, "active_incidents": active}
 
 
-def global_uptime(days: int = 30) -> float:
-    """Mean uptime across services over the last *days* (from daily rollups)."""
+def global_uptime(days: int = 30) -> float | None:
+    """Mean uptime across services over the last *days* (from daily rollups).
+
+    None when no rollups exist yet — an uptime figure must never be claimed
+    without a single real check behind it.
+    """
     from .models import UptimeDailyRollup
     since = (timezone.now() - timedelta(days=days)).date()
     agg = UptimeDailyRollup.objects.filter(day__gte=since).aggregate(v=Avg("uptime_pct"))
-    return round(float(agg["v"]), 3) if agg["v"] is not None else 100.0
+    return round(float(agg["v"]), 3) if agg["v"] is not None else None
 
 
 # ---------------------------------------------------------------------------
