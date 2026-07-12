@@ -108,6 +108,17 @@ class CapabilitySerializer(serializers.ModelSerializer):
         child=serializers.SlugField(max_length=100), required=False, write_only=True
     )
 
+    def to_representation(self, instance):
+        # Read side of the write-only dependencies list: the required keys.
+        # A capability with an unmet dependency resolves OFF regardless of
+        # grants/overrides, so clients need this to explain the state.
+        data = super().to_representation(instance)
+        data["dependencies"] = [
+            link.requires.key
+            for link in instance.dependency_links.select_related("requires").all()
+        ]
+        return data
+
     class Meta:
         model = Capability
         fields = [
