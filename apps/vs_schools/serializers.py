@@ -982,7 +982,20 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 **package_setup_data,
             )
 
-            for capability in enabled_modules:
+            # Close the grant set under capability dependencies (transitively):
+            # a picked module must not end up entitled-but-off because its
+            # requirement wasn't ticked (e.g. procurement needs finance). The
+            # wizard mirrors this expansion client-side; this is the guarantee.
+            to_grant = {c.pk: c for c in enabled_modules}
+            stack = list(enabled_modules)
+            while stack:
+                for link in stack.pop().dependency_links.select_related("requires"):
+                    required = link.requires
+                    if required.pk not in to_grant and required.is_active:
+                        to_grant[required.pk] = required
+                        stack.append(required)
+
+            for capability in to_grant.values():
                 CapabilityEntitlement.all_objects.update_or_create(
                     capability=capability,
                     scope_key=f"school:{school.pk}",
