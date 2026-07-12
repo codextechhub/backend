@@ -35,8 +35,8 @@ This does **NOT**:
 - gate money-out by default — approval only applies where a
   `payments.payout_batch` template is published for the batch's scope; **absent a
   template, a single `payments.payout.create` holder disburses directly** (§8).
-- adopt a provider-reported settled amount for payouts — unlike collections, a
-  payout books the amount **we** instructed (`services.py:519`; see §5).
+- ignore a provider-reported settled amount — like collections, `confirm_payout`
+  now adopts the PSP's settled figure when it differs (see §5/§8.3).
 
 ## 2. Domain model
 
@@ -155,7 +155,10 @@ approver** (read from the workflow action log, `workflow_handlers.py:41-60,105-1
 
 **Payout net & journal split** (`_book_vendor_payment`, `services.py:536-559` →
 `vs_procurement/payables.py:268-343`), all kobo:
-- `gross = payout.amount`; `wht = metadata["wht_amount"]` (default 0);
+- `gross = payout.amount` — where `confirm_payout` first adopts the PSP's settled
+  amount when it reports one that differs (`settled = amount or payout.amount`,
+  keeping the original in `metadata["instructed_amount"]`, `services.py:522-527`);
+  `wht = metadata["wht_amount"]` (default 0);
   `net = gross − wht` (`payables.py:292`). Guard: `0 ≤ wht ≤ gross` else
   `PostingError` (`payables.py:290`). Example: instructed `70 000`, `wht = 7 000`
   → net `63 000`.
@@ -230,51 +233,58 @@ Batch of two, approval-gated (from `PayoutBatchApprovalTests`,
 
 ## 8. Gotchas / known limitations
 
-1. **Maker-checker is opt-in per template — no template means single-actor
+> Hardening pass (2026-07-12) closed items 2, 3, 5, 6, 7. Item 1 is tracked as an
+> operational go-live task (`todo.md`); item 4 is accepted as a labelled heuristic.
+
+1. ⚠️ **Maker-checker is opt-in per template — no template means single-actor
    disbursement.** `approval_required(batch)` is false without a published
    `payments.payout_batch` template, so a lone `payments.payout.create` holder can
    `POST /payout-batches/<id>/` (or create-with-`submit:true`) and push money out
    with no second approver (`views.py:514-517,598-603`). **By design** (mirrors the
-   finance approval slices) but a real control gap until a template is published
-   per scope. Verdict: ensure each live entity has a template seeded.
+   finance approval slices), but a real control gap until a template is published
+   per scope. **Open — operational:** tracked in `todo.md` (seed a
+   `payments.payout_batch` approval template for every live entity before go-live).
 
-2. **Webhook-received / -rejected events never appear in the transactions log.**
-   `audit.record(WEBHOOK_RECEIVED / WEBHOOK_REJECTED)` is called from the webhook
-   path with **no `entity`** (the ingestor doesn't know it yet), so those
-   `PaymentEvent` rows have `entity=NULL`; `TransactionsLogView` filters
-   `entity=entity` (`views.py:736`) and silently omits them. So the "immutable
-   record of *every* gateway action including webhooks" (the view's own docstring)
-   excludes the webhook rows in practice. **Recommend fix** — resolve the entity
-   before logging, or add an unscoped webhook-events view.
+2. ✅ **Webhook events now carry the matched record's entity.** `ingest_webhook`
+   resolves the target collection/payout once (`_find_record`) and passes its
+   `entity` into the `WEBHOOK_RECEIVED` `PaymentEvent` (`webhooks.py:74-82`), so
+   webhook actions appear in that entity's transactions log. The bad-signature
+   `WEBHOOK_REJECTED` row intentionally stays `entity=NULL` (the payload is
+   untrusted, so no entity can be attributed). Test:
+   `test_webhook_received_event_is_attributed_to_the_entity`.
 
-3. **Payouts do not adopt a provider-reported settled amount.** Unlike
-   `confirm_collection` (slice 1 fix), `confirm_payout` books `payout.amount`
-   verbatim (`services.py:519`, gross on `_book_vendor_payment`). Defensible — we
-   instruct the exact payout amount, so the PSP shouldn't change it — but if a PSP
-   ever settles a different net (partial reversal, fee deduction at source) the
-   ledger won't reflect it. **Judgment call** — document the assumption; revisit if
-   a provider settles variable amounts.
+3. ✅ **Payouts now adopt the provider-reported settled amount.** `TransferResult`
+   carries `amount` (`providers/base.py:74`, populated by Paystack/OPay/Fake);
+   `confirm_payout` computes `settled = amount or payout.amount` and, when the PSP
+   reports a positive figure that differs, stashes `metadata["instructed_amount"]`
+   and books the settled gross (`services.py:507,522-527`). A `0` report never
+   overrides. Tests: `test_payout_adopts_provider_settled_amount`,
+   `test_confirm_payout_status_without_amount_keeps_instructed`.
 
-4. **Reconciliation amount-fallback can mis-pair look-alike amounts.** Pass 2
+4. ⚠️ **Reconciliation amount-fallback can mis-pair look-alike amounts.** Pass 2
    matches purely on exact signed amount within the window, first-unconsumed-wins
-   (`reconciliation.py:217-229`). Two same-amount movements and two same-amount bank
-   lines can pair the *wrong* way. Harmless (read-only, advisory) but the row's
-   `settlement_*` fields may point at the wrong bank line. **By design / known** —
-   note in the console that amount matches are heuristic.
+   (`reconciliation.py:217-229`) — the backend is **unchanged**. Two same-amount
+   movements + two same-amount bank lines can pair the *wrong* way; harmless
+   (read-only, advisory) but the row's `settlement_*` fields may point at the wrong
+   bank line. **Accepted as a labelled heuristic** — the console flags amount
+   matches (`match_basis == "amount"`) for a human to confirm.
 
-5. **`fee_amount` can go negative.** `|gross| − |settled|` (`reconciliation.py:61`)
-   assumes the bank nets *below* gross; a larger/reversal bank line (or a wrong
-   amount-match) yields a negative "fee". Cosmetic; clamp at display.
+5. ✅ **`fee_amount` is clamped at zero.** `max(0, |gross| − |settled|)`
+   (`reconciliation.py:61`), so an over-settlement / reversal never displays a
+   negative fee. Test: `test_over_settlement_fee_is_clamped_to_zero`.
 
-6. **Batch `total_amount` is not reduced when a child fails.** It is the assembly
-   sum (`services.py:408-411`); a batch with a FAILED child still reports the
-   original total. The summary "queued" KPI (DRAFT+PROCESSING totals,
-   `views.py:550`) can therefore overstate money truly in flight. Low severity.
+6. ✅ **The "queued" KPI now counts only in-flight children.**
+   `PayoutBatchSummaryView` sums child `PayoutInstruction` amounts where
+   `batch is not null and status in (PENDING, PROCESSING)` instead of the batches'
+   denormalised `total_amount` (`views.py:551-560`), so a FAILED child no longer
+   inflates money-in-flight. (`total_amount` itself remains the assembly sum — the
+   batch's face value.) Test:
+   `test_payout_batch_summary_queued_counts_only_in_flight_children`.
 
-7. **Movements feed exposes internal ledger ids + narration for payouts.** Rows
-   carry `linked_id` (the `payment_id` / `vendor_payment_id`) and `narration`;
-   only `party` + `beneficiary_account` are FLS-masked (`views.py:836-838`). PII is
-   masked, but internal ids leak to any `payments.report.view` holder. Low severity.
+7. ✅ **Movements feed no longer exposes internal ledger ids.** `linked_id` (the
+   `payment_id` / `vendor_payment_id`) was dropped from the projection
+   (`views.py:768-798`); `party` + `beneficiary_account` stay FLS-masked and
+   `narration` is intentionally kept. Test: `test_movements_feed_hides_internal_linked_id`.
 
 ## 9. Permissions & tenant isolation
 
@@ -332,7 +342,7 @@ the same fields manually (`views.py:836-838`).
 
 ## 11. Test coverage & gaps
 
-Baseline: **45 green** (`python manage.py test vs_payments
+Baseline after hardening: **54 green** (`python manage.py test vs_payments
 --settings=apps.settings.local`). Settlement-relevant:
 - `PayoutTests` (`tests.py:308-354`): initiate→PROCESSING; confirm→books
   `VendorPayment` (gross carried); webhook confirm (re-verify); failed payout books
@@ -349,18 +359,22 @@ Baseline: **45 green** (`python manage.py test vs_payments
   break reconciliation; date-window filters both sides.
 - `PaymentEventTests` (`tests.py:553-564`): append-only (save/delete raise).
 - `PaymentsAPITests`: payout endpoint, create+submit batch, batch resolves vendor
-  by code / requires one, settlement-reconciliation endpoint, transactions log.
+  by code / requires one, settlement-reconciliation endpoint, transactions log,
+  plus the hardening tests `test_payout_batch_summary_queued_counts_only_in_flight_children`
+  and `test_movements_feed_hides_internal_linked_id`.
+- Hardening additions: `WebhookTests.test_webhook_received_event_is_attributed_to_the_entity`,
+  `PayoutTests.test_payout_adopts_provider_settled_amount` /
+  `.test_confirm_payout_status_without_amount_keeps_instructed`,
+  `SettlementReconciliationTests.test_over_settlement_fee_is_clamped_to_zero`.
 
 Gaps still open:
 - **403 / permission-denied** — no test that a caller lacking `payout.create` /
   `report.view` / `payout_batch.submit` gets 403.
 - **Cross-tenant isolation** — no test that a foreign batch/payout `pk` or
   `?entity` 404s on these routes.
-- **Movements feed** — the `/movements/` and `/movements/summary/` endpoints have
-  **no dedicated test** (union, direction filter, FLS masking of payout PII are all
-  unexercised).
-- **§8 gotchas** — the transactions-log webhook-entity omission (§8.2), negative
-  fee (§8.5), and total-not-reduced-on-failure (§8.6) are unpinned.
+- **Movements feed** — beyond the `linked_id` check, `/movements/` union +
+  `direction` filter + FLS masking of payout PII, and `/movements/summary/`, remain
+  lightly covered.
 - **FLS negative case** — no test that a caller without `payout.view_sensitive`
   sees beneficiary details masked.
 </content>

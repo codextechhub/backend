@@ -46,7 +46,7 @@ def ingest_webhook(*, provider: str, raw_body: bytes, headers: dict | None = Non
     if not client.verify_signature(raw_body=raw_body, headers=headers):  # Reject events that fail authenticity checks.
         audit.record(  # Write a rejection event so signature failures are visible in audit logs.
             action=PaymentAuditAction.WEBHOOK_REJECTED, provider=provider, succeeded=False,
-            message="Signature verification failed.",
+            message="Signature verification failed.",  # entity stays None: the payload is untrusted here, so we can't attribute one.
         )
         raise WebhookSignatureError(provider=provider)
 
@@ -71,13 +71,15 @@ def ingest_webhook(*, provider: str, raw_body: bytes, headers: dict | None = Non
     if not created and event.status == WebhookStatus.PROCESSED:  # A processed event is a true duplicate retry.
         raise DuplicateWebhookError()
 
+    record = _find_record(parsed)  # Resolve the target collection/payout once for entity attribution and dispatch reuse.
     audit.record(  # Record that a valid webhook arrived, even if later dispatch ignores it.
         action=PaymentAuditAction.WEBHOOK_RECEIVED, provider=provider,
+        entity=getattr(record, "entity", None),  # Attribute the event to the matched record's entity so it shows in that entity's log.
         reference=parsed.reference, message=f"{parsed.event_type} ({parsed.direction}).",
     )
 
     try:  # Dispatch can fail after the webhook is safely stored.
-        _dispatch(event, parsed)
+        _dispatch(event, parsed, record)
     except Exception as exc:  # Processing failed, but the event should remain stored for replay/debugging.
         event.status = WebhookStatus.FAILED  # Mark the event failed so it can be retried explicitly.
         event.error = str(getattr(exc, "message", exc))[:255]  # Keep a short error string for operators.
@@ -88,7 +90,7 @@ def ingest_webhook(*, provider: str, raw_body: bytes, headers: dict | None = Non
 
 
 # Support the dispatch workflow.
-def _dispatch(event: WebhookEvent, parsed) -> None:
+def _dispatch(event: WebhookEvent, parsed, record=None) -> None:
     """Route a verified event to the matching confirm service and mark it processed.
 
     SECURITY: a valid signature proves the event *came from* the provider, but we do
@@ -101,7 +103,7 @@ def _dispatch(event: WebhookEvent, parsed) -> None:
     status) and against a leaked webhook secret being used to fabricate settlements.
     """
     if parsed.direction == PaymentDirection.COLLECTION:  # Money-in events are matched to collection intents.
-        intent = _find_collection(parsed)  # Resolve the local collection record from provider references.
+        intent = record  # Reuse the record resolved during ingestion to avoid a second lookup.
         if intent is not None:  # Only confirm if the webhook maps to a known intent.
             services.confirm_collection(intent)  # Re-verify the provider state before booking the receipt.
             event.collection = intent  # Link the webhook event to the matching collection.
@@ -110,7 +112,7 @@ def _dispatch(event: WebhookEvent, parsed) -> None:
             event.status = WebhookStatus.IGNORED  # Record that the payload was valid but unmatched.
             event.error = "No matching collection intent."  # Save a clear operator-facing explanation.
     elif parsed.direction == PaymentDirection.PAYOUT:  # Money-out events are matched to payout instructions.
-        payout = _find_payout(parsed)  # Resolve the local payout record from provider references.
+        payout = record  # Reuse the record resolved during ingestion to avoid a second lookup.
         if payout is not None:  # Only confirm if the webhook maps to a known payout.
             services.confirm_payout(payout)  # Re-verify the provider state before posting the vendor payment.
             event.payout = payout  # Link the webhook event to the matching payout.
@@ -126,6 +128,20 @@ def _dispatch(event: WebhookEvent, parsed) -> None:
     event.save(update_fields=[
         "collection", "payout", "status", "error", "processed_at", "updated_at",
     ])
+
+
+# Support the find record workflow.
+def _find_record(parsed):
+    """Resolve the local collection/payout this event targets (or None if unmatched).
+
+    Resolving once here lets us attribute the WEBHOOK_RECEIVED audit row to the record's
+    entity and hand the same object to :func:`_dispatch` without a second query.
+    """
+    if parsed.direction == PaymentDirection.COLLECTION:  # Money-in events map to a collection intent.
+        return _find_collection(parsed)
+    if parsed.direction == PaymentDirection.PAYOUT:  # Money-out events map to a payout instruction.
+        return _find_payout(parsed)
+    return None  # Unknown direction has no attributable record.
 
 
 # Support the find collection workflow.

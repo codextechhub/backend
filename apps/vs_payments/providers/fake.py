@@ -35,6 +35,8 @@ class FakeProvider(Provider):
         self.bank_name = bank_name  # Display bank name used for virtual accounts.
         # Lets a test force the next verify result without a webhook round-trip.  # Override verification outcomes.
         self.forced_status: dict[str, str] = {}
+        # Lets a test force the provider-reported settled amount (kobo) per reference.  # Override the verified amount.
+        self.forced_amount: dict[str, int] = {}
 
     # -- collection --------------------------------------------------------- #  # Money-in behavior.
     def create_checkout(self, *, reference, amount, currency, customer_email="",
@@ -87,6 +89,7 @@ class FakeProvider(Provider):
             reference=reference,  # Merchant payout reference.
             provider_reference=provider_reference or f"FAKE-TR-{reference}",  # Predictable fake transfer id.
             status=status,  # Forced or default transfer status.
+            amount=self.forced_amount.get(reference, 0),  # Report the forced settled amount (0 = not reported).
             raw={"forced": status},  # Show the origin of the returned state.
         )
 

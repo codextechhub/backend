@@ -178,6 +178,9 @@ class OPayProvider(Provider):
             reference=reference,  # Merchant payout reference.
             provider_reference=str(data.get("orderNo", provider_reference)),
             status=_TRANSFER_STATUS.get(gateway, "PROCESSING"),
+            # Best-effort: OPay models amounts as a nested {"total": <kobo>, ...} object
+            # (same shape as verify_collection/create_transfer); anything else stays 0.  # Only trust the documented kobo total.
+            amount=int((data.get("amount") or {}).get("total", 0) or 0),
             failure_reason=data.get("failureReason", "") if gateway in ("FAIL", "FAILED") else "",
             raw=data,  # Preserve the raw payload.
         )

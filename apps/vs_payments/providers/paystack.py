@@ -157,6 +157,7 @@ class PaystackProvider(Provider):
             reference=reference,  # Merchant reference for the transfer.
             provider_reference=data.get("transfer_code", provider_reference),
             status=_TRANSFER_STATUS.get(status, "PROCESSING"),
+            amount=int(data.get("amount") or 0),  # Paystack transfer verify returns the kobo amount in data.amount.
             failure_reason=data.get("message", "") if status in ("failed", "reversed") else "",
             raw=data,  # Keep the raw provider payload.
         )

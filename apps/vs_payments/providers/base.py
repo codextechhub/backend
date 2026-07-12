@@ -71,6 +71,7 @@ class TransferResult:
     reference: str  # Merchant reference for the payout.
     provider_reference: str = ""  # Provider-side transfer identifier.
     status: str = "PENDING"          # PayoutStatus value  # Neutral payout lifecycle state.
+    amount: int = 0                  # kobo, as reported by the provider (0 = not reported)  # Settled transfer amount.
     recipient_code: str = ""  # PSP recipient code when the transfer is created.
     failure_reason: str = ""  # Human-readable failure explanation, if any.
     raw: dict = field(default_factory=dict)  # Raw PSP response payload.

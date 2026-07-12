@@ -58,7 +58,7 @@ class SettlementRow:
         """Gross (gateway) minus net (bank) — the PSP fee, in absolute kobo."""
         if self.settled_amount is None:  # No settlement means we cannot derive a fee yet.
             return 0
-        return abs(self.amount) - abs(self.settled_amount)  # Fee is the absolute difference between gross and net.
+        return max(0, abs(self.amount) - abs(self.settled_amount))  # Fee is gross − net, clamped so an over-settlement never reads negative.
 
     @property
     # Flag amount-only matches for a human to confirm.

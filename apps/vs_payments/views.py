@@ -542,18 +542,25 @@ class PayoutBatchSummaryView(APIView):
         from django.db.models import Count, Q, Sum
         from django.db.models.functions import Coalesce
 
+        from .constants import PayoutStatus  # In-flight statuses backing the queued-money KPI.
+
         entity = resolve_entity(request)  # Resolve the tenant entity.
         qs = PayoutBatch.objects.filter(entity=entity)
         cutoff = timezone.now() - datetime.timedelta(days=7)
         agg = qs.aggregate(
             total=Count("id"),
-            queued=Coalesce(Sum("total_amount", filter=Q(status__in=["DRAFT", "PROCESSING"])), 0),
             completed7d=Count("id", filter=Q(status="COMPLETED", submitted_at__gte=cutoff)),
             drafts=Count("id", filter=Q(status="DRAFT")),
         )
+        # "queued" money must reflect only genuinely in-flight child instructions, not the
+        # batch total — a PROCESSING batch can carry FAILED children that never left.  # Sum child amounts, not batch totals.
+        queued_kobo = PayoutInstruction.objects.filter(
+            entity=entity, batch__isnull=False,
+            status__in=[PayoutStatus.PENDING, PayoutStatus.PROCESSING],
+        ).aggregate(s=Coalesce(Sum("amount"), 0))["s"]
         return success_response("Payout batches summary retrieved.", data={
             "total": agg["total"],
-            "queued": {"kobo": agg["queued"], "naira": format_naira(agg["queued"])},
+            "queued": {"kobo": queued_kobo, "naira": format_naira(queued_kobo)},
             "completed7d": agg["completed7d"],
             "drafts": agg["drafts"],
         })
@@ -761,7 +768,7 @@ MOVEMENT_GROUPS = {
 }
 _MOVEMENT_COLS = [  # Common projection shape for the movements feed.
     "kind", "gateway_id", "reference", "created_at", "direction", "party", "provider",
-    "amount", "status", "narration", "provider_reference", "confirmed_at", "linked_id",
+    "amount", "status", "narration", "provider_reference", "confirmed_at",
     "email", "account_code", "account_name", "beneficiary_account",
 ]
 
@@ -786,14 +793,14 @@ def _movement_querysets(entity, *, provider=None, group=None):
         kind=Value("collection", output_field=CharField()), gateway_id=F("id"),
         direction=Value("in", output_field=CharField()),
         party=Coalesce(F("customer__name"), F("payer_name"), Value(""), output_field=CharField()),
-        linked_id=F("payment_id"), email=F("payer_email"),
+        email=F("payer_email"),
         account_code=F("deposit_account__code"), account_name=F("deposit_account__name"),
         beneficiary_account=Value("", output_field=CharField()),
     ).values(*_MOVEMENT_COLS)
     pv = pos.annotate(
         kind=Value("payout", output_field=CharField()), gateway_id=F("id"),
         direction=Value("out", output_field=CharField()), party=F("beneficiary_name"),
-        linked_id=F("vendor_payment_id"), email=Value("", output_field=CharField()),
+        email=Value("", output_field=CharField()),
         account_code=F("source_account__code"), account_name=F("source_account__name"),
         beneficiary_account=F("beneficiary_account_number"),
     ).values(*_MOVEMENT_COLS)

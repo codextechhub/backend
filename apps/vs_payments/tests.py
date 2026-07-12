@@ -295,6 +295,21 @@ class WebhookTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(intent.status, CollectionStatus.SUCCEEDED)
         self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)
 
+    # Verify webhook received event carries the matched record's entity behavior.
+    def test_webhook_received_event_is_attributed_to_the_entity(self):
+        # The WEBHOOK_RECEIVED audit row must carry the collection's entity so it shows
+        # in that entity's transactions log (TransactionsLogView filters by entity).
+        entity, customer, _ = self.build()
+        intent = services.initiate_collection(entity=entity, amount=40000, customer=customer)
+        self.fake.forced_status[intent.reference] = "SUCCEEDED"
+        raw, headers = self._signed(
+            event="charge.success", reference=intent.reference, status="SUCCEEDED", amount=40000,
+        )
+        webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
+        received = PaymentEvent.objects.filter(entity=entity, action="WEBHOOK_RECEIVED")
+        self.assertTrue(received.exists())
+        self.assertEqual(received.first().entity_id, intent.entity_id)
+
     # Verify duplicate webhook never double books behavior.
     def test_duplicate_webhook_never_double_books(self):
         entity, customer, _ = self.build()
@@ -361,6 +376,40 @@ class PayoutTests(_PaymentsFixtureMixin, TestCase):
         payout.refresh_from_db()
         self.assertEqual(payout.status, PayoutStatus.PAID)
         self.assertEqual(VendorPayment.objects.filter(entity=entity).count(), 1)
+
+    # Verify payout adopts the provider-reported settled amount behavior.
+    def test_payout_adopts_provider_settled_amount(self):
+        # Mirror of confirm_collection: the verify path books what actually left the
+        # account, retaining the instructed amount in metadata.
+        entity, _, vendor = self.build()
+        payout = services.initiate_payout(
+            entity=entity, amount=70000, beneficiary_name="Supplier Ltd",
+            beneficiary_account_number="0123456789", beneficiary_bank_code="058",
+            vendor=vendor,
+        )
+        # Provider verify reports PAID for 68,000 (a 2,000 shortfall vs the 70,000 instructed).
+        self.fake.forced_amount[payout.reference] = 68000
+        self.fake.forced_status[payout.reference] = "PAID"
+        payout = services.confirm_payout(payout)  # No explicit amount → verify path adopts result.amount.
+        self.assertEqual(payout.amount, 68000)
+        vp = VendorPayment.objects.get(pk=payout.vendor_payment_id)
+        self.assertEqual(vp.gross_amount, 68000)
+        self.assertEqual(payout.metadata["instructed_amount"], 70000)
+
+    # Verify an explicit PAID status without an amount never overrides behavior.
+    def test_confirm_payout_status_without_amount_keeps_instructed(self):
+        entity, _, vendor = self.build()
+        payout = services.initiate_payout(
+            entity=entity, amount=70000, beneficiary_name="Supplier Ltd",
+            beneficiary_account_number="0123456789", beneficiary_bank_code="058",
+            vendor=vendor,
+        )
+        # status supplied, amount omitted → settled falls back to the instructed 70,000.
+        payout = services.confirm_payout(payout, status=PayoutStatus.PAID)
+        self.assertEqual(payout.amount, 70000)
+        vp = VendorPayment.objects.get(pk=payout.vendor_payment_id)
+        self.assertEqual(vp.gross_amount, 70000)
+        self.assertNotIn("instructed_amount", payout.metadata or {})
 
     # Verify failed payout books nothing behavior.
     def test_failed_payout_books_nothing(self):
@@ -520,6 +569,21 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(row.settled_amount, 39100)  # net (bank)
         self.assertEqual(row.fee_amount, 900)        # PSP fee
         self.assertEqual(row.settlement_reference, intent.reference)
+
+    # Verify an over-settlement never yields a negative fee behavior.
+    def test_over_settlement_fee_is_clamped_to_zero(self):
+        # If the matched bank line is larger than the gateway amount, the derived fee
+        # (gross − net) would go negative — it must clamp to 0 instead.
+        entity, customer, _ = self.build()
+        intent = services.initiate_collection(entity=entity, amount=40000, customer=customer)
+        services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+        intent.refresh_from_db()
+        ba = self._bank_account(entity)
+        self._bank_line(ba, amount=40500, reference=intent.reference)  # Bank shows MORE than gateway.
+
+        row = reconciliation.settlement_reconciliation(entity).rows[0]
+        self.assertEqual(row.settled_amount, 40500)
+        self.assertEqual(row.fee_amount, 0)
 
     # Verify amount fallback match for a payout behavior.
     def test_amount_fallback_match_for_a_payout(self):
@@ -739,6 +803,46 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
             format="json",
         )
         self.assertEqual(bad.status_code, 400, bad.content)
+
+    # Verify payout batch summary queued reflects only in-flight children behavior.
+    def test_payout_batch_summary_queued_counts_only_in_flight_children(self):
+        entity, _, vendor = self.build()
+        flaky = _FlakyProvider(secret="test-secret", fail_amount=7000)  # Fails the 7,000 item at submit.
+        registry.register("PAYSTACK", flaky)
+        registry.register("FAKE", flaky)
+        resp = self.client.post(
+            f"/v1/payments/payout-batches/?entity={entity.code}",
+            {"title": "Run", "submit": True, "items": [
+                {"amount": 11000, "beneficiary_name": "Supplier Ltd",
+                 "beneficiary_account_number": "0123456789", "beneficiary_bank_code": "058",
+                 "vendor": vendor.pk},
+                {"amount": 7000, "beneficiary_name": "Supplier Ltd",
+                 "beneficiary_account_number": "0123456780", "beneficiary_bank_code": "058",
+                 "vendor": vendor.pk},
+            ]},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        summary = self.client.get(f"/v1/payments/payout-batches/summary/?entity={entity.code}")
+        self.assertEqual(summary.status_code, 200)
+        # Only the surviving in-flight child (11,000) is queued money; the FAILED 7,000 is not.
+        self.assertEqual(summary.json()["data"]["queued"]["kobo"], 11000)
+
+    # Verify movements feed does not expose internal ledger ids behavior.
+    def test_movements_feed_hides_internal_linked_id(self):
+        entity, customer, vendor = self.build()
+        services.initiate_collection(entity=entity, amount=40000, customer=customer)
+        services.initiate_payout(
+            entity=entity, amount=15000, beneficiary_name="Supplier Ltd",
+            beneficiary_account_number="0123456789", beneficiary_bank_code="058",
+            vendor=vendor,
+        )
+        resp = self.client.get(f"/v1/payments/movements/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.json()["data"]
+        self.assertTrue(rows)  # Both a collection and a payout row are present.
+        for row in rows:  # Neither side should leak the internal payment/vendor-payment id.
+            self.assertNotIn("linked_id", row)
 
     # Verify settlement reconciliation endpoint behavior.
     def test_settlement_reconciliation_endpoint(self):

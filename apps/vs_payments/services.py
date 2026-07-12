@@ -488,8 +488,12 @@ def _recompute_batch_status(batch):
 
 @transaction.atomic
 # Handle the confirm payout workflow.
-def confirm_payout(payout, *, status=None, actor_user=None):
-    """Confirm a payout and book the vendor payment — idempotently."""
+def confirm_payout(payout, *, status=None, amount=None, actor_user=None):
+    """Confirm a payout and book the vendor payment — idempotently.
+
+    ``amount`` (kobo) optionally overrides the booked amount; if omitted on the verify
+    path, the provider-reported settled amount is adopted (mirrors ``confirm_collection``).
+    """
     payout = PayoutInstruction.objects.select_for_update().get(pk=payout.pk)
     if payout.is_terminal:  # Already confirmed or failed rows should not be processed again.
         return payout  # Exit early for idempotency.
@@ -500,6 +504,7 @@ def confirm_payout(payout, *, status=None, actor_user=None):
             reference=payout.reference, provider_reference=payout.provider_reference,
         )
         status = result.status  # Use the provider's transfer status for confirmation.
+        amount = result.amount or payout.amount  # Adopt the PSP's settled amount, falling back to the instructed value.
         payout.raw_response = {**(payout.raw_response or {}), "verify": result.raw}  # Append the verification payload.
 
     if status != PayoutStatus.PAID:  # Only a paid transfer can book a vendor payment.
@@ -514,11 +519,17 @@ def confirm_payout(payout, *, status=None, actor_user=None):
         _refresh_batch(payout)  # Keep the parent batch aggregate in sync.
         return payout  # Stop because no vendor payment should be posted.
 
+    settled = amount or payout.amount  # Use the confirmed amount when one is available.
+    if settled > 0 and settled != payout.amount:  # Preserve the originally instructed amount in metadata.
+        # Book the amount that actually left the account, but retain the instructed value for audit.
+        payout.metadata = {**(payout.metadata or {}), "instructed_amount": payout.amount}  # Store the pre-settlement amount.
+        payout.amount = settled  # Replace the payout amount with the actual settled amount.
+
     _book_vendor_payment(payout, actor_user=actor_user)  # Post the vendor payment into the ledger.
     payout.status = PayoutStatus.PAID  # Mark the payout as successfully settled.
     payout.confirmed_at = timezone.now()
     payout.save(update_fields=[
-        "status", "vendor_payment_id", "confirmed_at", "raw_response", "updated_at",
+        "status", "vendor_payment_id", "amount", "metadata", "confirmed_at", "raw_response", "updated_at",
     ])
     audit.record(  # Emit the successful confirmation audit event.
         action=PaymentAuditAction.PAYOUT_CONFIRMED, entity=payout.entity,
