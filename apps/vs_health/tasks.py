@@ -12,7 +12,7 @@ from celery import shared_task
 from django.db.models import Avg, Count, Q
 from django.utils import timezone
 
-from .constants import HealthStatus, KNOWN_QUEUES, worst_status
+from .constants import HealthStatus, KNOWN_QUEUES, ROUTE_PREFIX_SERVICES, worst_status
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,58 @@ def run_uptime_checks_task() -> dict:
                 latest_per_check.append(res.status)
         if latest_per_check:
             svc.set_status(worst_status(latest_per_check))
-    return {"checks_run": ran, "services_updated": len(affected_services)}
+
+    module_updates = refresh_module_service_statuses()
+    return {
+        "checks_run": ran,
+        "services_updated": len(affected_services) + module_updates,
+    }
+
+
+def refresh_module_service_statuses(window_minutes: int = 15) -> int:
+    """Derive module-service status from real request metrics.
+
+    The "module" services (schools/billing/reports) are route groups of the
+    monolith, not separate processes — nothing can probe them independently.
+    Their honest status is the observed error rate + p95 latency of their own
+    routes over the trailing window; with zero traffic there is no signal and
+    the status is UNKNOWN, never a claimed green.
+    """
+    from .models import MonitoredService, RequestMetric
+    from .services import _status_for_error_rate, _status_for_latency, percentile_from_hist
+    from .constants import HISTOGRAM_SIZE
+
+    since = timezone.now() - timedelta(minutes=window_minutes)
+    updated = 0
+    for key, prefixes in ROUTE_PREFIX_SERVICES.items():
+        svc = MonitoredService.objects.filter(key=key, is_active=True).first()
+        if svc is None:
+            continue
+        route_q = Q()
+        for prefix in prefixes:
+            route_q |= Q(route__startswith=prefix)
+        rows = RequestMetric.objects.filter(bucket_start__gte=since).filter(route_q)
+
+        requests = 0
+        errors = 0
+        hist = [0] * HISTOGRAM_SIZE
+        for row in rows.values_list("request_count", "status_5xx", "latency_hist"):
+            requests += row[0]
+            errors += row[1]
+            for i, count in enumerate(row[2][:HISTOGRAM_SIZE]):
+                hist[i] += count
+
+        if requests == 0:
+            svc.set_status(HealthStatus.UNKNOWN)
+        else:
+            error_rate = round(errors / requests * 100, 2)
+            p95 = percentile_from_hist(hist, 95)
+            svc.set_status(worst_status([
+                _status_for_error_rate(error_rate),
+                _status_for_latency(p95),
+            ]))
+        updated += 1
+    return updated
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +190,19 @@ def capture_queue_snapshot_task() -> dict:
             retry_storm=retry_storm, status=status,
         )
         created += 1
+
+    # The Celery service card reflects real worker presence: workers online →
+    # healthy; broker reachable but no workers → critical (jobs would stall);
+    # broker unreachable/not redis → unknown (no signal, no claim).
+    from .models import MonitoredService
+    celery_svc = MonitoredService.objects.filter(key="celery", is_active=True).first()
+    if celery_svc:
+        if workers_active + workers_idle > 0:
+            celery_svc.set_status(HealthStatus.HEALTHY)
+        elif depths:
+            celery_svc.set_status(HealthStatus.CRITICAL)
+        else:
+            celery_svc.set_status(HealthStatus.UNKNOWN)
     return {"snapshots": created, "workers_active": workers_active}
 
 

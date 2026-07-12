@@ -23,7 +23,9 @@ SERVICES = [
     ("web", "Web Frontend", "Edge", "Tier 1", "internal", 10),
     ("api", "API · DRF", "Core", "Tier 1", "internal", 20),
     ("auth", "Auth / JWT", "Core", "Tier 1", "internal", 30),
-    ("admissions", "Admissions", "Modules", "Tier 2", "internal", 40),
+    # Module services are route groups of the monolith; status derives from
+    # live request metrics on their prefixes (constants.ROUTE_PREFIX_SERVICES).
+    ("schools", "Schools & Onboarding", "Modules", "Tier 2", "internal", 40),
     ("billing", "Billing & Fees", "Modules", "Tier 2", "internal", 50),
     ("reports", "Report Engine", "Modules", "Tier 3", "internal", 60),
     ("celery", "Celery Workers", "Async", "Tier 2", "internal", 70),
@@ -77,7 +79,13 @@ def seed_services(stdout=None):
             defaults={"name": name, "group": group, "tier": tier,
                       "kind": kind, "sort_order": order},
         )
-    _log(stdout, f"  services: {MonitoredService.objects.count()}")
+    # Retire registry entries no longer in the list (e.g. the old fictional
+    # "admissions" group) so the console never shows unmonitorable services.
+    keys = {key for key, *_ in SERVICES}
+    retired = MonitoredService.objects.exclude(key__in=keys).filter(is_active=True).update(is_active=False)
+    if retired:
+        _log(stdout, f"  services retired: {retired}")
+    _log(stdout, f"  services: {MonitoredService.objects.filter(is_active=True).count()}")
 
 
 def seed_checks(stdout=None):
@@ -102,6 +110,10 @@ def seed_checks(stdout=None):
     mk("redis", "Redis ping", CheckType.REDIS, expected={"warn_ms": 50})
     mk("dns", "SSL certificate", CheckType.SSL, SSL_DOMAIN, {"warn_days": 14, "critical_days": 5}, 3600)
     mk("payments", "Payments gateway", CheckType.HTTP, f"{PROBE_BASE}/v1/payments/", {"warn_ms": 900})
+    # Real TCP reachability of the configured mail relay.
+    smtp_host = getattr(settings, "EMAIL_HOST", "smtp.zoho.com")
+    smtp_port = getattr(settings, "EMAIL_PORT", 587)
+    mk("smtp", "SMTP reachability", CheckType.TCP, f"{smtp_host}:{smtp_port}", {"timeout": 5})
     _log(stdout, f"  uptime checks: {UptimeCheck.objects.count()}")
 
 

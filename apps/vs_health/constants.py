@@ -61,6 +61,15 @@ METRIC_BUCKET_SECONDS = 60
 # The Celery queues the platform runs (mirrors apps/celery.py + the design).
 KNOWN_QUEUES = ["imports", "exports", "notifications", "provisioning", "reports", "celery"]
 
+# Module "services" are route groups of the Django monolith, not separate
+# processes — their status is DERIVED from real request metrics on these
+# route prefixes (tasks.refresh_module_service_statuses), never probed.
+ROUTE_PREFIX_SERVICES = {
+    "schools": ("/v1/i/",),
+    "billing": ("/v1/finance/", "/v1/payments/"),
+    "reports": ("/v1/finance/reports/",),
+}
+
 
 # ---------------------------------------------------------------------------
 # RBAC permission keys (registered as module.resource.action rows by seed)
