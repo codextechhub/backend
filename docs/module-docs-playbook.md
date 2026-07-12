@@ -12,10 +12,12 @@ can trace endpoints → calculations → output shapes without reading the code 
 
 - ✅ `vs_finance` — complete: 16 slices in `docs/finance/`, every gotcha fixed or
   explicitly justified in each doc's §8.
-- ⏭ `vs_payments` → `docs/payments/`: `payment_collections` (collections + virtual
-  accounts), `payment_settlement` (payouts, batches, settlement reconciliation),
-  `payment_webhooks_providers` (webhook handling + OPay/Paystack adapters), plus the
-  movements feed if it doesn't fit cleanly in settlement.
+- ✅ `vs_payments` — complete: 3 slices in `docs/payments/` — `payment_collections`
+  (collections + virtual accounts), `payment_settlement` (payouts, batches,
+  settlement reconciliation + movements/transactions feeds),
+  `payment_webhooks_providers` (async webhook pipeline + OPay/Paystack/Fake
+  adapters). Gotchas swept; suite 70 green. One OPEN operational item (`todo.md`):
+  seed a `payments.payout_batch` approval template per live entity before go-live.
 - ⏭ `vs_procurement` → `docs/procurement/`: `procurement_master_data` (categories,
   vendors, catalog, contracts), `procurement_sourcing` (requisitions, RFQs,
   quotations/awards), `procurement_p2p_chain` (PO → GRN → vendor invoice → vendor
