@@ -68,6 +68,48 @@ class TenantAwareManagerIsolationTests(TestCase):
         self.assertEqual(roles, [self.role_b])
 
 
+class DirectTenantFieldIsolationTests(TestCase):
+    """Models that own rows via a direct ``tenant`` FK (the TenantOwnedModel
+    shape every converted app uses) must be ambient-scoped too — the manager
+    auto-detect must prefer ``tenant`` over the legacy school/branch paths."""
+
+    def setUp(self):
+        clear_current_tenant()
+        self.school_a = make_school(slug="direct-a", name="Direct A")
+        self.school_b = make_school(slug="direct-b", name="Direct B")
+
+    def tearDown(self):
+        clear_current_tenant()
+
+    def test_direct_tenant_models_are_ambient_scoped(self):
+        from vs_tickets.models import Ticket
+        from .helpers import make_branch, make_school_admin
+
+        branch_a = make_branch(self.school_a)
+        branch_b = make_branch(self.school_b)
+        requester_a = make_school_admin(
+            branch_a, email="direct-a@test.com", school=self.school_a,
+        )
+        requester_b = make_school_admin(
+            branch_b, email="direct-b@test.com", school=self.school_b,
+        )
+        # No ambient context is set yet, so creates are unscoped.
+        ticket_a = Ticket.objects.create(
+            tenant=self.school_a.tenant, requester=requester_a,
+            title="A's ticket", description="x",
+        )
+        Ticket.objects.create(
+            tenant=self.school_b.tenant, requester=requester_b,
+            title="B's ticket", description="x",
+        )
+
+        set_current_tenant(self.school_a.tenant)
+        self.assertEqual(list(Ticket.objects.all()), [ticket_a])
+        self.assertFalse(
+            Ticket.objects.exclude(tenant=self.school_a.tenant).exists()
+        )
+
+
 class TenantAwareManagerWaveTwoTests(TestCase):
     """Session/security logs stay tenant-scoped under the contextvar."""
 

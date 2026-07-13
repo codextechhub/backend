@@ -1,10 +1,9 @@
 """
 Custom QuerySet and Manager for automatic tenant-aware filtering.
 
-The school context is established per-request (TenantJWTAuthentication for
-JWT calls, TenantContextMiddleware for session calls) and stored in
-thread-local storage. ``TenantAwareManager`` applies it EAGERLY in
-``get_queryset()``, so every entry point — ``all()``, ``filter()``,
+The tenant context is established per-request by TenantJWTAuthentication and
+stored in a contextvar (vs_tenants.context). ``TenantAwareManager`` applies it
+EAGERLY in ``get_queryset()``, so every entry point — ``all()``, ``filter()``,
 ``get()``, ``exists()``, related lookups through the default manager —
 is scoped without any per-call machinery.
 
@@ -80,18 +79,21 @@ class TenantAwareManager(models.Manager.from_queryset(TenantAwareQuerySet)):
         self.tenant_field = tenant_field
         self.include_global = include_global
 
-    # Resolve the model field path that represents school ownership.
+    # Resolve the model field path that represents tenant ownership.
     def _tenant_lookup(self) -> str | None:
         if self.tenant_field:
             return self.tenant_field
         field_names = {f.name for f in self.model._meta.get_fields()}
+        # Direct tenant ownership wins — every converted model carries it.
+        if "tenant" in field_names:
+            return "tenant"
         if "school" in field_names:
             return "school"
         if "branch" in field_names:
             return "branch__school"
         return None
 
-    # Attach the current school filter before callers add their own conditions.
+    # Attach the current tenant filter before callers add their own conditions.
     def get_queryset(self):
         qs = super().get_queryset()
         tenant = get_current_tenant()
