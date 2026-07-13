@@ -126,7 +126,12 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
 
 # Only the Super Admin may transfer the Super Admin role.
 TRANSFER_KEY = "platform.roles.transfer"
-PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
+# Canonical codex-tenant role keys (mirror the legacy PlatformRoleTemplate ids).
+PLATFORM_ROLE_KEYS = ["xvs_super_admin", "xvs_platform_admin"]
+_PLATFORM_ROLE_NAMES = {
+    "xvs_super_admin": "XVS Super Admin",
+    "xvs_platform_admin": "XVS Platform Admin",
+}
 
 
 class Command(BaseCommand):
@@ -139,9 +144,10 @@ class Command(BaseCommand):
             PermissionAction,
             PermissionModule,
             PermissionResource,
-            PlatformRolePermission,
-            PlatformRoleTemplate,
+            TenantRolePermission,
+            TenantRoleTemplate,
         )
+        from vs_tenants.models import Tenant
 
         self.stdout.write(self.style.MIGRATE_HEADING("\n  Seeding platform permissions...\n"))
 
@@ -190,36 +196,47 @@ class Command(BaseCommand):
 
                 all_perms.append(perm)
 
-        # ── Grant to platform roles ────────────────────────────────────────────
+        # ── Grant to platform roles (codex tenant) ─────────────────────────────
         self.stdout.write(self.style.MIGRATE_HEADING("\n  Granting to platform roles...\n"))
 
-        for role_id in PLATFORM_ROLE_IDS:
-            try:
-                role = PlatformRoleTemplate.objects.get(id=role_id)
-            except PlatformRoleTemplate.DoesNotExist:
-                self.stdout.write(self.style.WARNING(
-                    f"  ⚠  Role '{role_id}' not found — run create_superuser first."
-                ))
-                continue
-
-            granted = 0
-            for perm in all_perms:
-                # Platform Admin gets everything except the Super-Admin handoff.
-                if role_id == "xvs_platform_admin" and perm.key == TRANSFER_KEY:
-                    continue
-                _, link_created = PlatformRolePermission.objects.get_or_create(
-                    role=role,
-                    permission=perm,
-                    defaults={"granted": True, "granted_by": None},
+        codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+        if codex is None:
+            self.stdout.write(self.style.WARNING(
+                "  ⚠  Codex platform tenant not found — run migrations first. Skipping grants."
+            ))
+        else:
+            for role_key in PLATFORM_ROLE_KEYS:
+                # Idempotently ensure the codex-tenant role exists (mirrors the
+                # legacy PlatformRoleTemplate ids by key).
+                role, _ = TenantRoleTemplate.objects.get_or_create(
+                    tenant=codex,
+                    key=role_key,
+                    defaults={
+                        "name": _PLATFORM_ROLE_NAMES.get(role_key, role_key),
+                        "status": "ACTIVE",
+                        "is_system_role": True,
+                        "is_locked": True,
+                    },
                 )
-                if link_created:
-                    granted += 1
 
-            self.stdout.write(
-                self.style.SUCCESS(f"  {role_id}: granted {granted} new permission(s).")
-                if granted else
-                f"  {role_id}: all permissions already assigned."
-            )
+                granted = 0
+                for perm in all_perms:
+                    # Platform Admin gets everything except the Super-Admin handoff.
+                    if role_key == "xvs_platform_admin" and perm.key == TRANSFER_KEY:
+                        continue
+                    _, link_created = TenantRolePermission.objects.get_or_create(
+                        role=role,
+                        permission=perm,
+                        defaults={"granted": True, "granted_by": None},
+                    )
+                    if link_created:
+                        granted += 1
+
+                self.stdout.write(
+                    self.style.SUCCESS(f"  {role_key}: granted {granted} new permission(s).")
+                    if granted else
+                    f"  {role_key}: all permissions already assigned."
+                )
 
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_count} new permission(s) created, "

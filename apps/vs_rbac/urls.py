@@ -76,113 +76,64 @@ urlpatterns = [
     ),
 
     # -------------------------------------------------------------------------
-    # School-scoped Role Templates
+    # Tenant-scoped Role Templates (roles addressed by per-tenant key)
     # -------------------------------------------------------------------------
     path(
-        "schools/<slug:school_slug>/roles/",
-        views.SchoolRoleTemplateListCreateView.as_view(),
+        "tenants/<slug:tenant_slug>/roles/",
+        views.TenantRoleTemplateListCreateView.as_view(),
         name="rbac-role-list-create",
     ),
     path(
-        "schools/<slug:school_slug>/roles/<slug:id>/",
-        views.SchoolRoleTemplateDetailView.as_view(),
+        "tenants/<slug:tenant_slug>/roles/<slug:key>/",
+        views.TenantRoleTemplateDetailView.as_view(),
         name="rbac-role-detail",
     ),
 
     # -------------------------------------------------------------------------
-    # School-scoped Role Assignments
+    # Tenant-scoped Role Assignments
     # -------------------------------------------------------------------------
     path(
-        "schools/<slug:school_slug>/role-assignments/",
-        views.SchoolUserRoleAssignmentListCreateView.as_view(),
+        "tenants/<slug:tenant_slug>/role-assignments/",
+        views.TenantUserRoleAssignmentListCreateView.as_view(),
         name="rbac-assignment-list-create",
     ),
     path(
-        "schools/<slug:school_slug>/role-assignments/<int:id>/",
-        views.SchoolUserRoleAssignmentDetailView.as_view(),
+        "tenants/<slug:tenant_slug>/role-assignments/<int:id>/",
+        views.TenantUserRoleAssignmentDetailView.as_view(),
         name="rbac-assignment-detail",
     ),
-
-    # -------------------------------------------------------------------------
-    # School Role Change Requests (school-internal approval)
-    # -------------------------------------------------------------------------
     path(
-        "schools/<slug:school_slug>/role-change-requests/",
-        views.SchoolRoleChangeRequestListCreateView.as_view(),
-        name="rbac-role-change-request-list-create",
+        "tenants/<slug:tenant_slug>/role-assignments/<int:id>/revoke/",
+        views.TenantUserRoleAssignmentRevokeView.as_view(),
+        name="rbac-assignment-revoke",
     ),
 
-    # School-admin approval queue and decision endpoints
+    # -------------------------------------------------------------------------
+    # Tenant Role Change Requests (tenant-internal approval)
+    # -------------------------------------------------------------------------
     path(
-        "schools/<slug:school_slug>/role-change-requests/approval/",
-        views.SchoolRoleChangeRequestApprovalQueueView.as_view(),
+        "tenants/<slug:tenant_slug>/role-change-requests/",
+        views.TenantRoleChangeRequestListCreateView.as_view(),
+        name="rbac-role-change-request-list-create",
+    ),
+    path(
+        "tenants/<slug:tenant_slug>/role-change-requests/approval/",
+        views.TenantRoleChangeRequestApprovalQueueView.as_view(),
         name="rbac-role-change-approval-queue",
     ),
     path(
-        "schools/<slug:school_slug>/role-change-requests/<int:id>/",
-        views.SchoolRoleChangeRequestApprovalDetailView.as_view(),
+        "tenants/<slug:tenant_slug>/role-change-requests/<int:id>/",
+        views.TenantRoleChangeRequestApprovalDetailView.as_view(),
         name="rbac-role-change-approval-detail",
     ),
     path(
-        "schools/<slug:school_slug>/role-change-requests/<int:request_id>/decide/",
-        views.SchoolRoleChangeRequestDecisionView.as_view(),
+        "tenants/<slug:tenant_slug>/role-change-requests/<int:request_id>/decide/",
+        views.TenantRoleChangeRequestDecisionView.as_view(),
         name="rbac-role-change-decide",
     ),
 
     # -------------------------------------------------------------------------
-    # Vision/Internal Platform Role Templates
-    # -------------------------------------------------------------------------
-    path(
-        "platform/roles/",
-        views.PlatformRoleTemplateListCreateView.as_view(),
-        name="platform-rbac-role-list-create",
-    ),
-    path(
-        "platform/roles/<slug:id>/",
-        views.PlatformRoleTemplateDetailView.as_view(),
-        name="platform-rbac-role-detail",
-    ),
-
-    # -------------------------------------------------------------------------
-    # Vision/Internal Platform Role Assignments
-    # -------------------------------------------------------------------------
-    path(
-        "platform/role-assignments/",
-        views.PlatformUserRoleAssignmentListCreateView.as_view(),
-        name="platform-rbac-assignment-list-create",
-    ),
-    path(
-        "platform/role-assignments/<int:id>/",
-        views.PlatformUserRoleAssignmentDetailView.as_view(),
-        name="platform-rbac-assignment-detail",
-    ),
-    path(
-        "platform/role-assignments/<int:id>/revoke/",
-        views.PlatformUserRoleAssignmentRevokeView.as_view(),
-        name="platform-rbac-assignment-revoke",
-    ),
-
-    # -------------------------------------------------------------------------
-    # Vision/Internal Platform Role Change Requests
-    # -------------------------------------------------------------------------
-    path(
-        "platform/role-change-requests/",
-        views.PlatformRoleChangeRequestListCreateView.as_view(),
-        name="platform-rbac-role-change-request-list-create",
-    ),
-    path(
-        "platform/role-change-requests/<int:id>/",
-        views.PlatformRoleChangeRequestDetailView.as_view(),
-        name="platform-rbac-role-change-detail",
-    ),
-    path(
-        "platform/role-change-requests/<int:request_id>/decide/",
-        views.PlatformRoleChangeRequestDecisionView.as_view(),
-        name="platform-rbac-role-change-decide",
-    ),
-
-    # -------------------------------------------------------------------------
-    # Super Admin Transfer
+    # Super Admin Transfer (codex tenant)
     # -------------------------------------------------------------------------
     path(
         "platform/transfer-super-admin/",

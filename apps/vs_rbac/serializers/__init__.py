@@ -3,5 +3,4 @@
 Import through ``vs_rbac.serializers`` exactly as before.
 """
 from .registry import *   # noqa: F401,F403
-from .school import *     # noqa: F401,F403
-from .platform import *   # noqa: F401,F403
+from .tenant import *     # noqa: F401,F403

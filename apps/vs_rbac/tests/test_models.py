@@ -1,25 +1,19 @@
 """
-Tests for vs_rbac models: Permission, SchoolRoleTemplate, SchoolUserRoleAssignment,
-SchoolRoleChangeRequest, and all Platform counterparts.
+Tests for vs_rbac models: Permission, and the canonical tenant RBAC models
+(TenantRoleTemplate, TenantRolePermission, TenantUserRoleAssignment,
+TenantRoleChangeRequest, TenantRoleChangeDeltaItem).
 """
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.test import TestCase
-from django.utils import timezone
 
 from vs_rbac.models import (
     Permission,
-    PermissionDependency,
-    SchoolRoleTemplate,
-    SchoolRolePermission,
-    SchoolUserRoleAssignment,
-    SchoolRoleChangeRequest,
-    SchoolRoleChangeDeltaItem,
-    PlatformRoleTemplate,
-    PlatformRolePermission,
-    PlatformUserRoleAssignment,
-    PlatformRoleChangeRequest,
-    PlatformRoleChangeDeltaItem,
+    TenantRoleTemplate,
+    TenantRolePermission,
+    TenantUserRoleAssignment,
+    TenantRoleChangeRequest,
+    TenantRoleChangeDeltaItem,
 )
 from .helpers import (
     make_school,
@@ -28,7 +22,6 @@ from .helpers import (
     make_school_admin,
     make_staff_user,
     make_permission,
-    make_permission_set,
     make_dependency,
     make_role,
     make_role_permission,
@@ -42,7 +35,7 @@ from .helpers import (
 
 
 # =============================================================================
-# Permission
+# Permission (shared registry)
 # =============================================================================
 class PermissionModelTests(TestCase):
     def test_create_permission(self):
@@ -99,48 +92,44 @@ class PermissionDependencyModelTests(TestCase):
 
 
 # =============================================================================
-# SchoolRoleTemplate (school-scoped)
+# TenantRoleTemplate
 # =============================================================================
-class SchoolRoleTemplateModelTests(TestCase):
+class TenantRoleTemplateModelTests(TestCase):
     def setUp(self):
         self.school = make_school()
-        self.branch = make_branch(self.school)
+        self.tenant = self.school.tenant
 
     def test_create_role(self):
         role = make_role(self.school, name="Teacher")
-        self.assertEqual(role.school, self.school)
+        self.assertEqual(role.tenant, self.tenant)
         self.assertEqual(role.name, "Teacher")
-        self.assertEqual(role.status, SchoolRoleTemplate.Status.ACTIVE)
+        self.assertEqual(role.status, TenantRoleTemplate.Status.ACTIVE)
         self.assertFalse(role.is_system_role)
         self.assertFalse(role.is_locked)
         self.assertEqual(role.version, 1)
+        self.assertTrue(role.key)
 
     def test_str(self):
         role = make_role(self.school, name="Accountant")
-        # B23: __str__ renders the school's surrogate pk, not the slug.
-        self.assertEqual(str(role), f"{self.school.pk}:Accountant")
+        self.assertEqual(str(role), f"{self.tenant.pk}:Accountant")
 
-    def test_bump_version(self):
-        role = make_role(self.school)
-        self.assertEqual(role.version, 1)
-        role.bump_version()
-        self.assertEqual(role.version, 2)
-        role.bump_version()
-        self.assertEqual(role.version, 3)
-
-    def test_case_insensitive_unique_name_per_school(self):
+    def test_duplicate_name_per_tenant_raises(self):
         make_role(self.school, name="Teacher")
         with self.assertRaises(IntegrityError):
-            make_role(self.school, name="teacher")
+            make_role(self.school, name="Teacher")
 
-    def test_same_name_different_schools(self):
+    def test_same_name_different_tenants(self):
         school2 = make_school(slug="school-2", name="School 2")
         make_role(self.school, name="Teacher")
         role2 = make_role(school2, name="Teacher")
         self.assertEqual(role2.name, "Teacher")
 
+    def test_accepts_tenant_directly(self):
+        role = make_role(self.tenant, name="Registrar")
+        self.assertEqual(role.tenant, self.tenant)
 
-class SchoolRolePermissionModelTests(TestCase):
+
+class TenantRolePermissionModelTests(TestCase):
     def setUp(self):
         self.school = make_school()
         self.role = make_role(self.school)
@@ -152,14 +141,9 @@ class SchoolRolePermissionModelTests(TestCase):
         self.assertEqual(rp.role, self.role)
         self.assertEqual(rp.permission, self.perm)
 
-    def test_str(self):
-        rp = make_role_permission(self.role, self.perm)
-        self.assertIn("grant", str(rp))
-
     def test_deny_permission(self):
         rp = make_role_permission(self.role, self.perm, granted=False)
         self.assertFalse(rp.granted)
-        self.assertIn("deny", str(rp))
 
     def test_unique_role_permission(self):
         make_role_permission(self.role, self.perm)
@@ -168,9 +152,9 @@ class SchoolRolePermissionModelTests(TestCase):
 
 
 # =============================================================================
-# SchoolUserRoleAssignment
+# TenantUserRoleAssignment
 # =============================================================================
-class SchoolUserRoleAssignmentModelTests(TestCase):
+class TenantUserRoleAssignmentModelTests(TestCase):
     def setUp(self):
         self.school = make_school()
         self.branch = make_branch(self.school)
@@ -180,27 +164,25 @@ class SchoolUserRoleAssignmentModelTests(TestCase):
 
     def test_create_assignment(self):
         a = make_assignment(self.school, self.user, self.role)
-        self.assertEqual(a.assignment_status, SchoolUserRoleAssignment.AssignmentStatus.ACTIVE)
-        self.assertEqual(a.school, self.school)
+        self.assertEqual(a.assignment_status, TenantUserRoleAssignment.AssignmentStatus.ACTIVE)
+        self.assertEqual(a.tenant, self.school.tenant)
         self.assertEqual(a.user, self.user)
         self.assertEqual(a.role, self.role)
-
-    def test_str(self):
-        a = make_assignment(self.school, self.user, self.role)
-        self.assertIn("ACTIVE", str(a))
 
     def test_revoke(self):
         a = make_assignment(self.school, self.user, self.role)
         a.revoke(by_user=self.admin, reason="No longer needed")
-        self.assertEqual(a.assignment_status, SchoolUserRoleAssignment.AssignmentStatus.REVOKED)
+        self.assertEqual(a.assignment_status, TenantUserRoleAssignment.AssignmentStatus.REVOKED)
         self.assertEqual(a.revoked_by, self.admin)
         self.assertIsNotNone(a.revoked_at)
         self.assertEqual(a.reason_note, "No longer needed")
 
-    def test_clean_cross_school_role_fails(self):
+    def test_clean_cross_tenant_role_fails(self):
         school2 = make_school(slug="school-2", name="School 2")
         role2 = make_role(school2)
-        a = SchoolUserRoleAssignment(school=self.school, user=self.user, role=role2)
+        a = TenantUserRoleAssignment(
+            tenant=self.school.tenant, user=self.user, role=role2,
+        )
         with self.assertRaises(ValidationError):
             a.clean()
 
@@ -213,15 +195,14 @@ class SchoolUserRoleAssignmentModelTests(TestCase):
         a = make_assignment(self.school, self.user, self.role)
         a.revoke(by_user=self.admin)
         a.save()
-        # Should be able to create a new active assignment
         a2 = make_assignment(self.school, self.user, self.role)
-        self.assertEqual(a2.assignment_status, SchoolUserRoleAssignment.AssignmentStatus.ACTIVE)
+        self.assertEqual(a2.assignment_status, TenantUserRoleAssignment.AssignmentStatus.ACTIVE)
 
 
 # =============================================================================
-# SchoolRoleChangeRequest
+# TenantRoleChangeRequest
 # =============================================================================
-class SchoolRoleChangeRequestModelTests(TestCase):
+class TenantRoleChangeRequestModelTests(TestCase):
     def setUp(self):
         self.school = make_school()
         self.branch = make_branch(self.school)
@@ -231,9 +212,10 @@ class SchoolRoleChangeRequestModelTests(TestCase):
 
     def test_create_request(self):
         rcr = make_role_change_request(self.school, self.admin, self.role)
-        self.assertEqual(rcr.status, SchoolRoleChangeRequest.Status.PENDING)
+        self.assertEqual(rcr.status, TenantRoleChangeRequest.Status.PENDING)
         self.assertEqual(rcr.requested_by, self.admin)
         self.assertEqual(rcr.target_role, self.role)
+        self.assertEqual(rcr.tenant, self.school.tenant)
 
     def test_str(self):
         rcr = make_role_change_request(self.school, self.admin, self.role)
@@ -242,7 +224,7 @@ class SchoolRoleChangeRequestModelTests(TestCase):
     def test_mark_approved(self):
         rcr = make_role_change_request(self.school, self.admin, self.role)
         rcr.mark_approved(self.reviewer, "Looks good")
-        self.assertEqual(rcr.status, SchoolRoleChangeRequest.Status.APPROVED)
+        self.assertEqual(rcr.status, TenantRoleChangeRequest.Status.APPROVED)
         self.assertEqual(rcr.reviewer, self.reviewer)
         self.assertEqual(rcr.reviewer_notes, "Looks good")
         self.assertIsNotNone(rcr.decided_at)
@@ -250,19 +232,19 @@ class SchoolRoleChangeRequestModelTests(TestCase):
     def test_mark_denied(self):
         rcr = make_role_change_request(self.school, self.admin, self.role)
         rcr.mark_denied(self.reviewer, "Not justified")
-        self.assertEqual(rcr.status, SchoolRoleChangeRequest.Status.DENIED)
+        self.assertEqual(rcr.status, TenantRoleChangeRequest.Status.DENIED)
         self.assertEqual(rcr.reviewer_notes, "Not justified")
 
     def test_mark_apply_failed(self):
         rcr = make_role_change_request(self.school, self.admin, self.role)
         rcr.mark_apply_failed(self.reviewer, "Dependency error")
-        self.assertEqual(rcr.status, SchoolRoleChangeRequest.Status.APPLY_FAILED)
+        self.assertEqual(rcr.status, TenantRoleChangeRequest.Status.APPLY_FAILED)
 
-    def test_clean_cross_school_role_fails(self):
+    def test_clean_cross_tenant_role_fails(self):
         school2 = make_school(slug="school-2", name="School 2")
         role2 = make_role(school2)
-        rcr = SchoolRoleChangeRequest(
-            school=self.school,
+        rcr = TenantRoleChangeRequest(
+            tenant=self.school.tenant,
             requested_by=self.admin,
             target_role=role2,
             justification="Test",
@@ -271,8 +253,8 @@ class SchoolRoleChangeRequestModelTests(TestCase):
             rcr.clean()
 
     def test_clean_empty_justification_fails(self):
-        rcr = SchoolRoleChangeRequest(
-            school=self.school,
+        rcr = TenantRoleChangeRequest(
+            tenant=self.school.tenant,
             requested_by=self.admin,
             target_role=self.role,
             justification="   ",
@@ -281,7 +263,7 @@ class SchoolRoleChangeRequestModelTests(TestCase):
             rcr.clean()
 
 
-class SchoolRoleChangeDeltaItemModelTests(TestCase):
+class TenantRoleChangeDeltaItemModelTests(TestCase):
     def setUp(self):
         self.school = make_school()
         self.branch = make_branch(self.school)
@@ -291,144 +273,64 @@ class SchoolRoleChangeDeltaItemModelTests(TestCase):
         self.rcr = make_role_change_request(self.school, self.admin, self.role)
 
     def test_create_delta_item(self):
-        item = SchoolRoleChangeDeltaItem.objects.create(
+        item = TenantRoleChangeDeltaItem.objects.create(
             request=self.rcr,
             permission=self.perm,
-            operation=SchoolRoleChangeDeltaItem.Operation.ADD,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
         )
         self.assertEqual(item.operation, "ADD")
 
     def test_str(self):
-        item = SchoolRoleChangeDeltaItem.objects.create(
+        item = TenantRoleChangeDeltaItem.objects.create(
             request=self.rcr,
             permission=self.perm,
-            operation=SchoolRoleChangeDeltaItem.Operation.REMOVE,
+            operation=TenantRoleChangeDeltaItem.Operation.REMOVE,
         )
         self.assertIn("REMOVE", str(item))
 
     def test_unique_constraint(self):
-        SchoolRoleChangeDeltaItem.objects.create(
+        TenantRoleChangeDeltaItem.objects.create(
             request=self.rcr,
             permission=self.perm,
-            operation=SchoolRoleChangeDeltaItem.Operation.ADD,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
         )
         with self.assertRaises(IntegrityError):
-            SchoolRoleChangeDeltaItem.objects.create(
+            TenantRoleChangeDeltaItem.objects.create(
                 request=self.rcr,
                 permission=self.perm,
-                operation=SchoolRoleChangeDeltaItem.Operation.ADD,
+                operation=TenantRoleChangeDeltaItem.Operation.ADD,
             )
 
 
 # =============================================================================
-# PlatformRoleTemplate
+# Platform roles are ordinary tenant roles on the codex tenant
 # =============================================================================
-class PlatformRoleTemplateModelTests(TestCase):
-    def test_create_platform_role(self):
+class CodexTenantRoleModelTests(TestCase):
+    def test_platform_role_is_codex_tenant_role(self):
         role = make_platform_role(name="Super Admin")
-        self.assertEqual(role.name, "Super Admin")
-        self.assertEqual(role.status, PlatformRoleTemplate.Status.ACTIVE)
+        self.assertEqual(role.tenant.slug, "codex")
+        self.assertEqual(role.status, TenantRoleTemplate.Status.ACTIVE)
         self.assertTrue(role.is_system_role)
-        self.assertEqual(role.version, 1)
-        self.assertIsNotNone(role.id)  # UUID
 
-    def test_str(self):
-        role = make_platform_role(name="Support Officer")
-        self.assertEqual(str(role), "Support Officer")
-
-    def test_bump_version(self):
-        role = make_platform_role()
-        role.bump_version()
-        self.assertEqual(role.version, 2)
-
-    def test_case_insensitive_unique_name(self):
-        make_platform_role(name="Super Admin")
-        with self.assertRaises(IntegrityError):
-            make_platform_role(name="super admin")
-
-
-class PlatformRolePermissionModelTests(TestCase):
-    def test_create(self):
+    def test_platform_role_permission(self):
         role = make_platform_role()
         perm = make_permission("system.config.view")
         rp = make_platform_role_permission(role, perm)
         self.assertTrue(rp.granted)
-        self.assertIsNotNone(rp.id)  # UUID
 
-    def test_unique_constraint(self):
+    def test_platform_assignment_and_revoke(self):
+        user = make_vision_user()
         role = make_platform_role()
-        perm = make_permission("system.config.view")
-        make_platform_role_permission(role, perm)
-        with self.assertRaises(IntegrityError):
-            make_platform_role_permission(role, perm)
-
-
-# =============================================================================
-# PlatformUserRoleAssignment
-# =============================================================================
-class PlatformUserRoleAssignmentModelTests(TestCase):
-    def setUp(self):
-        self.user = make_vision_user()
-        self.role = make_platform_role()
-
-    def test_create(self):
-        a = make_platform_assignment(self.user, self.role)
+        a = make_platform_assignment(user, role)
         self.assertEqual(a.assignment_status, "ACTIVE")
-
-    def test_revoke(self):
-        a = make_platform_assignment(self.user, self.role)
         reviewer = make_vision_user(email="reviewer@test.com")
         a.revoke(by_user=reviewer, reason="Access revoked")
         self.assertEqual(a.assignment_status, "REVOKED")
         self.assertEqual(a.revoked_by, reviewer)
-        self.assertIsNotNone(a.revoked_at)
 
-    def test_unique_active_assignment(self):
-        make_platform_assignment(self.user, self.role)
-        with self.assertRaises(IntegrityError):
-            make_platform_assignment(self.user, self.role)
-
-    def test_revoked_then_reassign(self):
-        a = make_platform_assignment(self.user, self.role)
-        a.revoke()
-        a.save()
-        a2 = make_platform_assignment(self.user, self.role)
-        self.assertEqual(a2.assignment_status, "ACTIVE")
-
-
-# =============================================================================
-# PlatformRoleChangeRequest
-# =============================================================================
-class PlatformRoleChangeRequestModelTests(TestCase):
-    def setUp(self):
-        self.user = make_vision_user()
-        self.reviewer = make_vision_user(email="reviewer@test.com")
-        self.role = make_platform_role()
-
-    def test_create(self):
-        rcr = make_platform_change_request(self.user, self.role)
+    def test_platform_change_request(self):
+        user = make_vision_user()
+        role = make_platform_role()
+        rcr = make_platform_change_request(user, role)
         self.assertEqual(rcr.status, "PENDING")
-
-    def test_mark_approved(self):
-        rcr = make_platform_change_request(self.user, self.role)
-        rcr.mark_approved(self.reviewer, "OK")
-        self.assertEqual(rcr.status, "APPROVED")
-        self.assertIsNotNone(rcr.decided_at)
-
-    def test_mark_denied(self):
-        rcr = make_platform_change_request(self.user, self.role)
-        rcr.mark_denied(self.reviewer, "Rejected")
-        self.assertEqual(rcr.status, "DENIED")
-
-    def test_clean_empty_justification(self):
-        rcr = PlatformRoleChangeRequest(
-            requested_by=self.user,
-            target_role=self.role,
-            justification="  ",
-        )
-        with self.assertRaises(ValidationError):
-            rcr.clean()
-
-    def test_str(self):
-        rcr = make_platform_change_request(self.user, self.role)
-        self.assertIn("PENDING", str(rcr))
+        self.assertEqual(rcr.tenant.slug, "codex")

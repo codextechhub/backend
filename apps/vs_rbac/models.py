@@ -1286,6 +1286,148 @@ class TenantUserRoleAssignment(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
+# Unified tenant approval workflow: role permission-change requests
+# -----------------------------------------------------------------------------
+class TenantRoleChangeRequest(TimeStampedModel):
+    """Tenant-scoped approval workflow for role permission edits.
+
+    Unifies ``SchoolRoleChangeRequest`` and ``PlatformRoleChangeRequest`` onto
+    the canonical tenant tables. The tenant boundary comes from ``tenant`` and
+    the target role must belong to the same tenant.
+
+    Attributes:
+        tenant: Tenant that owns the request.
+        requested_by: User initiating the change.
+        target_role: ``TenantRoleTemplate`` being modified.
+        status: State machine captured via ``Status`` choices.
+        justification: Required explanation for the reviewer.
+        reviewer/reviewer_notes: Outcome metadata once decided.
+        submitted_at/decided_at: Audit timestamps.
+        impact_summary: Cached diff to help the reviewer.
+
+    Helper methods:
+        mark_denied/mark_approved/mark_apply_failed: status transitions.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        APPROVED = "APPROVED", "Approved"
+        DENIED = "DENIED", "Denied"
+        APPLY_FAILED = "APPLY_FAILED", "Apply Failed"
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant",
+        on_delete=models.PROTECT,
+        related_name="role_change_requests",
+    )
+
+    requested_by = models.ForeignKey(
+        User,
+        on_delete=models.PROTECT,
+        related_name="tenant_role_change_requests_made",
+    )
+
+    target_role = models.ForeignKey(
+        TenantRoleTemplate,
+        on_delete=models.PROTECT,
+        related_name="change_requests",
+    )
+
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
+
+    justification = models.TextField()
+
+    reviewer = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="tenant_role_change_requests_reviewed",
+    )
+    reviewer_notes = models.TextField(blank=True)
+
+    submitted_at = models.DateTimeField(default=timezone.now)
+    decided_at = models.DateTimeField(null=True, blank=True)
+
+    impact_summary = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["tenant", "status", "submitted_at"]),
+            models.Index(fields=["status", "submitted_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"TRCR:{self.id} ({self.status})"
+
+    def clean(self):
+        # Cross-tenant safety: target role must belong to same tenant.
+        if self.target_role_id and self.tenant_id and self.target_role.tenant_id != self.tenant_id:
+            raise ValidationError("Target role must belong to the same tenant as the request.")
+        if not self.justification or not self.justification.strip():
+            raise ValidationError("Justification is required.")
+
+    def mark_denied(self, reviewer, notes: str):
+        self.status = self.Status.DENIED
+        self.reviewer = reviewer
+        self.reviewer_notes = notes
+        self.decided_at = timezone.now()
+
+    def mark_approved(self, reviewer, notes: str = ""):
+        self.status = self.Status.APPROVED
+        self.reviewer = reviewer
+        self.reviewer_notes = notes
+        self.decided_at = timezone.now()
+
+    def mark_apply_failed(self, reviewer, notes: str):
+        self.status = self.Status.APPLY_FAILED
+        self.reviewer = reviewer
+        self.reviewer_notes = notes
+        self.decided_at = timezone.now()
+
+
+class TenantRoleChangeDeltaItem(TimeStampedModel):
+    """Normalized permission diff attached to a ``TenantRoleChangeRequest``.
+
+    Attributes:
+        request: Parent ``TenantRoleChangeRequest``.
+        permission: Permission key being added or removed.
+        operation: ``ADD`` or ``REMOVE`` to describe the action.
+    """
+
+    class Operation(models.TextChoices):
+        ADD = "ADD", "Add"
+        REMOVE = "REMOVE", "Remove"
+
+    request = models.ForeignKey(
+        TenantRoleChangeRequest,
+        on_delete=models.CASCADE,
+        related_name="delta_items",
+    )
+
+    permission = models.ForeignKey(
+        Permission,
+        to_field="key",
+        db_column="permission_key",
+        on_delete=models.PROTECT,
+        related_name="tenant_delta_items",
+    )
+
+    operation = models.CharField(max_length=8, choices=Operation.choices)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["request", "permission", "operation"],
+                name="uq_tenant_request_permission_operation",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.request_id} {self.operation} {self.permission_id}"
+
+
+# -----------------------------------------------------------------------------
 # Platform approval workflow for restricted permission changes
 # -----------------------------------------------------------------------------
 class PlatformRoleChangeRequest(TimeStampedModel):

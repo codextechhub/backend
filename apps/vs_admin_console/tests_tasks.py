@@ -8,6 +8,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from core.models import BackgroundJob
+from vs_tenants.models import Tenant
 from vs_user.models import User
 
 
@@ -20,6 +21,8 @@ def _staff_user():
 
 
 def _job(name, job_status="SUCCEEDED", **extra):
+    if "tenant" not in extra and "tenant_id" not in extra:
+        extra["tenant"] = Tenant.objects.get(slug="codex")
     return BackgroundJob.objects.create(
         celery_task_id=str(uuid.uuid4()), task_name=name, status=job_status, **extra,
     )

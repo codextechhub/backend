@@ -461,7 +461,7 @@ class BranchCreateSerializer(serializers.ModelSerializer):
 
         # Provision branch_admin role template (branch-scoped) before any email is sent
         branch_admin_role = provision_role_from_prebuilt(
-            school=school,
+            tenant=school.tenant,
             branch=branch,
             prebuilt_key="branch_admin",
             created_by=self.context.get("actor_id"),
@@ -489,7 +489,7 @@ class BranchCreateSerializer(serializers.ModelSerializer):
                 school=school,
                 branch=branch,
                 user_type="BRANCH_ADMIN",
-                role=branch_admin_role.id if branch_admin_role else "",
+                role=branch_admin_role.key if branch_admin_role else "",
                 actor=self.context.get("actor_id"),
             )
         else:
@@ -852,7 +852,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
 
         # Provision school_admin role template for this school before any email is sent
         school_admin_role = provision_role_from_prebuilt(
-            school=school,
+            tenant=school.tenant,
             branch=None,
             prebuilt_key="school_admin",
             created_by=actor,
@@ -883,7 +883,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                 school=school,
                 branch=None,
                 user_type="SCHOOL_ADMIN",
-                role=school_admin_role.id if school_admin_role else "",
+                role=school_admin_role.key if school_admin_role else "",
                 actor=actor,
             )
 
@@ -900,7 +900,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
 
             # Provision branch_admin role template (branch-scoped) before any email is sent
             branch_admin_role = provision_role_from_prebuilt(
-                school=school,
+                tenant=school.tenant,
                 branch=branch,
                 prebuilt_key="branch_admin",
                 created_by=actor,
@@ -944,7 +944,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                         school=school,
                         branch=branch,
                         user_type="BRANCH_ADMIN",
-                        role=branch_admin_role.id if branch_admin_role else "",
+                        role=branch_admin_role.key if branch_admin_role else "",
                         actor=actor,
                     )
         

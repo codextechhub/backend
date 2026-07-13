@@ -19,9 +19,51 @@ from vs_user.models import User
 from vs_user.services.audit import log_auth_event
 from vs_user.models import AuthEventLog
 from vs_rbac.models import (
-    PlatformRoleTemplate,
-    PlatformUserRoleAssignment,
+    TenantRoleTemplate,
+    TenantUserRoleAssignment,
 )
+
+
+def _codex_tenant():
+    """Return the codex platform tenant, or None if migrations have not run."""
+    from vs_tenants.models import Tenant
+    return Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+
+
+def _assign_super_admin(user):
+    """Grant the codex xvs_super_admin tenant role to *user* (idempotent).
+
+    Returns True on success, False if the codex tenant / role is missing.
+    """
+    codex = _codex_tenant()
+    if codex is None:
+        return False
+    role, _ = TenantRoleTemplate.objects.get_or_create(
+        tenant=codex,
+        key="xvs_super_admin",
+        defaults={
+            "name": "XVS Super Admin",
+            "status": "ACTIVE",
+            "is_system_role": True,
+            "is_locked": True,
+        },
+    )
+    assignment = TenantUserRoleAssignment.objects.filter(
+        tenant=codex, user=user, role=role,
+    ).first()
+    if assignment is None:
+        TenantUserRoleAssignment.objects.create(
+            tenant=codex, user=user, role=role,
+            assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+            assigned_by=None,
+        )
+        return True
+    if assignment.assignment_status == TenantUserRoleAssignment.AssignmentStatus.REVOKED:
+        assignment.assignment_status = TenantUserRoleAssignment.AssignmentStatus.ACTIVE
+        assignment.revoked_at = None
+        assignment.revoked_by = None
+        assignment.save(update_fields=["assignment_status", "revoked_at", "revoked_by", "updated_at"])
+    return True
 
 
 class Command(BaseCommand):
@@ -181,20 +223,10 @@ class Command(BaseCommand):
             invited_by=None,    # Self-created (bootstrap account)
         )
         
-        # ── Assign XVS Super Admin role ───────────────────────────────────────
-        try:
-            super_admin_role = PlatformRoleTemplate.objects.get(id='xvs_super_admin')
-            PlatformUserRoleAssignment.objects.get_or_create(
-                user=user,
-                role=super_admin_role,
-                defaults={
-                    'assignment_status': PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
-                    'assigned_by': None,
-                },
-            )
-        except PlatformRoleTemplate.DoesNotExist:
+        # ── Assign XVS Super Admin role (codex tenant) ────────────────────────
+        if not _assign_super_admin(user):
             self.stdout.write(self.style.WARNING(
-                "  ⚠️  'xvs_super_admin' platform role not found."
+                "  ⚠️  Codex tenant / 'xvs_super_admin' role not found — run migrations first."
             ))
 
         # ── Audit Log ─────────────────────────────────────────────────────────
@@ -248,47 +280,19 @@ class Command(BaseCommand):
     # ── Helper Methods ────────────────────────────────────────────────────────
 
     def _bootstrap_permission_creation_capability(self):
-        """Ensure the platform roles exist and carry the full platform permission set.
+        """Ensure the codex platform roles exist and carry the full platform set.
 
-        Creates the xvs_super_admin and xvs_platform_admin role templates, then
-        delegates to ``seed_platform_permissions`` — the single source of truth
+        Delegates to ``seed_platform_permissions`` — the single source of truth
         for the platform permission keys (organogram, schools, audit, …) and
-        their grants. Keeping the keys in one place means a resource wired into
-        views can never again be missed by the seed.
+        their grants. That command idempotently get_or_creates the codex-tenant
+        ``xvs_super_admin`` / ``xvs_platform_admin`` roles (required by
+        ``transfer_super_admin``) and grants the permissions onto them.
 
-        Safe to re-run: every create uses get_or_create.
+        Safe to re-run: everything uses get_or_create.
         """
         from django.core.management import call_command
 
         try:
-            # Roles first — seed_platform_permissions grants onto them.
-            PlatformRoleTemplate.objects.get_or_create(
-                id='xvs_super_admin',
-                defaults={
-                    'name': 'XVS Super Admin',
-                    'description': 'Full platform access. There is exactly one Super Admin at any time; '
-                                   'use the Transfer Super Admin flow to reassign.',
-                    'is_system_role': True,
-                    'is_locked': True,
-                    'status': PlatformRoleTemplate.Status.ACTIVE,
-                }
-            )
-            # Required by transfer_super_admin: the outgoing Super Admin is
-            # demoted to xvs_platform_admin. Without this template the transfer
-            # endpoint raises ValueError.
-            PlatformRoleTemplate.objects.get_or_create(
-                id='xvs_platform_admin',
-                defaults={
-                    'name': 'XVS Platform Admin',
-                    'description': 'Vision platform administrator. Receives the previous Super Admin '
-                                   'after a transfer; can manage roles, team, and platform settings but '
-                                   'cannot transfer the Super Admin role.',
-                    'is_system_role': True,
-                    'is_locked': True,
-                    'status': PlatformRoleTemplate.Status.ACTIVE,
-                }
-            )
-
             call_command('seed_platform_permissions', stdout=self.stdout, stderr=self.stderr)
         except Exception as e:
             self.stdout.write(self.style.WARNING(f"⚠️  Permission bootstrap: {e}"))
@@ -302,33 +306,15 @@ class Command(BaseCommand):
             self.stdout.write(self.style.ERROR(f"No user found with email: {email}"))
             return
 
-        try:
-            role = PlatformRoleTemplate.objects.get(id='xvs_super_admin')
-        except PlatformRoleTemplate.DoesNotExist:
-            self.stdout.write(self.style.ERROR(
-                "'xvs_super_admin' platform role not found. Run seed_role_perms first."
+        if _assign_super_admin(user):
+            self.stdout.write(self.style.SUCCESS(
+                f"  ✅ Vision Super Admin role assigned/active for {user.email}"
             ))
-            return
-
-        assignment, created = PlatformUserRoleAssignment.objects.get_or_create(
-            user=user,
-            role=role,
-            defaults={
-                'assignment_status': PlatformUserRoleAssignment.AssignmentStatus.ACTIVE,
-                'assigned_by': None,
-            },
-        )
-
-        if not created and assignment.assignment_status == PlatformUserRoleAssignment.AssignmentStatus.REVOKED:
-            assignment.assignment_status = PlatformUserRoleAssignment.AssignmentStatus.ACTIVE
-            assignment.revoked_at = None
-            assignment.revoked_by = None
-            assignment.save(update_fields=['assignment_status', 'revoked_at', 'revoked_by', 'updated_at'])
-            self.stdout.write(self.style.SUCCESS(f"  ✅ Vision Super Admin role re-activated for {user.email}"))
-        elif created:
-            self.stdout.write(self.style.SUCCESS(f"  ✅ Vision Super Admin role assigned to {user.email}"))
         else:
-            self.stdout.write(self.style.WARNING(f"  ℹ️  {user.email} already has Vision Super Admin role (active)."))
+            self.stdout.write(self.style.ERROR(
+                "Codex tenant / 'xvs_super_admin' role not found. Run migrations "
+                "and seed_platform_permissions first."
+            ))
 
     def _prompt(self, field_name, default):
         """Prompt user for input with a default value."""

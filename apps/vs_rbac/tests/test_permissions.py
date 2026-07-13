@@ -343,6 +343,12 @@ class HasRBACPermissionTests(TestCase):
         request = MagicMock()
         request.user = user
         request.school = school
+        # HasRBACPermission resolves the tenant from request.rbac_tenant first;
+        # bind it to the real tenant context (a bare MagicMock would masquerade
+        # as a truthy-but-invalid tenant and short-circuit the evaluator).
+        request.rbac_tenant = school.tenant if school else getattr(user, "tenant", None)
+        request.tenant = request.rbac_tenant
+        request.branch = None
         return request
 
     def test_granted_single_permission(self):

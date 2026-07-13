@@ -26,6 +26,8 @@ Three idempotent phases:
 
 Safe to re-run — everything uses get_or_create. Supports ``--dry-run``.
 """
+import re
+
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
@@ -81,6 +83,11 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
 
     ("school", "roles", "view",                _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
     ("school", "roles", "assign",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    # Explicit grants replace the removed implicit SCHOOL_ADMIN user_type
+    # authority over role templates (tenant refactor: personas grant nothing).
+    ("school", "roles", "create",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("school", "roles", "update",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
+    ("school", "roles", "delete",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
     # module: academics
     ("academics", "session", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
@@ -159,8 +166,9 @@ class Command(BaseCommand):
             PermissionResource,
             PrebuiltRolePermission,
             PrebuiltRoleTemplate,
-            SchoolRolePermission,
             SchoolRoleTemplate,
+            TenantRolePermission,
+            TenantRoleTemplate,
         )
 
         prefix = "  [dry-run]" if dry_run else " "
@@ -269,43 +277,68 @@ class Command(BaseCommand):
                 f"{prefix} {role_key}: all {len(role_default_keys[role_key])} defaults already attached."
             )
 
-        # ── Phase 3: backfill existing school role templates ──────────────────
+        # ── Phase 3: backfill existing tenant role templates ──────────────────
+        # Runtime grants live in the tenant RBAC tables now. Two lineages map a
+        # tenant role back to its prebuilt:
+        #   a) roles migrated from the legacy school tables carry
+        #      key=str(old SchoolRoleTemplate pk), and the legacy row (kept
+        #      until the contract phase) still records prebuilt_from;
+        #   b) roles provisioned natively use key=<prebuilt.key> or
+        #      key=<prebuilt.key>-<branch pk>.
         self.stdout.write(self.style.MIGRATE_HEADING(
-            "\n  Phase 3 — backfilling existing school role templates...\n"
+            "\n  Phase 3 — backfilling existing tenant role templates...\n"
         ))
 
-        templates = (
+        prebuilt_for_role: dict[int, str] = {}
+
+        for old in (
             SchoolRoleTemplate.all_objects
             .filter(prebuilt_from__key__in=PREBUILT_ROLE_KEYS)
-            .select_related("prebuilt_from")
+            .select_related("prebuilt_from", "school")
+        ):
+            if not old.school or not old.school.tenant_id:
+                continue
+            migrated = TenantRoleTemplate.objects.filter(
+                tenant_id=old.school.tenant_id, key=str(old.pk),
+            ).first()
+            if migrated:
+                prebuilt_for_role[migrated.pk] = old.prebuilt_from.key
+
+        native_key_re = re.compile(
+            r"^(%s)(?:-\d+)?$" % "|".join(re.escape(k) for k in PREBUILT_ROLE_KEYS)
         )
+        for role in TenantRoleTemplate.objects.filter(
+            tenant__kind="SCHOOL", is_system_role=True,
+        ).only("id", "key"):
+            match = native_key_re.match(role.key)
+            if match and role.pk not in prebuilt_for_role:
+                prebuilt_for_role[role.pk] = match.group(1)
 
         total_backfilled = 0
         template_count = 0
-        for template in templates:
+        for role_pk, role_key in prebuilt_for_role.items():
             template_count += 1
-            role_key = template.prebuilt_from.key
-            keys = role_default_keys.get(role_key, [])
             granted_here = 0
-            for key in keys:
+            for key in role_default_keys.get(role_key, []):
                 # get_or_create with granted=True in defaults: if a row already
                 # exists (grant OR explicit deny) it is left untouched, so an
                 # admin's explicit deny (granted=False) is never flipped.
-                _, row_created = SchoolRolePermission.objects.get_or_create(
-                    role=template,
+                _, row_created = TenantRolePermission.objects.get_or_create(
+                    role_id=role_pk,
                     permission_id=key,
                     defaults={"granted": True, "granted_by": None},
                 )
                 if row_created:
                     granted_here += 1
             total_backfilled += granted_here
-            self.stdout.write(
-                f"{prefix} school={template.school_id} role={template.name} "
-                f"({role_key}): +{granted_here} grant(s)."
-            )
+            if granted_here:
+                self.stdout.write(
+                    f"{prefix} tenant role #{role_pk} ({role_key}): "
+                    f"+{granted_here} grant(s)."
+                )
 
         if template_count == 0:
-            self.stdout.write("  No existing school role templates to backfill.")
+            self.stdout.write("  No existing tenant role templates to backfill.")
 
         # ── Summary ───────────────────────────────────────────────────────────
         self.stdout.write(self.style.SUCCESS(

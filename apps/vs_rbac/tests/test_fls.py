@@ -143,5 +143,6 @@ class SensitiveSerializerWiringTest(TestCase):
                 "paye_amount": "finance.payrollrun.view_sensitive",
                 "pension_amount": "finance.payrollrun.view_sensitive",
                 "net_amount": "finance.payrollrun.view_sensitive",
+                "components": "finance.payrollrun.view_sensitive",
             },
         )

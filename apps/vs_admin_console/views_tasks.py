@@ -41,7 +41,7 @@ class AdminJobSerializer(serializers.ModelSerializer):
         model = BackgroundJob
         fields = [
             "id", "celery_task_id", "task_name", "kind", "label",
-            "owner", "owner_name", "school", "status", "progress", "worker",
+            "owner", "owner_name", "tenant", "status", "progress", "worker",
             "created_at", "started_at", "finished_at", "runtime_seconds",
             "result", "error", "traceback",
         ]

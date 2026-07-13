@@ -52,10 +52,13 @@ class Command(BaseCommand):
         from vs_rbac.models import (
             SchoolRoleChangeRequest,
             PlatformRoleChangeRequest,
+            TenantRoleChangeRequest,
             SchoolUserRoleAssignment,
             PlatformUserRoleAssignment,
+            TenantUserRoleAssignment,
             SchoolRoleTemplate,
             PlatformRoleTemplate,
+            TenantRoleTemplate,
             PrebuiltRolePermission,
             GroupPermission,
             PermissionDependency,
@@ -76,15 +79,20 @@ class Command(BaseCommand):
             # This clears the PROTECT references those delta items hold on Permission.
             ("SchoolRoleChangeRequest",   SchoolRoleChangeRequest.objects.all()),
             ("PlatformRoleChangeRequest", PlatformRoleChangeRequest.objects.all()),
+            # Deleting TenantRoleChangeRequest cascades TenantRoleChangeDeltaItem.
+            ("TenantRoleChangeRequest",   TenantRoleChangeRequest.objects.all()),
 
             # Step 3-4: user→role assignments (PROTECT blocks role template deletion)
             ("SchoolUserRoleAssignment",   SchoolUserRoleAssignment.objects.all()),
             ("PlatformUserRoleAssignment", PlatformUserRoleAssignment.objects.all()),
+            ("TenantUserRoleAssignment",   TenantUserRoleAssignment.objects.all()),
 
             # Step 5-6: role templates
-            # Cascades: SchoolRolePermission, SchoolRoleGroup, PlatformRolePermission, PlatformRoleGroup
+            # Cascades: SchoolRolePermission, SchoolRoleGroup, PlatformRolePermission,
+            # PlatformRoleGroup, TenantRolePermission, TenantRoleGroup
             ("SchoolRoleTemplate",   SchoolRoleTemplate.objects.all()),
             ("PlatformRoleTemplate", PlatformRoleTemplate.objects.all()),
+            ("TenantRoleTemplate",   TenantRoleTemplate.objects.all()),
 
             # Step 7-9: remaining permission links (explicit; cascades above may have
             # already cleared some of these, but get_or_create is idempotent)

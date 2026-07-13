@@ -16,6 +16,10 @@ from .models import (
     SchoolRoleGroup,
     SchoolRoleTemplate,
     SchoolUserRoleAssignment,
+    TenantRoleChangeRequest,
+    TenantRoleGroup,
+    TenantRoleTemplate,
+    TenantUserRoleAssignment,
 )
 
 
@@ -502,7 +506,7 @@ def audit_platform_role_group_detached(sender, instance, **kwargs):
 
 # ---------------------------------------------------------------------------
 # SchoolRoleChangeRequest — submission and denial / apply-failure
-# (approval + permission diff is already audited in services.apply_school_role_change_request)
+# (approval + permission diff for the tenant tables is audited in services.apply_role_change_request)
 # ---------------------------------------------------------------------------
 
 pre_save.connect(_capture_old_status, sender=SchoolRoleChangeRequest)
@@ -577,7 +581,7 @@ def audit_school_role_change_request(sender, instance, created, **kwargs):
 
 # ---------------------------------------------------------------------------
 # PlatformRoleChangeRequest — submission and denial / apply-failure
-# (approval + permission diff is already audited in services.apply_platform_role_change_request)
+# (approval + permission diff for the tenant tables is audited in services.apply_role_change_request)
 # ---------------------------------------------------------------------------
 
 pre_save.connect(_capture_old_status, sender=PlatformRoleChangeRequest)
@@ -839,3 +843,231 @@ def audit_permission_action_deleted(sender, instance, **kwargs):
         summary=f"Permission action '{instance.name}' deleted — all permissions using this action verb are cascade-removed",
         metadata={"name": instance.name},
     )
+
+
+# ===========================================================================
+# Unified tenant RBAC audit (canonical tables — mirror the legacy receivers
+# with entity types updated to the tenant models)
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# TenantUserRoleAssignment — role assignment / revocation
+# ---------------------------------------------------------------------------
+
+@receiver(post_save, sender=TenantUserRoleAssignment)
+# Audit tenant-scoped role assignment and revocation events.
+def audit_tenant_role_assignment(sender, instance, created, **kwargs):
+    """Emit an audit event when a tenant role is assigned or revoked."""
+    from vs_audit.models import AuditActionType, AuditModuleKey
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
+
+    role_name = getattr(getattr(instance, "role", None), "name", "")
+    user = instance.user
+
+    if created:
+        emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.ROLE_ASSIGNED,
+            actor_user=instance.assigned_by,
+            entity_type="User",
+            entity_id=str(user.pk),
+            entity_label=getattr(user, "email", str(user.pk)),
+            summary=f"Role '{role_name}' assigned to {getattr(user, 'email', user.pk)}",
+            diff_data={"role_name": {"before": None, "after": role_name}},
+            metadata={
+                "assignment_id": str(instance.pk),
+                "tenant_id": str(instance.tenant_id),
+                "role_id": str(instance.role_id),
+            },
+        )
+        return
+
+    if instance.assignment_status == TenantUserRoleAssignment.AssignmentStatus.REVOKED:
+        emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.ROLE_CHANGED,
+            actor_user=instance.revoked_by,
+            entity_type="User",
+            entity_id=str(user.pk),
+            entity_label=getattr(user, "email", str(user.pk)),
+            summary=f"Role '{role_name}' revoked for {getattr(user, 'email', user.pk)}",
+            diff_data={
+                "assignment_status": {
+                    "before": TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+                    "after": TenantUserRoleAssignment.AssignmentStatus.REVOKED,
+                }
+            },
+            metadata={
+                "assignment_id": str(instance.pk),
+                "tenant_id": str(instance.tenant_id),
+                "role_id": str(instance.role_id),
+                "reason_note": instance.reason_note,
+            },
+        )
+
+
+# ---------------------------------------------------------------------------
+# TenantRoleTemplate — creation and status changes
+# ---------------------------------------------------------------------------
+
+pre_save.connect(_capture_old_status, sender=TenantRoleTemplate)
+
+
+@receiver(post_save, sender=TenantRoleTemplate)
+# Audit tenant role template creation and lifecycle status changes.
+def audit_tenant_role_template(sender, instance, created, **kwargs):
+    """Emit an audit event when a tenant role template is created or its status changes."""
+    from vs_audit.models import AuditActionType, AuditModuleKey
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
+
+    if created:
+        emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.CREATE,
+            actor_user=instance.created_by,
+            entity_type="TenantRoleTemplate",
+            entity_id=str(instance.pk),
+            entity_label=instance.name,
+            summary=f"Role template '{instance.name}' created",
+            metadata={
+                "tenant_id": str(instance.tenant_id),
+                "is_system_role": instance.is_system_role,
+            },
+        )
+        return
+
+    old_status = getattr(instance, "_pre_save_status", None)
+    if old_status and old_status != instance.status:
+        emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.UPDATE,
+            entity_type="TenantRoleTemplate",
+            entity_id=str(instance.pk),
+            entity_label=instance.name,
+            summary=f"Role template '{instance.name}' status changed from '{old_status}' to '{instance.status}'",
+            diff_data={"status": {"before": old_status, "after": instance.status}},
+            metadata={"tenant_id": str(instance.tenant_id)},
+        )
+
+
+# ---------------------------------------------------------------------------
+# TenantRoleGroup — group attached to / detached from a tenant role
+# ---------------------------------------------------------------------------
+
+@receiver(post_save, sender=TenantRoleGroup)
+# Audit permission groups attached to tenant roles.
+def audit_tenant_role_group_attached(sender, instance, created, **kwargs):
+    """Emit an audit event when a permission group is attached to a tenant role."""
+    if not created:
+        return
+
+    from vs_audit.models import AuditActionType, AuditModuleKey
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
+
+    role_name = getattr(getattr(instance, "role", None), "name", str(instance.role_id))
+    group_name = getattr(getattr(instance, "group", None), "name", str(instance.group_id))
+    emit_audit_event(
+        module_key=AuditModuleKey.RBAC,
+        action_type=AuditActionType.PERMISSION_CHANGED,
+        actor_user=instance.attached_by,
+        entity_type="TenantRoleTemplate",
+        entity_id=str(instance.role_id),
+        entity_label=role_name,
+        summary=f"Permission group '{group_name}' attached to role '{role_name}'",
+        metadata={"group_id": str(instance.group_id), "role_id": str(instance.role_id)},
+    )
+
+
+@receiver(post_delete, sender=TenantRoleGroup)
+# Audit permission groups detached from tenant roles.
+def audit_tenant_role_group_detached(sender, instance, **kwargs):
+    """Emit an audit event when a permission group is detached from a tenant role."""
+    from vs_audit.models import AuditActionType, AuditModuleKey
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
+
+    role_name = getattr(getattr(instance, "role", None), "name", str(instance.role_id))
+    group_name = getattr(getattr(instance, "group", None), "name", str(instance.group_id))
+    emit_audit_event(
+        module_key=AuditModuleKey.RBAC,
+        action_type=AuditActionType.PERMISSION_CHANGED,
+        entity_type="TenantRoleTemplate",
+        entity_id=str(instance.role_id),
+        entity_label=role_name,
+        summary=f"Permission group '{group_name}' detached from role '{role_name}'",
+        metadata={"group_id": str(instance.group_id), "role_id": str(instance.role_id)},
+    )
+
+
+# ---------------------------------------------------------------------------
+# TenantRoleChangeRequest — submission and denial / apply-failure
+# (approval + permission diff is audited in services.apply_role_change_request)
+# ---------------------------------------------------------------------------
+
+pre_save.connect(_capture_old_status, sender=TenantRoleChangeRequest)
+
+
+@receiver(post_save, sender=TenantRoleChangeRequest)
+# Audit tenant role change request submission and failed/denied outcomes.
+def audit_tenant_role_change_request(sender, instance, created, **kwargs):
+    """Emit audit events for tenant role change request lifecycle transitions."""
+    from vs_audit.models import AuditActionType, AuditModuleKey, AuditSeverity, AuditStatus
+    from vs_rbac.audit import record_rbac_audit as emit_audit_event
+
+    role_name = getattr(getattr(instance, "target_role", None), "name", str(instance.target_role_id))
+
+    if created:
+        emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.UPDATE,
+            actor_user=instance.requested_by,
+            entity_type="TenantRoleChangeRequest",
+            entity_id=str(instance.pk),
+            entity_label=role_name,
+            summary=f"Role change request submitted for role '{role_name}'",
+            metadata={
+                "tenant_id": str(instance.tenant_id),
+                "role_id": str(instance.target_role_id),
+                "justification": instance.justification,
+            },
+        )
+        return
+
+    old_status = getattr(instance, "_pre_save_status", None)
+    if not old_status or old_status == instance.status:
+        return
+
+    if instance.status == TenantRoleChangeRequest.Status.DENIED:
+        emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.UPDATE,
+            actor_user=instance.reviewer,
+            entity_type="TenantRoleChangeRequest",
+            entity_id=str(instance.pk),
+            entity_label=role_name,
+            severity=AuditSeverity.WARNING,
+            status=AuditStatus.DENIED,
+            summary=f"Role change request for '{role_name}' denied",
+            diff_data={"status": {"before": old_status, "after": instance.status}},
+            metadata={
+                "tenant_id": str(instance.tenant_id),
+                "reviewer_notes": instance.reviewer_notes,
+            },
+        )
+
+    elif instance.status == TenantRoleChangeRequest.Status.APPLY_FAILED:
+        emit_audit_event(
+            module_key=AuditModuleKey.RBAC,
+            action_type=AuditActionType.UPDATE,
+            actor_user=instance.reviewer,
+            entity_type="TenantRoleChangeRequest",
+            entity_id=str(instance.pk),
+            entity_label=role_name,
+            severity=AuditSeverity.CRITICAL,
+            status=AuditStatus.FAILED,
+            summary=f"Role change request for '{role_name}' failed to apply",
+            diff_data={"status": {"before": old_status, "after": instance.status}},
+            metadata={
+                "tenant_id": str(instance.tenant_id),
+                "reviewer_notes": instance.reviewer_notes,
+            },
+        )

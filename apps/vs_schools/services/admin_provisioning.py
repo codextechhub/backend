@@ -36,7 +36,7 @@ def provision_admin_user(
     school,        # School instance (always required)
     branch,        # Branch instance or None (required for BRANCH_ADMIN)
     user_type: str,   # 'SCHOOL_ADMIN' or 'BRANCH_ADMIN'
-    role: str = "",   # branch_role / school_role label stored on the User row
+    role: str = "",   # TenantRoleTemplate key for the tenant role assignment
     actor,         # the requesting User (invited_by); may be None for system
 ):
     """
@@ -53,7 +53,7 @@ def provision_admin_user(
     email = contact.email.lower().strip()
 
     try:
-        from vs_rbac.models import SchoolRoleTemplate, SchoolUserRoleAssignment
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         with transaction.atomic():  # savepoint — rollback here if anything fails
             # Idempotent: if the user already exists just stamp the link as sent.
             existing = User.objects.filter(email=email).first()
@@ -70,7 +70,11 @@ def provision_admin_user(
 
             first_name, last_name = _split_name(contact.full_name)
             invited_by = actor if isinstance(actor, User) else None
-            role_obj = SchoolRoleTemplate.objects.filter(id=role, school=school).first() if role else None
+            tenant = school.tenant
+            role_obj = (
+                TenantRoleTemplate.objects.filter(tenant=tenant, key=role).first()
+                if role else None
+            )
 
             # A school admin or branch admin without a role is a half-broken
             # account: they receive the invitation email, activate it, and
@@ -78,11 +82,11 @@ def provision_admin_user(
             # the user and dispatching the email — the outer savepoint will
             # roll back, and the admin link stays in QUEUED so the operator
             # can investigate (typically: the prebuilt role template wasn't
-            # seeded, or the school's per-school SchoolRoleTemplate is missing).
+            # seeded, or the tenant's TenantRoleTemplate is missing).
             if not role_obj:
                 raise ValueError(
                     f"Refusing to provision {email} ({user_type}) without a role assignment. "
-                    f"Expected SchoolRoleTemplate id={role!r} on school {school.id}."
+                    f"Expected TenantRoleTemplate key={role!r} on tenant {getattr(tenant, 'slug', tenant)}."
                 )
 
             user = User.objects.create_user(
@@ -102,10 +106,11 @@ def provision_admin_user(
                 is_staff=False,
             )
 
-            SchoolUserRoleAssignment.objects.create(
+            TenantUserRoleAssignment.objects.create(
+                tenant=tenant,
                 user=user,
                 role=role_obj,
-                school=user.school,
+                branch=role_obj.branch,
                 assigned_by=invited_by,
             )
 

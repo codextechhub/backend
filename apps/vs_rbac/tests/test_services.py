@@ -1,21 +1,15 @@
 """
-Tests for vs_rbac.services: apply_school_role_change_request, apply_platform_role_change_request.
+Tests for vs_rbac.services.apply_role_change_request (unified tenant workflow).
 """
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 
 from vs_rbac.models import (
-    SchoolRolePermission,
-    SchoolRoleChangeRequest,
-    SchoolRoleChangeDeltaItem,
-    PlatformRolePermission,
-    PlatformRoleChangeRequest,
-    PlatformRoleChangeDeltaItem,
+    TenantRolePermission,
+    TenantRoleChangeRequest,
+    TenantRoleChangeDeltaItem,
 )
-from vs_rbac.services import (
-    apply_school_role_change_request,
-    apply_platform_role_change_request,
-)
+from vs_rbac.services import apply_role_change_request
 from .helpers import (
     make_school,
     make_branch,
@@ -32,7 +26,7 @@ from .helpers import (
 )
 
 
-class ApplySchoolRoleChangeRequestTests(TestCase):
+class ApplySchoolTenantRoleChangeRequestTests(TestCase):
     def setUp(self):
         self.school = make_school()
         self.branch = make_branch(self.school)
@@ -40,61 +34,51 @@ class ApplySchoolRoleChangeRequestTests(TestCase):
         self.reviewer = make_vision_user()
         self.role = make_role(self.school)
 
-        # Permissions
         self.perm_view = make_permission("finance.invoice.view")
         self.perm_approve = make_permission("finance.invoice.approve")
         self.perm_export = make_permission("finance.invoice.export")
 
-        # Role starts with view permission
         make_role_permission(self.role, self.perm_view)
+
+    def _granted(self):
+        return set(
+            TenantRolePermission.objects.filter(role=self.role, granted=True)
+            .values_list("permission_id", flat=True)
+        )
 
     def test_add_permission(self):
         rcr = make_role_change_request(self.school, self.admin, self.role)
-        SchoolRoleChangeDeltaItem.objects.create(
-            request=rcr,
-            permission=self.perm_export,
-            operation=SchoolRoleChangeDeltaItem.Operation.ADD,
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=self.perm_export,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
         )
 
-        apply_school_role_change_request(rcr, self.reviewer, "Approved")
+        apply_role_change_request(rcr, self.reviewer, "Approved")
 
         rcr.refresh_from_db()
-        self.assertEqual(rcr.status, SchoolRoleChangeRequest.Status.APPROVED)
+        self.assertEqual(rcr.status, TenantRoleChangeRequest.Status.APPROVED)
         self.assertEqual(rcr.reviewer, self.reviewer)
-
-        perm_keys = set(
-            SchoolRolePermission.objects.filter(role=self.role, granted=True)
-            .values_list("permission_id", flat=True)
-        )
-        self.assertEqual(perm_keys, {"finance.invoice.view", "finance.invoice.export"})
+        self.assertEqual(self._granted(), {"finance.invoice.view", "finance.invoice.export"})
 
     def test_remove_permission(self):
         rcr = make_role_change_request(self.school, self.admin, self.role)
-        SchoolRoleChangeDeltaItem.objects.create(
-            request=rcr,
-            permission=self.perm_view,
-            operation=SchoolRoleChangeDeltaItem.Operation.REMOVE,
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=self.perm_view,
+            operation=TenantRoleChangeDeltaItem.Operation.REMOVE,
         )
 
-        apply_school_role_change_request(rcr, self.reviewer)
-
-        perm_keys = set(
-            SchoolRolePermission.objects.filter(role=self.role, granted=True)
-            .values_list("permission_id", flat=True)
-        )
-        self.assertEqual(perm_keys, set())
+        apply_role_change_request(rcr, self.reviewer)
+        self.assertEqual(self._granted(), set())
 
     def test_version_bumped(self):
         old_version = self.role.version
         rcr = make_role_change_request(self.school, self.admin, self.role)
-        SchoolRoleChangeDeltaItem.objects.create(
-            request=rcr,
-            permission=self.perm_export,
-            operation=SchoolRoleChangeDeltaItem.Operation.ADD,
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=self.perm_export,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
         )
 
-        apply_school_role_change_request(rcr, self.reviewer)
-
+        apply_role_change_request(rcr, self.reviewer)
         self.role.refresh_from_db()
         self.assertEqual(self.role.version, old_version + 1)
 
@@ -102,46 +86,36 @@ class ApplySchoolRoleChangeRequestTests(TestCase):
         make_dependency("finance.invoice.approve", "finance.invoice.view")
 
         rcr = make_role_change_request(self.school, self.admin, self.role)
-        # Remove view, which approve depends on, and add approve
-        SchoolRoleChangeDeltaItem.objects.create(
-            request=rcr,
-            permission=self.perm_view,
-            operation=SchoolRoleChangeDeltaItem.Operation.REMOVE,
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=self.perm_view,
+            operation=TenantRoleChangeDeltaItem.Operation.REMOVE,
         )
-        SchoolRoleChangeDeltaItem.objects.create(
-            request=rcr,
-            permission=self.perm_approve,
-            operation=SchoolRoleChangeDeltaItem.Operation.ADD,
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=self.perm_approve,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
         )
 
         with self.assertRaises(ValidationError):
-            apply_school_role_change_request(rcr, self.reviewer)
+            apply_role_change_request(rcr, self.reviewer)
 
     def test_add_and_remove_combined(self):
         make_role_permission(self.role, self.perm_export)
 
         rcr = make_role_change_request(self.school, self.admin, self.role)
-        SchoolRoleChangeDeltaItem.objects.create(
-            request=rcr,
-            permission=self.perm_export,
-            operation=SchoolRoleChangeDeltaItem.Operation.REMOVE,
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=self.perm_export,
+            operation=TenantRoleChangeDeltaItem.Operation.REMOVE,
         )
-        SchoolRoleChangeDeltaItem.objects.create(
-            request=rcr,
-            permission=self.perm_approve,
-            operation=SchoolRoleChangeDeltaItem.Operation.ADD,
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=self.perm_approve,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
         )
 
-        apply_school_role_change_request(rcr, self.reviewer)
-
-        perm_keys = set(
-            SchoolRolePermission.objects.filter(role=self.role, granted=True)
-            .values_list("permission_id", flat=True)
-        )
-        self.assertEqual(perm_keys, {"finance.invoice.view", "finance.invoice.approve"})
+        apply_role_change_request(rcr, self.reviewer)
+        self.assertEqual(self._granted(), {"finance.invoice.view", "finance.invoice.approve"})
 
 
-class ApplyPlatformRoleChangeRequestTests(TestCase):
+class ApplyPlatformTenantRoleChangeRequestTests(TestCase):
     def setUp(self):
         self.user = make_vision_user()
         self.reviewer = make_vision_user(email="reviewer@test.com")
@@ -151,69 +125,47 @@ class ApplyPlatformRoleChangeRequestTests(TestCase):
 
         make_platform_role_permission(self.role, self.perm_view)
 
-    def test_add_permission(self):
-        rcr = make_platform_change_request(self.user, self.role)
-        PlatformRoleChangeDeltaItem.objects.create(
-            request=rcr,
-            permission=self.perm_edit,
-            operation=PlatformRoleChangeDeltaItem.Operation.ADD,
-        )
-
-        apply_platform_role_change_request(rcr, self.reviewer, "OK")
-
-        rcr.refresh_from_db()
-        self.assertEqual(rcr.status, PlatformRoleChangeRequest.Status.APPROVED)
-
-        perm_keys = set(
-            PlatformRolePermission.objects.filter(role=self.role, granted=True)
+    def _granted(self):
+        return set(
+            TenantRolePermission.objects.filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        self.assertEqual(perm_keys, {"system.config.view", "system.config.edit"})
+
+    def test_add_permission(self):
+        rcr = make_platform_change_request(self.user, self.role)
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=self.perm_edit,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
+        )
+
+        apply_role_change_request(rcr, self.reviewer, "OK")
+
+        rcr.refresh_from_db()
+        self.assertEqual(rcr.status, TenantRoleChangeRequest.Status.APPROVED)
+        self.assertEqual(self._granted(), {"system.config.view", "system.config.edit"})
 
     def test_remove_permission(self):
         rcr = make_platform_change_request(self.user, self.role)
-        PlatformRoleChangeDeltaItem.objects.create(
-            request=rcr,
-            permission=self.perm_view,
-            operation=PlatformRoleChangeDeltaItem.Operation.REMOVE,
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=self.perm_view,
+            operation=TenantRoleChangeDeltaItem.Operation.REMOVE,
         )
 
-        apply_platform_role_change_request(rcr, self.reviewer)
-
-        perm_keys = set(
-            PlatformRolePermission.objects.filter(role=self.role, granted=True)
-            .values_list("permission_id", flat=True)
-        )
-        self.assertEqual(perm_keys, set())
-
-    def test_version_bumped(self):
-        old_version = self.role.version
-        rcr = make_platform_change_request(self.user, self.role)
-        PlatformRoleChangeDeltaItem.objects.create(
-            request=rcr,
-            permission=self.perm_edit,
-            operation=PlatformRoleChangeDeltaItem.Operation.ADD,
-        )
-
-        apply_platform_role_change_request(rcr, self.reviewer)
-
-        self.role.refresh_from_db()
-        self.assertEqual(self.role.version, old_version + 1)
+        apply_role_change_request(rcr, self.reviewer)
+        self.assertEqual(self._granted(), set())
 
     def test_dependency_violation_raises(self):
         make_dependency("system.config.edit", "system.config.view")
 
         rcr = make_platform_change_request(self.user, self.role)
-        PlatformRoleChangeDeltaItem.objects.create(
-            request=rcr,
-            permission=self.perm_view,
-            operation=PlatformRoleChangeDeltaItem.Operation.REMOVE,
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=self.perm_view,
+            operation=TenantRoleChangeDeltaItem.Operation.REMOVE,
         )
-        PlatformRoleChangeDeltaItem.objects.create(
-            request=rcr,
-            permission=self.perm_edit,
-            operation=PlatformRoleChangeDeltaItem.Operation.ADD,
+        TenantRoleChangeDeltaItem.objects.create(
+            request=rcr, permission=self.perm_edit,
+            operation=TenantRoleChangeDeltaItem.Operation.ADD,
         )
 
         with self.assertRaises(ValidationError):
-            apply_platform_role_change_request(rcr, self.reviewer)
+            apply_role_change_request(rcr, self.reviewer)

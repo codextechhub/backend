@@ -4,8 +4,9 @@ Tests for the `seed_school_permissions` management command (WP-B1 / A.2).
 Covers:
   (a) running the command creates the school + academics permission keys;
   (b) prebuilt roles carry the expected default counts;
-  (c) a pre-existing SchoolRoleTemplate (created BEFORE the grants exist) gains
-      the granted rows on re-run (backfill);
+  (c) pre-existing tenant role templates (both lineages: migrated from the
+      legacy school tables, and natively provisioned by prebuilt key) gain the
+      granted rows on re-run (backfill);
   (d) an explicit deny is not overwritten by the backfill;
   (e) get_effective_permissions for a user with an active school_admin
       assignment returns `school.students.view`.
@@ -20,9 +21,10 @@ from vs_rbac.models import (
     Permission,
     PrebuiltRolePermission,
     PrebuiltRoleTemplate,
-    SchoolRolePermission,
     SchoolRoleTemplate,
-    SchoolUserRoleAssignment,
+    TenantRolePermission,
+    TenantRoleTemplate,
+    TenantUserRoleAssignment,
 )
 from vs_schools.models import School
 from vs_user.models import User
@@ -54,6 +56,9 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             "school.administrators.suspend",
             "school.administrators.reactivate",
             "school.roles.assign",
+            "school.roles.create",
+            "school.roles.update",
+            "school.roles.delete",
             "academics.session.view",
             "academics.calendar.manage",
             "academics.classes.assign",
@@ -67,7 +72,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            38,
+            41,
         )
 
     def test_sensitivity_levels_applied(self):
@@ -103,8 +108,8 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
             .values_list("permission_id", flat=True)
         )
 
-    def test_school_admin_gets_all_38(self):
-        self.assertEqual(len(self._defaults("school_admin")), 38)
+    def test_school_admin_gets_all_41(self):
+        self.assertEqual(len(self._defaults("school_admin")), 41)
 
     def test_branch_admin_default_count(self):
         self.assertEqual(len(self._defaults("branch_admin")), 22)
@@ -121,82 +126,109 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
 
 
 class SeedSchoolBackfillTests(TestCase):
-    """The critical new step — pre-existing school role templates get grants."""
+    """The critical step — pre-existing tenant role templates get grants.
+
+    Two lineages must both be found by the backfill: roles migrated from the
+    legacy school tables (tenant role key = str(legacy pk), legacy row still
+    carries prebuilt_from), and roles natively provisioned by prebuilt key.
+    """
 
     def setUp(self):
         _seed_actions_and_roles()
         self.school = School.objects.create(
             name="Backfill Academy", slug="backfill", status="ACTIVE"
         )
-        # A SchoolRoleTemplate that was provisioned from school_admin BEFORE the
-        # school permissions were ever seeded (the already-onboarded-school case).
         self.prebuilt = PrebuiltRoleTemplate.objects.get(key="school_admin")
-        self.template = SchoolRoleTemplate.all_objects.create(
+        # Legacy lineage: a SchoolRoleTemplate provisioned BEFORE the tenant
+        # refactor plus its migrated tenant counterpart (key = str(legacy pk),
+        # mirroring migration vs_rbac/0004).
+        self.legacy_template = SchoolRoleTemplate.all_objects.create(
             school=self.school,
             name="School Admin",
             prebuilt_from=self.prebuilt,
             is_system_role=True,
         )
+        self.role = TenantRoleTemplate.objects.create(
+            tenant=self.school.tenant,
+            key=str(self.legacy_template.pk),
+            name="School Admin",
+            is_system_role=True,
+        )
         # No permissions attached to it yet.
         self.assertEqual(
-            SchoolRolePermission.objects.filter(role=self.template).count(), 0
+            TenantRolePermission.objects.filter(role=self.role).count(), 0
         )
 
     def test_backfill_grants_rows_on_run(self):
         _run_school_seed()
         keys = set(
-            SchoolRolePermission.objects
-            .filter(role=self.template, granted=True)
+            TenantRolePermission.objects
+            .filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        # school_admin defaults are all 38 keys.
-        self.assertEqual(len(keys), 38)
+        # school_admin defaults are all 41 keys.
+        self.assertEqual(len(keys), 41)
         self.assertIn("school.students.view", keys)
+        self.assertIn("school.roles.create", keys)
         self.assertIn("academics.classes.assign", keys)
 
     def test_backfill_is_idempotent(self):
         _run_school_seed()
-        first = SchoolRolePermission.objects.filter(role=self.template).count()
+        first = TenantRolePermission.objects.filter(role=self.role).count()
         _run_school_seed()
-        second = SchoolRolePermission.objects.filter(role=self.template).count()
+        second = TenantRolePermission.objects.filter(role=self.role).count()
         self.assertEqual(first, second)
 
     def test_explicit_deny_not_overwritten(self):
         # Admin explicitly denied a permission that is a school_admin default.
-        SchoolRolePermission.objects.create(
-            role=self.template,
-            permission_id="school.students.view",
-            granted=False,
-        )
+        _run_school_seed()  # first run registers the Permission rows
+        TenantRolePermission.objects.filter(
+            role=self.role, permission_id="school.students.view"
+        ).update(granted=False)
         _run_school_seed()
-        row = SchoolRolePermission.objects.get(
-            role=self.template, permission_id="school.students.view"
+        row = TenantRolePermission.objects.get(
+            role=self.role, permission_id="school.students.view"
         )
         self.assertFalse(row.granted, "Backfill must never flip an explicit deny.")
         # Other defaults still granted.
         self.assertTrue(
-            SchoolRolePermission.objects.filter(
-                role=self.template, permission_id="school.teachers.view", granted=True
+            TenantRolePermission.objects.filter(
+                role=self.role, permission_id="school.teachers.view", granted=True
             ).exists()
         )
 
-    def test_teacher_template_backfilled_with_teacher_defaults_only(self):
-        teacher_prebuilt = PrebuiltRoleTemplate.objects.get(key="teacher")
-        teacher_tmpl = SchoolRoleTemplate.all_objects.create(
-            school=self.school,
+    def test_native_teacher_role_backfilled_with_teacher_defaults_only(self):
+        # Native lineage: provisioned straight into the tenant tables with the
+        # prebuilt key (no legacy row at all).
+        teacher_role = TenantRoleTemplate.objects.create(
+            tenant=self.school.tenant,
+            key="teacher",
             name="Teacher",
-            prebuilt_from=teacher_prebuilt,
             is_system_role=True,
         )
         _run_school_seed()
         keys = set(
-            SchoolRolePermission.objects
-            .filter(role=teacher_tmpl, granted=True)
+            TenantRolePermission.objects
+            .filter(role=teacher_role, granted=True)
             .values_list("permission_id", flat=True)
         )
         self.assertEqual(len(keys), 7)
         self.assertIn("school.students.view", keys)
         self.assertNotIn("school.students.create", keys)
+
+    def test_non_system_role_with_prebuilt_like_key_not_backfilled(self):
+        # A custom (non-system) role must not silently inherit prebuilt
+        # defaults just because its key resembles a prebuilt key.
+        custom = TenantRoleTemplate.objects.create(
+            tenant=self.school.tenant,
+            key="teacher-lead",
+            name="Lead Teacher (custom)",
+            is_system_role=False,
+        )
+        _run_school_seed()
+        self.assertEqual(
+            TenantRolePermission.objects.filter(role=custom).count(), 0
+        )
 
 
 class SchoolAdminEffectivePermissionsTests(TestCase):
@@ -207,11 +239,10 @@ class SchoolAdminEffectivePermissionsTests(TestCase):
         self.school = School.objects.create(
             name="Effective High", slug="effective", status="ACTIVE"
         )
-        self.prebuilt = PrebuiltRoleTemplate.objects.get(key="school_admin")
-        self.template = SchoolRoleTemplate.all_objects.create(
-            school=self.school,
+        self.role = TenantRoleTemplate.objects.create(
+            tenant=self.school.tenant,
+            key="school_admin",
             name="School Admin",
-            prebuilt_from=self.prebuilt,
             is_system_role=True,
         )
         _run_school_seed()
@@ -225,24 +256,26 @@ class SchoolAdminEffectivePermissionsTests(TestCase):
             last_name="Teacher",
             school=self.school,
         )
-        SchoolUserRoleAssignment.all_objects.create(
-            school=self.school,
+        TenantUserRoleAssignment.objects.create(
+            tenant=self.school.tenant,
             user=self.user,
-            role=self.template,
+            role=self.role,
             assignment_status="ACTIVE",
         )
 
     def test_effective_permissions_include_students_view(self):
+        # school= exercises the transitional school→tenant bridge in the evaluator.
         perms = get_effective_permissions(self.user, school=self.school)
         self.assertIn("school.students.view", perms)
         self.assertIn("academics.classes.assign", perms)
+        self.assertIn("school.roles.update", perms)
 
     def test_effective_permissions_respect_explicit_deny(self):
-        SchoolRolePermission.objects.filter(
-            role=self.template, permission_id="school.students.view"
+        TenantRolePermission.objects.filter(
+            role=self.role, permission_id="school.students.view"
         ).update(granted=False)
         # Clear any request-scoped cache on the user instance.
         if hasattr(self.user, "_rbac_effective_perms"):
             delattr(self.user, "_rbac_effective_perms")
-        perms = get_effective_permissions(self.user, school=self.school)
+        perms = get_effective_permissions(self.user, tenant=self.school.tenant)
         self.assertNotIn("school.students.view", perms)

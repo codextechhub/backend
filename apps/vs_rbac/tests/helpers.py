@@ -1,30 +1,50 @@
 """
 Shared test helpers and fixture factories for vs_rbac tests.
+
+Role / assignment / change-request factories single-write the canonical
+**tenant** RBAC tables (``TenantRoleTemplate`` / ``TenantRolePermission`` /
+``TenantUserRoleAssignment`` / ``TenantRoleChangeRequest``). Function names are
+preserved for existing callers, but they now return the tenant objects.
 """
 import itertools
-from django.utils import timezone
+from django.utils.text import slugify
 from vs_schools.models import School, Branch
 from vs_user.models import User
+from vs_tenants.models import Tenant
 from vs_rbac.models import (
     Permission,
     PermissionDependency,
-    SchoolRoleTemplate,
-    SchoolRolePermission,
-    SchoolUserRoleAssignment,
-    SchoolRoleChangeRequest,
-    SchoolRoleChangeDeltaItem,
-    PlatformRoleTemplate,
-    PlatformRolePermission,
-    PlatformUserRoleAssignment,
-    PlatformRoleChangeRequest,
-    PlatformRoleChangeDeltaItem,
     TenantRoleTemplate,
     TenantRolePermission,
+    TenantRoleGroup,
     TenantUserRoleAssignment,
+    TenantRoleChangeRequest,
+    TenantRoleChangeDeltaItem,
 )
 
 
 _school_counter = itertools.count(1)
+_role_key_counter = itertools.count(1)
+
+
+def _as_tenant(school_or_tenant):
+    """Accept a School or a Tenant and return the Tenant."""
+    if isinstance(school_or_tenant, Tenant):
+        return school_or_tenant
+    return school_or_tenant.tenant
+
+
+def _unique_role_key(tenant, name):
+    base = slugify(name) or "role"
+    key = base
+    while TenantRoleTemplate.objects.filter(tenant=tenant, key=key).exists():
+        key = f"{base}-{next(_role_key_counter)}"
+    return key
+
+
+def codex_tenant():
+    """Return the codex platform tenant (created by the vs_tenants migrations)."""
+    return Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
 
 
 def make_school(slug="test-school", name="Test School", **kwargs):
@@ -55,18 +75,12 @@ def make_vision_user(email="vision@test.com", password="testpass123",
     defaults.update(kwargs)
     user = User.objects.create_user(email=email, password=password, **defaults)
     if super_admin:
-        role, _ = PlatformRoleTemplate.objects.get_or_create(
-            id="xvs_super_admin",
-            defaults={"name": "Vision Super Admin", "status": "ACTIVE"},
-        )
-        PlatformUserRoleAssignment.objects.get_or_create(
-            user=user,
-            role=role,
-            defaults={"assignment_status": "ACTIVE"},
-        )
+        # Single-write the tenant tables: the xvs_super_admin codex role grants
+        # the RBAC bypass that is_vision_super_admin() checks.
         tenant_role, _ = TenantRoleTemplate.objects.get_or_create(
             tenant=user.tenant, key="xvs_super_admin",
-            defaults={"name": "Vision Super Admin", "status": "ACTIVE"},
+            defaults={"name": "Vision Super Admin", "status": "ACTIVE",
+                      "is_system_role": True},
         )
         TenantUserRoleAssignment.objects.get_or_create(
             tenant=user.tenant, user=user, role=tenant_role,
@@ -141,47 +155,42 @@ def make_dependency(permission_key, depends_on_key):
     )
 
 
-def make_role(school, name="Test Role", **kwargs):
+def make_role(school_or_tenant, name="Test Role", **kwargs):
+    """Create a TenantRoleTemplate for a school's tenant (or a tenant directly)."""
+    tenant = _as_tenant(school_or_tenant)
     defaults = {"status": "ACTIVE"}
     defaults.update(kwargs)
-    role = SchoolRoleTemplate.objects.create(school=school, name=name, **defaults)
-    TenantRoleTemplate.objects.create(
-        tenant=school.tenant, branch=role.branch, key=str(role.pk), name=role.name,
-        description=role.description, status=role.status,
+    key = defaults.pop("key", None) or _unique_role_key(tenant, name)
+    return TenantRoleTemplate.objects.create(
+        tenant=tenant, key=key, name=name, **defaults
     )
-    return role
 
 
 def make_role_permission(role, permission, granted=True, **kwargs):
-    result = SchoolRolePermission.objects.create(
+    return TenantRolePermission.objects.create(
         role=role, permission=permission, granted=granted, **kwargs
     )
-    tenant_role = TenantRoleTemplate.objects.get(tenant=role.school.tenant, key=str(role.pk))
-    TenantRolePermission.objects.create(
-        role=tenant_role, permission=permission, granted=granted,
-    )
-    return result
 
 
-def make_assignment(school, user, role, **kwargs):
+def make_role_group(role, group, **kwargs):
+    return TenantRoleGroup.objects.create(role=role, group=group, **kwargs)
+
+
+def make_assignment(school_or_tenant, user, role, **kwargs):
+    tenant = _as_tenant(school_or_tenant)
     defaults = {"assignment_status": "ACTIVE"}
     defaults.update(kwargs)
-    result = SchoolUserRoleAssignment.objects.create(
-        school=school, user=user, role=role, **defaults
+    return TenantUserRoleAssignment.objects.create(
+        tenant=tenant, user=user, role=role, branch=role.branch, **defaults
     )
-    tenant_role = TenantRoleTemplate.objects.get(tenant=school.tenant, key=str(role.pk))
-    TenantUserRoleAssignment.objects.create(
-        tenant=school.tenant, user=user, role=tenant_role,
-        branch=tenant_role.branch, assignment_status=defaults["assignment_status"],
-    )
-    return result
 
 
-def make_role_change_request(school, user, role, justification="Test justification", **kwargs):
+def make_role_change_request(school_or_tenant, user, role, justification="Test justification", **kwargs):
+    tenant = _as_tenant(school_or_tenant)
     defaults = {"status": "PENDING"}
     defaults.update(kwargs)
-    return SchoolRoleChangeRequest.objects.create(
-        school=school,
+    return TenantRoleChangeRequest.objects.create(
+        tenant=tenant,
         requested_by=user,
         target_role=role,
         justification=justification,
@@ -190,45 +199,35 @@ def make_role_change_request(school, user, role, justification="Test justificati
 
 
 def make_platform_role(name="Platform Role", **kwargs):
-    defaults = {"status": "ACTIVE"}
+    """Create a TenantRoleTemplate on the codex platform tenant."""
+    codex = codex_tenant()
+    defaults = {"status": "ACTIVE", "is_system_role": True}
     defaults.update(kwargs)
-    role = PlatformRoleTemplate.objects.create(name=name, **defaults)
-    from vs_tenants.models import Tenant
-    codex = Tenant.objects.get(slug="codex")
-    TenantRoleTemplate.objects.create(
-        tenant=codex, key=str(role.pk), name=role.name,
-        description=role.description, status=role.status, is_system_role=True,
+    key = defaults.pop("key", None) or _unique_role_key(codex, name)
+    return TenantRoleTemplate.objects.create(
+        tenant=codex, key=key, name=name, **defaults
     )
-    return role
 
 
 def make_platform_role_permission(role, permission, granted=True, **kwargs):
-    result = PlatformRolePermission.objects.create(
+    return TenantRolePermission.objects.create(
         role=role, permission=permission, granted=granted, **kwargs
     )
-    tenant_role = TenantRoleTemplate.objects.get(tenant__slug="codex", key=str(role.pk))
-    TenantRolePermission.objects.create(role=tenant_role, permission=permission, granted=granted)
-    return result
 
 
 def make_platform_assignment(user, role, **kwargs):
     defaults = {"assignment_status": "ACTIVE"}
     defaults.update(kwargs)
-    result = PlatformUserRoleAssignment.objects.create(
-        user=user, role=role, **defaults
+    return TenantUserRoleAssignment.objects.create(
+        tenant=role.tenant, user=user, role=role, **defaults
     )
-    tenant_role = TenantRoleTemplate.objects.get(tenant=user.tenant, key=str(role.pk))
-    TenantUserRoleAssignment.objects.create(
-        tenant=user.tenant, user=user, role=tenant_role,
-        assignment_status=defaults["assignment_status"],
-    )
-    return result
 
 
 def make_platform_change_request(user, role, justification="Test justification", **kwargs):
     defaults = {"status": "PENDING"}
     defaults.update(kwargs)
-    return PlatformRoleChangeRequest.objects.create(
+    return TenantRoleChangeRequest.objects.create(
+        tenant=role.tenant,
         requested_by=user,
         target_role=role,
         justification=justification,
