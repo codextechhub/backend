@@ -65,7 +65,7 @@ class GoldenSignalsTests(TestCase):
         for m in range(10):
             RequestMetric.objects.create(
                 bucket_start=now - timedelta(minutes=m),
-                route="/v1/i/students/", method="GET", school_id=None,
+                route="/v1/i/students/", method="GET", tenant_id=None,
                 request_count=100, status_2xx=98, status_5xx=2,
                 latency_sum_ms=9000, latency_max_ms=300,
                 latency_hist=_hist_from([90] * 100),
@@ -119,7 +119,7 @@ class AlertEvaluationTests(TestCase):
         now = timezone.now().replace(second=0, microsecond=0)
         # 50% error rate over the recent window — well past a 5% threshold.
         RequestMetric.objects.create(
-            bucket_start=now, route="/v1/i/", method="GET", school_id=None,
+            bucket_start=now, route="/v1/i/", method="GET", tenant_id=None,
             request_count=100, status_2xx=50, status_5xx=50,
             latency_sum_ms=9000, latency_max_ms=300, latency_hist=_hist_from([90] * 100),
         )

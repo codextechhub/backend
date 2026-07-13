@@ -179,9 +179,10 @@ class Command(BaseCommand):
         # ── Validation ────────────────────────────────────────────────────────
         
         existing_count, user_exist, len_pass = None, None, None
-        # Check if Vision Staff already exists (unless --force is used)
+        # Check if platform-tenant staff already exist (unless --force is used).
+        # Keyed off the tenant kind, not user_type.
         if not force:
-            existing_count = User.objects.filter(user_type=User.UserType.CX_STAFF).count()
+            existing_count = User.objects.filter(tenant__kind='PLATFORM').count()
         
         # Check for duplicate email
         if User.objects.filter(email__iexact=email).exists():

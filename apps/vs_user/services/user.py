@@ -12,10 +12,7 @@ logger = logging.getLogger(__name__)
 
 from ..models import LoginSession, User, AuthEventLog
 from .audit import log_auth_event, blacklist_all_user_tokens
-from vs_rbac.models import (
-    SchoolRoleTemplate, PlatformRoleTemplate,
-    TenantRoleTemplate, TenantUserRoleAssignment,
-)
+from vs_rbac.models import TenantUserRoleAssignment
 
 
 class UserCreationService:
@@ -51,11 +48,9 @@ class UserCreationService:
             is_staff=True if validated_data['user_type'] == "CX_STAFF" else False,
         )
 
+        # role_instance is now a native TenantRoleTemplate resolved by the
+        # serializer within the target tenant — no legacy bridge needed.
         role = role_instance
-        if isinstance(role_instance, (PlatformRoleTemplate, SchoolRoleTemplate)):
-            role = TenantRoleTemplate.objects.get(
-                tenant=user.tenant, key=str(role_instance.pk),
-            )
         TenantUserRoleAssignment.objects.create(
             tenant=user.tenant,
             branch=user.branch if role.branch_id else None,
@@ -146,9 +141,11 @@ class EmailChangeService:
         target_user.save(update_fields=['email', 'updated_at'])
 
         # End all sessions — user logs in again with the new email.
+        # all_objects: the RBAC-authorized target may live outside the ambient
+        # tenant (platform actor acting on a school user); every session ends.
         blacklist_all_user_tokens(target_user)
 
-        LoginSession.objects.filter(user=target_user, is_active=True).update(
+        LoginSession.all_objects.filter(user=target_user, is_active=True).update(
             is_active=False, ended_at=timezone.now(), end_reason='EMAIL_CHANGE',
         )
 
@@ -181,7 +178,8 @@ class  UserStatusService:
         target_user.save(update_fields=['status', 'is_active', 'updated_at'])
         blacklist_all_user_tokens(target_user)
 
-        LoginSession.objects.filter(user=target_user, is_active=True).update(
+        # all_objects — see EmailChangeService: cross-tenant target sessions.
+        LoginSession.all_objects.filter(user=target_user, is_active=True).update(
             is_active=False, ended_at=timezone.now(), end_reason='SUSPENDED',
         )
 

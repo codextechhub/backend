@@ -9,8 +9,15 @@ from ..models import Ticket
 
 
 def is_support_user(user) -> bool:
-    return bool(user and getattr(user, "is_authenticated", False) and
-                user_has_rbac_permission(user, TicketPermission.MANAGE, tenant=user.tenant))
+    """Cross-tenant support console access: PLATFORM-tenant staff holding the
+    manage grant. The kind check is load-bearing — a school user granted
+    tickets.ticket.manage manages tickets inside their own tenant only and
+    must never inherit the cross-tenant span."""
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    if getattr(getattr(user, "tenant", None), "kind", None) != "PLATFORM":
+        return False
+    return user_has_rbac_permission(user, TicketPermission.MANAGE, tenant=user.tenant)
 
 
 def has_ticket_permission(user, permission_key: str, tenant=None) -> bool:
@@ -22,6 +29,11 @@ def visible_tickets_qs(user):
 
     if not user or not getattr(user, "is_authenticated", False):
         return qs.none()
+
+    # Platform support (tickets.ticket.manage on the platform tenant) works the
+    # cross-tenant support console — the one deliberate span over all tenants.
+    if is_support_user(user):
+        return qs
 
     qs = qs.filter(tenant=user.tenant)
 
@@ -36,6 +48,8 @@ def visible_tickets_qs(user):
 def can_view_ticket(user, ticket: Ticket) -> bool:
     if not user or not getattr(user, "is_authenticated", False):
         return False
+    if is_support_user(user):
+        return True
     if ticket.tenant_id != user.tenant_id:
         return False
     if ticket.requester_id == user.pk or ticket.assignee_id == user.pk:

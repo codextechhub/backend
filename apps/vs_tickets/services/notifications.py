@@ -28,12 +28,12 @@ def _unique_recipients(users, *, exclude=None):
 
 
 def support_recipients():
-    """Active CX staff who hold a ticket triage key through an active platform
-    role — not every CX_STAFF user. Mirrors the platform-role branch of
+    """Active platform-tenant users who hold a ticket triage key through an active
+    platform role — not every platform user. Mirrors the platform-role branch of
     vs_rbac.permissions.user_has_rbac_permission."""
     return list(
         User.objects.filter(
-            user_type=User.UserType.CX_STAFF,
+            tenant__kind="PLATFORM",
             status=User.Status.ACTIVE,
             platform_role_assignments__assignment_status="ACTIVE",
             platform_role_assignments__role__role_permissions__permission_id__in=TRIAGE_PERMISSION_KEYS,
@@ -67,7 +67,7 @@ def dispatch_ticket_event(event_key: str, *, ticket, recipients, actor=None, con
                 event_key=event_key,
                 context=context or context_for(ticket),
                 recipients=recipients,
-                school=ticket.school,
+                tenant=ticket.tenant,
                 metadata={"ticket_id": ticket.pk, "ticket_number": ticket.ticket_number},
             )
         except Exception as exc:

@@ -27,8 +27,8 @@ from vs_rbac.permissions import IsAuthenticatedAndActive
 
 
 def can_view_all_jobs(user) -> bool:
-    """Admin-queue visibility: CX staff holding a platform admin role."""
-    if getattr(user, "user_type", None) != "CX_STAFF":
+    """Admin-queue visibility: platform-tenant staff holding a platform admin role."""
+    if getattr(getattr(user, "tenant", None), "kind", None) != "PLATFORM":
         return False
     from vs_rbac.models import TenantUserRoleAssignment
 

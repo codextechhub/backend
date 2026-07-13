@@ -45,14 +45,17 @@ class CurrentUserView(APIView):
 
     def get(self, request):
         from vs_rbac.evaluator import get_effective_permissions
+        # request.tenant is bound by TenantJWTAuthentication; fall back to the
+        # user's home tenant for auth paths that bypass it (e.g. force_authenticate).
+        tenant = getattr(request, "tenant", None) or request.user.tenant
         permissions = sorted(
-            get_effective_permissions(request.user, tenant=getattr(request, "tenant", None))
+            get_effective_permissions(request.user, tenant=tenant)
         )
         return success_response(
             message="Current user retrieved successfully.",
             data={
                 "user": UserReadSerializer(request.user).data,
-                "tenant": {"slug": request.tenant.slug, "name": request.tenant.name},
+                "tenant": {"slug": tenant.slug, "name": tenant.name},
                 "school": school_public_info(getattr(request.user, "school", None), request),
                 "permissions": permissions,
             },

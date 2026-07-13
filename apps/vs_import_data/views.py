@@ -14,8 +14,6 @@ from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, 
 from core.response import success_response, error_response
 
 from vs_rbac.permissions import IsAuthenticatedAndActive, IsBranchAdmin, IsSchoolAdmin, IsVisionStaff, HasRBACPermission
-from vs_schools.models import School
-from vs_user.models import User
 
 from .constants import ImportPermission
 
@@ -64,6 +62,11 @@ from .services.validation_service import validate_import_batch
 # =========================================================
 # Helpers
 # =========================================================
+def _is_platform(user) -> bool:
+    """True when the user belongs to the platform (Codex) tenant."""
+    return getattr(getattr(user, "tenant", None), "kind", None) == "PLATFORM"
+
+
 def _format_validation_issues(issues: list[dict]) -> list[dict]:
     """
     Return a flat, sorted list of validation issues ready for API responses.
@@ -91,42 +94,35 @@ def _format_validation_issues(issues: list[dict]) -> list[dict]:
 # =========================================================
 class SchoolContextMixin:
     """
-    Resolves the school for the current request without requiring school_id in the URL.
+    Resolves tenant scoping for the current request without requiring an id in the URL.
 
-    - Non-CX_STAFF: school is always the user's own school.
-    - CX_STAFF: school is read from the optional ?school_id= query param (None = all schools).
+    - School-tenant users: always scoped to their own asserted tenant (request.tenant).
+    - Platform-tenant users: unscoped (see every tenant's data). ?school= inputs no
+      longer influence scoping — the asserted tenant is authoritative.
     """
 
-    def get_school(self):
-        user = self.request.user
-        if getattr(user, "user_type", None) == User.UserType.CX_STAFF:
-            school_id = self.request.query_params.get("school_id")
-            if school_id:
-                return get_object_or_404(School, id=school_id)
+    def scope_tenant(self):
+        """The tenant to filter by, or None when the caller is unscoped (platform)."""
+        if _is_platform(self.request.user):
             return None
-        return get_object_or_404(School, id=user.school_id)
-
-    def get_serializer_context(self):
-        context = super().get_serializer_context()
-        context["school"] = self.get_school()
-        return context
+        return getattr(self.request, "tenant", None)
 
 
 class ImportBatchContextMixin(SchoolContextMixin):
     """
-    Gets an import batch belonging to the current school.
+    Gets an import batch belonging to the current tenant.
     URL must include: batch_id
     """
     batch_lookup_url_kwarg = "batch_id"
 
     def get_import_batch(self):
         filters = {"id": self.kwargs[self.batch_lookup_url_kwarg]}
-        school = self.get_school()
-        if school is not None:
-            filters["school"] = school
+        tenant = self.scope_tenant()
+        if tenant is not None:
+            filters["tenant"] = tenant
         return get_object_or_404(
             ImportBatch.objects.select_related(
-                "school",
+                "tenant",
                 "uploaded_by",
                 "template",
             ).prefetch_related(
@@ -192,8 +188,7 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
     def get_queryset(self):
         queryset = ImportTemplate.objects.prefetch_related("columns").order_by("dataset_type", "name")
 
-        is_cx_staff = getattr(self.request.user, "user_type", None) == User.UserType.CX_STAFF
-        if self.request.method == "GET" and not is_cx_staff:
+        if self.request.method == "GET" and not _is_platform(self.request.user):
             queryset = queryset.filter(
                 status=TemplateStatusChoices.ACTIVE,
                 is_download_enabled=True,
@@ -207,8 +202,8 @@ class SystemImportTemplateListView(generics.ListCreateAPIView):
 
     def check_permissions(self, request):
         super().check_permissions(request)
-        if request.method == "POST" and getattr(request.user, "user_type", None) != User.UserType.CX_STAFF:
-            self.permission_denied(request, message="Only CX staff can create import templates.")
+        if request.method == "POST" and not _is_platform(request.user):
+            self.permission_denied(request, message="Only platform staff can create import templates.")
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -249,8 +244,8 @@ class SystemImportTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, gener
 
     def check_permissions(self, request):
         super().check_permissions(request)
-        if request.method in ("PATCH", "PUT") and getattr(request.user, "user_type", None) != User.UserType.CX_STAFF:
-            self.permission_denied(request, message="Only CX staff can update import templates.")
+        if request.method in ("PATCH", "PUT") and not _is_platform(request.user):
+            self.permission_denied(request, message="Only platform staff can update import templates.")
 
     def get_serializer_class(self):
         if self.request.method in ("PATCH", "PUT"):
@@ -259,8 +254,7 @@ class SystemImportTemplateDetailView(RetrieveModelMixin, UpdateModelMixin, gener
 
     def get_queryset(self):
         qs = ImportTemplate.objects.prefetch_related("columns")
-        is_cx_staff = getattr(self.request.user, "user_type", None) == User.UserType.CX_STAFF
-        if not is_cx_staff:
+        if not _is_platform(self.request.user):
             qs = qs.filter(status=TemplateStatusChoices.ACTIVE, is_download_enabled=True)
         return qs
 
@@ -297,8 +291,7 @@ class SystemImportTemplateDownloadView(APIView):
 
     def get(self, request, template_id):
         qs = ImportTemplate.objects.prefetch_related("columns")
-        is_cx_staff = getattr(request.user, "user_type", None) == User.UserType.CX_STAFF
-        if not is_cx_staff:
+        if not _is_platform(request.user):
             qs = qs.filter(status=TemplateStatusChoices.ACTIVE, is_download_enabled=True)
         template = get_object_or_404(qs, id=template_id)
 
@@ -325,7 +318,7 @@ class SystemImportTemplateDownloadView(APIView):
 # =========================================================
 class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.ListCreateAPIView):
     """
-    GET  -> list import batches for an school
+    GET  -> list import batches for the caller's tenant (platform users see all)
     POST -> upload a new import batch using a selected system template
 
     docstring-name: Import batches
@@ -341,10 +334,10 @@ class ImportBatchListCreateView(CreateModelMixin, SchoolContextMixin, generics.L
         return super().get_permissions()
 
     def get_queryset(self):
-        school = self.get_school()
+        tenant = self.scope_tenant()
         queryset = ImportBatch.objects.select_related("tenant", "uploaded_by", "template").order_by("-created_at")
-        if school is not None:
-            queryset = queryset.filter(tenant=self.request.tenant)
+        if tenant is not None:
+            queryset = queryset.filter(tenant=tenant)
 
         status_param = self.request.query_params.get("status")
         if status_param:
@@ -409,14 +402,14 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
         return super().get_permissions()
 
     def get_queryset(self):
-        school = self.get_school()
+        tenant = self.scope_tenant()
         qs = ImportBatch.objects.select_related("tenant", "uploaded_by", "template").prefetch_related(
             "template__columns",
             "validation_issues",
             "notifications",
         )
-        if school is not None:
-            qs = qs.filter(tenant=self.request.tenant)
+        if tenant is not None:
+            qs = qs.filter(tenant=tenant)
         return qs
 
     def get_object(self):
@@ -477,10 +470,10 @@ class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
     rbac_permission = ImportPermission.BATCH_VIEW
 
     def get(self, request, **_kwargs):
-        school = self.get_school()
+        tenant = self.scope_tenant()
         qs = ImportBatch.objects.only("id", "tenant", "file", "original_filename")
-        if school is not None:
-            qs = qs.filter(tenant=self.request.tenant)
+        if tenant is not None:
+            qs = qs.filter(tenant=tenant)
         batch = get_object_or_404(qs, id=_kwargs["batch_id"])
 
         if not batch.file:
@@ -683,7 +676,7 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
                     import_batch_id=str(import_batch.id),
                     queued_by_id=str(request.user.id),
                     _job_owner_id=str(request.user.id),
-                    _job_school_id=import_batch.school_id,
+                    _job_tenant_id=str(import_batch.tenant_id),
                     _job_label=f"Import: {import_batch.original_filename or import_batch.dataset_type}",
                     _job_kind="import",
                 )

@@ -79,7 +79,7 @@ def log_auth_event(*, actor, subject, school, event: str, request=None, metadata
 
 
 def record_attempt(*, email_entered, user=None,
-                   school=None, result: str, failure_code: str = '',
+                   tenant=None, result: str, failure_code: str = '',
                    request=None, metadata: dict | None = None):
     """
     Write a single record to AuthAttempt for rate-limiting and lockout tracking.
@@ -90,7 +90,7 @@ def record_attempt(*, email_entered, user=None,
         AuthAttempt.objects.create(
             email_entered=email_entered,
             user=user,
-            school=school,
+            tenant=tenant,
             ip_address=get_client_ip(request) if request else None,
             user_agent=request.META.get('HTTP_USER_AGENT', '') if request else '',
             result=result,

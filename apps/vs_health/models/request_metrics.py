@@ -25,9 +25,9 @@ class RequestMetric(models.Model):
     Notes:
         * ``route`` is the *resolved* URL pattern (e.g. ``v1/finance/invoices/``),
           never the raw path, to keep cardinality bounded.
-        * ``school`` is nullable: unauthenticated / platform-scoped requests
-          have no tenant. This column is for slicing, not isolation — the table
-          is global observability data gated by platform RBAC.
+        * ``tenant`` is nullable: unauthenticated / platform-anonymous requests
+          have no asserted tenant. This column is for slicing, not isolation — the
+          table is global observability data gated by platform RBAC.
     """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -35,8 +35,8 @@ class RequestMetric(models.Model):
     bucket_start = models.DateTimeField(db_index=True, help_text="Start of the 1-minute window (UTC).")
     route = models.CharField(max_length=255, db_index=True)
     method = models.CharField(max_length=10)
-    school = models.ForeignKey(
-        "vs_schools.School", on_delete=models.SET_NULL, null=True, blank=True,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.SET_NULL, null=True, blank=True,
         related_name="+",
     )
 
@@ -53,10 +53,10 @@ class RequestMetric(models.Model):
 
     class Meta:
         # One canonical row per dimension tuple — collectors upsert into it.
-        unique_together = ("bucket_start", "route", "method", "school")
+        unique_together = ("bucket_start", "route", "method", "tenant")
         indexes = [
             models.Index(fields=["bucket_start", "route"]),
-            models.Index(fields=["bucket_start", "school"]),
+            models.Index(fields=["bucket_start", "tenant"], name="vs_health_r_bucket_tenant_idx"),
         ]
         ordering = ["-bucket_start"]
 

@@ -262,11 +262,16 @@ class SchoolBrandingPayloadTests(TestCase):
 
     def test_existing_flat_fields_unchanged(self):
         # console-fe compatibility: additive change must not touch existing fields.
+        # The user payload now carries tenant identity (tenant_slug/tenant_name)
+        # instead of the legacy flat school_name; school identity lives in the
+        # nested `school` object.
         data = self._login(self.admin, self.password)
         self.assertIn("user", data)
         self.assertIn("access", data)
         self.assertIn("permissions", data)
-        self.assertEqual(data["user"]["school_name"], self.school.name)
+        self.assertEqual(data["user"]["tenant_name"], self.school.name)
+        self.assertEqual(data["user"]["tenant_slug"], self.school.slug)
+        self.assertEqual(data["school"]["name"], self.school.name)
 
     def test_me_returns_same_school_object(self):
         self._add_branding(logo=True)

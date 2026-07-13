@@ -33,7 +33,7 @@ _thread_lock = threading.Lock()
 
 @dataclass
 class _Agg:
-    """Mutable accumulator for one (bucket, route, method, school) tuple."""
+    """Mutable accumulator for one (bucket, route, method, tenant) tuple."""
     count: int = 0
     s2: int = 0
     s3: int = 0
@@ -58,11 +58,11 @@ def _floor_minute(dt):
 
 
 def record(*, route: str, method: str, status_code: int, latency_ms: float,
-           school_id=None, throttled: bool = False) -> None:
+           tenant_id=None, throttled: bool = False) -> None:
     """Fold a single request into the in-memory buffer (cheap, thread-safe)."""
     try:
         bucket = _floor_minute(timezone.now())
-        key = (bucket, route, method, school_id)
+        key = (bucket, route, method, tenant_id)
         with _lock:
             agg = _buffer.get(key)
             if agg is None:
@@ -106,7 +106,7 @@ def flush() -> int:
         return 0
 
     touched = 0
-    for (bucket, route, method, school_id), agg in snapshot.items():
+    for (bucket, route, method, tenant_id), agg in snapshot.items():
         try:
             with transaction.atomic():
                 obj, created = (
@@ -114,7 +114,7 @@ def flush() -> int:
                         bucket_start=bucket,
                         route=route[:255],
                         method=method[:10],
-                        school_id=school_id,
+                        tenant_id=tenant_id,
                         defaults={
                             "request_count": agg.count,
                             "status_2xx": agg.s2,

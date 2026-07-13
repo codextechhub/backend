@@ -87,6 +87,16 @@ class TicketFixtureMixin:
         _grant(self.school_a, self.requester, REQUESTER_KEYS, role_name="Alpha Requester")
         _grant(self.school_a, self.peer, REQUESTER_KEYS, role_name="Alpha Peer")
         _grant(self.school_b, self.outsider, REQUESTER_KEYS, role_name="Beta Requester")
+        # Support authority is an RBAC grant on the platform tenant now, not a
+        # user_type side effect: is_support_user checks tickets.ticket.manage.
+        _grant(
+            self.support.tenant, self.support,
+            (TicketPermission.MANAGE,), role_name="CX Support",
+        )
+        _grant(
+            self.other_support.tenant, self.other_support,
+            (TicketPermission.MANAGE,), role_name="CX Support Tier 2",
+        )
 
 
 class TicketServiceTests(TicketFixtureMixin, TestCase):
@@ -157,6 +167,21 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
         self.assertNotIn(other, visibility.visible_tickets_qs(self.peer))
         self.assertIn(mine, visibility.visible_tickets_qs(self.support))
         self.assertIn(other, visibility.visible_tickets_qs(self.support))
+
+    def test_school_manage_grant_does_not_leak_cross_tenant(self):
+        # A SCHOOL user holding tickets.ticket.manage manages tickets inside
+        # their own tenant only — the cross-tenant support span is reserved
+        # for PLATFORM-tenant staff.
+        _grant(
+            self.school_a, self.peer,
+            (TicketPermission.MANAGE,), role_name="Alpha Ticket Manager",
+        )
+        other = ticket_svc.create_ticket(
+            actor=self.outsider, title="Other", description="x", category="HELP", priority="LOW",
+        )
+        self.assertFalse(visibility.is_support_user(self.peer))
+        self.assertNotIn(other, visibility.visible_tickets_qs(self.peer))
+        self.assertFalse(visibility.can_view_ticket(self.peer, other))
 
     def test_school_wide_visibility_requires_view_grant(self):
         mine = ticket_svc.create_ticket(

@@ -7,6 +7,8 @@ from __future__ import annotations
 from django.db import transaction
 from django.utils import timezone
 
+from vs_tenants.models import Tenant
+
 from ..models import User, LoginSession, AccountLockout, AuthAttempt, AuthEventLog
 from ..tokens import CodeXRefreshToken
 from ..serializers import UserReadSerializer, school_public_info
@@ -45,14 +47,15 @@ class LoginService:
 
         # 1. Find user
         user = User.objects.filter(email__iexact=email).first()
-        school = user.school if user else None
+        tenant = user.tenant if user else None
 
-        # 2. School context enforcement — non-Vision Staff must have a school.
-        if user and user.user_type != User.UserType.CX_STAFF:
-            if not school:
+        # 2. School-binding enforcement — non-platform users must have a school.
+        # Gated by the actor's TENANT KIND, not their user_type.
+        if user and getattr(user.tenant, 'kind', None) != Tenant.Kind.PLATFORM:
+            if not user.school_id:
                 record_attempt(
                     email_entered=email,
-                    user=user, school=None,
+                    user=user, tenant=tenant,
                     result=AuthAttempt.Result.FAIL, failure_code='SCHOOL_CONTEXT_REQUIRED',
                     request=request,
                 )
@@ -62,7 +65,7 @@ class LoginService:
         # check_password directly instead of django's authenticate() — authenticate()
         # returns None for is_active=False users, masking the real reason.
         if not user or not user.check_password(password):
-            LoginService._handle_failed_attempt(user, school, email, request)
+            LoginService._handle_failed_attempt(user, tenant, email, request)
             raise ValueError({'code': 'INVALID_CREDENTIALS', 'detail': 'Invalid credentials.'})
 
         # 4. Lockout check — the caller proved they know the password, so a
@@ -72,7 +75,7 @@ class LoginService:
             if lockout and lockout.is_locked_now():
                 record_attempt(
                     email_entered=email,
-                    user=user, school=school,
+                    user=user, tenant=tenant,
                     result=AuthAttempt.Result.BLOCKED, failure_code='LOCKED',
                     request=request,
                 )
@@ -88,7 +91,7 @@ class LoginService:
         if status_error:
             record_attempt(
                 email_entered=email,
-                user=authed, school=authed.school,
+                user=authed, tenant=authed.tenant,
                 result=AuthAttempt.Result.BLOCKED, failure_code=authed.status,
                 request=request,
             )
@@ -107,7 +110,7 @@ class LoginService:
             ua_string = request.META.get('HTTP_USER_AGENT', '') if request else ''
             session = LoginSession.objects.create(
                 user=authed,
-                school=authed.school,
+                tenant=authed.tenant,
                 ip_address=get_client_ip(request),
                 user_agent=ua_string,
                 device_label=get_device_label(ua_string, request),
@@ -122,7 +125,7 @@ class LoginService:
         # 7. Audit writes — outside any transaction so they always persist.
         record_attempt(
             email_entered=email,
-            user=authed, school=authed.school,
+            user=authed, tenant=authed.tenant,
             result=AuthAttempt.Result.SUCCESS, failure_code='',
             request=request,
         )
@@ -182,7 +185,7 @@ class LoginService:
         return errors.get(user.status)
 
     @staticmethod
-    def _handle_failed_attempt(user, school, email_entered, request):
+    def _handle_failed_attempt(user, tenant, email_entered, request):
         """Increment the failure counter, lock the account if threshold is reached, and record the attempt.
 
         The lockout update is wrapped in its own atomic block so the counter
@@ -218,7 +221,7 @@ class LoginService:
         # only identifying datum the security team has (spraying, typos, probes).
         record_attempt(
             email_entered=email_entered or (user.email if user else ''),
-            user=user, school=school,
+            user=user, tenant=tenant,
             result=AuthAttempt.Result.FAIL, failure_code='INVALID_CREDENTIALS',
             request=request,
         )

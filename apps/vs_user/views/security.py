@@ -17,6 +17,7 @@ from rest_framework import status, viewsets, mixins
 from rest_framework.decorators import action
 from rest_framework.views import APIView
 from vs_rbac.permissions import IsAuthenticatedAndActive, IsVisionStaff, HasRBACPermission
+from vs_tenants.models import Tenant
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
 from ..models import (
@@ -62,10 +63,13 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        qs   = LoginSession.objects.select_related('user', 'school').order_by('-last_seen_at')
+        qs   = LoginSession.objects.select_related('user', 'tenant').order_by('-last_seen_at')
 
-        if getattr(user, 'user_type', None) == User.UserType.CX_STAFF:
-            pass  # no tenant boundary — sees all sessions
+        # Platform-kind actors see every session in the asserted tenant scope
+        # (the TenantAwareManager applies request.tenant); everyone else sees
+        # only their own sessions.
+        if getattr(getattr(user, 'tenant', None), 'kind', None) == Tenant.Kind.PLATFORM:
+            pass
         else:
             qs = qs.filter(user=user)
 
@@ -102,7 +106,10 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             ended = 1
 
         if target_user:
-            ended = LoginSession.objects.filter(user=target_user, is_active=True).update(
+            # all_objects: the target is explicitly authorized via RBAC and may
+            # live outside the ambient tenant (platform actor acting on a
+            # school user) — every one of their sessions must end.
+            ended = LoginSession.all_objects.filter(user=target_user, is_active=True).update(
                 is_active=False,
                 ended_at=timezone.now(),
                 end_reason='FORCE_LOGOUT',
@@ -139,13 +146,13 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_queryset(self):
         params = self.request.query_params
-        qs = AuthAttempt.objects.select_related('user', 'user__school', 'school').order_by('-created_at')
+        qs = AuthAttempt.objects.select_related('user', 'tenant').order_by('-created_at')
 
         if user_id := params.get('user_id'):
             qs = qs.filter(user_id=user_id)
 
-        if school_id := params.get('school_id'):
-            qs = qs.filter(school_id=school_id)
+        if tenant_id := params.get('tenant_id'):
+            qs = qs.filter(tenant_id=tenant_id)
 
         if email := params.get('email'):
             qs = qs.filter(email_entered__icontains=email)
@@ -238,8 +245,11 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         user = self.request.user
         qs = AccountLockout.objects.select_related('user').order_by('-updated_at')
 
-        if getattr(user, 'user_type', None) != User.UserType.CX_STAFF:
-            qs = qs.filter(user__school=user.school)
+        # Non-platform actors only see lockouts inside the asserted tenant;
+        # platform-kind actors keep the platform-wide view (IsVisionStaff +
+        # RBAC gate the endpoint).
+        if getattr(getattr(user, 'tenant', None), 'kind', None) != Tenant.Kind.PLATFORM:
+            qs = qs.filter(user__tenant=getattr(self.request, 'tenant', None) or user.tenant)
 
         if user_id := params.get('user_id'):
             qs = qs.filter(user_id=user_id)

@@ -15,9 +15,10 @@ from rest_framework_simplejwt.serializers import (
     TokenRefreshSerializer as JWTTokenRefreshSerializer,
 )
 
-from vs_rbac.models import SchoolRoleTemplate, PlatformRoleTemplate
+from vs_rbac.models import TenantRoleTemplate
 from vs_rbac.fls import FieldSecurityMixin
 from vs_schools.models import School, Branch
+from vs_tenants.models import Tenant
 from .models import (
     User,
     UserInvitation,
@@ -74,6 +75,13 @@ class SchoolSlimSerializer(serializers.ModelSerializer):
     class Meta:
         model = School
         fields = ('id', 'name', 'slug')
+
+
+class TenantSlimSerializer(serializers.Serializer):
+    """Minimal tenant identity for session/security-log payloads."""
+    id   = serializers.IntegerField(read_only=True)
+    slug = serializers.CharField(read_only=True)
+    name = serializers.CharField(read_only=True)
 
 
 class UserInlineSerializer(serializers.ModelSerializer):
@@ -250,11 +258,15 @@ class UserCreateSerializer(serializers.Serializer):
         user_type = attrs.get('user_type')
 
         if not user_type:
-            if self.context['request'].user.user_type == User.UserType.CX_STAFF:
+            # Default the created user's persona from the ACTOR's tenant kind:
+            # a platform-tenant actor provisions internal staff, everyone else
+            # provisions a school admin. (Tenant-kind, not user_type, decides.)
+            actor = self.context['request'].user
+            if getattr(actor.tenant, 'kind', None) == Tenant.Kind.PLATFORM:
                 user_type = User.UserType.CX_STAFF
-            else:                
+            else:
                 user_type = User.UserType.SCHOOL_ADMIN
-                
+
         attrs['user_type'] = user_type
 
         # Resolve school UUID to instance
@@ -305,15 +317,26 @@ class UserCreateSerializer(serializers.Serializer):
                     {'branch': 'The selected branch does not belong to the selected school.'}
                 )
             
-        role_id = attrs['role']
+        # Role input is a TenantRoleTemplate KEY, resolved within the target
+        # tenant natively (no legacy Platform/SchoolRoleTemplate bridge). The
+        # backfill in vs_rbac.0004 set each migrated tenant-role key to
+        # str(legacy_pk), so legacy role slugs keep resolving unchanged.
+        role_key = attrs['role']
         if user_type == User.UserType.CX_STAFF:
-            try:
-                role = PlatformRoleTemplate.objects.get(id=role_id)
-            except PlatformRoleTemplate.DoesNotExist:
+            target_tenant = Tenant.objects.filter(
+                slug='codex', kind=Tenant.Kind.PLATFORM,
+            ).first()
+            if target_tenant is None:
                 raise serializers.ValidationError(
-                    {'role': f'Platform role with id "{role_id}" not found.'}
+                    {'role': 'The platform (codex) tenant is not provisioned.'}
                 )
-            if role_id == 'xvs_super_admin':
+            try:
+                role = TenantRoleTemplate.objects.get(tenant=target_tenant, key=role_key)
+            except TenantRoleTemplate.DoesNotExist:
+                raise serializers.ValidationError(
+                    {'role': f'Platform role with key "{role_key}" not found.'}
+                )
+            if role_key == 'xvs_super_admin':
                 from vs_rbac.models import TenantUserRoleAssignment
                 if TenantUserRoleAssignment.objects.filter(
                     role__key='xvs_super_admin',
@@ -330,10 +353,10 @@ class UserCreateSerializer(serializers.Serializer):
                     {'role': 'Role can only be assigned if a school is specified.'}
                 )
             try:
-                role = SchoolRoleTemplate.objects.get(id=role_id, school=school)
-            except SchoolRoleTemplate.DoesNotExist:
+                role = TenantRoleTemplate.objects.get(tenant=school.tenant, key=role_key)
+            except TenantRoleTemplate.DoesNotExist:
                 raise serializers.ValidationError(
-                    {'role': f'Role with id "{role_id}" not found in the specified school.'}
+                    {'role': f'Role with key "{role_key}" not found in the specified school.'}
                 )
 
         attrs['role'] = role.name
@@ -555,12 +578,12 @@ class UserInvitationReadSerializer(serializers.ModelSerializer):
 
 class LoginSessionReadSerializer(serializers.ModelSerializer):
     user   = UserInlineSerializer(read_only=True)
-    school = SchoolSlimSerializer(read_only=True)
+    tenant = TenantSlimSerializer(read_only=True)
 
     class Meta:
         model  = LoginSession
         fields = (
-            'id', 'user', 'school', 'ip_address', 'user_agent',
+            'id', 'user', 'tenant', 'ip_address', 'user_agent',
             'device_label', 'last_seen_at', 'is_active', 'ended_at',
             'end_reason', 'created_at',
         )
@@ -580,12 +603,12 @@ class ForceLogoutSerializer(serializers.Serializer):
 
 class AuthAttemptReadSerializer(serializers.ModelSerializer):
     user   = UserInlineSerializer(read_only=True)
-    school = SchoolSlimSerializer(read_only=True)
+    tenant = TenantSlimSerializer(read_only=True)
 
     class Meta:
         model  = AuthAttempt
         fields = (
-            'id', 'email_entered', 'user', 'school',
+            'id', 'email_entered', 'user', 'tenant',
             'ip_address', 'user_agent', 'result', 'failure_code', 'metadata', 'created_at',
         )
         read_only_fields = fields
@@ -618,7 +641,7 @@ class AuthEventLogReadSerializer(serializers.ModelSerializer):
     class Meta:
         model  = AuthEventLog
         fields = (
-            'id', 'actor', 'subject', 'school', 'event',
+            'id', 'actor', 'subject', 'tenant', 'event',
             'ip_address', 'user_agent', 'metadata', 'created_at',
         )
         read_only_fields = fields
@@ -850,7 +873,7 @@ class PositionSerializer(serializers.ModelSerializer):
     )
     default_role    = serializers.PrimaryKeyRelatedField(
         required=False, allow_null=True,
-        queryset=PlatformRoleTemplate.objects.all(),
+        queryset=TenantRoleTemplate.objects.all(),
     )
     current_holders = UserInlineSerializer(many=True, read_only=True)
     is_vacant       = serializers.BooleanField(read_only=True)

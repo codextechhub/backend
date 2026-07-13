@@ -127,13 +127,13 @@ class TenantAwareManagerWaveTwoTests(TestCase):
 
         branch_a = make_branch(self.school_a)
         user_a = make_school_admin(branch_a, email="iso2a@test.com", school=self.school_a)
-        LoginSession.objects.create(user=user_a, school=self.school_a)
-        AuthAttempt.objects.create(email_entered="x@a.com", school=self.school_a, result="FAIL")
-        AuthAttempt.objects.create(email_entered="cx@platform.com", school=None, result="FAIL")
+        LoginSession.objects.create(user=user_a, tenant=self.school_a.tenant)
+        AuthAttempt.objects.create(email_entered="x@a.com", tenant=self.school_a.tenant, result="FAIL")
+        AuthAttempt.objects.create(email_entered="cx@platform.com", tenant=None, result="FAIL")
 
         set_current_tenant(self.school_b.tenant)
         self.assertEqual(LoginSession.objects.count(), 0)
-        # Platform rows (school NULL) are hidden from other tenants too.
+        # Unowned rows (tenant NULL) are hidden from other tenants too.
         self.assertEqual(AuthAttempt.objects.count(), 0)
 
         set_current_tenant(self.school_a.tenant)

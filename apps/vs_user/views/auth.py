@@ -216,6 +216,10 @@ class TokenRefreshView(APIView):
     docstring-name: Refresh access token
     """
     permission_classes = [AllowAny]
+    # Operates purely on the submitted refresh token — token validity is the
+    # gate, so ?tenant= is not required (clients send a Bearer header here,
+    # which would otherwise trip the mandatory tenant assertion).
+    tenant_param_required = False
 
     def post(self, request):
         ser = TokenRefreshSerializer(data=request.data)

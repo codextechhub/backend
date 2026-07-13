@@ -107,11 +107,11 @@ def percentile_from_hist(hist, p: float) -> float:
 # Core request aggregation
 # ---------------------------------------------------------------------------
 
-def _base_qs(start, end, school_id=None, route=None):
+def _base_qs(start, end, tenant_id=None, route=None):
     from .models import RequestMetric
     qs = RequestMetric.objects.filter(bucket_start__gte=start, bucket_start__lt=end)
-    if school_id is not None:
-        qs = qs.filter(school_id=school_id)
+    if tenant_id is not None:
+        qs = qs.filter(tenant_id=tenant_id)
     if route is not None:
         qs = qs.filter(route=route)
     return qs
@@ -148,10 +148,10 @@ def _delta(curr: float, prev: float) -> float:
     return round((curr - prev) / prev * 100.0, 1)
 
 
-def golden_signals(tr: TimeRange, school_id=None) -> dict:
+def golden_signals(tr: TimeRange, tenant_id=None) -> dict:
     """The four KPI tiles + their sparklines and vs-previous deltas."""
-    qs = _base_qs(tr.start, tr.end, school_id)
-    prev_qs = _base_qs(tr.prev_start, tr.start, school_id)
+    qs = _base_qs(tr.start, tr.end, tenant_id)
+    prev_qs = _base_qs(tr.prev_start, tr.start, tenant_id)
 
     totals = _totals(qs)
     prev_totals = _totals(prev_qs)
@@ -162,7 +162,7 @@ def golden_signals(tr: TimeRange, school_id=None) -> dict:
     rpm = round(totals["requests"] / minutes, 1)
     prev_rpm = round(prev_totals["requests"] / _minutes(tr), 1)
 
-    series = request_series(tr, school_id)
+    series = request_series(tr, tenant_id)
     spark_traffic = [pt["requests"] for pt in series]
     spark_errors = [pt["error_rate"] for pt in series]
     spark_latency = [pt["p95"] for pt in series]
@@ -190,13 +190,13 @@ def golden_signals(tr: TimeRange, school_id=None) -> dict:
     }
 
 
-def request_series(tr: TimeRange, school_id=None, route=None) -> list:
+def request_series(tr: TimeRange, tenant_id=None, route=None) -> list:
     """Time-bucketed traffic/error/latency series for charts.
 
     Resampled at ``tr.trunc`` granularity. p95 per bucket is computed from the
     merged histogram of that bucket's rows.
     """
-    qs = _base_qs(tr.start, tr.end, school_id, route)
+    qs = _base_qs(tr.start, tr.end, tenant_id, route)
     rows = (
         qs.annotate(t=Trunc("bucket_start", tr.trunc))
         .values("t")
@@ -265,9 +265,9 @@ def _status_for_error_rate(rate: float) -> str:
 # Per-endpoint stats (API & Endpoint Health)
 # ---------------------------------------------------------------------------
 
-def endpoint_stats(tr: TimeRange, school_id=None) -> list:
+def endpoint_stats(tr: TimeRange, tenant_id=None) -> list:
     """One entry per (route, method) with percentiles, rpm, error & throttle."""
-    qs = _base_qs(tr.start, tr.end, school_id)
+    qs = _base_qs(tr.start, tr.end, tenant_id)
     grouped = (
         qs.values("route", "method")
         .annotate(reqs=Sum("request_count"), s5=Sum("status_5xx"),
@@ -314,14 +314,14 @@ def endpoint_detail(tr: TimeRange, route: str) -> dict:
     merged = _merged_hist(qs)
     totals = _totals(qs)
     by_tenant = (
-        qs.exclude(school__isnull=True)
-        .values("school_id", "school__name")
+        qs.exclude(tenant__isnull=True)
+        .values("tenant_id", "tenant__name")
         .annotate(reqs=Sum("request_count"), s5=Sum("status_5xx"))
         .order_by("-reqs")[:10]
     )
     tenants = [{
-        "school_id": t["school_id"],
-        "name": t["school__name"],
+        "tenant_id": t["tenant_id"],
+        "name": t["tenant__name"],
         "requests": t["reqs"] or 0,
         "error_rate": round((t["s5"] or 0) / t["reqs"] * 100, 3) if t["reqs"] else 0.0,
     } for t in by_tenant]
@@ -343,9 +343,9 @@ def endpoint_detail(tr: TimeRange, route: str) -> dict:
 
 def tenant_stats(tr: TimeRange) -> list:
     """Per-institution golden signals + noisy-neighbour flag."""
-    qs = _base_qs(tr.start, tr.end).exclude(school__isnull=True)
+    qs = _base_qs(tr.start, tr.end).exclude(tenant__isnull=True)
     grouped = (
-        qs.values("school_id", "school__name")
+        qs.values("tenant_id", "tenant__name")
         .annotate(reqs=Sum("request_count"), s5=Sum("status_5xx"))
         .order_by("-reqs")
     )
@@ -354,8 +354,8 @@ def tenant_stats(tr: TimeRange) -> list:
         return []
 
     hist_map: dict = {}
-    for sid, hist in qs.values_list("school_id", "latency_hist"):
-        hist_map.setdefault(sid, []).append(hist)
+    for tid, hist in qs.values_list("tenant_id", "latency_hist"):
+        hist_map.setdefault(tid, []).append(hist)
 
     minutes = _minutes(tr)
     total_reqs = sum(r["reqs"] or 0 for r in rows)
@@ -366,12 +366,12 @@ def tenant_stats(tr: TimeRange) -> list:
         reqs = r["reqs"] or 0
         s5 = r["s5"] or 0
         err = round(s5 / reqs * 100, 3) if reqs else 0.0
-        p95 = percentile_from_hist(merge_hist(hist_map.get(r["school_id"], [])), 95)
+        p95 = percentile_from_hist(merge_hist(hist_map.get(r["tenant_id"], [])), 95)
         # Noisy neighbour: consuming >3x the mean request volume.
         noisy = bool(avg_reqs and reqs > avg_reqs * 3)
         out.append({
-            "school_id": r["school_id"],
-            "name": r["school__name"],
+            "tenant_id": r["tenant_id"],
+            "name": r["tenant__name"],
             "requests": reqs,
             "rpm": round(reqs / minutes, 1),
             "error_rate": err,

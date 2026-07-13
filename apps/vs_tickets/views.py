@@ -83,7 +83,9 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         if value := params.get("requester"):
             qs = qs.filter(requester_id=value)
         if value := params.get("school"):
-            qs = qs.filter(school_id=value)
+            # Legacy display filter: resolve the school through its canonical
+            # tenant (School.tenant is OneToOne, related_name="school_profile").
+            qs = qs.filter(tenant__school_profile__id=value)
         if value := params.get("created_from"):
             qs = qs.filter(created_at__date__gte=value)
         if value := params.get("created_to"):
@@ -107,7 +109,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     def get_object(self):
         ticket = get_object_or_404(
-            Ticket.all_objects.select_related("requester", "assignee", "school", "branch"),
+            Ticket.all_objects.select_related("requester", "assignee", "tenant", "branch"),
             pk=self.kwargs["pk"],
         )
         if not visibility.can_view_ticket(self.request.user, ticket):

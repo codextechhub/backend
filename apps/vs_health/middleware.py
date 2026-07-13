@@ -1,6 +1,6 @@
 """Request-timing middleware that feeds the golden signals.
 
-Sits *after* the tenant-context middleware so ``request.school`` is resolved.
+Sits *after* the tenant-context middleware so ``request.tenant`` is resolved.
 It times every resolved request and hands the result to the in-process
 collector. It deliberately:
 
@@ -51,14 +51,14 @@ class RequestMetricsMiddleware:
         if route.startswith("/v1/health/"):
             return
 
-        school = getattr(request, "school", None)
-        school_id = getattr(school, "id", None) if school else None
+        tenant = getattr(request, "tenant", None)
+        tenant_id = getattr(tenant, "id", None) if tenant else None
 
         record(
             route=route,
             method=request.method,
             status_code=getattr(response, "status_code", 0),
             latency_ms=latency_ms,
-            school_id=school_id,
+            tenant_id=tenant_id,
             throttled=getattr(response, "status_code", 0) == 429,
         )

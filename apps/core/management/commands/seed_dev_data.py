@@ -646,24 +646,24 @@ class Command(BaseCommand):
             ip, ua, label = devices[i % len(devices)]
             if not LoginSession.objects.filter(user=user).exists():
                 LoginSession.objects.create(
-                    user=user, school=None, ip_address=ip, user_agent=ua,
+                    user=user, tenant=user.tenant, ip_address=ip, user_agent=ua,
                     device_label=label, refresh_jti=str(_uuid.uuid4()),
                     last_seen_at=self.now, is_active=True,
                 )
                 sessions += 1
             if not AuthAttempt.objects.filter(user=user).exists():
                 AuthAttempt.objects.create(
-                    email_entered=user.email, user=user, school=None,
+                    email_entered=user.email, user=user, tenant=user.tenant,
                     result="SUCCESS", failure_code="", ip_address=ip, user_agent=ua,
                 )
                 if i % 2 == 0:
                     AuthAttempt.objects.create(
-                        email_entered=user.email, user=user, school=None,
+                        email_entered=user.email, user=user, tenant=user.tenant,
                         result="FAIL", failure_code="INVALID_CREDENTIALS",
                         ip_address=ip, user_agent=ua,
                     )
                 AuthEventLog.objects.create(
-                    actor=user, subject=user, school=None,
+                    actor=user, subject=user, tenant=user.tenant,
                     event="LOGIN_SUCCESS", ip_address=ip, user_agent=ua,
                 )
                 attempts += 1

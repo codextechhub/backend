@@ -448,8 +448,8 @@ class LoginSession(TimeStampedModel):
 
     # Copied from user context at login time for fast filtering
     # without joining back to the User table on every query.
-    school = models.ForeignKey(
-        School, on_delete=models.PROTECT,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT,
         related_name='login_sessions', null=True, blank=True,
     )
 
@@ -506,8 +506,8 @@ class AuthAttempt(TimeStampedModel):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='auth_attempts',
     )
-    school = models.ForeignKey(
-        School, on_delete=models.SET_NULL,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.SET_NULL,
         null=True, blank=True, related_name='auth_attempts',
     )
 
@@ -673,8 +673,8 @@ class AuthEventLog(TimeStampedModel):
         null=True, blank=True, related_name='auth_events_as_subject',
     )
 
-    school = models.ForeignKey(
-        School, on_delete=models.SET_NULL,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.SET_NULL,
         null=True, blank=True, related_name='auth_events',
     )
 
@@ -1043,7 +1043,7 @@ class Position(TimeStampedModel):
     )
     # Optional default RBAC role granted when someone is assigned this seat.
     default_role = models.ForeignKey(
-        'vs_rbac.PlatformRoleTemplate',
+        'vs_rbac.TenantRoleTemplate',
         on_delete=models.SET_NULL, null=True, blank=True,
         related_name='default_for_positions',
     )

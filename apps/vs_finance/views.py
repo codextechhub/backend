@@ -49,10 +49,10 @@ def resolve_entity(request):
     """Resolve the ``?entity=`` query param (id or code) to a :class:`LedgerEntity`.
 
     Authorization: holding a finance permission key is NOT enough — the caller
-    must also be entitled to this specific entity's books. CX staff may access
-    every entity; school-scoped users only entities sourced from their school.
-    Unknown and forbidden entities both return NotFound so an outsider can't
-    probe which entity codes exist.
+    must also be entitled to this specific entity's books. The entity must belong
+    to the caller's asserted tenant (request.tenant). Unknown and forbidden
+    entities both return NotFound so an outsider can't probe which entity codes
+    exist.
 
     Raises DRF :class:`ValidationError` when missing, :class:`NotFound` when
     unknown/forbidden — both rendered into the standard error envelope by the
@@ -141,15 +141,14 @@ class EntityListCreateView(generics.ListCreateAPIView):
     # Handle the get queryset workflow.
     def get_queryset(self):
         qs = LedgerEntity.objects.all().order_by("code")
-        # Tenancy (defence-in-depth, matching resolve_entity): CX staff see every set
-        # of books; a school-scoped user sees only entities sourced from their school,
-        # and a user with no school sees none.
-        user = getattr(self.request, "user", None)
-        if getattr(user, "user_type", None) != "CX_STAFF":
-            school = getattr(self.request, "school", None) or getattr(user, "school", None)
-            if school is None:
+        # Tenancy (defence-in-depth, matching resolve_entity): platform-tenant users
+        # see every set of books; a school-tenant user sees only entities owned by
+        # their tenant, and a user with no tenant sees none.
+        tenant = getattr(self.request, "tenant", None)
+        if getattr(tenant, "kind", None) != "PLATFORM":
+            if tenant is None:
                 return qs.none()
-            qs = qs.filter(source_school=school)
+            qs = qs.filter(tenant=tenant)
         if (kind := self.request.query_params.get("kind")):
             qs = qs.filter(kind=kind)
         if (active := self.request.query_params.get("is_active")) is not None:

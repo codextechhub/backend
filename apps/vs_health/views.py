@@ -65,8 +65,8 @@ def _range(request):
     return services.parse_range(request.query_params.get("range"), request.query_params.get("start"), request.query_params.get("end"))
 
 
-def _school_id(request):
-    raw = request.query_params.get("school")
+def _tenant_id(request):
+    raw = request.query_params.get("tenant")
     if raw in (None, "", "all"):
         return None
     try:
@@ -87,7 +87,7 @@ class OverviewView(HealthViewMixin, APIView):
 
     def get(self, request):
         tr = _range(request)
-        school_id = _school_id(request)
+        tenant_id = _tenant_id(request)
         deployments = list(
             Deployment.objects.filter(deployed_at__gte=tr.start, deployed_at__lt=tr.end)
             .values("id", "version", "kind", "actor", "text", "deployed_at")
@@ -104,9 +104,9 @@ class OverviewView(HealthViewMixin, APIView):
             "range": tr.key,
             "posture": services.overall_posture(),
             "global_uptime": services.global_uptime(),
-            "kpis": services.golden_signals(tr, school_id),
+            "kpis": services.golden_signals(tr, tenant_id),
             "services": services.service_grid(),
-            "request_series": services.request_series(tr, school_id),
+            "request_series": services.request_series(tr, tenant_id),
             "deployments": deployments,
             "queues": services.queue_overview(),
             "active_incidents": active_incidents,
@@ -176,7 +176,7 @@ class ApiEndpointsView(HealthViewMixin, APIView):
 
     def get(self, request):
         tr = _range(request)
-        rows = services.endpoint_stats(tr, _school_id(request))
+        rows = services.endpoint_stats(tr, _tenant_id(request))
         slowest = sorted(rows, key=lambda r: r["p95"], reverse=True)[:5]
         errored = sorted(rows, key=lambda r: r["error_rate"], reverse=True)[:5]
         data = {
@@ -184,7 +184,7 @@ class ApiEndpointsView(HealthViewMixin, APIView):
             "endpoints": rows,
             "top_slowest": slowest,
             "top_errors": errored,
-            "status_code_series": services.request_series(tr, _school_id(request)),
+            "status_code_series": services.request_series(tr, _tenant_id(request)),
         }
         return success_response("Endpoints retrieved successfully.", data)
 
@@ -215,7 +215,7 @@ class QueuesView(HealthViewMixin, APIView):
 class TaskListView(HealthViewMixin, generics.ListAPIView):
     """GET /health/tasks/ — the task table (reads core.BackgroundJob).
 
-    Filters: ?status=, ?queue=, ?school=, ?kind=.
+    Filters: ?status=, ?queue=, ?tenant=, ?kind=.
     """
     serializer_class = TaskRowSerializer
 
@@ -223,14 +223,14 @@ class TaskListView(HealthViewMixin, generics.ListAPIView):
         from core.models import BackgroundJob
         from .tasks import KIND_TO_QUEUE
 
-        qs = BackgroundJob.objects.select_related("school").all()
+        qs = BackgroundJob.objects.select_related("tenant").all()
         params = self.request.query_params
         status = params.get("status")
         if status:
             qs = qs.filter(status=status.upper())
-        school = params.get("school")
-        if school and school != "all":
-            qs = qs.filter(school_id=school)
+        tenant = params.get("tenant")
+        if tenant and tenant != "all":
+            qs = qs.filter(tenant_id=tenant)
         kind = params.get("kind")
         if kind:
             qs = qs.filter(kind=kind)
@@ -338,20 +338,20 @@ class TenantListView(HealthViewMixin, APIView):
 
 
 class TenantDetailView(HealthViewMixin, APIView):
-    """GET /health/tenants/{school_id}/ — golden signals scoped to one tenant."""
+    """GET /health/tenants/{tenant_id}/ — golden signals scoped to one tenant."""
 
-    def get(self, request, school_id):
+    def get(self, request, tenant_id):
         tr = _range(request)
         try:
-            sid = int(school_id)
+            tid = int(tenant_id)
         except (TypeError, ValueError):
-            return error_response("Invalid school id.", status=400)
+            return error_response("Invalid tenant id.", status=400)
         data = {
             "range": tr.key,
-            "school_id": sid,
-            "kpis": services.golden_signals(tr, sid),
-            "series": services.request_series(tr, sid),
-            "endpoints": services.endpoint_stats(tr, sid),
+            "tenant_id": tid,
+            "kpis": services.golden_signals(tr, tid),
+            "series": services.request_series(tr, tid),
+            "endpoints": services.endpoint_stats(tr, tid),
         }
         return success_response("Tenant health retrieved successfully.", data)
 

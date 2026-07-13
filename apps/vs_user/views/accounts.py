@@ -18,6 +18,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 from vs_rbac.models import TenantUserRoleAssignment
+from vs_tenants.models import Tenant
 from core.mixins import (
     XVSModelViewSetMixin,
 )
@@ -94,10 +95,13 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             )
         )
 
-        if getattr(user, 'user_type', None) == User.UserType.CX_STAFF:
-            pass  # no tenant boundary — sees all users
+        # Tenant boundary: platform-kind actors keep the platform-wide view
+        # (the endpoint's RBAC keys are the gate); everyone else is scoped to
+        # the asserted request tenant.
+        if getattr(getattr(user, 'tenant', None), 'kind', None) == Tenant.Kind.PLATFORM:
+            pass  # platform tenant — sees all users
         else:
-            qs = qs.filter(school=user.school)
+            qs = qs.filter(tenant=getattr(self.request, 'tenant', None) or user.tenant)
 
         qs = qs.exclude(status__in=[User.Status.PENDING_APPROVAL, User.Status.REJECTED])
 
@@ -111,10 +115,11 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             qs = qs.filter(user_type=user_type)
 
         # The platform console presents tenant-bound accounts separately from
-        # internal CX staff. Keep this filter server-side so pagination totals
-        # and every page are scoped correctly (client-side filtering would not).
+        # internal platform staff. Keep this filter server-side so pagination
+        # totals and every page are scoped correctly (client-side filtering
+        # would not). Keyed off the tenant kind, not user_type.
         if params.get('scope') == 'school':
-            qs = qs.exclude(user_type=User.UserType.CX_STAFF)
+            qs = qs.exclude(tenant__kind=Tenant.Kind.PLATFORM)
 
         if school_id := params.get('school_id'):
             qs = qs.filter(school_id=school_id)

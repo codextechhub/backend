@@ -16,6 +16,7 @@ from rest_framework import status, viewsets, mixins
 from rest_framework.exceptions import ValidationError
 from rest_framework.decorators import action
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+from vs_tenants.models import Tenant
 from core.mixins import (
     XVSModelViewSetMixin,
     RetrieveModelMixin, CreateModelMixin, UpdateModelMixin,
@@ -132,9 +133,10 @@ class PlatformStaffProfileViewSet(
 
     @action(detail=False, methods=['get', 'patch'], url_path='me')
     def me(self, request):
-        if getattr(request.user, 'user_type', None) != User.UserType.CX_STAFF:
+        # Tenant-kind gate: only platform-tenant users have a staff profile.
+        if getattr(getattr(request.user, 'tenant', None), 'kind', None) != Tenant.Kind.PLATFORM:
             return error_response(
-                message="Only CX staff have a platform staff profile.",
+                message="Only platform staff have a platform staff profile.",
                 status=status.HTTP_404_NOT_FOUND,
             )
 
