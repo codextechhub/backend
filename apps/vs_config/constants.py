@@ -24,7 +24,11 @@ class ConfigPermissions:
     ]
 
 
-# Scope names used to build inheritance and override keys.
+# Definition-level scope labels declared in ConfigurationDefinition.allowed_scopes.
+# These name the LEVEL a value may be written at, not the persisted scope_key
+# prefix. The middle level keeps the historical label "school" (a school IS a
+# tenant) so definition payloads/response shapes stay stable across the tenant
+# cutover, even though the stored scope_key now reads "tenant:<id>".
 PLATFORM_SCOPE = "platform"
 SCHOOL_SCOPE = "school"
 BRANCH_SCOPE = "branch"

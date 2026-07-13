@@ -81,7 +81,7 @@ class ConfigurationValueSerializer(serializers.ModelSerializer):
     class Meta:
         model = ConfigurationValue
         fields = [
-            "id", "definition", "key", "school", "branch", "value",
+            "id", "definition", "key", "tenant", "branch", "value",
             "updated_by", "created_at", "updated_at",
         ]
         read_only_fields = fields
@@ -94,8 +94,8 @@ class ConfigurationValueSerializer(serializers.ModelSerializer):
 
 
 class SetConfigurationValueSerializer(serializers.Serializer):
-    # Scope (school/branch) is resolved once per request from the top-level
-    # payload or query string — never per item, so it is not declared here.
+    # Scope (tenant/branch) is resolved once per request from request.tenant
+    # and the branch query/payload — never per item, so it is not declared here.
     key = serializers.RegexField(
         r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$", max_length=200
     )
@@ -186,15 +186,15 @@ class CapabilityEntitlementSerializer(serializers.ModelSerializer):
     class Meta:
         model = CapabilityEntitlement
         fields = [
-            "id", "capability", "capability_key", "school", "state", "source",
+            "id", "capability", "capability_key", "tenant", "state", "source",
             "starts_at", "ends_at", "updated_by", "created_at", "updated_at",
         ]
         read_only_fields = fields
 
 
 class SetEntitlementSerializer(serializers.Serializer):
+    # Scope is resolved from request.tenant, never from the payload.
     capability = serializers.SlugField(max_length=100)
-    school = serializers.CharField(required=False, allow_null=True)
     state = serializers.ChoiceField(choices=CapabilityEntitlement.State.choices)
     source = serializers.ChoiceField(choices=CapabilityEntitlement.Source.choices)
     reason = serializers.CharField(required=False, allow_blank=True, default="")
@@ -206,15 +206,16 @@ class CapabilityOverrideSerializer(serializers.ModelSerializer):
     class Meta:
         model = CapabilityOverride
         fields = [
-            "id", "capability", "capability_key", "school", "branch", "state",
+            "id", "capability", "capability_key", "tenant", "branch", "state",
             "reason", "updated_by", "created_at", "updated_at",
         ]
         read_only_fields = fields
 
 
 class SetOverrideSerializer(serializers.Serializer):
+    # Tenant scope is resolved from request.tenant; only ``branch`` (read from
+    # the request by resolve_request_scope) narrows within that tenant.
     capability = serializers.SlugField(max_length=100)
-    school = serializers.CharField(required=False, allow_null=True)
     branch = serializers.CharField(required=False, allow_null=True)
     state = serializers.ChoiceField(choices=CapabilityOverride.State.choices)
     reason = serializers.CharField(required=False, allow_blank=True, default="")
@@ -227,7 +228,7 @@ class ConfigurationAuditEventSerializer(serializers.ModelSerializer):
     class Meta:
         model = ConfigurationAuditEvent
         fields = [
-            "id", "action", "target_type", "target_id", "target_label", "school",
+            "id", "action", "target_type", "target_id", "target_label", "tenant",
             "branch", "actor", "before_data", "after_data", "reason", "metadata",
             "created_at",
         ]

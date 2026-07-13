@@ -6,14 +6,14 @@ Configuration (settings with values)
     ConfigurationDefinition declares WHAT a setting is (its key, type,
     validation rules, and where it may be set). ConfigurationValue stores
     one concrete value per definition per scope. Reads resolve through the
-    precedence chain: branch value -> school value -> platform value ->
+    precedence chain: branch value -> tenant value -> platform value ->
     definition default.
 
 Capabilities (features that are on or off)
     Capability declares a switchable unit of product functionality (a
-    module or a feature). CapabilityEntitlement records whether a school
+    module or a feature). CapabilityEntitlement records whether a tenant
     is ALLOWED to have it (the commercial grant). CapabilityOverride
-    records whether it is actually TURNED ON at runtime (platform, school,
+    records whether it is actually TURNED ON at runtime (platform, tenant,
     or branch scope). CapabilityDependency links capabilities that require
     other capabilities. An override can never switch on something that is
     not entitled.
@@ -21,9 +21,9 @@ Capabilities (features that are on or off)
 Both systems write every mutation to ConfigurationAuditEvent, an immutable
 append-only log enforced in Python and by database triggers.
 
-Scoping: models that support platform/school/branch placement inherit
+Scoping: models that support platform/tenant/branch placement inherit
 ScopedModel, which normalizes the scope into a single ``scope_key`` string
-("platform", "school:<id>", or "branch:<id>") used in unique constraints
+("platform", "tenant:<id>", or "branch:<id>") used in unique constraints
 and precedence lookups.
 """
 
@@ -121,45 +121,48 @@ class ConfigurationDefinition(models.Model):
 
 
 class ScopedModel(models.Model):
-    """Abstract base providing the shared platform/school/branch scope contract.
+    """Abstract base providing the shared platform/tenant/branch scope contract.
 
     Any model that can be placed at one of the three scopes inherits this
     (ConfigurationValue, CapabilityOverride, ConfigurationAuditEvent).
     The scope of a row is defined by its two nullable FKs:
 
-        school NULL, branch NULL  -> platform scope (applies everywhere)
-        school set,  branch NULL  -> school scope
-        branch set                -> branch scope (school auto-filled)
+        tenant NULL, branch NULL  -> platform scope (applies everywhere; this
+                                     is a scope marker, NOT tenant ownership)
+        tenant set,  branch NULL  -> tenant scope
+        branch set                -> branch scope (tenant auto-filled from the
+                                     branch's owning school)
 
     ``scope_key`` is a denormalized string form of that placement —
-    "platform", "school:<uuid>", or "branch:<uuid>" — computed on every
-    save. It exists so that:
+    "platform", "tenant:<id>", or "branch:<id>" — computed on every save. It
+    exists so that:
 
     * unique constraints can express "one row per definition per scope"
       without tripping over NULLs (SQL treats NULL != NULL, so a plain
-      unique on (definition, school, branch) would allow duplicate
+      unique on (definition, tenant, branch) would allow duplicate
       platform rows), and
     * precedence lookups can fetch all candidate rows for a scope chain
-      in one query (``scope_key__in=["branch:x", "school:y", "platform"]``).
+      in one query (``scope_key__in=["branch:x", "tenant:y", "platform"]``).
 
     Fields:
-        school: Optional school boundary. Null together with branch means
-            platform scope.
-        branch: Optional branch boundary. When set it must belong to
-            ``school``; if school is omitted the branch's own school is
+        tenant: Optional tenant boundary. Null together with branch means
+            platform scope. A branch's tenant is derived from
+            ``branch.school.tenant`` and must agree when both are supplied.
+        branch: Optional branch boundary. When set it must belong to a school
+            under ``tenant``; if tenant is omitted the branch's own tenant is
             filled in automatically (enforced in ``clean()``).
         scope_key: Normalized scope string described above. Not editable;
             recomputed by ``save()``.
 
     Behavior:
-        ``save()`` always runs ``clean()`` (school/branch consistency) and
+        ``save()`` always runs ``clean()`` (tenant/branch consistency) and
         ``set_scope_key()`` first, so rows can never be persisted with a
         scope_key that disagrees with their FKs. Abstract — creates no
         table of its own.
     """
 
-    school = models.ForeignKey(
-        "vs_schools.School", on_delete=models.CASCADE, null=True, blank=True,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT, null=True, blank=True,
         related_name="+",
     )
     branch = models.ForeignKey(
@@ -174,17 +177,19 @@ class ScopedModel(models.Model):
     def clean(self):
         super().clean()
         if self.branch_id:
-            branch_school_id = self.branch.school_id
-            if self.school_id is None:
-                self.school_id = branch_school_id
-            elif self.school_id != branch_school_id:
-                raise ValidationError({"branch": "Branch must belong to the selected school."})
+            # branch -> school -> tenant is the only cross-tenant traversal kept
+            # after the cutover; the branch's owning school defines the tenant.
+            branch_tenant_id = self.branch.school.tenant_id
+            if self.tenant_id is None:
+                self.tenant_id = branch_tenant_id
+            elif self.tenant_id != branch_tenant_id:
+                raise ValidationError({"branch": "Branch must belong to the selected tenant."})
 
     def set_scope_key(self):
         if self.branch_id:
             self.scope_key = f"branch:{self.branch_id}"
-        elif self.school_id:
-            self.scope_key = f"school:{self.school_id}"
+        elif self.tenant_id:
+            self.scope_key = f"tenant:{self.tenant_id}"
         else:
             self.scope_key = "platform"
 
@@ -203,7 +208,7 @@ class ConfigurationValue(ScopedModel):
     (``services.resolution.set_value``) and reads walk the precedence chain
     (``services.resolution.resolve_value``):
 
-        branch row -> school row -> platform row -> definition.default_value
+        branch row -> tenant row -> platform row -> definition.default_value
 
     Values are never written directly through the ORM by views; they go
     through ``set_value()``, which checks the definition's allowed_scopes,
@@ -217,7 +222,7 @@ class ConfigurationValue(ScopedModel):
         value: The JSON-native payload. Its shape is guaranteed by
             ``validate_value()`` to match ``definition.value_type`` and
             ``definition.validation_rules`` at write time.
-        school / branch / scope_key: Scope placement inherited from
+        tenant / branch / scope_key: Scope placement inherited from
             :class:`ScopedModel`.
         updated_by: User who most recently set the value (nullable,
             SET_NULL on user deletion).
@@ -225,7 +230,7 @@ class ConfigurationValue(ScopedModel):
         updated_at: Timestamp of the most recent value change.
 
     Managers:
-        ``objects`` is tenant-aware (``include_global=True``): school-scoped
+        ``objects`` is tenant-aware (``include_global=True``): tenant-scoped
         requests see their own rows plus platform rows automatically.
         ``all_objects`` is the unscoped escape hatch used by the resolution
         service and by views that have already authorized an explicit scope.
@@ -254,7 +259,7 @@ class ConfigurationValue(ScopedModel):
                 fields=["definition", "scope_key"], name="uniq_config_value_scope"
             )
         ]
-        indexes = [models.Index(fields=["school", "branch"])]
+        indexes = [models.Index(fields=["tenant", "branch"])]
 
 
 class Capability(models.Model):
@@ -396,22 +401,22 @@ class CapabilityDependency(models.Model):
 
 
 class CapabilityEntitlement(models.Model):
-    """The commercial/administrative grant: is a school ALLOWED this capability?
+    """The commercial/administrative grant: is a tenant ALLOWED this capability?
 
     Answers "did they buy it / were they given it", never "is it switched
     on". Runtime state lives in CapabilityOverride; the two are kept apart
-    so a school can temporarily disable a module it pays for without losing
+    so a tenant can temporarily disable a module it pays for without losing
     the grant, and so no branch toggle can ever enable something that was
     never granted (``set_override`` refuses ENABLED without an active
     entitlement here).
 
     Scoping is deliberately narrower than ScopedModel: entitlements exist
-    only at school or platform level (a NULL school means "every school"),
-    because branches don't buy modules — schools do. Hence this model
-    carries its own school FK + scope_key rather than inheriting the
-    three-level contract. A school-specific row always beats the platform
+    only at tenant or platform level (a NULL tenant means "every tenant"),
+    because branches don't buy modules — tenants do. Hence this model
+    carries its own tenant FK + scope_key rather than inheriting the
+    three-level contract. A tenant-specific row always beats the platform
     row during evaluation, which lets a platform-wide grant carry
-    school-level DENIED exceptions.
+    tenant-level DENIED exceptions.
 
     Rows are written by school package setup (source=PACKAGE), platform
     admins (MANUAL/PLATFORM), or data migration (IMPORT), always through
@@ -420,11 +425,11 @@ class CapabilityEntitlement(models.Model):
     Fields:
         id: Stable UUID primary key.
         capability: The capability being granted or denied (CASCADE).
-        school: The school the decision applies to; NULL = platform-wide.
-        scope_key: "school:<id>" or "platform", computed on save; unique
+        tenant: The tenant the decision applies to; NULL = platform-wide.
+        scope_key: "tenant:<id>" or "platform", computed on save; unique
             together with capability, so there is exactly one decision per
             capability per scope and writes are upserts.
-        state: GRANTED or DENIED. An explicit DENIED row at school level
+        state: GRANTED or DENIED. An explicit DENIED row at tenant level
             overrides a platform-wide GRANTED.
         source: Where the decision came from — PACKAGE (school package
             setup), PLATFORM, MANUAL, or IMPORT (legacy migration).
@@ -438,7 +443,7 @@ class CapabilityEntitlement(models.Model):
         updated_at: Timestamp of the most recent entitlement change.
 
     Managers:
-        ``objects`` is tenant-aware (schools see their own rows plus
+        ``objects`` is tenant-aware (tenants see their own rows plus
         platform-wide ones); ``all_objects`` is the unscoped escape hatch
         used by the evaluation service.
     """
@@ -457,8 +462,8 @@ class CapabilityEntitlement(models.Model):
     capability = models.ForeignKey(
         Capability, on_delete=models.CASCADE, related_name="entitlements"
     )
-    school = models.ForeignKey(
-        "vs_schools.School", on_delete=models.CASCADE, null=True, blank=True,
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant", on_delete=models.PROTECT, null=True, blank=True,
         related_name="capability_entitlements",
     )
     scope_key = models.CharField(max_length=80, editable=False, db_index=True)
@@ -486,7 +491,7 @@ class CapabilityEntitlement(models.Model):
         ]
 
     def save(self, *args, **kwargs):
-        self.scope_key = f"school:{self.school_id}" if self.school_id else "platform"
+        self.scope_key = f"tenant:{self.tenant_id}" if self.tenant_id else "platform"
         return super().save(*args, **kwargs)
 
 
@@ -497,14 +502,14 @@ class CapabilityOverride(ScopedModel):
     replaced the legacy BranchFeatureFlag. Overrides may sit at any of the
     three scopes, and evaluation reads the MOST SPECIFIC non-INHERIT row:
 
-        branch override -> school override -> platform override
+        branch override -> tenant override -> platform override
         -> capability.default_enabled
 
     A DISABLED override anywhere in that chain switches the capability off
-    for that scope even though the school remains fully entitled (e.g. a
+    for that scope even though the tenant remains fully entitled (e.g. a
     school pausing its parent portal during exams). The reverse is blocked:
     ``set_override`` raises CapabilityNotEntitled when asked to write
-    ENABLED for a capability the scope's school is not entitled to, so
+    ENABLED for a capability the scope's tenant is not entitled to, so
     runtime toggles can never widen commercial access.
 
     At most one override exists per (capability, scope) — the
@@ -516,7 +521,7 @@ class CapabilityOverride(ScopedModel):
         id: Stable UUID primary key.
         capability: The capability whose runtime state is overridden
             (CASCADE).
-        school / branch / scope_key: Scope placement inherited from
+        tenant / branch / scope_key: Scope placement inherited from
             :class:`ScopedModel`.
         state: ENABLED, DISABLED, or INHERIT. INHERIT rows exist to
             explicitly hand the decision back up the chain (equivalent to
@@ -597,8 +602,8 @@ class ConfigurationAuditEvent(ScopedModel):
         target_id: String primary key of the mutated record. Indexed.
         actor: User responsible; NULL for system/migration work
             (SET_NULL so history outlives user accounts).
-        school / branch / scope_key: Scope the mutation applied to,
-            inherited from :class:`ScopedModel`. School-scoped audit
+        tenant / branch / scope_key: Scope the mutation applied to,
+            inherited from :class:`ScopedModel`. Tenant-scoped audit
             listings filter on these; platform events (both NULL) are
             visible only to platform staff.
         before_data: Redacted JSON snapshot of the state before the change
@@ -611,7 +616,7 @@ class ConfigurationAuditEvent(ScopedModel):
             newest first.
 
     Managers:
-        ``objects`` is tenant-aware (schools see their own events plus
+        ``objects`` is tenant-aware (tenants see their own events plus
         global ones); ``all_objects`` is the unscoped escape hatch used by
         the immutability guard and platform views.
     """
@@ -637,7 +642,7 @@ class ConfigurationAuditEvent(ScopedModel):
         default_manager_name = "objects"
         base_manager_name = "all_objects"
         ordering = ["-created_at"]
-        indexes = [models.Index(fields=["school", "branch", "-created_at"])]
+        indexes = [models.Index(fields=["tenant", "branch", "-created_at"])]
 
     def save(self, *args, **kwargs):
         if self.pk and ConfigurationAuditEvent.all_objects.filter(pk=self.pk).exists():

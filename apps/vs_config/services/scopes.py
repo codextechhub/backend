@@ -1,74 +1,70 @@
 from rest_framework.exceptions import NotFound
 
-from vs_schools.models import Branch, School
+from vs_schools.models import Branch
 
 from ..constants import BRANCH_SCOPE, PLATFORM_SCOPE, SCHOOL_SCOPE
 from ..exceptions import InvalidConfigurationScope
 
 
-# Collapse school/branch objects into the persisted configuration scope name.
-def scope_name(school=None, branch=None):
+# Collapse tenant/branch objects into the persisted configuration scope name.
+def scope_name(tenant=None, branch=None):
     if branch is not None:
         return BRANCH_SCOPE
-    if school is not None:
+    if tenant is not None:
+        # A tenant-level value maps to the definition's "school" allowed-scope
+        # label — a school IS a tenant; the label predates the cutover and is
+        # kept so ConfigurationDefinition.allowed_scopes shapes never change.
         return SCHOOL_SCOPE
-    # Absence of tenant objects means the value belongs to the platform default layer.
+    # Absence of a tenant means the value belongs to the platform default layer.
     return PLATFORM_SCOPE
 
 
-# Keep branch-scoped writes tied to their owning school before keys are built.
-def normalize_scope(*, school=None, branch=None):
+# Keep branch-scoped writes tied to their owning tenant before keys are built.
+def normalize_scope(*, tenant=None, branch=None):
     if branch is not None:
-        if school is None:
-            # Branch-scoped values still persist school for filtering and audit reporting.
-            school = branch.school
-        elif branch.school_id != school.id:
-            raise InvalidConfigurationScope("Branch must belong to the selected school.")
-    return school, branch
+        # branch -> school -> tenant is the only cross-tenant traversal retained.
+        branch_tenant = branch.school.tenant
+        if tenant is None:
+            tenant = branch_tenant
+        elif branch_tenant.pk != tenant.pk:
+            raise InvalidConfigurationScope("Branch must belong to the selected tenant.")
+    return tenant, branch
 
 
-# Resolve request-provided scope references through the caller's allowed tenancy.
+# Resolve the caller's authorized tenant/branch scope from request.tenant.
 def resolve_request_scope(request, *, allow_platform=True):
-    """Resolve an authorized school/branch scope without leaking foreign IDs."""
-    school_ref = request.query_params.get("school") or request.data.get("school")
-    branch_ref = request.query_params.get("branch") or request.data.get("branch")
-    user = request.user
-    is_platform_user = getattr(user, "user_type", None) == "CX_STAFF"
+    """Derive the write/read scope from the request's asserted tenant.
 
-    school = None
-    if school_ref:
-        # All missing/foreign scope failures return the same 404 to avoid tenant enumeration.
-        school = School.objects.filter(pk=school_ref).first()
-        if school is None:
-            raise NotFound("Configuration scope not found.")
-    elif not is_platform_user:
-        # School users inherit their own school when the client omits explicit scope.
-        school = getattr(request, "school", None) or getattr(user, "school", None)
+    ``request.tenant`` is the single source of truth (set by
+    TenantJWTAuthentication from the mandatory ``?tenant=`` assertion, which the
+    auth layer already validates against the caller's own tenant — platform
+    staff may assert a business tenant only on views that opt in). There is no
+    ``?school=`` override: a caller cannot read or write another tenant's rows
+    by changing a query parameter.
+    """
+    # Fall back to the user's home tenant for entry points that authenticate
+    # without the assertion (e.g. force_authenticate in tests), mirroring the
+    # pre-cutover fallback to ``user.school``.
+    tenant = getattr(request, "tenant", None) or getattr(request.user, "tenant", None)
+    is_platform = getattr(tenant, "kind", None) == "PLATFORM"
 
-    # Non-platform users may only resolve their own school, even if a foreign ID exists.
-    if not is_platform_user:
-        user_school = getattr(user, "school", None)
-        if school is None or user_school is None or school.pk != user_school.pk:
-            raise NotFound("Configuration scope not found.")
-    elif school is None and not allow_platform:
+    # Platform-tenant requests act on the platform layer; a business tenant
+    # request acts on that tenant.
+    scope_tenant = None if is_platform else tenant
+    if scope_tenant is None and not allow_platform:
         # Some write paths require a tenant layer and must not fall back to platform.
-        raise InvalidConfigurationScope("A school scope is required.")
+        raise InvalidConfigurationScope("A tenant scope is required.")
 
     branch = None
-    # Branch lookups are filtered through the resolved school to avoid cross-school leaks.
+    branch_ref = request.query_params.get("branch") or request.data.get("branch")
     if branch_ref:
-        qs = Branch.all_objects.filter(pk=branch_ref)
-        if school is not None:
-            qs = qs.filter(school=school)
-        branch = qs.first()
-        if branch is None:
+        branch = Branch.all_objects.filter(pk=branch_ref).first()
+        # The branch must live under the resolved tenant; foreign/missing
+        # branches return the same 404 to avoid tenant enumeration.
+        target_tenant_id = tenant.pk if tenant is not None else None
+        if branch is None or branch.school.tenant_id != target_tenant_id:
             raise NotFound("Configuration scope not found.")
-        if not is_platform_user:
-            user_branch = getattr(user, "branch", None)
-            if user_branch is not None and branch.pk != user_branch.pk:
-                raise NotFound("Configuration scope not found.")
-    elif not is_platform_user and getattr(user, "user_type", None) != "SCHOOL_ADMIN":
-        # Branch users default to their branch; school admins remain at school scope.
-        branch = getattr(user, "branch", None)
+        # A branch selection implies its tenant even for platform callers.
+        scope_tenant = branch.school.tenant
 
-    return normalize_scope(school=school, branch=branch)
+    return normalize_scope(tenant=scope_tenant, branch=branch)

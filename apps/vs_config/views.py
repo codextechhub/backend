@@ -39,6 +39,10 @@ class ConfigAPIView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     permission_map = {}
     platform_methods = set()
+    # Platform (Codex) staff may assert a business tenant via ?tenant= to read
+    # or configure that tenant's scope (e.g. grant a school entitlement); the
+    # auth layer still bars non-platform callers from asserting a foreign tenant.
+    platform_cross_tenant_param = True
 
     # Resolve the RBAC permission key for the current HTTP method.
     @property
@@ -62,7 +66,11 @@ class ConfigAPIView(APIView):
     # Enforce operations that must remain platform-owned.
     def check_permissions(self, request):
         super().check_permissions(request)
-        if request.method in self.platform_methods and request.user.user_type != "CX_STAFF":
+        # Platform-ness is a property of the actor's home tenant, not the tenant
+        # currently being targeted (mirrors vs_rbac.permissions.IsVisionStaff):
+        # a Codex staffer keeps platform rights while asserting a school tenant.
+        is_platform = getattr(getattr(request.user, "tenant", None), "kind", None) == "PLATFORM"
+        if request.method in self.platform_methods and not is_platform:
             raise PermissionDenied("This operation is platform-scoped.")
 
 
@@ -159,15 +167,15 @@ class ValueListSetView(ConfigAPIView):
 
     # Return only values stored at the caller's resolved scope.
     def get(self, request):
-        school, branch = resolve_request_scope(request)
+        tenant, branch = resolve_request_scope(request)
         qs = ConfigurationValue.all_objects.select_related("definition", "updated_by")
         if branch:
             qs = qs.filter(branch=branch)
-        elif school:
-            # School scope excludes branch rows; effective-value endpoints handle inheritance.
-            qs = qs.filter(school=school, branch__isnull=True)
+        elif tenant:
+            # Tenant scope excludes branch rows; effective-value endpoints handle inheritance.
+            qs = qs.filter(tenant=tenant, branch__isnull=True)
         else:
-            qs = qs.filter(school__isnull=True, branch__isnull=True)
+            qs = qs.filter(tenant__isnull=True, branch__isnull=True)
         return self.paginate(request, qs.order_by("definition__key"), ConfigurationValueSerializer)
 
     # Save one or many values under one resolved scope and transaction.
@@ -182,7 +190,7 @@ class ValueListSetView(ConfigAPIView):
         serializers = [SetConfigurationValueSerializer(data=item) for item in items]
         for serializer in serializers:
             serializer.is_valid(raise_exception=True)
-        school, branch = resolve_request_scope(request)
+        tenant, branch = resolve_request_scope(request)
         rows = []
         # All submitted keys are written to the same resolved tenant scope.
         for serializer in serializers:
@@ -194,7 +202,7 @@ class ValueListSetView(ConfigAPIView):
                 definition=definition,
                 value=serializer.validated_data["value"],
                 actor=request.user,
-                school=school,
+                tenant=tenant,
                 branch=branch,
                 reason=serializer.validated_data["reason"],
             ))
@@ -212,7 +220,7 @@ class EffectiveValueView(ConfigAPIView):
 
     # Compute effective values instead of returning only physically stored rows.
     def get(self, request, key=None):
-        school, branch = resolve_request_scope(request)
+        tenant, branch = resolve_request_scope(request)
         definitions = ConfigurationDefinition.objects.filter(is_active=True)
         if key:
             definitions = definitions.filter(key=key)
@@ -220,7 +228,7 @@ class EffectiveValueView(ConfigAPIView):
                 raise NotFound("Configuration definition not found.")
         data = []
         for definition in definitions:
-            value, source = resolve_value(definition, school=school, branch=branch)
+            value, source = resolve_value(definition, tenant=tenant, branch=branch)
             if definition.sensitivity == definition.Sensitivity.SECRET_REFERENCE:
                 # Effective reads should reveal that a secret exists, never the reference value.
                 value = "[REDACTED]" if value is not None else None
@@ -323,12 +331,12 @@ class EntitlementListSetView(ConfigAPIView):
         "POST": ConfigPermissions.ENTITLEMENT_MANAGE,
     }
 
-    # List entitlements at the resolved platform or school scope.
+    # List entitlements at the resolved platform or tenant scope.
     def get(self, request):
-        school, _ = resolve_request_scope(request)
+        tenant, _ = resolve_request_scope(request)
         qs = CapabilityEntitlement.all_objects.select_related("capability", "updated_by")
         # Entitlements never live at branch scope, so discard the branch half of resolution.
-        qs = qs.filter(school=school) if school else qs.filter(school__isnull=True)
+        qs = qs.filter(tenant=tenant) if tenant else qs.filter(tenant__isnull=True)
         return self.paginate(request, qs, CapabilityEntitlementSerializer)
 
     # Grant or revoke entitlement before scoped overrides can enable the feature.
@@ -336,9 +344,9 @@ class EntitlementListSetView(ConfigAPIView):
         serializer = SetEntitlementSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         capability = get_object_or_404(Capability, key=serializer.validated_data["capability"])
-        school, _ = resolve_request_scope(request)
+        tenant, _ = resolve_request_scope(request)
         row = set_entitlement(
-            capability=capability, school=school,
+            capability=capability, tenant=tenant,
             state=serializer.validated_data["state"],
             source=serializer.validated_data["source"], actor=request.user,
             reason=serializer.validated_data["reason"],
@@ -358,15 +366,15 @@ class OverrideListSetView(ConfigAPIView):
 
     # List overrides that are physically stored at the resolved scope.
     def get(self, request):
-        school, branch = resolve_request_scope(request)
+        tenant, branch = resolve_request_scope(request)
         qs = CapabilityOverride.all_objects.select_related("capability", "updated_by")
         if branch:
             qs = qs.filter(branch=branch)
-        elif school:
+        elif tenant:
             # Listing physical overrides does not include inherited platform rows.
-            qs = qs.filter(school=school, branch__isnull=True)
+            qs = qs.filter(tenant=tenant, branch__isnull=True)
         else:
-            qs = qs.filter(school__isnull=True, branch__isnull=True)
+            qs = qs.filter(tenant__isnull=True, branch__isnull=True)
         return self.paginate(request, qs, CapabilityOverrideSerializer)
 
     # Write an override after the service enforces entitlement constraints.
@@ -374,10 +382,10 @@ class OverrideListSetView(ConfigAPIView):
         serializer = SetOverrideSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         capability = get_object_or_404(Capability, key=serializer.validated_data["capability"])
-        school, branch = resolve_request_scope(request)
+        tenant, branch = resolve_request_scope(request)
         row = set_override(
             capability=capability, state=serializer.validated_data["state"],
-            actor=request.user, school=school, branch=branch,
+            actor=request.user, tenant=tenant, branch=branch,
             reason=serializer.validated_data["reason"],
         )
         return success_response(
@@ -392,9 +400,9 @@ class EffectiveCapabilitiesView(ConfigAPIView):
 
     # Evaluate each active capability for the caller's resolved scope.
     def get(self, request):
-        school, branch = resolve_request_scope(request)
+        tenant, branch = resolve_request_scope(request)
         data = [
-            {"key": item.key, "enabled": effective_capability(item, school=school, branch=branch)}
+            {"key": item.key, "enabled": effective_capability(item, tenant=tenant, branch=branch)}
             for item in Capability.objects.filter(is_active=True)
         ]
         return success_response("Effective capabilities retrieved.", data)
@@ -404,17 +412,17 @@ class EffectiveCapabilitiesView(ConfigAPIView):
 class AuditEventListView(ConfigAPIView):
     permission_map = {"GET": ConfigPermissions.AUDIT_VIEW}
 
-    # Restrict audit history to the branch or school selected by the caller.
+    # Restrict audit history to the branch or tenant selected by the caller.
     def get(self, request):
-        school, branch = resolve_request_scope(request)
+        tenant, branch = resolve_request_scope(request)
         qs = ConfigurationAuditEvent.all_objects.select_related("actor")
         if branch:
             qs = qs.filter(branch=branch)
-        elif school:
-            # School audit includes branch-tagged rows so tenant admins see all config changes.
-            qs = qs.filter(school=school)
+        elif tenant:
+            # Tenant audit includes branch-tagged rows so tenant admins see all config changes.
+            qs = qs.filter(tenant=tenant)
         else:
-            qs = qs.filter(school__isnull=True)
+            qs = qs.filter(tenant__isnull=True)
         return self.paginate(request, qs, ConfigurationAuditEventSerializer)
 
 
@@ -424,17 +432,17 @@ class ConfigExportView(ConfigAPIView):
 
     # Build a redacted snapshot suitable for support and tenant diagnostics.
     def get(self, request):
-        school, branch = resolve_request_scope(request)
+        tenant, branch = resolve_request_scope(request)
         definitions = ConfigurationDefinition.objects.filter(is_active=True)
         values = []
         for definition in definitions:
-            value, source = resolve_value(definition, school=school, branch=branch)
+            value, source = resolve_value(definition, tenant=tenant, branch=branch)
             if definition.sensitivity == definition.Sensitivity.SECRET_REFERENCE:
                 # Export follows the same redaction rule as effective reads.
                 value = "[REDACTED]" if value is not None else None
             values.append({"key": definition.key, "value": value, "source": source.scope_key if source else "default"})
         capabilities = [
-            {"key": item.key, "enabled": effective_capability(item, school=school, branch=branch)}
+            {"key": item.key, "enabled": effective_capability(item, tenant=tenant, branch=branch)}
             for item in Capability.objects.filter(is_active=True)
         ]
         return success_response(

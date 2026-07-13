@@ -7,19 +7,19 @@ __all__ = ["get_config", "is_capability_enabled"]
 
 
 # Read the effective configuration value for callers that should not know resolution internals.
-def get_config(key, default=None, *, school=None, branch=None):
+def get_config(key, default=None, *, tenant=None, branch=None):
     definition = ConfigurationDefinition.objects.filter(key=key, is_active=True).first()
     if definition is None:
         return default
     # Reuse the same inheritance path as the API so internal callers see identical values.
-    value, _ = resolve_value(definition, school=school, branch=branch)
+    value, _ = resolve_value(definition, tenant=tenant, branch=branch)
     return default if value is None else value
 
 
 # Expose capability gates as a boolean API for feature checks across modules.
-def is_capability_enabled(key, *, school=None, branch=None):
+def is_capability_enabled(key, *, tenant=None, branch=None):
     capability = Capability.objects.filter(key=key, is_active=True).first()
     if capability is None:
         return False
     # Unknown or inactive gates fail closed so callers do not accidentally expose features.
-    return effective_capability(capability, school=school, branch=branch)
+    return effective_capability(capability, tenant=tenant, branch=branch)

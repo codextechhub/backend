@@ -71,15 +71,15 @@ def validate_value(definition, value):
     return value
 
 
-# Resolve the effective value using branch, school, then platform inheritance.
-def resolve_value(definition, *, school=None, branch=None):
-    school, branch = normalize_scope(school=school, branch=branch)
+# Resolve the effective value using branch, tenant, then platform inheritance.
+def resolve_value(definition, *, tenant=None, branch=None):
+    tenant, branch = normalize_scope(tenant=tenant, branch=branch)
     # Search scopes from most specific to least specific.
     scopes = []
     if branch is not None:
         scopes.append(f"branch:{branch.pk}")
-    if school is not None:
-        scopes.append(f"school:{school.pk}")
+    if tenant is not None:
+        scopes.append(f"tenant:{tenant.pk}")
     scopes.append("platform")
     rows = {
         row.scope_key: row
@@ -97,9 +97,9 @@ def resolve_value(definition, *, school=None, branch=None):
 
 # Persist a scoped configuration value and record its redacted audit trail.
 @transaction.atomic
-def set_value(*, definition, value, actor, school=None, branch=None, reason=""):
-    school, branch = normalize_scope(school=school, branch=branch)
-    requested_scope = scope_name(school, branch)
+def set_value(*, definition, value, actor, tenant=None, branch=None, reason=""):
+    tenant, branch = normalize_scope(tenant=tenant, branch=branch)
+    requested_scope = scope_name(tenant, branch)
     # Definitions explicitly control which tenant level may override them.
     if requested_scope not in set(definition.allowed_scopes or []):
         raise InvalidConfigurationScope(
@@ -108,7 +108,7 @@ def set_value(*, definition, value, actor, school=None, branch=None, reason=""):
     validate_value(definition, value)
     # The persisted scope_key mirrors resolve_value's inheritance keys.
     scope_key = (
-        f"branch:{branch.pk}" if branch else f"school:{school.pk}" if school else "platform"
+        f"branch:{branch.pk}" if branch else f"tenant:{tenant.pk}" if tenant else "platform"
     )
     current = ConfigurationValue.all_objects.filter(
         definition=definition, scope_key=scope_key
@@ -118,13 +118,13 @@ def set_value(*, definition, value, actor, school=None, branch=None, reason=""):
     row, _ = ConfigurationValue.all_objects.update_or_create(
         definition=definition,
         scope_key=scope_key,
-        defaults={"school": school, "branch": branch, "value": value, "updated_by": actor},
+        defaults={"tenant": tenant, "branch": branch, "value": value, "updated_by": actor},
     )
     record_configuration_event(
         action="config.value.updated",
         target=row,
         actor=actor,
-        school=school,
+        tenant=tenant,
         branch=branch,
         before={"value": _redacted(definition, before)},
         after={"value": _redacted(definition, value)},

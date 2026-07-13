@@ -30,6 +30,7 @@ from .services.resolution import resolve_value, set_value
 class ConfigurationResolutionTests(TestCase):
     def setUp(self):
         self.school = make_school(slug="config-school")
+        self.tenant = self.school.tenant
         self.branch = make_branch(self.school)
         self.actor = make_vision_user(email="config-actor@example.com")
         self.definition = ConfigurationDefinition.objects.create(
@@ -41,39 +42,40 @@ class ConfigurationResolutionTests(TestCase):
             allowed_scopes=["platform", "school", "branch"],
         )
 
-    def test_resolution_uses_branch_school_platform_default_precedence(self):
-        value, source = resolve_value(self.definition, school=self.school, branch=self.branch)
+    def test_resolution_uses_branch_tenant_platform_default_precedence(self):
+        value, source = resolve_value(self.definition, tenant=self.tenant, branch=self.branch)
         self.assertEqual(value, "UTC")
         self.assertIsNone(source)
 
         platform = set_value(
             definition=self.definition, value="Africa/Accra", actor=self.actor
         )
-        school = set_value(
+        tenant = set_value(
             definition=self.definition, value="Africa/Lagos", actor=self.actor,
-            school=self.school,
+            tenant=self.tenant,
         )
         branch = set_value(
             definition=self.definition, value="Europe/London", actor=self.actor,
-            school=self.school, branch=self.branch,
+            tenant=self.tenant, branch=self.branch,
         )
 
         self.assertEqual(resolve_value(self.definition)[0], platform.value)
-        self.assertEqual(resolve_value(self.definition, school=self.school)[0], school.value)
-        value, source = resolve_value(self.definition, school=self.school, branch=self.branch)
+        self.assertEqual(resolve_value(self.definition, tenant=self.tenant)[0], tenant.value)
+        value, source = resolve_value(self.definition, tenant=self.tenant, branch=self.branch)
         self.assertEqual(value, branch.value)
         self.assertEqual(source.scope_key, f"branch:{self.branch.pk}")
 
-    def test_branch_scope_populates_school_and_rejects_mismatch(self):
+    def test_branch_scope_populates_tenant_and_rejects_mismatch(self):
         row = ConfigurationValue(
             definition=self.definition, branch=self.branch, value="Africa/Lagos"
         )
         row.save()
-        self.assertEqual(row.school, self.school)
+        self.assertEqual(row.tenant, self.tenant)
+        self.assertEqual(row.scope_key, f"branch:{self.branch.pk}")
 
         other = make_school(slug="other-config-school")
         invalid = ConfigurationValue(
-            definition=self.definition, school=other, branch=self.branch, value="UTC"
+            definition=self.definition, tenant=other.tenant, branch=self.branch, value="UTC"
         )
         with self.assertRaises(ValidationError):
             invalid.save()
@@ -142,6 +144,7 @@ class ConfigurationResolutionTests(TestCase):
 class CapabilityEvaluationTests(TestCase):
     def setUp(self):
         self.school = make_school(slug="capability-school")
+        self.tenant = self.school.tenant
         self.branch = make_branch(self.school)
         self.actor = make_vision_user(email="capability-actor@example.com")
         self.finance, _ = Capability.objects.update_or_create(
@@ -150,26 +153,26 @@ class CapabilityEvaluationTests(TestCase):
         )
 
     def test_runtime_override_cannot_bypass_entitlement(self):
-        self.assertFalse(effective_capability(self.finance, school=self.school))
+        self.assertFalse(effective_capability(self.finance, tenant=self.tenant))
         with self.assertRaises(CapabilityNotEntitled):
             set_override(
                 capability=self.finance, state=CapabilityOverride.State.ENABLED,
-                actor=self.actor, school=self.school,
+                actor=self.actor, tenant=self.tenant,
             )
 
     def test_entitlement_and_most_specific_override_are_separate(self):
         set_entitlement(
-            capability=self.finance, school=self.school,
+            capability=self.finance, tenant=self.tenant,
             state=CapabilityEntitlement.State.GRANTED,
             source=CapabilityEntitlement.Source.PACKAGE, actor=self.actor,
         )
-        self.assertTrue(effective_capability(self.finance, school=self.school, branch=self.branch))
+        self.assertTrue(effective_capability(self.finance, tenant=self.tenant, branch=self.branch))
         set_override(
             capability=self.finance, state=CapabilityOverride.State.DISABLED,
-            actor=self.actor, school=self.school, branch=self.branch,
+            actor=self.actor, tenant=self.tenant, branch=self.branch,
         )
-        self.assertTrue(effective_capability(self.finance, school=self.school))
-        self.assertFalse(effective_capability(self.finance, school=self.school, branch=self.branch))
+        self.assertTrue(effective_capability(self.finance, tenant=self.tenant))
+        self.assertFalse(effective_capability(self.finance, tenant=self.tenant, branch=self.branch))
 
     def test_dependencies_must_be_effective(self):
         procurement, _ = Capability.objects.update_or_create(
@@ -182,12 +185,12 @@ class CapabilityEvaluationTests(TestCase):
         CapabilityDependency.objects.get_or_create(
             capability=procurement, requires=self.finance
         )
-        self.assertFalse(effective_capability(procurement, school=self.school))
+        self.assertFalse(effective_capability(procurement, tenant=self.tenant))
         set_entitlement(
-            capability=self.finance, school=self.school,
+            capability=self.finance, tenant=self.tenant,
             state="GRANTED", source="MANUAL", actor=self.actor,
         )
-        self.assertTrue(effective_capability(procurement, school=self.school))
+        self.assertTrue(effective_capability(procurement, tenant=self.tenant))
 
     def test_dependency_cycles_are_rejected(self):
         second = Capability.objects.create(
@@ -244,15 +247,45 @@ class ConfigurationAPISecurityTests(TestCase):
         }, format="json")
         self.assertEqual(response.status_code, 201, response.data)
 
-    def test_cross_tenant_scope_returns_not_found(self):
+    def test_cross_tenant_branch_scope_returns_not_found(self):
         permission = make_permission("config.value.view")
         role = make_role(self.school, name="Value Reader")
         make_role_permission(role, permission)
         make_assignment(self.school, self.admin, role)
+        # A branch under another tenant must never resolve for this caller: the
+        # scope tenant comes from request.tenant, and branch validation rejects
+        # any branch whose owning school belongs to a different tenant.
         other = make_school(slug="other-tenant-school")
+        other_branch = make_branch(other)
         self.client.force_authenticate(self.admin)
-        response = self.client.get(f"/v1/config/values/?school={other.pk}")
+        response = self.client.get(f"/v1/config/values/?branch={other_branch.pk}")
         self.assertEqual(response.status_code, 404)
+
+    def test_tenant_scoped_value_write_lists_and_audits(self):
+        role = make_role(self.school, name="Config Writer")
+        for key in ("config.value.update", "config.value.view", "config.audit.view"):
+            make_role_permission(role, make_permission(key))
+        make_assignment(self.school, self.admin, role)
+        ConfigurationDefinition.objects.create(
+            key="ui.theme", label="Theme", description="Theme.",
+            value_type="STRING", allowed_scopes=["school"],
+        )
+        self.client.force_authenticate(self.admin)
+
+        # A school admin's write lands at their own tenant scope (resolved from
+        # the request, not the payload) and the response exposes ``tenant``.
+        post = self.client.post(
+            "/v1/config/values/", {"key": "ui.theme", "value": "dark"}, format="json"
+        )
+        self.assertEqual(post.status_code, 201, post.data)
+        self.assertEqual(post.data["data"]["tenant"], self.school.tenant_id)
+
+        # List + audit endpoints must serialize cleanly under the tenant shape.
+        listing = self.client.get("/v1/config/values/")
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.data["data"][0]["tenant"], self.school.tenant_id)
+        audit = self.client.get("/v1/config/audit-events/")
+        self.assertEqual(audit.status_code, 200)
 
     def test_unmapped_http_method_returns_405(self):
         user = make_vision_user(

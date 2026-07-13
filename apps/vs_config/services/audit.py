@@ -17,22 +17,22 @@ logger = logging.getLogger(__name__)
 
 # Persist the local audit event first, then mirror it into the platform audit stream.
 def record_configuration_event(
-    *, action, target, actor, school=None, branch=None, before=None, after=None,
+    *, action, target, actor, tenant=None, branch=None, before=None, after=None,
     reason="", metadata=None,
 ):
     """Write the authoritative immutable local event and mirror it centrally."""
     from ..models import ConfigurationAuditEvent
 
-    # Branch-scoped audit rows also carry school for tenant filtering.
-    if branch is not None and school is None:
-        school = branch.school
+    # Branch-scoped audit rows also carry tenant for tenant filtering.
+    if branch is not None and tenant is None:
+        tenant = branch.school.tenant
     # The local row is authoritative because it is committed with the config change.
     event = ConfigurationAuditEvent(
         action=action,
         target_type=target.__class__.__name__,
         target_id=str(target.pk),
         actor=actor,
-        school=school,
+        tenant=tenant,
         branch=branch,
         before_data=before or {},
         after_data=after or {},
