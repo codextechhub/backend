@@ -30,11 +30,12 @@ def can_view_all_jobs(user) -> bool:
     """Admin-queue visibility: CX staff holding a platform admin role."""
     if getattr(user, "user_type", None) != "CX_STAFF":
         return False
-    from vs_rbac.models import PlatformUserRoleAssignment
+    from vs_rbac.models import TenantUserRoleAssignment
 
-    return PlatformUserRoleAssignment.objects.filter(
+    return TenantUserRoleAssignment.objects.filter(
         user=user,
-        role_id__in=("xvs_super_admin", "xvs_platform_admin"),
+        role__key__in=("xvs_super_admin", "xvs_platform_admin"),
+        role__tenant__kind="PLATFORM",
         assignment_status="ACTIVE",
     ).exists()
 
@@ -47,7 +48,7 @@ class BackgroundJobSerializer(serializers.ModelSerializer):
         model = BackgroundJob
         fields = [
             "id", "kind", "label", "task_name", "status", "progress",
-            "owner", "owner_name", "school",
+            "owner", "owner_name", "tenant",
             "created_at", "started_at", "finished_at", "runtime_seconds",
             "result", "error",
         ]

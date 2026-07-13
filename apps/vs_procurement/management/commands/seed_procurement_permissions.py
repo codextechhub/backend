@@ -18,6 +18,7 @@ from django.db import transaction
 MODULE_NAME = "procurement"
 MODULE_DESCRIPTION = "Procure-to-pay: requisitions, sourcing, receipts, vendor invoicing and payments."
 PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
+_PLATFORM_ROLE_NAMES = {"xvs_super_admin": "XVS Super Admin", "xvs_platform_admin": "XVS Platform Admin"}
 
 # sensitivity → whether the permission must flow through approvals / audit
 _RESTRICTED = {"SENSITIVE", "CRITICAL"}
@@ -54,9 +55,10 @@ class Command(BaseCommand):
             PermissionAction,
             PermissionModule,
             PermissionResource,
-            PlatformRolePermission,
-            PlatformRoleTemplate,
+            TenantRolePermission,
+            TenantRoleTemplate,
         )
+        from vs_tenants.models import Tenant
 
         self.stdout.write(self.style.MIGRATE_HEADING(f"\n  Seeding {MODULE_NAME} permissions...\n"))
 
@@ -118,29 +120,37 @@ class Command(BaseCommand):
                     self.stdout.write(f"  + {perm.key}  [{sensitivity}]")
                 all_perms.append(perm)
 
-        # ── Grant every key to the platform admin roles ───────────────────────
-        for role_id in PLATFORM_ROLE_IDS:
-            try:
-                role = PlatformRoleTemplate.objects.get(id=role_id)
-            except PlatformRoleTemplate.DoesNotExist:
-                self.stdout.write(self.style.WARNING(
-                    f"  ⚠  role '{role_id}' not found — run create_superuser first; grants skipped."
-                ))
-                continue
-
-            granted = 0
-            for perm in all_perms:
-                _, link_created = PlatformRolePermission.objects.get_or_create(
-                    role=role,
-                    permission=perm,
-                    defaults={"granted": True, "granted_by": None},
+        # ── Grant every key to the platform admin roles (codex tenant) ────────
+        codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+        if codex is None:
+            self.stdout.write(self.style.WARNING(
+                "  ⚠  Codex platform tenant not found — run migrations first; grants skipped."
+            ))
+        else:
+            for role_id in PLATFORM_ROLE_IDS:
+                role, _ = TenantRoleTemplate.objects.get_or_create(
+                    tenant=codex,
+                    key=role_id,
+                    defaults={
+                        "name": _PLATFORM_ROLE_NAMES.get(role_id, role_id),
+                        "status": "ACTIVE",
+                        "is_system_role": True,
+                        "is_locked": True,
+                    },
                 )
-                if link_created:
-                    granted += 1
-            self.stdout.write(
-                f"  {role_id}: granted {granted} new key(s)." if granted
-                else f"  {role_id}: all keys already assigned."
-            )
+                granted = 0
+                for perm in all_perms:
+                    _, link_created = TenantRolePermission.objects.get_or_create(
+                        role=role,
+                        permission=perm,
+                        defaults={"granted": True, "granted_by": None},
+                    )
+                    if link_created:
+                        granted += 1
+                self.stdout.write(
+                    f"  {role_id}: granted {granted} new key(s)." if granted
+                    else f"  {role_id}: all keys already assigned."
+                )
 
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_perms} new permission(s), {len(all_perms)} total "

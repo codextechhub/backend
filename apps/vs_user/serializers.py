@@ -314,8 +314,12 @@ class UserCreateSerializer(serializers.Serializer):
                     {'role': f'Platform role with id "{role_id}" not found.'}
                 )
             if role_id == 'xvs_super_admin':
-                from vs_rbac.models import PlatformUserRoleAssignment
-                if PlatformUserRoleAssignment.objects.filter(role_id='xvs_super_admin').exists():
+                from vs_rbac.models import TenantUserRoleAssignment
+                if TenantUserRoleAssignment.objects.filter(
+                    role__key='xvs_super_admin',
+                    role__tenant__kind='PLATFORM',
+                    assignment_status='ACTIVE',
+                ).exists():
                     raise serializers.ValidationError(
                         {'role': 'A Vision Super Admin already exists. Only one is allowed.'}
                     )
@@ -402,7 +406,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
         model  = User
         fields = ('first_name', 'last_name', 'phone', 'gender')
         # role and user_type are intentionally excluded — changes go through
-        # SchoolRoleChangeRequest / PlatformRoleChangeRequest workflows only.
+        # the TenantRoleChangeRequest workflow only.
         # Email changes go through the separate /email/change/ endpoint.
 
 

@@ -25,10 +25,12 @@ class UserListScopeTests(TestCase):
         self.cx_user = make_cx_user(email="scope-cx@codex.test")
         school = make_school(name="Scope School", slug="scope-school")
         self.school_user = make_school_admin(school, email="scope-admin@school.test")
-        from vs_rbac.models import SchoolRoleTemplate, SchoolUserRoleAssignment
-        role = SchoolRoleTemplate.objects.create(school=school, name="School Administrator")
-        SchoolUserRoleAssignment.objects.create(
-            school=school,
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        role = TenantRoleTemplate.objects.create(
+            tenant=school.tenant, key="school-administrator", name="School Administrator",
+        )
+        TenantUserRoleAssignment.objects.create(
+            tenant=school.tenant,
             user=self.school_user,
             role=role,
             assignment_status="ACTIVE",

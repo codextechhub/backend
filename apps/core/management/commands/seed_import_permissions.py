@@ -91,9 +91,10 @@ class Command(BaseCommand):
             PermissionAction,
             PermissionModule,
             PermissionResource,
-            PlatformRolePermission,
-            PlatformRoleTemplate,
+            TenantRolePermission,
+            TenantRoleTemplate,
         )
+        from vs_tenants.models import Tenant
 
         self.stdout.write(self.style.MIGRATE_HEADING("\n  Seeding import data permissions...\n"))
 
@@ -141,14 +142,28 @@ class Command(BaseCommand):
                     created_count += 1
                     self.stdout.write(f"  + {key}")
 
-        # Grant all import permissions to xvs_super_admin role
-        try:
-            super_admin_role = PlatformRoleTemplate.objects.get(id="xvs_super_admin")
+        # Grant all import permissions to the xvs_super_admin role (codex tenant)
+        codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+        if codex is None:
+            self.stdout.write(self.style.WARNING(
+                "\n  ⚠  Codex platform tenant not found — run migrations first; grants skipped."
+            ))
+        else:
+            super_admin_role, _ = TenantRoleTemplate.objects.get_or_create(
+                tenant=codex,
+                key="xvs_super_admin",
+                defaults={
+                    "name": "XVS Super Admin",
+                    "status": "ACTIVE",
+                    "is_system_role": True,
+                    "is_locked": True,
+                },
+            )
             granted = 0
             for key in all_keys:
                 perm = Permission.objects.filter(key=key).first()
                 if perm:
-                    _, role_perm_created = PlatformRolePermission.objects.get_or_create(
+                    _, role_perm_created = TenantRolePermission.objects.get_or_create(
                         role=super_admin_role,
                         permission=perm,
                         defaults={"granted": True, "granted_by": None},
@@ -157,10 +172,6 @@ class Command(BaseCommand):
                         granted += 1
             if granted:
                 self.stdout.write(f"\n  Granted {granted} import permissions to xvs_super_admin role.")
-        except PlatformRoleTemplate.DoesNotExist:
-            self.stdout.write(self.style.WARNING(
-                "\n  ⚠  'xvs_super_admin' role not found — run create_superuser first."
-            ))
 
         # -- Permission Groups -------------------------------------------------
         self._seed_permission_groups(all_keys)

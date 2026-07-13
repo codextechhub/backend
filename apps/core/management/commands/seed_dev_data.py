@@ -281,18 +281,26 @@ class Command(BaseCommand):
         )
 
     def _platform_roles(self, staff, seats):
-        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
 
-        role = PlatformRoleTemplate.objects.filter(id="xvs_platform_admin").first()
-        if role is None:
+        codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+        if codex is None:
             return
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=codex, key="xvs_platform_admin",
+            defaults=dict(
+                name="XVS Platform Admin", status="ACTIVE",
+                is_system_role=True, is_locked=True,
+            ),
+        )
         # Grant platform-admin access to the MD and all C-Suite (L1–L2).
         lead_codes = {"CX-MD", "CX-CTO", "CX-COO", "CX-CFO", "CX-CPO"}
         granted = 0
         for user, pos in zip(staff, seats):
             if pos.code in lead_codes:
-                _, created = PlatformUserRoleAssignment.objects.get_or_create(
-                    user=user, role=role,
+                _, created = TenantUserRoleAssignment.objects.get_or_create(
+                    tenant=codex, user=user, role=role,
                     defaults=dict(assignment_status="ACTIVE"),
                 )
                 granted += int(created)
@@ -425,9 +433,11 @@ class Command(BaseCommand):
     # 4. RBAC roles + assignments + a pending change request             #
     # ------------------------------------------------------------------ #
     def _rbac(self, schools, users_by_school):
+        from django.utils.text import slugify
+
         from vs_rbac.models import (
-            Permission, SchoolRoleChangeRequest, SchoolRolePermission,
-            SchoolRoleTemplate, SchoolUserRoleAssignment,
+            Permission, TenantRoleChangeRequest, TenantRolePermission,
+            TenantRoleTemplate, TenantUserRoleAssignment,
         )
 
         self.stdout.write(self.style.MIGRATE_HEADING("RBAC roles and assignments..."))
@@ -448,27 +458,32 @@ class Command(BaseCommand):
         assignments = 0
         for school in schools:
             users = users_by_school[school.pk]
+            tenant = school.tenant
             for role_name, prefixes, bucket in role_specs:
-                role = SchoolRoleTemplate.all_objects.filter(
-                    school=school, name__iexact=role_name
+                role = TenantRoleTemplate.objects.filter(
+                    tenant=tenant, name__iexact=role_name
                 ).first()
                 if role is None:
-                    role = SchoolRoleTemplate.objects.create(school=school, name=role_name)
+                    role = TenantRoleTemplate.objects.create(
+                        tenant=tenant, key=slugify(role_name), name=role_name,
+                    )
                     for key in grants(prefixes):
-                        SchoolRolePermission.objects.get_or_create(
+                        TenantRolePermission.objects.get_or_create(
                             role=role, permission_id=key, defaults=dict(granted=True),
                         )
                 for user in users[bucket]:
-                    exists = SchoolUserRoleAssignment.all_objects.filter(
-                        school=school, user=user, role=role, assignment_status="ACTIVE",
+                    exists = TenantUserRoleAssignment.objects.filter(
+                        tenant=tenant, user=user, role=role, assignment_status="ACTIVE",
                     ).exists()
                     if not exists:
-                        SchoolUserRoleAssignment.objects.create(school=school, user=user, role=role)
+                        TenantUserRoleAssignment.objects.create(
+                            tenant=tenant, user=user, role=role,
+                        )
                         assignments += 1
 
-            teacher_role = SchoolRoleTemplate.all_objects.get(school=school, name="Teacher")
-            SchoolRoleChangeRequest.objects.get_or_create(
-                school=school, target_role=teacher_role,
+            teacher_role = TenantRoleTemplate.objects.get(tenant=tenant, name="Teacher")
+            TenantRoleChangeRequest.objects.get_or_create(
+                tenant=tenant, target_role=teacher_role,
                 requested_by=users["admins"][0],
                 status="PENDING",
                 defaults=dict(

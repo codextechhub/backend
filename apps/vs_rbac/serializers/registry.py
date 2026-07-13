@@ -13,10 +13,8 @@ from ..models import (
     PermissionGroup,
     PermissionModule,
     PermissionResource,
-    PlatformRoleGroup,
-    PlatformRoleTemplate,
-    SchoolRoleGroup,
-    SchoolRoleTemplate,
+    TenantRoleGroup,
+    TenantRoleTemplate,
 )
 
 
@@ -423,23 +421,14 @@ class PermissionGroupDetailSerializer(
                 [GroupPermission(group=instance, permission=perm) for perm in perms]
             )
 
-            # Any role (school or platform) attached to this group now has a
-            # changed effective permission set, so bump their versions to
-            # invalidate caches downstream.
-            attached_role_ids = SchoolRoleGroup.objects.filter(
+            # Any tenant role attached to this group now has a changed effective
+            # permission set, so bump their versions to invalidate caches
+            # downstream.
+            attached_role_ids = TenantRoleGroup.objects.filter(
                 group=instance
             ).values_list("role_id", flat=True)
-            for role in SchoolRoleTemplate.objects.filter(id__in=list(attached_role_ids)):
-                role.bump_version()
-                role.save(update_fields=["version", "updated_at"])
-
-            attached_platform_role_ids = PlatformRoleGroup.objects.filter(
-                group=instance
-            ).values_list("role_id", flat=True)
-            for role in PlatformRoleTemplate.objects.filter(
-                id__in=list(attached_platform_role_ids)
-            ):
-                role.bump_version()
+            for role in TenantRoleTemplate.objects.filter(id__in=list(attached_role_ids)):
+                role.version = (role.version or 1) + 1
                 role.save(update_fields=["version", "updated_at"])
 
         return instance

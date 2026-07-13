@@ -12,6 +12,7 @@ RESOURCES = [
     ("export", [("create", "SENSITIVE")]),
 ]
 PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
+_PLATFORM_ROLE_NAMES = {"xvs_super_admin": "XVS Super Admin", "xvs_platform_admin": "XVS Platform Admin"}
 
 
 class Command(BaseCommand):
@@ -21,8 +22,9 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         from vs_rbac.models import (
             Permission, PermissionAction, PermissionModule, PermissionResource,
-            PlatformRolePermission, PlatformRoleTemplate,
+            TenantRolePermission, TenantRoleTemplate,
         )
+        from vs_tenants.models import Tenant
 
         module, _ = PermissionModule.objects.get_or_create(
             name="config",
@@ -52,14 +54,21 @@ class Command(BaseCommand):
                     permission.save()
                 permissions.append(permission)
 
-        for role_id in PLATFORM_ROLE_IDS:
-            role = PlatformRoleTemplate.objects.filter(pk=role_id).first()
-            if role is None:
-                self.stdout.write(self.style.WARNING(f"Role '{role_id}' does not exist; grants skipped."))
-                continue
-            for permission in permissions:
-                PlatformRolePermission.objects.get_or_create(
-                    role=role, permission=permission,
-                    defaults={"granted": True, "granted_by": None},
+        codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+        if codex is None:
+            self.stdout.write(self.style.WARNING("Codex platform tenant not found; grants skipped."))
+        else:
+            for role_id in PLATFORM_ROLE_IDS:
+                role, _ = TenantRoleTemplate.objects.get_or_create(
+                    tenant=codex, key=role_id,
+                    defaults={
+                        "name": _PLATFORM_ROLE_NAMES.get(role_id, role_id),
+                        "status": "ACTIVE", "is_system_role": True, "is_locked": True,
+                    },
                 )
+                for permission in permissions:
+                    TenantRolePermission.objects.get_or_create(
+                        role=role, permission=permission,
+                        defaults={"granted": True, "granted_by": None},
+                    )
         self.stdout.write(self.style.SUCCESS(f"Seeded {len(permissions)} configuration permissions."))

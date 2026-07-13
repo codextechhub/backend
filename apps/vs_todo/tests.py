@@ -273,12 +273,15 @@ class PermissionSeedTests(TestCase):
     seed_all_permissions) is what this guards against, plus the new todo keys."""
 
     def _platform_roles(self):
-        from vs_rbac.models import PlatformRoleTemplate
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_tenants.models import Tenant
+        codex = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
         for role_id, name in (("xvs_super_admin", "XVS Super Admin"),
                               ("xvs_platform_admin", "XVS Platform Admin")):
-            PlatformRoleTemplate.objects.get_or_create(
-                id=role_id,
-                defaults={"name": name, "is_system_role": True, "is_locked": True},
+            TenantRoleTemplate.objects.get_or_create(
+                tenant=codex, key=role_id,
+                defaults={"name": name, "status": "ACTIVE",
+                          "is_system_role": True, "is_locked": True},
             )
 
     def setUp(self):
@@ -295,26 +298,30 @@ class PermissionSeedTests(TestCase):
             self.assertTrue(Permission.objects.filter(key=key).exists(), key)
 
     def test_platform_grants_respect_transfer_boundary(self):
-        from vs_rbac.models import PlatformRolePermission
+        from vs_rbac.models import TenantRolePermission
         call_command("seed_platform_permissions", verbosity=0)
         # Super admin gets the handoff key; platform admin must not.
-        self.assertTrue(PlatformRolePermission.objects.filter(
-            role_id="xvs_super_admin", permission_id="platform.roles.transfer").exists())
-        self.assertFalse(PlatformRolePermission.objects.filter(
-            role_id="xvs_platform_admin", permission_id="platform.roles.transfer").exists())
+        self.assertTrue(TenantRolePermission.objects.filter(
+            role__key="xvs_super_admin", role__tenant__kind="PLATFORM",
+            permission_id="platform.roles.transfer").exists())
+        self.assertFalse(TenantRolePermission.objects.filter(
+            role__key="xvs_platform_admin", role__tenant__kind="PLATFORM",
+            permission_id="platform.roles.transfer").exists())
         # Organogram manage IS granted to both.
         for role_id in ("xvs_super_admin", "xvs_platform_admin"):
-            self.assertTrue(PlatformRolePermission.objects.filter(
-                role_id=role_id, permission_id="platform.organogram.manage").exists(), role_id)
+            self.assertTrue(TenantRolePermission.objects.filter(
+                role__key=role_id, role__tenant__kind="PLATFORM",
+                permission_id="platform.organogram.manage").exists(), role_id)
 
     def test_todo_seed_captures_and_grants_task_keys(self):
-        from vs_rbac.models import Permission, PlatformRolePermission
+        from vs_rbac.models import Permission, TenantRolePermission
         call_command("seed_todo_permissions", verbosity=0)
         for key in ("todo.task.view", "todo.task.manage", "todo.task.assign"):
             self.assertTrue(Permission.objects.filter(key=key).exists(), key)
             for role_id in ("xvs_super_admin", "xvs_platform_admin"):
-                self.assertTrue(PlatformRolePermission.objects.filter(
-                    role_id=role_id, permission_id=key).exists(), f"{role_id}:{key}")
+                self.assertTrue(TenantRolePermission.objects.filter(
+                    role__key=role_id, role__tenant__kind="PLATFORM",
+                    permission_id=key).exists(), f"{role_id}:{key}")
 
     def test_seed_all_permissions_runs_clean(self):
         from vs_rbac.models import Permission

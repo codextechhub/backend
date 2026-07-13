@@ -17,7 +17,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
-from vs_rbac.models import SchoolUserRoleAssignment
+from vs_rbac.models import TenantUserRoleAssignment
 from core.mixins import (
     XVSModelViewSetMixin,
 )
@@ -86,9 +86,9 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             'school', 'branch', 'invited_by', 'invitation'
         ).prefetch_related(
             Prefetch(
-                'role_assignments',
-                queryset=SchoolUserRoleAssignment.objects.filter(
-                    assignment_status=SchoolUserRoleAssignment.AssignmentStatus.ACTIVE,
+                'tenant_role_assignments',
+                queryset=TenantUserRoleAssignment.objects.filter(
+                    assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
                 ).select_related('role'),
                 to_attr='active_school_role_assignments',
             )

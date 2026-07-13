@@ -47,9 +47,9 @@ def _grant_school_permission(user, school, permission_key):
         PermissionAction,
         PermissionModule,
         PermissionResource,
-        SchoolRolePermission,
-        SchoolRoleTemplate,
-        SchoolUserRoleAssignment,
+        TenantRolePermission,
+        TenantRoleTemplate,
+        TenantUserRoleAssignment,
     )
 
     module_key, resource_name, action_key = permission_key.split(".")
@@ -58,12 +58,13 @@ def _grant_school_permission(user, school, permission_key):
     action, _ = PermissionAction.objects.get_or_create(name=action_key)
     perm, _ = Permission.objects.get_or_create(module=module, resource=resource, action=action)
 
-    role = SchoolRoleTemplate.objects.create(
-        school=school, name=f"Role {permission_key}",
+    role = TenantRoleTemplate.objects.create(
+        tenant=school.tenant, key=f"role-{permission_key.replace('.', '-')}",
+        name=f"Role {permission_key}",
     )
-    SchoolRolePermission.objects.create(role=role, permission=perm, granted=True)
-    SchoolUserRoleAssignment.objects.create(
-        school=school, user=user, role=role, assignment_status="ACTIVE",
+    TenantRolePermission.objects.create(role=role, permission=perm, granted=True)
+    TenantUserRoleAssignment.objects.create(
+        tenant=school.tenant, user=user, role=role, assignment_status="ACTIVE",
     )
 
 
@@ -98,10 +99,14 @@ class _NotifFixture(TestCase):
             email="cx@test.com", password="x", user_type="CX_STAFF",
             status="ACTIVE", first_name="Cee", last_name="Ex",
         )
-        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
-        role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
-        PlatformUserRoleAssignment.objects.create(
-            user=self.cx, role=role, assignment_status="ACTIVE",
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=self.cx.tenant, key="xvs_super_admin",
+            defaults={"name": "XVS Super Admin", "status": "ACTIVE",
+                      "is_system_role": True, "is_locked": True},
+        )
+        TenantUserRoleAssignment.objects.create(
+            tenant=self.cx.tenant, user=self.cx, role=role, assignment_status="ACTIVE",
         )
 
     def _client(self, user):
@@ -606,3 +611,55 @@ class ResponseShapeTests(_NotifFixture):
     def test_settings_matrix_returns_list(self):
         resp = self._client(self.cx).get("/v1/notify/settings/")
         self.assertIsInstance(resp.json()["data"], list)
+
+
+# ---------------------------------------------------------------------------
+# seed_notification_permissions — grants land in the tenant RBAC tables
+# ---------------------------------------------------------------------------
+
+class SeedNotificationPermissionsTests(TestCase):
+    """The communication permission seed must grant into TenantRolePermission on
+    the codex platform roles (the legacy platform-role grant path is retired)."""
+
+    def setUp(self):
+        from django.core.management import call_command
+        call_command("seed_actions", verbosity=0)
+        call_command("seed_notification_permissions", verbosity=0)
+
+    def test_platform_roles_granted_in_tenant_table(self):
+        from vs_rbac.models import Permission, TenantRolePermission
+
+        for key in (
+            "communication.notification_templates.configure",
+            "communication.communication_permissions.enforce",
+            "communication.message_activity.audit",
+        ):
+            self.assertTrue(Permission.objects.filter(key=key).exists(), key)
+            for role_key in ("xvs_super_admin", "xvs_platform_admin"):
+                self.assertTrue(
+                    TenantRolePermission.objects.filter(
+                        role__key=role_key, role__tenant__kind="PLATFORM",
+                        permission_id=key, granted=True,
+                    ).exists(),
+                    f"{role_key}:{key}",
+                )
+
+    def test_native_school_role_backfilled_in_tenant_table(self):
+        from vs_rbac.models import TenantRolePermission, TenantRoleTemplate
+        from vs_schools.models import School
+
+        school = School.objects.create(name="Notif Backfill", slug="notif-bf", code="NBF")
+        role = TenantRoleTemplate.objects.create(
+            tenant=school.tenant, key="school_admin", name="School Admin",
+            is_system_role=True,
+        )
+        from django.core.management import call_command
+        call_command("seed_notification_permissions", verbosity=0)
+
+        keys = set(
+            TenantRolePermission.objects
+            .filter(role=role, granted=True)
+            .values_list("permission_id", flat=True)
+        )
+        self.assertIn("communication.communication_permissions.enforce", keys)
+        self.assertIn("communication.message_activity.audit", keys)

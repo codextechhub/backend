@@ -13,12 +13,15 @@ receive the settings + history keys, because the backend already scopes both
 endpoints to the caller's own school (see NotificationSettingViewSet /
 NotificationHistoryViewSet docstrings).
 """
+import re
+
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
 MODULE_NAME = "communication"
 MODULE_DESCRIPTION = "Notifications, messaging and delivery tracking."
 PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
+_PLATFORM_ROLE_NAMES = {"xvs_super_admin": "XVS Super Admin", "xvs_platform_admin": "XVS Platform Admin"}
 SCHOOL_ROLE_KEYS = ["school_admin", "branch_admin"]
 SCHOOL_DEFAULT_KEYS = {
     "communication.communication_permissions.enforce",
@@ -43,13 +46,13 @@ class Command(BaseCommand):
             PermissionAction,
             PermissionModule,
             PermissionResource,
-            PlatformRolePermission,
-            PlatformRoleTemplate,
             PrebuiltRolePermission,
             PrebuiltRoleTemplate,
-            SchoolRolePermission,
             SchoolRoleTemplate,
+            TenantRolePermission,
+            TenantRoleTemplate,
         )
+        from vs_tenants.models import Tenant
 
         self.stdout.write(self.style.MIGRATE_HEADING(f"\n  Seeding {MODULE_NAME} permissions...\n"))
 
@@ -95,20 +98,30 @@ class Command(BaseCommand):
                     self.stdout.write(f"  + {perm.key} [{sensitivity}]")
                 all_perms.append(perm)
 
-        for role_id in PLATFORM_ROLE_IDS:
-            role = PlatformRoleTemplate.objects.filter(id=role_id).first()
-            if role is None:
-                self.stdout.write(self.style.WARNING(f"  role '{role_id}' missing; platform grants skipped."))
-                continue
-            granted = 0
-            for perm in all_perms:
-                _, link_created = PlatformRolePermission.objects.get_or_create(
-                    role=role,
-                    permission=perm,
-                    defaults={"granted": True, "granted_by": None},
+        codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
+        if codex is None:
+            self.stdout.write(self.style.WARNING("  Codex platform tenant missing; platform grants skipped."))
+        else:
+            for role_id in PLATFORM_ROLE_IDS:
+                role, _ = TenantRoleTemplate.objects.get_or_create(
+                    tenant=codex,
+                    key=role_id,
+                    defaults={
+                        "name": _PLATFORM_ROLE_NAMES.get(role_id, role_id),
+                        "status": "ACTIVE",
+                        "is_system_role": True,
+                        "is_locked": True,
+                    },
                 )
-                granted += int(link_created)
-            self.stdout.write(f"  {role_id}: granted {granted} new key(s).")
+                granted = 0
+                for perm in all_perms:
+                    _, link_created = TenantRolePermission.objects.get_or_create(
+                        role=role,
+                        permission=perm,
+                        defaults={"granted": True, "granted_by": None},
+                    )
+                    granted += int(link_created)
+                self.stdout.write(f"  {role_id}: granted {granted} new key(s).")
 
         for role_key in SCHOOL_ROLE_KEYS:
             role = PrebuiltRoleTemplate.objects.filter(key=role_key).first()
@@ -124,14 +137,43 @@ class Command(BaseCommand):
                 attached += int(link_created)
             self.stdout.write(f"  {role_key}: attached {attached} new default(s).")
 
-        templates = SchoolRoleTemplate.all_objects.filter(prebuilt_from__key__in=SCHOOL_ROLE_KEYS).select_related("prebuilt_from")
+        # Backfill existing tenant role templates (runtime grants live in the
+        # tenant tables now). Two lineages map a tenant role to its prebuilt:
+        #   a) roles migrated from the legacy school tables carry
+        #      key=str(old SchoolRoleTemplate pk); the legacy row (kept until the
+        #      contract phase) still records prebuilt_from;
+        #   b) native roles use key=<prebuilt.key> or key=<prebuilt.key>-<branch>.
+        prebuilt_for_role: dict[int, str] = {}
+        for old in (
+            SchoolRoleTemplate.all_objects
+            .filter(prebuilt_from__key__in=SCHOOL_ROLE_KEYS)
+            .select_related("prebuilt_from", "school")
+        ):
+            if not old.school or not old.school.tenant_id:
+                continue
+            migrated = TenantRoleTemplate.objects.filter(
+                tenant_id=old.school.tenant_id, key=str(old.pk),
+            ).first()
+            if migrated:
+                prebuilt_for_role[migrated.pk] = old.prebuilt_from.key
+
+        native_key_re = re.compile(
+            r"^(%s)(?:-\d+)?$" % "|".join(re.escape(k) for k in SCHOOL_ROLE_KEYS)
+        )
+        for role in TenantRoleTemplate.objects.filter(
+            tenant__kind="SCHOOL", is_system_role=True,
+        ).only("id", "key"):
+            match = native_key_re.match(role.key)
+            if match and role.pk not in prebuilt_for_role:
+                prebuilt_for_role[role.pk] = match.group(1)
+
         backfilled = 0
         template_count = 0
-        for template in templates:
+        for role_pk in prebuilt_for_role:
             template_count += 1
             for key in sorted(SCHOOL_DEFAULT_KEYS):
-                _, row_created = SchoolRolePermission.objects.get_or_create(
-                    role=template,
+                _, row_created = TenantRolePermission.objects.get_or_create(
+                    role_id=role_pk,
                     permission_id=key,
                     defaults={"granted": True, "granted_by": None},
                 )
@@ -139,5 +181,5 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS(
             f"\n  Done. {created_perms} new permission(s), {len(all_perms)} total communication keys; "
-            f"backfilled {backfilled} grant(s) across {template_count} school role template(s).\n"
+            f"backfilled {backfilled} grant(s) across {template_count} tenant role template(s).\n"
         ))

@@ -7459,3 +7459,27 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         self.assertEqual(net, 0)
         jan.fiscal_year.refresh_from_db()
         self.assertEqual(jan.fiscal_year.status, PeriodStatus.CLOSED)
+
+
+class SeedFinancePermissionsTests(TestCase):
+    """The finance permission seed must grant into TenantRolePermission on the
+    codex platform roles (the legacy platform-role grant path is retired)."""
+
+    def setUp(self):
+        from django.core.management import call_command
+        call_command("seed_actions", verbosity=0)
+        call_command("seed_finance_permissions", verbosity=0)
+
+    def test_platform_roles_granted_in_tenant_table(self):
+        from vs_rbac.models import Permission, TenantRolePermission
+
+        for key in ("finance.account.view", "finance.journal.post", "finance.period.close"):
+            self.assertTrue(Permission.objects.filter(key=key).exists(), key)
+            for role_key in ("xvs_super_admin", "xvs_platform_admin"):
+                self.assertTrue(
+                    TenantRolePermission.objects.filter(
+                        role__key=role_key, role__tenant__kind="PLATFORM",
+                        permission_id=key, granted=True,
+                    ).exists(),
+                    f"{role_key}:{key}",
+                )

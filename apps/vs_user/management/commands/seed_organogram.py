@@ -162,10 +162,10 @@ class Command(BaseCommand):
 
     def _assign_users(self, positions, reassign, stats):
         # Order users so any super admin lands at the top seat, then by id.
-        from vs_rbac.models import PlatformUserRoleAssignment
+        from vs_rbac.models import TenantUserRoleAssignment
         admin_ids = set(
-            PlatformUserRoleAssignment.objects
-            .filter(role_id="xvs_super_admin")
+            TenantUserRoleAssignment.objects
+            .filter(role__key="xvs_super_admin", role__tenant__kind="PLATFORM")
             .values_list("user_id", flat=True)
         )
         cx_users = list(User.objects.filter(user_type=User.UserType.CX_STAFF).order_by("id"))

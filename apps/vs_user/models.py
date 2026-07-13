@@ -148,7 +148,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     # ──User type and status ───────────────────────────────────────────────────────
 
     user_type = models.CharField(max_length=32, choices=UserType.choices)
-    role      = models.CharField(max_length=120, blank=True, default='')  # Denormalized display name; actual grants live in SchoolUserRoleAssignment.
+    role      = models.CharField(max_length=120, blank=True, default='')  # Denormalized display name; actual grants live in TenantUserRoleAssignment.
     status    = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
 
     # ── Django auth flags ─────────────────────────────────────────────────────

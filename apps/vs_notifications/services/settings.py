@@ -59,7 +59,7 @@ def resolve_channels_bulk(event_types, tenant=None, rows=None, school=None) -> d
         from ..models import NotificationSetting
         from django.db.models import Q
 
-        scope = Q(school__isnull=True)
+        scope = Q(tenant__isnull=True)
         if tenant is not None:
             scope |= Q(tenant=tenant)
 

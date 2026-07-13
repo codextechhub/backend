@@ -97,10 +97,12 @@ class Command(BaseCommand):
     def _check_platform_roles(self):
         """Warn early if platform roles are missing so the user knows to run create_superuser."""
         try:
-            from vs_rbac.models import PlatformRoleTemplate
+            from vs_rbac.models import TenantRoleTemplate
             missing = [
                 role_id for role_id in ("xvs_super_admin", "xvs_platform_admin")
-                if not PlatformRoleTemplate.objects.filter(id=role_id).exists()
+                if not TenantRoleTemplate.objects.filter(
+                    key=role_id, tenant__kind="PLATFORM"
+                ).exists()
             ]
             if missing:
                 self.stdout.write(self.style.WARNING(

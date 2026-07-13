@@ -6,7 +6,7 @@ from rest_framework import status
 from rest_framework.test import APIClient
 
 from core.models import BackgroundJob
-from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
 from vs_user.models import User
 
 
@@ -26,12 +26,16 @@ def _cx(email, *, platform_admin=False, **extra):
         first_name="T", last_name="User", **extra,
     )
     if platform_admin:
-        role, _ = PlatformRoleTemplate.objects.get_or_create(
-            id="xvs_platform_admin",
-            defaults={"name": "Platform Admin", "status": "ACTIVE"},
+        # can_view_all_jobs reads the codex-tenant role assignment; CX_STAFF
+        # users derive their tenant to the codex PLATFORM tenant on save.
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=user.tenant, key="xvs_platform_admin",
+            defaults={"name": "XVS Platform Admin", "status": "ACTIVE",
+                      "is_system_role": True, "is_locked": True},
         )
-        PlatformUserRoleAssignment.objects.get_or_create(
-            user=user, role=role, defaults={"assignment_status": "ACTIVE"},
+        TenantUserRoleAssignment.objects.get_or_create(
+            tenant=user.tenant, user=user, role=role,
+            defaults={"assignment_status": "ACTIVE"},
         )
     return user
 
@@ -71,7 +75,7 @@ class TrackedTaskTests(TestCase):
         )
         self.assertEqual(note.event_type.key, "task.completed")
         self.assertIn("Probe job", note.body)
-        self.assertIsNone(note.school_id)
+        self.assertEqual(note.tenant_id, self.owner.tenant_id)
 
     def test_failure_recorded_with_error(self):
         with self.assertRaises(RuntimeError):
@@ -95,12 +99,15 @@ class MyTasksAPITests(TestCase):
         self.other = _cx("other@codexng.com")
         self.admin = _cx("padmin@codexng.com", platform_admin=True)
         BackgroundJob.objects.create(
-            owner=self.me, celery_task_id="t-1", label="Mine", status="SUCCEEDED", kind="export",
+            owner=self.me, tenant=self.me.tenant,
+            celery_task_id="t-1", label="Mine", status="SUCCEEDED", kind="export",
         )
         BackgroundJob.objects.create(
-            owner=self.other, celery_task_id="t-2", label="Theirs", status="FAILED", kind="import",
+            owner=self.other, tenant=self.other.tenant,
+            celery_task_id="t-2", label="Theirs", status="FAILED", kind="import",
         )
         BackgroundJob.objects.create(
+            tenant=self.admin.tenant,
             celery_task_id="t-3", label="", task_name="beat.thing", status="SUCCEEDED", kind="system",
         )
         self.client = APIClient()

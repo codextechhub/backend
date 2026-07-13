@@ -99,7 +99,7 @@ class IsVisionStaff(BasePermission):
 class IsVisionSuperAdmin(BasePermission):
     """
     Grants access only to the active Vision Super Admin —
-    the single user with an active xvs_super_admin PlatformUserRoleAssignment.
+    the single user with an active xvs_super_admin TenantUserRoleAssignment.
     """
 
     def has_permission(self, request, view):
