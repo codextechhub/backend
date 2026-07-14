@@ -26,7 +26,7 @@ What it creates (idempotent — safe to re-run):
 
 Prerequisites (run first, in this order):
   seed_actions, seed_all_permissions, seed_import_permissions,
-  seed_workflow_permissions, seed_xvs_modules, seed_package,
+  seed_workflow_permissions, seed_config_catalogue, seed_package,
   seed_prebuilt_role_templates, create_superuser --force,
   seed_vision_staff, seed_import, seed_notification_event_types,
   seed_notification_templates.
@@ -41,7 +41,7 @@ How to run:
 dropdb cx_db && createdb cx_db
 cd apps && ../cx/bin/python manage.py migrate --settings=apps.settings.local
 # then the seed chain (order matters):
-for c in seed_all_permissions seed_xvs_modules seed_package; do
+for c in seed_all_permissions seed_config_catalogue seed_package; do
 ../cx/bin/python manage.py $c --settings=apps.settings.local; done
 ../cx/bin/python manage.py create_superuser --force --settings=apps.settings.local
 ../cx/bin/python manage.py seed_vision_staff --settings=apps.settings.local

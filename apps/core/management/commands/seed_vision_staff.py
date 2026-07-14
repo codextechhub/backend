@@ -83,7 +83,6 @@ class Command(BaseCommand):
                     "status": User.Status.ACTIVE,
                     "is_active": True,
                     "is_staff": True,
-                    "school": None,
                     "branch": None,
                 },
             )
