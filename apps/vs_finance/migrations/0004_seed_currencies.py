@@ -30,7 +30,7 @@ def remove_currencies(apps, schema_editor):
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("vs_finance", "0002_initial"),
+        ("vs_finance", "0003_financeauditlog_immutability_triggers"),
     ]
 
     operations = [

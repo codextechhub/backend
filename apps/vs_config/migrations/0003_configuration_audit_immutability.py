@@ -56,5 +56,5 @@ def uninstall(apps, schema_editor):
 
 
 class Migration(migrations.Migration):
-    dependencies = [("vs_config", "0005_alter_branchfeatureflag_unique_together_and_more")]
+    dependencies = [("vs_config", "0002_initial")]
     operations = [migrations.RunPython(install, uninstall)]

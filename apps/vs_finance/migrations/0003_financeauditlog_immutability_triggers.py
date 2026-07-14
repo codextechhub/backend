@@ -85,7 +85,7 @@ def drop_triggers(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("vs_finance", "0024_alter_financeauditlog_action"),
+        ("vs_finance", "0002_initial"),
     ]
 
     operations = [

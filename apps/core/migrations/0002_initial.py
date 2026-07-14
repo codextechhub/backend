@@ -9,53 +9,55 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ("vs_todo", "0001_initial"),
+        ("core", "0001_initial"),
+        ("vs_tenants", "0001_initial"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.AddField(
-            model_name="task",
-            name="assigned_by",
+            model_name="backgroundjob",
+            name="owner",
             field=models.ForeignKey(
                 blank=True,
+                help_text="Who triggered the task. Null for system/scheduled runs.",
                 null=True,
                 on_delete=django.db.models.deletion.SET_NULL,
-                related_name="todo_tasks_assigned",
+                related_name="background_jobs",
                 to=settings.AUTH_USER_MODEL,
             ),
         ),
         migrations.AddField(
-            model_name="task",
-            name="assignee",
+            model_name="backgroundjob",
+            name="tenant",
             field=models.ForeignKey(
-                on_delete=django.db.models.deletion.CASCADE,
-                related_name="todo_tasks",
-                to=settings.AUTH_USER_MODEL,
+                on_delete=django.db.models.deletion.PROTECT,
+                related_name="background_jobs",
+                to="vs_tenants.tenant",
             ),
         ),
         migrations.AddIndex(
-            model_name="task",
+            model_name="storedfile",
             index=models.Index(
-                fields=["assignee", "is_done"], name="vs_todo_tas_assigne_5cae5e_idx"
+                fields=["created_at"], name="core_stored_created_39a011_idx"
             ),
         ),
         migrations.AddIndex(
-            model_name="task",
+            model_name="backgroundjob",
             index=models.Index(
-                fields=["assignee", "deadline"], name="vs_todo_tas_assigne_d3f973_idx"
+                fields=["owner", "-created_at"], name="core_backgr_owner_i_b5ae8e_idx"
             ),
         ),
         migrations.AddIndex(
-            model_name="task",
+            model_name="backgroundjob",
             index=models.Index(
-                fields=["assigned_by"], name="vs_todo_tas_assigne_6c2904_idx"
+                fields=["status", "-created_at"], name="core_backgr_status_9d70dc_idx"
             ),
         ),
         migrations.AddIndex(
-            model_name="task",
+            model_name="backgroundjob",
             index=models.Index(
-                fields=["is_done", "deadline"], name="vs_todo_tas_is_done_929ed8_idx"
+                fields=["kind", "-created_at"], name="core_backgr_kind_819e49_idx"
             ),
         ),
     ]

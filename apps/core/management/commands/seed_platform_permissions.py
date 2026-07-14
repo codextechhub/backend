@@ -49,6 +49,15 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
         ],
     ),
     (
+        "impersonation",
+        "Audited support impersonation",
+        [
+            ("start", "Start an impersonation session into a tenant", True, _CRITICAL),
+            ("end",   "End an impersonation session",                 True, _CRITICAL),
+            ("view",  "View impersonation sessions",                  True, _CRITICAL),
+        ],
+    ),
+    (
         "team",
         "Vision staff team management",
         [
