@@ -49,6 +49,7 @@ def _make_instance(template, user, stage=None,
                    status=WorkflowInstanceStatus.IN_PROGRESS):
     ct = ContentType.objects.get_for_model(WorkflowTemplate)
     return WorkflowInstance.objects.create(
+        tenant=user.tenant,
         template=template,
         document_content_type=ct,
         document_object_id="fdoc",
@@ -158,6 +159,7 @@ class ResolveApproversTests(TestCase):
         self.template  = _make_template()
         ct = ContentType.objects.get_for_model(WorkflowTemplate)
         self.instance = WorkflowInstance.objects.create(
+            tenant=self.requester.tenant,
             template=self.template,
             document_content_type=ct,
             document_object_id="doc1",
@@ -267,7 +269,7 @@ class PublishTemplateTests(TestCase):
 
     def test_create_new_template(self):
         t = templates_svc.publish_template(
-            school=None, document_type="TPL_TEST", code="default",
+            tenant=None, document_type="TPL_TEST", code="default",
             name="Test", stages_payload=[
                 {"code": "s1", "label": "Step 1", "kind": "APPROVAL", "order": 1},
             ],
@@ -278,13 +280,13 @@ class PublishTemplateTests(TestCase):
 
     def test_republish_updates_fields_in_place(self):
         templates_svc.publish_template(
-            school=None, document_type="TPL_UPD", code="default",
+            tenant=None, document_type="TPL_UPD", code="default",
             name="Original", stages_payload=[
                 {"code": "s1", "label": "Step 1", "kind": "APPROVAL", "order": 1},
             ],
         )
         t = templates_svc.publish_template(
-            school=None, document_type="TPL_UPD", code="default",
+            tenant=None, document_type="TPL_UPD", code="default",
             name="Updated", stages_payload=[
                 {"code": "s1", "label": "Step 1 updated", "kind": "APPROVAL", "order": 1},
             ],
@@ -297,14 +299,14 @@ class PublishTemplateTests(TestCase):
     def test_removed_stage_is_soft_retired(self):
         """A stage absent from a republish payload must be retired, not deleted."""
         templates_svc.publish_template(
-            school=None, document_type="TPL_RET", code="default",
+            tenant=None, document_type="TPL_RET", code="default",
             name="T", stages_payload=[
                 {"code": "s1", "label": "Step 1", "kind": "APPROVAL", "order": 1},
                 {"code": "s2", "label": "Step 2", "kind": "APPROVAL", "order": 2},
             ],
         )
         templates_svc.publish_template(
-            school=None, document_type="TPL_RET", code="default",
+            tenant=None, document_type="TPL_RET", code="default",
             name="T", stages_payload=[
                 {"code": "s1", "label": "Step 1", "kind": "APPROVAL", "order": 1},
             ],
@@ -316,19 +318,19 @@ class PublishTemplateTests(TestCase):
     def test_republishing_retired_stage_reactivates_it(self):
         """Including a previously retired stage code in the payload un-retires it."""
         templates_svc.publish_template(
-            school=None, document_type="TPL_UNRET", code="default",
+            tenant=None, document_type="TPL_UNRET", code="default",
             name="T", stages_payload=[
                 {"code": "s1", "label": "Step 1", "kind": "APPROVAL", "order": 1},
             ],
         )
         # Remove s1.
         templates_svc.publish_template(
-            school=None, document_type="TPL_UNRET", code="default",
+            tenant=None, document_type="TPL_UNRET", code="default",
             name="T", stages_payload=[],
         )
         # Re-include s1.
         templates_svc.publish_template(
-            school=None, document_type="TPL_UNRET", code="default",
+            tenant=None, document_type="TPL_UNRET", code="default",
             name="T", stages_payload=[
                 {"code": "s1", "label": "Step 1 back", "kind": "APPROVAL", "order": 1},
             ],
@@ -341,7 +343,7 @@ class PublishTemplateTests(TestCase):
         """Routes have no instance-level references so they are fully replaced."""
         from vs_workflow.models import WorkflowRoutePath
         templates_svc.publish_template(
-            school=None, document_type="TPL_RT", code="default",
+            tenant=None, document_type="TPL_RT", code="default",
             name="T", stages_payload=[
                 {"code": "s1", "label": "S1", "kind": "APPROVAL", "order": 1},
                 {"code": "s2", "label": "S2", "kind": "APPROVAL", "order": 2},
@@ -351,7 +353,7 @@ class PublishTemplateTests(TestCase):
             ],
         )
         templates_svc.publish_template(
-            school=None, document_type="TPL_RT", code="default",
+            tenant=None, document_type="TPL_RT", code="default",
             name="T", stages_payload=[
                 {"code": "s1", "label": "S1", "kind": "APPROVAL", "order": 1},
                 {"code": "s2", "label": "S2", "kind": "APPROVAL", "order": 2},

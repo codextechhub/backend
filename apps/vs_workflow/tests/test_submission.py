@@ -11,19 +11,19 @@ from vs_workflow.services.submission import submit_for_approval
 
 class _Doc:
     workflow_document_type = "TEST_DOC"
-    school = None
+    tenant = None
     branch = None
     pk = "docpk01"
 
 
 class _SchoolDoc(_Doc):
-    """Document scoped to a school but no branch."""
-    school = "school-1"
+    """Document scoped to a tenant but no branch."""
+    tenant = "tenant-1"
 
 
 class _BranchDoc(_Doc):
-    """Document scoped to both school and branch."""
-    school = "school-1"
+    """Document scoped to both tenant and branch."""
+    tenant = "tenant-1"
     branch = "branch-1"
 
 
@@ -44,12 +44,12 @@ class TemplateCascadeTests(TestCase):
         """
         from vs_workflow.models import WorkflowTemplate
 
-        def fake_get(document_type, code, school, branch):
-            if school == doc.school and branch == doc.branch and branch_tpl:
+        def fake_get(document_type, code, tenant, branch):
+            if tenant == doc.tenant and branch == doc.branch and branch_tpl:
                 return branch_tpl
-            if school == doc.school and branch is None and school_tpl:
+            if tenant == doc.tenant and branch is None and school_tpl:
                 return school_tpl
-            if school is None and branch is None and platform_tpl:
+            if tenant is None and branch is None and platform_tpl:
                 return platform_tpl
             raise WorkflowTemplate.DoesNotExist
 
@@ -67,7 +67,7 @@ class TemplateCascadeTests(TestCase):
              patch("vs_workflow.services.submission.routing_service"):
 
             mock_mgr.get.side_effect = lambda **kw: fake_get(
-                kw["document_type"], kw["code"], kw["school"], kw["branch"]
+                kw["document_type"], kw["code"], kw["tenant"], kw["branch"]
             )
             mock_ct.get_for_model.return_value = MagicMock()
             created = MagicMock()

@@ -67,6 +67,7 @@ class AuditModuleKey(models.TextChoices):
     SCHOOL = "SCHOOL", "School Management"
     BRANCH = "BRANCH", "Branch Management"
     SYSTEM = "SYSTEM", "System"
+    PLATFORM = "PLATFORM", "Platform Operations"
 
 
 class AuditActionType(models.TextChoices):
@@ -106,6 +107,11 @@ class AuditActionType(models.TextChoices):
     ROLE_ASSIGNED = "ROLE_ASSIGNED", "Role Assigned"
     ROLE_CHANGED = "ROLE_CHANGED", "Role Changed"
     PERMISSION_CHANGED = "PERMISSION_CHANGED", "Permission Changed"
+
+    # Impersonation (dual-identity support sessions)
+    IMPERSONATION_STARTED = "IMPERSONATION_STARTED", "Impersonation Started"
+    IMPERSONATION_ENDED = "IMPERSONATION_ENDED", "Impersonation Ended"
+    IMPERSONATED_REQUEST = "IMPERSONATED_REQUEST", "Impersonated Request"
 
     # Other
     CONFIG_CHANGED = "CONFIG_CHANGED", "Configuration Changed"

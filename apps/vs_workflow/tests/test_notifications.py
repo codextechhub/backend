@@ -57,6 +57,7 @@ class WorkflowNotificationTests(TestCase):
     def _instance(self, stage=None, status=WorkflowInstanceStatus.IN_PROGRESS):
         ct = ContentType.objects.get_for_model(WorkflowTemplate)
         return WorkflowInstance.objects.create(
+            tenant=self.requester.tenant,
             template=self.template,
             document_content_type=ct,
             document_object_id="fake-doc-id",

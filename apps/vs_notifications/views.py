@@ -366,13 +366,18 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
 
     def _resolve_scope(self, request):
         """
-        Resolve the (school) scope for this request from the caller + ?school=.
+        Resolve the settings scope from the asserted tenant.
 
-        Returns a School instance or None (platform scope). Raises a DRF-style
-        404 response by returning it via the caller — here we return either
-        (school_or_none, None) on success, or (None, error_response) on denial.
+        A business tenant manages its own override rows. A PLATFORM-kind tenant
+        (Codex staff) manages the platform DEFAULT layer — the tenant-NULL rows
+        every school inherits. Writing codex-tenant rows here would be inert for
+        schools: dispatch resolution only reads (tenant IS NULL | own tenant).
+        Returns (tenant_or_none, None); None means the platform layer.
         """
-        return request.tenant, None
+        tenant = request.tenant
+        if getattr(tenant, "kind", None) == "PLATFORM":
+            return None, None
+        return tenant, None
 
     def _build_matrix(self, tenant):
         """

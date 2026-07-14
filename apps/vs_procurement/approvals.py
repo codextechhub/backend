@@ -110,7 +110,7 @@ def ensure_default_approval_templates(
             },
         ]
         template = publish_template(
-            school=None, branch=None, document_type=document_type,
+            tenant=None, branch=None, document_type=document_type,
             code=WF_DEFAULT_TEMPLATE_CODE, name=name,
             description=f"Default threshold-gated approval ladder for a {label}.",
             created_by=created_by, stages_payload=stages_payload,

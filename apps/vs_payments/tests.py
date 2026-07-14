@@ -761,7 +761,8 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
     def setUp(self):
         from django.contrib.auth import get_user_model
         from rest_framework.test import APIClient
-        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
 
         User = get_user_model()
         self.user = User.objects.create_user(
@@ -769,12 +770,12 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
             user_type="CX_STAFF", status="ACTIVE",
             first_name="Pay", last_name="Admin",
         )
-        role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
-        PlatformUserRoleAssignment.objects.create(
+        role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
+        TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), 
             user=self.user, role=role, assignment_status="ACTIVE",
         )
-        self.client = APIClient()
-        self.client.force_authenticate(user=self.user)
+        from core.test_utils import TenantAPIClient
+        self.client = TenantAPIClient(user=self.user)
 
     # Verify initiate collection endpoint behavior.
     def test_initiate_collection_endpoint(self):
@@ -1059,21 +1060,21 @@ class PayoutBatchApprovalTests(TestCase):
         from django.core.management import call_command
         from rest_framework.test import APIClient
         from vs_rbac.models import (
-            PlatformRoleTemplate, PlatformUserRoleAssignment,
-            SchoolRolePermission, SchoolRoleTemplate, SchoolUserRoleAssignment,
+            TenantRoleTemplate, TenantUserRoleAssignment, TenantRolePermission,
         )
+        from vs_tenants.models import Tenant
         from vs_schools.models import School
 
         call_command("seed_payments_permissions", verbosity=0, stdout=io.StringIO())
 
         self.User = get_user_model()
-        self.SchoolRoleTemplate = SchoolRoleTemplate
-        self.SchoolRolePermission = SchoolRolePermission
-        self.SchoolUserRoleAssignment = SchoolUserRoleAssignment
+        self.TenantRoleTemplate = TenantRoleTemplate
+        self.TenantRolePermission = TenantRolePermission
+        self.TenantUserRoleAssignment = TenantUserRoleAssignment
 
         # A school-owned entity so batch.school resolves and SCHOOL-scoped approver
         # resolution has a pool to draw from.
-        self.school = School.objects.create(name="Cedar", slug="cedar-pba", code="CDRPBA")
+        self.school = School.objects.create(name="Cedar", slug="cedar-pba", code="CDRPBA", status="ACTIVE")
         seed_currencies()
         self.entity = LedgerEntity.objects.create(
             name="Cedar Books", code="CDRBK", kind=LedgerEntity.Kind.TENANT,
@@ -1104,18 +1105,35 @@ class PayoutBatchApprovalTests(TestCase):
         registry.register("FAKE", self.fake)
         self.addCleanup(registry.unregister)
 
-        # Requester: a CX super admin (bypasses the endpoint RBAC gate, sees every
-        # entity). SoD still excludes them from approving their own batch.
+        # Requester: a school user holding every payments/finance key at this
+        # school (the entity is school-owned, so only its tenant may address it;
+        # approve verbs excluded so SoD scenarios stay meaningful).
+        from vs_schools.models import Branch
+        from vs_rbac.models import Permission, TenantRolePermission
+        branch = Branch.objects.create(school=self.school, name="Main", is_main=True, status="ACTIVE")
         self.requester = self.User.objects.create_user(
-            email="req-pba@test.com", password="pw", user_type="CX_STAFF", status="ACTIVE",
-            first_name="Req", last_name="Ester",
+            email="req-pba@test.com", password="pw", user_type="STAFF", status="ACTIVE",
+            first_name="Req", last_name="Ester", school=self.school, branch=branch,
         )
-        super_role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
-        PlatformUserRoleAssignment.objects.create(
-            user=self.requester, role=super_role, assignment_status="ACTIVE",
+        ops_role, created = TenantRoleTemplate.objects.get_or_create(
+            tenant=self.school.tenant, key="payments-ops-all",
+            defaults={"name": "Payments Ops (all keys)", "status": "ACTIVE"},
         )
-        self.client = APIClient()
-        self.client.force_authenticate(user=self.requester)
+        if created:
+            keys = Permission.objects.filter(
+                key__startswith="payments.",
+            ) | Permission.objects.filter(key__startswith="finance.")
+            TenantRolePermission.objects.bulk_create(
+                [TenantRolePermission(role=ops_role, permission=p)
+                 for p in keys.exclude(key__endswith=".approve")],
+                ignore_conflicts=True,
+            )
+        TenantUserRoleAssignment.objects.create(
+            tenant=self.school.tenant, user=self.requester, role=ops_role,
+            assignment_status="ACTIVE",
+        )
+        from core.test_utils import TenantAPIClient
+        self.client = TenantAPIClient(user=self.requester)
 
     # --- helpers ----------------------------------------------------------- #
 
@@ -1132,7 +1150,7 @@ class PayoutBatchApprovalTests(TestCase):
         from vs_workflow.services.templates import publish_template
 
         return publish_template(
-            school=self.school, branch=None,
+            tenant=self.school.tenant, branch=None,
             document_type="payments.payout_batch", code="standard",
             name="Payout batch approval",
             stages_payload=[{
@@ -1147,14 +1165,15 @@ class PayoutBatchApprovalTests(TestCase):
             email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
             first_name="Apr", last_name="Over", school=self.school,
         )
-        role, _ = self.SchoolRoleTemplate.objects.get_or_create(
-            id="pba-checker", defaults={"school": self.school, "name": "Payout Checker"},
+        role, _ = self.TenantRoleTemplate.objects.get_or_create(
+            tenant=self.school.tenant, key="pba-checker",
+            defaults={"name": "Payout Checker", "status": "ACTIVE"},
         )
-        self.SchoolRolePermission.objects.get_or_create(
+        self.TenantRolePermission.objects.get_or_create(
             role=role, permission_id=self.APPROVE_KEY, defaults={"granted": True},
         )
-        self.SchoolUserRoleAssignment.objects.create(
-            school=self.school, user=user, role=role, assignment_status="ACTIVE",
+        self.TenantUserRoleAssignment.objects.create(
+            tenant=self.school.tenant, user=user, role=role, assignment_status="ACTIVE",
         )
         return user
 

@@ -36,10 +36,20 @@ def submit_for_approval(document, requested_by, *,
     handler.validate_document(document, requested_by)
 
     code = template_code or handler.resolve_default_template_code(document)
-    tenant = getattr(document, "tenant", requested_by.tenant)
+    # Direct tenant attribute wins — including an explicit None (platform-scoped
+    # documents must try ONLY the platform template). Finance-style documents
+    # scope through their ledger entity's owning tenant; documents with neither
+    # fall back to the requester's home tenant. Must resolve identically to
+    # vs_finance.approvals.approval_required.
+    if hasattr(document, "tenant"):
+        tenant = document.tenant
+    elif getattr(document, "entity", None) is not None:
+        tenant = document.entity.tenant
+    else:
+        tenant = requested_by.tenant
     branch = getattr(document, "branch", None)
 
-    # Cascade: branch-specific → school-wide → platform-wide.
+    # Cascade: branch-specific → tenant-wide → platform-wide.
     scopes = [{"tenant": tenant, "branch": branch}]
     if branch is not None:
         scopes.append({"tenant": tenant, "branch": None})

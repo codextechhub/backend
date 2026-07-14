@@ -18,7 +18,6 @@ from unittest import mock
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.test import TestCase, override_settings
-from rest_framework.test import APIClient
 
 from vs_schools.models import School
 
@@ -76,8 +75,12 @@ class _NotifFixture(TestCase):
         seed_notification_templates()
         seed_platform_settings()
 
-        self.school_a = School.objects.create(name="Alpha", slug="alpha-nt", code="ALPNT")
-        self.school_b = School.objects.create(name="Beta", slug="beta-nt", code="BETNT")
+        self.school_a = School.objects.create(
+            name="Alpha", slug="alpha-nt", code="ALPNT", status="ACTIVE",
+        )
+        self.school_b = School.objects.create(
+            name="Beta", slug="beta-nt", code="BETNT", status="ACTIVE",
+        )
 
         # School-scoped admin in school A, granted the settings permission.
         self.admin_a = User.objects.create_user(
@@ -111,15 +114,16 @@ class _NotifFixture(TestCase):
 
     def _client(self, user):
         """
-        Authenticate with a real JWT so TenantJWTAuthentication establishes the
-        school (tenant) context on the request — school-scoped RBAC checks read
-        request.school, which force_authenticate would leave unset.
+        Authenticate through the real tenant auth layer. TenantAPIClient mints a
+        CodeXRefreshToken (carrying the tenant assertion) and auto-appends
+        ?tenant=<the user's home tenant slug> to every request, so
+        TenantJWTAuthentication establishes request.tenant exactly as production
+        traffic does. Requests that must assert a DIFFERENT tenant (cross-tenant
+        404 tests) build the URL with an explicit ?tenant=<other slug> — the
+        client only appends when the path has no tenant param.
         """
-        from rest_framework_simplejwt.tokens import AccessToken
-        token = AccessToken.for_user(user)
-        c = APIClient()
-        c.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
-        return c
+        from core.test_utils import TenantAPIClient
+        return TenantAPIClient(user)
 
     def _event(self, key):
         return NotificationEventType.objects.get(key=key)
@@ -143,7 +147,7 @@ class ResolveChannelsTests(_NotifFixture):
     def test_platform_row_wins_over_default(self):
         et = self._event("ticket.created")
         NotificationSetting.all_objects.filter(
-            event_type=et, channel=ChannelChoices.EMAIL, school__isnull=True,
+            event_type=et, channel=ChannelChoices.EMAIL, tenant__isnull=True,
         ).update(is_enabled=False)
         resolved = resolve_channels(et, school=self.school_a)
         self.assertFalse(resolved[ChannelChoices.EMAIL])
@@ -151,10 +155,11 @@ class ResolveChannelsTests(_NotifFixture):
     def test_school_row_beats_platform(self):
         et = self._event("ticket.created")
         NotificationSetting.all_objects.filter(
-            event_type=et, channel=ChannelChoices.EMAIL, school__isnull=True,
+            event_type=et, channel=ChannelChoices.EMAIL, tenant__isnull=True,
         ).update(is_enabled=False)
         NotificationSetting.all_objects.create(
-            school=self.school_a, event_type=et, channel=ChannelChoices.EMAIL, is_enabled=True,
+            tenant=self.school_a.tenant, event_type=et,
+            channel=ChannelChoices.EMAIL, is_enabled=True,
         )
         self.assertTrue(resolve_channels(et, school=self.school_a)[ChannelChoices.EMAIL])
         # School B has no override → still off (platform).
@@ -163,7 +168,7 @@ class ResolveChannelsTests(_NotifFixture):
     def test_transactional_bypasses_disabled_rows(self):
         et = self._event("user.password_reset")
         NotificationSetting.all_objects.create(
-            school=None, event_type=et, channel=ChannelChoices.EMAIL, is_enabled=False,
+            tenant=None, event_type=et, channel=ChannelChoices.EMAIL, is_enabled=False,
         )
         self.assertTrue(resolve_channels(et)[ChannelChoices.EMAIL])
 
@@ -189,21 +194,21 @@ class ResolveChannelsBulkTests(_NotifFixture):
 
         # et_school: platform says off, school A says on → school wins.
         NotificationSetting.all_objects.filter(
-            event_type=et_school, channel=ChannelChoices.EMAIL, school__isnull=True,
+            event_type=et_school, channel=ChannelChoices.EMAIL, tenant__isnull=True,
         ).update(is_enabled=False)
         NotificationSetting.all_objects.create(
-            school=self.school_a, event_type=et_school,
+            tenant=self.school_a.tenant, event_type=et_school,
             channel=ChannelChoices.EMAIL, is_enabled=True,
         )
         # et_platform: platform row says off; no school override → platform wins.
         NotificationSetting.all_objects.filter(
-            event_type=et_platform, channel=ChannelChoices.EMAIL, school__isnull=True,
+            event_type=et_platform, channel=ChannelChoices.EMAIL, tenant__isnull=True,
         ).update(is_enabled=False)
         # et_default: no rows at all → default_enabled fallback.
         NotificationSetting.all_objects.filter(event_type=et_default).delete()
         # et_tx: a disabled row must be ignored — transactional always fires.
         NotificationSetting.all_objects.create(
-            school=None, event_type=et_tx, channel=ChannelChoices.EMAIL, is_enabled=False,
+            tenant=None, event_type=et_tx, channel=ChannelChoices.EMAIL, is_enabled=False,
         )
 
         resolved = resolve_channels_bulk(
@@ -227,7 +232,7 @@ class ResolveChannelsBulkTests(_NotifFixture):
         from .views import NotificationSettingViewSet
         view = NotificationSettingViewSet()
         with self.assertNumQueries(2):
-            matrix = view._build_matrix(self.school_a)
+            matrix = view._build_matrix(self.school_a.tenant)
         self.assertTrue(matrix)
 
     def test_single_resolve_delegates_to_bulk(self):
@@ -263,7 +268,10 @@ class DispatchTests(_NotifFixture):
                 )
         self.assertEqual(len(ids), 2)  # in_app + email
         notifs = Notification.objects.filter(id__in=ids)
-        self.assertIsNone(notifs.first().school_id)
+        # No school passed → dispatch anchors the records on the recipient's home
+        # tenant, which for a CX recipient is the codex PLATFORM tenant.
+        self.assertEqual(notifs.first().tenant_id, rcpt.tenant_id)
+        self.assertEqual(notifs.first().tenant.kind, "PLATFORM")
         email = notifs.get(channel=ChannelChoices.EMAIL)
         self.assertEqual(email.status, NotificationStatus.PENDING)
         in_app = notifs.get(channel=ChannelChoices.IN_APP)
@@ -348,8 +356,11 @@ class DeliveryTaskTests(_NotifFixture):
 
     def _pending_email(self, html=""):
         et = self._event("ticket.created")
+        # tenant is required (non-null); its value is irrelevant to delivery — the
+        # task keys off recipient/unregistered_email, not the anchor tenant.
         return Notification.objects.create(
-            school=None, recipient=None, unregistered_email="dest@test.com",
+            tenant=self.school_a.tenant, recipient=None,
+            unregistered_email="dest@test.com",
             event_type=et, channel=ChannelChoices.EMAIL, subject="Hi",
             body="plain body", html_body=html, status=NotificationStatus.PENDING,
         )
@@ -392,7 +403,8 @@ class DeliveryTaskTests(_NotifFixture):
         from .tasks import deliver_email_notification
         et = self._event("ticket.created")
         notif = Notification.objects.create(
-            school=None, recipient=None, unregistered_email="dest@test.com",
+            tenant=self.school_a.tenant, recipient=None,
+            unregistered_email="dest@test.com",
             event_type=et, channel=ChannelChoices.EMAIL, subject="Hi",
             body="plain", status=NotificationStatus.PENDING,
             metadata={"from_name": "Ada Admin"},
@@ -439,11 +451,11 @@ class FeedRetrieveTests(_NotifFixture):
     def test_retrieve_other_users_notification_is_404(self):
         et = self._event("ticket.created")
         mine = Notification.objects.create(
-            school=self.school_a, recipient=self.admin_a, event_type=et,
+            tenant=self.school_a.tenant, recipient=self.admin_a, event_type=et,
             channel=ChannelChoices.IN_APP, body="x", status=NotificationStatus.SENT,
         )
         theirs = Notification.objects.create(
-            school=self.school_a, recipient=self.plain_a, event_type=et,
+            tenant=self.school_a.tenant, recipient=self.plain_a, event_type=et,
             channel=ChannelChoices.IN_APP, body="y", status=NotificationStatus.SENT,
         )
         client = self._client(self.admin_a)
@@ -462,15 +474,17 @@ class SettingsApiTests(_NotifFixture):
         self.assertEqual(resp.status_code, 403)
 
     def test_school_admin_cannot_read_other_school(self):
+        # Asserting a foreign tenant is refused at the auth layer with a
+        # non-enumerating 404 (never leak another tenant's existence).
         resp = self._client(self.admin_a).get(
-            f"/v1/notify/settings/?school={self.school_b.id}"
+            f"/v1/notify/settings/?tenant={self.school_b.slug}"
         )
         self.assertEqual(resp.status_code, 404)
 
     def test_school_admin_can_read_own_school(self):
-        resp = self._client(self.admin_a).get(
-            f"/v1/notify/settings/?school={self.school_a.id}"
-        )
+        # No explicit ?tenant → TenantAPIClient appends the admin's own home
+        # tenant, which they are entitled to read.
+        resp = self._client(self.admin_a).get("/v1/notify/settings/")
         self.assertEqual(resp.status_code, 200)
 
     def test_matrix_shape_and_source_field(self):
@@ -494,8 +508,11 @@ class SettingsApiTests(_NotifFixture):
             format="json",
         )
         self.assertEqual(resp.status_code, 200, resp.content)
+        # A PLATFORM-kind assertion manages the platform DEFAULT layer — the
+        # tenant-NULL rows every school inherits (codex-tenant rows would be
+        # invisible to school dispatch resolution).
         row = NotificationSetting.all_objects.get(
-            school__isnull=True, event_type__key="ticket.created", channel="email",
+            tenant__isnull=True, event_type__key="ticket.created", channel="email",
         )
         self.assertFalse(row.is_enabled)
         entries = resp.json()["data"]
@@ -503,15 +520,17 @@ class SettingsApiTests(_NotifFixture):
         self.assertFalse(entries[0]["is_enabled"])
 
     def test_patch_school_scoped_writes_school_row(self):
+        # A school admin's PATCH resolves to their own tenant assertion, writing
+        # a tenant-scoped override row (no ?school= needed any more).
         self._client(self.admin_a).patch(
-            f"/v1/notify/settings/update/?school={self.school_a.id}",
+            "/v1/notify/settings/update/",
             {"updates": [{"event_type_key": "ticket.created",
                           "channel": "email", "is_enabled": False}]},
             format="json",
         )
         self.assertTrue(
             NotificationSetting.all_objects.filter(
-                school=self.school_a, event_type__key="ticket.created",
+                tenant=self.school_a.tenant, event_type__key="ticket.created",
                 channel="email", is_enabled=False,
             ).exists()
         )
@@ -563,16 +582,17 @@ class HistoryScopingTests(_NotifFixture):
         )
         et = self._event("ticket.created")
         self.n_a = Notification.objects.create(
-            school=self.school_a, recipient=self.admin_a, event_type=et,
+            tenant=self.school_a.tenant, recipient=self.admin_a, event_type=et,
             channel=ChannelChoices.IN_APP, body="a", status=NotificationStatus.SENT,
         )
         self.n_b = Notification.objects.create(
-            school=self.school_b, recipient=None, unregistered_email="b@test.com",
+            tenant=self.school_b.tenant, recipient=None, unregistered_email="b@test.com",
             event_type=et, channel=ChannelChoices.EMAIL, body="b",
             status=NotificationStatus.SENT,
         )
+        # Platform row anchors on the CX recipient's codex PLATFORM tenant.
         self.n_platform = Notification.objects.create(
-            school=None, recipient=self.cx, event_type=et,
+            tenant=self.cx.tenant, recipient=self.cx, event_type=et,
             channel=ChannelChoices.IN_APP, body="p", status=NotificationStatus.SENT,
         )
 

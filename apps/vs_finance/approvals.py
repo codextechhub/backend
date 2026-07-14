@@ -32,15 +32,22 @@ def approval_required(document) -> bool:
 
     from vs_workflow.models import WorkflowTemplate
 
-    school = getattr(document, "school", None)  # The document's school scope, if any.
+    # Direct tenant attribute wins — including an explicit None (platform
+    # documents gate on the platform template only). Finance documents scope
+    # through their ledger entity's owning tenant. Must resolve identically to
+    # submission.submit_for_approval or the gate and engine disagree.
+    if hasattr(document, "tenant"):
+        tenant = document.tenant
+    else:
+        tenant = getattr(getattr(document, "entity", None), "tenant", None)
     branch = getattr(document, "branch", None)  # The document's branch scope, if any.
 
-    # Cascade: branch-specific → school-wide → platform-wide (mirrors submission.py).  # Match the workflow engine order.
-    scopes = [{"school": school, "branch": branch}]  # Start with the most specific scope.
-    if branch is not None:  # Fall back to school-wide when a branch is present.
-        scopes.append({"school": school, "branch": None})  # Add the school-wide scope.
-    if school is not None or branch is not None:  # Finally fall back to platform-wide.
-        scopes.append({"school": None, "branch": None})  # Add the global scope.
+    # Cascade: branch-specific → tenant-wide → platform-wide (mirrors submission.py).  # Match the workflow engine order.
+    scopes = [{"tenant": tenant, "branch": branch}]  # Start with the most specific scope.
+    if branch is not None:  # Fall back to tenant-wide when a branch is present.
+        scopes.append({"tenant": tenant, "branch": None})  # Add the tenant-wide scope.
+    if tenant is not None or branch is not None:  # Finally fall back to platform-wide.
+        scopes.append({"tenant": None, "branch": None})  # Add the global scope.
 
     for scope in scopes:  # Test each scope in order until a template is found.
         if WorkflowTemplate.objects.filter(document_type=document_type, **scope).exists():

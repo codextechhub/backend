@@ -901,14 +901,14 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         # One platform-wide template per approvable document type.
         self.assertEqual(
             WorkflowTemplate.objects.filter(
-                school__isnull=True, branch__isnull=True,
+                tenant__isnull=True, branch__isnull=True,
                 code=WF_DEFAULT_TEMPLATE_CODE,
             ).count(),
             3,
         )
         req_tmpl = WorkflowTemplate.objects.get(
             document_type=WF_DOCTYPE_REQUISITION, code=WF_DEFAULT_TEMPLATE_CODE,
-            school__isnull=True, branch__isnull=True,
+            tenant__isnull=True, branch__isnull=True,
         )
         stages = list(WorkflowStage.objects.filter(template=req_tmpl).order_by("order"))
         self.assertEqual([s.code for s in stages], ["manager", "senior"])

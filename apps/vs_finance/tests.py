@@ -3618,7 +3618,8 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     def setUp(self):
         from django.contrib.auth import get_user_model
         from rest_framework.test import APIClient
-        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
 
         User = get_user_model()
         self.user = User.objects.create_user(
@@ -3626,12 +3627,12 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
             user_type="CX_STAFF", status="ACTIVE",
             first_name="Finance", last_name="Admin",
         )
-        role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
-        PlatformUserRoleAssignment.objects.create(
+        role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
+        TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), 
             user=self.user, role=role, assignment_status="ACTIVE",
         )
-        self.client = APIClient()
-        self.client.force_authenticate(user=self.user)
+        from core.test_utils import TenantAPIClient
+        self.client = TenantAPIClient(user=self.user)
 
     # Support the create claim workflow.
     def _create_claim(self, entity):
@@ -4723,18 +4724,19 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
     def setUp(self):
         from django.contrib.auth import get_user_model
         from rest_framework.test import APIClient
-        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
 
         User = get_user_model()
         self.user = User.objects.create_user(
             email="ops-admin@test.com", password="testpass123",
             user_type="CX_STAFF", status="ACTIVE", first_name="Ops", last_name="Admin",
         )
-        role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
-        PlatformUserRoleAssignment.objects.create(
+        role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
+        TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), 
             user=self.user, role=role, assignment_status="ACTIVE")
-        self.client = APIClient()
-        self.client.force_authenticate(user=self.user)
+        from core.test_utils import TenantAPIClient
+        self.client = TenantAPIClient(user=self.user)
 
     # Support the claim workflow.
     def _claim(self, entity, *, unit_price):
@@ -4877,8 +4879,8 @@ class EntityCreatePermissionTests(TestCase):
             user_type="CX_STAFF", status="ACTIVE",
             first_name="No", last_name="Grant",
         )
-        self.client = APIClient()
-        self.client.force_authenticate(user=self.user)
+        from core.test_utils import TenantAPIClient
+        self.client = TenantAPIClient(user=self.user)
 
     # Verify create denied without grant behavior.
     def test_create_denied_without_grant(self):
@@ -4917,15 +4919,27 @@ class _StubUser:
     def __init__(self, user_type, school=None):
         self.user_type = user_type
         self.school = school
+        if school is not None:
+            self.tenant = school.tenant
+        elif user_type == "CX_STAFF":
+            from vs_tenants.models import Tenant
+            self.tenant = Tenant.objects.filter(slug="codex").first()
+        else:
+            self.tenant = None
 
 
 # Group tests for Stub Request.
 class _StubRequest:
-    """A minimal request exposing user + query_params (and optionally .school)."""
+    """A minimal request exposing user + query_params + the bound tenant.
+
+    Production requests get ``.tenant`` from TenantJWTAuthentication; view unit
+    tests bind the user's home tenant the same way the auth layer would.
+    """
     # Initialize this object with its required state.
-    def __init__(self, user, params=None):
+    def __init__(self, user, params=None, tenant=None):
         self.user = user
         self.query_params = params or {}
+        self.tenant = tenant or getattr(user, "tenant", None)
 
 
 # Group tests for Entity List Scoping Tests.
@@ -4934,8 +4948,8 @@ class EntityListScopingTests(TestCase):
 
     # Prepare or verify the setUp test path.
     def setUp(self):
-        self.school = School.objects.create(name="Greenfield", slug="greenfield-f1", code="GRNF1")
-        self.other = School.objects.create(name="Bluewater", slug="bluewater-f1", code="BLUF1")
+        self.school = School.objects.create(name="Greenfield", slug="greenfield-f1", code="GRNF1", status="ACTIVE")
+        self.other = School.objects.create(name="Bluewater", slug="bluewater-f1", code="BLUF1", status="ACTIVE")
         self.mine = LedgerEntity.objects.create(
             name="Greenfield Books", code="GREENF1",
             kind=LedgerEntity.Kind.TENANT, source_school=self.school,
@@ -5071,7 +5085,8 @@ class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
         import json
         from django.contrib.auth import get_user_model
         from rest_framework.test import APIRequestFactory, force_authenticate
-        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
         from vs_finance.views import InvoiceDetailView
 
         entity, period, customer, vat = self.build_ar()
@@ -5081,11 +5096,12 @@ class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
         u = get_user_model().objects.create_user(
             email="inv-detail@test.com", password="x", user_type="CX_STAFF", status="ACTIVE",
             first_name="Inv", last_name="Detail")
-        role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
-        PlatformUserRoleAssignment.objects.create(user=u, role=role, assignment_status="ACTIVE")
+        role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
+        TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
 
         req = APIRequestFactory().get(f"/v1/finance/invoices/{inv.pk}/", {"entity": entity.code})
         force_authenticate(req, user=u)
+        req.tenant = u.tenant  # factory requests bypass the auth layer
         resp = InvoiceDetailView.as_view()(req, pk=inv.pk)
         resp.render()
         self.assertEqual(resp.status_code, 200)
@@ -5103,7 +5119,8 @@ class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
         import json
         from django.contrib.auth import get_user_model
         from rest_framework.test import APIRequestFactory, force_authenticate
-        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
         from vs_finance.views import InvoiceDetailView
 
         entity, period, customer, vat = self.build_ar()
@@ -5131,11 +5148,12 @@ class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
         u = get_user_model().objects.create_user(
             email="inv-settle@test.com", password="x", user_type="CX_STAFF", status="ACTIVE",
             first_name="Inv", last_name="Settle")
-        role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
-        PlatformUserRoleAssignment.objects.create(user=u, role=role, assignment_status="ACTIVE")
+        role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
+        TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
 
         req = APIRequestFactory().get(f"/v1/finance/invoices/{inv.pk}/", {"entity": entity.code})
         force_authenticate(req, user=u)
+        req.tenant = u.tenant  # factory requests bypass the auth layer
         resp = InvoiceDetailView.as_view()(req, pk=inv.pk)
         resp.render()
         self.assertEqual(resp.status_code, 200)
@@ -5170,14 +5188,15 @@ class FinanceDocumentEndpointTests(_ARFixtureMixin, TestCase):
     # Support the user workflow.
     def _user(self, email="finance-docs@test.com"):
         from django.contrib.auth import get_user_model
-        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
 
         u = get_user_model().objects.create_user(
             email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
             first_name="Finance", last_name="Docs",
         )
-        role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
-        PlatformUserRoleAssignment.objects.create(user=u, role=role, assignment_status="ACTIVE")
+        role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
+        TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
         return u
 
     # Support the request workflow.
@@ -5186,6 +5205,7 @@ class FinanceDocumentEndpointTests(_ARFixtureMixin, TestCase):
 
         req = APIRequestFactory().get(path, {"entity": entity.code})
         force_authenticate(req, user=user)
+        req.tenant = user.tenant  # factory requests bypass the auth layer
         return req
 
     # Verify invoice document renders html with collection account behavior.
@@ -5354,12 +5374,13 @@ class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
     # Support the super admin workflow.
     def _super_admin(self, email):
         from django.contrib.auth import get_user_model
-        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
         u = get_user_model().objects.create_user(
             email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
             first_name="Inv", last_name="Maker")
-        role, _ = PlatformRoleTemplate.objects.get_or_create(id="xvs_super_admin", defaults={"name": "Super Admin"})
-        PlatformUserRoleAssignment.objects.create(user=u, role=role, assignment_status="ACTIVE")
+        role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
+        TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
         return u
 
     # Support the post workflow.
@@ -5369,6 +5390,7 @@ class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
         req = APIRequestFactory().post(
             f"/v1/finance/invoices/?entity={entity.code}", body, format="json")
         force_authenticate(req, user=user)
+        req.tenant = user.tenant  # factory requests bypass the auth layer
         resp = InvoiceListView.as_view()(req)
         resp.render()
         return resp
@@ -5439,12 +5461,13 @@ class InvoicePayRemindEndpointTests(_ARFixtureMixin, TestCase):
     # Support the super admin workflow.
     def _super_admin(self, email):
         from django.contrib.auth import get_user_model
-        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
         u = get_user_model().objects.create_user(
             email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
             first_name="Pay", last_name="Tester")
-        role, _ = PlatformRoleTemplate.objects.get_or_create(id="xvs_super_admin", defaults={"name": "Super Admin"})
-        PlatformUserRoleAssignment.objects.create(user=u, role=role, assignment_status="ACTIVE")
+        role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
+        TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
         return u
 
     # Support the call workflow.
@@ -5452,6 +5475,7 @@ class InvoicePayRemindEndpointTests(_ARFixtureMixin, TestCase):
         from rest_framework.test import APIRequestFactory, force_authenticate
         req = APIRequestFactory().post(f"/v1/finance/invoices/{pk}/x/?entity={entity.code}", body, format="json")
         force_authenticate(req, user=user)
+        req.tenant = user.tenant  # factory requests bypass the auth layer
         resp = view.as_view()(req, pk=pk)
         resp.render()
         return resp
@@ -5546,12 +5570,13 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
     # Support the super admin workflow.
     def _super_admin(self, email):
         from django.contrib.auth import get_user_model
-        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
         u = get_user_model().objects.create_user(
             email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
             first_name="Cust", last_name="Tester")
-        role, _ = PlatformRoleTemplate.objects.get_or_create(id="xvs_super_admin", defaults={"name": "Super Admin"})
-        PlatformUserRoleAssignment.objects.create(user=u, role=role, assignment_status="ACTIVE")
+        role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
+        TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
         return u
 
     # Support the fixture workflow.
@@ -5570,6 +5595,7 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         u = self._super_admin("cust-list@test.com")
         req = APIRequestFactory().get("/v1/finance/customers/", {"entity": entity.code})
         force_authenticate(req, user=u)
+        req.tenant = u.tenant  # factory requests bypass the auth layer
         resp = CustomerListCreateView.as_view()(req); resp.render()
         self.assertEqual(resp.status_code, 200)
         row = next(r for r in json.loads(resp.content)["data"] if r["code"] == customer.code)
@@ -5585,6 +5611,7 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         u = self._super_admin("cust-detail@test.com")
         req = APIRequestFactory().get(f"/v1/finance/customers/{customer.pk}/", {"entity": entity.code})
         force_authenticate(req, user=u)
+        req.tenant = u.tenant  # factory requests bypass the auth layer
         resp = CustomerDetailView.as_view()(req, pk=str(customer.pk)); resp.render()
         self.assertEqual(resp.status_code, 200)
         d = json.loads(resp.content)["data"]
@@ -5606,6 +5633,7 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
             {"amount": inv.total, "payment_date": "2026-01-20", "deposit_account": "1100"},
             format="json")
         force_authenticate(req, user=u)
+        req.tenant = u.tenant  # factory requests bypass the auth layer
         resp = CustomerReceiptView.as_view()(req, pk=str(customer.pk)); resp.render()
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(json.loads(resp.content)["data"]["allocated"], inv.total)
@@ -5627,6 +5655,7 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
             {"amount": 5000, "payment_date": "2026-01-20", "deposit_account": "1100"},
             format="json")
         force_authenticate(req, user=u)
+        req.tenant = u.tenant  # factory requests bypass the auth layer
         resp = CustomerReceiptView.as_view()(req, pk=str(customer.pk)); resp.render()
         self.assertEqual(resp.status_code, 403)
         self.assertEqual(Payment.objects.filter(entity=entity).count(), 0)
@@ -5647,6 +5676,7 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
             {"amount": 9000, "payment_date": "2026-01-20", "deposit_account": "1100"},
             format="json")
         force_authenticate(req, user=u)
+        req.tenant = u.tenant  # factory requests bypass the auth layer
         resp = CustomerReceiptView.as_view()(req, pk=str(customer.pk)); resp.render()
         self.assertEqual(resp.status_code, 201)
         a.refresh_from_db(); b.refresh_from_db()
@@ -5661,12 +5691,13 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
     # Support the super admin workflow.
     def _super_admin(self, email):
         from django.contrib.auth import get_user_model
-        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
         u = get_user_model().objects.create_user(
             email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
             first_name="Rcpt", last_name="Tester")
-        role, _ = PlatformRoleTemplate.objects.get_or_create(id="xvs_super_admin", defaults={"name": "Super Admin"})
-        PlatformUserRoleAssignment.objects.create(user=u, role=role, assignment_status="ACTIVE")
+        role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
+        TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), user=u, role=role, assignment_status="ACTIVE")
         return u
 
     # Support the unallocated receipt workflow.
@@ -5691,6 +5722,7 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
         u = self._super_admin("rcpt-list@test.com")
         req = APIRequestFactory().get("/v1/finance/payments/", {"entity": entity.code})
         force_authenticate(req, user=u)
+        req.tenant = u.tenant  # factory requests bypass the auth layer
         resp = PaymentListView.as_view()(req); resp.render()
         self.assertEqual(resp.status_code, 200)
         row = json.loads(resp.content)["data"][0]
@@ -5708,6 +5740,7 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
         u = self._super_admin("rcpt-detail@test.com")
         req = APIRequestFactory().get(f"/v1/finance/payments/{p.pk}/", {"entity": entity.code})
         force_authenticate(req, user=u)
+        req.tenant = u.tenant  # factory requests bypass the auth layer
         resp = PaymentDetailView.as_view()(req, pk=p.pk); resp.render()
         d = json.loads(resp.content)["data"]
         self.assertTrue(d["open_invoices"])
@@ -5726,6 +5759,7 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
         body = {"allocations": [{"invoice": a.id, "amount": 7900}, {"invoice": b.id, "amount": 1100}]}
         req = APIRequestFactory().post(f"/v1/finance/payments/{p.pk}/allocate/?entity={entity.code}", body, format="json")
         force_authenticate(req, user=u)
+        req.tenant = u.tenant  # factory requests bypass the auth layer
         resp = PaymentAllocateView.as_view()(req, pk=p.pk); resp.render()
         self.assertEqual(resp.status_code, 200)
         a.refresh_from_db(); b.refresh_from_db(); p.refresh_from_db()
@@ -5746,6 +5780,7 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
             status="ACTIVE", first_name="No", last_name="Perm")
         req = APIRequestFactory().post(f"/v1/finance/payments/{p.pk}/allocate/?entity={entity.code}", {"auto_allocate": True}, format="json")
         force_authenticate(req, user=u)
+        req.tenant = u.tenant  # factory requests bypass the auth layer
         resp = PaymentAllocateView.as_view()(req, pk=p.pk); resp.render()
         self.assertEqual(resp.status_code, 403)
         p.refresh_from_db()
@@ -5915,18 +5950,19 @@ class DimensionAnalyticsAPITests(_Phase4FixtureMixin, TestCase):
     def setUp(self):
         from django.contrib.auth import get_user_model
         from rest_framework.test import APIClient
-        from vs_rbac.models import PlatformRoleTemplate, PlatformUserRoleAssignment
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
 
         User = get_user_model()
         self.user = User.objects.create_user(
             email="dim-admin@test.com", password="testpass123",
             user_type="CX_STAFF", status="ACTIVE", first_name="Dim", last_name="Admin",
         )
-        role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
-        PlatformUserRoleAssignment.objects.create(
+        role, _ = TenantRoleTemplate.objects.get_or_create(tenant=Tenant.objects.get(slug="codex"), key="xvs_super_admin", defaults={"name": "Super Admin", "status": "ACTIVE"})
+        TenantUserRoleAssignment.objects.create(tenant=Tenant.objects.get(slug="codex"), 
             user=self.user, role=role, assignment_status="ACTIVE")
-        self.client = APIClient()
-        self.client.force_authenticate(user=self.user)
+        from core.test_utils import TenantAPIClient
+        self.client = TenantAPIClient(user=self.user)
 
     # Verify dimension crud persists and dedupes values behavior.
     def test_dimension_crud_persists_and_dedupes_values(self):
@@ -5998,11 +6034,53 @@ class DimensionAnalyticsAPITests(_Phase4FixtureMixin, TestCase):
         req = APIRequestFactory().get(
             f"/v1/finance/reports/analytics-slice/?entity={entity.code}&axis=cost_center")
         force_authenticate(req, user=u)
+        req.tenant = u.tenant  # factory requests bypass the auth layer
         resp = AnalyticsSliceView.as_view()(req); resp.render()
         self.assertEqual(resp.status_code, 403)
 
 
 # Group tests for Journal Approval Workflow Tests.
+def _school_finance_requester(school, email, *, exclude_approve=True):
+    """A school STAFF user holding every ``finance.*`` key at *school*.
+
+    The approval-workflow slices operate on a school-owned entity, and under
+    the tenant model only that school's users may address it (?tenant= must
+    match; CX support goes through impersonation). This replaces the old CX
+    super-admin requester with explicit school-tenant grants. Approve verbs are
+    excluded by default so the requester never lands in the approver pool.
+    """
+    from django.contrib.auth import get_user_model
+    from vs_rbac.models import (
+        Permission, TenantRolePermission, TenantRoleTemplate,
+        TenantUserRoleAssignment,
+    )
+    from vs_schools.models import Branch
+
+    branch = Branch.all_objects.filter(school=school, is_main=True).first() or (
+        Branch.objects.create(school=school, name="Main", is_main=True, status="ACTIVE")
+    )
+    user = get_user_model().objects.create_user(
+        email=email, password="pw", user_type="STAFF", status="ACTIVE",
+        first_name="Reqi", last_name="Ester", school=school, branch=branch,
+    )
+    role, created = TenantRoleTemplate.objects.get_or_create(
+        tenant=school.tenant, key="finance-ops-all",
+        defaults={"name": "Finance Ops (all keys)", "status": "ACTIVE"},
+    )
+    if created:
+        keys = Permission.objects.filter(key__startswith="finance.")
+        if exclude_approve:
+            keys = keys.exclude(key__endswith=".approve")
+        TenantRolePermission.objects.bulk_create(
+            [TenantRolePermission(role=role, permission=p) for p in keys],
+            ignore_conflicts=True,
+        )
+    TenantUserRoleAssignment.objects.create(
+        tenant=school.tenant, user=user, role=role, assignment_status="ACTIVE",
+    )
+    return user
+
+
 class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
     """The journal approval slice: opt-in-by-template gating, SoD, and post-on-approve.
 
@@ -6019,9 +6097,9 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
         from django.contrib.auth import get_user_model
         from rest_framework.test import APIClient
         from vs_rbac.models import (
-            PlatformRoleTemplate, PlatformUserRoleAssignment,
-            SchoolRolePermission, SchoolRoleTemplate, SchoolUserRoleAssignment,
+            TenantRoleTemplate, TenantUserRoleAssignment, TenantRolePermission,
         )
+        from vs_tenants.models import Tenant
 
         # The approver permission key must exist for the RBAC grant FK to resolve.
         import io
@@ -6030,13 +6108,13 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
 
         self.User = get_user_model()
         self.School = School
-        self.SchoolRoleTemplate = SchoolRoleTemplate
-        self.SchoolRolePermission = SchoolRolePermission
-        self.SchoolUserRoleAssignment = SchoolUserRoleAssignment
+        self.TenantRoleTemplate = TenantRoleTemplate
+        self.TenantRolePermission = TenantRolePermission
+        self.TenantUserRoleAssignment = TenantUserRoleAssignment
 
         # A school-owned entity, so document.school resolves to a real school and the
         # engine's SCHOOL-scoped approver resolution has a pool to draw from.
-        self.school = School.objects.create(name="Greenfield", slug="greenfield-jaw", code="GRNJAW")
+        self.school = School.objects.create(name="Greenfield", slug="greenfield-jaw", code="GRNJAW", status="ACTIVE")
         seed_currencies()
         self.entity = LedgerEntity.objects.create(
             name="Greenfield Books", code="GRNBK", kind=LedgerEntity.Kind.TENANT,
@@ -6053,18 +6131,11 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
             status=PeriodStatus.OPEN,
         )
 
-        # Requester: a CX super admin (bypasses the per-endpoint RBAC gate and sees
-        # every entity). SoD still excludes them from approving their own journal.
-        self.requester = self.User.objects.create_user(
-            email="req-jaw@test.com", password="pw", user_type="CX_STAFF", status="ACTIVE",
-            first_name="Reqi", last_name="Ester",
-        )
-        super_role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
-        PlatformUserRoleAssignment.objects.create(
-            user=self.requester, role=super_role, assignment_status="ACTIVE",
-        )
-        self.client = APIClient()
-        self.client.force_authenticate(user=self.requester)
+        # Requester: a school user holding every finance key at this school
+        # (the entity is school-owned, so only its tenant may address it).
+        self.requester = _school_finance_requester(self.school, "req-jaw@test.com")
+        from core.test_utils import TenantAPIClient
+        self.client = TenantAPIClient(user=self.requester)
 
     # --- fixtures ---------------------------------------------------------- #
 
@@ -6087,7 +6158,7 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
         from vs_workflow.services.templates import publish_template
 
         return publish_template(
-            school=self.school, branch=None,
+            tenant=self.school.tenant, branch=None,
             document_type="finance.journal", code="standard",
             name="Standard journal approval",
             stages_payload=[{
@@ -6105,14 +6176,15 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
             email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
             first_name="Apro", last_name="Ver", school=self.school,
         )
-        role, _ = self.SchoolRoleTemplate.objects.get_or_create(
-            id="checker-role", defaults={"school": self.school, "name": "Journal Checker"},
+        role, _ = self.TenantRoleTemplate.objects.get_or_create(
+            tenant=self.school.tenant, key="checker-role",
+            defaults={"name": "Journal Checker", "status": "ACTIVE"},
         )
-        self.SchoolRolePermission.objects.get_or_create(
+        self.TenantRolePermission.objects.get_or_create(
             role=role, permission_id=self.APPROVE_KEY, defaults={"granted": True},
         )
-        self.SchoolUserRoleAssignment.objects.create(
-            school=self.school, user=user, role=role, assignment_status="ACTIVE",
+        self.TenantUserRoleAssignment.objects.create(
+            tenant=self.school.tenant, user=user, role=role, assignment_status="ACTIVE",
         )
         return user
 
@@ -6227,7 +6299,7 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
         # A TERMINAL-on-rejection template so REJECTED ends the instance.
         from vs_workflow.services.templates import publish_template
         publish_template(
-            school=self.school, branch=None,
+            tenant=self.school.tenant, branch=None,
             document_type="finance.journal", code="standard",
             name="Standard journal approval",
             stages_payload=[{
@@ -6331,21 +6403,21 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         from django.core.management import call_command
         from rest_framework.test import APIClient
         from vs_rbac.models import (
-            PlatformRoleTemplate, PlatformUserRoleAssignment,
-            SchoolRolePermission, SchoolRoleTemplate, SchoolUserRoleAssignment,
+            TenantRoleTemplate, TenantUserRoleAssignment, TenantRolePermission,
         )
+        from vs_tenants.models import Tenant
 
         # The approver permission key must exist for the RBAC grant FK to resolve.
         call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
 
         self.User = get_user_model()
-        self.SchoolRoleTemplate = SchoolRoleTemplate
-        self.SchoolRolePermission = SchoolRolePermission
-        self.SchoolUserRoleAssignment = SchoolUserRoleAssignment
+        self.TenantRoleTemplate = TenantRoleTemplate
+        self.TenantRolePermission = TenantRolePermission
+        self.TenantUserRoleAssignment = TenantUserRoleAssignment
 
         # A school-owned entity, so refund.school resolves to a real school and the
         # engine's SCHOOL-scoped approver resolution has a pool to draw from.
-        self.school = School.objects.create(name="Riverside", slug="riverside-raw", code="RVRAW")
+        self.school = School.objects.create(name="Riverside", slug="riverside-raw", code="RVRAW", status="ACTIVE")
         seed_currencies()
         self.entity = LedgerEntity.objects.create(
             name="Riverside Books", code="RVRBK", kind=LedgerEntity.Kind.TENANT,
@@ -6367,18 +6439,11 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
             receivable_account=Account.objects.get(entity=self.entity, code="1200"),
         )
 
-        # Requester: a CX super admin (bypasses the per-endpoint RBAC gate, sees every
-        # entity). SoD still excludes them from approving their own refund.
-        self.requester = self.User.objects.create_user(
-            email="req-raw@test.com", password="pw", user_type="CX_STAFF", status="ACTIVE",
-            first_name="Reqi", last_name="Ester",
-        )
-        super_role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
-        PlatformUserRoleAssignment.objects.create(
-            user=self.requester, role=super_role, assignment_status="ACTIVE",
-        )
-        self.client = APIClient()
-        self.client.force_authenticate(user=self.requester)
+        # Requester: a school user holding every finance key at this school
+        # (the entity is school-owned, so only its tenant may address it).
+        self.requester = _school_finance_requester(self.school, "req-raw@test.com")
+        from core.test_utils import TenantAPIClient
+        self.client = TenantAPIClient(user=self.requester)
 
     # --- fixtures ---------------------------------------------------------- #
 
@@ -6409,7 +6474,7 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         from vs_workflow.services.templates import publish_template
 
         return publish_template(
-            school=self.school, branch=None,
+            tenant=self.school.tenant, branch=None,
             document_type="finance.refund", code="standard",
             name="Standard refund approval",
             stages_payload=[{
@@ -6425,14 +6490,15 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
             email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
             first_name="Apro", last_name="Ver", school=self.school,
         )
-        role, _ = self.SchoolRoleTemplate.objects.get_or_create(
-            id="refund-checker-role", defaults={"school": self.school, "name": "Refund Checker"},
+        role, _ = self.TenantRoleTemplate.objects.get_or_create(
+            tenant=self.school.tenant, key="refund-checker-role",
+            defaults={"name": "Refund Checker", "status": "ACTIVE"},
         )
-        self.SchoolRolePermission.objects.get_or_create(
+        self.TenantRolePermission.objects.get_or_create(
             role=role, permission_id=self.APPROVE_KEY, defaults={"granted": True},
         )
-        self.SchoolUserRoleAssignment.objects.create(
-            school=self.school, user=user, role=role, assignment_status="ACTIVE",
+        self.TenantUserRoleAssignment.objects.create(
+            tenant=self.school.tenant, user=user, role=role, assignment_status="ACTIVE",
         )
         return user
 
@@ -6652,19 +6718,19 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         from django.core.management import call_command
         from rest_framework.test import APIClient
         from vs_rbac.models import (
-            PlatformRoleTemplate, PlatformUserRoleAssignment,
-            SchoolRolePermission, SchoolRoleTemplate, SchoolUserRoleAssignment,
+            TenantRoleTemplate, TenantUserRoleAssignment, TenantRolePermission,
         )
+        from vs_tenants.models import Tenant
 
         call_command("seed_finance_permissions", verbosity=0, stdout=io.StringIO())
 
         self.User = get_user_model()
-        self.SchoolRoleTemplate = SchoolRoleTemplate
-        self.SchoolRolePermission = SchoolRolePermission
-        self.SchoolUserRoleAssignment = SchoolUserRoleAssignment
+        self.TenantRoleTemplate = TenantRoleTemplate
+        self.TenantRolePermission = TenantRolePermission
+        self.TenantUserRoleAssignment = TenantUserRoleAssignment
 
         # School-owned entity, so write_off_request.school resolves to a real school.
-        self.school = School.objects.create(name="Lakeside", slug="lakeside-woa", code="LKSWO")
+        self.school = School.objects.create(name="Lakeside", slug="lakeside-woa", code="LKSWO", status="ACTIVE")
         seed_currencies()
         self.entity = LedgerEntity.objects.create(
             name="Lakeside Books", code="LKSBK", kind=LedgerEntity.Kind.TENANT,
@@ -6685,16 +6751,11 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
             receivable_account=Account.objects.get(entity=self.entity, code="1200"),
         )
 
-        self.requester = self.User.objects.create_user(
-            email="req-woa@test.com", password="pw", user_type="CX_STAFF", status="ACTIVE",
-            first_name="Reqi", last_name="Ester",
-        )
-        super_role = PlatformRoleTemplate.objects.create(id="xvs_super_admin", name="Super Admin")
-        PlatformUserRoleAssignment.objects.create(
-            user=self.requester, role=super_role, assignment_status="ACTIVE",
-        )
-        self.client = APIClient()
-        self.client.force_authenticate(user=self.requester)
+        # Requester: a school user holding every finance key at this school
+        # (the entity is school-owned, so only its tenant may address it).
+        self.requester = _school_finance_requester(self.school, "req-woa@test.com")
+        from core.test_utils import TenantAPIClient
+        self.client = TenantAPIClient(user=self.requester)
 
     # --- fixtures ---------------------------------------------------------- #
 
@@ -6728,7 +6789,7 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         from vs_workflow.services.templates import publish_template
 
         return publish_template(
-            school=self.school, branch=None,
+            tenant=self.school.tenant, branch=None,
             document_type="finance.write_off", code="standard",
             name="Standard write-off approval",
             stages_payload=[{
@@ -6744,14 +6805,15 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
             email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
             first_name="Apro", last_name="Ver", school=self.school,
         )
-        role, _ = self.SchoolRoleTemplate.objects.get_or_create(
-            id="writeoff-checker-role", defaults={"school": self.school, "name": "Write-off Checker"},
+        role, _ = self.TenantRoleTemplate.objects.get_or_create(
+            tenant=self.school.tenant, key="writeoff-checker-role",
+            defaults={"name": "Write-off Checker", "status": "ACTIVE"},
         )
-        self.SchoolRolePermission.objects.get_or_create(
+        self.TenantRolePermission.objects.get_or_create(
             role=role, permission_id=self.APPROVE_KEY, defaults={"granted": True},
         )
-        self.SchoolUserRoleAssignment.objects.create(
-            school=self.school, user=user, role=role, assignment_status="ACTIVE",
+        self.TenantUserRoleAssignment.objects.create(
+            tenant=self.school.tenant, user=user, role=role, assignment_status="ACTIVE",
         )
         return user
 
@@ -7002,7 +7064,7 @@ class DunningNotificationTests(_GLFixtureMixin, TestCase):
         seed_event_types()
         seed_notification_templates()
 
-        self.school = School.objects.create(name="Maplewood", slug="maplewood-dnt", code="MPLDN")
+        self.school = School.objects.create(name="Maplewood", slug="maplewood-dnt", code="MPLDN", status="ACTIVE")
         seed_school_settings(self.school)
 
         seed_currencies()
@@ -7065,7 +7127,7 @@ class DunningNotificationTests(_GLFixtureMixin, TestCase):
         self.assertIsNotNone(notice.sent_at)
 
         email = Notification.objects.filter(
-            school=self.school, channel=ChannelChoices.EMAIL,
+            tenant=self.school.tenant, channel=ChannelChoices.EMAIL,
             unregistered_email="debtor@example.com",
         )
         self.assertTrue(email.exists(), "an EMAIL notification should be created for the customer")
@@ -7085,7 +7147,7 @@ class DunningNotificationTests(_GLFixtureMixin, TestCase):
         # Scope to the overdue event: post_invoice also fires an invoice_issued EMAIL
         # to the same customer, so filter by event key to get the dunning notice.
         email = Notification.objects.get(
-            school=self.school, channel=ChannelChoices.EMAIL,
+            tenant=self.school.tenant, channel=ChannelChoices.EMAIL,
             unregistered_email="debtor@example.com",
             event_type__key="billing.invoice_overdue",
         )
@@ -7153,7 +7215,7 @@ class DunningNotificationTests(_GLFixtureMixin, TestCase):
         mark_notice_sent(notice)  # must not crash
 
         failed = Notification.objects.filter(
-            school=self.school, channel=ChannelChoices.EMAIL,
+            tenant=self.school.tenant, channel=ChannelChoices.EMAIL,
             status=NotificationStatus.FAILED, failure_reason="NO_EMAIL_ADDRESS",
         )
         self.assertTrue(failed.exists())
@@ -7174,7 +7236,7 @@ class DunningNotificationTests(_GLFixtureMixin, TestCase):
         self._overdue_invoice(due=datetime.date(2026, 1, 5))
 
         # A second school entity with NO policy — must be skipped, not crash the run.
-        other_school = School.objects.create(name="Oak", slug="oak-dnt", code="OAKDN")
+        other_school = School.objects.create(name="Oak", slug="oak-dnt", code="OAKDN", status="ACTIVE")
         seed_school_settings(other_school)
         other = LedgerEntity.objects.create(
             name="Oak Books", code="OAKBK", kind=LedgerEntity.Kind.TENANT,
@@ -7188,7 +7250,7 @@ class DunningNotificationTests(_GLFixtureMixin, TestCase):
         self.assertGreaterEqual(result["sent"], 1)
         self.assertGreaterEqual(result["skipped"], 1)  # the no-policy entity
         self.assertTrue(Notification.objects.filter(
-            school=self.school, channel=ChannelChoices.EMAIL,
+            tenant=self.school.tenant, channel=ChannelChoices.EMAIL,
             unregistered_email="debtor@example.com").exists())
 
     # --- 6. idempotency: second mark_notice_sent is a no-op --------------- #
@@ -7221,7 +7283,7 @@ class InvoiceNotificationTests(_GLFixtureMixin, TestCase):
         )
         seed_event_types()
         seed_notification_templates()
-        self.school = School.objects.create(name="Birchwood", slug="birchwood-int", code="BRCIN")
+        self.school = School.objects.create(name="Birchwood", slug="birchwood-int", code="BRCIN", status="ACTIVE")
         seed_school_settings(self.school)
         seed_currencies()
         self.entity = LedgerEntity.objects.create(

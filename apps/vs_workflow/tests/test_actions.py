@@ -54,6 +54,7 @@ def _make_instance(template, requester, stage=None,
                    status=WorkflowInstanceStatus.IN_PROGRESS):
     ct = ContentType.objects.get_for_model(WorkflowTemplate)
     return WorkflowInstance.objects.create(
+        tenant=requester.tenant,
         template=template,
         document_content_type=ct,
         document_object_id="fake-doc-id",
