@@ -56,8 +56,8 @@ class LedgerEntityManager(models.Manager):
         return self.filter(code=PLATFORM_ENTITY_CODE, is_active=True).first()
 
     def for_school(self, school):
-        """All entities (sets of books) sourced from a given School tenant."""
-        return self.filter(source_school=school)
+        """All entities (sets of books) owned by a given School's tenant."""
+        return self.filter(tenant=school.tenant)
 
 
 class LedgerEntity(TimeStampedModel):
@@ -75,9 +75,8 @@ class LedgerEntity(TimeStampedModel):
             (e.g. ``CFX-LEKKI-INV-2026-00001``). Reserved code ``CODEX`` is the
             platform entity.
         kind: Classification (platform / tenant / product / other).
-        source_school: Optional link to the originating School tenant. **Nullable**
-            (platform and product entities have none) and **non-unique** (a tenant
-            may own multiple entities — 1:many).
+        tenant: Canonical owner. The originating school (when any) is derived from
+            the tenant's ``school_profile``; platform/product tenants have none.
         base_currency: FK to the :class:`Currency` this entity keeps its primary
             ledger in (its reporting currency). Defaults to NGN. Because
             ``Currency``'s PK is the 3-letter code, the column still stores ``"NGN"``
@@ -103,12 +102,6 @@ class LedgerEntity(TimeStampedModel):
         related_name="ledger_entities",
         help_text="Canonical owner.",
     )
-    source_school = models.ForeignKey(
-        "vs_schools.School", on_delete=models.PROTECT,
-        related_name="ledger_entities", null=True, blank=True,
-        help_text="Originating tenant; NULL for platform/product entities. A tenant "
-                  "may own several entities (non-unique).",
-    )
     base_currency = models.ForeignKey(
         "Currency", on_delete=models.PROTECT, related_name="entities",
         default="NGN",
@@ -123,22 +116,13 @@ class LedgerEntity(TimeStampedModel):
     class Meta:
         indexes = [
             models.Index(fields=["kind", "is_active"]),
-            models.Index(fields=["source_school"]),
             models.Index(fields=["tenant", "is_active"]),
         ]
 
-    def clean(self):
-        super().clean()
-        if self.source_school_id and self.tenant_id != self.source_school.tenant_id:
-            raise ValidationError("Ledger entity and source school must have the same tenant.")
-
     def save(self, *args, **kwargs):
         if not self.tenant_id:
-            if self.source_school_id:
-                self.tenant_id = self.source_school.tenant_id
-            else:
-                from vs_tenants.models import Tenant
-                self.tenant = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+            from vs_tenants.models import Tenant
+            self.tenant = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
         super().save(*args, **kwargs)
 
     def __str__(self) -> str:
@@ -250,7 +234,7 @@ class FinanceDocument(TimeStampedModel):
         canonical originating school; platform/product entities have none, so it
         returns ``None`` and the engine falls back to platform-level scoping.
         """
-        return self.entity.source_school
+        return getattr(self.entity.tenant, "school_profile", None)
 
     def assign_number(self, *, fiscal_year: int | None = None) -> str:
         """Allocate and store this document's number if it does not have one yet.

@@ -49,7 +49,7 @@ class TenantJWTAuthenticationTests(TestCase):
     def test_school_user_gets_school_context(self):
         school = make_school()
         branch = make_branch(school)
-        user = make_school_admin(branch, school=school)
+        user = make_school_admin(branch)
 
         request = self._authed_request(user)
         result = self.auth.authenticate(request)
@@ -57,7 +57,6 @@ class TenantJWTAuthenticationTests(TestCase):
         self.assertIsNotNone(result)
         authed_user, _ = result
         self.assertEqual(authed_user.pk, user.pk)
-        self.assertEqual(request.school, school)
         self.assertEqual(request.tenant, school.tenant)
         self.assertEqual(get_current_tenant(), school.tenant)
 
@@ -75,7 +74,6 @@ class TenantJWTAuthenticationTests(TestCase):
         result = self.auth.authenticate(request)
 
         self.assertIsNotNone(result)
-        self.assertIsNone(request.school)
         self.assertEqual(request.tenant.slug, "codex")
         self.assertEqual(get_current_tenant(), request.tenant)
 
@@ -116,7 +114,7 @@ class TenantJWTAuthenticationTests(TestCase):
     def test_missing_tenant_param_required_by_default(self):
         school = make_school()
         branch = make_branch(school)
-        user = make_school_admin(branch, school=school)
+        user = make_school_admin(branch, tenant=school.tenant)
         request = self._authed_request(user, with_tenant=False, view=_FakeView())
         with self.assertRaises(ValidationError):
             self.auth.authenticate(request)
@@ -124,7 +122,7 @@ class TenantJWTAuthenticationTests(TestCase):
     def test_exempt_view_binds_home_tenant_without_param(self):
         school = make_school()
         branch = make_branch(school)
-        user = make_school_admin(branch, school=school)
+        user = make_school_admin(branch, tenant=school.tenant)
         view = _FakeView(tenant_param_required=False)
         request = self._authed_request(user, with_tenant=False, view=view)
 

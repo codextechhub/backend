@@ -998,7 +998,7 @@ class InvoiceDocumentView(APIView):
         entity = resolve_entity(request)
         inv = (
             Invoice.objects.filter(entity=entity, pk=pk)
-            .select_related("entity__source_school", "branch", "customer")
+            .select_related("entity__tenant__school_profile", "branch", "customer")
             .prefetch_related("lines__revenue_account", "lines__tax_code", "lines__cost_center")
             .first()
         )

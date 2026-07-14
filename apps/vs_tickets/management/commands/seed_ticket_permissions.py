@@ -54,7 +54,6 @@ class Command(BaseCommand):
             PermissionResource,
             PrebuiltRolePermission,
             PrebuiltRoleTemplate,
-            SchoolRoleTemplate,
             TenantRolePermission,
             TenantRoleTemplate,
         )
@@ -148,24 +147,9 @@ class Command(BaseCommand):
             self.stdout.write(f"  {role_key}: attached {attached} new default(s).")
 
         # Backfill existing tenant role templates (runtime grants live in the
-        # tenant tables now). Two lineages map a tenant role to its prebuilt:
-        #   a) roles migrated from the legacy school tables carry
-        #      key=str(old SchoolRoleTemplate pk); the legacy row (kept until the
-        #      contract phase) still records prebuilt_from;
-        #   b) native roles use key=<prebuilt.key> or key=<prebuilt.key>-<branch>.
+        # tenant tables now). A tenant role maps to its prebuilt by its native
+        # key: key=<prebuilt.key> or key=<prebuilt.key>-<branch>.
         prebuilt_for_role: dict[int, str] = {}
-        for old in (
-            SchoolRoleTemplate.all_objects
-            .filter(prebuilt_from__key__in=SCHOOL_ROLE_KEYS)
-            .select_related("prebuilt_from", "school")
-        ):
-            if not old.school or not old.school.tenant_id:
-                continue
-            migrated = TenantRoleTemplate.objects.filter(
-                tenant_id=old.school.tenant_id, key=str(old.pk),
-            ).first()
-            if migrated:
-                prebuilt_for_role[migrated.pk] = old.prebuilt_from.key
 
         native_key_re = re.compile(
             r"^(%s)(?:-\d+)?$" % "|".join(re.escape(k) for k in SCHOOL_ROLE_KEYS)

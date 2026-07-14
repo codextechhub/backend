@@ -98,7 +98,7 @@ def provision_admin_user(
                 phone=getattr(contact, "phone", "") or "",
                 user_type=user_type,
                 role=role_obj.name,
-                school=school,
+                tenant=tenant,
                 branch=branch,
                 invited_by=invited_by,
                 status=User.Status.PENDING,
@@ -120,7 +120,7 @@ def provision_admin_user(
             send_invitation_email_task.delay(
                 str(user.activation_key),
                 _job_owner_id=str(user.id),
-                _job_school_id=user.school_id,
+                _job_tenant_id=user.tenant_id,
                 _job_label=f"Invitation email to {user.email}",
                 _job_kind="email",
             )

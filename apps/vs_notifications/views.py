@@ -14,7 +14,7 @@
 #   * School-scoped users act on their own school. Supplying ?school= for a
 #     DIFFERENT school returns 404 (never leak another school's existence);
 #     their own id is allowed.
-#   * CX staff (user.school is None) default to the PLATFORM scope, or pass
+#   * CX staff (platform tenant) default to the PLATFORM scope, or pass
 #     ?school=<id> to view/write a specific school's rows.
 #
 # NOTE on managers: view scoping is done EXPLICITLY (recipient=… / school=… /
@@ -348,7 +348,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
     Scope resolution (same for GET and PATCH):
       * School-scoped caller → their own school, overlaid on platform defaults.
         ?school=<own id> is allowed; ?school=<other id> → 404 (no leak).
-      * CX staff (user.school is None) → platform scope by default;
+      * CX staff (platform tenant) → platform scope by default;
         ?school=<id> targets that school's effective matrix / rows.
 
     Transactional event types appear in the matrix flagged

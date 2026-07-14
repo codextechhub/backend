@@ -270,7 +270,7 @@ def _dispatch_notice(notice, *, actor_user=None):
     :class:`~vs_notifications.notify.UnregisteredRecipient`.
 
     Notifications are **recipient-centric**: ``school`` is an optional scope, not a
-    gate. A platform/product book (``entity.source_school is None``) still delivers to
+    gate. A platform/product book (no school profile on the tenant) still delivers to
     the customer's billing email — the school only resolves settings overrides and
     record attribution, so we pass it through as-is (possibly ``None``).
 
@@ -286,7 +286,7 @@ def _dispatch_notice(notice, *, actor_user=None):
     try:  # Delivery is best-effort and must not break dunning lifecycle.
         from vs_notifications.notify import send_notification, UnregisteredRecipient
 
-        school = notice.entity.source_school  # optional scope; may be None (platform books)  # Scope settings when present.
+        school = getattr(notice.entity.tenant, "school_profile", None)  # optional scope; may be None (platform books).
         customer = notice.customer  # Recipient information.
         invoice = notice.invoice  # Invoice context for the template.
         context = {  # Template variables for overdue invoice event.

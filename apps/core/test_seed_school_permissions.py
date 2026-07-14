@@ -4,9 +4,8 @@ Tests for the `seed_school_permissions` management command (WP-B1 / A.2).
 Covers:
   (a) running the command creates the school + academics permission keys;
   (b) prebuilt roles carry the expected default counts;
-  (c) pre-existing tenant role templates (both lineages: migrated from the
-      legacy school tables, and natively provisioned by prebuilt key) gain the
-      granted rows on re-run (backfill);
+  (c) pre-existing tenant role templates (natively provisioned by prebuilt key)
+      gain the granted rows on re-run (backfill);
   (d) an explicit deny is not overwritten by the backfill;
   (e) get_effective_permissions for a user with an active school_admin
       assignment returns `school.students.view`.
@@ -21,7 +20,6 @@ from vs_rbac.models import (
     Permission,
     PrebuiltRolePermission,
     PrebuiltRoleTemplate,
-    SchoolRoleTemplate,
     TenantRolePermission,
     TenantRoleTemplate,
     TenantUserRoleAssignment,
@@ -128,9 +126,8 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
 class SeedSchoolBackfillTests(TestCase):
     """The critical step — pre-existing tenant role templates get grants.
 
-    Two lineages must both be found by the backfill: roles migrated from the
-    legacy school tables (tenant role key = str(legacy pk), legacy row still
-    carries prebuilt_from), and roles natively provisioned by prebuilt key.
+    Roles are found by the backfill through their native prebuilt key
+    (key=<prebuilt.key> or key=<prebuilt.key>-<branch pk>).
     """
 
     def setUp(self):
@@ -139,18 +136,11 @@ class SeedSchoolBackfillTests(TestCase):
             name="Backfill Academy", slug="backfill", status="ACTIVE"
         )
         self.prebuilt = PrebuiltRoleTemplate.objects.get(key="school_admin")
-        # Legacy lineage: a SchoolRoleTemplate provisioned BEFORE the tenant
-        # refactor plus its migrated tenant counterpart (key = str(legacy pk),
-        # mirroring migration vs_rbac/0004).
-        self.legacy_template = SchoolRoleTemplate.all_objects.create(
-            school=self.school,
-            name="School Admin",
-            prebuilt_from=self.prebuilt,
-            is_system_role=True,
-        )
+        # Native lineage: a system role provisioned straight into the tenant
+        # tables with the prebuilt key.
         self.role = TenantRoleTemplate.objects.create(
             tenant=self.school.tenant,
-            key=str(self.legacy_template.pk),
+            key="school_admin",
             name="School Admin",
             is_system_role=True,
         )
@@ -254,7 +244,7 @@ class SchoolAdminEffectivePermissionsTests(TestCase):
             status="ACTIVE",
             first_name="Head",
             last_name="Teacher",
-            school=self.school,
+            tenant=self.school.tenant,
         )
         TenantUserRoleAssignment.objects.create(
             tenant=self.school.tenant,
@@ -264,8 +254,7 @@ class SchoolAdminEffectivePermissionsTests(TestCase):
         )
 
     def test_effective_permissions_include_students_view(self):
-        # school= exercises the transitional school→tenant bridge in the evaluator.
-        perms = get_effective_permissions(self.user, school=self.school)
+        perms = get_effective_permissions(self.user, tenant=self.school.tenant)
         self.assertIn("school.students.view", perms)
         self.assertIn("academics.classes.assign", perms)
         self.assertIn("school.roles.update", perms)

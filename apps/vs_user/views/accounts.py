@@ -84,7 +84,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         params = self.request.query_params
 
         qs = User.objects.select_related(
-            'school', 'branch', 'invited_by', 'invitation'
+            'tenant__school_profile', 'branch', 'invited_by', 'invitation'
         ).prefetch_related(
             Prefetch(
                 'tenant_role_assignments',
@@ -122,7 +122,8 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             qs = qs.exclude(tenant__kind=Tenant.Kind.PLATFORM)
 
         if school_id := params.get('school_id'):
-            qs = qs.filter(school_id=school_id)
+            # school_id query param maps to the tenant's school profile now.
+            qs = qs.filter(tenant__school_profile__id=school_id)
 
         if branch_id := params.get('branch_id'):
             qs = qs.filter(branch_id=branch_id)

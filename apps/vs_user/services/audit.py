@@ -38,23 +38,27 @@ _FAILED_EVENTS = {
 }
 
 
-def log_auth_event(*, actor, subject, school, event: str, request=None, metadata: dict | None = None):
+def log_auth_event(*, actor, subject, tenant, event: str, request=None, metadata: dict | None = None):
     """
     Emit a single identity/auth action as a vs_audit AuditEvent.
 
     Never raises — a logging failure must never prevent an auth action from completing.
     actor: the user who performed the action (may be None for system-initiated events).
     subject: the user the action was performed on.
-    school: the tenant context (stored in metadata).
+    tenant: the tenant context; its school profile (when any) is stored in metadata.
     """
     action_type = _AUTH_EVENT_TO_ACTION.get(event, AuditActionType.CUSTOM)
     status = AuditStatus.FAILED if event in _FAILED_EVENTS else AuditStatus.SUCCESS
 
     extra_meta = metadata or {}
     extra_meta["auth_event"] = event
-    if school:
-        extra_meta["school_id"] = str(school.pk)
-        extra_meta["school_slug"] = getattr(school, "slug", "")
+    if tenant is not None:
+        extra_meta["tenant_id"] = str(tenant.pk)
+        extra_meta["tenant_slug"] = getattr(tenant, "slug", "")
+        school = getattr(tenant, "school_profile", None)
+        if school is not None:
+            extra_meta["school_id"] = str(school.pk)
+            extra_meta["school_slug"] = getattr(school, "slug", "")
     if request:
         extra_meta["ip_address"] = get_client_ip(request)
         extra_meta["user_agent"] = request.META.get("HTTP_USER_AGENT", "")

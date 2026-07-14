@@ -25,7 +25,7 @@ from django.db import models, transaction
 from django.db.models import Q, Max
 from django.utils import timezone
 
-from vs_schools.models import School, Branch
+from vs_schools.models import Branch
 from vs_rbac.managers import TenantAwareManager
 
 
@@ -122,11 +122,6 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         help_text="Canonical home tenant.",
     )
 
-    school = models.ForeignKey(
-        School, on_delete=models.PROTECT,
-        related_name='users', null=True, blank=True,
-        help_text='NULL only for Vision Staff.',
-    )
     branch = models.ForeignKey(
         Branch, on_delete=models.PROTECT,
         related_name='users', null=True, blank=True,
@@ -147,7 +142,14 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     # ──User type and status ───────────────────────────────────────────────────────
 
-    user_type = models.CharField(max_length=32, choices=UserType.choices)
+    user_type = models.CharField(
+        max_length=32, choices=UserType.choices,
+        help_text=(
+            'Inert domain marker for the person\'s persona. Migrates into the '
+            'future profile models and MUST NEVER drive authorization — all '
+            'access decisions run through tenant RBAC, not this field.'
+        ),
+    )
     role      = models.CharField(max_length=120, blank=True, default='')  # Denormalized display name; actual grants live in TenantUserRoleAssignment.
     status    = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
 
@@ -186,21 +188,13 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     class Meta:
         db_table = 'vs_users_user'
         constraints = [
-            # Vision Staff must not be bound to any school or branch.
+            # Vision Staff must not be bound to any branch.
             models.CheckConstraint(
                 condition=(
-                    Q(user_type='CX_STAFF', school__isnull=True, branch__isnull=True)
+                    Q(user_type='CX_STAFF', branch__isnull=True)
                     | ~Q(user_type='CX_STAFF')
                 ),
-                name='ck_vision_staff_no_school',
-            ),
-            # All non-Vision Staff must have an school.
-            models.CheckConstraint(
-                condition=(
-                    Q(user_type='CX_STAFF')
-                    | Q(school__isnull=False)
-                ),
-                name='ck_school_bound_users',
+                name='ck_vision_staff_no_branch',
             ),
             # Branch-level user types must have a branch.
             models.CheckConstraint(
@@ -210,11 +204,11 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
                 ),
                 name='ck_branch_required_for_branch_level_users',
             ),
-            # uid is unique within each school for school-scoped users.
+            # uid is unique within each tenant for tenant-scoped (non-CX) users.
             models.UniqueConstraint(
-                fields=['school', 'uid'],
-                condition=Q(school__isnull=False),
-                name='unique_uid_per_school',
+                fields=['tenant', 'uid'],
+                condition=~Q(user_type='CX_STAFF'),
+                name='unique_uid_per_tenant',
             ),
             # uid is unique across all Vision Staff.
             models.UniqueConstraint(
@@ -224,8 +218,8 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             ),
         ]
         indexes = [
-            models.Index(fields=['school', 'user_type', 'status']),
-            models.Index(fields=['school', 'branch']),
+            models.Index(fields=['tenant', 'user_type', 'status']),
+            models.Index(fields=['tenant', 'branch']),
             models.Index(fields=['email', 'status']),
         ]
         ordering = ['-created_at']
@@ -235,25 +229,25 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     def clean(self):
         super().clean()
         if self.user_type != self.UserType.CX_STAFF:
-            if not self.school_id:
-                raise ValidationError('Non-Vision Staff must be assigned to an school.')
             if self.user_type not in (self.UserType.SCHOOL_ADMIN,) and not self.branch_id:
                 raise ValidationError(f'{self.user_type} must be assigned to a branch.')
         if self.user_type == self.UserType.CX_STAFF:
-            if self.school_id or self.branch_id:
-                raise ValidationError('Vision Staff must not be assigned to an school or branch.')
+            if self.branch_id:
+                raise ValidationError('Vision Staff must not be assigned to a branch.')
 
     def _derive_tenant(self):
         """Fill in the canonical home tenant when one wasn't supplied.
 
-        School-bound users inherit their school's tenant; CX Staff fall back to
-        the Codex PLATFORM tenant. Runs from both full_clean() and save() so
-        validation and persistence agree on the derived value.
+        Branch-bound users inherit their branch's school tenant; CX Staff fall
+        back to the Codex PLATFORM tenant. Runs from both full_clean() and
+        save() so validation and persistence agree on the derived value. A
+        non-CX user created with neither an explicit tenant nor a branch is
+        left with a null tenant so full_clean() fails loudly (tenant required).
         """
         if self.tenant_id:
             return
-        if self.school_id:
-            self.tenant_id = self.school.tenant_id
+        if self.branch_id:
+            self.tenant_id = self.branch.school.tenant_id
         elif self.user_type == self.UserType.CX_STAFF:
             from vs_tenants.models import Tenant
             self.tenant = Tenant.objects.filter(
@@ -270,8 +264,6 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 
     def save(self, *args, **kwargs):
         self._derive_tenant()  # backstop for saves that skip full_clean()
-        if self.school_id and self.school.tenant_id != self.tenant_id:
-            raise ValidationError("User school must belong to the user's tenant.")
         if self.branch_id and self.branch.school.tenant_id != self.tenant_id:
             raise ValidationError("User branch must belong to the user's tenant.")
         if self.uid is None:
@@ -285,7 +277,8 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
                 else:
                     max_uid = (
                         User.objects.select_for_update()
-                        .filter(school_id=self.school_id)
+                        .filter(tenant_id=self.tenant_id)
+                        .exclude(user_type=self.UserType.CX_STAFF)
                         .aggregate(m=Max('uid'))['m']
                     )
                 self.uid = (max_uid or 9) + 1

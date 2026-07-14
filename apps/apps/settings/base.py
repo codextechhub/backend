@@ -29,7 +29,7 @@ REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
-    # JWT auth that also resolves request.school + the thread-local tenant
+    # JWT auth that also resolves request.tenant + the thread-local tenant
     # context (Django middleware runs too early to see JWT users).
     "DEFAULT_AUTHENTICATION_CLASSES": (
         "vs_rbac.authentication.TenantJWTAuthentication",

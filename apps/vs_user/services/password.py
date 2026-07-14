@@ -42,7 +42,7 @@ class PasswordService:
         blacklist_all_user_tokens(user)
 
         log_auth_event(
-            actor=user, subject=user, school=user.school,
+            actor=user, subject=user, tenant=user.tenant,
             event=AuthEventLog.Event.PASSWORD_CHANGED, request=request,
         )
 
@@ -71,7 +71,7 @@ class PasswordService:
 
         log_auth_event(
             actor=requesting_user, subject=target_user,
-            school=target_user.school,
+            tenant=target_user.tenant,
             event=AuthEventLog.Event.PASSWORD_RESET_REQUESTED,
             request=request,
             metadata={"initiated_by": str(requesting_user.id), "origin": "ADMIN"},
@@ -116,7 +116,7 @@ class PasswordService:
             blacklist_all_user_tokens(user)
 
         log_auth_event(
-            actor=None, subject=user, school=user.school,
+            actor=None, subject=user, tenant=user.tenant,
             event=AuthEventLog.Event.PASSWORD_RESET_COMPLETED,
             request=request,
             metadata={"origin": pr.requested_by},
@@ -149,7 +149,7 @@ class PasswordService:
                     origin=origin,
                     sender_name=sender_name,
                     _job_owner_id=str(user.id),
-                    _job_school_id=user.school_id,
+                    _job_tenant_id=user.tenant_id,
                     _job_label="Password reset email",
                     _job_kind="email",
                 )

@@ -44,7 +44,7 @@ def send_payment_received_notification(payment_id, *, actor_user_id=None):
     from .notifications import notify_payment_received
 
     payment = Payment.objects.select_related(
-        "customer", "entity__source_school",
+        "customer", "entity__tenant__school_profile",
     ).filter(pk=payment_id).first()
     if payment is None:
         logger.warning("Receipt email skipped; payment %s no longer exists", payment_id)
@@ -83,7 +83,7 @@ def run_daily_dunning():
     sent = 0  # Count pending notices successfully dispatched.
     skipped = 0  # Count entities skipped because generation failed.
 
-    entities = LedgerEntity.objects.filter(is_active=True, source_school__isnull=False)
+    entities = LedgerEntity.objects.filter(is_active=True, tenant__kind="SCHOOL")
     for entity in entities:  # Treat each entity independently so one failure does not abort the run.
         try:  # Generation can fail for entity-specific policy/configuration issues.
             created = generate_dunning(entity)  # Create today's new pending notices.

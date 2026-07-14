@@ -197,7 +197,7 @@ class LogoutView(APIView):
         log_auth_event(
             actor=request.user,
             subject=request.user,
-            school=getattr(request.user, 'school', None),
+            tenant=request.user.tenant,
             event=AuthEventLog.Event.TOKEN_REVOKED,
             request=request,
         )

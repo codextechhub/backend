@@ -244,7 +244,7 @@ class LedgerEntityTests(TestCase):
         self.assertIsNotNone(codex)
         self.assertEqual(codex.code, PLATFORM_ENTITY_CODE)
         self.assertTrue(codex.is_platform)
-        self.assertIsNone(codex.source_school_id)
+        self.assertIsNone(getattr(codex.tenant, "school_profile", None))
         # base_currency is now a real Currency FK (still stored as the "NGN" code).
         self.assertEqual(codex.base_currency_id, "NGN")
         self.assertEqual(codex.base_currency.symbol, "₦")
@@ -254,11 +254,11 @@ class LedgerEntityTests(TestCase):
         school = School.objects.create(name="Greenfield", slug="greenfield")
         a = LedgerEntity.objects.create(
             name="Greenfield (Platform-managed)", code="GREEN1",
-            kind=LedgerEntity.Kind.TENANT, source_school=school,
+            kind=LedgerEntity.Kind.TENANT, tenant=school.tenant,
         )
         b = LedgerEntity.objects.create(
             name="Greenfield (Own books)", code="GREEN2",
-            kind=LedgerEntity.Kind.TENANT, source_school=school,
+            kind=LedgerEntity.Kind.TENANT, tenant=school.tenant,
         )
         self.assertEqual(
             set(LedgerEntity.objects.for_school(school).values_list("code", flat=True)),
@@ -275,7 +275,7 @@ class NumberingTests(TestCase):
         self.branch = Branch.objects.create(school=self.school, name="HQ", _type="Main")
         self.entity = LedgerEntity.objects.create(
             name="Test Org Books", code="LEKKI",
-            kind=LedgerEntity.Kind.TENANT, source_school=self.school,
+            kind=LedgerEntity.Kind.TENANT, tenant=self.school.tenant,
         )
         # Use the platform entity seeded by migration 0002 (code CODEX).
         self.platform = LedgerEntity.objects.platform()
@@ -4952,11 +4952,11 @@ class EntityListScopingTests(TestCase):
         self.other = School.objects.create(name="Bluewater", slug="bluewater-f1", code="BLUF1", status="ACTIVE")
         self.mine = LedgerEntity.objects.create(
             name="Greenfield Books", code="GREENF1",
-            kind=LedgerEntity.Kind.TENANT, source_school=self.school,
+            kind=LedgerEntity.Kind.TENANT, tenant=self.school.tenant,
         )
         self.theirs = LedgerEntity.objects.create(
             name="Bluewater Books", code="BLUEF1",
-            kind=LedgerEntity.Kind.TENANT, source_school=self.other,
+            kind=LedgerEntity.Kind.TENANT, tenant=self.other.tenant,
         )
 
     # Support the codes workflow.
@@ -6061,7 +6061,7 @@ def _school_finance_requester(school, email, *, exclude_approve=True):
     )
     user = get_user_model().objects.create_user(
         email=email, password="pw", user_type="STAFF", status="ACTIVE",
-        first_name="Reqi", last_name="Ester", school=school, branch=branch,
+        first_name="Reqi", last_name="Ester", branch=branch,
     )
     role, created = TenantRoleTemplate.objects.get_or_create(
         tenant=school.tenant, key="finance-ops-all",
@@ -6118,7 +6118,7 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
         seed_currencies()
         self.entity = LedgerEntity.objects.create(
             name="Greenfield Books", code="GRNBK", kind=LedgerEntity.Kind.TENANT,
-            source_school=self.school,
+            tenant=self.school.tenant,
         )
         seed_chart_of_accounts(self.entity)
         self.year = FiscalYear.objects.create(
@@ -6174,7 +6174,7 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
         """A school user holding finance.journal.approve at self.school."""
         user = self.User.objects.create_user(
             email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
-            first_name="Apro", last_name="Ver", school=self.school,
+            first_name="Apro", last_name="Ver", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
             tenant=self.school.tenant, key="checker-role",
@@ -6421,7 +6421,7 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         seed_currencies()
         self.entity = LedgerEntity.objects.create(
             name="Riverside Books", code="RVRBK", kind=LedgerEntity.Kind.TENANT,
-            source_school=self.school,
+            tenant=self.school.tenant,
         )
         seed_chart_of_accounts(self.entity)
         self.year = FiscalYear.objects.create(
@@ -6488,7 +6488,7 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     def _make_approver(self, email="apr-raw@test.com"):
         user = self.User.objects.create_user(
             email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
-            first_name="Apro", last_name="Ver", school=self.school,
+            first_name="Apro", last_name="Ver", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
             tenant=self.school.tenant, key="refund-checker-role",
@@ -6734,7 +6734,7 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         seed_currencies()
         self.entity = LedgerEntity.objects.create(
             name="Lakeside Books", code="LKSBK", kind=LedgerEntity.Kind.TENANT,
-            source_school=self.school,
+            tenant=self.school.tenant,
         )
         seed_chart_of_accounts(self.entity)
         self.year = FiscalYear.objects.create(
@@ -6803,7 +6803,7 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     def _make_approver(self, email="apr-woa@test.com"):
         user = self.User.objects.create_user(
             email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
-            first_name="Apro", last_name="Ver", school=self.school,
+            first_name="Apro", last_name="Ver", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
             tenant=self.school.tenant, key="writeoff-checker-role",
@@ -7070,7 +7070,7 @@ class DunningNotificationTests(_GLFixtureMixin, TestCase):
         seed_currencies()
         self.entity = LedgerEntity.objects.create(
             name="Maplewood Books", code="MPLBK", kind=LedgerEntity.Kind.TENANT,
-            source_school=self.school,
+            tenant=self.school.tenant,
         )
         seed_chart_of_accounts(self.entity)
         self.year = FiscalYear.objects.create(
@@ -7240,7 +7240,7 @@ class DunningNotificationTests(_GLFixtureMixin, TestCase):
         seed_school_settings(other_school)
         other = LedgerEntity.objects.create(
             name="Oak Books", code="OAKBK", kind=LedgerEntity.Kind.TENANT,
-            source_school=other_school,
+            tenant=other_school.tenant,
         )
         seed_chart_of_accounts(other)
 
@@ -7288,7 +7288,7 @@ class InvoiceNotificationTests(_GLFixtureMixin, TestCase):
         seed_currencies()
         self.entity = LedgerEntity.objects.create(
             name="Birchwood Books", code="BRCBK", kind=LedgerEntity.Kind.TENANT,
-            source_school=self.school,
+            tenant=self.school.tenant,
         )
         seed_chart_of_accounts(self.entity)
         self.year = FiscalYear.objects.create(

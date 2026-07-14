@@ -68,6 +68,9 @@ from .money import format_naira
 
 class LedgerEntitySerializer(serializers.ModelSerializer):
     base_currency = serializers.CharField(source="base_currency_id", read_only=True)
+    # Originating school id derived from the tenant's school profile (None for
+    # platform/product entities). Key kept stable for the frontend.
+    source_school_id = serializers.SerializerMethodField()
 
     class Meta:
         model = LedgerEntity
@@ -75,6 +78,10 @@ class LedgerEntitySerializer(serializers.ModelSerializer):
             "id", "code", "name", "kind", "base_currency",
             "is_active", "source_school_id",
         ]
+
+    def get_source_school_id(self, obj):
+        school = getattr(obj.tenant, "school_profile", None)
+        return school.id if school else None
 
 
 class LedgerEntityCreateSerializer(serializers.ModelSerializer):
@@ -97,11 +104,10 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = LedgerEntity
-        fields = ["id", "code", "name", "kind", "base_currency", "source_school",
+        fields = ["id", "code", "name", "kind", "base_currency",
                   "fiscal_year", "fiscal_start_month"]
         extra_kwargs = {
             "kind": {"required": False},
-            "source_school": {"required": False, "allow_null": True},
         }
 
     def validate_code(self, value):
@@ -121,6 +127,13 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
         fiscal_year = validated_data.pop("fiscal_year", None)
         start_month = validated_data.pop("fiscal_start_month", 1)
         validated_data.setdefault("kind", LedgerEntity.Kind.TENANT)
+
+        # The owning tenant comes from the asserted request context; the entity
+        # save() falls back to the codex platform tenant when none is present.
+        request = self.context.get("request")
+        request_tenant = getattr(request, "tenant", None) if request else None
+        if request_tenant is not None and not validated_data.get("tenant"):
+            validated_data["tenant"] = request_tenant
 
         # Provision a fully usable set of books in one call: the entity, the default
         # currencies, a starter chart of accounts, and twelve open monthly periods.

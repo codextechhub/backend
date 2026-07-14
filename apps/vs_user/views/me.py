@@ -56,7 +56,7 @@ class CurrentUserView(APIView):
             data={
                 "user": UserReadSerializer(request.user).data,
                 "tenant": {"slug": tenant.slug, "name": tenant.name},
-                "school": school_public_info(getattr(request.user, "school", None), request),
+                "school": school_public_info(getattr(tenant, "school_profile", None), request),
                 "permissions": permissions,
             },
         )

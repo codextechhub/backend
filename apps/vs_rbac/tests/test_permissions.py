@@ -200,7 +200,7 @@ class UserHasRBACPermissionTests(TestCase):
         make_assignment(self.school, user, role)
 
         self.assertTrue(
-            user_has_rbac_permission(user, "finance.invoice.view", school=self.school)
+            user_has_rbac_permission(user, "finance.invoice.view", tenant=self.school.tenant)
         )
 
     def test_school_user_without_permission(self):
@@ -210,7 +210,7 @@ class UserHasRBACPermissionTests(TestCase):
         make_assignment(self.school, user, role)
 
         self.assertFalse(
-            user_has_rbac_permission(user, "finance.invoice.approve", school=self.school)
+            user_has_rbac_permission(user, "finance.invoice.approve", tenant=self.school.tenant)
         )
 
     def test_school_user_revoked_assignment_denied(self):
@@ -222,7 +222,7 @@ class UserHasRBACPermissionTests(TestCase):
         assignment.save()
 
         self.assertFalse(
-            user_has_rbac_permission(user, "finance.invoice.view", school=self.school)
+            user_has_rbac_permission(user, "finance.invoice.view", tenant=self.school.tenant)
         )
 
     def test_school_user_denied_permission_not_granted(self):
@@ -233,7 +233,7 @@ class UserHasRBACPermissionTests(TestCase):
         make_assignment(self.school, user, role)
 
         self.assertFalse(
-            user_has_rbac_permission(user, "finance.invoice.view", school=self.school)
+            user_has_rbac_permission(user, "finance.invoice.view", tenant=self.school.tenant)
         )
 
     def test_school_user_multiple_roles_any_grants(self):
@@ -247,7 +247,7 @@ class UserHasRBACPermissionTests(TestCase):
         make_assignment(self.school, user, role2)
 
         self.assertTrue(
-            user_has_rbac_permission(user, "finance.invoice.approve", school=self.school)
+            user_has_rbac_permission(user, "finance.invoice.approve", tenant=self.school.tenant)
         )
 
     def test_school_user_cross_school_denied(self):
@@ -259,7 +259,7 @@ class UserHasRBACPermissionTests(TestCase):
         make_assignment(self.school, user, role)
 
         self.assertFalse(
-            user_has_rbac_permission(user, "finance.invoice.view", school=school2)
+            user_has_rbac_permission(user, "finance.invoice.view", tenant=school2.tenant)
         )
 
     def test_school_user_no_school_filter_checks_all(self):
@@ -276,7 +276,7 @@ class UserHasRBACPermissionTests(TestCase):
     def test_school_user_no_assignments(self):
         user = make_staff_user(self.branch)
         self.assertFalse(
-            user_has_rbac_permission(user, "finance.invoice.view", school=self.school)
+            user_has_rbac_permission(user, "finance.invoice.view", tenant=self.school.tenant)
         )
 
     # -- Vision / platform users ----------------------------------------------
@@ -339,14 +339,13 @@ class HasRBACPermissionTests(TestCase):
         view.rbac_permission = rbac_permission
         return view
 
-    def _make_request(self, user, school=None):
+    def _make_request(self, user, tenant=None):
         request = MagicMock()
         request.user = user
-        request.school = school
         # HasRBACPermission resolves the tenant from request.rbac_tenant first;
         # bind it to the real tenant context (a bare MagicMock would masquerade
         # as a truthy-but-invalid tenant and short-circuit the evaluator).
-        request.rbac_tenant = school.tenant if school else getattr(user, "tenant", None)
+        request.rbac_tenant = tenant or getattr(user, "tenant", None)
         request.tenant = request.rbac_tenant
         request.branch = None
         return request
@@ -357,7 +356,7 @@ class HasRBACPermissionTests(TestCase):
         make_role_permission(role, self.perm_view)
         make_assignment(self.school, user, role)
 
-        request = self._make_request(user, school=self.school)
+        request = self._make_request(user, tenant=self.school.tenant)
         view = self._make_view(rbac_permission="finance.invoice.view")
 
         self.assertTrue(self.perm_class.has_permission(request, view))
@@ -368,7 +367,7 @@ class HasRBACPermissionTests(TestCase):
         make_role_permission(role, self.perm_view)
         make_assignment(self.school, user, role)
 
-        request = self._make_request(user, school=self.school)
+        request = self._make_request(user, tenant=self.school.tenant)
         view = self._make_view(rbac_permission="finance.invoice.approve")
 
         self.assertFalse(self.perm_class.has_permission(request, view))
@@ -380,7 +379,7 @@ class HasRBACPermissionTests(TestCase):
         make_role_permission(role, self.perm_approve)
         make_assignment(self.school, user, role)
 
-        request = self._make_request(user, school=self.school)
+        request = self._make_request(user, tenant=self.school.tenant)
         view = self._make_view(
             rbac_permission=["finance.invoice.view", "finance.invoice.approve"]
         )
@@ -391,7 +390,7 @@ class HasRBACPermissionTests(TestCase):
         user = make_staff_user(self.branch)
         # User has no roles
 
-        request = self._make_request(user, school=self.school)
+        request = self._make_request(user, tenant=self.school.tenant)
         view = self._make_view(
             rbac_permission=["finance.invoice.view", "finance.invoice.approve"]
         )
@@ -401,7 +400,7 @@ class HasRBACPermissionTests(TestCase):
     def test_no_rbac_permission_declared_passes(self):
         """If the view has no rbac_permission attr, the check is a pass-through."""
         user = make_staff_user(self.branch)
-        request = self._make_request(user, school=self.school)
+        request = self._make_request(user, tenant=self.school.tenant)
         view = self._make_view(rbac_permission=None)
 
         self.assertTrue(self.perm_class.has_permission(request, view))
@@ -419,7 +418,7 @@ class HasRBACPermissionTests(TestCase):
         make_platform_role_permission(role, self.perm_view)
         make_platform_assignment(user, role)
 
-        request = self._make_request(user, school=None)
+        request = self._make_request(user)
         view = self._make_view(rbac_permission="finance.invoice.view")
 
         self.assertTrue(self.perm_class.has_permission(request, view))
@@ -427,7 +426,7 @@ class HasRBACPermissionTests(TestCase):
     def test_vision_user_without_platform_role_denied(self):
         user = make_vision_user()
 
-        request = self._make_request(user, school=None)
+        request = self._make_request(user)
         view = self._make_view(rbac_permission="finance.invoice.view")
 
         self.assertFalse(self.perm_class.has_permission(request, view))

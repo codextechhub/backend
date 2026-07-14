@@ -10,7 +10,7 @@ so task signatures stay untouched::
     execute_import_batch_task.delay(
         import_batch_id=str(batch.id),
         _job_owner_id=str(request.user.id),
-        _job_school_id=request.user.school_id,
+        _job_tenant_id=request.user.tenant_id,
         _job_label=f"Import: {batch.file_name}",
         _job_kind="import",
     )

@@ -49,10 +49,10 @@ class LoginService:
         user = User.objects.filter(email__iexact=email).first()
         tenant = user.tenant if user else None
 
-        # 2. School-binding enforcement — non-platform users must have a school.
-        # Gated by the actor's TENANT KIND, not their user_type.
+        # 2. School-binding enforcement — non-platform tenants must resolve to a
+        # school profile. Gated by the actor's TENANT KIND, not their user_type.
         if user and getattr(user.tenant, 'kind', None) != Tenant.Kind.PLATFORM:
-            if not user.school_id:
+            if getattr(user.tenant, 'school_profile', None) is None:
                 record_attempt(
                     email_entered=email,
                     user=user, tenant=tenant,
@@ -130,7 +130,7 @@ class LoginService:
             request=request,
         )
         log_auth_event(
-            actor=authed, subject=authed, school=authed.school,
+            actor=authed, subject=authed, tenant=authed.tenant,
             event=AuthEventLog.Event.LOGIN_SUCCESS,
             request=request,
             metadata={'session_id': session.id},
@@ -145,7 +145,7 @@ class LoginService:
             'session_id':  session.id,
             'user':        UserReadSerializer(authed).data,
             'tenant':      {'slug': authed.tenant.slug, 'name': authed.tenant.name},
-            'school':      school_public_info(authed.school, request),
+            'school':      school_public_info(getattr(authed.tenant, 'school_profile', None), request),
             'permissions': permissions,
         }
 
@@ -213,7 +213,7 @@ class LoginService:
 
             if just_locked:
                 log_auth_event(
-                    actor=None, subject=user, school=user.school,
+                    actor=None, subject=user, tenant=user.tenant,
                     event=AuthEventLog.Event.ACCOUNT_LOCKED, request=request,
                 )
 

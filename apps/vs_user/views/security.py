@@ -119,7 +119,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         log_auth_event(
             actor=request.user,
             subject=target_user if target_user else (session.user if session else None),
-            school=getattr(request.user, 'school', None),
+            tenant=request.user.tenant,
             event=AuthEventLog.Event.FORCE_LOGOUT,
             request=request,
             metadata={'ended_sessions': ended, 'reason': reason},
@@ -305,7 +305,7 @@ class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         log_auth_event(
             actor=request.user,
             subject=user,
-            school=getattr(user, 'school', None),
+            tenant=user.tenant,
             event=AuthEventLog.Event.ACCOUNT_UNLOCKED,
             request=request,
             metadata={'force_password_reset': force_reset, 'reason': reason},

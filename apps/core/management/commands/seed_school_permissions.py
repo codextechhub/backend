@@ -6,7 +6,7 @@ school-fe (the XVS school-facing app). It registers two modules — ``school``
 (administration / people) and ``academics`` (sessions / calendar / classes) —
 then attaches sensible defaults to the ``school_admin`` / ``branch_admin`` /
 ``teacher`` PrebuiltRoleTemplates and, critically, backfills those defaults into
-any existing SchoolRoleTemplate that was provisioned from one of those prebuilt
+any existing tenant role template that was provisioned from one of those prebuilt
 roles BEFORE these permissions existed.
 
 Run order::
@@ -19,9 +19,9 @@ Three idempotent phases:
   1. Register modules + resources + permissions (with sensitivity per table).
   2. Attach PrebuiltRolePermission defaults per the school_admin/branch_admin/
      teacher columns.
-  3. Backfill: for every SchoolRoleTemplate whose ``prebuilt_from.key`` is one of
-     the three roles, get_or_create a GRANTED SchoolRolePermission row for each of
-     that prebuilt role's default keys. get_or_create never flips an existing
+  3. Backfill: for every native tenant role template whose key matches one of the
+     three prebuilt roles, get_or_create a GRANTED TenantRolePermission row for each
+     of that prebuilt role's default keys. get_or_create never flips an existing
      explicit deny (granted=False) — admin customisations survive.
 
 Safe to re-run — everything uses get_or_create. Supports ``--dry-run``.
@@ -166,7 +166,6 @@ class Command(BaseCommand):
             PermissionResource,
             PrebuiltRolePermission,
             PrebuiltRoleTemplate,
-            SchoolRoleTemplate,
             TenantRolePermission,
             TenantRoleTemplate,
         )
@@ -278,31 +277,14 @@ class Command(BaseCommand):
             )
 
         # ── Phase 3: backfill existing tenant role templates ──────────────────
-        # Runtime grants live in the tenant RBAC tables now. Two lineages map a
-        # tenant role back to its prebuilt:
-        #   a) roles migrated from the legacy school tables carry
-        #      key=str(old SchoolRoleTemplate pk), and the legacy row (kept
-        #      until the contract phase) still records prebuilt_from;
-        #   b) roles provisioned natively use key=<prebuilt.key> or
-        #      key=<prebuilt.key>-<branch pk>.
+        # Runtime grants live in the tenant RBAC tables now. A tenant role maps
+        # back to its prebuilt by its native key: key=<prebuilt.key> or
+        # key=<prebuilt.key>-<branch pk>.
         self.stdout.write(self.style.MIGRATE_HEADING(
             "\n  Phase 3 — backfilling existing tenant role templates...\n"
         ))
 
         prebuilt_for_role: dict[int, str] = {}
-
-        for old in (
-            SchoolRoleTemplate.all_objects
-            .filter(prebuilt_from__key__in=PREBUILT_ROLE_KEYS)
-            .select_related("prebuilt_from", "school")
-        ):
-            if not old.school or not old.school.tenant_id:
-                continue
-            migrated = TenantRoleTemplate.objects.filter(
-                tenant_id=old.school.tenant_id, key=str(old.pk),
-            ).first()
-            if migrated:
-                prebuilt_for_role[migrated.pk] = old.prebuilt_from.key
 
         native_key_re = re.compile(
             r"^(%s)(?:-\d+)?$" % "|".join(re.escape(k) for k in PREBUILT_ROLE_KEYS)

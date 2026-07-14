@@ -1078,7 +1078,7 @@ class PayoutBatchApprovalTests(TestCase):
         seed_currencies()
         self.entity = LedgerEntity.objects.create(
             name="Cedar Books", code="CDRBK", kind=LedgerEntity.Kind.TENANT,
-            source_school=self.school,
+            tenant=self.school.tenant,
         )
         seed_chart_of_accounts(self.entity)
         today = datetime.date.today()
@@ -1113,7 +1113,7 @@ class PayoutBatchApprovalTests(TestCase):
         branch = Branch.objects.create(school=self.school, name="Main", is_main=True, status="ACTIVE")
         self.requester = self.User.objects.create_user(
             email="req-pba@test.com", password="pw", user_type="STAFF", status="ACTIVE",
-            first_name="Req", last_name="Ester", school=self.school, branch=branch,
+            first_name="Req", last_name="Ester", branch=branch,
         )
         ops_role, created = TenantRoleTemplate.objects.get_or_create(
             tenant=self.school.tenant, key="payments-ops-all",
@@ -1163,7 +1163,7 @@ class PayoutBatchApprovalTests(TestCase):
     def _make_approver(self, email="apr-pba@test.com"):
         user = self.User.objects.create_user(
             email=email, password="pw", user_type="SCHOOL_ADMIN", status="ACTIVE",
-            first_name="Apr", last_name="Over", school=self.school,
+            first_name="Apr", last_name="Over", tenant=self.school.tenant,
         )
         role, _ = self.TenantRoleTemplate.objects.get_or_create(
             tenant=self.school.tenant, key="pba-checker",

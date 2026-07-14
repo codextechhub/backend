@@ -89,8 +89,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             'full_name':      self.user.full_name,
             'user_type':      self.user.user_type,
             'account_status': self.user.status,
-            'school_id': str(self.user.school_id) if self.user.school_id else None,
-            'school_slug': self.user.school.slug if self.user.school_id else None,
+            'tenant_slug':    self.user.tenant.slug,
             'branch_id':      str(self.user.branch_id) if self.user.branch_id else None,
         }
 

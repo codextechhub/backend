@@ -36,10 +36,9 @@ class UserCreationService:
             last_name=validated_data['last_name'],
             gender=validated_data['gender'],
             phone=validated_data.get('phone', ''),
-            tenant=(validated_data.get('school').tenant if validated_data.get('school') else requesting_user.tenant),
+            tenant=(validated_data.get('tenant') or requesting_user.tenant),
             user_type=validated_data['user_type'],
             role=validated_data.get('role', ''),
-            school=validated_data.get('school') if validated_data.get('school') else None,
             branch=validated_data.get('branch') if validated_data.get('branch') else None,
             invited_by=requesting_user,
             invited_by_name=getattr(requesting_user, 'full_name', '') or '',
@@ -82,7 +81,7 @@ class UserCreationService:
                 )
 
         log_auth_event(
-            actor=requesting_user, subject=user, school=user.school,
+            actor=requesting_user, subject=user, tenant=user.tenant,
             event=AuthEventLog.Event.USER_CREATED, request=request,
         )
 
@@ -107,7 +106,7 @@ class UserCreationService:
             send_invitation_email_task.delay(
                 str(user.activation_key),
                 _job_owner_id=str(user.id),
-                _job_school_id=user.school_id,
+                _job_tenant_id=user.tenant_id,
                 _job_label=f"Invitation email to {user.email}",
                 _job_kind="email",
             )
@@ -152,7 +151,7 @@ class EmailChangeService:
         log_auth_event(
             actor=requesting_user,
             subject=target_user,
-            school=target_user.school,
+            tenant=target_user.tenant,
             event=AuthEventLog.Event.EMAIL_CHANGED,
             request=request,
             metadata={'previous_email': previous_email, 'new_email': new_email},
@@ -185,7 +184,7 @@ class  UserStatusService:
 
         log_auth_event(
             actor=requesting_user, subject=target_user,
-            school=target_user.school,
+            tenant=target_user.tenant,
             event=AuthEventLog.Event.ACCOUNT_SUSPENDED, request=request,
         )
         return target_user
@@ -202,7 +201,7 @@ class  UserStatusService:
 
         log_auth_event(
             actor=requesting_user, subject=target_user,
-            school=target_user.school,
+            tenant=target_user.tenant,
             event=AuthEventLog.Event.ACCOUNT_REACTIVATED, request=request,
         )
         return target_user
@@ -223,7 +222,7 @@ class  UserStatusService:
 
         log_auth_event(
             actor=requesting_user, subject=target_user,
-            school=target_user.school,
+            tenant=target_user.tenant,
             event=AuthEventLog.Event.ACCOUNT_DEACTIVATED, request=request,
         )
         return target_user
@@ -246,7 +245,7 @@ class  UserStatusService:
 
         log_auth_event(
             actor=requesting_user, subject=target_user,
-            school=target_user.school,
+            tenant=target_user.tenant,
             event=AuthEventLog.Event.ACCOUNT_UNLOCKED, request=request,
         )
         return target_user

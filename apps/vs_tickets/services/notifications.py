@@ -35,9 +35,9 @@ def support_recipients():
         User.objects.filter(
             tenant__kind="PLATFORM",
             status=User.Status.ACTIVE,
-            platform_role_assignments__assignment_status="ACTIVE",
-            platform_role_assignments__role__role_permissions__permission_id__in=TRIAGE_PERMISSION_KEYS,
-            platform_role_assignments__role__role_permissions__granted=True,
+            tenant_role_assignments__assignment_status="ACTIVE",
+            tenant_role_assignments__role__role_permissions__permission_id__in=TRIAGE_PERMISSION_KEYS,
+            tenant_role_assignments__role__role_permissions__granted=True,
         ).distinct()
     )
 

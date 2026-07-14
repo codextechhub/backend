@@ -85,7 +85,7 @@ class _NotifFixture(TestCase):
         # School-scoped admin in school A, granted the settings permission.
         self.admin_a = User.objects.create_user(
             email="admin-a@test.com", password="x", user_type="SCHOOL_ADMIN",
-            status="ACTIVE", first_name="Ada", last_name="Admin", school=self.school_a,
+            status="ACTIVE", first_name="Ada", last_name="Admin", tenant=self.school_a.tenant,
         )
         _grant_school_permission(
             self.admin_a, self.school_a, NotificationPermission.ENFORCE_PERMISSIONS,
@@ -94,7 +94,7 @@ class _NotifFixture(TestCase):
         # A plain school user with no RBAC grants (for 403 tests).
         self.plain_a = User.objects.create_user(
             email="plain-a@test.com", password="x", user_type="SCHOOL_ADMIN",
-            status="ACTIVE", first_name="Peter", last_name="Plain", school=self.school_a,
+            status="ACTIVE", first_name="Peter", last_name="Plain", tenant=self.school_a.tenant,
         )
 
         # A CX super admin (bypasses RBAC; no school → platform scope).
@@ -138,7 +138,7 @@ class ResolveChannelsTests(_NotifFixture):
     def test_default_when_no_rows(self):
         et = self._event("ticket.created")
         NotificationSetting.all_objects.filter(event_type=et).delete()
-        resolved = resolve_channels(et, school=self.school_a)
+        resolved = resolve_channels(et, tenant=self.school_a.tenant)
         self.assertEqual(
             resolved,
             {ChannelChoices.IN_APP: et.default_enabled, ChannelChoices.EMAIL: et.default_enabled},
@@ -149,7 +149,7 @@ class ResolveChannelsTests(_NotifFixture):
         NotificationSetting.all_objects.filter(
             event_type=et, channel=ChannelChoices.EMAIL, tenant__isnull=True,
         ).update(is_enabled=False)
-        resolved = resolve_channels(et, school=self.school_a)
+        resolved = resolve_channels(et, tenant=self.school_a.tenant)
         self.assertFalse(resolved[ChannelChoices.EMAIL])
 
     def test_school_row_beats_platform(self):
@@ -161,9 +161,9 @@ class ResolveChannelsTests(_NotifFixture):
             tenant=self.school_a.tenant, event_type=et,
             channel=ChannelChoices.EMAIL, is_enabled=True,
         )
-        self.assertTrue(resolve_channels(et, school=self.school_a)[ChannelChoices.EMAIL])
+        self.assertTrue(resolve_channels(et, tenant=self.school_a.tenant)[ChannelChoices.EMAIL])
         # School B has no override → still off (platform).
-        self.assertFalse(resolve_channels(et, school=self.school_b)[ChannelChoices.EMAIL])
+        self.assertFalse(resolve_channels(et, tenant=self.school_b.tenant)[ChannelChoices.EMAIL])
 
     def test_transactional_bypasses_disabled_rows(self):
         et = self._event("user.password_reset")
@@ -212,7 +212,7 @@ class ResolveChannelsBulkTests(_NotifFixture):
         )
 
         resolved = resolve_channels_bulk(
-            [et_school, et_platform, et_default, et_tx], school=self.school_a,
+            [et_school, et_platform, et_default, et_tx], tenant=self.school_a.tenant,
         )
 
         self.assertTrue(resolved[et_school.id][ChannelChoices.EMAIL])       # school layer
@@ -225,7 +225,7 @@ class ResolveChannelsBulkTests(_NotifFixture):
     def test_bulk_uses_single_settings_query(self):
         event_types = list(NotificationEventType.objects.filter(is_active=True))
         with self.assertNumQueries(1):
-            resolve_channels_bulk(event_types, school=self.school_a)
+            resolve_channels_bulk(event_types, tenant=self.school_a.tenant)
 
     def test_matrix_build_costs_two_queries(self):
         """1 event-type query + 1 settings query — no per-event resolve queries."""
@@ -238,8 +238,8 @@ class ResolveChannelsBulkTests(_NotifFixture):
     def test_single_resolve_delegates_to_bulk(self):
         et = self._event("ticket.created")
         self.assertEqual(
-            resolve_channels(et, school=self.school_a),
-            resolve_channels_bulk([et], school=self.school_a)[et.id],
+            resolve_channels(et, tenant=self.school_a.tenant),
+            resolve_channels_bulk([et], tenant=self.school_a.tenant)[et.id],
         )
 
 
@@ -341,7 +341,7 @@ class DispatchTests(_NotifFixture):
             event_key="ticket.created",
             context={"student_first_name": "Sam"},
             recipients=[rcpt],
-            school=self.school_a,
+            tenant=self.school_a.tenant,
         )
         self.assertEqual(ids, [])
 

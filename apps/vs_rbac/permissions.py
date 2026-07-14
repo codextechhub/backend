@@ -52,8 +52,13 @@ def user_has_rbac_permission(user, permission_key, tenant=None, branch=None, sch
     if not user or not user.is_authenticated:
         return False
 
+    # ``school`` is a convenience for callers that hold a School rather than a
+    # Tenant; the evaluator itself is tenant-only.
+    if tenant is None and school is not None:
+        tenant = getattr(school, "tenant", None)
+
     return has_permission(
-        user, permission_key, tenant=tenant, branch=branch, school=school,
+        user, permission_key, tenant=tenant, branch=branch,
     )
 
 
@@ -146,8 +151,8 @@ class HasRBACPermission(BasePermission):
 
     If both rbac_permission and rbac_group_permission are set, both conditions must be met.
 
-    The school context is read from ``request.school`` (set by
-    ``TenantContextMiddleware``).
+    The tenant context is read from ``request.rbac_tenant`` / ``request.tenant``
+    (set by ``TenantJWTAuthentication`` from the ``?tenant=`` assertion).
     """
 
     def has_permission(self, request, view):

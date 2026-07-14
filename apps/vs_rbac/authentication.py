@@ -112,8 +112,5 @@ class TenantJWTAuthentication(JWTAuthentication):
         django_request.impersonation_session = impersonation
         django_request.tenant = tenant
         django_request.rbac_tenant = actor.tenant if impersonation is None else tenant
-        # Internal expand/cutover bridge for domain code that still needs the
-        # School profile object. Tenant selection itself is exclusively ?tenant=.
-        django_request.school = getattr(tenant, "school_profile", None)
         set_current_tenant(tenant)
         return effective_user, validated_token

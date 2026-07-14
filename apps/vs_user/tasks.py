@@ -63,12 +63,13 @@ def send_invitation_email_task(self, activation_key: str):
     from .models import User
 
     try:
-        user = User.objects.select_related('school').get(activation_key=activation_key)
+        user = User.objects.select_related('tenant__school_profile').get(activation_key=activation_key)
     except User.DoesNotExist:
         logger.error('send_invitation_email_task: no user with activation_key=%s', activation_key)
         return
 
-    school_name = user.school.name if user.school else 'CodeX'
+    school = getattr(user.tenant, 'school_profile', None)  # None for platform users.
+    school_name = school.name if school else 'CodeX'
     base_url = getattr(settings, 'FRONTEND_BASE_URL', None)
     if not base_url:
         raise ImproperlyConfigured('FRONTEND_BASE_URL must be set in settings.')
@@ -84,10 +85,10 @@ def send_invitation_email_task(self, activation_key: str):
             'invitation_url':  invitation_url,
             'expiry_days':     7,
             # Drives the school-less subject variant in the DB template.
-            'has_school':      bool(user.school),
+            'has_school':      bool(school),
         },
         recipients=[user],
-        school=user.school,
+        tenant=user.tenant,
         metadata={
             'activation_key': str(user.activation_key),
             'from_name':      user.invited_by_name or None,
@@ -141,7 +142,7 @@ def send_password_reset_email_task(self, activation_key: str, origin: str, sende
             'sender_name':     sender_name,
         },
         recipients=[user],
-        school=user.school,
+        tenant=user.tenant,
         metadata={'from_name': sender_name},
     )
     logger.info('Password reset email dispatched for %s (origin=%s)', user.email, origin)

@@ -787,7 +787,7 @@ class PaymentReceiptView(_FinanceBase):
         entity = resolve_entity(request)
         payment = (
             Payment.objects.filter(entity=entity, pk=pk, status=DocumentStatus.POSTED)
-            .select_related("entity__source_school", "branch", "customer")
+            .select_related("entity__tenant__school_profile", "branch", "customer")
             .prefetch_related("allocations__invoice")
             .first()
         )

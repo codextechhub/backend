@@ -64,7 +64,7 @@ def _issuer_block(entity, *, branch=None) -> dict:
     The pay-to bank is always the entity's primary collection account regardless of
     which identity is used.
     """
-    school = entity.source_school  # A school-sourced entity brands from its school.
+    school = getattr(entity.tenant, "school_profile", None)  # A school-sourced entity brands from its school.
     branch_email = getattr(branch, "email", "") if branch is not None else ""  # Optional branch contact email.
     branch_address = getattr(branch, "address", "") if branch is not None else ""  # Optional branch address.
     logo = ""  # Default: no logo unless a source provides one.

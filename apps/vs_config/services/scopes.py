@@ -43,8 +43,7 @@ def resolve_request_scope(request, *, allow_platform=True):
     by changing a query parameter.
     """
     # Fall back to the user's home tenant for entry points that authenticate
-    # without the assertion (e.g. force_authenticate in tests), mirroring the
-    # pre-cutover fallback to ``user.school``.
+    # without the assertion (e.g. force_authenticate in tests).
     tenant = getattr(request, "tenant", None) or getattr(request.user, "tenant", None)
     is_platform = getattr(tenant, "kind", None) == "PLATFORM"
 

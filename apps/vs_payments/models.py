@@ -239,7 +239,7 @@ class PayoutBatch(TimeStampedModel):
         this maps the entity back to its originating school. ``None`` for platform books,
         which the engine handles as platform-level scoping.
         """
-        return self.entity.source_school  # The entity's originating school, or None.
+        return getattr(self.entity.tenant, "school_profile", None)  # Originating school, or None.
 
     @property
     def branch(self):  # The engine also reads document.branch; batches have none.

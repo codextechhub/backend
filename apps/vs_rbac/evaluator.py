@@ -25,16 +25,12 @@ def _group_permission_keys(group_ids) -> Set[str]:
     )
 
 
-def _normalize_tenant(user, tenant=None, school=None):
-    # ``school`` remains an internal migration bridge; public APIs do not accept
-    # school as tenant context.
-    if tenant is None and school is not None:
-        tenant = getattr(school, "tenant", None)
+def _normalize_tenant(user, tenant=None):
     return tenant or getattr(user, "tenant", None)
 
 
-def get_effective_permissions(user, tenant=None, branch=None, school=None) -> Set[str]:
-    tenant = _normalize_tenant(user, tenant=tenant, school=school)
+def get_effective_permissions(user, tenant=None, branch=None) -> Set[str]:
+    tenant = _normalize_tenant(user, tenant=tenant)
     if not user or not getattr(user, "is_authenticated", False) or tenant is None:
         return set()
     if getattr(user, "tenant_id", None) != tenant.pk:
@@ -75,22 +71,22 @@ def get_effective_permissions(user, tenant=None, branch=None, school=None) -> Se
     return effective
 
 
-def has_permission(user, permission_key: str, tenant=None, branch=None, school=None) -> bool:
+def has_permission(user, permission_key: str, tenant=None, branch=None) -> bool:
     return permission_key in get_effective_permissions(
-        user, tenant=tenant, branch=branch, school=school,
+        user, tenant=tenant, branch=branch,
     )
 
 
-def has_any_permission(user, permission_keys, tenant=None, branch=None, school=None) -> bool:
+def has_any_permission(user, permission_keys, tenant=None, branch=None) -> bool:
     return bool(
-        get_effective_permissions(user, tenant=tenant, branch=branch, school=school)
+        get_effective_permissions(user, tenant=tenant, branch=branch)
         & set(permission_keys)
     )
 
 
-def has_all_permissions(user, permission_keys, tenant=None, branch=None, school=None) -> bool:
+def has_all_permissions(user, permission_keys, tenant=None, branch=None) -> bool:
     return set(permission_keys).issubset(
-        get_effective_permissions(user, tenant=tenant, branch=branch, school=school)
+        get_effective_permissions(user, tenant=tenant, branch=branch)
     )
 
 

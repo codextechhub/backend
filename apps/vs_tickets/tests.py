@@ -35,12 +35,13 @@ def _branch(school, name):
 
 
 def _user(email, first, last, *, user_type, school=None, branch=None):
+    # ``school`` is accepted for call-site readability but the tenant is derived
+    # from the branch (or defaults to codex for CX staff) — User.school is gone.
     return User.objects.create_user(
         email=email,
         first_name=first,
         last_name=last,
         user_type=user_type,
-        school=school,
         branch=branch,
         status=User.Status.ACTIVE,
     )

@@ -400,7 +400,7 @@ class Command(BaseCommand):
                         email=email, password=SCHOOL_USER_PASSWORD,
                         first_name=first, last_name=last,
                         user_type=user_type, status="ACTIVE",
-                        school=school, branch=branch,
+                        tenant=school.tenant, branch=branch,
                     )
                 return user
 
@@ -674,13 +674,13 @@ class Command(BaseCommand):
         target_school = schools[0] if schools else None
         if target_school is not None:
             target_user = User.objects.filter(
-                school=target_school, user_type="SCHOOL_ADMIN"
+                tenant=target_school.tenant, user_type="SCHOOL_ADMIN"
             ).first()
             if target_user and not ImpersonationSession.objects.filter(
-                staff_user=cs_lead, school=target_school
+                staff_user=cs_lead, tenant=target_school.tenant
             ).exists():
                 ImpersonationSession.objects.create(
-                    staff_user=cs_lead, school=target_school, target_user=target_user,
+                    staff_user=cs_lead, tenant=target_school.tenant, target_user=target_user,
                     justification="Investigating reported import failure (seeded).",
                     started_at=self.now - timedelta(hours=2),
                     ends_at=self.now + timedelta(hours=1),

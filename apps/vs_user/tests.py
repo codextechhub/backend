@@ -88,7 +88,7 @@ def make_school_admin(school, email="admin@caleb.test", password="Str0ng!pass123
         status="ACTIVE",
         first_name="Ada",
         last_name="Obi",
-        school=school,
+        tenant=school.tenant,
     )
 
 

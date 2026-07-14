@@ -158,7 +158,10 @@ class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
 class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     full_name    = serializers.SerializerMethodField()
     role          = serializers.SerializerMethodField()
-    school_name  = serializers.CharField(source='school.name', read_only=True, default=None)
+    # Derived from the user's tenant school profile (None for platform users).
+    # Keys kept stable (`school_id`/`school_name`) for the frontend.
+    school_id    = serializers.SerializerMethodField()
+    school_name  = serializers.SerializerMethodField()
     branch_name  = serializers.CharField(source='branch.name', read_only=True, default=None)
     invited_by_name         = serializers.SerializerMethodField()
     invitation_email_status = serializers.SerializerMethodField()
@@ -182,6 +185,14 @@ class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
 
     def get_full_name(self, obj) -> str:
         return obj.full_name
+
+    def get_school_id(self, obj):
+        school = getattr(obj.tenant, 'school_profile', None)
+        return school.id if school else None
+
+    def get_school_name(self, obj) -> str | None:
+        school = getattr(obj.tenant, 'school_profile', None)
+        return school.name if school else None
 
     def get_role(self, obj) -> str:
         assignments = getattr(obj, 'active_school_role_assignments', None)
@@ -215,8 +226,8 @@ class UserCreateSerializer(serializers.Serializer):
         max_length=32, required=False, allow_blank=True, default='',
         validators=[RegexValidator(r'^\+?[0-9 ()\-]{7,22}$', message='Enter a valid phone number.')],
     )
-    # school and branch passed as UUIDs; resolved to objects in validate()
-    school      = serializers.UUIDField(required=False, allow_null=True, default=None)
+    # branch passed as UUID; resolved to an object in validate(). The target
+    # tenant is derived from request context, not a school input.
     branch      = serializers.UUIDField(required=False, allow_null=True, default=None)
     role        = serializers.CharField(
         max_length=120,
@@ -255,13 +266,13 @@ class UserCreateSerializer(serializers.Serializer):
         return value.lower().strip()
 
     def validate(self, attrs):
+        actor = self.context['request'].user
         user_type = attrs.get('user_type')
 
         if not user_type:
             # Default the created user's persona from the ACTOR's tenant kind:
             # a platform-tenant actor provisions internal staff, everyone else
             # provisions a school admin. (Tenant-kind, not user_type, decides.)
-            actor = self.context['request'].user
             if getattr(actor.tenant, 'kind', None) == Tenant.Kind.PLATFORM:
                 user_type = User.UserType.CX_STAFF
             else:
@@ -269,59 +280,21 @@ class UserCreateSerializer(serializers.Serializer):
 
         attrs['user_type'] = user_type
 
-        # Resolve school UUID to instance
-        school_id = attrs.pop('school', None)
-        branch_id      = attrs.pop('branch', None)
-
-        if school_id:
-            # Accept the surrogate id (B23) or the slug — clients sent slugs
-            # while the slug was the primary key.
-            lookup = {'id': school_id} if str(school_id).isdigit() else {'slug': school_id}
-            try:
-                attrs['school'] = School.objects.get(**lookup)
-            except School.DoesNotExist:
-                raise serializers.ValidationError({'school': 'School not found.'})
-        else:
-            attrs['school'] = None
+        # The target tenant that will own the created user comes from request
+        # context (the ?tenant= assertion), not a school input. CX staff always
+        # belong to the platform (codex) tenant. A legacy ``school`` input is
+        # accepted and ignored so old clients do not 400.
+        attrs.pop('school', None)
+        branch_id = attrs.pop('branch', None)
 
         if branch_id:
             try:
-                attrs['branch'] = Branch.objects.get(id=branch_id)
+                attrs['branch'] = Branch.objects.select_related('school').get(id=branch_id)
             except Branch.DoesNotExist:
                 raise serializers.ValidationError({'branch': 'Branch not found.'})
         else:
             attrs['branch'] = None
 
-        # Vision Staff must not have school or branch
-        if user_type == User.UserType.CX_STAFF:
-            if attrs['school'] or attrs['branch']:
-                raise serializers.ValidationError(
-                    {'user_type': 'Vision Staff accounts cannot be assigned to a school or branch.'}
-                )
-        else:
-            # All other user types must have a school
-            if not attrs['school']:
-                raise serializers.ValidationError(
-                    {'school': 'This user type must be assigned to a school.'}
-                )
-            # Branch-level users must have a branch
-            if user_type not in (User.UserType.SCHOOL_ADMIN,) and not attrs['branch']:
-                raise serializers.ValidationError(
-                    {'branch': f'User type {user_type} must be assigned to a branch.'}
-                )
-
-        # Branch must belong to the school
-        if attrs.get('branch') and attrs.get('school'):
-            if attrs['branch'].school_id != attrs['school'].id:
-                raise serializers.ValidationError(
-                    {'branch': 'The selected branch does not belong to the selected school.'}
-                )
-            
-        # Role input is a TenantRoleTemplate KEY, resolved within the target
-        # tenant natively (no legacy Platform/SchoolRoleTemplate bridge). The
-        # backfill in vs_rbac.0004 set each migrated tenant-role key to
-        # str(legacy_pk), so legacy role slugs keep resolving unchanged.
-        role_key = attrs['role']
         if user_type == User.UserType.CX_STAFF:
             target_tenant = Tenant.objects.filter(
                 slug='codex', kind=Tenant.Kind.PLATFORM,
@@ -330,33 +303,49 @@ class UserCreateSerializer(serializers.Serializer):
                 raise serializers.ValidationError(
                     {'role': 'The platform (codex) tenant is not provisioned.'}
                 )
-            try:
-                role = TenantRoleTemplate.objects.get(tenant=target_tenant, key=role_key)
-            except TenantRoleTemplate.DoesNotExist:
-                raise serializers.ValidationError(
-                    {'role': f'Platform role with key "{role_key}" not found.'}
-                )
-            if role_key == 'xvs_super_admin':
-                from vs_rbac.models import TenantUserRoleAssignment
-                if TenantUserRoleAssignment.objects.filter(
-                    role__key='xvs_super_admin',
-                    role__tenant__kind='PLATFORM',
-                    assignment_status='ACTIVE',
-                ).exists():
-                    raise serializers.ValidationError(
-                        {'role': 'A Vision Super Admin already exists. Only one is allowed.'}
-                    )
         else:
-            school = attrs.get('school')
-            if not school:
+            target_tenant = getattr(self.context['request'], 'tenant', None) or actor.tenant
+
+        # Vision Staff must not have a branch.
+        if user_type == User.UserType.CX_STAFF:
+            if attrs['branch']:
                 raise serializers.ValidationError(
-                    {'role': 'Role can only be assigned if a school is specified.'}
+                    {'user_type': 'Vision Staff accounts cannot be assigned to a branch.'}
                 )
-            try:
-                role = TenantRoleTemplate.objects.get(tenant=school.tenant, key=role_key)
-            except TenantRoleTemplate.DoesNotExist:
+        else:
+            # Branch-level users must have a branch.
+            if user_type not in (User.UserType.SCHOOL_ADMIN,) and not attrs['branch']:
                 raise serializers.ValidationError(
-                    {'role': f'Role with key "{role_key}" not found in the specified school.'}
+                    {'branch': f'User type {user_type} must be assigned to a branch.'}
+                )
+
+        # Branch must belong to the target tenant.
+        if attrs.get('branch') and attrs['branch'].school.tenant_id != target_tenant.id:
+            raise serializers.ValidationError(
+                {'branch': 'The selected branch does not belong to the target tenant.'}
+            )
+
+        attrs['tenant'] = target_tenant
+
+        # Role input is a TenantRoleTemplate KEY, resolved within the target
+        # tenant natively. The backfill in vs_rbac.0004 set each migrated
+        # tenant-role key to str(legacy_pk), so legacy role slugs keep resolving.
+        role_key = attrs['role']
+        try:
+            role = TenantRoleTemplate.objects.get(tenant=target_tenant, key=role_key)
+        except TenantRoleTemplate.DoesNotExist:
+            raise serializers.ValidationError(
+                {'role': f'Role with key "{role_key}" not found in the target tenant.'}
+            )
+        if user_type == User.UserType.CX_STAFF and role_key == 'xvs_super_admin':
+            from vs_rbac.models import TenantUserRoleAssignment
+            if TenantUserRoleAssignment.objects.filter(
+                role__key='xvs_super_admin',
+                role__tenant__kind='PLATFORM',
+                assignment_status='ACTIVE',
+            ).exists():
+                raise serializers.ValidationError(
+                    {'role': 'A Vision Super Admin already exists. Only one is allowed.'}
                 )
 
         attrs['role'] = role.name

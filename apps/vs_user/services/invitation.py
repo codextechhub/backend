@@ -81,7 +81,7 @@ class InvitationService:
             user = User.objects.get(activation_key=activation_key)
             invitation = (
                 UserInvitation.objects
-                .select_related('user__school')
+                .select_related('user__tenant__school_profile')
                 .get(user_id=user.id)
             )
         except UserInvitation.DoesNotExist:
@@ -162,7 +162,7 @@ class InvitationService:
         log_auth_event(
             actor=user,
             subject=user,
-            school=user.school,
+            tenant=user.tenant,
             event=AuthEventLog.Event.ACCOUNT_ACTIVATED,
             request=request,
         )
@@ -199,7 +199,7 @@ class InvitationService:
             send_invitation_email_task.delay(
                 str(user.activation_key),
                 _job_owner_id=str(user.id),
-                _job_school_id=user.school_id,
+                _job_tenant_id=user.tenant_id,
                 _job_label=f"Invitation email to {user.email}",
                 _job_kind="email",
             )
@@ -215,7 +215,7 @@ class InvitationService:
         log_auth_event(
             actor=requested_by,
             subject=user,
-            school=user.school,
+            tenant=user.tenant,
             event=AuthEventLog.Event.INVITATION_SENT,
             request=request,
         )

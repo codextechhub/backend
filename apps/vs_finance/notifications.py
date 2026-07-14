@@ -12,7 +12,7 @@ ledger back. Every entry point swallows and logs its own errors.
 
 Notifications are **recipient-centric** (per the vs_notifications overhaul): the
 customer's billing email is the recipient (an ``UnregisteredRecipient`` — a payer
-need not have a portal account), and the school (``entity.source_school``) is an
+need not have a portal account), and the school (from ``entity.tenant.school_profile``) is an
 *optional scope*, not a gate — platform/product books deliver just the same.
 """
 from __future__ import annotations
@@ -47,7 +47,7 @@ def notify_invoice_issued(invoice, *, actor_user=None):
         from vs_notifications.notify import send_notification, UnregisteredRecipient
 
         customer = invoice.customer  # Recipient information comes from the invoice customer.
-        school = invoice.entity.source_school  # optional scope; may be None  # School scopes template settings when present.
+        school = getattr(invoice.entity.tenant, "school_profile", None)  # optional scope; may be None.
         context = {  # Template variables for the invoice-issued event.
             "customer_name": customer.name,  # Customer display name.
             "invoice_number": invoice.document_number,  # Posted invoice document number.
@@ -86,7 +86,7 @@ def notify_payment_received(payment, *, actor_user=None):
         from vs_notifications.notify import send_notification, UnregisteredRecipient
 
         customer = payment.customer  # Recipient information comes from the payment customer.
-        school = payment.entity.source_school  # optional scope; may be None  # School scopes template settings when present.
+        school = getattr(payment.entity.tenant, "school_profile", None)  # optional scope; may be None.
         alloc = payment.allocations.select_related("invoice").first()
         invoice_number = alloc.invoice.document_number if alloc is not None else ""  # Surface one settled invoice number.
         context = {  # Template variables for the payment-received event.

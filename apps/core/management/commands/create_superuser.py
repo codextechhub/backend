@@ -219,7 +219,6 @@ class Command(BaseCommand):
             is_active=True,
             is_staff=True,      # Django admin access
             is_superuser=True,  # Django admin superuser permissions
-            school=None,        # Vision Staff have no school assignment
             branch=None,        # Vision Staff have no branch assignment
             invited_by=None,    # Self-created (bootstrap account)
         )
@@ -234,7 +233,7 @@ class Command(BaseCommand):
         log_auth_event(
             actor=None,
             subject=user,
-            school=None,
+            tenant=user.tenant,
             event=AuthEventLog.Event.USER_CREATED,
             metadata={
                 'bootstrap': True,

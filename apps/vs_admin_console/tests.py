@@ -62,7 +62,7 @@ class ImpersonationTestBase(TestCase):
         self.school = make_school(slug="imp-school", name="Impersonation School")
         self.branch = make_branch(self.school)
         self.target = make_school_admin(
-            self.branch, email="target@school.test", school=self.school,
+            self.branch, email="target@school.test",
         )
         self.admin = make_vision_user(email="cxadmin@codex.test")
         _grant_platform(self.admin, IMPERSONATION_KEYS)
@@ -101,7 +101,7 @@ class ImpersonationStartTests(ImpersonationTestBase):
         other_school = make_school(slug="imp-other", name="Other School")
         other_branch = make_branch(other_school)
         school_actor = make_school_admin(
-            other_branch, email="sneaky@other.test", school=other_school,
+            other_branch, email="sneaky@other.test",
         )
         resp = self.start_session(actor=school_actor)
         self.assertEqual(resp.status_code, 404)
@@ -119,7 +119,7 @@ class ImpersonationStartTests(ImpersonationTestBase):
         other_school = make_school(slug="imp-elsewhere", name="Elsewhere")
         other_branch = make_branch(other_school)
         foreign_target = make_school_admin(
-            other_branch, email="foreign@elsewhere.test", school=other_school,
+            other_branch, email="foreign@elsewhere.test",
         )
         resp = self.start_session(target=foreign_target)
         self.assertEqual(resp.status_code, 404)

@@ -94,7 +94,7 @@ class Command(BaseCommand):
         users, not_found = [], []
         for email in emails:
             try:
-                users.append(User.objects.select_related("school").get(email__iexact=email))
+                users.append(User.objects.select_related("tenant__school_profile").get(email__iexact=email))
             except User.DoesNotExist:
                 not_found.append(email)
 
@@ -106,7 +106,7 @@ class Command(BaseCommand):
             self.stdout.write(
                 f"    • {u.full_name or '—'} <{u.email}>"
                 f"  [{u.user_type} | {u.status}"
-                f"{' | ' + u.school.name if u.school else ''}]\n"
+                f"{' | ' + s.name if (s := getattr(u.tenant, 'school_profile', None)) else ''}]\n"
             )
 
         if not options["force"]:
