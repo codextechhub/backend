@@ -4,7 +4,14 @@ from django.core.management import call_command
 from django.test import TestCase
 from rest_framework.test import APIClient
 
-from vs_rbac.models import Permission, PrebuiltRolePermission, PrebuiltRoleTemplate
+from vs_rbac.models import (
+    Permission,
+    PrebuiltRolePermission,
+    PrebuiltRoleTemplate,
+    TenantRolePermission,
+    TenantRoleTemplate,
+    TenantUserRoleAssignment,
+)
 from vs_rbac.tests.helpers import (
     make_assignment,
     make_permission,
@@ -246,6 +253,38 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
             {"status": TicketStatus.CLOSED},
         )
         self.assertEqual(response.status_code, 403)
+
+    def test_consultant_role_can_create_a_ticket(self):
+        consultant = _user(
+            "consultant@cx.test", "Cora", "Consultant",
+            user_type=User.UserType.CX_STAFF,
+        )
+        call_command("seed_consultant_role", verbosity=0)
+        role = TenantRoleTemplate.objects.get(
+            tenant=consultant.tenant,
+            key="xvs_consultant",
+        )
+        TenantUserRoleAssignment.objects.create(
+            tenant=consultant.tenant,
+            user=consultant,
+            role=role,
+        )
+        self.assertFalse(
+            TenantRolePermission.objects.filter(
+                role=role,
+            ).exclude(permission__action_id="view").exists()
+        )
+
+        self.client_api.force_authenticate(consultant)
+        response = self.client_api.post("/v1/support/tickets/", {
+            "title": "Consultant needs assistance",
+            "description": "Please review this request.",
+            "category": "HELP",
+            "priority": "LOW",
+        }, format="json")
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["data"]["requester"]["id"], consultant.pk)
 
     def test_requester_cannot_assign_ticket(self):
         self.client_api.force_authenticate(self.requester)

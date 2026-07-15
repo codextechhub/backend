@@ -5,8 +5,8 @@ Run once after initial setup (safe to re-run — uses get_or_create):
 
     python manage.py seed_import_permissions
 
-Also grants every import permission to the xvs_super_admin platform role
-so super-admins can exercise all import functionality immediately.
+Also grants every import permission to both platform administration roles so
+super-admins and platform admins can exercise all import functionality.
 """
 from __future__ import annotations
 
@@ -16,6 +16,11 @@ from django.db import transaction
 
 S_NORMAL    = "NORMAL"
 S_SENSITIVE = "SENSITIVE"
+
+PLATFORM_ROLE_NAMES = {
+    "xvs_super_admin": "XVS Super Admin",
+    "xvs_platform_admin": "XVS Platform Admin",
+}
 
 
 # (resource_name, resource_description, [(action, description, is_restricted, sensitivity), ...])
@@ -142,36 +147,41 @@ class Command(BaseCommand):
                     created_count += 1
                     self.stdout.write(f"  + {key}")
 
-        # Grant all import permissions to the xvs_super_admin role (codex tenant)
+        # Import templates and batches are platform-owned, so both platform
+        # administration roles receive the complete import permission set.
         codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
         if codex is None:
             self.stdout.write(self.style.WARNING(
                 "\n  ⚠  Codex platform tenant not found — run migrations first; grants skipped."
             ))
         else:
-            super_admin_role, _ = TenantRoleTemplate.objects.get_or_create(
-                tenant=codex,
-                key="xvs_super_admin",
-                defaults={
-                    "name": "XVS Super Admin",
-                    "status": "ACTIVE",
-                    "is_system_role": True,
-                    "is_locked": True,
-                },
-            )
-            granted = 0
-            for key in all_keys:
-                perm = Permission.objects.filter(key=key).first()
-                if perm:
-                    _, role_perm_created = TenantRolePermission.objects.get_or_create(
-                        role=super_admin_role,
+            permissions = list(Permission.objects.filter(key__in=all_keys))
+            for role_key, role_name in PLATFORM_ROLE_NAMES.items():
+                role, _ = TenantRoleTemplate.objects.get_or_create(
+                    tenant=codex,
+                    key=role_key,
+                    defaults={
+                        "name": role_name,
+                        "status": "ACTIVE",
+                        "is_system_role": True,
+                        "is_locked": True,
+                    },
+                )
+                granted = 0
+                for perm in permissions:
+                    role_perm, role_perm_created = TenantRolePermission.objects.get_or_create(
+                        role=role,
                         permission=perm,
                         defaults={"granted": True, "granted_by": None},
                     )
-                    if role_perm_created:
+                    if not role_perm_created and not role_perm.granted:
+                        role_perm.granted = True
+                        role_perm.save(update_fields=["granted", "updated_at"])
+                    if role_perm_created or role_perm.granted:
                         granted += 1
-            if granted:
-                self.stdout.write(f"\n  Granted {granted} import permissions to xvs_super_admin role.")
+                self.stdout.write(
+                    f"\n  Ensured {granted} import permissions for {role_key} role."
+                )
 
         # -- Permission Groups -------------------------------------------------
         self._seed_permission_groups(all_keys)

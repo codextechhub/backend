@@ -21,7 +21,7 @@ Seed order
 3. seed_platform_permissions — platform module (registry, roles, team, staff,
                                organogram, schools, branches, audit, dashboard)
                                → both platform roles
-4. seed_import_permissions   — import pipeline permissions → xvs_super_admin
+4. seed_import_permissions   — import pipeline permissions → both platform roles
 5. seed_workflow_permissions — workflow engine permissions → both platform roles
 6. seed_config_permissions   — vs_config permissions → both platform roles
 7. seed_finance_permissions  — vs_finance permissions → both platform roles

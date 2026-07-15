@@ -265,6 +265,30 @@ class TenantRoleTemplateViewTests(TestCase):
         )
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_super_admin_can_update_locked_system_role(self):
+        super_admin = make_vision_user(
+            email="system-role-super-admin@test.com",
+            super_admin=True,
+        )
+        role = TenantRoleTemplate.objects.get(
+            tenant=super_admin.tenant,
+            key="xvs_super_admin",
+        )
+        role.is_system_role = True
+        role.is_locked = True
+        role.save(update_fields=["is_system_role", "is_locked", "updated_at"])
+
+        url = self._detail_url(role.key, slug=super_admin.tenant.slug)
+        resp = _token_client(super_admin).patch(
+            url,
+            {"description": "Updated by the active super admin."},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.content)
+        role.refresh_from_db()
+        self.assertEqual(role.description, "Updated by the active super admin.")
+
     def test_permission_denied_without_grant(self):
         resp = _token_client(self.plain).get(self._list_url())
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)

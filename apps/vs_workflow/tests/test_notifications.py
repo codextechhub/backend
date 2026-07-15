@@ -24,10 +24,10 @@ from vs_workflow.services import actions as actions_service
 from vs_workflow.services import routing as routing_service
 
 
-def _user(email):
+def _user(email, first_name="Test", last_name="User"):
     from django.contrib.auth import get_user_model
     return get_user_model().objects.create_user(
-        email=email, user_type="CX_STAFF", first_name="Test", last_name="User",
+        email=email, user_type="CX_STAFF", first_name=first_name, last_name=last_name,
     )
 
 
@@ -42,8 +42,8 @@ class WorkflowNotificationTests(TestCase):
         seed_event_types()
         seed_notification_templates()
 
-        cls.requester = _user("requester@test.com")
-        cls.approver = _user("approver@test.com")
+        cls.requester = _user("requester@test.com", "Rita", "Requester")
+        cls.approver = _user("approver@test.com", "Ada", "Approver")
         cls.template = WorkflowTemplate.objects.create(
             document_type="TEST_DOC", code="default", name="Test Template",
         )
@@ -54,7 +54,8 @@ class WorkflowNotificationTests(TestCase):
             skip_if_no_approvers=False,
         )
 
-    def _instance(self, stage=None, status=WorkflowInstanceStatus.IN_PROGRESS):
+    def _instance(self, stage=None, status=WorkflowInstanceStatus.IN_PROGRESS,
+                  document_summary=None):
         ct = ContentType.objects.get_for_model(WorkflowTemplate)
         return WorkflowInstance.objects.create(
             tenant=self.requester.tenant,
@@ -66,6 +67,7 @@ class WorkflowNotificationTests(TestCase):
             requested_by=self.requester,
             current_stage=stage,
             submitted_at=timezone.now(),
+            document_summary=document_summary or {},
         )
 
     def _feed_rows(self, user, event_key):
@@ -134,15 +136,46 @@ class WorkflowNotificationTests(TestCase):
         )
 
     def test_final_approval_notifies_requester(self):
-        """Completing the last stage notifies the requester of full approval."""
-        instance = self._instance()
+        """Automatic approval uses the document summary and names the system."""
+        instance = self._instance(document_summary={
+            "title": "Manuel Ola",
+            "subtitle": "Platform user creation",
+        })
         with patch.object(routing_service, "get_handler", return_value=MagicMock()):
             with self.captureOnCommitCallbacks(execute=True):
                 routing_service._terminate_approved(instance)
 
+        rows = self._feed_rows(self.requester, "workflow.final_approved")
+        self.assertEqual(rows.count(), 1)
         self.assertEqual(
-            self._feed_rows(self.requester, "workflow.final_approved").count(), 1,
+            rows.first().body,
+            "Fully approved: 'Platform user creation: Manuel Ola' has been approved "
+            "by the system and is now complete.",
         )
+
+    def test_final_approval_notification_names_the_human_approver(self):
+        instance = self._instance(
+            stage=self.stage,
+            document_summary={"title": "REQ-0042", "subtitle": "Purchase requisition"},
+        )
+        si = WorkflowStageInstance.objects.create(
+            instance=instance, stage=self.stage,
+            status=WorkflowStageStatus.ACTIVE, attempt=1,
+            activated_at=timezone.now(),
+        )
+        WorkflowStageApprover.objects.create(
+            stage_instance=si, user=self.approver, attempt=1,
+        )
+
+        with patch.object(routing_service, "get_handler", return_value=MagicMock()):
+            with self.captureOnCommitCallbacks(execute=True):
+                actions_service.record_action(
+                    instance.id, self.approver, ActionEnum.APPROVED,
+                )
+
+        row = self._feed_rows(self.requester, "workflow.final_approved").get()
+        self.assertIn("Purchase requisition: REQ-0042", row.body)
+        self.assertIn("approved by Ada Approver", row.body)
 
     def test_template_opt_out_suppresses_notification(self):
         """A configured notification_events dict is exact intent — missing key = off."""

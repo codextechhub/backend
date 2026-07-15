@@ -20,7 +20,7 @@ from vs_workflow.exceptions import TemplateInvalidError
 from vs_workflow.handlers import get_handler
 from vs_workflow.models import (
     WorkflowInstance, WorkflowRoutePath, WorkflowStage,
-    WorkflowStageApprover, WorkflowStageInstance,
+    WorkflowStageAction, WorkflowStageApprover, WorkflowStageInstance,
 )
 from vs_workflow.services import approvers as approvers_service
 from vs_workflow.services import audit as audit_service
@@ -35,10 +35,20 @@ def _notify(instance: WorkflowInstance, event_key: str,
         return
     from vs_workflow.tasks import dispatch_notification
     instance_id = str(instance.id)
-    # Templates reference {{ document_title }}; instances carry no title, so
-    # give them the same "Type #shortid" handle the console UI uses.
+    # Prefer the domain snapshot captured by the handler at submission time.
+    # Internal tokens such as PLATFORM_USER_CREATION are implementation details,
+    # not useful notification copy.
+    summary = instance.document_summary if isinstance(instance.document_summary, dict) else {}
+    title = str(summary.get("title") or "").strip()
+    subtitle = str(summary.get("subtitle") or "").strip()
+    if title and subtitle:
+        document_title = f"{subtitle}: {title}"
+    else:
+        document_title = title or f"{instance.document_type} #{str(instance.document_object_id)[:8]}"
+    document_type = subtitle or instance.document_type.replace("_", " ").title()
     context = {
-        "document_title": f"{instance.document_type} #{str(instance.document_object_id)[:8]}",
+        "document_title": document_title,
+        "document_type": document_type,
         **context,
     }
     transaction.on_commit(lambda: dispatch_notification.delay(
@@ -319,10 +329,34 @@ def _terminate_approved(instance: WorkflowInstance) -> WorkflowInstance:
     audit_service.write(instance, AuditEventType.INSTANCE_APPROVED)
     handler = get_handler(instance.document_type)
     handler.on_approved(instance, {"template": instance.template.code})
+
+    # Name the vote that actually completed the workflow. Fully automatic
+    # workflows have no action row, so say "the system" instead of rendering
+    # the template variable as an empty string.
+    final_action = (
+        WorkflowStageAction.objects
+        .filter(
+            stage_instance__instance=instance,
+            action="APPROVED",
+            reversed_at__isnull=True,
+            is_reversal_of__isnull=True,
+        )
+        .select_related("actor")
+        .order_by("-acted_at")
+        .first()
+    )
+    if final_action is None:
+        final_approver_name = "the system"
+    else:
+        final_approver_name = (
+            (final_action.actor.full_name or "").strip()
+            or final_action.actor.email
+            or "an approver"
+        )
     # Tell the requester their submission is fully approved.
     _notify(instance, NOTIF_EVENT_FINAL_APPROVED,
             recipient_user_ids=[str(instance.requested_by_id)],
-            context={})
+            context={"final_approver_name": final_approver_name})
     return instance
 
 
@@ -373,4 +407,3 @@ def _return_to_requester(instance: WorkflowInstance, actor, comment: str,
             context={"returned_by_name": getattr(actor, "full_name", ""),
                      "return_comment": comment})
     return instance
-

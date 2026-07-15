@@ -574,12 +574,13 @@ class TenantRoleTemplateDetailView(TenantScopedRBACMixin, RetrieveModelMixin, Up
 
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
-        if instance.is_locked:
+        super_admin = is_vision_super_admin(request.user)
+        if instance.is_locked and not super_admin:
             return error_response(
                 message="This role is locked and cannot be modified.",
                 status=status.HTTP_403_FORBIDDEN,
             )
-        if instance.is_system_role:
+        if instance.is_system_role and not super_admin:
             return error_response(
                 message="System roles cannot be modified.",
                 status=status.HTTP_403_FORBIDDEN,

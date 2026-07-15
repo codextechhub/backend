@@ -27,6 +27,9 @@ python manage.py migrate
 
 # Run seeding commands AFTER migrate succeeds (all idempotent — safe every deploy)
 python manage.py seed_all_permissions
+# Canonical bulk-import templates (including Schools and Branches).
+# The command updates by stable template code, so it is safe on every deploy.
+python manage.py seed_import
 python manage.py seed_notification_event_types
 python manage.py seed_notification_templates
 python manage.py seed_notification_settings
