@@ -20,7 +20,7 @@ python manage.py collectstatic --no-input
 # ║  deploy. As soon as this deploy succeeds, delete this whole block        ║
 # ║  (down to the END marker) and commit — future deploys then just migrate. ║
 # ╚══════════════════════════════════════════════════════════════════════════╝
-RESET_DB=true python manage.py rebuild_database --yes
+# RESET_DB=true python manage.py rebuild_database --yes
 # ╚═══════════════════════════ END ONE-TIME BLOCK ═══════════════════════════╝
 
 python manage.py migrate
@@ -33,13 +33,16 @@ python manage.py seed_notification_settings
 # Product reference data: config capability catalogue + billing package plans.
 python manage.py seed_config_catalogue
 python manage.py seed_package
+# View-only Consultant platform role — re-syncs to all *.view permissions,
+# so it must run after the permission seeders above.
+python manage.py seed_consultant_role
 
 # Bootstrap the first platform superuser. Self-skips (exits cleanly) once a
 # platform-tenant staff account exists, so it is safe to leave in permanently.
 # Set SUPERUSER_EMAIL / SUPERUSER_PASSWORD in the staging environment for a real
 # credential (the fallback below is a known default — change it after first login).
-python manage.py create_superuser \
-  --email "${SUPERUSER_EMAIL:-chidera.ohanenye@codexng.com}" \
-  --password "${SUPERUSER_PASSWORD:-Admin@123456}" \
-  --first-name "${SUPERUSER_FIRST_NAME:-Chidera}" \
-  --last-name "${SUPERUSER_LAST_NAME:-Ohanenye}" \
+# python manage.py create_superuser \
+#   --email "${SUPERUSER_EMAIL:-chidera.ohanenye@codexng.com}" \
+#   --password "${SUPERUSER_PASSWORD:-Admin@123456}" \
+#   --first-name "${SUPERUSER_FIRST_NAME:-Chidera}" \
+#   --last-name "${SUPERUSER_LAST_NAME:-Ohanenye}" \
