@@ -211,6 +211,13 @@ EMAIL_CC = [
 ]
 FRONTEND_BASE_URL = config("FRONTEND_BASE_URL", default="http://localhost:3000")
 
+# Public targets used by the platform-health synthetic probes. Keep these
+# configurable per environment; the defaults are the production API domain.
+HEALTH_PROBE_BASE_URL = config(
+    "HEALTH_PROBE_BASE_URL", default="https://api.codexng.com"
+).rstrip("/")
+HEALTH_SSL_DOMAIN = config("HEALTH_SSL_DOMAIN", default="api.codexng.com")
+
 # --------------------------------------------------------------------------- #
 # Payment providers (vs_payments)                                             #
 # --------------------------------------------------------------------------- #

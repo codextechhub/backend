@@ -7,6 +7,7 @@ collector flush, and RBAC gating on the API.
 from __future__ import annotations
 
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.urls import reverse
@@ -169,6 +170,29 @@ class DailyRollupTests(TestCase):
         self.assertEqual(roll.total_checks, 10)
         self.assertEqual(roll.failed_checks, 2)
         self.assertAlmostEqual(float(roll.uptime_pct), 80.0, delta=0.01)
+
+
+class HealthSeedTests(TestCase):
+    @patch("vs_health.seed.SSL_DOMAIN", "api.codexng.com")
+    def test_seed_repairs_stale_ssl_monitor_target(self):
+        from vs_health.seed import seed_checks
+
+        svc = MonitoredService.objects.create(
+            key="dns", name="DNS / SSL", kind="external", sort_order=1
+        )
+        check = UptimeCheck.objects.create(
+            service=svc,
+            name="SSL certificate",
+            check_type=CheckType.SSL,
+            target="api.codexvision.io",
+        )
+
+        seed_checks()
+
+        check.refresh_from_db()
+        self.assertEqual(check.target, "api.codexng.com")
+        self.assertEqual(check.expected["critical_days"], 5)
+        self.assertEqual(check.interval_sec, 3600)
 
 
 class RBACGatingTests(APITestCase):

@@ -16,8 +16,8 @@ from django.conf import settings
 from .constants import PERM_VIEW, PERM_MANAGE
 
 
-PROBE_BASE = getattr(settings, "HEALTH_PROBE_BASE_URL", "https://api.codexvision.io")
-SSL_DOMAIN = getattr(settings, "HEALTH_SSL_DOMAIN", "api.codexvision.io")
+PROBE_BASE = getattr(settings, "HEALTH_PROBE_BASE_URL", "https://api.codexng.com")
+SSL_DOMAIN = getattr(settings, "HEALTH_SSL_DOMAIN", "api.codexng.com")
 
 SERVICES = [
     ("web", "Web Frontend", "Edge", "Tier 1", "internal", 10),
@@ -96,7 +96,10 @@ def seed_checks(stdout=None):
         s = svc.get(service_key)
         if not s:
             return
-        UptimeCheck.objects.get_or_create(
+        # These checks are system configuration. Re-seeding must repair stale
+        # targets (notably the former api.codexvision.io SSL domain) rather
+        # than preserving them forever.
+        UptimeCheck.objects.update_or_create(
             service=s, name=name,
             defaults={"check_type": check_type, "target": target,
                       "expected": expected or {}, "interval_sec": interval},
