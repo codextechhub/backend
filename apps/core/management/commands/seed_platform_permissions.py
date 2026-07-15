@@ -52,9 +52,14 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
         "impersonation",
         "Audited support impersonation",
         [
-            ("start", "Start an impersonation session into a tenant", True, _CRITICAL),
-            ("end",   "End an impersonation session",                 True, _CRITICAL),
-            ("view",  "View impersonation sessions",                  True, _CRITICAL),
+            # Scoped start: the target's tenant kind decides which key is required
+            # (see ImpersonationSessionViewSet.get_permissions). start_all covers
+            # both CX and school; start_cx / start_school narrow it.
+            ("start_all",    "Impersonate any user, including CX staff.", True, _CRITICAL),
+            ("start_cx",     "Impersonate CX (platform) staff only.",     True, _CRITICAL),
+            ("start_school", "Impersonate school users only.",            True, _CRITICAL),
+            ("end",          "End an impersonation session.",             True, _CRITICAL),
+            ("view",         "View impersonation sessions.",              True, _CRITICAL),
         ],
     ),
     (

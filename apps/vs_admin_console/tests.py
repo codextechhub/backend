@@ -34,8 +34,9 @@ from .models import ImpersonationSession
 from .services import end_impersonations_for_tenant, end_impersonations_for_user
 
 
+# start_all covers every target kind; end/view are scope-agnostic.
 IMPERSONATION_KEYS = (
-    "platform.impersonation.start",
+    "platform.impersonation.start_all",
     "platform.impersonation.end",
     "platform.impersonation.view",
 )
@@ -145,6 +146,56 @@ class ImpersonationStartTests(ImpersonationTestBase):
         self.assertEqual(resp.status_code, 201)
         session = ImpersonationSession.objects.get()
         self.assertEqual(session.tenant, self.codex)
+
+
+class ImpersonationScopeTests(ImpersonationTestBase):
+    """The tiered start permissions: the target's tenant kind decides which key
+    is required. start_all → anyone; start_cx → CX staff only; start_school →
+    school users only."""
+
+    def _scoped_admin(self, email, *scope_keys):
+        admin = make_vision_user(email=email)
+        _grant_platform(admin, ("platform.impersonation.view", *scope_keys))
+        return admin
+
+    def test_no_start_key_cannot_impersonate(self):
+        # view-only: may list sessions, but starting one is denied.
+        viewer = self._scoped_admin("viewonly@codex.test")
+        self.assertEqual(self.start_session(actor=viewer).status_code, 403)
+
+    def test_start_cx_can_impersonate_cx_but_not_school(self):
+        admin = self._scoped_admin("cxonly@codex.test", "platform.impersonation.start_cx")
+        codex_target = make_vision_user(email="cxtarget@codex.test")
+        # CX target (PLATFORM tenant) → allowed.
+        self.assertEqual(
+            self.start_session(actor=admin, tenant_slug=self.codex.slug, target=codex_target).status_code,
+            201,
+        )
+        # School target → denied (needs start_school or start_all).
+        ImpersonationSession.objects.all().delete()
+        self.assertEqual(self.start_session(actor=admin).status_code, 403)
+
+    def test_start_school_can_impersonate_school_but_not_cx(self):
+        admin = self._scoped_admin("schoolonly@codex.test", "platform.impersonation.start_school")
+        # School target → allowed.
+        self.assertEqual(self.start_session(actor=admin).status_code, 201)
+        # CX target → denied (needs start_cx or start_all).
+        ImpersonationSession.objects.all().delete()
+        codex_target = make_vision_user(email="cxtarget2@codex.test")
+        self.assertEqual(
+            self.start_session(actor=admin, tenant_slug=self.codex.slug, target=codex_target).status_code,
+            403,
+        )
+
+    def test_start_all_covers_both_kinds(self):
+        admin = self._scoped_admin("allscopes@codex.test", "platform.impersonation.start_all")
+        self.assertEqual(self.start_session(actor=admin).status_code, 201)
+        ImpersonationSession.objects.all().delete()
+        codex_target = make_vision_user(email="cxtarget3@codex.test")
+        self.assertEqual(
+            self.start_session(actor=admin, tenant_slug=self.codex.slug, target=codex_target).status_code,
+            201,
+        )
 
 
 class ImpersonatedRequestTests(ImpersonationTestBase):

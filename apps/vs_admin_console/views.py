@@ -41,12 +41,29 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     platform_cross_tenant_param = True
 
     def get_permissions(self):
-        self.rbac_permission = {
-            "start": "platform.impersonation.start",
-            "end": "platform.impersonation.end",
-            "list": "platform.impersonation.view",
-            "retrieve": "platform.impersonation.view",
-        }.get(self.action, "platform.impersonation.view")
+        if self.action == "start":
+            # The required scope depends on WHO is being impersonated: the target
+            # lives in the asserted tenant (request.tenant), so its kind decides
+            # the key. Any-of — start_all always suffices; the narrow key covers
+            # only its own tenant kind. request.tenant is bound by auth before
+            # permission checks run.
+            tenant = getattr(self.request, "tenant", None)
+            if getattr(tenant, "kind", None) == "PLATFORM":
+                self.rbac_permission = [
+                    "platform.impersonation.start_all",
+                    "platform.impersonation.start_cx",
+                ]
+            else:
+                self.rbac_permission = [
+                    "platform.impersonation.start_all",
+                    "platform.impersonation.start_school",
+                ]
+        else:
+            self.rbac_permission = {
+                "end": "platform.impersonation.end",
+                "list": "platform.impersonation.view",
+                "retrieve": "platform.impersonation.view",
+            }.get(self.action, "platform.impersonation.view")
         return super().get_permissions()
 
     def get_queryset(self):
@@ -78,6 +95,13 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         with transaction.atomic():
             tenant = request.tenant
             actor = getattr(request, "actor_user", request.user)
+            # Impersonation is a platform capability: only CX (PLATFORM-tenant)
+            # staff may impersonate, regardless of which start key a role carries.
+            if getattr(getattr(actor, "tenant", None), "kind", None) != "PLATFORM":
+                return error_response(
+                    message="Only platform staff may impersonate.",
+                    status=status.HTTP_403_FORBIDDEN,
+                )
             if ImpersonationSession.objects.filter(
                 staff_user=actor, status="ACTIVE", ends_at__gt=started_at,
             ).exists():
