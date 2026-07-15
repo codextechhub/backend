@@ -633,8 +633,11 @@ class TenantUserRoleAssignmentListCreateView(TenantScopedRBACMixin, CreateModelM
         qp = self.request.query_params
         if user_id := qp.get("user"):
             qs = qs.filter(user_id=user_id)
-        if role_id := qp.get("role"):
-            qs = qs.filter(role_id=role_id)
+        if role := qp.get("role"):
+            if role.isdigit():
+                qs = qs.filter(role_id=role)
+            else:
+                qs = qs.filter(role__key=role)
         if assignment_status := qp.get("assignment_status"):
             qs = qs.filter(assignment_status=assignment_status)
         return qs
