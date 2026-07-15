@@ -5,8 +5,9 @@ Run once after initial setup (safe to re-run — uses get_or_create):
 
     python manage.py seed_import_permissions
 
-Also grants every import permission to both platform administration roles so
-super-admins and platform admins can exercise all import functionality.
+The super-admin receives every import permission. The platform-admin receives
+only template-management permissions; other import operations must be granted
+deliberately.
 """
 from __future__ import annotations
 
@@ -147,15 +148,20 @@ class Command(BaseCommand):
                     created_count += 1
                     self.stdout.write(f"  + {key}")
 
-        # Import templates and batches are platform-owned, so both platform
-        # administration roles receive the complete import permission set.
+        # The super-admin is unrestricted. The platform-admin gets only the
+        # template permissions required for the template administration UI.
         codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
         if codex is None:
             self.stdout.write(self.style.WARNING(
                 "\n  ⚠  Codex platform tenant not found — run migrations first; grants skipped."
             ))
         else:
-            permissions = list(Permission.objects.filter(key__in=all_keys))
+            role_permission_keys = {
+                "xvs_super_admin": set(all_keys),
+                "xvs_platform_admin": {
+                    key for key in all_keys if key.startswith("import.templates.")
+                },
+            }
             for role_key, role_name in PLATFORM_ROLE_NAMES.items():
                 role, _ = TenantRoleTemplate.objects.get_or_create(
                     tenant=codex,
@@ -167,8 +173,19 @@ class Command(BaseCommand):
                         "is_locked": True,
                     },
                 )
+                allowed_keys = role_permission_keys[role_key]
+
+                # Repair deployments that previously gave platform-admin every
+                # import permission. This role is system-managed, so its seeded
+                # import grants must match the intended least-privilege set.
+                TenantRolePermission.objects.filter(
+                    role=role,
+                    permission__key__startswith="import.",
+                    granted=True,
+                ).exclude(permission_id__in=allowed_keys).delete()
+
                 granted = 0
-                for perm in permissions:
+                for perm in Permission.objects.filter(key__in=allowed_keys):
                     role_perm, role_perm_created = TenantRolePermission.objects.get_or_create(
                         role=role,
                         permission=perm,

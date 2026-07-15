@@ -27,23 +27,13 @@ python manage.py migrate
 
 # Run seeding commands AFTER migrate succeeds (all idempotent — safe every deploy)
 python manage.py seed_all_permissions
-# Canonical bulk-import templates (including Schools and Branches).
-# The command updates by stable template code, so it is safe on every deploy.
-python manage.py seed_import
+# python manage.py seed_import
 python manage.py seed_notification_event_types
 python manage.py seed_notification_templates
 python manage.py seed_notification_settings
 # Product reference data: config capability catalogue + billing package plans.
 python manage.py seed_config_catalogue
 python manage.py seed_package
-# View-only Consultant platform role — re-syncs to all *.view permissions,
-# so it must run after the permission seeders above.
-python manage.py seed_consultant_role
-
-# Repair the CX user left pending when staging was missing the platform-user
-# approval template. The command is idempotent and only targets this email, so
-# keeping it here is safe after the user has been submitted or invited.
-python manage.py repair_pending_user_approvals --email manuelola6@gmail.com
 
 # Bootstrap the first platform superuser. Self-skips (exits cleanly) once a
 # platform-tenant staff account exists, so it is safe to leave in permanently.
