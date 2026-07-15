@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import mimetypes
+
 from django.db.models import Count, Q
+from django.http import FileResponse
 from django.shortcuts import get_object_or_404
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -18,7 +21,7 @@ from .constants import (
     TicketPriority,
     TicketStatus,
 )
-from .models import Ticket, TicketComment
+from .models import Ticket, TicketAttachment, TicketComment
 from .permissions import TICKET_PERMISSIONS
 from .serializers import (
     TicketAssignSerializer,
@@ -209,6 +212,38 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             message="Attachment added successfully.",
             data=TicketAttachmentSerializer(attachment, context={"request": request}).data,
             status=status.HTTP_201_CREATED,
+        )
+
+    @action(
+        detail=True,
+        methods=["get"],
+        url_path=r"attachments/(?P<attachment_id>[^/.]+)/download",
+        url_name="attachment-download",
+    )
+    def attachment_download(self, request, pk=None, attachment_id=None):
+        ticket = self.get_object()
+        attachment = get_object_or_404(
+            TicketAttachment.objects.select_related("comment"),
+            pk=attachment_id,
+            ticket=ticket,
+        )
+        if (
+            attachment.comment_id
+            and attachment.comment.visibility == CommentVisibility.INTERNAL
+            and not visibility.can_view_internal_notes(request.user, ticket)
+        ):
+            raise NotFound("No such attachment.")
+        if not attachment.file:
+            raise NotFound("No file is attached.")
+
+        content_type = attachment.content_type or mimetypes.guess_type(
+            attachment.original_filename
+        )[0] or "application/octet-stream"
+        return FileResponse(
+            attachment.file.open("rb"),
+            content_type=content_type,
+            as_attachment=not content_type.startswith("image/"),
+            filename=attachment.original_filename,
         )
 
     @action(detail=True, methods=["get"], url_path="audit")

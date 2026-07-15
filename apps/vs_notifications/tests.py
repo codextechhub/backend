@@ -293,6 +293,27 @@ class DispatchTests(_NotifFixture):
         self.assertNotIn("metadata", NotificationDetailSerializer(n).data)
         self.assertNotIn("metadata", NotificationHistoryDetailSerializer(n).data)
 
+    def test_feed_exposes_body_and_allowlisted_action_without_metadata(self):
+        from .serializers import NotificationListSerializer
+
+        rcpt = self._recipient()
+        notification = Notification.objects.create(
+            recipient=rcpt,
+            tenant=rcpt.tenant,
+            event_type=self._event("ticket.commented"),
+            channel=ChannelChoices.IN_APP,
+            subject="",
+            body="Ada commented on ticket TCK-0001.",
+            status=NotificationStatus.SENT,
+            metadata={"ticket_id": 42, "secret": "never-expose"},
+        )
+
+        data = NotificationListSerializer(notification).data
+        self.assertEqual(data["subject"], notification.event_type.label)
+        self.assertEqual(data["body"], "Ada commented on ticket TCK-0001.")
+        self.assertEqual(data["action_url"], "/support/tickets/42")
+        self.assertNotIn("metadata", data)
+
     def test_html_body_rendered_and_stored(self):
         with mock.patch("vs_notifications.tasks.deliver_email_notification.delay"):
             ids = NotificationService.send(

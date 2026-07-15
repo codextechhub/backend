@@ -37,10 +37,12 @@ def visible_tickets_qs(user):
 
     qs = qs.filter(tenant=user.tenant)
 
-    # Requesters and assignees always see their own tickets; school-wide
-    # visibility requires the seeded view grant on the user's school.
+    # A view grant is deliberately not school-wide ticket access: ticket
+    # conversations can contain personal or operationally sensitive details.
+    # Participants see their own threads, while same-tenant ticket managers
+    # are the only non-participants allowed into them.
     visibility = Q(requester=user) | Q(assignee=user)
-    if has_ticket_permission(user, TicketPermission.VIEW, tenant=user.tenant):
+    if has_ticket_permission(user, TicketPermission.MANAGE, tenant=user.tenant):
         visibility |= Q(tenant=user.tenant)
     return qs.filter(visibility)
 
@@ -54,9 +56,7 @@ def can_view_ticket(user, ticket: Ticket) -> bool:
         return False
     if ticket.requester_id == user.pk or ticket.assignee_id == user.pk:
         return True
-    return bool(
-        has_ticket_permission(user, TicketPermission.VIEW, tenant=ticket.tenant)
-    )
+    return has_ticket_permission(user, TicketPermission.MANAGE, tenant=ticket.tenant)
 
 
 def can_manage_ticket(user, ticket: Ticket) -> bool:

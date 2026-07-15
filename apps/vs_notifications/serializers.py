@@ -33,10 +33,48 @@ from .services.render import validate_template_syntax, render_notification_templ
 # Notification — feed (list)
 # ---------------------------------------------------------------------------
 
-class NotificationListSerializer(serializers.ModelSerializer):
+def _notification_action_url(notification):
+    """Return only allowlisted application routes; never expose raw metadata."""
+    event_key = notification.event_type.key
+    metadata = notification.metadata or {}
+    if event_key.startswith("ticket.") and metadata.get("ticket_id"):
+        return f"/support/tickets/{metadata['ticket_id']}"
+    if event_key.startswith("workflow.") and metadata.get("workflow_instance_id"):
+        instance_id = metadata["workflow_instance_id"]
+        if event_key in {"workflow.stage_activated", "workflow.escalated"}:
+            return f"/workflow/approvals/{instance_id}"
+        return f"/workflow/my-submissions/{instance_id}"
+    if event_key.startswith("import."):
+        return "/data-imports/batches"
+    if event_key.startswith(("user.", "team.")):
+        return "/team-management"
+    if event_key.startswith("security."):
+        return "/me/security"
+    if event_key.startswith("finance."):
+        return "/finance"
+    if event_key.startswith("payments."):
+        return "/finance"
+    if event_key.startswith("procurement."):
+        return "/procurement"
+    return ""
+
+
+class NotificationPresentationMixin(serializers.ModelSerializer):
+    subject = serializers.SerializerMethodField()
+    action_url = serializers.SerializerMethodField()
+
+    def get_subject(self, obj):
+        return obj.subject.strip() or obj.event_type.label
+
+    def get_action_url(self, obj):
+        return _notification_action_url(obj)
+
+
+class NotificationListSerializer(NotificationPresentationMixin):
     """
     Compact serializer for the in-app notification feed.
-    Omits body for performance — clients fetch the detail endpoint on click.
+    Includes the already-rendered plain-text body so the feed is useful without
+    a second request or a detail drawer.
     """
     event_type_key   = serializers.CharField(source="event_type.key",   read_only=True)
     event_type_label = serializers.CharField(source="event_type.label", read_only=True)
@@ -49,6 +87,8 @@ class NotificationListSerializer(serializers.ModelSerializer):
             "event_type_label",
             "channel",
             "subject",
+            "body",
+            "action_url",
             "is_read",
             "created_at",
         ]
@@ -59,7 +99,7 @@ class NotificationListSerializer(serializers.ModelSerializer):
 # Notification — detail
 # ---------------------------------------------------------------------------
 
-class NotificationDetailSerializer(serializers.ModelSerializer):
+class NotificationDetailSerializer(NotificationPresentationMixin):
     """
     Full notification record including rendered body.
     Used for single-record retrieval (GET /notifications/{id}/).
@@ -78,6 +118,7 @@ class NotificationDetailSerializer(serializers.ModelSerializer):
             "channel",
             "subject",
             "body",
+            "action_url",
             "status",
             "is_read",
             "read_at",

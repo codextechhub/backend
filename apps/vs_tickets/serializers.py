@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from rest_framework import serializers
+from rest_framework.reverse import reverse
 
 from core.storage import ALLOWED_EXTENSIONS
 from vs_user.models import User
@@ -37,8 +38,11 @@ class TicketAttachmentSerializer(serializers.ModelSerializer):
         if not obj.file:
             return ""
         request = self.context.get("request")
-        url = obj.file.url
-        return request.build_absolute_uri(url) if request else url
+        return reverse(
+            "ticket-attachment-download",
+            kwargs={"pk": obj.ticket_id, "attachment_id": obj.pk},
+            request=request,
+        )
 
 
 class TicketCommentSerializer(serializers.ModelSerializer):
@@ -75,9 +79,10 @@ class TicketSerializer(serializers.ModelSerializer):
 class TicketDetailSerializer(TicketSerializer):
     comments = serializers.SerializerMethodField()
     attachments = serializers.SerializerMethodField()
+    capabilities = serializers.SerializerMethodField()
 
     class Meta(TicketSerializer.Meta):
-        fields = TicketSerializer.Meta.fields + ["comments", "attachments"]
+        fields = TicketSerializer.Meta.fields + ["comments", "attachments", "capabilities"]
 
     def _sees_internal(self, obj) -> bool:
         if not hasattr(self, "_sees_internal_cache"):
@@ -97,6 +102,15 @@ class TicketDetailSerializer(TicketSerializer):
             # Files hanging off internal notes must stay as hidden as the notes.
             attachments = attachments.exclude(comment__visibility=CommentVisibility.INTERNAL)
         return TicketAttachmentSerializer(attachments, many=True, context=self.context).data
+
+    def get_capabilities(self, obj):
+        from .services.visibility import can_attach_to_ticket, can_comment_on_ticket
+
+        user = self.context["request"].user
+        return {
+            "can_comment": can_comment_on_ticket(user, obj),
+            "can_attach": can_attach_to_ticket(user, obj),
+        }
 
 
 class TicketCreateSerializer(serializers.Serializer):

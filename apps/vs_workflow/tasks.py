@@ -36,6 +36,7 @@ def dispatch_notification(*, instance_id: str, event_key: str,
             event_key=event_key,
             recipients=recipients,
             school=instance.school,
+            metadata={"workflow_instance_id": str(instance.id)},
             context={"workflow_instance_id": str(instance.id),
                      "document_type": instance.document_type,
                      "document_id": instance.document_object_id, **(context or {})})

@@ -163,7 +163,7 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
         )
         self.assertEqual(reply.status_code, 201)
 
-    def test_visibility_is_requester_school_and_support_scoped(self):
+    def test_visibility_is_participant_manager_and_support_scoped(self):
         mine = ticket_svc.create_ticket(
             actor=self.requester, title="Mine", description="x", category="HELP", priority="LOW",
         )
@@ -171,7 +171,7 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
             actor=self.outsider, title="Other", description="x", category="HELP", priority="LOW",
         )
 
-        self.assertIn(mine, visibility.visible_tickets_qs(self.peer))
+        self.assertNotIn(mine, visibility.visible_tickets_qs(self.peer))
         self.assertNotIn(other, visibility.visible_tickets_qs(self.peer))
         self.assertIn(mine, visibility.visible_tickets_qs(self.support))
         self.assertIn(other, visibility.visible_tickets_qs(self.support))
@@ -191,13 +191,18 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
         self.assertNotIn(other, visibility.visible_tickets_qs(self.peer))
         self.assertFalse(visibility.can_view_ticket(self.peer, other))
 
-    def test_school_wide_visibility_requires_view_grant(self):
+    def test_school_wide_visibility_is_not_granted_by_view_permission(self):
         mine = ticket_svc.create_ticket(
             actor=self.requester, title="Mine", description="x", category="HELP", priority="LOW",
         )
         # Same school, but no role grants: only their own tickets are visible.
         self.assertNotIn(mine, visibility.visible_tickets_qs(self.norole))
         self.assertFalse(visibility.can_view_ticket(self.norole, mine))
+
+        # Even a peer with the ordinary view/comment/attach grants must not
+        # enter another employee's private ticket thread.
+        self.assertNotIn(mine, visibility.visible_tickets_qs(self.peer))
+        self.assertFalse(visibility.can_view_ticket(self.peer, mine))
 
     def test_assign_and_transition_ticket(self):
         ticket = ticket_svc.create_ticket(
@@ -245,6 +250,20 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
         self.client_api.force_authenticate(self.outsider)
         response = self.client_api.get(f"/v1/support/tickets/{self.ticket.pk}/")
         self.assertEqual(response.status_code, 404)
+
+    def test_same_tenant_peer_cannot_list_or_open_another_users_ticket(self):
+        self.client_api.force_authenticate(self.peer)
+        listing = self.client_api.get("/v1/support/tickets/").json()["data"]
+        rows = listing.get("results", listing) if isinstance(listing, dict) else listing
+        self.assertNotIn(self.ticket.pk, [row["id"] for row in rows])
+        self.assertEqual(
+            self.client_api.get(f"/v1/support/tickets/{self.ticket.pk}/").status_code,
+            404,
+        )
+        self.assertEqual(
+            self.client_api.get(f"/v1/support/tickets/{self.ticket.pk}/comments/").status_code,
+            404,
+        )
 
     def test_requester_cannot_transition_own_ticket(self):
         self.client_api.force_authenticate(self.requester)
@@ -329,6 +348,24 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
         self.client_api.force_authenticate(self.support)
         data = self.client_api.get(f"/v1/support/tickets/{self.ticket.pk}/").json()["data"]
         self.assertIn("secret.pdf", [row["original_filename"] for row in data["attachments"]])
+
+    def test_attachment_download_is_authenticated_and_ticket_scoped(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        attachment = ticket_svc.add_attachment(
+            self.ticket,
+            actor=self.requester,
+            file_obj=SimpleUploadedFile("screen.png", b"fake-png", content_type="image/png"),
+        )
+        url = f"/v1/support/tickets/{self.ticket.pk}/attachments/{attachment.pk}/download/"
+
+        self.client_api.force_authenticate(self.requester)
+        response = self.client_api.get(url)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "image/png")
+
+        self.client_api.force_authenticate(self.peer)
+        self.assertEqual(self.client_api.get(url).status_code, 404)
 
     def test_empty_comment_list_shape(self):
         self.client_api.force_authenticate(self.requester)
