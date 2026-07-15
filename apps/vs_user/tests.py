@@ -7,11 +7,173 @@ Covers the security-review fixes:
 - B10: logout ends only the submitted session, not every device.
 - B11: refresh rotation updates only the matching session's JTI.
 """
+from io import StringIO
+from unittest import mock
+
+from django.core.management import call_command
 from django.test import TestCase
 from rest_framework.test import APIClient
 
 from vs_user.models import AccountLockout, AuthAttempt, LoginSession, User
 from vs_user.services.auth import LoginService
+
+
+class PlatformUserCreationTests(TestCase):
+    """CX hires receive staff IDs and failed workflow setup is atomic."""
+
+    def setUp(self):
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
+
+        self.tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
+        self.actor = make_cx_user(email="creator@codex.test")
+        self.actor.first_name = "Sole"
+        self.actor.last_name = "Admin"
+        self.actor.save(update_fields=["first_name", "last_name", "updated_at"])
+        self.super_role = TenantRoleTemplate.objects.create(
+            tenant=self.tenant, key="xvs_super_admin", name="XVS Super Admin",
+        )
+        self.hire_role = TenantRoleTemplate.objects.create(
+            tenant=self.tenant, key="xvs_platform_admin", name="Platform Admin",
+        )
+        TenantUserRoleAssignment.objects.create(
+            tenant=self.tenant, user=self.actor, role=self.super_role,
+            assignment_status="ACTIVE",
+        )
+
+    def _validated_data(self, email, employee_id=None):
+        profile_prefill = {}
+        if employee_id:
+            profile_prefill["employee_id"] = employee_id
+        return {
+            "email": email,
+            "first_name": "New",
+            "last_name": "Hire",
+            "gender": "MALE",
+            "phone": "08012345678",
+            "tenant": self.tenant,
+            "user_type": "CX_STAFF",
+            "role": self.hire_role.name,
+            "role_instance": self.hire_role,
+            "branch": None,
+            "position_instance": None,
+            "profile_prefill": profile_prefill,
+        }
+
+    def test_missing_employee_ids_are_generated_sequentially_before_approval(self):
+        from vs_user.services.user import UserCreationService
+
+        first = UserCreationService.create_pending(
+            self._validated_data("first.hire@codex.test"), self.actor,
+        )
+        second = UserCreationService.create_pending(
+            self._validated_data("second.hire@codex.test"), self.actor,
+        )
+
+        self.assertEqual(first.platform_staff_profile.employee_id, "CX-1")
+        self.assertEqual(second.platform_staff_profile.employee_id, "CX-2")
+        self.assertEqual(first.status, User.Status.PENDING_APPROVAL)
+
+    def test_explicit_employee_id_is_preserved(self):
+        from vs_user.services.user import UserCreationService
+
+        user = UserCreationService.create_pending(
+            self._validated_data("manual.id@codex.test", "CX-42"), self.actor,
+        )
+
+        self.assertEqual(user.platform_staff_profile.employee_id, "CX-42")
+
+    def test_local_nigerian_phone_number_is_accepted(self):
+        from types import SimpleNamespace
+        from vs_user.serializers import UserCreateSerializer
+
+        request = SimpleNamespace(user=self.actor, tenant=self.tenant)
+        serializer = UserCreateSerializer(data={
+            "first_name": "Local",
+            "last_name": "Phone",
+            "email": "local.phone@codex.test",
+            "gender": "FEMALE",
+            "phone": "08012345678",
+            "role": self.hire_role.key,
+        }, context={"request": request})
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["phone"], "08012345678")
+
+    def test_workflow_failure_rolls_back_the_pending_user(self):
+        from vs_workflow.exceptions import TemplateNotFoundError
+
+        client = APIClient()
+        client.force_authenticate(user=self.actor)
+        with mock.patch(
+            "vs_user.views.accounts._wf_submit",
+            side_effect=TemplateNotFoundError("missing template"),
+        ):
+            response = client.post("/v1/user/users/", {
+                "first_name": "Rolled",
+                "last_name": "Back",
+                "email": "rolled.back@codex.test",
+                "gender": "MALE",
+                "phone": "08012345678",
+                "role": self.hire_role.key,
+            }, format="json")
+
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(User.objects.filter(email="rolled.back@codex.test").exists())
+
+    def test_sole_admin_creation_auto_approves_and_sends_invitation(self):
+        from vs_user.models import UserInvitation
+
+        client = APIClient()
+        client.force_authenticate(user=self.actor)
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
+            response = client.post("/v1/user/users/", {
+                "first_name": "Auto",
+                "last_name": "Approved",
+                "email": "auto.approved@codex.test",
+                "gender": "FEMALE",
+                "phone": "08012345678",
+                "role": self.hire_role.key,
+            }, format="json")
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["workflow_instance"]["status"], "APPROVED")
+        user = User.objects.get(email="auto.approved@codex.test")
+        self.assertEqual(user.status, User.Status.PENDING)
+        self.assertTrue(UserInvitation.objects.filter(user=user).exists())
+
+    def test_repair_command_submits_an_existing_orphan_once(self):
+        from vs_user.models import UserInvitation
+        from vs_user.services.user import UserCreationService
+        from vs_workflow.models import WorkflowInstance
+
+        orphan = UserCreationService.create_pending(
+            self._validated_data("orphaned.hire@codex.test"), self.actor,
+        )
+        orphan.platform_staff_profile.employee_id = None
+        orphan.platform_staff_profile.save(update_fields=["employee_id", "updated_at"])
+
+        output = StringIO()
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay"):
+            call_command(
+                "repair_pending_user_approvals",
+                email=orphan.email,
+                stdout=output,
+            )
+            call_command(
+                "repair_pending_user_approvals",
+                email=orphan.email,
+                stdout=output,
+            )
+
+        orphan.refresh_from_db()
+        self.assertEqual(orphan.status, User.Status.PENDING)
+        self.assertIsNotNone(orphan.platform_staff_profile.employee_id)
+        self.assertTrue(UserInvitation.objects.filter(user=orphan).exists())
+        self.assertEqual(
+            WorkflowInstance.objects.filter(document_object_id=str(orphan.pk)).count(),
+            1,
+        )
 
 
 class UserListScopeTests(TestCase):

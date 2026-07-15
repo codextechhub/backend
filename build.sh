@@ -37,6 +37,11 @@ python manage.py seed_package
 # so it must run after the permission seeders above.
 python manage.py seed_consultant_role
 
+# Repair the CX user left pending when staging was missing the platform-user
+# approval template. The command is idempotent and only targets this email, so
+# keeping it here is safe after the user has been submitted or invited.
+python manage.py repair_pending_user_approvals --email manuelola6@gmail.com
+
 # Bootstrap the first platform superuser. Self-skips (exits cleanly) once a
 # platform-tenant staff account exists, so it is safe to leave in permanently.
 # Set SUPERUSER_EMAIL / SUPERUSER_PASSWORD in the staging environment for a real

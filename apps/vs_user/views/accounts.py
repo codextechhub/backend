@@ -11,6 +11,7 @@
 #   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet
 
 from __future__ import annotations
+from django.db import transaction
 from django.db.models import Prefetch, Q
 from rest_framework import status, viewsets
 from rest_framework.exceptions import ValidationError
@@ -180,12 +181,16 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
         # Workflow gate only applies to platform (CX_STAFF) user creation.
         if serializer.validated_data.get("user_type") == User.UserType.CX_STAFF:
-            user = UserCreationService.create_pending(
-                validated_data=serializer.validated_data,
-                requesting_user=request.user,
-                request=request,
-            )
-            wf_instance = _wf_submit(document=user, requested_by=request.user)
+            # User, role/profile setup, workflow submission, and any immediate
+            # no-approver approval are one unit. A missing/invalid template must
+            # never leave an orphaned PENDING_APPROVAL account behind.
+            with transaction.atomic():
+                user = UserCreationService.create_pending(
+                    validated_data=serializer.validated_data,
+                    requesting_user=request.user,
+                    request=request,
+                )
+                wf_instance = _wf_submit(document=user, requested_by=request.user)
             return Response({
                 "user": UserReadSerializer(user).data,
                 "workflow_instance": _WFInstanceSerializer(wf_instance).data,

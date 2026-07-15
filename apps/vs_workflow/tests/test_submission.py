@@ -141,3 +141,19 @@ class TemplateCascadeTests(TestCase):
             pk = "x"
         with self.assertRaises(InvalidInstanceStateError):
             submit_for_approval(NoTypDoc(), MagicMock())
+
+
+class PlatformUserCreationTemplateTests(TestCase):
+    def test_default_template_is_seeded_for_the_platform_tenant(self):
+        from vs_workflow.models import WorkflowTemplate
+
+        template = WorkflowTemplate.objects.get(
+            tenant__slug="codex",
+            document_type="PLATFORM_USER_CREATION",
+            code="p-user-creation",
+        )
+        stage = template.stages.get(code="platform-admin-approval")
+
+        self.assertEqual(stage.approver_permission_key, "platform.team.create")
+        self.assertEqual(stage.approver_scope, "PLATFORM")
+        self.assertTrue(stage.skip_if_no_approvers)

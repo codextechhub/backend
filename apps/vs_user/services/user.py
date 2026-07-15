@@ -18,6 +18,26 @@ from vs_rbac.models import TenantUserRoleAssignment
 class UserCreationService:
 
     @staticmethod
+    def _next_employee_id(tenant) -> str:
+        """Return the next CX-N staff ID while serialising concurrent hires."""
+        from django.db.models import IntegerField, Max
+        from django.db.models.functions import Cast, Substr
+        from vs_tenants.models import Tenant
+        from ..models import PlatformStaffProfile
+
+        # Lock one stable row so two concurrent creates cannot both choose the
+        # same suffix. The profile's unique constraint remains the final guard.
+        Tenant.objects.select_for_update().get(pk=tenant.pk)
+        highest = (
+            PlatformStaffProfile.objects
+            .filter(employee_id__regex=r"^CX-[0-9]+$")
+            .annotate(sequence=Cast(Substr("employee_id", 4), IntegerField()))
+            .aggregate(highest=Max("sequence"))["highest"]
+            or 0
+        )
+        return f"CX-{highest + 1}"
+
+    @staticmethod
     @transaction.atomic
     def create_pending(validated_data: dict, requesting_user, request=None) -> User:
         """Creates the User record in PENDING_APPROVAL status and assigns the role.
@@ -59,15 +79,23 @@ class UserCreationService:
         )
 
         if user.user_type == User.UserType.CX_STAFF:
-            # If HR fields were supplied, create the profile now and prefill it.
+            from ..models import PlatformStaffProfile
+
+            # Every CX hire must have a staff profile and employee ID before
+            # entering approval. Preserve an explicitly supplied ID; otherwise
+            # allocate the next CX-N value under the tenant lock above.
+            profile_prefill["employee_id"] = (
+                profile_prefill.get("employee_id")
+                or UserCreationService._next_employee_id(user.tenant)
+            )
+
+            # Create the profile now and prefill any supplied HR fields.
             # InvitationService.create() later get_or_creates this same profile
             # (idempotent), so the only effect of doing it here is that the
             # captured-at-creation HR data is already present.
-            if profile_prefill:
-                from ..models import PlatformStaffProfile
-                PlatformStaffProfile.objects.update_or_create(
-                    user=user, defaults=profile_prefill,
-                )
+            PlatformStaffProfile.objects.update_or_create(
+                user=user, defaults=profile_prefill,
+            )
 
             # Slot the hire into their organogram seat, if one was supplied. This
             # writes the effective-dated primary PositionAssignment now; when the
