@@ -88,7 +88,9 @@ def assign_ticket(ticket: Ticket, *, actor, assignee: User | None) -> Ticket:
     if not can_assign_ticket(actor, ticket):
         raise PermissionDenied("You cannot assign this ticket.")
     if assignee is not None and not is_support_user(assignee):
-        raise ValidationError("Tickets can only be assigned to support staff.")
+        raise ValidationError({
+            "assignee_id": ["Tickets can only be assigned to active staff who can manage tickets."],
+        })
 
     with transaction.atomic():
         before = snapshot_ticket(ticket)

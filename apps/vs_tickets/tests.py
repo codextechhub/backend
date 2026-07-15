@@ -313,6 +313,29 @@ class TicketApiSecurityTests(TicketFixtureMixin, TestCase):
         )
         self.assertEqual(response.status_code, 403)
 
+    def test_assignment_options_include_only_active_ticket_handlers(self):
+        non_handler = _user(
+            "observer@cx.test", "Olivia", "Observer",
+            user_type=User.UserType.CX_STAFF,
+        )
+        self.client_api.force_authenticate(self.support)
+
+        response = self.client_api.get(
+            f"/v1/support/tickets/{self.ticket.pk}/eligible-assignees/",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        ids = {row["id"] for row in response.json()["data"]}
+        self.assertIn(self.support.pk, ids)
+        self.assertIn(self.other_support.pk, ids)
+        self.assertNotIn(non_handler.pk, ids)
+
+        rejected = self.client_api.post(
+            f"/v1/support/tickets/{self.ticket.pk}/assign/",
+            {"assignee_id": non_handler.pk},
+        )
+        self.assertEqual(rejected.status_code, 400)
+
     def test_school_manager_with_grant_can_transition_via_api(self):
         _grant(self.school_a, self.peer, (TicketPermission.MANAGE,), role_name="Alpha Manager")
         self.client_api.force_authenticate(self.peer)

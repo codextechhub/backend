@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from django.db.models import Q
+from django.db.models import Exists, OuterRef, Q
 
 from vs_rbac.permissions import user_has_rbac_permission
+from vs_rbac.models import TenantUserRoleAssignment
+from vs_user.models import User
 
 from ..constants import TicketPermission
 from ..models import Ticket
@@ -18,6 +20,44 @@ def is_support_user(user) -> bool:
     if getattr(getattr(user, "tenant", None), "kind", None) != "PLATFORM":
         return False
     return user_has_rbac_permission(user, TicketPermission.MANAGE, tenant=user.tenant)
+
+
+def eligible_support_users_qs():
+    """Active platform users whose effective RBAC grants ticket management."""
+    active_roles = TenantUserRoleAssignment.objects.filter(
+        user_id=OuterRef("pk"),
+        tenant_id=OuterRef("tenant_id"),
+        branch__isnull=True,
+        assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+        role__status="ACTIVE",
+    )
+    grants_manage = active_roles.filter(
+        Q(
+            role__role_permissions__permission_id=TicketPermission.MANAGE,
+            role__role_permissions__granted=True,
+        )
+        | Q(
+            role__role_groups__group__group_permissions__permission_id=TicketPermission.MANAGE,
+        )
+    )
+    denies_manage = active_roles.filter(
+        role__role_permissions__permission_id=TicketPermission.MANAGE,
+        role__role_permissions__granted=False,
+    )
+    return (
+        User.objects.filter(
+            tenant__kind="PLATFORM",
+            user_type=User.UserType.CX_STAFF,
+            status=User.Status.ACTIVE,
+            is_active=True,
+        )
+        .annotate(
+            _grants_ticket_manage=Exists(grants_manage),
+            _denies_ticket_manage=Exists(denies_manage),
+        )
+        .filter(_grants_ticket_manage=True, _denies_ticket_manage=False)
+        .order_by("first_name", "last_name", "email")
+    )
 
 
 def has_ticket_permission(user, permission_key: str, tenant=None) -> bool:

@@ -36,6 +36,7 @@ from .serializers import (
     TicketSerializer,
     TicketTransitionSerializer,
     TicketUpdateSerializer,
+    TicketUserSerializer,
 )
 from .services import tickets as ticket_svc
 from .services import visibility
@@ -53,6 +54,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         "assign": TicketPermission.ASSIGN,
         "transition": TicketPermission.MANAGE,
         "audit": TicketPermission.AUDIT_VIEW,
+        "eligible_assignees": TicketPermission.ASSIGN,
     }
 
     @property
@@ -157,6 +159,17 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         return success_response(
             message="Ticket assigned successfully.",
             data=TicketDetailSerializer(ticket, context={"request": request}).data,
+        )
+
+    @action(detail=True, methods=["get"], url_path="eligible-assignees")
+    def eligible_assignees(self, request, pk=None):
+        ticket = self.get_object()
+        if not visibility.can_assign_ticket(request.user, ticket):
+            raise PermissionDenied("You cannot assign this ticket.")
+        users = visibility.eligible_support_users_qs()
+        return success_response(
+            message="Eligible ticket assignees retrieved successfully.",
+            data=TicketUserSerializer(users, many=True).data,
         )
 
     @action(detail=True, methods=["post"])
