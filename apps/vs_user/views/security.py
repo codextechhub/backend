@@ -56,10 +56,13 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     pagination_class = XVSPagination
 
     def get_permissions(self):
+        if self.action in {'mine', 'end_mine', 'end_all_mine'}:
+            return [IsAuthenticatedAndActive()]
         if self.action == 'force_logout':
             self.rbac_permission = 'platform.team.suspend'
             return [IsAuthenticatedAndActive(), HasRBACPermission()]
-        return [IsAuthenticatedAndActive()]
+        self.rbac_permission = 'platform.security.view'
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
         user = self.request.user
@@ -80,6 +83,71 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             qs = qs.filter(user_id=user_id)
 
         return qs
+
+    @action(detail=False, methods=['get'], url_path='mine')
+    def mine(self, request):
+        """List only the signed-in user's sessions (self-service)."""
+        queryset = (
+            LoginSession.objects
+            .filter(user=request.user)
+            .select_related('user', 'tenant')
+            .order_by('-last_seen_at')
+        )
+        if is_active := request.query_params.get('is_active'):
+            queryset = queryset.filter(is_active=is_active.lower() == 'true')
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return success_response(data=serializer.data)
+
+    @action(detail=True, methods=['post'], url_path='end-mine')
+    def end_mine(self, request, pk=None):
+        """End one session only when it belongs to the signed-in user."""
+        session = LoginSession.objects.filter(pk=pk, user=request.user).first()
+        if session is None:
+            return error_response(
+                message="Session not found.", status=status.HTTP_404_NOT_FOUND,
+            )
+        ended = 0
+        if session.is_active:
+            session.end(reason='FORCE_LOGOUT')
+            session.save(update_fields=['is_active', 'ended_at', 'end_reason', 'updated_at'])
+            blacklist_token_by_jti(session.refresh_jti)
+            ended = 1
+        log_auth_event(
+            actor=request.user,
+            subject=request.user,
+            tenant=request.user.tenant,
+            event=AuthEventLog.Event.FORCE_LOGOUT,
+            request=request,
+            metadata={'ended_sessions': ended, 'reason': 'SELF_SIGNOUT'},
+        )
+        return success_response(message="Session ended.", data={'ended_sessions': ended})
+
+    @action(detail=False, methods=['post'], url_path='end-all-mine')
+    def end_all_mine(self, request):
+        """End all active sessions belonging to the signed-in user."""
+        ended = LoginSession.all_objects.filter(
+            user=request.user, is_active=True,
+        ).update(
+            is_active=False,
+            ended_at=timezone.now(),
+            end_reason='FORCE_LOGOUT',
+        )
+        blacklist_all_user_tokens(request.user)
+        log_auth_event(
+            actor=request.user,
+            subject=request.user,
+            tenant=request.user.tenant,
+            event=AuthEventLog.Event.FORCE_LOGOUT,
+            request=request,
+            metadata={'ended_sessions': ended, 'reason': 'SUSPECTED_COMPROMISE'},
+        )
+        return success_response(
+            message="All sessions ended.", data={'ended_sessions': ended},
+        )
 
     @action(detail=False, methods=['post'], url_path='force-logout')
     def force_logout(self, request):
@@ -141,8 +209,13 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     docstring-name: Auth attempts
     """
     serializer_class   = AuthAttemptReadSerializer
-    permission_classes = [IsAuthenticatedAndActive, IsVisionStaff]
     pagination_class   = XVSPagination
+
+    def get_permissions(self):
+        if self.action == 'mine':
+            return [IsAuthenticatedAndActive()]
+        self.rbac_permission = 'platform.security.view'
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
         params = self.request.query_params
@@ -173,6 +246,17 @@ class AuthAttemptViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             qs = qs.filter(created_at__date__lte=date_to)
 
         return qs
+
+    @action(detail=False, methods=['get'], url_path='mine')
+    def mine(self, request):
+        """List only the signed-in user's authentication attempts."""
+        queryset = AuthAttempt.objects.filter(user=request.user).order_by('-created_at')
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return success_response(data=serializer.data)
 
 
 class PasswordResetListView(APIView):
@@ -359,5 +443,3 @@ class AuthEventLogViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             qs = qs.filter(event_at__date__lte=date_to)
 
         return qs
-
-

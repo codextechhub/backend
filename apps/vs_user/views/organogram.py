@@ -314,6 +314,8 @@ class PositionAssignmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     pagination_class = XVSPagination
 
     def get_permissions(self):
+        if self.action == 'mine':
+            return [IsAuthenticatedAndActive()]
         read_actions = {'list', 'retrieve'}
         self.rbac_permission = (
             'platform.organogram.view' if self.action in read_actions
@@ -338,6 +340,25 @@ class PositionAssignmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             else:
                 qs = qs.filter(end_date__isnull=False)
         return qs
+
+    @action(detail=False, methods=['get'], url_path='mine')
+    def mine(self, request):
+        """Return only the signed-in user's position history (self-service)."""
+        queryset = (
+            PositionAssignment.objects
+            .filter(user=request.user)
+            .select_related('user', 'position', 'position__org_node')
+            .order_by('-start_date')
+        )
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = self.get_serializer(queryset, many=True)
+        return success_response(
+            message="Position history retrieved successfully.",
+            data=serializer.data,
+        )
 
     def create(self, request, *args, **kwargs):
         ser = self.get_serializer(data=request.data)
@@ -403,4 +424,3 @@ class MatrixReportViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         if reports_to := params.get('reports_to'):
             qs = qs.filter(reports_to_id=reports_to)
         return qs
-

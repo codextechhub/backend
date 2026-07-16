@@ -121,17 +121,36 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         if can_school:
             eligible_kind |= ~Q(tenant__kind=Tenant.Kind.PLATFORM)
 
+        terms = query.split()
+        if len(terms) == 1:
+            # A single value may be a first name, last name, or email fragment.
+            term = terms[0]
+            search_filter = (
+                Q(first_name__icontains=term)
+                | Q(last_name__icontains=term)
+                | Q(email__icontains=term)
+            )
+        else:
+            first_term = terms[0]
+            last_term = " ".join(terms[1:])
+            search_filter = (
+                (
+                    Q(first_name__icontains=first_term)
+                    & Q(last_name__icontains=last_term)
+                )
+                | (
+                    Q(last_name__icontains=first_term)
+                    & Q(first_name__icontains=last_term)
+                )
+            )
+
         queryset = (
             User.objects.select_related("tenant__school_profile")
             .filter(
                 eligible_kind,
+                search_filter,
                 is_active=True,
                 status=User.Status.ACTIVE,
-            )
-            .filter(
-                Q(first_name__icontains=query)
-                | Q(last_name__icontains=query)
-                | Q(email__icontains=query)
             )
             .exclude(pk=actor.pk)
             .order_by("first_name", "last_name", "email")

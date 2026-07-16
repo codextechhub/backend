@@ -263,6 +263,24 @@ class ImpersonationTargetSearchTests(ImpersonationTestBase):
         self.assertFalse(any(row["id"] == self.admin.pk for row in resp.json()["data"]))
         self.assertEqual(self.search(self.admin, query="x").status_code, 400)
 
+    def test_search_matches_full_and_partial_cross_field_names(self):
+        rashida = make_vision_user(email="rashida.sule@codex.test")
+        rashida.first_name = "Rashida"
+        rashida.last_name = "Sule"
+        rashida.save(update_fields=["first_name", "last_name"])
+        for query in (
+            "Rashida Sule",
+            "Ras Su",
+            "Sule Ras",
+            "Rashida",
+            "Sule",
+            "rashida.sule@",
+        ):
+            with self.subTest(query=query):
+                resp = self.search(self.admin, query=query)
+                self.assertEqual(resp.status_code, 200)
+                self.assertTrue(any(row["id"] == rashida.pk for row in resp.json()["data"]))
+
 
 class ImpersonatedRequestTests(ImpersonationTestBase):
     def setUp(self):

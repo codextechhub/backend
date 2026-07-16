@@ -144,6 +144,13 @@ CORS_ALLOWED_ORIGINS = [
 ]
 CORS_ALLOW_CREDENTIALS = True
 
+# Proxy requests carry the audited session id in a custom header. Browsers
+# preflight custom headers even when the origin itself is allowed, so this must
+# be present in every environment (including production).
+from corsheaders.defaults import default_headers
+
+CORS_ALLOW_HEADERS = (*default_headers, "x-impersonation-session")
+
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SAMESITE    = "Lax"
 

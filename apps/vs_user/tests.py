@@ -254,6 +254,51 @@ def make_school_admin(school, email="admin@caleb.test", password="Str0ng!pass123
     )
 
 
+class MyPositionAssignmentsTests(TestCase):
+    """Self-service history never exposes another staff member's assignments."""
+
+    def setUp(self):
+        from vs_user.models import OrgNode, Position, PositionAssignment
+
+        self.user = make_cx_user(email="my-history@codex.test")
+        self.other = make_cx_user(email="other-history@codex.test")
+        division = OrgNode.objects.create(
+            name="History Division", code="HISTORY", kind=OrgNode.Kind.DIVISION,
+        )
+        own_position = Position.objects.create(
+            title="My Position", code="MY-POS", org_node=division,
+        )
+        other_position = Position.objects.create(
+            title="Other Position", code="OTHER-POS", org_node=division,
+        )
+        self.own_assignment = PositionAssignment.objects.create(
+            user=self.user, position=own_position,
+        )
+        self.other_assignment = PositionAssignment.objects.create(
+            user=self.other, position=other_position,
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_user_without_organogram_permission_can_read_own_history(self):
+        response = self.client.get("/v1/user/organogram/assignments/mine/")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["pagination"]["totalItems"], 1)
+        self.assertEqual(response.json()["data"][0]["id"], self.own_assignment.id)
+
+    def test_user_query_parameter_cannot_expose_another_users_history(self):
+        response = self.client.get(
+            "/v1/user/organogram/assignments/mine/",
+            {"user": str(self.other.id)},
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        returned_ids = {item["id"] for item in response.json()["data"]}
+        self.assertEqual(returned_ids, {self.own_assignment.id})
+        self.assertNotIn(self.other_assignment.id, returned_ids)
+
+
 class LoginLockoutOracleTests(TestCase):
     """B13 — wrong-password attempts must never reveal the locked state."""
 
@@ -345,6 +390,58 @@ class SessionScopedLogoutTests(TestCase):
 
         session_b_after = LoginSession.objects.get(pk=self.device_b["session_id"])
         self.assertEqual(session_b_before.refresh_jti, session_b_after.refresh_jti)
+
+
+class SelfServiceSecurityScopeTests(TestCase):
+    """The My Security endpoints expose and revoke only the caller's records."""
+
+    def setUp(self):
+        self.password = "Str0ng!pass123"
+        self.user = make_cx_user(email="my-security@codex.test", password=self.password)
+        self.other = make_cx_user(email="other-security@codex.test", password=self.password)
+        self.own_login = LoginService.login(self.user.email, self.password)
+        self.other_login = LoginService.login(self.other.email, self.password)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_my_sessions_lists_only_the_caller(self):
+        response = self.client.get("/v1/user/sessions/mine/?page_size=50")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        returned_users = {item["user"]["id"] for item in response.json()["data"]}
+        self.assertEqual(returned_users, {self.user.id})
+
+    def test_my_auth_attempts_lists_only_the_caller(self):
+        response = self.client.get("/v1/user/auth-attempts/mine/?page_size=50")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        returned_emails = {item["email_entered"] for item in response.json()["data"]}
+        self.assertEqual(returned_emails, {self.user.email})
+
+    def test_user_without_security_permission_cannot_use_admin_lists(self):
+        sessions = self.client.get("/v1/user/sessions/")
+        attempts = self.client.get("/v1/user/auth-attempts/")
+
+        self.assertEqual(sessions.status_code, 403, sessions.content)
+        self.assertEqual(attempts.status_code, 403, attempts.content)
+
+    def test_user_cannot_end_another_users_session(self):
+        response = self.client.post(
+            f"/v1/user/sessions/{self.other_login['session_id']}/end-mine/",
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 404, response.content)
+        self.assertTrue(
+            LoginSession.all_objects.get(pk=self.other_login["session_id"]).is_active,
+        )
+
+    def test_end_all_mine_leaves_another_users_session_active(self):
+        response = self.client.post("/v1/user/sessions/end-all-mine/", format="json")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(LoginSession.all_objects.get(pk=self.own_login["session_id"]).is_active)
+        self.assertTrue(LoginSession.all_objects.get(pk=self.other_login["session_id"]).is_active)
 
 
 # =============================================================================
