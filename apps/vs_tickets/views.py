@@ -42,6 +42,7 @@ from .services import tickets as ticket_svc
 from .services import visibility
 
 
+# API surface for ticket creation, assignment, lifecycle, comments, files, and audit.
 class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     """Ticket CRUD plus assignment, transitions, comments, attachments and audit."""
 
@@ -68,6 +69,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             comment_filter = Q()
             attachment_filter = Q()
         else:
+            # Public users see counts that exclude internal-note conversations and files.
             comment_filter = Q(comments__visibility=CommentVisibility.PUBLIC)
             attachment_filter = Q(attachments__comment__isnull=True) | Q(
                 attachments__comment__visibility=CommentVisibility.PUBLIC
@@ -96,6 +98,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         if value := params.get("created_to"):
             qs = qs.filter(created_at__date__lte=value)
         if value := params.get("q"):
+            # Search only after visibility scoping so hidden tickets cannot be discovered.
             qs = qs.filter(
                 Q(title__icontains=value)
                 | Q(description__icontains=value)
@@ -103,6 +106,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             )
         return qs.order_by("-created_at")
 
+    # Use narrower serializers for create/update while returning richer detail on retrieve.
     def get_serializer_class(self):
         if self.action == "retrieve":
             return TicketDetailSerializer
@@ -112,15 +116,18 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             return TicketUpdateSerializer
         return TicketSerializer
 
+    # Resolve by primary key but return 404 when object-level visibility fails.
     def get_object(self):
         ticket = get_object_or_404(
             Ticket.all_objects.select_related("requester", "assignee", "tenant", "branch"),
             pk=self.kwargs["pk"],
         )
         if not visibility.can_view_ticket(self.request.user, ticket):
+            # Hidden tickets are indistinguishable from missing tickets to callers.
             raise NotFound("No such ticket.")
         return ticket
 
+    # File a new ticket through the service so audit and triage notifications stay coupled.
     def create(self, request, *args, **kwargs):
         serializer = TicketCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -131,6 +138,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
+    # Edit ticket fields through the service to enforce field allowlisting.
     def update(self, request, *args, **kwargs):
         ticket = self.get_object()
         serializer = TicketUpdateSerializer(data=request.data, partial=kwargs.pop("partial", False))
@@ -141,19 +149,23 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             data=TicketDetailSerializer(ticket, context={"request": request}).data,
         )
 
+    # PATCH shares the same service path as PUT with partial validation enabled.
     def partial_update(self, request, *args, **kwargs):
         kwargs["partial"] = True
         return self.update(request, *args, **kwargs)
 
+    # Tickets are append-only operational records; deletion would break audit history.
     def destroy(self, request, *args, **kwargs):
         raise PermissionDenied("Tickets are retained for audit history and cannot be deleted.")
 
+    # Assign support ownership or return the ticket to the unassigned queue.
     @action(detail=True, methods=["post"])
     def assign(self, request, pk=None):
         ticket = self.get_object()
         serializer = TicketAssignSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         assignee_id = serializer.validated_data.get("assignee_id")
+        # The service validates that a selected assignee is support-capable.
         assignee = User.objects.get(pk=assignee_id) if assignee_id else None
         ticket = ticket_svc.assign_ticket(ticket, actor=request.user, assignee=assignee)
         return success_response(
@@ -161,6 +173,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             data=TicketDetailSerializer(ticket, context={"request": request}).data,
         )
 
+    # Return support-capable users for assignment pickers.
     @action(detail=True, methods=["get"], url_path="eligible-assignees")
     def eligible_assignees(self, request, pk=None):
         ticket = self.get_object()
@@ -172,6 +185,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             data=TicketUserSerializer(users, many=True).data,
         )
 
+    # Move a ticket through the service-owned lifecycle graph.
     @action(detail=True, methods=["post"])
     def transition(self, request, pk=None):
         ticket = self.get_object()
@@ -183,12 +197,14 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             data=TicketDetailSerializer(ticket, context={"request": request}).data,
         )
 
+    # List visible comments or add a new public reply/internal note.
     @action(detail=True, methods=["get", "post"])
     def comments(self, request, pk=None):
         ticket = self.get_object()
         if request.method == "GET":
             comments = ticket.comments.select_related("author").prefetch_related("attachments")
             if not visibility.can_view_internal_notes(request.user, ticket):
+                # Internal notes are support-only and must not leak through list responses.
                 comments = comments.filter(visibility=CommentVisibility.PUBLIC)
             return success_response(
                 message="Comments retrieved successfully.",
@@ -204,6 +220,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
+    # Attach uploaded evidence to a ticket or visible comment thread.
     @action(detail=True, methods=["post"])
     def attachments(self, request, pk=None):
         ticket = self.get_object()
@@ -233,6 +250,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         url_path=r"attachments/(?P<attachment_id>[^/.]+)/download",
         url_name="attachment-download",
     )
+    # Stream an attachment only after ticket and internal-note visibility checks.
     def attachment_download(self, request, pk=None, attachment_id=None):
         ticket = self.get_object()
         attachment = get_object_or_404(
@@ -241,6 +259,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             ticket=ticket,
         )
         if (
+            # Internal-note attachments inherit the note visibility.
             attachment.comment_id
             and attachment.comment.visibility == CommentVisibility.INTERNAL
             and not visibility.can_view_internal_notes(request.user, ticket)
@@ -249,6 +268,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         if not attachment.file:
             raise NotFound("No file is attached.")
 
+        # Stored content type wins; otherwise derive a safe browser fallback from filename.
         content_type = attachment.content_type or mimetypes.guess_type(
             attachment.original_filename
         )[0] or "application/octet-stream"
@@ -259,6 +279,7 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             filename=attachment.original_filename,
         )
 
+    # Return the immutable ticket-local audit trail.
     @action(detail=True, methods=["get"], url_path="audit")
     def audit(self, request, pk=None):
         ticket = self.get_object()
@@ -269,10 +290,12 @@ class TicketViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         )
 
 
+# Aggregate visible ticket workload for dashboard counters.
 class TicketDashboardView(APIView):
     permission_classes = TICKET_PERMISSIONS
 
     def get(self, request):
+        # Dashboard numbers must use the same visibility boundary as the ticket list.
         qs = visibility.visible_tickets_qs(request.user)
         aggregates = {
             "total": Count("id"),
@@ -280,6 +303,7 @@ class TicketDashboardView(APIView):
             "requested_by_me": Count("id", filter=Q(requester=request.user)),
         }
         for key, _ in TicketStatus.choices:
+            # Build stable keys for every enum value, even when the count is zero.
             aggregates[f"status__{key}"] = Count("id", filter=Q(status=key))
         for key, _ in TicketPriority.choices:
             aggregates[f"priority__{key}"] = Count("id", filter=Q(priority=key))

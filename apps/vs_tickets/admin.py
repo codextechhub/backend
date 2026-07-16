@@ -3,6 +3,7 @@ from django.contrib import admin
 from .models import Ticket, TicketAttachment, TicketAuditLog, TicketComment
 
 
+# Show ticket conversation rows inline while preserving their creation timestamp.
 class TicketCommentInline(admin.TabularInline):
     model = TicketComment
     extra = 0
@@ -10,6 +11,7 @@ class TicketCommentInline(admin.TabularInline):
     readonly_fields = ("created_at",)
 
 
+# Show uploaded evidence inline with immutable file metadata.
 class TicketAttachmentInline(admin.TabularInline):
     model = TicketAttachment
     extra = 0
@@ -17,6 +19,7 @@ class TicketAttachmentInline(admin.TabularInline):
     readonly_fields = ("created_at",)
 
 
+# Inspect support tickets by lifecycle, urgency, and tenant ownership.
 @admin.register(Ticket)
 class TicketAdmin(admin.ModelAdmin):
     list_display = ("ticket_number", "title", "status", "priority", "category", "requester", "assignee", "tenant", "created_at")
@@ -26,6 +29,7 @@ class TicketAdmin(admin.ModelAdmin):
     inlines = [TicketCommentInline, TicketAttachmentInline]
 
 
+# Inspect public replies and internal notes independently from the ticket page.
 @admin.register(TicketComment)
 class TicketCommentAdmin(admin.ModelAdmin):
     list_display = ("ticket", "author", "visibility", "created_at")
@@ -33,12 +37,14 @@ class TicketCommentAdmin(admin.ModelAdmin):
     search_fields = ("ticket__ticket_number", "body", "author__email")
 
 
+# Inspect uploaded ticket files and their uploader metadata.
 @admin.register(TicketAttachment)
 class TicketAttachmentAdmin(admin.ModelAdmin):
     list_display = ("ticket", "original_filename", "uploaded_by", "content_type", "size", "created_at")
     search_fields = ("ticket__ticket_number", "original_filename", "uploaded_by__email")
 
 
+# Inspect immutable ticket audit events for support investigations.
 @admin.register(TicketAuditLog)
 class TicketAuditLogAdmin(admin.ModelAdmin):
     list_display = ("ticket", "action", "actor", "created_at")

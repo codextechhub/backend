@@ -25,10 +25,12 @@ from .serializers import (
 )
 
 
+# Produce stable labels for impersonation audit summaries.
 def _user_label(user) -> str:
     return user.full_name or user.email
 
 
+# Write platform audit bookends for every proxy-session lifecycle change.
 def _emit_proxy_lifecycle_event(*, action_type, actor, target, tenant, session, summary):
     """Write the durable, human-readable bookend for a proxy session."""
     from vs_audit.services import emit_audit_event
@@ -44,10 +46,12 @@ def _emit_proxy_lifecycle_event(*, action_type, actor, target, tenant, session, 
         tenant=tenant,
         impersonation_session=session,
         summary=summary,
+        # Session status is stored in metadata so audit consumers can filter starts vs ends.
         metadata={"session_status": session.status},
     )
 
 
+# Manage platform staff proxy sessions into tenant users.
 class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     """
     Basic CRUD + start/end actions.
@@ -86,6 +90,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     platform_cross_tenant_param = True
 
     def get_permissions(self):
+        # Target search accepts any start permission; final scope is enforced in the queryset.
         if self.action == "targets":
             self.rbac_permission = [
                 "platform.impersonation.start_all",
@@ -99,6 +104,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             # only its own tenant kind. request.tenant is bound by auth before
             # permission checks run.
             tenant = getattr(self.request, "tenant", None)
+            # Starting a CX proxy and a school proxy are distinct RBAC capabilities.
             if getattr(tenant, "kind", None) == "PLATFORM":
                 self.rbac_permission = [
                     "platform.impersonation.start_all",
@@ -125,6 +131,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             }.get(self.action, "platform.impersonation.view")
         return super().get_permissions()
 
+    # Search the users a platform actor may impersonate in the asserted tenant scope.
     @action(detail=False, methods=["get"], url_path="targets")
     def targets(self, request):
         """Search active users the original platform actor may proxy."""
@@ -134,6 +141,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         from vs_user.models import User
 
         actor = getattr(request, "actor_user", request.user)
+        # Impersonation is always initiated by the original platform actor.
         if getattr(actor.tenant, "kind", None) != Tenant.Kind.PLATFORM:
             return error_response(
                 message="Only platform staff may search proxy targets.",
@@ -152,10 +160,12 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             )
 
         permission_keys = get_effective_permissions(actor, tenant=actor.tenant)
+        # start_all widens both CX and school target pools; narrower keys only add their own kind.
         can_all = is_vision_super_admin(actor) or "platform.impersonation.start_all" in permission_keys
         can_cx = can_all or "platform.impersonation.start_cx" in permission_keys
         can_school = can_all or "platform.impersonation.start_school" in permission_keys
 
+        # Start from an empty predicate so users with no start grant see no targets.
         eligible_kind = Q(pk__in=[])
         if can_cx:
             eligible_kind |= Q(tenant__kind=Tenant.Kind.PLATFORM)
@@ -205,11 +215,13 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         tenant = getattr(self.request, "tenant", None)
         status_param = self.request.query_params.get("status")
         if tenant:
+            # TenantJWTAuthentication binds platform-cross-tenant queries before list/retrieve.
             qs = qs.filter(tenant=tenant)
         if status_param:
             qs = qs.filter(status=status_param)
         return qs
 
+    # Start or switch a proxy session for the currently asserted tenant.
     @action(detail=False, methods=["post"], url_path="start")
     def start(self, request):
         """
@@ -221,7 +233,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         ser = ImpersonationStartSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
-        
+
         duration = data.get("duration_minutes")
         started_at = timezone.now()
         ends_at = (
@@ -229,7 +241,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             if duration is not None
             else None
         )
-        
+
         with transaction.atomic():
             tenant = request.tenant
             actor = getattr(request, "actor_user", request.user)
@@ -245,6 +257,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             # cannot create concurrent ACTIVE sessions.
             actor = User.objects.select_for_update().get(pk=actor.pk)
             target = User.objects.filter(
+                # Targets are pinned to the asserted tenant to prevent cross-tenant proxy jumps.
                 pk=data["target_user"], tenant=tenant, is_active=True, status="ACTIVE",
             ).first()
             if target is None:
@@ -261,6 +274,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                 pk__in=[active.pk for active in active_sessions],
             ).update(status="ENDED", ended_at=started_at)
             for active in active_sessions:
+                # Emit one audit end event per replaced session, even though the DB update was bulk.
                 active.status = "ENDED"
                 active.ended_at = started_at
                 _emit_proxy_lifecycle_event(
@@ -275,6 +289,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                     ),
                 )
             session = ImpersonationSession.objects.create(
+                # The new session is created after old sessions end, preserving a single active proxy.
                 staff_user=actor,
                 tenant=tenant,
                 target_user=target,
@@ -291,13 +306,14 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                 session=session,
                 summary=f"{_user_label(actor)} started a proxy session as {_user_label(target)}",
             )
-            
+
             return success_response(
                 message="Impersonation session started.",
                 data=ImpersonationSessionSerializer(session).data,
                 status=status.HTTP_201_CREATED,
             )
-        
+
+    # End a proxy session owned by the original platform actor.
     @action(detail=False, methods=["post"], url_path="end")
     def end(self, request):
         """
@@ -308,8 +324,9 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         ser = ImpersonationEndSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         session_id = ser.validated_data["session_id"]
-        
+
         actor = getattr(request, "actor_user", request.user)
+        # Ownership check prevents one staff member from ending another staff member's proxy.
         session = ImpersonationSession.objects.filter(id=session_id, staff_user=actor).first()
         if not session:
             return error_response(message="Impersonation session not found.", status=status.HTTP_404_NOT_FOUND)
@@ -332,6 +349,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             data=ImpersonationSessionSerializer(session).data,
         )
 
+# Placeholder platform dashboard endpoint for future cross-module school health rows.
 class DashboardViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     GET /dashboard/
@@ -348,9 +366,9 @@ class DashboardViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.dashboard.view"
     serializer_class = SchoolDashboardItemSerializer
-    
+
     def list(self, request, *args, **kwargs):
-        # Validate query params (optional)
+        # Validate dashboard filters now so the eventual implementation keeps the same contract.
         filter_ser = DashboardFilterSerializer(data=request.query_params)
         filter_ser.is_valid(raise_exception=True)
 
@@ -362,7 +380,3 @@ class DashboardViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             message="Dashboard data retrieved.",
             data=self.serializer_class(items, many=True).data,
         )
-
-            
-        
-    

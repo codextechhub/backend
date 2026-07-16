@@ -15,6 +15,7 @@ logger = logging.getLogger("vs_tickets.notifications")
 TRIAGE_PERMISSION_KEYS = (TicketPermission.MANAGE, TicketPermission.ASSIGN)
 
 
+# Deduplicate notification recipients and suppress echoing events back to the actor.
 def _unique_recipients(users, *, exclude=None):
     exclude_id = getattr(exclude, "pk", None)
     seen = set()
@@ -27,6 +28,7 @@ def _unique_recipients(users, *, exclude=None):
     return out
 
 
+# Resolve the active platform users who should see new unassigned ticket activity.
 def support_recipients():
     """Active platform-tenant users who hold a ticket triage key through an active
     platform role — not every platform user. Mirrors the platform-role branch of
@@ -42,6 +44,7 @@ def support_recipients():
     )
 
 
+# Build the template context shared by ticket notification events.
 def context_for(ticket, **extra):
     assignee_name = ticket.assignee.full_name if ticket.assignee_id else ""
     return {
@@ -56,9 +59,11 @@ def context_for(ticket, **extra):
     }
 
 
+# Queue a ticket notification after the surrounding transaction commits.
 def dispatch_ticket_event(event_key: str, *, ticket, recipients, actor=None, context=None):
     recipients = _unique_recipients(recipients, exclude=actor)
     if not recipients:
+        # No recipients is a valid no-op for unassigned or actor-only events.
         return []
 
     def _send():
@@ -71,12 +76,14 @@ def dispatch_ticket_event(event_key: str, *, ticket, recipients, actor=None, con
                 metadata={"ticket_id": ticket.pk, "ticket_number": ticket.ticket_number},
             )
         except Exception as exc:
+            # Notification failure must not roll back ticket state or audit history.
             logger.warning("Ticket notification failed for %s: %s", event_key, exc)
 
     transaction.on_commit(_send)
     return recipients
 
 
+# Notify the support queue when a new ticket needs triage.
 def notify_created(ticket, actor=None):
     return dispatch_ticket_event(
         "ticket.created",
@@ -87,6 +94,7 @@ def notify_created(ticket, actor=None):
     )
 
 
+# Notify the assigned support user when ownership changes.
 def notify_assigned(ticket, actor=None):
     return dispatch_ticket_event(
         "ticket.assigned",
@@ -97,12 +105,14 @@ def notify_assigned(ticket, actor=None):
     )
 
 
+# Notify participants with event names that match the lifecycle outcome.
 def notify_status_changed(ticket, *, old_status, actor=None):
     event_key = {
         TicketStatus.RESOLVED: "ticket.resolved",
         TicketStatus.CLOSED: "ticket.closed",
     }.get(ticket.status)
     if event_key is None and old_status == TicketStatus.CLOSED:
+        # Moving out of CLOSED is a reopen even when the target state is in progress.
         event_key = "ticket.reopened"
     if event_key is None:
         event_key = "ticket.status_changed"
@@ -121,6 +131,7 @@ def notify_status_changed(ticket, *, old_status, actor=None):
     )
 
 
+# Notify only support staff for internal notes; public comments notify both sides.
 def notify_commented(comment, actor=None):
     if comment.visibility == CommentVisibility.INTERNAL:
         recipients = [comment.ticket.assignee]
@@ -140,6 +151,7 @@ def notify_commented(comment, actor=None):
     )
 
 
+# Notify ticket participants when a file is attached.
 def notify_attachment_added(attachment, actor=None):
     return dispatch_ticket_event(
         "ticket.attachment_added",

@@ -11,7 +11,9 @@ from vs_tenants.models import Tenant
 from .services import end_impersonations_for_tenant
 
 
+# Close active proxy sessions when a tenant leaves the usable state.
 @receiver(post_save, sender=Tenant, dispatch_uid="vs_admin_console.tenant_deactivated")
 def on_tenant_saved(sender, instance, **kwargs):
     if instance.status != Tenant.Status.ACTIVE:
+        # Deactivation must immediately stop staff from acting inside the tenant.
         end_impersonations_for_tenant(instance)

@@ -33,6 +33,7 @@ from core.response import success_response
 from .permissions import IsVisionStaff
 
 
+# Shape background job rows for the CX staff operations console.
 class AdminJobSerializer(serializers.ModelSerializer):
     owner_name = serializers.SerializerMethodField()
     runtime_seconds = serializers.SerializerMethodField()
@@ -47,14 +48,17 @@ class AdminJobSerializer(serializers.ModelSerializer):
         ]
 
     def get_owner_name(self, obj):
+        # Jobs may be system-owned, so owner display is intentionally nullable.
         return obj.owner.full_name if obj.owner_id and obj.owner else None
 
     def get_runtime_seconds(self, obj):
         if obj.started_at and obj.finished_at:
             return round((obj.finished_at - obj.started_at).total_seconds(), 3)
+        # Queued/running jobs do not have a stable runtime yet.
         return None
 
 
+# Read-only operational view over tracked Celery jobs.
 class TaskMonitorViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """Read-only window onto the full task history.
 
@@ -66,11 +70,13 @@ class TaskMonitorViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     pagination_class = XVSPagination
 
     def get_queryset(self):
+        # Newest-first ordering makes incident triage land on the freshest runs.
         qs = BackgroundJob.objects.select_related("owner").order_by("-created_at")
         params = self.request.query_params
 
         status_param = (params.get("status") or "").strip().upper()
         if status_param:
+            # Status values are stored uppercase; normalize user-entered filters.
             qs = qs.filter(status=status_param)
 
         task = (params.get("task") or "").strip()
@@ -87,11 +93,13 @@ class TaskMonitorViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
         return qs
 
+    # Summarize task health for the operations dashboard.
     @action(detail=False, methods=["get"])
     def stats(self, request):
         """Status counts (all-time and last 24h) plus a per-task breakdown."""
         day_ago = timezone.now() - timedelta(hours=24)
 
+        # Pair all-time counts with a 24-hour window so regressions stand out.
         by_status = dict(
             BackgroundJob.objects.values_list("status").annotate(n=Count("id"))
         )
@@ -105,6 +113,7 @@ class TaskMonitorViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             .order_by("-runs")[:20]
         )
         failures = list(
+            # Recent failures are capped for dashboard readability.
             BackgroundJob.objects.filter(status=BackgroundJob.Status.FAILED)
             .order_by("-finished_at")
             .values("task_name", "label", "finished_at", "celery_task_id")[:5]
@@ -120,12 +129,14 @@ class TaskMonitorViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
             },
         )
 
+    # Expose scheduler configuration so support can confirm beat wiring.
     @action(detail=False, methods=["get"])
     def schedule(self, request):
         """The beat schedule as configured in code, plus the execution mode."""
         from apps.celery import app as celery_app
 
         entries = [
+            # Stringify schedule objects because beat schedules are not JSON-native.
             {
                 "name": name,
                 "task": entry["task"],
