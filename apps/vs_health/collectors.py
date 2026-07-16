@@ -31,6 +31,7 @@ _thread_started = False
 _thread_lock = threading.Lock()
 
 
+# Mutable in-memory accumulator for one metric bucket before DB flush.
 @dataclass
 class _Agg:
     """Mutable accumulator for one (bucket, route, method, tenant) tuple."""
@@ -45,6 +46,7 @@ class _Agg:
     hist: list = field(default_factory=lambda: [0] * HISTOGRAM_SIZE)
 
 
+# Map latency to the compact histogram slot used by percentile estimation.
 def bucket_index(latency_ms: float) -> int:
     """Map a latency in ms to its histogram bucket index (last = overflow)."""
     for i, upper in enumerate(LATENCY_BUCKETS_MS):
@@ -53,10 +55,12 @@ def bucket_index(latency_ms: float) -> int:
     return HISTOGRAM_SIZE - 1
 
 
+# Align request timestamps to the persisted metric bucket boundary.
 def _floor_minute(dt):
     return dt.replace(second=0, microsecond=0)
 
 
+# Record one request into the process-local buffer without touching the database.
 def record(*, route: str, method: str, status_code: int, latency_ms: float,
            tenant_id=None, throttled: bool = False) -> None:
     """Fold a single request into the in-memory buffer (cheap, thread-safe)."""
@@ -64,12 +68,14 @@ def record(*, route: str, method: str, status_code: int, latency_ms: float,
         bucket = _floor_minute(timezone.now())
         key = (bucket, route, method, tenant_id)
         with _lock:
+            # The lock keeps concurrent requests in the same worker from losing counts.
             agg = _buffer.get(key)
             if agg is None:
                 agg = _Agg()
                 _buffer[key] = agg
             agg.count += 1
             if status_code >= 500:
+                # Store status families separately so error rates do not require raw logs.
                 agg.s5 += 1
             elif status_code >= 400:
                 agg.s4 += 1
@@ -78,16 +84,18 @@ def record(*, route: str, method: str, status_code: int, latency_ms: float,
             else:
                 agg.s2 += 1
             if throttled or status_code == 429:
+                # 429s are tracked as saturation pressure even when middleware did not flag throttling.
                 agg.throttled += 1
             agg.sum_ms += latency_ms
             if latency_ms > agg.max_ms:
                 agg.max_ms = latency_ms
             agg.hist[bucket_index(latency_ms)] += 1
         _ensure_flusher()
-    except Exception:  # pragma: no cover - instrumentation must never throw
+    except Exception:
         logger.debug("vs_health.record failed", exc_info=True)
 
 
+# Swap the hot-path buffer out quickly so flushing does not block request recording.
 def _drain():
     """Atomically swap out the buffer and return its contents."""
     global _buffer
@@ -96,6 +104,7 @@ def _drain():
     return snapshot
 
 
+# Merge buffered request aggregates into canonical RequestMetric rows.
 def flush() -> int:
     """Persist buffered aggregates to RequestMetric. Returns rows touched."""
     from django.db import transaction
@@ -109,6 +118,7 @@ def flush() -> int:
     for (bucket, route, method, tenant_id), agg in snapshot.items():
         try:
             with transaction.atomic():
+                # Lock the row so multiple worker processes can safely merge the same bucket.
                 obj, created = (
                     RequestMetric.objects.select_for_update().get_or_create(
                         bucket_start=bucket,
@@ -129,6 +139,7 @@ def flush() -> int:
                     )
                 )
                 if not created:
+                    # Existing rows are additive rollups; raw requests are never stored here.
                     obj.request_count += agg.count
                     obj.status_2xx += agg.s2
                     obj.status_3xx += agg.s3
@@ -145,17 +156,18 @@ def flush() -> int:
                         "latency_max_ms", "latency_hist",
                     ])
             touched += 1
-        except Exception:  # pragma: no cover
+        except Exception:
             logger.warning("vs_health flush failed for %s %s", method, route, exc_info=True)
     return touched
 
 
+# Background flusher loop; errors are swallowed by the caller.
 def _flush_loop(interval: float):
     while True:
         time.sleep(interval)
         try:
             flush()
-        except Exception:  # pragma: no cover
+        except Exception:
             logger.debug("vs_health flush loop error", exc_info=True)
 
 
@@ -169,18 +181,21 @@ def _running_tests() -> bool:
     return "test" in sys.argv
 
 
+# Lazily start one daemon flusher thread per worker process.
 def _ensure_flusher():
     """Start the background flush thread once per process (lazy, opt-out)."""
     global _thread_started
     if _thread_started:
         return
     if _running_tests():
+        # Test DB teardown is fragile when daemon threads keep DB connections open.
         return
     if not getattr(settings, "HEALTH_METRICS_BACKGROUND_FLUSH", True):
         return
     with _thread_lock:
         if _thread_started:
             return
+        # Default to half the bucket width so rows are reasonably fresh without hot writes.
         interval = getattr(settings, "HEALTH_METRICS_FLUSH_SECONDS", METRIC_BUCKET_SECONDS // 2)
         t = threading.Thread(target=_flush_loop, args=(interval,), name="vs-health-flush", daemon=True)
         t.start()

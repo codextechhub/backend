@@ -36,11 +36,13 @@ SERVICES = [
     ("dns", "DNS / SSL", "External", "Ext", "external", 120),
 ]
 
+# Write progress only when called from a management command with stdout.
 def _log(stdout, msg):
     if stdout:
         stdout.write(msg)
 
 
+# Ensure the RBAC contract for health read/manage access exists.
 def seed_permissions(stdout=None):
     from vs_rbac.models import PermissionModule, PermissionResource, PermissionAction, Permission
 
@@ -56,6 +58,7 @@ def seed_permissions(stdout=None):
                               ("manage", "Manage incidents, alerts and deployments")]:
         PermissionAction.objects.get_or_create(name=action_name, defaults={"description": desc})
 
+    # Manage is sensitive because it can alter incidents, deployments, and alert rules.
     for key, action, sens in [(PERM_VIEW, "view", "NORMAL"), (PERM_MANAGE, "manage", "SENSITIVE")]:
         permission = Permission.objects.filter(key=key).first()
         if permission is None:
@@ -71,6 +74,7 @@ def seed_permissions(stdout=None):
     _log(stdout, f"  permissions: {PERM_VIEW}, {PERM_MANAGE}")
 
 
+# Seed the monitored service registry without writing any telemetry.
 def seed_services(stdout=None):
     from .models import MonitoredService
     for key, name, group, tier, kind, order in SERVICES:
@@ -88,6 +92,7 @@ def seed_services(stdout=None):
     _log(stdout, f"  services: {MonitoredService.objects.filter(is_active=True).count()}")
 
 
+# Seed uptime checks that generate future probe results.
 def seed_checks(stdout=None):
     from .models import MonitoredService, UptimeCheck, CheckType
     svc = {s.key: s for s in MonitoredService.objects.all()}
@@ -120,6 +125,7 @@ def seed_checks(stdout=None):
     _log(stdout, f"  uptime checks: {UptimeCheck.objects.count()}")
 
 
+# Seed default alert rules that evaluate against live collected signals.
 def seed_alert_rules(stdout=None):
     from .models import MonitoredService, AlertRule
     svc = {s.key: s for s in MonitoredService.objects.all()}
@@ -144,6 +150,7 @@ def seed_alert_rules(stdout=None):
     _log(stdout, f"  alert rules: {AlertRule.objects.count()}")
 
 
+# Seed availability SLO targets for services shown in reliability screens.
 def seed_slos(stdout=None):
     from .models import MonitoredService, SLO
     svc = {s.key: s for s in MonitoredService.objects.all()}
@@ -156,6 +163,7 @@ def seed_slos(stdout=None):
     _log(stdout, f"  slos: {SLO.objects.count()}")
 
 
+# Run all health configuration seeders in dependency order.
 def run(stdout=None):
     _log(stdout, "Seeding vs_health (configuration only — telemetry comes from live collectors)")
     seed_permissions(stdout)

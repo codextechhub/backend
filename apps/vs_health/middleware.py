@@ -18,19 +18,22 @@ from .collectors import record
 logger = logging.getLogger(__name__)
 
 
+# Time resolved requests and hand sanitized dimensions to the health collector.
 class RequestMetricsMiddleware:
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
+        # Use perf_counter for monotonic elapsed timing rather than wall-clock time.
         start = time.perf_counter()
         response = self.get_response(request)
         try:
             self._record(request, response, (time.perf_counter() - start) * 1000.0)
-        except Exception:  # pragma: no cover - never break the response
+        except Exception:
             logger.debug("RequestMetricsMiddleware record failed", exc_info=True)
         return response
 
+    # Resolve a bounded route label instead of recording unbounded raw paths.
     @staticmethod
     def _route_for(request) -> str | None:
         match = getattr(request, "resolver_match", None)
@@ -43,6 +46,7 @@ class RequestMetricsMiddleware:
         # Fall back to the view's qualified name when no route string is exposed.
         return getattr(match, "view_name", None) or request.path
 
+    # Record only routes that should contribute to product health signals.
     def _record(self, request, response, latency_ms: float) -> None:
         route = self._route_for(request)
         if not route:
@@ -52,6 +56,7 @@ class RequestMetricsMiddleware:
             return
 
         tenant = getattr(request, "tenant", None)
+        # Tenant context is optional; platform/system requests roll up globally.
         tenant_id = getattr(tenant, "id", None) if tenant else None
 
         record(

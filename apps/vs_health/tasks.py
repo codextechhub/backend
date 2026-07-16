@@ -31,6 +31,7 @@ KIND_TO_QUEUE = {
 # Uptime probes
 # ---------------------------------------------------------------------------
 
+# Execute active probes and refresh service cards from their latest results.
 @shared_task
 def run_uptime_checks_task() -> dict:
     """Execute every active uptime check and refresh each service's status."""
@@ -40,6 +41,7 @@ def run_uptime_checks_task() -> dict:
     ran = 0
     affected_services = set()
     for check in UptimeCheck.objects.filter(is_active=True).select_related("service"):
+        # Probe failures are stored as CRITICAL/UNKNOWN outcomes, not raised exceptions.
         outcome = probes.execute(check)
         UptimeCheckResult.objects.create(
             uptime_check=check, service=check.service,
@@ -67,6 +69,7 @@ def run_uptime_checks_task() -> dict:
     }
 
 
+# Derive monolith module health from route-level request metrics.
 def refresh_module_service_statuses(window_minutes: int = 15) -> int:
     """Derive module-service status from real request metrics.
 
@@ -87,6 +90,7 @@ def refresh_module_service_statuses(window_minutes: int = 15) -> int:
         if svc is None:
             continue
         route_q = Q()
+        # Prefix groups map logical modules onto real DRF routes.
         for prefix in prefixes:
             route_q |= Q(route__startswith=prefix)
         rows = RequestMetric.objects.filter(bucket_start__gte=since).filter(route_q)
@@ -101,6 +105,7 @@ def refresh_module_service_statuses(window_minutes: int = 15) -> int:
                 hist[i] += count
 
         if requests == 0:
+            # No traffic is no signal; do not report green for an unobserved module.
             svc.set_status(HealthStatus.UNKNOWN)
         else:
             error_rate = round(errors / requests * 100, 2)
@@ -117,6 +122,7 @@ def refresh_module_service_statuses(window_minutes: int = 15) -> int:
 # Queue snapshot
 # ---------------------------------------------------------------------------
 
+# Read Redis broker queue depths when the configured broker supports LLEN.
 def _broker_depths() -> dict:
     """LLEN per queue list on the Redis broker. Empty dict if unavailable."""
     from django.conf import settings
@@ -132,6 +138,7 @@ def _broker_depths() -> dict:
         return {}
 
 
+# Estimate worker capacity from Celery inspect without failing the task on broker issues.
 def _worker_counts() -> tuple[int, int]:
     """(active, idle) worker estimate from Celery inspect. (0,0) if no workers."""
     try:
@@ -146,6 +153,7 @@ def _worker_counts() -> tuple[int, int]:
         return 0, 0
 
 
+# Capture queue depth, recent job outcomes, and Celery service posture.
 @shared_task
 def capture_queue_snapshot_task() -> dict:
     """Snapshot depth + trailing-minute throughput/failures for each queue."""
@@ -157,6 +165,7 @@ def capture_queue_snapshot_task() -> dict:
     window_start = timezone.now() - timedelta(minutes=1)
 
     # Trailing-window job aggregates grouped by mapped queue.
+    # Throughput/failure signals come from tracked jobs rather than broker messages alone.
     recent = BackgroundJob.objects.filter(created_at__gte=window_start)
     per_queue = {q: {"throughput": 0, "failed": 0, "running": 0} for q in KNOWN_QUEUES}
     for job in recent.values("kind", "status"):
@@ -176,6 +185,7 @@ def capture_queue_snapshot_task() -> dict:
         failed = agg["failed"]
         retrying = agg["running"]
         retry_storm = failed >= 50
+        # Depth and retry storms both indicate queue saturation.
         if depth >= 5000 or retry_storm:
             status = HealthStatus.CRITICAL
         elif depth >= 2000 or failed >= 10:
@@ -197,6 +207,7 @@ def capture_queue_snapshot_task() -> dict:
     from .models import MonitoredService
     celery_svc = MonitoredService.objects.filter(key="celery", is_active=True).first()
     if celery_svc:
+        # Worker presence is the strongest signal for whether async jobs can drain.
         if workers_active + workers_idle > 0:
             celery_svc.set_status(HealthStatus.HEALTHY)
         elif depths:
@@ -210,6 +221,7 @@ def capture_queue_snapshot_task() -> dict:
 # Alert evaluation + auto-incidents
 # ---------------------------------------------------------------------------
 
+# Allocate the next human-readable auto-incident code.
 def _next_incident_code() -> str:
     from .models import Incident
     last = Incident.objects.filter(code__startswith="INC-").order_by("-code").first()
@@ -222,6 +234,7 @@ def _next_incident_code() -> str:
     return f"INC-{n + 1}"
 
 
+# Resolve the current observed value for an alert rule metric.
 def _current_metric_value(rule):
     """Resolve the live value a rule is evaluated against, or None."""
     from .models import QueueSnapshot, UptimeDailyRollup, UptimeCheckResult, AlertRule, CheckType
@@ -230,6 +243,7 @@ def _current_metric_value(rule):
     tr = services.parse_range("15m")
     # Widen the window to the rule's sustained-for duration when it's longer.
     if rule.duration_sec > 900:
+        # Sustained rules evaluate over their configured duration when it exceeds 15m.
         tr.start = tr.end - timedelta(seconds=rule.duration_sec)
 
     if rule.metric == AlertRule.Metric.ERROR_RATE:
@@ -258,6 +272,7 @@ def _current_metric_value(rule):
     return None
 
 
+# Fire and resolve alerts, opening or closing auto-incidents as needed.
 @shared_task
 def evaluate_alert_rules_task() -> dict:
     """Fire/resolve alerts from rule breaches and auto-manage their incidents."""
@@ -270,6 +285,7 @@ def evaluate_alert_rules_task() -> dict:
         open_alert = Alert.objects.filter(rule=rule, status=Alert.Status.FIRING).first()
 
         if breaching and not open_alert:
+            # First breach opens exactly one firing alert and one linked auto-incident.
             title = f"{rule.name}: {value} {rule.get_comparator_display()} {rule.threshold}"
             incident = _open_auto_incident(rule, title, value)
             Alert.objects.create(
@@ -279,6 +295,7 @@ def evaluate_alert_rules_task() -> dict:
             )
             fired += 1
         elif not breaching and open_alert:
+            # Clearing the metric resolves the alert and may resolve the linked incident.
             open_alert.status = Alert.Status.RESOLVED
             open_alert.resolved_at = timezone.now()
             open_alert.value = value
@@ -288,6 +305,7 @@ def evaluate_alert_rules_task() -> dict:
     return {"fired": fired, "resolved": resolved}
 
 
+# Create the incident record attached to a newly firing alert.
 def _open_auto_incident(rule, title, value):
     from .models import Incident
     incident = Incident.objects.create(
@@ -307,12 +325,14 @@ def _open_auto_incident(rule, title, value):
     return incident
 
 
+# Resolve auto-incidents only after all linked alerts have cleared.
 def _maybe_resolve_auto_incident(incident):
     from .models import Incident, Alert
     if not incident or incident.source != Incident.Source.AUTO:
         return
     if incident.status == Incident.Status.RESOLVED:
         return
+    # Multiple alert rules can point at one auto-incident; wait for all to clear.
     still_firing = Alert.objects.filter(incident=incident, status=Alert.Status.FIRING).exists()
     if still_firing:
         return
@@ -326,6 +346,7 @@ def _maybe_resolve_auto_incident(incident):
 # Rollups + retention
 # ---------------------------------------------------------------------------
 
+# Fold raw uptime probe results into daily service rollups.
 @shared_task
 def rollup_uptime_daily_task(days_back: int = 2) -> dict:
     """Aggregate raw uptime results into per-service daily rollups."""
@@ -342,6 +363,7 @@ def rollup_uptime_daily_task(days_back: int = 2) -> dict:
                 service=svc, checked_at__gte=day_start, checked_at__lt=day_end)
             total = results.count()
             if not total:
+                # Do not create synthetic uptime rows when no probes ran for the day.
                 continue
             failed = results.filter(
                 status__in=[HealthStatus.CRITICAL, HealthStatus.WARNING]).count()
@@ -361,12 +383,14 @@ def rollup_uptime_daily_task(days_back: int = 2) -> dict:
     return {"rollups_written": written}
 
 
+# Apply retention windows to raw observability rows.
 @shared_task
 def prune_health_metrics_task() -> dict:
     """Retention: drop raw rows past their window (rollups keep the long view)."""
     from .models import RequestMetric, UptimeCheckResult, QueueSnapshot, Alert
 
     now = timezone.now()
+    # Rollups keep long-term visibility, so raw high-cardinality rows can expire.
     deleted = {}
     deleted["request_metrics"] = RequestMetric.objects.filter(
         bucket_start__lt=now - timedelta(days=7)).delete()[0]
