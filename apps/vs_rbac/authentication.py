@@ -32,7 +32,7 @@ class TenantJWTAuthentication(JWTAuthentication):
         )
         if impersonation is None:
             raise AuthenticationFailed("Invalid impersonation session.")
-        if impersonation.ends_at <= timezone.now():
+        if impersonation.ends_at is not None and impersonation.ends_at <= timezone.now():
             impersonation.status = "EXPIRED"
             impersonation.ended_at = timezone.now()
             impersonation.save(update_fields=["status", "ended_at"])

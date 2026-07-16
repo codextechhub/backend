@@ -38,11 +38,11 @@ class ImpersonationSession(models.Model):
     status = models.CharField(max_length=10, choices=STATUS_CHOICES, default="ACTIVE")
 
     started_at = models.DateTimeField(default=timezone.now)
-    ends_at = models.DateTimeField()
+    ends_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
 
     def clean(self):
-        if self.ends_at <= self.started_at:
+        if self.ends_at is not None and self.ends_at <= self.started_at:
             raise ValidationError("ends_at must be after started_at.")
         if not self.justification.strip():
             raise ValidationError("justification is required.")

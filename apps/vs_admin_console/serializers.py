@@ -6,6 +6,7 @@ from rest_framework import serializers
 from .models import (
     ImpersonationSession,
 )
+from vs_user.models import User
 
 
 # -----------------------------------------------------------------------------
@@ -32,6 +33,33 @@ class ImpersonationSessionSerializer(serializers.ModelSerializer):
             "ended_at",
         ]
         read_only_fields = ["id", "staff_email", "target_email", "ended_at"]
+
+
+class ImpersonationTargetSerializer(serializers.ModelSerializer):
+    """Minimal identity payload for the proxy-user picker."""
+
+    full_name = serializers.CharField(read_only=True)
+    tenant_slug = serializers.CharField(source="tenant.slug", read_only=True)
+    tenant_name = serializers.CharField(source="tenant.name", read_only=True)
+    school_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = User
+        fields = [
+            "id",
+            "email",
+            "full_name",
+            "user_type",
+            "role",
+            "tenant_slug",
+            "tenant_name",
+            "school_name",
+        ]
+        read_only_fields = fields
+
+    def get_school_name(self, obj):
+        school = getattr(obj.tenant, "school_profile", None)
+        return getattr(school, "name", None)
         
 class ImpersonationStartSerializer(serializers.Serializer):
     """
@@ -39,13 +67,11 @@ class ImpersonationStartSerializer(serializers.Serializer):
     In your view/service, you'll create an ImpersonationSession object.
     """
     target_user = serializers.IntegerField()
-    justification = serializers.CharField()
-    duration_minutes = serializers.IntegerField(min_value=5, max_value=240, default=30) # 5 min to 4 hours
+    justification = serializers.CharField(required=False, allow_blank=True)
+    duration_minutes = serializers.IntegerField(min_value=5, max_value=240, required=False)
     
-    def validation_justification(self, value):
-        if not value.strip():
-            raise serializers.ValidationError("justification is required.")
-        return value
+    def validate_justification(self, value):
+        return value.strip()
     
 class ImpersonationEndSerializer(serializers.Serializer):
     """

@@ -132,11 +132,37 @@ class ImpersonationStartTests(ImpersonationTestBase):
         resp = self.start_session()
         self.assertEqual(resp.status_code, 404)
 
-    def test_second_concurrent_session_rejected(self):
+    def test_start_while_active_atomically_switches_target(self):
         self.assertEqual(self.start_session().status_code, 201)
-        resp = self.start_session()
-        self.assertEqual(resp.status_code, 400)
-        self.assertEqual(ImpersonationSession.objects.count(), 1)
+        other_target = make_school_admin(
+            self.branch, email="other-target@school.test",
+        )
+        resp = self.start_session(target=other_target)
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(ImpersonationSession.objects.count(), 2)
+        first, second = ImpersonationSession.objects.order_by("started_at", "pk")
+        self.assertEqual(first.status, "ENDED")
+        self.assertIsNotNone(first.ended_at)
+        self.assertEqual(second.status, "ACTIVE")
+        self.assertEqual(second.target_user, other_target)
+
+    def test_failed_switch_keeps_current_session_active(self):
+        self.assertEqual(self.start_session().status_code, 201)
+        current = ImpersonationSession.objects.get()
+        resp = self.start_session(target=self.admin)
+        self.assertEqual(resp.status_code, 404)
+        current.refresh_from_db()
+        self.assertEqual(current.status, "ACTIVE")
+
+    def test_start_without_reason_or_duration_is_manual_until_exit(self):
+        resp = self.client_for(self.admin).post(
+            f"/v1/admin/impersonations/start/?tenant={self.school.tenant.slug}",
+            {"target_user": self.target.pk},
+        )
+        self.assertEqual(resp.status_code, 201)
+        session = ImpersonationSession.objects.get()
+        self.assertIsNone(session.ends_at)
+        self.assertEqual(session.justification, "Started from proxy user menu.")
 
     def test_codex_staff_may_impersonate_codex_staff(self):
         codex_target = make_vision_user(email="peer@codex.test")
@@ -196,6 +222,46 @@ class ImpersonationScopeTests(ImpersonationTestBase):
             self.start_session(actor=admin, tenant_slug=self.codex.slug, target=codex_target).status_code,
             201,
         )
+
+
+class ImpersonationTargetSearchTests(ImpersonationTestBase):
+    def search(self, actor, query="target"):
+        return self.client_for(actor).get(
+            f"/v1/admin/impersonations/targets/?tenant={actor.tenant.slug}&search={query}"
+        )
+
+    def test_search_requires_a_start_permission(self):
+        viewer = make_vision_user(email="target-viewer@codex.test")
+        _grant_platform(viewer, ("platform.impersonation.view",))
+        self.assertEqual(self.search(viewer).status_code, 403)
+
+    def test_school_scope_returns_only_school_users(self):
+        actor = make_vision_user(email="target-school-scope@codex.test")
+        _grant_platform(actor, ("platform.impersonation.start_school",))
+        make_vision_user(email="target-platform@codex.test")
+        resp = self.search(actor)
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.json()["data"]
+        self.assertTrue(any(row["id"] == self.target.pk for row in rows))
+        self.assertTrue(all(row["tenant_slug"] != actor.tenant.slug for row in rows))
+
+    def test_cx_scope_includes_super_admin_role_and_excludes_school_users(self):
+        actor = make_vision_user(email="target-cx-scope@codex.test")
+        _grant_platform(actor, ("platform.impersonation.start_cx",))
+        super_target = make_vision_user(email="target-super@codex.test")
+        super_target.role = "Super Admin"
+        super_target.save(update_fields=["role"])
+        resp = self.search(actor)
+        self.assertEqual(resp.status_code, 200)
+        rows = resp.json()["data"]
+        self.assertTrue(any(row["id"] == super_target.pk for row in rows))
+        self.assertTrue(all(row["tenant_slug"] == actor.tenant.slug for row in rows))
+
+    def test_search_excludes_actor_and_rejects_short_query(self):
+        resp = self.search(self.admin, query="cxadmin")
+        self.assertEqual(resp.status_code, 200)
+        self.assertFalse(any(row["id"] == self.admin.pk for row in resp.json()["data"]))
+        self.assertEqual(self.search(self.admin, query="x").status_code, 400)
 
 
 class ImpersonatedRequestTests(ImpersonationTestBase):
@@ -307,6 +373,19 @@ class ImpersonationLifecycleTests(ImpersonationTestBase):
         self.assertEqual(resp.status_code, 404)
         resp = self.client_for(self.admin).post(
             f"/v1/admin/impersonations/end/?tenant={self.codex.slug}",
+            {"session_id": session.pk},
+        )
+        self.assertEqual(resp.status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.status, "ENDED")
+
+    def test_start_permission_can_exit_own_session_without_end_permission(self):
+        actor = make_vision_user(email="starter-exit@codex.test")
+        _grant_platform(actor, ("platform.impersonation.start_school",))
+        self.assertEqual(self.start_session(actor=actor).status_code, 201)
+        session = ImpersonationSession.objects.get()
+        resp = self.client_for(actor).post(
+            f"/v1/admin/impersonations/end/?tenant={actor.tenant.slug}",
             {"session_id": session.pk},
         )
         self.assertEqual(resp.status_code, 200)
