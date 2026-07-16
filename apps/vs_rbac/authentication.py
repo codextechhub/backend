@@ -113,4 +113,10 @@ class TenantJWTAuthentication(JWTAuthentication):
         django_request.tenant = tenant
         django_request.rbac_tenant = actor.tenant if impersonation is None else tenant
         set_current_tenant(tenant)
+        from vs_tenants.context import set_current_audit_identity
+        set_current_audit_identity(
+            actor_user=actor,
+            effective_user=effective_user,
+            impersonation_session=impersonation,
+        )
         return effective_user, validated_token

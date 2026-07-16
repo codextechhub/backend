@@ -57,6 +57,10 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
     its class name and pk are used. Returns the created row.
     """
     from .models import FinanceAuditLog
+    from vs_tenants.context import add_proxy_audit_metadata, resolve_audit_identity
+
+    actor_user, effective_user, proxy_session = resolve_audit_identity(actor_user)
+    metadata = add_proxy_audit_metadata(metadata, effective_user, proxy_session)
 
     if target is not None:  # Allow callers to pass a model instance instead of manual identifiers.
         target_type = target_type or type(target).__name__  # Derive the target type from the instance.

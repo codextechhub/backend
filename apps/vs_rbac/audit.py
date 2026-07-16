@@ -38,8 +38,12 @@ def record_rbac_audit(
     durable write (by design — the caller's transaction must roll back with
     it). The central mirror never raises.
     """
+    from vs_tenants.context import add_proxy_audit_metadata, resolve_audit_identity
+
+    actor_user, effective_user, proxy_session = resolve_audit_identity(actor_user)
+    metadata = add_proxy_audit_metadata(metadata, effective_user, proxy_session)
     # Preserve tenant context even when the target row changes.
-    school_id = str((metadata or {}).get("school_id", "") or "")
+    school_id = str(metadata.get("school_id", "") or "")
 
     log = RBACAuditLog.objects.create(
         action_type=str(action_type),

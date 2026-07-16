@@ -116,6 +116,10 @@ def emit_audit_event(
     from .models import AuditEvent, AuditActorType, EntityAuditTrail
 
     try:
+        from vs_tenants.context import resolve_audit_identity
+        actor_user, effective_user, impersonation_session = resolve_audit_identity(
+            actor_user, effective_user, impersonation_session,
+        )
         actor_type = AuditActorType.USER if actor_user is not None else AuditActorType.SYSTEM
 
         resolved_summary = summary or _build_summary(action_type, actor_user, entity_label, entity_type)

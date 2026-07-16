@@ -22,6 +22,10 @@ def record_configuration_event(
 ):
     """Write the authoritative immutable local event and mirror it centrally."""
     from ..models import ConfigurationAuditEvent
+    from vs_tenants.context import add_proxy_audit_metadata, resolve_audit_identity
+
+    actor, effective_user, proxy_session = resolve_audit_identity(actor)
+    metadata = add_proxy_audit_metadata(metadata, effective_user, proxy_session)
 
     # Branch-scoped audit rows also carry tenant for tenant filtering.
     if branch is not None and tenant is None:

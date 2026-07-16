@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .context import clear_current_tenant
+from .context import clear_request_context
 
 
 class TenantContextCleanupMiddleware:
@@ -10,7 +10,7 @@ class TenantContextCleanupMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
-        clear_current_tenant()
+        clear_request_context()
         try:
             response = self.get_response(request)
             session = getattr(request, "impersonation_session", None)
@@ -31,4 +31,4 @@ class TenantContextCleanupMiddleware:
                 )
             return response
         finally:
-            clear_current_tenant()
+            clear_request_context()

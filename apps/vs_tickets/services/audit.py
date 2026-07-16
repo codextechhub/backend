@@ -19,6 +19,10 @@ def record_ticket_audit(
     after_data: dict | None = None,
     metadata: dict | None = None,
 ):
+    from vs_tenants.context import add_proxy_audit_metadata, resolve_audit_identity
+
+    actor, effective_user, proxy_session = resolve_audit_identity(actor)
+    metadata = add_proxy_audit_metadata(metadata, effective_user, proxy_session)
     log = TicketAuditLog.objects.create(
         ticket=ticket,
         actor=actor,
@@ -39,7 +43,7 @@ def record_ticket_audit(
         summary=summary or f"Ticket {ticket.ticket_number}: {action}",
         before_data=before_data or {},
         diff_data=after_data or {},
-        metadata={"ticket_action": action, **(metadata or {})},
+        metadata={"ticket_action": action, **metadata},
     )
     return log
 
