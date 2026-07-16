@@ -40,6 +40,8 @@ class ImpersonationSession(models.Model):
     started_at = models.DateTimeField(default=timezone.now)
     ends_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
+    last_activity_at = models.DateTimeField(default=timezone.now)  # Last time a proxied request was made on this session. Updated by middleware.
+    access_log = models.JSONField(default=list, blank=True)  # For recording access patterns via middleware. Eg. [{"path": "/api/v1/foo", "count": 3, "first_at": "...", "last_at": "..."}]
 
     def clean(self):
         if self.ends_at is not None and self.ends_at <= self.started_at:

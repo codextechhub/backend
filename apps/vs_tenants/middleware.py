@@ -1,9 +1,46 @@
 from __future__ import annotations
 
+from django.utils import timezone
+
 from .context import clear_request_context, get_current_audit_event_count
 
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+# Distinct paths kept per session; existing entries keep counting past the cap.
+ACCESS_LOG_MAX_PATHS = 200
+
+
+def _record_proxy_activity(session, request, response):
+    """Mark the session as live and add successful reads to its access trail.
+
+    Writes and failures already land in the audit stream; the trail records
+    what data the proxier viewed, deduped by path so browsing stays readable.
+    Never raises — bookkeeping must not break the proxied response.
+    """
+    try:
+        now = timezone.now()
+        session.last_activity_at = now
+        update_fields = ["last_activity_at"]
+        if request.method in SAFE_METHODS and response.status_code < 400:
+            log = list(session.access_log or [])
+            entry = next((e for e in log if e.get("path") == request.path), None)
+            if entry is not None:
+                entry["count"] = int(entry.get("count", 0)) + 1
+                entry["last_at"] = now.isoformat()
+                update_fields.append("access_log")
+            elif len(log) < ACCESS_LOG_MAX_PATHS:
+                log.append({
+                    "path": request.path,
+                    "count": 1,
+                    "first_at": now.isoformat(),
+                    "last_at": now.isoformat(),
+                })
+                update_fields.append("access_log")
+            session.access_log = log
+        session.save(update_fields=update_fields)
+    except Exception:  # pragma: no cover — defensive; see docstring.
+        pass
 
 
 def _user_label(user) -> str:
@@ -28,9 +65,12 @@ class TenantContextCleanupMiddleware:
         try:
             response = self.get_response(request)
             session = getattr(request, "impersonation_session", None)
+            if session is not None:
+                _record_proxy_activity(session, request, response)
             # A feature-level event is always more useful than a request-level
-            # fallback. Successful reads are intentionally quiet; sensitive
-            # reads can still emit their own explicit audit event.
+            # fallback. Successful reads land in the session's access trail
+            # instead of the audit stream; sensitive reads can still emit
+            # their own explicit audit event.
             if session is not None and get_current_audit_event_count() == 0:
                 from vs_audit.services import emit_audit_event
 

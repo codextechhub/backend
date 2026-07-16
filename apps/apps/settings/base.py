@@ -150,6 +150,7 @@ CORS_ALLOW_CREDENTIALS = True
 from corsheaders.defaults import default_headers
 
 CORS_ALLOW_HEADERS = (*default_headers, "x-impersonation-session")
+IMPERSONATION_IDLE_TIMEOUT_MINUTES = 30  # Proxy sessions idle beyond this are swept to EXPIRED by a cron job.
 
 SESSION_COOKIE_SAMESITE = "Lax"
 CSRF_COOKIE_SAMESITE    = "Lax"

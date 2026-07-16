@@ -56,10 +56,13 @@ class ImpersonationSessionSerializer(serializers.ModelSerializer):
             "started_at",
             "ends_at",
             "ended_at",
+            "last_activity_at",
+            "access_log",
         ]
         read_only_fields = [
             "id", "staff_email", "staff_type_label", "tenant_name", "tenant_slug",
             "target_email", "target_type_label", "ended_at",
+            "last_activity_at", "access_log",
         ]
 
 

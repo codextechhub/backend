@@ -1,7 +1,21 @@
+from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 
 from .models import ImpersonationSession
+
+
+# Close ACTIVE sessions the actor abandoned without exiting or logging out.
+def sweep_stale_impersonations():
+    """Expire ACTIVE sessions past their deadline or idle beyond the limit."""
+    now = timezone.now()
+    idle_cutoff = now - timezone.timedelta(
+        minutes=settings.IMPERSONATION_IDLE_TIMEOUT_MINUTES,
+    )
+    return ImpersonationSession.objects.filter(
+        Q(ends_at__lte=now) | Q(ends_at__isnull=True, last_activity_at__lt=idle_cutoff),
+        status="ACTIVE",
+    ).update(status="EXPIRED", ended_at=now)
 
 
 # End every active proxy session involving a user whose access changed.

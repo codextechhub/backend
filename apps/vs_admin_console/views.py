@@ -65,7 +65,8 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     docstring-name: Impersonation sessions
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
-    queryset = ImpersonationSession.objects.select_related(
+    # Stable ordering keeps pagination consistent between pages.
+    queryset = ImpersonationSession.objects.order_by("-started_at", "-pk").select_related(
         "staff_user", "target_user", "tenant",
     ).prefetch_related(
         Prefetch(
@@ -117,9 +118,9 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                 ]
         else:
             self.rbac_permission = {
-                # A starter must always be able to exit their own session. The
-                # endpoint also verifies ownership, so broader session-control
-                # authority is never inherited from these keys.
+                # A starter must always be able to exit their own session.
+                # Inside the action, start_* keys stay owner-only while the
+                # dedicated end key is the admin kill switch for ANY session.
                 "end": [
                     "platform.impersonation.end",
                     "platform.impersonation.start_all",
@@ -211,6 +212,11 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         return self.get_paginated_response(serializer.data)
 
     def get_queryset(self):
+        if self.action == "list":
+            # The monitoring screen must never show abandoned sessions as
+            # ACTIVE: expire idle/overdue rows before they are listed.
+            from .services import sweep_stale_impersonations
+            sweep_stale_impersonations()
         qs = super().get_queryset()
         tenant = getattr(self.request, "tenant", None)
         status_param = self.request.query_params.get("status")
@@ -313,7 +319,8 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                 status=status.HTTP_201_CREATED,
             )
 
-    # End a proxy session owned by the original platform actor.
+    # End a proxy session: owners exit their own; the end key is the admin
+    # kill switch and may terminate ANY active session.
     @action(detail=False, methods=["post"], url_path="end")
     def end(self, request):
         """
@@ -321,18 +328,41 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         Payload: ImpersonationEndSerializer
         Ends an ACTIVE session and logs the action.
         """
+        from vs_rbac.evaluator import get_effective_permissions
+        from vs_rbac.permissions import is_vision_super_admin
+
         ser = ImpersonationEndSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         session_id = ser.validated_data["session_id"]
 
         actor = getattr(request, "actor_user", request.user)
-        # Ownership check prevents one staff member from ending another staff member's proxy.
-        session = ImpersonationSession.objects.filter(id=session_id, staff_user=actor).first()
+        session = ImpersonationSession.objects.select_related(
+            "staff_user", "target_user", "tenant",
+        ).filter(id=session_id).first()
+        if session is not None and session.staff_user_id != actor.pk:
+            # start_* holders reached this action for self-exit only; without
+            # the dedicated end key another actor's session stays a
+            # non-enumerating 404.
+            can_end_any = is_vision_super_admin(actor) or (
+                "platform.impersonation.end"
+                in get_effective_permissions(actor, tenant=actor.tenant)
+            )
+            if not can_end_any:
+                session = None
         if not session:
             return error_response(message="Impersonation session not found.", status=status.HTTP_404_NOT_FOUND)
         if session.status != 'ACTIVE':
             return error_response(message="Impersonation session is not ACTIVE.")
 
+        ended_by_owner = session.staff_user_id == actor.pk
+        summary = (
+            f"{_user_label(actor)} ended the proxy session as {_user_label(session.target_user)}"
+            if ended_by_owner
+            else (
+                f"{_user_label(actor)} terminated {_user_label(session.staff_user)}'s "
+                f"proxy session as {_user_label(session.target_user)}"
+            )
+        )
         with transaction.atomic():
             session.end()
             _emit_proxy_lifecycle_event(
@@ -341,7 +371,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                 target=session.target_user,
                 tenant=session.tenant,
                 session=session,
-                summary=f"{_user_label(actor)} ended the proxy session as {_user_label(session.target_user)}",
+                summary=summary,
             )
 
         return success_response(

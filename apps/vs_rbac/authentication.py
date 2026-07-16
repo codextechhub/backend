@@ -32,9 +32,21 @@ class TenantJWTAuthentication(JWTAuthentication):
         )
         if impersonation is None:
             raise AuthenticationFailed("Invalid impersonation session.")
-        if impersonation.ends_at is not None and impersonation.ends_at <= timezone.now():
+        now = timezone.now()
+        expired = (
+            impersonation.ends_at is not None and impersonation.ends_at <= now
+        )
+        if not expired and impersonation.ends_at is None:
+            # Open-ended sessions stay alive only while they are used.
+            from django.conf import settings
+            idle_limit = timezone.timedelta(
+                minutes=settings.IMPERSONATION_IDLE_TIMEOUT_MINUTES,
+            )
+            last_seen = impersonation.last_activity_at or impersonation.started_at
+            expired = last_seen + idle_limit <= now
+        if expired:
             impersonation.status = "EXPIRED"
-            impersonation.ended_at = timezone.now()
+            impersonation.ended_at = now
             impersonation.save(update_fields=["status", "ended_at"])
             raise AuthenticationFailed("Impersonation session has expired.")
         if getattr(actor.tenant, "kind", None) != Tenant.Kind.PLATFORM:

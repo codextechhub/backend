@@ -413,23 +413,114 @@ class ImpersonatedRequestTests(ImpersonationTestBase):
         self.assertEqual(event.effective_user, self.target)
         self.assertEqual(event.status, "DENIED")
 
+    def test_successful_reads_land_in_the_session_access_trail(self):
+        url = f"/v1/user/auth/me/?tenant={self.school.tenant.slug}"
+        self.assertEqual(self.impersonated_client().get(url).status_code, 200)
+        self.assertEqual(self.impersonated_client().get(url).status_code, 200)
+
+        self.session.refresh_from_db()
+        self.assertEqual(len(self.session.access_log), 1)
+        entry = self.session.access_log[0]
+        self.assertEqual(entry["path"], "/v1/user/auth/me/")
+        self.assertEqual(entry["count"], 2)
+
+    def test_failed_request_updates_activity_but_not_the_trail(self):
+        before = self.session.last_activity_at
+        resp = self.impersonated_client().get(
+            f"/v1/admin/impersonations/?tenant={self.school.tenant.slug}"
+        )
+        self.assertEqual(resp.status_code, 403)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.access_log, [])
+        self.assertGreater(self.session.last_activity_at, before)
+
+    def test_proxied_self_service_auth_event_is_attributed_to_the_real_actor(self):
+        from vs_audit.models import AuditEvent
+
+        resp = self.impersonated_client().post(
+            f"/v1/user/sessions/end-all-mine/?tenant={self.school.tenant.slug}",
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        event = AuditEvent.objects.get(action_type="FORCE_LOGOUT")
+        self.assertEqual(event.actor_user, self.admin)
+        self.assertEqual(event.effective_user, self.target)
+        self.assertEqual(event.impersonation_session, self.session)
+        # The explicit auth event suppresses the generic PROXY_CHANGE fallback.
+        self.assertFalse(AuditEvent.objects.filter(action_type="PROXY_CHANGE").exists())
+
+
+class ImpersonationIdleExpiryTests(ImpersonationTestBase):
+    def _make_idle(self, session, minutes):
+        ImpersonationSession.objects.filter(pk=session.pk).update(
+            last_activity_at=timezone.now() - timezone.timedelta(minutes=minutes),
+        )
+
+    def _open_ended_session(self):
+        resp = self.client_for(self.admin).post(
+            f"/v1/admin/impersonations/start/?tenant={self.school.tenant.slug}",
+            {"target_user": self.target.pk},
+        )
+        self.assertEqual(resp.status_code, 201)
+        return ImpersonationSession.objects.get()
+
+    def _impersonated_get(self, session):
+        client = self.client_for(self.admin)
+        client.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {CodeXRefreshToken.for_user(self.admin).access_token}",
+            HTTP_X_IMPERSONATION_SESSION=str(session.pk),
+        )
+        return client.get(f"/v1/user/auth/me/?tenant={self.school.tenant.slug}")
+
+    def test_idle_open_ended_session_is_rejected_and_expired(self):
+        session = self._open_ended_session()
+        self._make_idle(session, minutes=31)
+        self.assertEqual(self._impersonated_get(session).status_code, 401)
+        session.refresh_from_db()
+        self.assertEqual(session.status, "EXPIRED")
+        self.assertIsNotNone(session.ended_at)
+
+    def test_recently_active_open_ended_session_still_works(self):
+        session = self._open_ended_session()
+        self._make_idle(session, minutes=29)
+        self.assertEqual(self._impersonated_get(session).status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.status, "ACTIVE")
+
+    def test_monitoring_list_sweeps_stale_sessions(self):
+        idle_session = self._open_ended_session()
+        self._make_idle(idle_session, minutes=45)
+        # A bounded session past its deadline is swept by the same pass even
+        # though its actor never sent another proxied request.
+        overdue = ImpersonationSession.objects.create(
+            staff_user=make_vision_user(email="overdue-owner@codex.test"),
+            tenant=self.school.tenant,
+            target_user=self.target,
+            justification="Overdue bounded session.",
+            ends_at=timezone.now() - timezone.timedelta(minutes=5),
+        )
+        resp = self.client_for(self.admin).get(
+            f"/v1/admin/impersonations/?tenant={self.school.tenant.slug}"
+        )
+        self.assertEqual(resp.status_code, 200)
+        idle_session.refresh_from_db()
+        overdue.refresh_from_db()
+        self.assertEqual(idle_session.status, "EXPIRED")
+        self.assertEqual(overdue.status, "EXPIRED")
+        statuses = {row["id"]: row["status"] for row in resp.json()["data"]}
+        self.assertEqual(statuses.get(idle_session.pk), "EXPIRED")
+        self.assertEqual(statuses.get(overdue.pk), "EXPIRED")
+
 
 class ImpersonationLifecycleTests(ImpersonationTestBase):
     def _active(self):
         return ImpersonationSession.objects.filter(status="ACTIVE").count()
 
-    def test_end_endpoint_requires_owner(self):
+    def test_owner_end_emits_audit_bookend(self):
         from vs_audit.models import AuditEvent
 
         self.start_session()
         session = ImpersonationSession.objects.get()
-        other_admin = make_vision_user(email="cxadmin3@codex.test")
-        _grant_platform(other_admin, IMPERSONATION_KEYS)
-        resp = self.client_for(other_admin).post(
-            f"/v1/admin/impersonations/end/?tenant={self.codex.slug}",
-            {"session_id": session.pk},
-        )
-        self.assertEqual(resp.status_code, 404)
         resp = self.client_for(self.admin).post(
             f"/v1/admin/impersonations/end/?tenant={self.codex.slug}",
             {"session_id": session.pk},
@@ -442,6 +533,40 @@ class ImpersonationLifecycleTests(ImpersonationTestBase):
         )
         self.assertEqual(ended.actor_user, self.admin)
         self.assertEqual(ended.effective_user, self.target)
+
+    def test_end_key_holder_can_terminate_another_actors_session(self):
+        from vs_audit.models import AuditEvent
+
+        self.start_session()
+        session = ImpersonationSession.objects.get()
+        security_admin = make_vision_user(email="cxadmin3@codex.test")
+        _grant_platform(security_admin, ("platform.impersonation.end",))
+        resp = self.client_for(security_admin).post(
+            f"/v1/admin/impersonations/end/?tenant={self.codex.slug}",
+            {"session_id": session.pk},
+        )
+        self.assertEqual(resp.status_code, 200)
+        session.refresh_from_db()
+        self.assertEqual(session.status, "ENDED")
+        ended = AuditEvent.objects.get(
+            impersonation_session=session, action_type="IMPERSONATION_ENDED",
+        )
+        self.assertEqual(ended.actor_user, security_admin)
+        self.assertEqual(ended.effective_user, self.target)
+        self.assertIn("terminated", ended.summary)
+
+    def test_start_only_holder_cannot_end_another_actors_session(self):
+        self.start_session()
+        session = ImpersonationSession.objects.get()
+        starter = make_vision_user(email="starter-no-end@codex.test")
+        _grant_platform(starter, ("platform.impersonation.start_school",))
+        resp = self.client_for(starter).post(
+            f"/v1/admin/impersonations/end/?tenant={self.codex.slug}",
+            {"session_id": session.pk},
+        )
+        self.assertEqual(resp.status_code, 404)
+        session.refresh_from_db()
+        self.assertEqual(session.status, "ACTIVE")
 
     def test_start_permission_can_exit_own_session_without_end_permission(self):
         actor = make_vision_user(email="starter-exit@codex.test")
