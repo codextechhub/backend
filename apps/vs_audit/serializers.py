@@ -352,6 +352,7 @@ class AuditEventFilterSerializer(serializers.Serializer):
         required=False,
     )
     actor_user_id = serializers.IntegerField(required=False)
+    impersonation_session_id = serializers.IntegerField(required=False)
     entity_type = serializers.CharField(required=False)
     entity_id = serializers.CharField(required=False)
 

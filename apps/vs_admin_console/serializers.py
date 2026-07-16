@@ -16,6 +16,27 @@ from vs_user.models import User
 class ImpersonationSessionSerializer(serializers.ModelSerializer):
     staff_email = serializers.EmailField(source="staff_user.email", read_only=True)
     target_email = serializers.EmailField(source="target_user.email", read_only=True)
+    staff_type_label = serializers.SerializerMethodField()
+    target_type_label = serializers.SerializerMethodField()
+    tenant_name = serializers.CharField(source="tenant.name", read_only=True)
+    tenant_slug = serializers.CharField(source="tenant.slug", read_only=True)
+
+    @staticmethod
+    def _staff_type_label(user):
+        assignments = getattr(user, "_active_proxy_roles", None)
+        if assignments is None:
+            assignments = user.tenant_role_assignments.select_related("role").filter(
+                assignment_status="ACTIVE",
+            )
+        if any(assignment.role.key.startswith("xvs_") for assignment in assignments):
+            return "XVS Staff"
+        return user.get_user_type_display()
+
+    def get_staff_type_label(self, obj):
+        return self._staff_type_label(obj.staff_user)
+
+    def get_target_type_label(self, obj):
+        return self._staff_type_label(obj.target_user)
 
     class Meta:
         model = ImpersonationSession
@@ -23,16 +44,23 @@ class ImpersonationSessionSerializer(serializers.ModelSerializer):
             "id",
             "staff_user",
             "staff_email",
+            "staff_type_label",
             "tenant",
+            "tenant_name",
+            "tenant_slug",
             "target_user",
             "target_email",
+            "target_type_label",
             "justification",
             "status",
             "started_at",
             "ends_at",
             "ended_at",
         ]
-        read_only_fields = ["id", "staff_email", "target_email", "ended_at"]
+        read_only_fields = [
+            "id", "staff_email", "staff_type_label", "tenant_name", "tenant_slug",
+            "target_email", "target_type_label", "ended_at",
+        ]
 
 
 class ImpersonationTargetSerializer(serializers.ModelSerializer):

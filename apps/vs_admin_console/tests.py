@@ -108,6 +108,8 @@ class ImpersonationStartTests(ImpersonationTestBase):
         self.assertEqual(resp.status_code, 404)
 
     def test_start_creates_active_session(self):
+        from vs_audit.models import AuditEvent
+
         resp = self.start_session()
         self.assertEqual(resp.status_code, 201)
         session = ImpersonationSession.objects.get()
@@ -115,6 +117,27 @@ class ImpersonationStartTests(ImpersonationTestBase):
         self.assertEqual(session.target_user, self.target)
         self.assertEqual(session.tenant, self.school.tenant)
         self.assertEqual(session.status, "ACTIVE")
+        payload = resp.json()["data"]
+        self.assertEqual(payload["tenant_name"], self.school.tenant.name)
+        self.assertEqual(payload["tenant_slug"], self.school.tenant.slug)
+        self.assertEqual(payload["staff_type_label"], "CX Staff")
+        self.assertEqual(payload["target_type_label"], "School Admin")
+        event = AuditEvent.objects.get(
+            impersonation_session=session, action_type="IMPERSONATION_STARTED",
+        )
+        self.assertEqual(event.actor_user, self.admin)
+        self.assertEqual(event.effective_user, self.target)
+        self.assertIn("started a proxy session", event.summary)
+
+    def test_xvs_role_holder_is_labeled_xvs_staff(self):
+        xvs_admin = make_vision_user(
+            email="xvs-admin@codex.test", super_admin=True,
+        )
+
+        resp = self.start_session(actor=xvs_admin)
+
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.json()["data"]["staff_type_label"], "XVS Staff")
 
     def test_target_must_belong_to_asserted_tenant(self):
         other_school = make_school(slug="imp-elsewhere", name="Elsewhere")
@@ -198,7 +221,7 @@ class ImpersonationScopeTests(ImpersonationTestBase):
             201,
         )
         # School target → denied (needs start_school or start_all).
-        ImpersonationSession.objects.all().delete()
+        ImpersonationSession.objects.update(status="ENDED", ended_at=timezone.now())
         self.assertEqual(self.start_session(actor=admin).status_code, 403)
 
     def test_start_school_can_impersonate_school_but_not_cx(self):
@@ -206,7 +229,7 @@ class ImpersonationScopeTests(ImpersonationTestBase):
         # School target → allowed.
         self.assertEqual(self.start_session(actor=admin).status_code, 201)
         # CX target → denied (needs start_cx or start_all).
-        ImpersonationSession.objects.all().delete()
+        ImpersonationSession.objects.update(status="ENDED", ended_at=timezone.now())
         codex_target = make_vision_user(email="cxtarget2@codex.test")
         self.assertEqual(
             self.start_session(actor=admin, tenant_slug=self.codex.slug, target=codex_target).status_code,
@@ -216,7 +239,7 @@ class ImpersonationScopeTests(ImpersonationTestBase):
     def test_start_all_covers_both_kinds(self):
         admin = self._scoped_admin("allscopes@codex.test", "platform.impersonation.start_all")
         self.assertEqual(self.start_session(actor=admin).status_code, 201)
-        ImpersonationSession.objects.all().delete()
+        ImpersonationSession.objects.update(status="ENDED", ended_at=timezone.now())
         codex_target = make_vision_user(email="cxtarget3@codex.test")
         self.assertEqual(
             self.start_session(actor=admin, tenant_slug=self.codex.slug, target=codex_target).status_code,
@@ -361,18 +384,34 @@ class ImpersonatedRequestTests(ImpersonationTestBase):
         self.session.refresh_from_db()
         self.assertEqual(self.session.status, "ENDED")
 
-    def test_impersonated_request_audits_both_identities(self):
+    def test_successful_impersonated_read_does_not_create_request_noise(self):
         from vs_audit.models import AuditEvent
 
+        before = AuditEvent.objects.filter(impersonation_session=self.session).count()
         resp = self.impersonated_client().get(
             f"/v1/user/auth/me/?tenant={self.school.tenant.slug}"
         )
         self.assertEqual(resp.status_code, 200)
-        event = AuditEvent.objects.filter(
+        self.assertEqual(
+            AuditEvent.objects.filter(impersonation_session=self.session).count(),
+            before,
+        )
+        self.assertFalse(AuditEvent.objects.filter(action_type="IMPERSONATED_REQUEST").exists())
+
+    def test_denied_impersonated_action_audits_both_identities(self):
+        from vs_audit.models import AuditEvent
+
+        resp = self.impersonated_client().get(
+            f"/v1/admin/impersonations/?tenant={self.school.tenant.slug}"
+        )
+        self.assertEqual(resp.status_code, 403)
+        event = AuditEvent.objects.get(
             impersonation_session=self.session,
-        ).latest("event_at")
+            action_type="PROXY_ACTION_FAILED",
+        )
         self.assertEqual(event.actor_user, self.admin)
         self.assertEqual(event.effective_user, self.target)
+        self.assertEqual(event.status, "DENIED")
 
 
 class ImpersonationLifecycleTests(ImpersonationTestBase):
@@ -380,6 +419,8 @@ class ImpersonationLifecycleTests(ImpersonationTestBase):
         return ImpersonationSession.objects.filter(status="ACTIVE").count()
 
     def test_end_endpoint_requires_owner(self):
+        from vs_audit.models import AuditEvent
+
         self.start_session()
         session = ImpersonationSession.objects.get()
         other_admin = make_vision_user(email="cxadmin3@codex.test")
@@ -396,6 +437,11 @@ class ImpersonationLifecycleTests(ImpersonationTestBase):
         self.assertEqual(resp.status_code, 200)
         session.refresh_from_db()
         self.assertEqual(session.status, "ENDED")
+        ended = AuditEvent.objects.get(
+            impersonation_session=session, action_type="IMPERSONATION_ENDED",
+        )
+        self.assertEqual(ended.actor_user, self.admin)
+        self.assertEqual(ended.effective_user, self.target)
 
     def test_start_permission_can_exit_own_session_without_end_permission(self):
         actor = make_vision_user(email="starter-exit@codex.test")

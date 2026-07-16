@@ -101,6 +101,7 @@ class AuditEventListView(generics.ListAPIView):
         status = filters.get("status")
         actor_type = filters.get("actor_type")
         actor_user_id = filters.get("actor_user_id")
+        impersonation_session_id = filters.get("impersonation_session_id")
         entity_type = filters.get("entity_type")
         entity_id = filters.get("entity_id")
         date_from = filters.get("date_from")
@@ -124,6 +125,9 @@ class AuditEventListView(generics.ListAPIView):
 
         if actor_user_id:
             queryset = queryset.filter(actor_user_id=actor_user_id)
+
+        if impersonation_session_id:
+            queryset = queryset.filter(impersonation_session_id=impersonation_session_id)
 
         if entity_type:
             queryset = queryset.filter(entity_type=entity_type)

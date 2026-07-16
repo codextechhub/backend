@@ -7,6 +7,7 @@ _current_tenant = ContextVar("current_tenant", default=None)
 _current_audit_actor = ContextVar("current_audit_actor", default=None)
 _current_effective_user = ContextVar("current_effective_user", default=None)
 _current_impersonation_session = ContextVar("current_impersonation_session", default=None)
+_current_audit_event_count = ContextVar("current_audit_event_count", default=0)
 
 
 def get_current_tenant():
@@ -29,6 +30,7 @@ def clear_current_tenant():
     _current_audit_actor.set(None)
     _current_effective_user.set(None)
     _current_impersonation_session.set(None)
+    _current_audit_event_count.set(0)
 
 
 def set_current_audit_identity(*, actor_user, effective_user, impersonation_session=None):
@@ -45,6 +47,15 @@ def get_current_audit_identity():
         _current_effective_user.get(),
         _current_impersonation_session.get(),
     )
+
+
+def mark_audit_event_emitted():
+    """Record that this request already produced a meaningful audit event."""
+    _current_audit_event_count.set(_current_audit_event_count.get() + 1)
+
+
+def get_current_audit_event_count() -> int:
+    return _current_audit_event_count.get()
 
 
 def _same_user(left, right) -> bool:
@@ -86,6 +97,7 @@ def clear_current_audit_identity():
     _current_audit_actor.set(None)
     _current_effective_user.set(None)
     _current_impersonation_session.set(None)
+    _current_audit_event_count.set(0)
 
 
 def clear_request_context():

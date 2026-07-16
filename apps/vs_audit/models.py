@@ -111,7 +111,8 @@ class AuditActionType(models.TextChoices):
     # Impersonation (dual-identity support sessions)
     IMPERSONATION_STARTED = "IMPERSONATION_STARTED", "Impersonation Started"
     IMPERSONATION_ENDED = "IMPERSONATION_ENDED", "Impersonation Ended"
-    IMPERSONATED_REQUEST = "IMPERSONATED_REQUEST", "Impersonated Request"
+    PROXY_CHANGE = "PROXY_CHANGE", "Change Through Proxy"
+    PROXY_ACTION_FAILED = "PROXY_ACTION_FAILED", "Proxy Action Failed"
 
     # Other
     CONFIG_CHANGED = "CONFIG_CHANGED", "Configuration Changed"

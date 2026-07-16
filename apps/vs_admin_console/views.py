@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
@@ -14,6 +14,7 @@ from .models import (
     ImpersonationSession,
 )
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+from vs_rbac.models import TenantUserRoleAssignment
 from .serializers import (
     DashboardFilterSerializer,
     ImpersonationEndSerializer,
@@ -22,6 +23,29 @@ from .serializers import (
     ImpersonationTargetSerializer,
     SchoolDashboardItemSerializer,
 )
+
+
+def _user_label(user) -> str:
+    return user.full_name or user.email
+
+
+def _emit_proxy_lifecycle_event(*, action_type, actor, target, tenant, session, summary):
+    """Write the durable, human-readable bookend for a proxy session."""
+    from vs_audit.services import emit_audit_event
+
+    emit_audit_event(
+        module_key="PLATFORM",
+        action_type=action_type,
+        entity_type="ImpersonationSession",
+        entity_id=str(session.pk),
+        entity_label=_user_label(target),
+        actor_user=actor,
+        effective_user=target,
+        tenant=tenant,
+        impersonation_session=session,
+        summary=summary,
+        metadata={"session_status": session.status},
+    )
 
 
 class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
@@ -37,7 +61,24 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     docstring-name: Impersonation sessions
     """
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
-    queryset = ImpersonationSession.objects.select_related("staff_user", "target_user", "tenant")
+    queryset = ImpersonationSession.objects.select_related(
+        "staff_user", "target_user", "tenant",
+    ).prefetch_related(
+        Prefetch(
+            "staff_user__tenant_role_assignments",
+            queryset=TenantUserRoleAssignment.objects.select_related("role").filter(
+                assignment_status="ACTIVE",
+            ),
+            to_attr="_active_proxy_roles",
+        ),
+        Prefetch(
+            "target_user__tenant_role_assignments",
+            queryset=TenantUserRoleAssignment.objects.select_related("role").filter(
+                assignment_status="ACTIVE",
+            ),
+            to_attr="_active_proxy_roles",
+        ),
+    )
     serializer_class = ImpersonationSessionSerializer
     pagination_class = XVSPagination
     # Lets a PLATFORM actor assert ?tenant=<school-slug> to start/list/end
@@ -213,9 +254,26 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                 )
             # Starting another target is an atomic switch. Validation happens
             # first, so a failed selection never disrupts the current proxy.
-            ImpersonationSession.objects.filter(
+            active_sessions = list(ImpersonationSession.objects.filter(
                 staff_user=actor, status="ACTIVE",
+            ).select_related("target_user", "tenant"))
+            ImpersonationSession.objects.filter(
+                pk__in=[active.pk for active in active_sessions],
             ).update(status="ENDED", ended_at=started_at)
+            for active in active_sessions:
+                active.status = "ENDED"
+                active.ended_at = started_at
+                _emit_proxy_lifecycle_event(
+                    action_type="IMPERSONATION_ENDED",
+                    actor=actor,
+                    target=active.target_user,
+                    tenant=active.tenant,
+                    session=active,
+                    summary=(
+                        f"{_user_label(actor)} ended the proxy session as "
+                        f"{_user_label(active.target_user)} to proxy another user"
+                    ),
+                )
             session = ImpersonationSession.objects.create(
                 staff_user=actor,
                 tenant=tenant,
@@ -224,6 +282,14 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                 started_at=started_at,
                 ends_at=ends_at,
                 status='ACTIVE',
+            )
+            _emit_proxy_lifecycle_event(
+                action_type="IMPERSONATION_STARTED",
+                actor=actor,
+                target=target,
+                tenant=tenant,
+                session=session,
+                summary=f"{_user_label(actor)} started a proxy session as {_user_label(target)}",
             )
             
             return success_response(
@@ -252,6 +318,14 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
         with transaction.atomic():
             session.end()
+            _emit_proxy_lifecycle_event(
+                action_type="IMPERSONATION_ENDED",
+                actor=actor,
+                target=session.target_user,
+                tenant=session.tenant,
+                session=session,
+                summary=f"{_user_label(actor)} ended the proxy session as {_user_label(session.target_user)}",
+            )
 
         return success_response(
             message="Impersonation session ended.",

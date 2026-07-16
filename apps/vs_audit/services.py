@@ -52,6 +52,13 @@ _SUMMARY_TEMPLATES: dict[str, str] = {
     "ROLE_CHANGED":        "{actor} changed role for {entity}",
     "PERMISSION_CHANGED":  "{actor} changed permissions for {entity}",
 
+    # Proxy lifecycle and request fallbacks. Lifecycle callers normally supply
+    # a richer summary; these templates keep manually emitted events readable.
+    "IMPERSONATION_STARTED": "{actor} started a proxy session as {entity}",
+    "IMPERSONATION_ENDED":   "{actor} ended the proxy session as {entity}",
+    "PROXY_CHANGE":          "{actor} made a change while proxied as {entity}",
+    "PROXY_ACTION_FAILED":   "{actor}'s action failed while proxied as {entity}",
+
     # Other
     "CONFIG_CHANGED":          "{actor} changed system configuration: {entity}",
     "FINANCIAL_TRANSACTION":   "Financial transaction recorded for {entity}",
@@ -142,6 +149,12 @@ def emit_audit_event(
             diff_data=diff_data or {},
             metadata=metadata or {},
         )
+
+        # The proxy middleware uses this request-local marker to avoid adding a
+        # vague fallback event when the feature already recorded the real
+        # business action.
+        from vs_tenants.context import mark_audit_event_emitted
+        mark_audit_event_emitted()
 
         trail, _ = EntityAuditTrail.objects.get_or_create(
             entity_type=entity_type,
