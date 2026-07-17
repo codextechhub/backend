@@ -483,6 +483,94 @@ class FeedRetrieveTests(_NotifFixture):
         self.assertEqual(client.get(f"/v1/notify/{mine.id}/").status_code, 200)
         self.assertEqual(client.get(f"/v1/notify/{theirs.id}/").status_code, 404)
 
+    def test_acknowledge_route_marks_only_matching_ticket_for_caller(self):
+        et = self._event("ticket.created")
+        mine = Notification.objects.create(
+            tenant=self.school_a.tenant, recipient=self.admin_a, event_type=et,
+            channel=ChannelChoices.IN_APP, body="x", status=NotificationStatus.SENT,
+            metadata={"ticket_id": 42},
+        )
+        other_ticket = Notification.objects.create(
+            tenant=self.school_a.tenant, recipient=self.admin_a, event_type=et,
+            channel=ChannelChoices.IN_APP, body="y", status=NotificationStatus.SENT,
+            metadata={"ticket_id": 43},
+        )
+        other_user = Notification.objects.create(
+            tenant=self.school_a.tenant, recipient=self.plain_a, event_type=et,
+            channel=ChannelChoices.IN_APP, body="z", status=NotificationStatus.SENT,
+            metadata={"ticket_id": 42},
+        )
+
+        response = self._client(self.admin_a).post(
+            "/v1/notify/acknowledge-route/", {"path": "/support/tickets/42"}, format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["data"]["updated_count"], 1)
+        mine.refresh_from_db()
+        other_ticket.refresh_from_db()
+        other_user.refresh_from_db()
+        self.assertTrue(mine.is_read)
+        self.assertIsNotNone(mine.read_at)
+        self.assertFalse(other_ticket.is_read)
+        self.assertFalse(other_user.is_read)
+
+    def test_acknowledge_route_rejects_external_url(self):
+        response = self._client(self.admin_a).post(
+            "/v1/notify/acknowledge-route/",
+            {"path": "https://attacker.test/finance"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_action_routes_and_acknowledgment_stay_aligned_across_modules(self):
+        from .serializers import NotificationListSerializer
+
+        cases = (
+            ("ticket.test_route", {"ticket_id": 81}, "/support/tickets/81"),
+            ("workflow.stage_activated", {"workflow_instance_id": 82}, "/workflow/approvals/82"),
+            ("workflow.test_route", {"workflow_instance_id": 83}, "/workflow/my-submissions/83"),
+            ("import.test_route", {}, "/data-imports/batches"),
+            ("team.test_route", {}, "/team-management"),
+            ("security.test_route", {}, "/me/security"),
+            ("finance.test_route", {}, "/finance"),
+            ("payments.test_route", {}, "/finance"),
+            ("procurement.test_route", {}, "/procurement"),
+        )
+        client = self._client(self.admin_a)
+
+        for index, (event_key, metadata, route) in enumerate(cases):
+            with self.subTest(event_key=event_key):
+                event_type, _ = NotificationEventType.objects.get_or_create(
+                    key=event_key,
+                    defaults={
+                        "label": f"Route test {index}",
+                        "source_module": "vs_notifications",
+                        "supported_channels": [ChannelChoices.IN_APP],
+                    },
+                )
+                notification = Notification.objects.create(
+                    tenant=self.school_a.tenant,
+                    recipient=self.admin_a,
+                    event_type=event_type,
+                    channel=ChannelChoices.IN_APP,
+                    body="route test",
+                    status=NotificationStatus.SENT,
+                    metadata=metadata,
+                )
+                self.assertEqual(
+                    NotificationListSerializer(notification).data["action_url"],
+                    route,
+                )
+
+                response = client.post(
+                    "/v1/notify/acknowledge-route/", {"path": route}, format="json",
+                )
+
+                self.assertEqual(response.status_code, 200)
+                notification.refresh_from_db()
+                self.assertTrue(notification.is_read)
+
 
 # ---------------------------------------------------------------------------
 # Settings API — security + shape + upsert

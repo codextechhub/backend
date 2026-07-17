@@ -10,6 +10,7 @@
 #   /notifications/unread-count/            — unread count (GET)
 #   /notifications/mark-read/               — mark list as read (POST)
 #   /notifications/mark-all-read/           — mark all as read (POST)
+#   /notifications/acknowledge-route/       — mark viewed destination events (POST)
 #   /notifications/history/                 — admin history list (GET)
 #   /notifications/history/<uuid>/          — admin history detail (GET)
 #   /notifications/settings/               — effective settings matrix (GET)
@@ -72,6 +73,11 @@ urlpatterns = [
         "mark-all-read/",
         NotificationViewSet.as_view({"post": "mark_all_read"}),
         name="notification-mark-all-read",
+    ),
+    path(
+        "acknowledge-route/",
+        NotificationViewSet.as_view({"post": "acknowledge_route"}),
+        name="notification-acknowledge-route",
     ),
 
     # History

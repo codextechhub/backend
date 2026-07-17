@@ -5,6 +5,7 @@
 #   NotificationListSerializer            — compact feed list (no body)
 #   NotificationDetailSerializer          — full record including body/html_body
 #   MarkReadSerializer                    — validates mark-read request payload
+#   AcknowledgeRouteSerializer            — validates viewed application routes
 #   NotificationHistorySerializer         — admin history log list view
 #   NotificationHistoryDetailSerializer   — admin history log detail view
 #   NotificationEventTypeSerializer       — event type read (all users)
@@ -27,37 +28,12 @@ from .models import (
     NotificationTemplate,
 )
 from .services.render import validate_template_syntax, render_notification_template
+from .services.routing import notification_action_url
 
 
 # ---------------------------------------------------------------------------
 # Notification — feed (list)
 # ---------------------------------------------------------------------------
-
-def _notification_action_url(notification):
-    """Return only allowlisted application routes; never expose raw metadata."""
-    event_key = notification.event_type.key
-    metadata = notification.metadata or {}
-    if event_key.startswith("ticket.") and metadata.get("ticket_id"):
-        return f"/support/tickets/{metadata['ticket_id']}"
-    if event_key.startswith("workflow.") and metadata.get("workflow_instance_id"):
-        instance_id = metadata["workflow_instance_id"]
-        if event_key in {"workflow.stage_activated", "workflow.escalated"}:
-            return f"/workflow/approvals/{instance_id}"
-        return f"/workflow/my-submissions/{instance_id}"
-    if event_key.startswith("import."):
-        return "/data-imports/batches"
-    if event_key.startswith(("user.", "team.")):
-        return "/team-management"
-    if event_key.startswith("security."):
-        return "/me/security"
-    if event_key.startswith("finance."):
-        return "/finance"
-    if event_key.startswith("payments."):
-        return "/finance"
-    if event_key.startswith("procurement."):
-        return "/procurement"
-    return ""
-
 
 class NotificationPresentationMixin(serializers.ModelSerializer):
     subject = serializers.SerializerMethodField()
@@ -67,7 +43,7 @@ class NotificationPresentationMixin(serializers.ModelSerializer):
         return obj.subject.strip() or obj.event_type.label
 
     def get_action_url(self, obj):
-        return _notification_action_url(obj)
+        return notification_action_url(obj)
 
 
 class NotificationListSerializer(NotificationPresentationMixin):
@@ -160,6 +136,17 @@ class MarkReadSerializer(serializers.Serializer):
                 }
             )
         return value
+
+
+class AcknowledgeRouteSerializer(serializers.Serializer):
+    path = serializers.CharField(max_length=500, trim_whitespace=True)
+
+    def validate_path(self, value):
+        if not value.startswith("/") or value.startswith("//") or "\\" in value:
+            raise serializers.ValidationError("Path must be a local application route.")
+        if "?" in value or "#" in value:
+            raise serializers.ValidationError("Path must not include a query string or fragment.")
+        return value.rstrip("/") or "/"
 
 
 # ---------------------------------------------------------------------------

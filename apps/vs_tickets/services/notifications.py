@@ -137,6 +137,14 @@ def notify_commented(comment, actor=None):
         recipients = [comment.ticket.assignee]
     else:
         recipients = [comment.ticket.requester, comment.ticket.assignee]
+        # Until a ticket is assigned, the support queue is the other side of
+        # the public conversation. Otherwise the requester's reply is reduced
+        # to the requester alone and then suppressed as an actor echo.
+        if (
+            comment.ticket.assignee_id is None
+            and comment.author_id == comment.ticket.requester_id
+        ):
+            recipients.extend(support_recipients())
     return dispatch_ticket_event(
         "ticket.commented",
         ticket=comment.ticket,
@@ -153,11 +161,17 @@ def notify_commented(comment, actor=None):
 
 # Notify ticket participants when a file is attached.
 def notify_attachment_added(attachment, actor=None):
+    recipients = [attachment.ticket.requester, attachment.ticket.assignee]
+    if (
+        attachment.ticket.assignee_id is None
+        and attachment.uploaded_by_id == attachment.ticket.requester_id
+    ):
+        recipients.extend(support_recipients())
     return dispatch_ticket_event(
         "ticket.attachment_added",
         ticket=attachment.ticket,
         actor=actor,
-        recipients=[attachment.ticket.requester, attachment.ticket.assignee],
+        recipients=recipients,
         context=context_for(
             attachment.ticket,
             actor_name=getattr(actor, "full_name", ""),

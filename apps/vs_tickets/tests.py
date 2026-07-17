@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from unittest import mock
+
 from django.core.management import call_command
 from django.test import TestCase
 from rest_framework.test import APIClient
@@ -162,6 +164,33 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
             {"body": "Thanks!", "visibility": CommentVisibility.PUBLIC},
         )
         self.assertEqual(reply.status_code, 201)
+
+    def test_requester_reply_on_unassigned_ticket_notifies_support_queue(self):
+        ticket = ticket_svc.create_ticket(
+            actor=self.requester,
+            title="Still locked out",
+            description="x",
+            category="HELP",
+            priority="LOW",
+        )
+
+        with mock.patch(
+            "vs_tickets.services.notifications.NotificationService.send"
+        ) as send:
+            with self.captureOnCommitCallbacks(execute=True):
+                ticket_svc.add_comment(
+                    ticket,
+                    actor=self.requester,
+                    body="Is anyone there?",
+                    visibility=CommentVisibility.PUBLIC,
+                )
+
+        send.assert_called_once()
+        recipients = send.call_args.kwargs["recipients"]
+        self.assertEqual(
+            {user.pk for user in recipients},
+            {self.support.pk, self.other_support.pk},
+        )
 
     def test_visibility_is_participant_manager_and_support_scoped(self):
         mine = ticket_svc.create_ticket(

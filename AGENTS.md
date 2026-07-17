@@ -1,5 +1,14 @@
 # AGENTS.md — backend
 
+## Holistic problem solving
+
+When the user asks for a problem to be fixed, trace it to its root cause and
+fix the shared source of the failure where practical. Review adjacent flows,
+callers, and equivalent modules for the same failure mode; do not stop at a
+one-off patch that only hides the reported symptom. Keep the work within the
+requested scope, preserve established behaviour, and add regression coverage
+at the lowest shared boundary so future instances are prevented.
+
 ## Pre-ship review (`ship-check`)
 
 When I say **`ship-check`** (or "run the ship-check") on a change, answer these

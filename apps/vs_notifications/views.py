@@ -49,6 +49,7 @@ from .models import (
 from vs_rbac.permissions import HasRBACPermission
 
 from .serializers import (
+    AcknowledgeRouteSerializer,
     MarkReadSerializer,
     NotificationDetailSerializer,
     NotificationEventTypeSerializer,
@@ -60,6 +61,7 @@ from .serializers import (
     SettingsBulkUpdateSerializer,
 )
 from .services.settings import resolve_channels_bulk
+from .services.routing import notification_route_q
 
 
 logger = logging.getLogger("vs_notifications.views")
@@ -83,6 +85,7 @@ class NotificationViewSet(viewsets.GenericViewSet):
         GET  /notifications/unread-count/ — bell badge count
         POST /notifications/mark-read/    — mark list of IDs as read
         POST /notifications/mark-all-read/— mark all unread as read
+        POST /notifications/acknowledge-route/ — mark viewed destination events
         GET  /notifications/{id}/         — single record detail
 
     docstring-name: My notifications
@@ -218,6 +221,25 @@ class NotificationViewSet(viewsets.GenericViewSet):
 
         return success_response(
             f"All {updated} unread notification(s) marked as read.",
+            data={"updated_count": updated},
+        )
+
+    @action(detail=False, methods=["post"], url_path="acknowledge-route")
+    def acknowledge_route(self, request):
+        """Mark this user's notifications read when their destination is viewed."""
+        serializer = AcknowledgeRouteSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        route_q = notification_route_q(serializer.validated_data["path"])
+        updated = 0
+        if route_q is not None:
+            updated = Notification.all_objects.filter(
+                route_q,
+                recipient=request.user,
+                channel=ChannelChoices.IN_APP,
+                is_read=False,
+            ).update(is_read=True, read_at=timezone.now())
+        return success_response(
+            f"{updated} notification(s) acknowledged.",
             data={"updated_count": updated},
         )
 
