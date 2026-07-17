@@ -159,6 +159,20 @@ class GRIRAgingView(_ProcBase):
 # Procurement analytics                                                        #
 # --------------------------------------------------------------------------- #
 
+class ProcurementDashboardView(_ProcBase):
+    """docstring-name: Procurement dashboard"""
+    rbac_permission = "procurement.report.view"
+
+    def get(self, request):
+        from ..dashboard import procurement_dashboard
+
+        entity = resolve_entity(request)
+        return success_response(
+            "Procurement dashboard retrieved.",
+            data=procurement_dashboard(entity, user=request.user),
+        )
+
+
 class SpendAnalysisView(_ProcBase):
     """docstring-name: Spend analysis"""
     rbac_permission = "procurement.report.view"
@@ -262,5 +276,4 @@ class ProcurementCycleTimeView(_ProcBase):
                 "end_to_end_count": report.end_to_end_count,
             },
         )
-
 

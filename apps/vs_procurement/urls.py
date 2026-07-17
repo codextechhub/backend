@@ -82,6 +82,7 @@ urlpatterns = [
     path("stock-movements/", views.StockMovementListView.as_view(), name="proc-stock-movements"),
 
     # AP reports
+    path("reports/dashboard/", views.ProcurementDashboardView.as_view(), name="proc-dashboard"),
     path("reports/ap-aging/", views.APAgingView.as_view(), name="proc-ap-aging"),
     path("reports/ap-reconciliation/", views.APReconciliationView.as_view(), name="proc-ap-reconciliation"),
     path("reports/grir/", views.GRIRBalanceView.as_view(), name="proc-grir"),

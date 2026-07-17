@@ -11,7 +11,9 @@ import datetime
 
 from django.test import TestCase
 
-from vs_finance.constants import DocumentStatus, FinanceAuditStatus, InvoicePaymentStatus
+from vs_finance.constants import (
+    DocumentStatus, FinanceAuditAction, FinanceAuditStatus, InvoicePaymentStatus,
+)
 from vs_finance.models import (
     Account,
     FinanceAuditLog,
@@ -852,6 +854,181 @@ class GRIRAgingTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(report.total_open, 0)
         self.assertEqual(report.difference, 0)
 
+
+# --------------------------------------------------------------------------- #
+# Procurement dashboard aggregate                                             #
+# --------------------------------------------------------------------------- #
+
+class ProcurementDashboardTests(_P2PFixtureMixin, TestCase):
+    def test_dashboard_activity_is_success_only_and_limited_to_five(self):
+        from vs_procurement.dashboard import procurement_dashboard
+
+        entity, _, _, _, _ = self.build_p2p()
+        for index in range(6):
+            FinanceAuditLog.objects.create(
+                entity=entity,
+                action=FinanceAuditAction.PURCHASE_ORDER_APPROVED,
+                status=FinanceAuditStatus.SUCCESS,
+                document_number=f"PO-SUCCESS-{index}",
+            )
+        FinanceAuditLog.objects.create(
+            entity=entity,
+            action=FinanceAuditAction.PURCHASE_ORDER_APPROVED,
+            status=FinanceAuditStatus.FAILED,
+            document_number="PO-FAILED",
+        )
+
+        activity = procurement_dashboard(entity)["recent_activity"]
+        self.assertEqual(len(activity), 5)
+        self.assertNotIn("PO-FAILED", {item["reference"] for item in activity})
+        self.assertNotIn("PO-SUCCESS-0", {item["reference"] for item in activity})
+
+    def test_dashboard_aggregates_real_data_and_excludes_other_entities(self):
+        from vs_procurement.dashboard import procurement_dashboard
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        category = VendorCategory.objects.create(entity=entity, code="CLOUD", name="Cloud")
+        vendor.category = category
+        vendor.on_hold = True
+        vendor.save(update_fields=["category", "on_hold", "updated_at"])
+
+        po = self.make_po(entity, vendor, [("5300", 10, 100_000, None)])
+        po.status = DocumentStatus.APPROVED
+        po.approval_state = "APPROVED"
+        po.save(update_fields=["status", "approval_state", "updated_at"])
+        line = po.lines.first()
+        line.received_qty = 4
+        line.save(update_fields=["received_qty", "updated_at"])
+
+        bill = self.make_bill(
+            entity, vendor, [("5300", 1, 2_000_000, None, None)],
+            date=datetime.date(2026, 1, 5),
+        )
+        bill.status = DocumentStatus.POSTED
+        bill.due_date = datetime.date(2026, 1, 10)
+        bill.amount_paid = 500_000
+        bill.subtotal = 2_000_000
+        bill.tax_total = 0
+        bill.total = 2_000_000
+        bill.save(update_fields=[
+            "status", "due_date", "amount_paid", "subtotal", "tax_total", "total", "updated_at",
+        ])
+
+        other = LedgerEntity.objects.create(
+            name="Other Books", code="OTHER", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+        seed_chart_of_accounts(other)
+        other_vendor = Vendor.objects.create(
+            entity=other, code="OTHER-V", name="Other Vendor",
+            payable_account=self.acc(other, "2100"),
+            default_expense_account=self.acc(other, "5300"),
+        )
+        other_bill = self.make_bill(
+            other, other_vendor, [("5300", 1, 99_000_000, None, None)],
+            date=datetime.date(2026, 1, 5),
+        )
+        other_bill.status = DocumentStatus.POSTED
+        other_bill.subtotal = 99_000_000
+        other_bill.tax_total = 0
+        other_bill.total = 99_000_000
+        other_bill.save(update_fields=["status", "subtotal", "tax_total", "total", "updated_at"])
+
+        data = procurement_dashboard(entity, as_of=datetime.date(2026, 1, 20))
+        self.assertEqual(data["kpis"]["total_spend_mtd"]["value"]["kobo"], 2_000_000)
+        self.assertEqual(data["kpis"]["open_purchase_orders"], {"count": 1, "partial_count": 1})
+        self.assertEqual(
+            {item["key"]: item["count"] for item in data["purchase_order_status"]["items"]},
+            {"APPROVED": 1, "PARTIAL": 0, "PENDING": 0, "DRAFT": 0, "CLOSED": 0},
+        )
+        self.assertEqual(data["kpis"]["overdue_invoices"]["count"], 1)
+        self.assertEqual(data["kpis"]["overdue_invoices"]["amount"]["kobo"], 1_500_000)
+        self.assertEqual(data["kpis"]["active_vendors"]["on_hold_count"], 1)
+        self.assertEqual(data["spend_by_category"]["items"][0]["label"], "Cloud")
+        self.assertEqual(data["monthly_spend_trend"]["values"][-1], 2_000_000)
+        self.assertEqual(len(data["monthly_spend_trend"]["labels"]), 8)
+
+    def test_dashboard_approval_cards_are_actor_and_entity_scoped(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.contenttypes.models import ContentType
+        from django.utils import timezone
+        from vs_procurement.dashboard import procurement_dashboard
+        from vs_procurement.constants import WF_DOCTYPE_REQUISITION
+        from vs_workflow.models import (
+            WorkflowInstance, WorkflowStage, WorkflowStageApprover,
+            WorkflowStageInstance, WorkflowTemplate,
+        )
+
+        entity, _, _, _, _ = self.build_p2p()
+        other = LedgerEntity.objects.create(
+            name="Other Books", code="OTHER", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+        User = get_user_model()
+        requester = User.objects.create_user(
+            email="dash-requester@test.com", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Dash", last_name="Requester",
+        )
+        approver = User.objects.create_user(
+            email="dash-approver@test.com", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Dash", last_name="Approver",
+        )
+        stranger = User.objects.create_user(
+            email="dash-stranger@test.com", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Dash", last_name="Stranger",
+        )
+        template = WorkflowTemplate.objects.create(
+            tenant=entity.tenant, document_type=WF_DOCTYPE_REQUISITION,
+            code="dashboard-test", name="Dashboard test",
+        )
+        stage = WorkflowStage.objects.create(
+            template=template, code="manager", label="Manager approval",
+        )
+        content_type = ContentType.objects.get_for_model(PurchaseRequisition)
+
+        def pending_for(target_entity, suffix):
+            req = PurchaseRequisition.objects.create(
+                entity=target_entity, request_date=datetime.date(2026, 1, 5),
+                requested_by=requester, justification=f"Request {suffix}",
+                estimated_total=1_000_000,
+            )
+            instance = WorkflowInstance.all_objects.create(
+                tenant=target_entity.tenant, template=template,
+                document_content_type=content_type, document_object_id=str(req.pk),
+                document_type=WF_DOCTYPE_REQUISITION, status="IN_PROGRESS",
+                requested_by=requester, current_stage=stage,
+            )
+            active = WorkflowStageInstance.objects.create(
+                instance=instance, stage=stage, status="ACTIVE", activated_at=timezone.now(),
+            )
+            WorkflowStageApprover.objects.create(stage_instance=active, user=approver, attempt=1)
+            return req
+
+        own = pending_for(entity, "own")
+        pending_for(other, "other")
+
+        data = procurement_dashboard(entity, user=approver, as_of=datetime.date(2026, 1, 20))
+        self.assertEqual(data["kpis"]["pending_approvals"]["count"], 1)
+        self.assertEqual(data["approvals_awaiting_user"][0]["document_id"], own.pk)
+        self.assertEqual(
+            procurement_dashboard(entity, user=stranger, as_of=datetime.date(2026, 1, 20))
+            ["approvals_awaiting_user"],
+            [],
+        )
+
+    def test_dashboard_endpoint_requires_report_permission(self):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        entity, _, _, _, _ = self.build_p2p()
+        user = get_user_model().objects.create_user(
+            email="dashboard-no-grant@test.com", password="pw",
+            user_type="CX_STAFF", status="ACTIVE", first_name="No", last_name="Grant",
+        )
+        response = TenantAPIClient(user=user).get(
+            f"/v1/procurement/reports/dashboard/?entity={entity.code}",
+        )
+        self.assertEqual(response.status_code, 403)
 
 class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
     """Spend approvals are routed through vs_workflow (threshold-gated stages).
