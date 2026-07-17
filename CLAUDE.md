@@ -49,3 +49,22 @@ explicitly — never `git add -A`; commit to main, don't push; one sequential
 agent when fixes share constants.py/migrations; run the test suite yourself
 after agent work). Template: `docs/finance/_report_template.md`. Status and
 next slices live at the top of the playbook.
+
+## Fixing problems: root cause, not symptom
+
+When I ask you to fix a problem, treat the reported issue as one *instance* of
+a potentially wider defect — fix it holistically:
+
+1. **Trace it to its source.** Ask why the bug exists — a wrong assumption, a
+   missing invariant, a fragile pattern — not just where it surfaced.
+2. **Fix the class, not the case.** If the same root cause can bite elsewhere
+   (other views, serializers, services, callers of the same helper), fix it at
+   the choke point they all share, or sweep the other occurrences in the same
+   change.
+3. **Name the root.** In the summary/commit, state the underlying cause and
+   where else it applied, so the fix is reviewable as a class-fix, not a patch.
+
+A fix that only silences the reported symptom while the source remains is not
+done — that includes suppressing errors, special-casing one caller, or adding
+a guard where the real problem is upstream. The goal is that future problems
+from the same source never happen.
