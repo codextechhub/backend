@@ -443,18 +443,48 @@ class GRNLineSerializer(serializers.ModelSerializer):
 class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
     lines = GRNLineSerializer(many=True, read_only=True)
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    purchase_order_number = serializers.CharField(source="purchase_order.document_number", read_only=True, default=None)
+    received_by_name = serializers.SerializerMethodField()
+    receipt_status = serializers.SerializerMethodField()
+    received_item_count = serializers.SerializerMethodField()
+    ordered_item_count = serializers.SerializerMethodField()
     total_value_naira = serializers.SerializerMethodField()
 
     class Meta:
         model = GoodsReceivedNote
         fields = [
-            "id", "document_number", "status", "vendor_id", "vendor_code",
-            "purchase_order_id", "received_date", "reference", "narration",
+            "id", "document_number", "status", "receipt_status", "vendor_id", "vendor_code", "vendor_name", "received_by_name",
+            "purchase_order_id", "purchase_order_number", "received_date", "reference", "narration",
+            "received_item_count", "ordered_item_count",
             "total_value", "total_value_naira", "journal_id", "lines",
         ]
 
     def get_total_value_naira(self, obj) -> str:
         return format_naira(obj.total_value)
+
+    def get_received_by_name(self, obj) -> str:
+        user = obj.received_by
+        if user is None:
+            return "System"
+        return getattr(user, "full_name", "") or user.get_full_name() or user.email
+
+    def get_receipt_status(self, obj) -> str:
+        # Quality/receipt state is derived from the accepted and rejected quantities, not the GL posting status.
+        accepted = sum((line.accepted_qty for line in obj.lines.all()), 0)
+        rejected = sum((line.rejected_qty for line in obj.lines.all()), 0)
+        if rejected and not accepted:
+            return "REJECTED"
+        return "PARTIAL" if rejected else "FULL"
+
+    def get_received_item_count(self, obj) -> str:
+        return str(sum((line.accepted_qty for line in obj.lines.all()), 0))
+
+    def get_ordered_item_count(self, obj) -> str:
+        # A GRN can be created without a PO; accepted + rejected is then its only honest expected quantity.
+        if not obj.purchase_order_id:
+            return str(sum((line.accepted_qty + line.rejected_qty for line in obj.lines.all()), 0))
+        return str(sum((line.quantity for line in obj.purchase_order.lines.all()), 0))
 
 
 # --------------------------------------------------------------------------- #

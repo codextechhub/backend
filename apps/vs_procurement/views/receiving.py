@@ -2,6 +2,7 @@
 """
 from __future__ import annotations
 
+from decimal import Decimal
 
 from rest_framework.exceptions import NotFound, ValidationError
 
@@ -51,7 +52,7 @@ class GoodsReceiptListCreateView(_ProcBase):
 
     def get(self, request):
         entity = resolve_entity(request)
-        qs = GoodsReceivedNote.objects.filter(entity=entity).select_related("vendor").prefetch_related("lines")
+        qs = GoodsReceivedNote.objects.filter(entity=entity).select_related("vendor", "purchase_order", "received_by").prefetch_related("lines", "purchase_order__lines")
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
         return self.paginate(request, qs.order_by("-id"), GoodsReceivedNoteSerializer)
@@ -66,10 +67,14 @@ class GoodsReceiptListCreateView(_ProcBase):
             po = PurchaseOrder.objects.filter(entity=entity, pk=body["purchase_order"]).first()
             if po is None:
                 raise ValidationError({"purchase_order": "No such purchase order in this entity."})
+            if po.vendor_id != vendor.id:
+                raise ValidationError({"vendor": "The selected vendor must match the purchase order."})
         grn = GoodsReceivedNote.objects.create(
             entity=entity, vendor=vendor, purchase_order=po,
             received_date=_date(body.get("received_date"), "received_date", required=True),
             reference=body.get("reference", ""), narration=body.get("narration", ""),
+            # Capture the authenticated receiver so the GRN audit is attributable without trusting client input.
+            received_by=request.user if request.user.is_authenticated else None,
             created_by=request.user if request.user.is_authenticated else None,
         )
         for i, ln in enumerate(lines, start=1):
@@ -80,6 +85,12 @@ class GoodsReceiptListCreateView(_ProcBase):
                     purchase_order__entity=entity, pk=ln["po_line"]).first()
                 if po_line is None:
                     raise ValidationError({"po_line": f"No such PO line {ln['po_line']}."})
+                if po and po_line.purchase_order_id != po.id:
+                    raise ValidationError({"po_line": "Each receipt line must belong to the selected purchase order."})
+                accepted = _dec(ln.get("accepted_qty", 0), "accepted_qty")
+                # A receipt cannot accept beyond the quantity still outstanding on its PO line.
+                if accepted > Decimal(po_line.quantity) - Decimal(po_line.received_qty):
+                    raise ValidationError({"accepted_qty": f"Cannot exceed remaining quantity for '{po_line.description}'."})
             expense = _resolve_account(entity, ln.get("expense_account"), "expense_account") \
                 or (po_line.expense_account if po_line else None)
             if expense is None:
@@ -104,7 +115,7 @@ class GoodsReceiptDetailView(_ProcBase):
 
     def get(self, request, pk):
         entity = resolve_entity(request)
-        grn = GoodsReceivedNote.objects.filter(entity=entity, pk=pk).first()
+        grn = GoodsReceivedNote.objects.filter(entity=entity, pk=pk).select_related("vendor", "purchase_order", "received_by").prefetch_related("lines", "purchase_order__lines").first()
         if grn is None:
             raise NotFound("No such goods receipt in this entity.")
         return success_response("Goods receipt retrieved.", data=GoodsReceivedNoteSerializer(grn).data)
@@ -260,5 +271,3 @@ class VendorInvoicePostView(_ProcBase):
             f"Vendor invoice {invoice.document_number} posted.",
             data=VendorInvoiceSerializer(invoice).data,
         )
-
-
