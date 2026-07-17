@@ -124,9 +124,14 @@ def _po_status(entity) -> dict:
         # The shared helper keeps receipt stage rules identical on the dashboard and PO list.
         receipt_stage = po_receipt_stage(row["ordered_qty"], row["received_qty"])
         # Draft and active workflow states take precedence over receipt progress.
-        if row["status"] == DocumentStatus.DRAFT:
+        is_draft = row["status"] == DocumentStatus.DRAFT
+        is_pending = (
+            row["approval_state"] == ProcApprovalState.PENDING
+            or row["status"] == DocumentStatus.PENDING_APPROVAL
+        )
+        if is_draft:
             counts["DRAFT"] += 1
-        elif row["approval_state"] == ProcApprovalState.PENDING or row["status"] == DocumentStatus.PENDING_APPROVAL:
+        elif is_pending:
             counts["PENDING"] += 1
         # A fully accepted order is received; this is derived from line quantities
         # because the PurchaseOrder model does not persist a separate receipt status.
@@ -138,7 +143,11 @@ def _po_status(entity) -> dict:
         else:
             counts["APPROVED"] += 1
 
-        # A PO remains open until accepted quantity reaches the ordered quantity.
+        # Open/partial KPIs count only *issued* orders (a draft or in-approval PO is
+        # not a commitment awaiting delivery), matching the PO console summary.
+        if is_draft or is_pending:
+            continue
+        # An issued order stays open until accepted quantity reaches the ordered quantity.
         if receipt_stage != "RECEIVED":
             open_count += 1
         # Partial means some accepted quantity exists but the order is not complete.

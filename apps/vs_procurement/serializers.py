@@ -13,9 +13,11 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from vs_finance.constants import DocumentStatus
 from vs_finance.money import format_naira
 from vs_rbac.fls import FieldSecurityMixin
 
+from .constants import ProcApprovalState
 from .purchasing import po_receipt_stage
 from .models import (
     CatalogItem,
@@ -388,10 +390,10 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
 
     def get_display_status(self, obj) -> str:
         # Approval overlays take precedence; a partially received draft must not look issued.
-        if obj.status == "DRAFT":
-            return "DRAFT"
-        if obj.status == "PENDING_APPROVAL" or obj.approval_state == "PENDING":
-            return "PENDING_APPROVAL"
+        if obj.status == DocumentStatus.DRAFT:
+            return DocumentStatus.DRAFT
+        if obj.status == DocumentStatus.PENDING_APPROVAL or obj.approval_state == ProcApprovalState.PENDING:
+            return DocumentStatus.PENDING_APPROVAL
         stage = po_receipt_stage(
             sum((line.quantity for line in obj.lines.all()), 0),
             sum((line.received_qty for line in obj.lines.all()), 0),
@@ -403,6 +405,23 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
         # Awarded quotations point back to their PO through a reverse relation, not a PO foreign key.
         quotation = next(iter(obj.source_quotation.all()), None)
         return quotation.document_number if quotation else None
+
+
+class PurchaseOrderListSerializer(PurchaseOrderSerializer):
+    """Lighter list row: the nested line/receipt/invoice documents belong to the
+    detail drawer (its own request), so the list never ships or prefetches them.
+    ``display_status``/``received_pct``/``invoiced_pct`` are still computed from the
+    prefetched lines — only the serialised line array is dropped."""
+
+    lines = None
+    receipt_documents = None
+    invoice_documents = None
+
+    class Meta(PurchaseOrderSerializer.Meta):
+        fields = [
+            f for f in PurchaseOrderSerializer.Meta.fields
+            if f not in ("lines", "receipt_documents", "invoice_documents")
+        ]
 
 
 # --------------------------------------------------------------------------- #

@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 
 from django.db.models import F, Q, Sum
+from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
@@ -24,6 +25,7 @@ from ..models import (
     VendorQuotationLine,
 )
 from ..serializers import (
+    PurchaseOrderListSerializer,
     PurchaseOrderSerializer,
     RequestForQuotationSerializer,
     VendorQuotationSerializer,
@@ -47,20 +49,36 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 _CLOSED_PO_STATUSES = (DocumentStatus.CANCELLED, DocumentStatus.REVERSED)
+# Not-yet-issued documents: excluded from the pipeline KPIs (they are not orders a
+# vendor is fulfilling), and never eligible for the derived PARTIAL/RECEIVED stages.
+_UNISSUED_PO_STATUSES = (DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL)
 
 
-def _purchase_order_queryset(entity):
-    """Return the PO read shape used by the list and detail endpoints.
+def _po_base_queryset(entity):
+    """Entity-scoped POs with the receipt-progress annotations the filters/KPIs need.
 
-    The annotated line totals let status filters operate on receipt progress in SQL;
-    related documents are prefetched once so serialising a page never triggers N+1 reads.
+    The annotated line totals let status filters operate on receipt progress in SQL.
     """
     return (
         PurchaseOrder.objects.filter(entity=entity)
         .select_related("vendor", "requisition")
         .annotate(ordered_qty=Sum("lines__quantity"), received_qty=Sum("lines__received_qty"))
-        .prefetch_related("lines", "goods_receipts__lines", "vendor_invoices", "source_quotation")
     )
+
+
+def _purchase_order_queryset(entity):
+    """Detail read shape — the full document flow the drawer renders, prefetched once."""
+    return _po_base_queryset(entity).prefetch_related(
+        "lines", "goods_receipts__lines", "vendor_invoices", "source_quotation",
+    )
+
+
+def _purchase_order_list_queryset(entity):
+    """List read shape — only what a row and its computed status need. Receipt and
+    invoice documents are the drawer's concern, so they are neither prefetched nor
+    serialised here (``lines`` stays prefetched because ``display_status`` derives
+    from it, but the array itself is dropped by ``PurchaseOrderListSerializer``)."""
+    return _po_base_queryset(entity).prefetch_related("lines", "source_quotation")
 
 
 def _filter_purchase_orders(qs, params):
@@ -93,15 +111,23 @@ def _filter_purchase_orders(qs, params):
 
 
 def purchase_order_summary(entity, *, as_of: datetime.date | None = None) -> dict:
-    """Build the PO-list KPIs from all entity documents, not the current page."""
-    as_of = as_of or datetime.date.today()
+    """Build the PO-list KPIs from all *issued* entity orders, not the current page.
+
+    Drafts and orders still in approval are not commitments a vendor is fulfilling,
+    so they are excluded from every count and value here — the same population the
+    dashboard's "Open Purchase Orders" KPI reports.
+    """
+    as_of = as_of or timezone.localdate()
     month_start = as_of.replace(day=1)
     prior_month_end = month_start - datetime.timedelta(days=1)
     prior_month_start = prior_month_end.replace(day=1)
     prior_comparable_end = prior_month_start + datetime.timedelta(days=min(as_of.day, prior_month_end.day) - 1)
     open_count = partial_count = awaiting_count = open_value = mtd_value = prior_mtd_value = 0
-    rows = _purchase_order_queryset(entity).exclude(status__in=_CLOSED_PO_STATUSES).values(
-        "status", "order_date", "total", "ordered_qty", "received_qty",
+    rows = (
+        _po_base_queryset(entity)
+        .exclude(status__in=_CLOSED_PO_STATUSES + _UNISSUED_PO_STATUSES)
+        .exclude(approval_state=ProcApprovalState.PENDING)
+        .values("status", "order_date", "total", "ordered_qty", "received_qty")
     )
     for row in rows:
         # Receipt stage remains quantity-based even when a PO has several GRNs against several lines.
@@ -141,8 +167,8 @@ class PurchaseOrderListCreateView(_ProcBase):
 
     def get(self, request):
         entity = resolve_entity(request)
-        qs = _filter_purchase_orders(_purchase_order_queryset(entity), request.query_params)
-        return self.paginate(request, qs.order_by("-id"), PurchaseOrderSerializer)
+        qs = _filter_purchase_orders(_purchase_order_list_queryset(entity), request.query_params)
+        return self.paginate(request, qs.order_by("-id"), PurchaseOrderListSerializer)
 
     def post(self, request):
         entity = resolve_entity(request)

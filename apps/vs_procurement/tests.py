@@ -1089,6 +1089,13 @@ class PurchaseOrderConsoleDataTests(_P2PFixtureMixin, TestCase):
         awaiting.status = DocumentStatus.APPROVED
         awaiting.save(update_fields=["status", "updated_at"])
 
+        # A draft and an in-approval order are NOT issued commitments: they must not
+        # inflate any KPI, even though the draft has zero received quantity.
+        self.make_po(entity, vendor, [("5300", 7, 100_000, None)])  # left DRAFT
+        pending = self.make_po(entity, vendor, [("5300", 9, 100_000, None)])
+        pending.status = DocumentStatus.PENDING_APPROVAL
+        pending.save(update_fields=["status", "updated_at"])
+
         summary = purchase_order_summary(entity, as_of=datetime.date(2026, 1, 20))
         self.assertEqual(summary["open"], {"count": 2, "amount": 1_200_000})
         self.assertEqual(summary["partially_received"], {"count": 1})
@@ -1100,6 +1107,44 @@ class PurchaseOrderConsoleDataTests(_P2PFixtureMixin, TestCase):
             _purchase_order_queryset(entity), {"status": "PARTIAL"},
         )
         self.assertEqual(list(partial_rows.values_list("id", flat=True)), [partial.id])
+
+    def test_summary_endpoint_is_permission_gated_and_entity_scoped(self):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+        from vs_procurement.views.orders import purchase_order_summary
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        issued = self.make_po(entity, vendor, [("5300", 4, 250_000, None)])
+        issued.status = DocumentStatus.APPROVED
+        issued.save(update_fields=["status", "updated_at"])
+
+        # Another entity's issued PO must never contribute to this entity's KPIs.
+        other = LedgerEntity.objects.create(
+            name="Other Books", code="OTHER-PO", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+        seed_chart_of_accounts(other)
+        other_vendor = Vendor.objects.create(
+            entity=other, code="OTHER-V", name="Other Vendor",
+            payable_account=self.acc(other, "2100"),
+            default_expense_account=self.acc(other, "5300"),
+        )
+        other_po = self.make_po(other, other_vendor, [("5300", 100, 1_000_000, None)])
+        other_po.status = DocumentStatus.APPROVED
+        other_po.save(update_fields=["status", "updated_at"])
+
+        summary = purchase_order_summary(entity, as_of=datetime.date(2026, 1, 20))
+        self.assertEqual(summary["open"], {"count": 1, "amount": 1_000_000})
+
+        # No procurement grant → the endpoint is refused before any data is returned.
+        user = get_user_model().objects.create_user(
+            email="po-summary-no-grant@test.com", password="pw",
+            user_type="CX_STAFF", status="ACTIVE", first_name="No", last_name="Grant",
+        )
+        response = TenantAPIClient(user=user).get(
+            f"/v1/procurement/purchase-orders/summary/?entity={entity.code}",
+        )
+        self.assertEqual(response.status_code, 403)
 
 class ProcurementDashboardTests(_P2PFixtureMixin, TestCase):
     def test_dashboard_activity_is_success_only_and_limited_to_five(self):
