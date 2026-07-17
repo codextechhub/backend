@@ -36,12 +36,14 @@ from .reports import spend_analysis
 
 
 PROCUREMENT_APPROVAL_TYPES = (
+    # Restrict the shared workflow table to document types owned by Procurement.
     WF_DOCTYPE_REQUISITION,
     WF_DOCTYPE_PURCHASE_ORDER,
     WF_DOCTYPE_VENDOR_INVOICE,
 )
 
 PROCUREMENT_AUDIT_ACTIONS = (
+    # Keep this allow-list explicit so unrelated finance events never enter the feed.
     FinanceAuditAction.REQUISITION_APPROVED,
     FinanceAuditAction.RFQ_ISSUED,
     FinanceAuditAction.RFQ_CANCELLED,
@@ -65,6 +67,7 @@ PROCUREMENT_AUDIT_ACTIONS = (
 
 
 def _money(kobo: int) -> dict:
+    # API money is always integer minor units; the formatted value is display-only.
     value = int(kobo or 0)
     return {"kobo": value, "naira": format_naira(value)}
 
@@ -74,15 +77,19 @@ def _month_start(day: datetime.date) -> datetime.date:
 
 
 def _shift_month(day: datetime.date, offset: int) -> datetime.date:
+    # Flatten year/month to a zero-based month index so offsets cross year boundaries.
     absolute = day.year * 12 + day.month - 1 + offset
+    # divmod-style arithmetic converts the absolute index back to year/month.
     return datetime.date(absolute // 12, absolute % 12 + 1, 1)
 
 
 def _month_end(day: datetime.date) -> datetime.date:
+    # calendar.monthrange handles leap years when selecting the final day.
     return day.replace(day=calendar.monthrange(day.year, day.month)[1])
 
 
 def _spend_kobo(entity, start: datetime.date, end: datetime.date) -> int:
+    # Spend is recognised only when a vendor invoice is posted, never while draft.
     return int(
         VendorInvoice.objects.filter(
             entity=entity,
@@ -95,7 +102,9 @@ def _spend_kobo(entity, start: datetime.date, end: datetime.date) -> int:
 
 def _delta_pct(current: int, prior: int) -> float | None:
     if not prior:
+        # A zero prior period has no meaningful percentage denominator.
         return None
+    # Percentage change = (current - comparable prior) / comparable prior × 100.
     return round((current - prior) / prior * 100, 1)
 
 
@@ -104,6 +113,7 @@ def _po_status(entity) -> dict:
     rows = (
         PurchaseOrder.objects.filter(entity=entity)
         .exclude(status__in=(DocumentStatus.CANCELLED, DocumentStatus.REVERSED))
+        # Aggregate line quantities once per PO to avoid loading every line in Python.
         .annotate(ordered_qty=Sum("lines__quantity"), received_qty=Sum("lines__received_qty"))
         .values("status", "approval_state", "ordered_qty", "received_qty")
     )
@@ -111,8 +121,10 @@ def _po_status(entity) -> dict:
     open_count = 0
     partial_count = 0
     for row in rows:
+        # Decimal preserves the model's fractional quantities without float rounding.
         ordered = Decimal(row["ordered_qty"] or 0)
         received = Decimal(row["received_qty"] or 0)
+        # Approval overlay wins because workflow can be pending before status refresh.
         if row["approval_state"] == ProcApprovalState.PENDING or row["status"] == DocumentStatus.PENDING_APPROVAL:
             counts["PENDING"] += 1
         elif row["status"] == DocumentStatus.DRAFT:
@@ -123,8 +135,10 @@ def _po_status(entity) -> dict:
         # The PO model does not persist PARTIAL/CLOSED document statuses. Keep
         # those chart buckets at zero rather than contradicting the list, while
         # preserving the useful receipt-aware KPI calculation.
+        # A PO remains open until accepted quantity reaches the ordered quantity.
         if not (ordered > 0 and received >= ordered):
             open_count += 1
+        # Partial means some accepted quantity exists but the order is not complete.
         if ordered > 0 and 0 < received < ordered:
             partial_count += 1
     return {
@@ -145,6 +159,7 @@ def _po_status(entity) -> dict:
 
 def _spend_by_category(entity, start: datetime.date, end: datetime.date) -> dict:
     report = spend_analysis(entity, start_date=start, end_date=end)
+    # Limit the legend to five named categories; merge the long tail into Other.
     top = report.by_category[:5]
     remainder = report.by_category[5:]
     items = [{"key": row.key, "label": row.label, "amount": _money(row.gross)} for row in top]
@@ -152,13 +167,16 @@ def _spend_by_category(entity, start: datetime.date, end: datetime.date) -> dict
         items.append({
             "key": "OTHER",
             "label": "Other",
+            # Other is the exact sum of every category outside the top five.
             "amount": _money(sum(row.gross for row in remainder)),
         })
     return {"total": _money(report.total_gross), "items": items}
 
 
 def _monthly_trend(entity, as_of: datetime.date) -> dict:
+    # Offsets -7…0 produce a stable eight-month window ending in the current month.
     starts = [_shift_month(_month_start(as_of), offset) for offset in range(-7, 1)]
+    # Group posted invoice totals in SQL, keyed by each month's first day.
     values = {
         (row["month"].date() if hasattr(row["month"], "date") else row["month"]): int(row["total"] or 0)
         for row in (
@@ -176,6 +194,7 @@ def _monthly_trend(entity, as_of: datetime.date) -> dict:
     }
     return {
         "labels": [start.strftime("%b") for start in starts],
+        # Explicit zeros preserve missing months instead of collapsing the x-axis.
         "values": [values.get(start, 0) for start in starts],
     }
 
@@ -184,6 +203,7 @@ def _requester_name(user) -> str:
     if user is None:
         return "System"
     return (
+        # Prefer the richest safe display name and fall back to the login identifier.
         getattr(user, "full_name", "")
         or user.get_full_name()
         or getattr(user, "email", "")
@@ -200,6 +220,7 @@ def _pending_approvals(entity, user) -> list:
     snaps = list(
         WorkflowStageApprover.objects.filter(
             user=user,
+            # Ignore stale approver snapshots from a previous workflow attempt.
             attempt=F("stage_instance__attempt"),
             stage_instance__status="ACTIVE",
             stage_instance__instance__status="IN_PROGRESS",
@@ -213,6 +234,7 @@ def _pending_approvals(entity, user) -> list:
         .order_by("-stage_instance__activated_at")
     )
     acted = set(
+        # A stage/attempt already acted by this user must not reappear as pending.
         WorkflowStageAction.objects.filter(
             actor=user,
             reversed_at__isnull=True,
@@ -221,6 +243,7 @@ def _pending_approvals(entity, user) -> list:
     )
 
     models = {
+        # Workflow stores generic object ids; map each allowed type to its real model.
         WF_DOCTYPE_REQUISITION: __import__("vs_procurement.models", fromlist=["PurchaseRequisition"]).PurchaseRequisition,
         WF_DOCTYPE_PURCHASE_ORDER: PurchaseOrder,
         WF_DOCTYPE_VENDOR_INVOICE: VendorInvoice,
@@ -231,17 +254,20 @@ def _pending_approvals(entity, user) -> list:
     for snap in snaps:
         stage = snap.stage_instance
         instance = stage.instance
+        # Remove completed votes and duplicate snapshots for the same workflow instance.
         if (stage.id, stage.attempt) in acted or instance.id in seen_instances:
             continue
         try:
             object_id = int(instance.document_object_id)
         except (TypeError, ValueError):
             continue
+        # Collect ids first so each document type is loaded in one entity-scoped query.
         ids_by_type[instance.document_type].add(object_id)
         usable.append((snap, object_id))
         seen_instances.add(instance.id)
 
     documents = {
+        # Filtering by entity here is the cross-tenant boundary for generic workflows.
         doc_type: {
             row.pk: row
             for row in model.objects.filter(entity=entity, pk__in=ids_by_type[doc_type]).select_related(
@@ -258,9 +284,11 @@ def _pending_approvals(entity, user) -> list:
         document = documents[instance.document_type].get(object_id)
         if document is None:  # The workflow target belongs to another ledger entity.
             continue
+        # Each document declares which money field the workflow should display.
         amount_field = getattr(document, "workflow_amount_field", "")
         amount = int(getattr(document, amount_field, 0) or 0)
         vendor = getattr(document, "vendor", None)
+        # Use only persisted display fields; never expose the workflow metadata bag.
         title = (
             getattr(document, "justification", "")
             or (getattr(vendor, "name", "") if vendor else "")
@@ -286,9 +314,11 @@ def _recent_activity(entity) -> list:
         FinanceAuditLog.objects.filter(
             entity=entity,
             action__in=PROCUREMENT_AUDIT_ACTIONS,
+            # Failed attempts belong in audit, but not in a completed-activity feed.
             status=FinanceAuditStatus.SUCCESS,
         )
         .select_related("actor")
+        # The Dashboard intentionally shows at most the five newest successful events.
         .order_by("-created_at", "-id")[:5]
     )
     return [
@@ -316,6 +346,8 @@ def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = No
     as_of = as_of or timezone.localdate()
     current_start = _month_start(as_of)
     previous_start = _shift_month(current_start, -1)
+    # Compare equal elapsed days (e.g. Jul 1–17 against Jun 1–17), clamped for
+    # shorter months so day 31 never spills into the following month.
     previous_end = min(
         _month_end(previous_start),
         previous_start + datetime.timedelta(days=as_of.day - 1),
@@ -333,6 +365,7 @@ def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = No
     ).exclude(payment_status=InvoicePaymentStatus.PAID)
     overdue_values = overdue.aggregate(
         count=Count("id"),
+        # Outstanding balance is invoice total less all allocations already paid.
         amount=Sum(F("total") - F("amount_paid")),
     )
     active_vendors = Vendor.objects.filter(entity=entity, is_active=True)
@@ -366,5 +399,6 @@ def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = No
         "purchase_order_status": {"items": po_status["items"]},
         "monthly_spend_trend": _monthly_trend(entity, as_of),
         "recent_activity": _recent_activity(entity),
+        # Four cards fit the prototype panel; the full queue remains a click away.
         "approvals_awaiting_user": approvals[:4],
     }

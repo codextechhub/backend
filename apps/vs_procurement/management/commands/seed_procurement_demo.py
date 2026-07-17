@@ -53,10 +53,12 @@ class Command(BaseCommand):
                 entity=entity, code=code,
                 defaults={
                     "name": name,
+                    # Vendor and category tuples share the same deterministic order.
                     "category": categories[index],
                     "payable_account": payable,
                     "default_expense_account": expense,
                     "is_active": True,
+                    # Keep exactly one on-hold vendor for the Dashboard KPI state.
                     "on_hold": index == 2,
                 },
             )
@@ -65,6 +67,7 @@ class Command(BaseCommand):
         today = timezone.localdate()
         starts = []
         cursor = today.replace(day=1)
+        # Walk backward via the day before each month start, then restore chronology.
         for _ in range(8):
             starts.append(cursor)
             prior = cursor - datetime.timedelta(days=1)
@@ -72,10 +75,13 @@ class Command(BaseCommand):
         starts.reverse()
 
         invoice_count = 0
+        # All seed amounts are integer kobo; the sequence creates a visible real trend.
         amounts = (18_450_000, 31_800_000, 12_300_000, 44_000_000, 26_800_000, 38_000_000, 57_500_000, 62_600_000)
         for index, month in enumerate(starts):
+            # Stagger invoice days while clamping to the month's actual final day.
             invoice_date = month.replace(day=min(8 + index, calendar.monthrange(month.year, month.month)[1]))
             if invoice_date > today:
+                # The current-month seed must never create a future-dated invoice.
                 invoice_date = today
             if not FiscalPeriod.objects.filter(
                 entity=entity, start_date__lte=invoice_date, end_date__gte=invoice_date,
@@ -84,9 +90,11 @@ class Command(BaseCommand):
             reference = f"CODEX-DEMO-{month:%Y%m}"
             if VendorInvoice.objects.filter(entity=entity, vendor_reference=reference).exists():
                 continue
+            # Round-robin assignment spreads historical spend across demo vendors.
             vendor = vendors[index % len(vendors)]
             invoice = VendorInvoice.objects.create(
                 entity=entity, vendor=vendor, invoice_date=invoice_date,
+                # A fixed 14-day term makes older posted invoices genuinely overdue.
                 due_date=invoice_date + datetime.timedelta(days=14),
                 vendor_reference=reference, created_by=actor,
                 narration="Procurement dashboard verification data",
@@ -99,12 +107,14 @@ class Command(BaseCommand):
             invoice_count += 1
 
         po_count = 0
+        # Ordered/received pairs cover untouched, partial, complete, and draft-origin POs.
         for index, (qty, received) in enumerate(((10, 0), (12, 4), (8, 8), (5, 0)), start=1):
             reference = f"CODEX-DEMO-PO-{index}"
             po = PurchaseOrder.objects.filter(entity=entity, reference=reference).first()
             if po is None:
                 po = PurchaseOrder.objects.create(
                     entity=entity, vendor=vendors[(index - 1) % len(vendors)],
+                    # Space demo orders three days apart so recent activity is readable.
                     order_date=today - datetime.timedelta(days=index * 3),
                     expected_date=today + datetime.timedelta(days=14),
                     reference=reference, created_by=actor,
@@ -112,6 +122,7 @@ class Command(BaseCommand):
                 PurchaseOrderLine.objects.create(
                     purchase_order=po, description=f"Demo order {index}",
                     expense_account=expense, quantity=qty,
+                    # Scale unit price by row index to avoid four identical PO totals.
                     unit_price=1_250_000 * index, line_no=1,
                 )
                 price_po(po)
@@ -126,6 +137,7 @@ class Command(BaseCommand):
                 line = po.lines.first()
                 grn = GoodsReceivedNote.objects.create(
                     entity=entity, vendor=po.vendor, purchase_order=po,
+                    # Receipt dates remain recent but deterministic for activity ordering.
                     received_date=today - datetime.timedelta(days=index),
                     reference=f"CODEX-DEMO-GRN-{index}", created_by=actor,
                 )
