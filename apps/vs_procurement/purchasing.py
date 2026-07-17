@@ -15,6 +15,7 @@ vendor's invoice clears it (see :mod:`vs_procurement.payables`).
 from __future__ import annotations
 
 from collections import defaultdict
+from decimal import Decimal
 
 from django.db import transaction
 from django.db.models import F
@@ -64,6 +65,22 @@ def price_po(po) -> None:
         if line.net_amount != net or line.tax_amount != tax:
             PurchaseOrderLine.objects.filter(pk=line.pk).update(net_amount=net, tax_amount=tax)
     po.recompute_totals(save=True)
+
+
+def po_receipt_stage(ordered_qty, received_qty) -> str:
+    """Classify a PO's receipt progress from its ordered and accepted quantities.
+
+    Receipt progress is deliberately derived rather than stored: goods-receipt
+    posting advances line quantities, so a persisted PO-level flag could drift.
+    Callers may pass database aggregates or model values without changing the rule.
+    """
+    ordered = Decimal(ordered_qty or 0)
+    received = Decimal(received_qty or 0)
+    if ordered > 0 and received >= ordered:
+        return "RECEIVED"
+    if received > 0:
+        return "PARTIAL"
+    return "AWAITING"
 
 
 # --------------------------------------------------------------------------- #

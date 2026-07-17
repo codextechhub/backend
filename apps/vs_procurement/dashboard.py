@@ -10,7 +10,6 @@ from __future__ import annotations
 import calendar
 import datetime
 from collections import Counter
-from decimal import Decimal
 
 from django.db.models import Count, F, Sum
 from django.db.models.functions import TruncMonth
@@ -32,6 +31,7 @@ from .constants import (
     WF_DOCTYPE_VENDOR_INVOICE,
 )
 from .models import PurchaseOrder, Vendor, VendorInvoice
+from .purchasing import po_receipt_stage
 from .reports import spend_analysis
 
 
@@ -121,9 +121,8 @@ def _po_status(entity) -> dict:
     open_count = 0
     partial_count = 0
     for row in rows:
-        # Decimal preserves the model's fractional quantities without float rounding.
-        ordered = Decimal(row["ordered_qty"] or 0)
-        received = Decimal(row["received_qty"] or 0)
+        # The shared helper keeps receipt stage rules identical on the dashboard and PO list.
+        receipt_stage = po_receipt_stage(row["ordered_qty"], row["received_qty"])
         # Draft and active workflow states take precedence over receipt progress.
         if row["status"] == DocumentStatus.DRAFT:
             counts["DRAFT"] += 1
@@ -131,19 +130,19 @@ def _po_status(entity) -> dict:
             counts["PENDING"] += 1
         # A fully accepted order is received; this is derived from line quantities
         # because the PurchaseOrder model does not persist a separate receipt status.
-        elif ordered > 0 and received >= ordered:
+        elif receipt_stage == "RECEIVED":
             counts["RECEIVED"] += 1
         # Some accepted quantity, but not all, makes the order partially received.
-        elif received > 0:
+        elif receipt_stage == "PARTIAL":
             counts["PARTIAL"] += 1
         else:
             counts["APPROVED"] += 1
 
         # A PO remains open until accepted quantity reaches the ordered quantity.
-        if not (ordered > 0 and received >= ordered):
+        if receipt_stage != "RECEIVED":
             open_count += 1
         # Partial means some accepted quantity exists but the order is not complete.
-        if ordered > 0 and 0 < received < ordered:
+        if receipt_stage == "PARTIAL":
             partial_count += 1
     return {
         "items": [

@@ -50,6 +50,7 @@ urlpatterns = [
 
     # Purchase orders
     path("purchase-orders/", views.PurchaseOrderListCreateView.as_view(), name="proc-purchase-orders"),
+    path("purchase-orders/summary/", views.PurchaseOrderSummaryView.as_view(), name="proc-purchase-order-summary"),
     path("purchase-orders/<int:pk>/", views.PurchaseOrderDetailView.as_view(), name="proc-purchase-order-detail"),
     path("purchase-orders/<int:pk>/submit/", views.PurchaseOrderSubmitApprovalView.as_view(),
          name="proc-purchase-order-submit"),

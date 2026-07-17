@@ -16,6 +16,7 @@ from rest_framework import serializers
 from vs_finance.money import format_naira
 from vs_rbac.fls import FieldSecurityMixin
 
+from .purchasing import po_receipt_stage
 from .models import (
     CatalogItem,
     ContractMilestone,
@@ -339,24 +340,69 @@ class POLineSerializer(serializers.ModelSerializer):
         ]
 
 
+class POReceiptDocumentSerializer(serializers.ModelSerializer):
+    item_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = GoodsReceivedNote
+        fields = ["id", "document_number", "received_date", "status", "item_count"]
+
+    def get_item_count(self, obj) -> int:
+        # Detail queries prefetch receipt lines; len therefore avoids a count query per receipt.
+        return len(obj.lines.all())
+
+
+class POInvoiceDocumentSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = VendorInvoice
+        fields = ["id", "document_number", "invoice_date", "total", "status", "match_status"]
+
+
 class PurchaseOrderSerializer(serializers.ModelSerializer):
     lines = POLineSerializer(many=True, read_only=True)
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    requisition_number = serializers.CharField(
+        source="requisition.document_number", read_only=True, default=None,
+    )
     total_naira = serializers.SerializerMethodField()
     received_pct = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True)
     invoiced_pct = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True)
+    display_status = serializers.SerializerMethodField()
+    quotation_number = serializers.SerializerMethodField()
+    receipt_documents = POReceiptDocumentSerializer(source="goods_receipts", many=True, read_only=True)
+    invoice_documents = POInvoiceDocumentSerializer(source="vendor_invoices", many=True, read_only=True)
 
     class Meta:
         model = PurchaseOrder
         fields = [
-            "id", "document_number", "status", "vendor_id", "vendor_code",
-            "requisition_id", "order_date", "expected_date", "narration",
+            "id", "document_number", "status", "approval_state", "display_status",
+            "vendor_id", "vendor_code", "vendor_name", "requisition_id", "requisition_number",
+            "quotation_number", "order_date", "expected_date", "narration",
             "subtotal", "tax_total", "total", "total_naira",
-            "received_pct", "invoiced_pct", "lines",
+            "received_pct", "invoiced_pct", "lines", "receipt_documents", "invoice_documents",
         ]
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
+
+    def get_display_status(self, obj) -> str:
+        # Approval overlays take precedence; a partially received draft must not look issued.
+        if obj.status == "DRAFT":
+            return "DRAFT"
+        if obj.status == "PENDING_APPROVAL" or obj.approval_state == "PENDING":
+            return "PENDING_APPROVAL"
+        stage = po_receipt_stage(
+            sum((line.quantity for line in obj.lines.all()), 0),
+            sum((line.received_qty for line in obj.lines.all()), 0),
+        )
+        # The list distinguishes work in progress; fully received POs retain their approved document state.
+        return "PARTIAL" if stage == "PARTIAL" else obj.status
+
+    def get_quotation_number(self, obj) -> str | None:
+        # Awarded quotations point back to their PO through a reverse relation, not a PO foreign key.
+        quotation = next(iter(obj.source_quotation.all()), None)
+        return quotation.document_number if quotation else None
 
 
 # --------------------------------------------------------------------------- #

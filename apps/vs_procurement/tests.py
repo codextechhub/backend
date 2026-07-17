@@ -987,6 +987,45 @@ class GRIRAgingTests(_P2PFixtureMixin, TestCase):
 # Procurement dashboard aggregate                                             #
 # --------------------------------------------------------------------------- #
 
+class PurchaseOrderConsoleDataTests(_P2PFixtureMixin, TestCase):
+    def test_summary_and_partial_filter_use_derived_receipt_progress(self):
+        from vs_procurement.views.orders import (
+            _filter_purchase_orders,
+            _purchase_order_queryset,
+            purchase_order_summary,
+        )
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        partial = self.make_po(entity, vendor, [("5300", 10, 100_000, None)])
+        partial.status = DocumentStatus.APPROVED
+        partial.save(update_fields=["status", "updated_at"])
+        partial_line = partial.lines.first()
+        partial_line.received_qty = 4
+        partial_line.save(update_fields=["received_qty", "updated_at"])
+
+        received = self.make_po(entity, vendor, [("5300", 5, 100_000, None)])
+        received.status = DocumentStatus.APPROVED
+        received.save(update_fields=["status", "updated_at"])
+        received_line = received.lines.first()
+        received_line.received_qty = received_line.quantity
+        received_line.save(update_fields=["received_qty", "updated_at"])
+
+        awaiting = self.make_po(entity, vendor, [("5300", 2, 100_000, None)])
+        awaiting.status = DocumentStatus.APPROVED
+        awaiting.save(update_fields=["status", "updated_at"])
+
+        summary = purchase_order_summary(entity, as_of=datetime.date(2026, 1, 20))
+        self.assertEqual(summary["open"], {"count": 2, "amount": 1_200_000})
+        self.assertEqual(summary["partially_received"], {"count": 1})
+        self.assertEqual(summary["awaiting_receipt"], {"count": 1})
+        self.assertEqual(summary["po_value_mtd"]["amount"], 1_700_000)
+        self.assertIsNone(summary["po_value_mtd"]["change_pct"])
+
+        partial_rows = _filter_purchase_orders(
+            _purchase_order_queryset(entity), {"status": "PARTIAL"},
+        )
+        self.assertEqual(list(partial_rows.values_list("id", flat=True)), [partial.id])
+
 class ProcurementDashboardTests(_P2PFixtureMixin, TestCase):
     def test_dashboard_activity_is_success_only_and_limited_to_five(self):
         from vs_procurement.dashboard import procurement_dashboard

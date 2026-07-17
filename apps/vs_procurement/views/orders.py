@@ -2,13 +2,18 @@
 """
 from __future__ import annotations
 
+import datetime
 
+from django.db.models import F, Q, Sum
 from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
+from vs_finance.constants import DocumentStatus
 from vs_finance.views import resolve_entity
+from vs_workflow.models import WorkflowInstance
 
 from .. import purchasing, sourcing
+from ..constants import ProcApprovalState
 from ..models import (
     PurchaseOrder,
     PurchaseRequisition,
@@ -41,6 +46,88 @@ from .base import (
 # Purchase orders                                                             #
 # --------------------------------------------------------------------------- #
 
+_CLOSED_PO_STATUSES = (DocumentStatus.CANCELLED, DocumentStatus.REVERSED)
+
+
+def _purchase_order_queryset(entity):
+    """Return the PO read shape used by the list and detail endpoints.
+
+    The annotated line totals let status filters operate on receipt progress in SQL;
+    related documents are prefetched once so serialising a page never triggers N+1 reads.
+    """
+    return (
+        PurchaseOrder.objects.filter(entity=entity)
+        .select_related("vendor", "requisition")
+        .annotate(ordered_qty=Sum("lines__quantity"), received_qty=Sum("lines__received_qty"))
+        .prefetch_related("lines", "goods_receipts__lines", "vendor_invoices", "source_quotation")
+    )
+
+
+def _filter_purchase_orders(qs, params):
+    """Apply server-side PO filters, including the derived partial-receipt stage."""
+    if (status_ := params.get("status")):
+        if status_ == "PARTIAL":
+            # Quantities are aggregate annotations, so this becomes one grouped SQL query instead of page-local logic.
+            qs = qs.exclude(status__in=(DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL)).filter(
+                received_qty__gt=0, received_qty__lt=F("ordered_qty"),
+            )
+        elif status_ == "PENDING_APPROVAL":
+            qs = qs.filter(Q(status=DocumentStatus.PENDING_APPROVAL) | Q(approval_state=ProcApprovalState.PENDING))
+        elif status_ == "APPROVED":
+            # Fully received documents remain approved in the list; only in-progress receipt work moves to Partial.
+            qs = qs.filter(status=DocumentStatus.APPROVED).filter(
+                Q(received_qty__isnull=True) | Q(received_qty=0) | Q(received_qty__gte=F("ordered_qty")),
+            )
+        else:
+            qs = qs.filter(status=status_)
+    if (vendor := params.get("vendor")):
+        qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
+    if (search := params.get("search", "").strip()):
+        qs = qs.filter(
+            Q(document_number__icontains=search)
+            | Q(vendor__code__icontains=search)
+            | Q(vendor__name__icontains=search)
+            | Q(requisition__document_number__icontains=search)
+        )
+    return qs
+
+
+def purchase_order_summary(entity, *, as_of: datetime.date | None = None) -> dict:
+    """Build the PO-list KPIs from all entity documents, not the current page."""
+    as_of = as_of or datetime.date.today()
+    month_start = as_of.replace(day=1)
+    prior_month_end = month_start - datetime.timedelta(days=1)
+    prior_month_start = prior_month_end.replace(day=1)
+    prior_comparable_end = prior_month_start + datetime.timedelta(days=min(as_of.day, prior_month_end.day) - 1)
+    open_count = partial_count = awaiting_count = open_value = mtd_value = prior_mtd_value = 0
+    rows = _purchase_order_queryset(entity).exclude(status__in=_CLOSED_PO_STATUSES).values(
+        "status", "order_date", "total", "ordered_qty", "received_qty",
+    )
+    for row in rows:
+        # Receipt stage remains quantity-based even when a PO has several GRNs against several lines.
+        receipt_stage = purchasing.po_receipt_stage(row["ordered_qty"], row["received_qty"])
+        total = int(row["total"] or 0)
+        if receipt_stage != "RECEIVED":
+            open_count += 1
+            open_value += total
+        if receipt_stage == "PARTIAL":
+            partial_count += 1
+        if receipt_stage == "AWAITING":
+            awaiting_count += 1
+        if month_start <= row["order_date"] <= as_of:
+            mtd_value += total
+        if prior_month_start <= row["order_date"] <= prior_comparable_end:
+            prior_mtd_value += total
+    # A zero prior period has no meaningful percentage denominator for a trend label.
+    change_pct = round((mtd_value - prior_mtd_value) / prior_mtd_value * 100, 1) if prior_mtd_value else None
+    return {
+        "as_of": as_of.isoformat(),
+        "open": {"count": open_count, "amount": open_value},
+        "partially_received": {"count": partial_count},
+        "awaiting_receipt": {"count": awaiting_count},
+        "po_value_mtd": {"amount": mtd_value, "change_pct": change_pct},
+    }
+
 class PurchaseOrderListCreateView(_ProcBase):
     """GET (list) / POST (create from an approved requisition).
 
@@ -54,11 +141,7 @@ class PurchaseOrderListCreateView(_ProcBase):
 
     def get(self, request):
         entity = resolve_entity(request)
-        qs = PurchaseOrder.objects.filter(entity=entity).select_related("vendor").prefetch_related("lines")
-        if (status_ := request.query_params.get("status")):
-            qs = qs.filter(status=status_)
-        if (vendor := request.query_params.get("vendor")):
-            qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
+        qs = _filter_purchase_orders(_purchase_order_queryset(entity), request.query_params)
         return self.paginate(request, qs.order_by("-id"), PurchaseOrderSerializer)
 
     def post(self, request):
@@ -86,10 +169,23 @@ class PurchaseOrderDetailView(_ProcBase):
 
     def get(self, request, pk):
         entity = resolve_entity(request)
-        po = PurchaseOrder.objects.filter(entity=entity, pk=pk).first()
+        po = _purchase_order_queryset(entity).filter(pk=pk).first()
         if po is None:
             raise NotFound("No such purchase order in this entity.")
-        return success_response("Purchase order retrieved.", data=PurchaseOrderSerializer(po).data)
+        data = PurchaseOrderSerializer(po).data
+        # Generic workflow rows use content type + object id, which for_document resolves safely.
+        instance = WorkflowInstance.objects.for_document(po).order_by("-created_at").first()
+        data["workflow_instance_id"] = str(instance.id) if instance else None
+        return success_response("Purchase order retrieved.", data=data)
+
+
+class PurchaseOrderSummaryView(_ProcBase):
+    """Entity-scoped KPIs for the PO list header (not a paginated list aggregate)."""
+    rbac_permission = "procurement.purchase_order.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        return success_response("Purchase order summary retrieved.", data=purchase_order_summary(entity))
 
 
 # --------------------------------------------------------------------------- #
@@ -307,5 +403,4 @@ class QuotationAwardView(_ProcBase):
             f"Quotation awarded → purchase order {po.document_number}.",
             data=PurchaseOrderSerializer(po).data, status=201,
         )
-
 
