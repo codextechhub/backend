@@ -1,5 +1,5 @@
 """
-Master permission seed — runs all permission seeds in dependency order.
+Master foundation seed — runs permission and required reference seeds in dependency order.
 
 Run this on any environment (local or cloud) after migrations to ensure
 all permission keys, module/resource definitions, and role grants are in sync.
@@ -23,6 +23,7 @@ Seed order
                                → both platform roles
 4. seed_import_permissions   — all import permissions → super-admin;
                                template management only → platform-admin
+4b. seed_import              — canonical school + branch bulk-upload templates
 5. seed_workflow_permissions — workflow engine permissions → both platform roles
 6. seed_config_permissions   — vs_config permissions → both platform roles
 7. seed_finance_permissions  — vs_finance permissions → both platform roles
@@ -46,6 +47,10 @@ SEED_STEPS: list[tuple[str, list]] = [
     ("seed_school_permissions",      []),
     ("seed_platform_permissions",    []),
     ("seed_import_permissions",      []),
+    # Import templates are required reference data, not optional demo data.
+    # Keep them in the master bootstrap so a migrated environment cannot expose
+    # working import endpoints backed by an empty template catalogue.
+    ("seed_import",                  []),
     ("seed_workflow_permissions",    []),
     ("seed_config_permissions",      []),
     ("seed_finance_permissions",     []),
@@ -59,7 +64,7 @@ SEED_STEPS: list[tuple[str, list]] = [
 
 
 class Command(BaseCommand):
-    help = "Run all permission seeds in dependency order (idempotent)."
+    help = "Run all permission and required reference seeds in dependency order (idempotent)."
 
     def add_arguments(self, parser):
         parser.add_argument(

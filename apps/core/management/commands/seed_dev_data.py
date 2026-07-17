@@ -25,10 +25,10 @@ What it creates (idempotent — safe to re-run):
   8. A few central audit events so the audit UI has data.
 
 Prerequisites (run first, in this order):
-  seed_actions, seed_all_permissions, seed_import_permissions,
+  seed_actions, seed_all_permissions (includes canonical import templates),
   seed_workflow_permissions, seed_config_catalogue, seed_package,
   seed_prebuilt_role_templates, create_superuser --force,
-  seed_vision_staff, seed_import, seed_notification_event_types,
+  seed_vision_staff, seed_notification_event_types,
   seed_notification_templates.
 Afterwards run: seed_notification_settings --all
 
@@ -45,7 +45,6 @@ for c in seed_all_permissions seed_config_catalogue seed_package; do
 ../cx/bin/python manage.py $c --settings=apps.settings.local; done
 ../cx/bin/python manage.py create_superuser --force --settings=apps.settings.local
 ../cx/bin/python manage.py seed_vision_staff --settings=apps.settings.local
-../cx/bin/python manage.py seed_import --settings=apps.settings.local
 ../cx/bin/python manage.py seed_notification_event_types --settings=apps.settings.local
 ../cx/bin/python manage.py seed_notification_templates --settings=apps.settings.local
 ../cx/bin/python manage.py seed_dev_data --settings=apps.settings.local       # ← the new command

@@ -38,6 +38,19 @@ class SeedImportConfigurationTests(TestCase):
             ).exists()
         )
 
+    def test_master_seed_includes_required_bulk_templates(self):
+        _call("seed_all_permissions")
+
+        self.assertEqual(
+            set(
+                ImportTemplate.objects.filter(
+                    status=TemplateStatusChoices.ACTIVE,
+                    is_download_enabled=True,
+                ).values_list("dataset_type", flat=True)
+            ),
+            {DatasetTypeChoices.SCHOOLS, DatasetTypeChoices.BRANCHES},
+        )
+
     def test_super_admin_gets_all_import_permissions_and_platform_admin_gets_templates(self):
         _call("seed_actions")
         _call("seed_import_permissions")

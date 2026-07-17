@@ -48,9 +48,8 @@ run create_superuser --force
 # that only exist after create_superuser. Idempotent.
 run seed_all_permissions
 
-echo "→ Staff, import templates, notification catalogue..."
+echo "→ Staff and notification catalogue..."
 run seed_vision_staff
-run seed_import
 run seed_notification_event_types
 run seed_notification_templates
 
