@@ -57,6 +57,7 @@ def price_po(po) -> None:
     from .models import PurchaseOrderLine
 
     for line in po.lines.all():
+        # Net extends quantity by unit price; tax applies the line's basis-point rate to that net.
         net = compute_line_net(line.quantity, line.unit_price)
         rate = line.tax_code.rate_bps if line.tax_code_id else 0
         tax = compute_tax(net, rate)
@@ -146,6 +147,7 @@ def create_po_from_requisition(requisition, *, vendor, order_date, actor_user=No
             f"APPROVED before raising a PO (is '{requisition.status}').",
         )
 
+    # A line-specific account wins; this fallback is only used when the requisition did not classify the spend.
     default_expense = (
         vendor.default_expense_account
         or (vendor.category.default_expense_account if vendor.category_id else None)
@@ -169,7 +171,10 @@ def create_po_from_requisition(requisition, *, vendor, order_date, actor_user=No
             purchase_order=po, requisition_line=rline,
             description=rline.description, expense_account=expense,
             quantity=rline.quantity, unit_price=rline.estimated_unit_price,
-            tax_code=rline.tax_code, line_no=rline.line_no,
+            tax_code=rline.tax_code,
+            # Requisition department becomes the PO-line cost centre so commitments remain reportable by owner.
+            cost_center=requisition.cost_center,
+            line_no=rline.line_no,
         )
     price_po(po)
     return po

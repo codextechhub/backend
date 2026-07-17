@@ -8,6 +8,7 @@ WHT correctly. Run against MySQL:
     ../cx/bin/python manage.py test vs_procurement --settings=apps.settings.local
 """
 import datetime
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -401,6 +402,106 @@ class FullChainTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(vi.payment_status, InvoicePaymentStatus.PAID)
         self.assertTrue(reconcile_ap(entity).is_reconciled)
         self.assertEqual(reconcile_ap(entity).control_total, 0)
+
+
+class RequisitionConsoleAPITests(_P2PFixtureMixin, TestCase):
+    """Entity scoping and derived values for the rebuilt requisition console."""
+
+    def client_for(self, entity):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        user = get_user_model().objects.create_user(
+            email=f"requisitions-{entity.code.lower()}@test.com", password="pw",
+            tenant=entity.tenant, user_type="CX_STAFF", status="ACTIVE",
+            first_name="Console", last_name="Tester",
+        )
+        return TenantAPIClient(user=user)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    @patch("vs_procurement.views.requisitions.timezone.localdate", return_value=datetime.date(2026, 1, 20))
+    def test_summary_uses_entity_scoped_server_aggregates(self, _today, _permission):
+        entity, _, _, _, _ = self.build_p2p()
+        other = LedgerEntity.objects.create(
+            name="Other Books", code="OTHER-REQ", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+        for target, status, amount, day in [
+            (entity, DocumentStatus.PENDING_APPROVAL, 300_000, 5),
+            (entity, DocumentStatus.APPROVED, 500_000, 10),
+            (entity, DocumentStatus.DRAFT, 200_000, 12),
+            (other, DocumentStatus.APPROVED, 99_000_000, 10),
+        ]:
+            PurchaseRequisition.objects.create(
+                entity=target, request_date=datetime.date(2026, 1, day),
+                status=status, estimated_total=amount,
+            )
+
+        response = self.client_for(entity).get(
+            f"/v1/procurement/requisitions/summary/?entity={entity.code}",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertEqual(data["pending_approval"], {"count": 1, "amount": 300_000})
+        self.assertEqual(data["approved_mtd"]["count"], 1)
+        self.assertEqual(data["draft"], {"count": 1, "amount": 200_000})
+        self.assertEqual(data["total_value_mtd"]["amount"], 1_000_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_persists_display_fields_and_rejects_foreign_cost_center(self, _permission):
+        entity, _, _, _, _ = self.build_p2p()
+        from vs_finance.models import CostCenter
+
+        own_center = CostCenter.objects.create(entity=entity, code="OPS", name="Operations")
+        client = self.client_for(entity)
+        payload = {
+            "title": "Replace meeting-room chairs", "request_date": "2026-01-10",
+            "needed_by": "2026-02-01", "cost_center": own_center.code,
+            "justification": "Existing chairs are damaged.",
+            "lines": [{
+                "description": "Ergonomic chair", "quantity": 5, "unit": "Each",
+                "estimated_unit_price": 200_000,
+            }],
+        }
+        response = client.post(
+            f"/v1/procurement/requisitions/?entity={entity.code}", payload, format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        data = response.json()["data"]
+        self.assertEqual(data["title"], payload["title"])
+        self.assertEqual(data["cost_center_code"], "OPS")
+        self.assertEqual(data["estimated_total"], 1_000_000)
+        self.assertEqual(data["lines"][0]["unit"], "Each")
+
+        other = LedgerEntity.objects.create(
+            name="Foreign Books", code="FOREIGN-REQ", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+        foreign_center = CostCenter.objects.create(entity=other, code="FOREIGN", name="Foreign")
+        payload["cost_center"] = foreign_center.id
+        denied = client.post(
+            f"/v1/procurement/requisitions/?entity={entity.code}", payload, format="json",
+        )
+        self.assertEqual(denied.status_code, 400)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_rejected_filter_uses_approval_overlay(self, _permission):
+        entity, _, _, _, _ = self.build_p2p()
+        from vs_procurement.constants import ProcApprovalState
+
+        rejected = PurchaseRequisition.objects.create(
+            entity=entity, title="Rejected request", request_date=datetime.date(2026, 1, 2),
+            status=DocumentStatus.CANCELLED, approval_state=ProcApprovalState.REJECTED,
+        )
+        PurchaseRequisition.objects.create(
+            entity=entity, title="Ordinary cancellation", request_date=datetime.date(2026, 1, 3),
+            status=DocumentStatus.CANCELLED,
+        )
+        response = self.client_for(entity).get(
+            f"/v1/procurement/requisitions/?entity={entity.code}&status=REJECTED",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["id"] for row in response.json()["data"]], [rejected.id])
 
 
 # --------------------------------------------------------------------------- #

@@ -323,6 +323,7 @@ class StockItem(TimeStampedModel):
     def unit_cost(self) -> int:
         """Derived weighted-average unit cost in kobo (0 when nothing on hand)."""
         if self.on_hand_qty and self.on_hand_qty > 0:
+            # Weighted-average unit cost divides the perpetual stock value by the live quantity on hand.
             return int((Decimal(self.stock_value) / Decimal(self.on_hand_qty)).to_integral_value())
         return 0
 
@@ -505,6 +506,7 @@ class PurchaseRequisition(FinanceDocument):
     workflow_document_type = WF_DOCTYPE_REQUISITION
     workflow_amount_field = "estimated_total"
 
+    title = models.CharField(max_length=200, blank=True, default="")
     requested_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="purchase_requisitions", null=True, blank=True,
@@ -530,6 +532,7 @@ class PurchaseRequisition(FinanceDocument):
         ]
 
     def recompute_total(self, *, save: bool = True) -> None:
+        # Requisition value is the sum of each estimated line value; it has no tax posting at this intent stage.
         total = sum((ln.estimated_line_total for ln in self.lines.all()), 0)
         self.estimated_total = total
         if save:
@@ -542,8 +545,13 @@ class PurchaseRequisitionLine(TimeStampedModel):
     requisition = models.ForeignKey(
         PurchaseRequisition, on_delete=models.CASCADE, related_name="lines",
     )
+    catalog_item = models.ForeignKey(
+        CatalogItem, on_delete=models.PROTECT, related_name="requisition_lines",
+        null=True, blank=True,
+    )
     description = models.CharField(max_length=255)
     quantity = models.DecimalField(max_digits=14, decimal_places=4, default=1)
+    unit = models.CharField(max_length=24, blank=True, default="Unit")
     estimated_unit_price = MoneyField(help_text="Estimated price per unit, in kobo.")
     expense_account = models.ForeignKey(
         "vs_finance.Account", on_delete=models.PROTECT,
@@ -561,6 +569,7 @@ class PurchaseRequisitionLine(TimeStampedModel):
 
     @property
     def estimated_line_total(self) -> int:
+        # Money is stored as integer kobo, so round the quantity extension to the nearest whole kobo.
         return int((Decimal(self.quantity) * Decimal(self.estimated_unit_price)).to_integral_value())
 
     def __str__(self) -> str:
@@ -682,6 +691,7 @@ class VendorQuotation(FinanceDocument):
         ]
 
     def recompute_totals(self, *, save: bool = True) -> None:
+        # Quotation gross is the sum of line net values plus their calculated tax.
         agg = self.lines.aggregate(
             net=models.Sum("net_amount"), tax=models.Sum("tax_amount"),
         )
@@ -777,6 +787,7 @@ class PurchaseOrder(FinanceDocument):
         ]
 
     def recompute_totals(self, *, save: bool = True) -> None:
+        # PO gross commitment is the sum of line net values plus their calculated tax.
         agg = self.lines.aggregate(
             net=models.Sum("net_amount"), tax=models.Sum("tax_amount"),
         )
@@ -788,18 +799,21 @@ class PurchaseOrder(FinanceDocument):
 
     @property
     def received_pct(self) -> Decimal:
+        # Fulfilment percentage compares aggregate received quantity with aggregate ordered quantity.
         ordered = sum((Decimal(l.quantity) for l in self.lines.all()), Decimal(0))
         received = sum((Decimal(l.received_qty) for l in self.lines.all()), Decimal(0))
         return _pct(received, ordered)
 
     @property
     def invoiced_pct(self) -> Decimal:
+        # Billing percentage compares aggregate invoiced quantity with aggregate ordered quantity.
         ordered = sum((Decimal(l.quantity) for l in self.lines.all()), Decimal(0))
         invoiced = sum((Decimal(l.invoiced_qty) for l in self.lines.all()), Decimal(0))
         return _pct(invoiced, ordered)
 
     @property
     def is_fully_received(self) -> bool:
+        # Every line must meet its own ordered quantity; aggregate equality could hide an over-received line.
         return all(Decimal(l.received_qty) >= Decimal(l.quantity) for l in self.lines.all())
 
 
@@ -902,6 +916,7 @@ class GoodsReceivedNote(FinanceDocument):
         ]
 
     def recompute_total(self, *, save: bool = True) -> None:
+        # Receipt value is the sum of accepted line extensions; rejected quantities never enter the GL value.
         agg = self.lines.aggregate(v=models.Sum("value_amount"))
         self.total_value = agg["v"] or 0
         if save:
@@ -1020,9 +1035,11 @@ class VendorInvoice(FinanceDocument):
 
     @property
     def balance_due(self) -> int:
+        # Outstanding AP is invoice gross less all payment allocations recorded against it.
         return self.total - self.amount_paid
 
     def recompute_totals(self, *, save: bool = True) -> None:
+        # Invoice gross payable is the sum of line net values plus their calculated tax.
         agg = self.lines.aggregate(
             net=models.Sum("net_amount"), tax=models.Sum("tax_amount"),
         )
@@ -1033,6 +1050,7 @@ class VendorInvoice(FinanceDocument):
             self.save(update_fields=["subtotal", "tax_total", "total", "updated_at"])
 
     def refresh_payment_status(self, *, save: bool = True) -> None:
+        # Payment status is derived from allocated cash versus gross invoice value, including overpayment as paid.
         if self.amount_paid <= 0:
             status = InvoicePaymentStatus.UNPAID
         elif self.amount_paid >= self.total:
@@ -1090,6 +1108,7 @@ class VendorInvoiceLine(TimeStampedModel):
 
     @property
     def line_total(self) -> int:
+        # A vendor-invoice line settles both its net charge and tax component.
         return self.net_amount + self.tax_amount
 
     def __str__(self) -> str:
@@ -1150,6 +1169,7 @@ class VendorPayment(FinanceDocument):
     @property
     def unallocated_amount(self) -> int:
         """Gross not yet applied to any bill — an open debit on the vendor."""
+        # Unallocated cash remains the gross payment less allocations already attached to invoices.
         return self.gross_amount - self.allocated_amount
 
 

@@ -228,7 +228,7 @@ class RequisitionLineSerializer(serializers.ModelSerializer):
     class Meta:
         model = PurchaseRequisitionLine
         fields = [
-            "id", "line_no", "description", "quantity", "estimated_unit_price",
+            "id", "line_no", "catalog_item_id", "description", "quantity", "unit", "estimated_unit_price",
             "expense_account_id", "expense_code", "tax_code_id", "estimated_line_total",
         ]
 
@@ -236,16 +236,28 @@ class RequisitionLineSerializer(serializers.ModelSerializer):
 class RequisitionSerializer(serializers.ModelSerializer):
     lines = RequisitionLineSerializer(many=True, read_only=True)
     estimated_total_naira = serializers.SerializerMethodField()
+    requested_by_name = serializers.SerializerMethodField()
+    cost_center_code = serializers.CharField(source="cost_center.code", read_only=True, default=None)
+    cost_center_name = serializers.CharField(source="cost_center.name", read_only=True, default=None)
 
     class Meta:
         model = PurchaseRequisition
         fields = [
-            "id", "document_number", "status", "request_date", "needed_by",
-            "justification", "estimated_total", "estimated_total_naira", "lines",
+            "id", "document_number", "status", "approval_state", "title",
+            "request_date", "needed_by", "requested_by_id", "requested_by_name",
+            "cost_center_id", "cost_center_code", "cost_center_name",
+            "justification", "estimated_total", "estimated_total_naira", "created_at", "lines",
         ]
 
     def get_estimated_total_naira(self, obj) -> str:
         return format_naira(obj.estimated_total)
+
+    def get_requested_by_name(self, obj) -> str:
+        user = obj.requested_by
+        if user is None:
+            return "System"
+        # Prefer the platform display name, then Django's composed name, then the stable email identifier.
+        return getattr(user, "full_name", "") or user.get_full_name() or user.email
 
 
 # --------------------------------------------------------------------------- #

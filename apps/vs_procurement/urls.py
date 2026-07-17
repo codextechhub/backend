@@ -31,6 +31,9 @@ urlpatterns = [
 
     # Purchase requisitions
     path("requisitions/", views.RequisitionListCreateView.as_view(), name="proc-requisitions"),
+    path("requisitions/summary/", views.RequisitionSummaryView.as_view(), name="proc-requisition-summary"),
+    path("requisitions/export/", views.RequisitionExportView.as_view(), name="proc-requisition-export"),
+    path("requisitions/budget-availability/", views.RequisitionBudgetAvailabilityView.as_view(), name="proc-requisition-budget"),
     path("requisitions/<int:pk>/", views.RequisitionDetailView.as_view(), name="proc-requisition-detail"),
     path("requisitions/<int:pk>/submit/", views.RequisitionSubmitView.as_view(), name="proc-requisition-submit"),
 

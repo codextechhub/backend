@@ -34,7 +34,7 @@ PROCUREMENT_RESOURCES = [
     ("purchase_order", "purchase orders",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("submit", "SENSITIVE")]),
     ("quotation",      "vendor quotations",     [("view", "NORMAL"), ("create", "NORMAL"), ("submit", "SENSITIVE"), ("award", "SENSITIVE")]),
     ("report",         "procurement reports",   [("view", "NORMAL")]),
-    ("requisition",    "purchase requisitions", [("view", "NORMAL"), ("create", "NORMAL"), ("submit", "SENSITIVE")]),
+    ("requisition",    "purchase requisitions", [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("submit", "SENSITIVE")]),
     ("rfq",            "requests for quotation", [("view", "NORMAL"), ("create", "NORMAL"), ("issue", "SENSITIVE")]),
     ("stock",          "stock items",           [("view", "NORMAL"), ("manage", "SENSITIVE"), ("issue", "SENSITIVE"), ("adjust", "SENSITIVE")]),
     ("vendor",         "vendors",               [("view", "NORMAL"), ("create", "SENSITIVE"),
