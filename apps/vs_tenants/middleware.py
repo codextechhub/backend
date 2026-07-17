@@ -1,11 +1,22 @@
 from __future__ import annotations
 
+import re
+
 from django.utils import timezone
 
 from .context import clear_request_context, get_current_audit_event_count
 
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+# These writes only maintain the current user's inbox/read state. They are
+# automatic UI bookkeeping, not business changes, so successful calls do not
+# belong in the audit timeline. Failed calls remain security-audited below.
+NON_BUSINESS_PROXY_WRITE_PATHS = {
+    "/v1/notify/mark-read/",
+    "/v1/notify/mark-all-read/",
+    "/v1/notify/acknowledge-route/",
+}
 
 # Distinct paths kept per session; existing entries keep counting past the cap.
 ACCESS_LOG_MAX_PATHS = 200
@@ -52,6 +63,36 @@ def _user_label(user) -> str:
         or getattr(user, "email", None)
         or "Unknown user"
     )
+
+
+def _proxy_change_description(request) -> str:
+    """Return a readable operation such as ``updated staff profile``."""
+    verb = {
+        "POST": "submitted",
+        "PUT": "updated",
+        "PATCH": "updated",
+        "DELETE": "deleted",
+    }.get(request.method, "changed")
+    match = getattr(request, "resolver_match", None)
+    raw_name = getattr(match, "url_name", "") or ""
+    if raw_name:
+        parts = re.split(r"[-_]", raw_name)
+    else:
+        parts = request.path.strip("/").split("/")
+        if parts and re.fullmatch(r"v\d+", parts[0]):
+            parts = parts[1:]
+    ignored = {"list", "detail", "create", "update", "delete", "destroy"}
+    words = [
+        part for part in parts
+        if (
+            part
+            and part not in ignored
+            and not part.isdigit()
+            and not re.fullmatch(r"[0-9a-fA-F-]{16,}", part)
+        )
+    ]
+    resource = " ".join(words) or "record"
+    return f"{verb} {resource}"
 
 
 class TenantContextCleanupMiddleware:
@@ -103,7 +144,12 @@ class TenantContextCleanupMiddleware:
                         summary=f"{actor_label}'s action {outcome} while proxied as {target_label}",
                         metadata=metadata,
                     )
-                elif request.method not in SAFE_METHODS:
+                elif (
+                    request.method not in SAFE_METHODS
+                    and request.path not in NON_BUSINESS_PROXY_WRITE_PATHS
+                ):
+                    change_description = _proxy_change_description(request)
+                    metadata["change_description"] = change_description
                     emit_audit_event(
                         module_key="PLATFORM",
                         action_type="PROXY_CHANGE",
@@ -114,7 +160,10 @@ class TenantContextCleanupMiddleware:
                         effective_user=target,
                         tenant=getattr(request, "tenant", None),
                         impersonation_session=session,
-                        summary=f"{actor_label} made a change while proxied as {target_label}",
+                        summary=(
+                            f"{actor_label} {change_description} while proxied as "
+                            f"{target_label}"
+                        ),
                         metadata=metadata,
                     )
             return response

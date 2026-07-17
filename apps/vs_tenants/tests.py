@@ -84,12 +84,15 @@ class ProxyAuditMiddlewareTests(TestCase):
             justification="Middleware policy test",
         )
 
-    def _run(self, method="get", status_code=200, emit_business_event=False):
+    def _run(
+        self, method="get", status_code=200, emit_business_event=False,
+        path="/v1/user/example/",
+    ):
         from vs_audit.services import emit_audit_event
         from vs_tenants.context import set_current_audit_identity
         from vs_tenants.middleware import TenantContextCleanupMiddleware
 
-        request = getattr(self.factory, method.lower())("/v1/user/example/")
+        request = getattr(self.factory, method.lower())(path)
 
         def get_response(req):
             req.actor_user = self.actor
@@ -124,8 +127,33 @@ class ProxyAuditMiddlewareTests(TestCase):
         self._run("patch")
         event = AuditEvent.objects.get()
         self.assertEqual(event.action_type, "PROXY_CHANGE")
-        self.assertNotIn("/v1/", event.summary)
+        self.assertEqual(
+            event.summary,
+            "Ada Admin updated user example while proxied as Rashida Sule",
+        )
         self.assertEqual(event.metadata["path"], "/v1/user/example/")
+        self.assertEqual(event.metadata["change_description"], "updated user example")
+
+    def test_successful_notification_housekeeping_is_not_audited(self):
+        from vs_audit.models import AuditEvent
+
+        for path in (
+            "/v1/notify/mark-read/",
+            "/v1/notify/mark-all-read/",
+            "/v1/notify/acknowledge-route/",
+        ):
+            with self.subTest(path=path):
+                self._run("post", path=path)
+        self.assertFalse(AuditEvent.objects.exists())
+
+    def test_failed_notification_housekeeping_remains_audited(self):
+        from vs_audit.models import AuditEvent
+
+        self._run("post", status_code=403, path="/v1/notify/mark-read/")
+
+        event = AuditEvent.objects.get()
+        self.assertEqual(event.action_type, "PROXY_ACTION_FAILED")
+        self.assertEqual(event.status, "DENIED")
 
     def test_failed_read_remains_visible_for_security_review(self):
         from vs_audit.models import AuditEvent
