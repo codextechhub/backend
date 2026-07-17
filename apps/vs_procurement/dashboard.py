@@ -30,7 +30,7 @@ from .constants import (
     WF_DOCTYPE_REQUISITION,
     WF_DOCTYPE_VENDOR_INVOICE,
 )
-from .models import PurchaseOrder, Vendor, VendorInvoice
+from .models import PurchaseOrder, PurchaseRequisition, Vendor, VendorInvoice
 from .purchasing import po_receipt_stage
 from .reports import spend_analysis
 
@@ -236,18 +236,22 @@ def _pending_approvals(entity, user) -> list:
         )
         .order_by("-stage_instance__activated_at")
     )
+    # A stage/attempt already acted by this user must not reappear as pending.
+    # Bound the scan to the stages actually in play (not the user's whole action
+    # history) so the query cost stays proportional to the pending queue.
+    stage_ids = {snap.stage_instance_id for snap in snaps}
     acted = set(
-        # A stage/attempt already acted by this user must not reappear as pending.
         WorkflowStageAction.objects.filter(
             actor=user,
+            stage_instance_id__in=stage_ids,
             reversed_at__isnull=True,
             is_reversal_of__isnull=True,
         ).values_list("stage_instance_id", "attempt")
-    )
+    ) if stage_ids else set()
 
     models = {
         # Workflow stores generic object ids; map each allowed type to its real model.
-        WF_DOCTYPE_REQUISITION: __import__("vs_procurement.models", fromlist=["PurchaseRequisition"]).PurchaseRequisition,
+        WF_DOCTYPE_REQUISITION: PurchaseRequisition,
         WF_DOCTYPE_PURCHASE_ORDER: PurchaseOrder,
         WF_DOCTYPE_VENDOR_INVOICE: VendorInvoice,
     }

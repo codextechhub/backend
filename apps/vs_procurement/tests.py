@@ -444,6 +444,8 @@ class RequisitionConsoleAPITests(_P2PFixtureMixin, TestCase):
         data = response.json()["data"]
         self.assertEqual(data["pending_approval"], {"count": 1, "amount": 300_000})
         self.assertEqual(data["approved_mtd"]["count"], 1)
+        # One approved this month, none in the prior month → absolute delta of +1.
+        self.assertEqual(data["approved_mtd"]["change"], 1)
         self.assertEqual(data["draft"], {"count": 1, "amount": 200_000})
         self.assertEqual(data["total_value_mtd"]["amount"], 1_000_000)
 
@@ -529,6 +531,79 @@ class RequisitionConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(
             {row["id"] for row in cleared.json()["data"]}, {matching.id, other.id},
         )
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_budget_availability_is_annual_and_counts_line_cost_centre(self, _permission):
+        from django.utils import timezone
+        from vs_finance.constants import BudgetStatus
+        from vs_finance.models import Budget, BudgetLine, CostCenter
+
+        entity, period, vendor, _, _ = self.build_p2p()
+        dept = CostCenter.objects.create(entity=entity, code="IT", name="IT & Infrastructure")
+        other_dept = CostCenter.objects.create(entity=entity, code="OPS", name="Operations")
+        expense = self.acc(entity, "5300")
+        budget = Budget.objects.create(
+            entity=entity, fiscal_year=period.fiscal_year, name="IT CAPEX 2026",
+            status=BudgetStatus.APPROVED, approved_at=timezone.now(),
+        )
+        # Annual allocation is the sum across every period, not just the request month.
+        for period_no, amount in ((1, 20_000_000), (2, 10_000_000)):
+            BudgetLine.objects.create(
+                budget=budget, account=expense, cost_center=dept,
+                period_no=period_no, amount=amount,
+            )
+
+        # A directly-raised PO (no requisition) whose line is classified to IT — it
+        # must still count, proving the commitment join uses the line's own centre.
+        in_year = PurchaseOrder.objects.create(
+            entity=entity, vendor=vendor, order_date=datetime.date(2026, 3, 4),
+            status=DocumentStatus.APPROVED,
+        )
+        PurchaseOrderLine.objects.create(
+            purchase_order=in_year, description="Servers", expense_account=expense,
+            quantity=1, unit_price=12_000_000, net_amount=12_000_000, cost_center=dept, line_no=1,
+        )
+        # Noise that must be excluded: another department, and a prior-year PO.
+        PurchaseOrderLine.objects.create(
+            purchase_order=in_year, description="Chairs", expense_account=expense,
+            quantity=1, unit_price=5_000_000, net_amount=5_000_000, cost_center=other_dept, line_no=2,
+        )
+        last_year = PurchaseOrder.objects.create(
+            entity=entity, vendor=vendor, order_date=datetime.date(2025, 12, 1),
+            status=DocumentStatus.APPROVED,
+        )
+        PurchaseOrderLine.objects.create(
+            purchase_order=last_year, description="Prior year", expense_account=expense,
+            quantity=1, unit_price=9_000_000, net_amount=9_000_000, cost_center=dept, line_no=1,
+        )
+
+        response = self.client_for(entity).get(
+            f"/v1/procurement/requisitions/budget-availability/"
+            f"?entity={entity.code}&cost_center={dept.code}&date=2026-01-15",
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()["data"]
+        self.assertTrue(data["has_budget"])
+        self.assertEqual(data["period"], "IT CAPEX 2026")
+        self.assertEqual(data["budget"], 30_000_000)
+        self.assertEqual(data["committed"], 12_000_000)
+        self.assertEqual(data["available"], 18_000_000)
+
+    def test_summary_and_budget_endpoints_require_view_permission(self):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        entity, _, _, _, _ = self.build_p2p()
+        user = get_user_model().objects.create_user(
+            email="req-no-grant@test.com", password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="No", last_name="Grant",
+        )
+        client = TenantAPIClient(user=user)
+        for path in (
+            f"/v1/procurement/requisitions/summary/?entity={entity.code}",
+            f"/v1/procurement/requisitions/budget-availability/?entity={entity.code}&cost_center=IT",
+        ):
+            self.assertEqual(client.get(path).status_code, 403)
 
 
 # --------------------------------------------------------------------------- #

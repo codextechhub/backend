@@ -19,6 +19,7 @@ from .. import approvals
 from ..constants import ProcApprovalState
 from ..models import (
     PurchaseOrder,
+    PurchaseOrderLine,
     PurchaseRequisition,
     PurchaseRequisitionLine,
     VendorInvoice,
@@ -232,7 +233,11 @@ class RequisitionSummaryView(_ProcBase):
             },
             "approved_mtd": {
                 "count": approved_mtd["count"], "amount": approved_mtd["amount"] or 0,
-                "change_pct": percent_change(approved_mtd["count"], approved_prior["count"]),
+                # This tile's headline is a *count*, so its delta is an absolute
+                # count change ("+2 vs prior month"), not a percentage — a % swing
+                # on a small integer (0→2 = "+∞%"/"+100%") reads as noise, and a
+                # zero prior month is a real comparison here, not a null one.
+                "change": approved_mtd["count"] - (approved_prior["count"] or 0),
             },
             "draft": {"count": drafts["count"], "amount": drafts["amount"] or 0},
             "total_value_mtd": {
@@ -264,23 +269,36 @@ class RequisitionBudgetAvailabilityView(_ProcBase):
         budget = Budget.objects.filter(
             entity=entity, fiscal_year=period.fiscal_year, status=BudgetStatus.APPROVED,
         ).order_by("-approved_at", "-id").first()
+        fy = period.fiscal_year
         budget_amount = 0
         if budget is not None:
+            # Annual allocation: the department's budgeted amount across every period
+            # of the operative plan. The commitment figure below is bounded to the
+            # same fiscal year so both sides of "available" share one time window
+            # (previously the budget was a single month while commitments were
+            # all-time, which understated availability for any department with a
+            # standing open PO).
             budget_amount = BudgetLine.objects.filter(
-                budget=budget, cost_center=cost_center, period_no=period.period_no,
+                budget=budget, cost_center=cost_center,
             ).aggregate(total=Sum("amount"))["total"] or 0
 
-        # Open PO line values are commitments; the requisition header carries the department into the PO relationship.
-        committed = PurchaseOrder.objects.filter(
-            entity=entity,
-            requisition__cost_center=cost_center,
-            status__in=(DocumentStatus.PENDING_APPROVAL, DocumentStatus.APPROVED),
-        ).aggregate(total=Sum("lines__net_amount"))["total"] or 0
-        # Available budget is the approved plan less purchase commitments already raised for the department.
+        # Open-PO commitments for this department within the operative fiscal year.
+        # Summing the PO *line's* own cost centre (not the requisition's) counts
+        # directly-raised POs too, and keeps the figure correct if a line was
+        # reclassified away from the requisition's department.
+        committed = PurchaseOrderLine.objects.filter(
+            purchase_order__entity=entity,
+            purchase_order__status__in=(DocumentStatus.PENDING_APPROVAL, DocumentStatus.APPROVED),
+            purchase_order__order_date__range=(fy.start_date, fy.end_date),
+            cost_center=cost_center,
+        ).aggregate(total=Sum("net_amount"))["total"] or 0
+        # Available budget is the approved annual plan less commitments already raised for the department.
         available = budget_amount - committed
         return success_response("Budget availability retrieved.", data={
             "has_budget": budget is not None and budget_amount > 0,
-            "period": period.name,
+            # Label with the operative plan (e.g. "IT CAPEX 2026") since the figures
+            # are annual; a month name here would misrepresent the scope.
+            "period": budget.name if budget is not None else f"FY{fy.year}",
             "budget": budget_amount,
             "committed": committed,
             "available": available,
