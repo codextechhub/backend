@@ -2,12 +2,10 @@
 """
 from __future__ import annotations
 
-import csv
 import datetime
 
 from django.db import transaction
 from django.db.models import Count, Q, Sum
-from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 
@@ -92,16 +90,18 @@ def _filter_requisitions(qs, params):
         qs = qs.filter(
             Q(document_number__icontains=search) | Q(title__icontains=search)
             | Q(justification__icontains=search) | Q(cost_center__name__icontains=search)
+            | Q(cost_center__code__icontains=search)
             | Q(requested_by__first_name__icontains=search)
             | Q(requested_by__last_name__icontains=search)
+            | Q(requested_by__email__icontains=search)
+            | Q(lines__description__icontains=search)
+            | Q(lines__catalog_item__name__icontains=search)
+            | Q(lines__catalog_item__code__icontains=search)
         )
+        # Line-item joins can match several rows on one requisition; distinct keeps the paginated list unique.
+        qs = qs.distinct()
     return qs
 
-
-def _requisition_display_status(req):
-    """Return the user-facing status without losing workflow rejection."""
-    # Rejection lives on the approval overlay because the shared document lifecycle has no REJECTED value.
-    return "REJECTED" if req.approval_state == ProcApprovalState.REJECTED else req.status
 
 class RequisitionListCreateView(_ProcBase):
     """GET (list) / POST (create draft + lines) purchase requisitions.
@@ -239,37 +239,6 @@ class RequisitionSummaryView(_ProcBase):
                 "amount": current_total, "change_pct": percent_change(current_total, prior_total),
             },
         })
-
-
-class RequisitionExportView(_ProcBase):
-    """Export the full filtered requisition set as a CSV file."""
-    rbac_permission = "procurement.requisition.view"
-
-    def get(self, request):
-        entity = resolve_entity(request)
-        qs = PurchaseRequisition.objects.filter(entity=entity).select_related(
-            "requested_by", "cost_center",
-        )
-        qs = _filter_requisitions(qs, request.query_params).order_by("-id")
-        response = HttpResponse(content_type="text/csv")
-        response["Content-Disposition"] = 'attachment; filename="purchase-requisitions.csv"'
-        writer = csv.writer(response)
-        writer.writerow([
-            "Requisition", "Title", "Department", "Requested by", "Request date",
-            "Needed by", "Estimated amount (kobo)", "Status", "Business case",
-        ])
-        # Iterator keeps memory bounded when an entity exports a large requisition history.
-        for req in qs.iterator(chunk_size=500):
-            user = req.requested_by
-            requested_by = "System" if user is None else (
-                getattr(user, "full_name", "") or user.get_full_name() or user.email
-            )
-            writer.writerow([
-                req.document_number, req.title, req.cost_center.name if req.cost_center else "",
-                requested_by, req.request_date, req.needed_by or "", req.estimated_total,
-                _requisition_display_status(req), req.justification,
-            ])
-        return response
 
 
 class RequisitionBudgetAvailabilityView(_ProcBase):

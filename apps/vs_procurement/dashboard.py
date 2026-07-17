@@ -117,24 +117,28 @@ def _po_status(entity) -> dict:
         .annotate(ordered_qty=Sum("lines__quantity"), received_qty=Sum("lines__received_qty"))
         .values("status", "approval_state", "ordered_qty", "received_qty")
     )
-    counts = Counter({"DRAFT": 0, "PENDING": 0, "APPROVED": 0, "PARTIAL": 0, "CLOSED": 0})
+    counts = Counter({"DRAFT": 0, "PENDING": 0, "APPROVED": 0, "PARTIAL": 0, "RECEIVED": 0})
     open_count = 0
     partial_count = 0
     for row in rows:
         # Decimal preserves the model's fractional quantities without float rounding.
         ordered = Decimal(row["ordered_qty"] or 0)
         received = Decimal(row["received_qty"] or 0)
-        # Approval overlay wins because workflow can be pending before status refresh.
-        if row["approval_state"] == ProcApprovalState.PENDING or row["status"] == DocumentStatus.PENDING_APPROVAL:
-            counts["PENDING"] += 1
-        elif row["status"] == DocumentStatus.DRAFT:
+        # Draft and active workflow states take precedence over receipt progress.
+        if row["status"] == DocumentStatus.DRAFT:
             counts["DRAFT"] += 1
+        elif row["approval_state"] == ProcApprovalState.PENDING or row["status"] == DocumentStatus.PENDING_APPROVAL:
+            counts["PENDING"] += 1
+        # A fully accepted order is received; this is derived from line quantities
+        # because the PurchaseOrder model does not persist a separate receipt status.
+        elif ordered > 0 and received >= ordered:
+            counts["RECEIVED"] += 1
+        # Some accepted quantity, but not all, makes the order partially received.
+        elif received > 0:
+            counts["PARTIAL"] += 1
         else:
             counts["APPROVED"] += 1
 
-        # The PO model does not persist PARTIAL/CLOSED document statuses. Keep
-        # those chart buckets at zero rather than contradicting the list, while
-        # preserving the useful receipt-aware KPI calculation.
         # A PO remains open until accepted quantity reaches the ordered quantity.
         if not (ordered > 0 and received >= ordered):
             open_count += 1
@@ -149,7 +153,7 @@ def _po_status(entity) -> dict:
                 ("PARTIAL", "Partial"),
                 ("PENDING", "Pending"),
                 ("DRAFT", "Draft"),
-                ("CLOSED", "Closed"),
+                ("RECEIVED", "Received"),
             )
         ],
         "open_count": open_count,

@@ -503,6 +503,33 @@ class RequisitionConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual([row["id"] for row in response.json()["data"]], [rejected.id])
 
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_search_filters_broadly_and_clearing_restores_all_rows(self, _permission):
+        entity, _, _, _, _ = self.build_p2p()
+        matching = PurchaseRequisition.objects.create(
+            entity=entity, title="Office refresh", request_date=datetime.date(2026, 1, 2),
+        )
+        PurchaseRequisitionLine.objects.create(
+            requisition=matching, description="Ergonomic conference chair",
+            quantity=1, estimated_unit_price=100_000,
+        )
+        other = PurchaseRequisition.objects.create(
+            entity=entity, title="Network upgrade", request_date=datetime.date(2026, 1, 3),
+        )
+        client = self.client_for(entity)
+
+        filtered = client.get(
+            f"/v1/procurement/requisitions/?entity={entity.code}&search=conference",
+        )
+        self.assertEqual(filtered.status_code, 200)
+        self.assertEqual([row["id"] for row in filtered.json()["data"]], [matching.id])
+
+        cleared = client.get(f"/v1/procurement/requisitions/?entity={entity.code}")
+        self.assertEqual(cleared.status_code, 200)
+        self.assertEqual(
+            {row["id"] for row in cleared.json()["data"]}, {matching.id, other.id},
+        )
+
 
 # --------------------------------------------------------------------------- #
 # Procurement analytics: spend, vendor performance, cycle time                #
@@ -1000,6 +1027,13 @@ class ProcurementDashboardTests(_P2PFixtureMixin, TestCase):
         line = po.lines.first()
         line.received_qty = 4
         line.save(update_fields=["received_qty", "updated_at"])
+        received_po = self.make_po(entity, vendor, [("5300", 3, 100_000, None)])
+        received_po.status = DocumentStatus.APPROVED
+        received_po.approval_state = "APPROVED"
+        received_po.save(update_fields=["status", "approval_state", "updated_at"])
+        received_line = received_po.lines.first()
+        received_line.received_qty = received_line.quantity
+        received_line.save(update_fields=["received_qty", "updated_at"])
 
         bill = self.make_bill(
             entity, vendor, [("5300", 1, 2_000_000, None, None)],
@@ -1040,7 +1074,7 @@ class ProcurementDashboardTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(data["kpis"]["open_purchase_orders"], {"count": 1, "partial_count": 1})
         self.assertEqual(
             {item["key"]: item["count"] for item in data["purchase_order_status"]["items"]},
-            {"APPROVED": 1, "PARTIAL": 0, "PENDING": 0, "DRAFT": 0, "CLOSED": 0},
+            {"APPROVED": 0, "PARTIAL": 1, "PENDING": 0, "DRAFT": 0, "RECEIVED": 1},
         )
         self.assertEqual(data["kpis"]["overdue_invoices"]["count"], 1)
         self.assertEqual(data["kpis"]["overdue_invoices"]["amount"]["kobo"], 1_500_000)
