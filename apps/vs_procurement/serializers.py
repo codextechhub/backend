@@ -505,6 +505,17 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
         return str(self._expected_quantity(obj))
 
 
+class GoodsReceivedNoteListSerializer(GoodsReceivedNoteSerializer):
+    """Lighter list row: the receipt lines belong to the detail drawer (its own
+    request). ``receipt_status`` and the item counts are still computed from the
+    prefetched lines — only the serialised line array is dropped from the payload."""
+
+    lines = None
+
+    class Meta(GoodsReceivedNoteSerializer.Meta):
+        fields = [f for f in GoodsReceivedNoteSerializer.Meta.fields if f != "lines"]
+
+
 # --------------------------------------------------------------------------- #
 # Vendor invoice                                                              #
 # --------------------------------------------------------------------------- #

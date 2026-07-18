@@ -75,7 +75,7 @@ class LedgerEntitySerializer(serializers.ModelSerializer):
     class Meta:
         model = LedgerEntity
         fields = [
-            "id", "code", "name", "kind", "base_currency",
+            "id", "code", "number_code", "name", "kind", "base_currency",
             "is_active", "source_school_id",
         ]
 
@@ -104,10 +104,12 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = LedgerEntity
-        fields = ["id", "code", "name", "kind", "base_currency",
+        fields = ["id", "code", "number_code", "name", "kind", "base_currency",
                   "fiscal_year", "fiscal_start_month"]
         extra_kwargs = {
             "kind": {"required": False},
+            # Optional: leave blank and the model auto-derives a unique short code.
+            "number_code": {"required": False},
         }
 
     def validate_code(self, value):
@@ -116,6 +118,16 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Entity code is required.")
         if LedgerEntity.objects.filter(code=code).exists():
             raise serializers.ValidationError(f"A ledger entity with code '{code}' already exists.")
+        return code
+
+    def validate_number_code(self, value):
+        code = (value or "").strip().upper()
+        if not code:
+            return ""  # blank → model save() auto-derives a unique code
+        if len(code) > 3:
+            raise serializers.ValidationError("Number code must be at most 3 characters.")
+        if LedgerEntity.objects.filter(number_code=code).exists():
+            raise serializers.ValidationError(f"Number code '{code}' is already in use.")
         return code
 
     def create(self, validated_data):

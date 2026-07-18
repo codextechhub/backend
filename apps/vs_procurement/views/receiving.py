@@ -15,10 +15,12 @@ from ..models import (
     GoodsReceivedNote,
     GoodsReceivedNoteLine,
     PurchaseOrder,
+    PurchaseOrderLine,
     VendorInvoice,
     VendorInvoiceLine,
 )
 from ..serializers import (
+    GoodsReceivedNoteListSerializer,
     GoodsReceivedNoteSerializer,
     VendorInvoiceSerializer,
 )
@@ -40,6 +42,65 @@ from .base import (
 # Goods received notes                                                        #
 # --------------------------------------------------------------------------- #
 
+def _write_grn_lines(entity, grn, po, lines):
+    """Replace a draft receipt's lines from validated, entity-scoped input.
+
+    Shared by create and draft-edit so both enforce the same rules — whole-unit
+    counts, per-line PO membership, and the accepted+rejected ≤ PO-remainder cap —
+    and so an edit can freely add, drop, or re-key lines (including a direct GRN's
+    own lines). A draft never advances the PO's ``received_qty``, so that remainder
+    is the same baseline whether the receipt is being created or re-edited, and the
+    delete-recreate is safe because nothing references a draft receipt's lines yet.
+    """
+    grn.lines.all().delete()
+    for i, ln in enumerate(lines, start=1):
+        accepted = _dec(ln.get("accepted_qty", 0), "accepted_qty")
+        rejected = _dec(ln.get("rejected_qty", 0), "rejected_qty")
+        if accepted < 0 or rejected < 0:
+            raise ValidationError({"quantity": "Accepted and rejected quantities cannot be negative."})
+        # Physical receipt counts are whole units; reject fractional API input that bypasses the UI steppers.
+        if accepted != accepted.to_integral_value() or rejected != rejected.to_integral_value():
+            raise ValidationError({"quantity": "Accepted and rejected quantities must be whole numbers."})
+        po_line = None
+        expected = accepted + rejected
+        if ln.get("po_line"):
+            po_line = PurchaseOrderLine.objects.filter(
+                purchase_order__entity=entity, pk=ln["po_line"]).first()
+            if po_line is None:
+                raise ValidationError({"po_line": f"No such PO line {ln['po_line']}."})
+            if po and po_line.purchase_order_id != po.id:
+                raise ValidationError({"po_line": "Each receipt line must belong to the selected purchase order."})
+            # Accepted + rejected is the inspected delivery quantity and cannot exceed the PO remainder.
+            remaining = Decimal(po_line.quantity) - Decimal(po_line.received_qty)
+            if accepted + rejected > remaining:
+                raise ValidationError({"quantity": f"Cannot exceed remaining quantity for '{po_line.description}'."})
+            # Snapshot the PO remainder so this GRN keeps its own “received of expected” denominator.
+            expected = remaining
+        expense = _resolve_account(entity, ln.get("expense_account"), "expense_account") \
+            or (po_line.expense_account if po_line else None)
+        if expense is None:
+            raise ValidationError({"expense_account": "A line expense account is required."})
+        unit_price = _money(ln.get("unit_price", po_line.unit_price if po_line else 0), "unit_price")
+        GoodsReceivedNoteLine.objects.create(
+            grn=grn, po_line=po_line, line_no=ln.get("line_no", i),
+            # Keep a display snapshot while falling back to the PO description when older clients omit it.
+            description=ln.get("description") or (po_line.description if po_line else ""),
+            expense_account=expense,
+            accepted_qty=accepted, rejected_qty=rejected, expected_qty=expected,
+            unit_price=unit_price,
+            # Draft value must be live: accepted whole units × the PO unit price in minor currency units.
+            value_amount=int(accepted * unit_price),
+        )
+    grn.recompute_total(save=True)
+
+
+def _read_grn_for_response(entity, pk):
+    """Re-read a receipt in the serialisation shape (fresh line cache after a rewrite)."""
+    return GoodsReceivedNote.objects.filter(entity=entity, pk=pk).select_related(
+        "vendor", "purchase_order", "received_by",
+    ).prefetch_related("lines__po_line", "purchase_order__lines").first()
+
+
 class GoodsReceiptListCreateView(_ProcBase):
     """GET (list) / POST (create draft GRN + lines).
 
@@ -56,7 +117,7 @@ class GoodsReceiptListCreateView(_ProcBase):
         qs = GoodsReceivedNote.objects.filter(entity=entity).select_related("vendor", "purchase_order", "received_by").prefetch_related("lines__po_line", "purchase_order__lines")
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
-        return self.paginate(request, qs.order_by("-id"), GoodsReceivedNoteSerializer)
+        return self.paginate(request, qs.order_by("-id"), GoodsReceivedNoteListSerializer)
 
     @transaction.atomic
     def post(self, request):
@@ -80,50 +141,11 @@ class GoodsReceiptListCreateView(_ProcBase):
             received_by=request.user if request.user.is_authenticated else None,
             created_by=request.user if request.user.is_authenticated else None,
         )
-        for i, ln in enumerate(lines, start=1):
-            accepted = _dec(ln.get("accepted_qty", 0), "accepted_qty")
-            rejected = _dec(ln.get("rejected_qty", 0), "rejected_qty")
-            if accepted < 0 or rejected < 0:
-                raise ValidationError({"quantity": "Accepted and rejected quantities cannot be negative."})
-            # Physical receipt counts are whole units; reject fractional API input that bypasses the UI steppers.
-            if accepted != accepted.to_integral_value() or rejected != rejected.to_integral_value():
-                raise ValidationError({"quantity": "Accepted and rejected quantities must be whole numbers."})
-            po_line = None
-            expected = accepted + rejected
-            if ln.get("po_line"):
-                from ..models import PurchaseOrderLine
-                po_line = PurchaseOrderLine.objects.filter(
-                    purchase_order__entity=entity, pk=ln["po_line"]).first()
-                if po_line is None:
-                    raise ValidationError({"po_line": f"No such PO line {ln['po_line']}."})
-                if po and po_line.purchase_order_id != po.id:
-                    raise ValidationError({"po_line": "Each receipt line must belong to the selected purchase order."})
-                # Accepted + rejected represents the inspected delivery quantity and cannot exceed the PO remainder.
-                remaining = Decimal(po_line.quantity) - Decimal(po_line.received_qty)
-                if accepted + rejected > remaining:
-                    raise ValidationError({"quantity": f"Cannot exceed remaining quantity for '{po_line.description}'."})
-                # Snapshot the PO remainder so this GRN keeps its own “received of expected” denominator.
-                expected = remaining
-            expense = _resolve_account(entity, ln.get("expense_account"), "expense_account") \
-                or (po_line.expense_account if po_line else None)
-            if expense is None:
-                raise ValidationError({"expense_account": "A line expense account is required."})
-            unit_price = _money(ln.get("unit_price", po_line.unit_price if po_line else 0), "unit_price")
-            GoodsReceivedNoteLine.objects.create(
-                grn=grn, po_line=po_line, line_no=ln.get("line_no", i),
-                # Keep a display snapshot while falling back to the PO description when older clients omit it.
-                description=ln.get("description") or (po_line.description if po_line else ""),
-                expense_account=expense,
-                accepted_qty=accepted,
-                rejected_qty=rejected,
-                expected_qty=expected,
-                unit_price=unit_price,
-                # Draft value must be live: accepted whole units × the PO unit price in minor currency units.
-                value_amount=int(accepted * unit_price),
-            )
-        grn.recompute_total(save=True)
+        _write_grn_lines(entity, grn, po, lines)
         return success_response(
-            "Goods receipt created.", data=GoodsReceivedNoteSerializer(grn).data, status=201,
+            "Goods receipt created.",
+            data=GoodsReceivedNoteSerializer(_read_grn_for_response(entity, grn.pk)).data,
+            status=201,
         )
 
 
@@ -145,9 +167,9 @@ class GoodsReceiptDetailView(_ProcBase):
     @transaction.atomic
     def patch(self, request, pk):
         entity = resolve_entity(request)
-        grn = GoodsReceivedNote.objects.select_for_update().filter(entity=entity, pk=pk).select_related(
-            "vendor", "purchase_order", "received_by",
-        ).prefetch_related("lines__po_line", "purchase_order__lines").first()
+        # Lock only the base row: PostgreSQL rejects FOR UPDATE over the outer joins
+        # that select_related on the nullable purchase_order / received_by would add.
+        grn = GoodsReceivedNote.objects.select_for_update().filter(entity=entity, pk=pk).first()
         if grn is None:
             raise NotFound("No such goods receipt in this entity.")
         if grn.status != "DRAFT":
@@ -159,32 +181,15 @@ class GoodsReceiptDetailView(_ProcBase):
             grn.reference = str(body.get("reference", ""))
         if "narration" in body:
             grn.narration = str(body.get("narration", ""))
-
-        existing_by_po_line = {line.po_line_id: line for line in grn.lines.all() if line.po_line_id}
-        if "lines" in body:
-            for payload in _require_lines(body):
-                line = existing_by_po_line.get(payload.get("po_line"))
-                if line is None:
-                    raise ValidationError({"po_line": "Draft edits may only change lines already on this receipt."})
-                accepted = _dec(payload.get("accepted_qty", line.accepted_qty), "accepted_qty")
-                rejected = _dec(payload.get("rejected_qty", line.rejected_qty), "rejected_qty")
-                if accepted < 0 or rejected < 0:
-                    raise ValidationError({"quantity": "Accepted and rejected quantities cannot be negative."})
-                # Keep draft edits consistent with create: received item counts are positive whole units.
-                if accepted != accepted.to_integral_value() or rejected != rejected.to_integral_value():
-                    raise ValidationError({"quantity": "Accepted and rejected quantities must be whole numbers."})
-                # Draft quantities have not advanced the PO yet, so its received_qty is the true remaining baseline.
-                remaining = Decimal(line.po_line.quantity) - Decimal(line.po_line.received_qty)
-                if accepted + rejected > remaining:
-                    raise ValidationError({"quantity": f"Cannot exceed remaining quantity for '{line.description}'."})
-                line.accepted_qty = accepted
-                line.rejected_qty = rejected
-                # Draft value preview follows the same accepted quantity × unit-price formula used at posting.
-                line.value_amount = int(accepted * line.unit_price)
-                line.save(update_fields=["accepted_qty", "rejected_qty", "value_amount", "updated_at"])
         grn.save(update_fields=["received_date", "reference", "narration", "updated_at"])
-        grn.recompute_total(save=True)
-        return success_response("Goods receipt draft updated.", data=GoodsReceivedNoteSerializer(grn).data)
+        if "lines" in body:
+            # Same rewrite path as create — an edit may add, drop, or adjust lines.
+            _write_grn_lines(entity, grn, grn.purchase_order, _require_lines(body))
+        # Re-read so the response reflects the rewritten lines, not the pre-edit prefetch cache.
+        return success_response(
+            "Goods receipt draft updated.",
+            data=GoodsReceivedNoteSerializer(_read_grn_for_response(entity, grn.pk)).data,
+        )
 
 
 class GoodsReceiptPostView(_ProcBase):

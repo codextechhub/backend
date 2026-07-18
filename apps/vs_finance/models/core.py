@@ -60,6 +60,26 @@ class LedgerEntityManager(models.Manager):
         return self.filter(tenant=school.tenant)
 
 
+def derive_number_code(code: str, taken) -> str:
+    """Pick a short (≤3 char) document-number code from an entity code.
+
+    Uses the first three alphanumerics of ``code`` (``CODEX`` → ``COD``); if that
+    is already ``taken`` by another entity, walks a 2-char stem + suffix until a
+    free code is found, so the code embedded in document numbers stays unique.
+    """
+    import re
+
+    base = re.sub(r"[^A-Z0-9]", "", (code or "").upper())[:3] or "ENT"
+    if base not in taken:
+        return base
+    stem = base[:2]
+    for suffix in "23456789ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        candidate = (stem + suffix)[:3]
+        if candidate not in taken:
+            return candidate
+    return base  # exhausted — the DB unique constraint is the final guard
+
+
 class LedgerEntity(TimeStampedModel):
     """A distinct set of books — the tenant of every finance/procurement document.
 
@@ -71,9 +91,10 @@ class LedgerEntity(TimeStampedModel):
 
     Fields:
         name: Human-friendly name of the entity/company keeping the books.
-        code: Short, uppercase, unique identifier; appears inside document numbers
-            (e.g. ``CFX-LEKKI-INV-2026-00001``). Reserved code ``CODEX`` is the
+        code: Short, uppercase, unique identifier. Reserved code ``CODEX`` is the
             platform entity.
+        number_code: The 2–3 char code embedded in document numbers (e.g. ``COD`` in
+            ``COD-IV-2600001``); auto-derived from ``code`` and kept unique.
         kind: Classification (platform / tenant / product / other).
         tenant: Canonical owner. The originating school (when any) is derived from
             the tenant's ``school_profile``; platform/product tenants have none.
@@ -93,7 +114,12 @@ class LedgerEntity(TimeStampedModel):
     name = models.CharField(max_length=160)
     code = models.CharField(
         max_length=16, unique=True,
-        help_text="Short uppercase code used inside document numbers; e.g. LEKKI, CODEX.",
+        help_text="Short uppercase code identifying the entity; e.g. LEKKI, CODEX.",
+    )
+    number_code = models.CharField(
+        max_length=3, blank=True, default="", unique=True,
+        help_text="2–3 char code embedded in document numbers (e.g. CDX). "
+                  "Auto-derived from `code` when left blank; kept globally unique.",
     )
     kind = models.CharField(max_length=12, choices=Kind.choices, default=Kind.TENANT)
     tenant = models.ForeignKey(
@@ -123,6 +149,12 @@ class LedgerEntity(TimeStampedModel):
         if not self.tenant_id:
             from vs_tenants.models import Tenant
             self.tenant = Tenant.objects.get(slug="codex", kind=Tenant.Kind.PLATFORM)
+        if self.number_code:
+            self.number_code = self.number_code.strip().upper()[:3]
+        else:
+            # Auto-derive a unique short code when one wasn't supplied explicitly.
+            taken = set(LedgerEntity.objects.exclude(pk=self.pk).values_list("number_code", flat=True))
+            self.number_code = derive_number_code(self.code, taken)
         super().save(*args, **kwargs)
 
     def __str__(self) -> str:
@@ -192,7 +224,7 @@ class FinanceDocument(TimeStampedModel):
     books are governed by platform-level access, not school boundaries.
 
     Document numbers are unique *within an entity*, not globally: each entity keeps
-    its own clean ``…-INV-2026-00001`` series.
+    its own clean ``…-IV-2600001`` series.
     """
 
     #: Override in concrete subclasses, e.g. ``DOC_TYPE = DocType.INVOICE``.

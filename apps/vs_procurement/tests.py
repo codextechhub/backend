@@ -239,6 +239,93 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(data["receipt_status"], "PARTIAL")
         self.assertEqual(data["lines"][0]["description"], po.lines.first().description)
 
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_draft_edit_rewrites_lines_and_can_add_a_line(self, _permission):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 8, 100_000, None), ("5100", 5, 100_000, None)])
+        line_a, line_b = list(po.lines.order_by("line_no"))
+        user = get_user_model().objects.create_user(
+            email="grn-edit@test.com", password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="GRN", last_name="Editor",
+        )
+        client = TenantAPIClient(user=user)
+        created = client.post(
+            f"/v1/procurement/goods-receipts/?entity={entity.code}",
+            {
+                "vendor": vendor.code, "purchase_order": po.id, "received_date": "2026-01-08",
+                "lines": [{"po_line": line_a.id, "expense_account": "5100", "accepted_qty": 3, "rejected_qty": 0}],
+            },
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201)
+        grn_id = created.json()["data"]["id"]
+
+        # Edit adjusts the first line AND adds a line that was never on the receipt —
+        # the old edit path rejected new lines; the rewrite helper accepts them.
+        edited = client.patch(
+            f"/v1/procurement/goods-receipts/{grn_id}/?entity={entity.code}",
+            {"lines": [
+                {"po_line": line_a.id, "expense_account": "5100", "accepted_qty": 5, "rejected_qty": 0},
+                {"po_line": line_b.id, "expense_account": "5100", "accepted_qty": 2, "rejected_qty": 0},
+            ]},
+            format="json",
+        )
+        self.assertEqual(edited.status_code, 200)
+        data = edited.json()["data"]
+        self.assertEqual(len(data["lines"]), 2)
+        self.assertEqual(data["received_item_count"], "7.0000")
+        self.assertEqual(data["total_value"], 700_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_draft_edit_rejects_over_remaining_and_posted_receipt(self, _permission):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+        from vs_procurement.purchasing import post_grn
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 8, 100_000, None)])
+        line = po.lines.first()
+        grn = self.make_grn(entity, vendor, po, [(line, 3)])
+        user = get_user_model().objects.create_user(
+            email="grn-edit-guard@test.com", password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="GRN", last_name="Guard",
+        )
+        client = TenantAPIClient(user=user)
+
+        over = client.patch(
+            f"/v1/procurement/goods-receipts/{grn.id}/?entity={entity.code}",
+            {"lines": [{"po_line": line.id, "expense_account": "5100", "accepted_qty": 10, "rejected_qty": 0}]},
+            format="json",
+        )
+        self.assertEqual(over.status_code, 400)
+
+        post_grn(grn, actor_user=user)
+        locked = client.patch(
+            f"/v1/procurement/goods-receipts/{grn.id}/?entity={entity.code}",
+            {"reference": "late edit"}, format="json",
+        )
+        self.assertEqual(locked.status_code, 400)
+
+    def test_draft_edit_requires_update_permission(self):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 8, 100_000, None)])
+        grn = self.make_grn(entity, vendor, po, [(po.lines.first(), 3)])
+        user = get_user_model().objects.create_user(
+            email="grn-edit-nogrant@test.com", password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="No", last_name="Grant",
+        )
+        response = TenantAPIClient(user=user).patch(
+            f"/v1/procurement/goods-receipts/{grn.id}/?entity={entity.code}",
+            {"reference": "no grant"}, format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
     def test_grn_posts_dr_expense_cr_grir(self):
         entity, _, vendor, _, _ = self.build_p2p()
         po = self.make_po(entity, vendor, [("5100", 10, 100000, None)])
@@ -248,7 +335,7 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         grn.refresh_from_db()
         self.assertEqual(grn.status, DocumentStatus.POSTED)
         self.assertEqual(grn.total_value, 1_000_000)
-        self.assertTrue(grn.document_number.startswith("CFX-TBOOK-GRN-"))
+        self.assertTrue(grn.document_number.startswith("TBO-GN-"))
 
         lines = {l.account.code: l for l in grn.journal.lines.all()}
         self.assertEqual(lines["5100"].debit, 1_000_000)

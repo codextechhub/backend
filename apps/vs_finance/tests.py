@@ -288,15 +288,15 @@ class NumberingTests(TestCase):
         n2 = next_document_number(
             entity=self.entity, branch=self.branch, doc_type=DocType.INVOICE, fiscal_year=2026,
         )
-        self.assertEqual(n1, f"CFX-LEKKI-B{self.branch.code:02d}-INV-2026-00001")
-        self.assertEqual(n2, f"CFX-LEKKI-B{self.branch.code:02d}-INV-2026-00002")
+        self.assertEqual(n1, f"{self.entity.number_code}-B{self.branch.code:02d}-IV-2600001")
+        self.assertEqual(n2, f"{self.entity.number_code}-B{self.branch.code:02d}-IV-2600002")
 
     # Verify entity level doc omits branch segment behavior.
     def test_entity_level_doc_omits_branch_segment(self):
         n = next_document_number(
             entity=self.platform, branch=None, doc_type=DocType.PAYMENT, fiscal_year=2026,
         )
-        self.assertEqual(n, "CFX-CODEX-PAY-2026-00001")
+        self.assertEqual(n, f"{self.platform.number_code}-PY-2600001")
 
     # Verify scopes are independent behavior.
     def test_scopes_are_independent(self):
@@ -306,8 +306,8 @@ class NumberingTests(TestCase):
         po = next_document_number(
             entity=self.entity, branch=self.branch, doc_type=DocType.PURCHASE_ORDER, fiscal_year=2026,
         )
-        self.assertTrue(inv.endswith("INV-2026-00001"))
-        self.assertTrue(po.endswith("PO-2026-00001"))
+        self.assertTrue(inv.endswith("IV-2600001"))
+        self.assertTrue(po.endswith("PO-2600001"))
 
     # Verify two entities keep independent series behavior.
     def test_two_entities_keep_independent_series(self):
@@ -317,8 +317,8 @@ class NumberingTests(TestCase):
         b = next_document_number(
             entity=self.platform, branch=None, doc_type=DocType.JOURNAL, fiscal_year=2026,
         )
-        self.assertEqual(a, "CFX-LEKKI-JNL-2026-00001")
-        self.assertEqual(b, "CFX-CODEX-JNL-2026-00001")
+        self.assertEqual(a, f"{self.entity.number_code}-JN-2600001")
+        self.assertEqual(b, f"{self.platform.number_code}-JN-2600001")
 
 
 # Group tests for G L Fixture Mixin.
@@ -400,7 +400,7 @@ class PostingTests(_GLFixtureMixin, TestCase):
         entry.refresh_from_db()
         self.assertEqual(entry.status, DocumentStatus.POSTED)
         self.assertIsNotNone(entry.posted_at)
-        self.assertTrue(entry.document_number.startswith("CFX-TBOOK-JNL-"))
+        self.assertTrue(entry.document_number.startswith("TBO-JN-"))
 
         cash_bal = AccountBalance.objects.get(
             account__code="1100", period=period,
@@ -683,7 +683,7 @@ class InvoicePostingTests(_ARFixtureMixin, TestCase):
         self.assertEqual(inv.tax_total, 7500)
         self.assertEqual(inv.total, 107500)
         self.assertEqual(inv.payment_status, InvoicePaymentStatus.UNPAID)
-        self.assertTrue(inv.document_number.startswith("CFX-TBOOK-INV-"))
+        self.assertTrue(inv.document_number.startswith("TBO-IV-"))
 
         # Journal: Dr AR 107,500 ; Cr Revenue 100,000 ; Cr VAT 7,500.
         debit, credit = inv.journal.totals()
@@ -821,7 +821,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
         # CRN total = 40,000 + 7.5% = 43,000; balanced journal that credits AR.
         self.assertEqual(note.status, "POSTED")
         self.assertEqual(note.total, 43000)
-        self.assertTrue(note.document_number.startswith("CFX-TBOOK-CRN-"))
+        self.assertTrue(note.document_number.startswith("TBO-CN-"))
         debit, credit = note.journal.totals()
         self.assertEqual(debit, credit)
         self.assertEqual(credit, 43000)
@@ -850,7 +850,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
         post_credit_note(note)
         note.refresh_from_db()
         self.assertEqual(note.total, 25000)
-        self.assertTrue(note.document_number.startswith("CFX-TBOOK-DRN-"))
+        self.assertTrue(note.document_number.startswith("TBO-DN-"))
         # Dr AR (debit note raises the receivable).
         ar_bal = AccountBalance.objects.get(account__code="1200", period=period)
         self.assertEqual(ar_bal.debit_total, 25000)
@@ -1059,7 +1059,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
         post_refund(refund)
         refund.refresh_from_db()
         self.assertEqual(refund.status, "POSTED")
-        self.assertTrue(refund.document_number.startswith("CFX-TBOOK-RFD-"))
+        self.assertTrue(refund.document_number.startswith("TBO-RF-"))
         debit, credit = refund.journal.totals()
         self.assertEqual(debit, credit)
         cc_bal = AccountBalance.objects.get(account__code="2140", period=period)
@@ -1133,7 +1133,7 @@ class ConcessionTests(_ARFixtureMixin, TestCase):
         inv.refresh_from_db()
 
         self.assertEqual(concession.status, "POSTED")
-        self.assertTrue(concession.document_number.startswith("CFX-TBOOK-CNC-"))
+        self.assertTrue(concession.document_number.startswith("TBO-CC-"))
         # Dr 4910 Discounts & Concessions, Cr AR — balanced.
         debit, credit = concession.journal.totals()
         self.assertEqual(debit, credit)
@@ -1186,7 +1186,7 @@ class PaymentPlanTests(_ARFixtureMixin, TestCase):
             installment_count=4, total_amount=inv.balance_due,
         )
         build_installments(plan)
-        self.assertTrue(plan.document_number.startswith("CFX-TBOOK-PPL-"))
+        self.assertTrue(plan.document_number.startswith("TBO-PP-"))
         installs = list(plan.installments.order_by("seq_no"))
         self.assertEqual([i.amount for i in installs], [25000, 25000, 25000, 25000])
         self.assertEqual(
@@ -1439,7 +1439,7 @@ class DunningTests(_ARFixtureMixin, TestCase):
         self.assertEqual(notice.notice_status, "PENDING")
         self.assertEqual(notice.amount_due, 100000)
         self.assertEqual(notice.days_overdue, 35)
-        self.assertTrue(notice.document_number.startswith("CFX-TBOOK-DUN-"))
+        self.assertTrue(notice.document_number.startswith("TBO-DU-"))
         self.assertTrue(
             FinanceAuditLog.objects.filter(action="DUNNING_RUN_GENERATED").exists()
         )
@@ -3862,7 +3862,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
             ]}, format="json")
         self.assertEqual(resp.status_code, 201, resp.content)
         b = resp.json()["data"]
-        self.assertTrue(b["code"].startswith(f"CFX-{entity.code}-BDG-{year.year}-"))
+        self.assertTrue(b["code"].startswith(f"{entity.number_code}-BG-"))
         self.assertEqual(len(b["lines"]), 3)
         bid = b["id"]
 

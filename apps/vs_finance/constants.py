@@ -55,34 +55,34 @@ class DocumentStatus(models.TextChoices):
 class DocType(models.TextChoices):
     """Document-type tokens used by the numbering sequence.
 
-    The token becomes the middle segment of a document number, e.g. ``INV`` in
-    ``CFX-B01-INV-2026-00821``. Keep tokens short, uppercase and stable — they are
-    persisted inside human-facing identifiers.
+    The token becomes the middle segment of a document number, e.g. ``IV`` in
+    ``LEK-B01-IV-2600821``. Keep tokens short (2 chars), uppercase, unique and
+    stable — they are persisted inside human-facing identifiers.
     """
-    JOURNAL = "JNL", "Journal Entry"
-    INVOICE = "INV", "Sales / AR Invoice"
-    RECEIPT = "RCP", "Receipt"
-    PAYMENT = "PAY", "Payment"
-    CREDIT_NOTE = "CRN", "Credit Note"
-    DEBIT_NOTE = "DRN", "Debit Note"
-    REFUND = "RFD", "Customer Refund"
-    PAYMENT_PLAN = "PPL", "Installment Payment Plan"
-    CONCESSION = "CNC", "Concession / Discount / Waiver"
-    WRITE_OFF = "WOF", "Bad-debt Write-off"
-    DUNNING_NOTICE = "DUN", "Dunning / Payment Reminder"
+    JOURNAL = "JN", "Journal Entry"
+    INVOICE = "IV", "Sales / AR Invoice"
+    RECEIPT = "RC", "Receipt"
+    PAYMENT = "PY", "Payment"
+    CREDIT_NOTE = "CN", "Credit Note"
+    DEBIT_NOTE = "DN", "Debit Note"
+    REFUND = "RF", "Customer Refund"
+    PAYMENT_PLAN = "PP", "Installment Payment Plan"
+    CONCESSION = "CC", "Concession / Discount / Waiver"
+    WRITE_OFF = "WO", "Bad-debt Write-off"
+    DUNNING_NOTICE = "DU", "Dunning / Payment Reminder"
     PURCHASE_REQUISITION = "PR", "Purchase Requisition"
-    RFQ = "RFQ", "Request for Quotation"
-    QUOTATION = "QUO", "Vendor Quotation"
+    RFQ = "RQ", "Request for Quotation"
+    QUOTATION = "QT", "Vendor Quotation"
     PURCHASE_ORDER = "PO", "Purchase Order"
-    GOODS_RECEIVED = "GRN", "Goods Received Note"
-    VENDOR_INVOICE = "VIN", "Vendor Invoice"
-    VENDOR_PAYMENT = "VPY", "Vendor Payment"
-    EXPENSE_CLAIM = "EXP", "Expense Claim"
-    PETTY_CASH_VOUCHER = "PCV", "Petty Cash Voucher"
-    PAYROLL_RUN = "PYR", "Payroll Run"
+    GOODS_RECEIVED = "GN", "Goods Received Note"
+    VENDOR_INVOICE = "VI", "Vendor Invoice"
+    VENDOR_PAYMENT = "VP", "Vendor Payment"
+    EXPENSE_CLAIM = "EX", "Expense Claim"
+    PETTY_CASH_VOUCHER = "PC", "Petty Cash Voucher"
+    PAYROLL_RUN = "PL", "Payroll Run"
     FIXED_ASSET = "FA", "Fixed Asset"
-    TAX_FILING = "TXF", "Tax Filing / Remittance"
-    BUDGET = "BDG", "Budget"
+    TAX_FILING = "TX", "Tax Filing / Remittance"
+    BUDGET = "BG", "Budget"
 
 # Define Account Type values.
 class AccountType(models.TextChoices):
@@ -603,9 +603,6 @@ SALES_RETURNS_CODE = "4900"              # Sales returns (contra-revenue) — cr
 DISCOUNTS_ALLOWED_CODE = "4910"          # Discounts & allowances (contra-revenue) — concessions default here
 BAD_DEBT_EXPENSE_CODE = "5300"           # Bad-debt / general expense — write-offs default here
 CUSTOMER_CREDIT_CODE = "2140"            # Customer credit balances (liability) — overpayments / unapplied credit / refundable
-
-#: Document-number prefix for the whole platform's finance documents (Code X Finance).
-DOC_NUMBER_PREFIX = "CFX"
 
 #: Reserved code for CodeX's own platform set of books (the operator's entity).
 #: An uppercase identifier (like all entity codes); the display name is "CodeX".
