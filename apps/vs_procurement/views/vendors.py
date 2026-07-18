@@ -2,7 +2,7 @@
 """
 from __future__ import annotations
 
-
+import datetime
 import re
 
 from django.db import IntegrityError, transaction
@@ -96,6 +96,14 @@ def _resolve_category(entity, ref):
     return category
 
 
+def _resolve_assignable_category(entity, ref, *, current_id=None):
+    """Resolve a category for a new assignment without hiding legacy inactive links."""
+    category = _resolve_category(entity, ref)
+    if category is not None and not category.is_active and category.pk != current_id:
+        raise ValidationError({"category": "Select an active vendor category."})
+    return category
+
+
 def _validate_account_type(account, field, allowed):
     if account is not None and account.account_type not in allowed:
         labels = ", ".join(sorted(allowed))
@@ -123,6 +131,83 @@ def _duplicate_error(exc):
         return ValidationError({"tax_id": "A vendor with this tax identifier already exists in this entity."})
     return ValidationError({"code": "A vendor with this code already exists in this entity."})
 
+
+def _category_duplicate_error(exc):
+    return ValidationError({"code": "A category with this code already exists in this entity."})
+
+
+def _category_text(body, field, max_length, *, upper=False):
+    value = str(body.get(field) or "").strip()
+    value = value.upper() if upper else value
+    if len(value) > max_length:
+        raise ValidationError({field: f"Ensure this field has no more than {max_length} characters."})
+    return value
+
+
+def _category_account(entity, ref):
+    account = _resolve_account(entity, ref, "default_expense_account")
+    return _validate_account_type(account, "default_expense_account", {AccountType.EXPENSE})
+
+
+def _category_depth(category):
+    """Return the persisted ancestry depth while rejecting corrupt/cyclic legacy rows."""
+    depth = 1
+    seen = {category.pk}
+    node = category
+    while node.parent_id is not None:
+        node = node.parent
+        if node.pk in seen:
+            raise ValidationError({"parent": "Category hierarchy contains a cycle."})
+        seen.add(node.pk)
+        depth += 1
+        if depth > 3:
+            raise ValidationError({"parent": "Categories support at most three levels."})
+    return depth
+
+
+def _max_descendant_distance(category):
+    """Find subtree height so re-parenting cannot push an existing descendant past level 3."""
+    frontier = [category.pk]
+    distance = 0
+    while frontier:
+        frontier = list(VendorCategory.objects.filter(parent_id__in=frontier).values_list("pk", flat=True))
+        if frontier:
+            distance += 1
+        if distance > 2:
+            # Existing data should never reach here, but fail closed if a non-API write corrupted it.
+            raise ValidationError({"parent": "Categories support at most three levels."})
+    return distance
+
+
+def _category_parent(entity, ref, *, category=None, active=True):
+    if ref in (None, ""):
+        parent = None
+    else:
+        qs = VendorCategory.objects.filter(entity=entity).select_related(
+            "parent", "parent__parent", "parent__parent__parent",
+        )
+        parent = qs.filter(pk=ref).first() if str(ref).isdigit() else qs.filter(code__iexact=str(ref)).first()
+        if parent is None:
+            raise ValidationError({"parent": "No such parent category in this entity."})
+    if parent is None:
+        new_level = 1
+    else:
+        if active and not parent.is_active:
+            raise ValidationError({"parent": "An active category requires an active parent."})
+        node = parent
+        seen = set()
+        while node is not None:
+            if node.pk in seen or (category is not None and node.pk == category.pk):
+                raise ValidationError({"parent": "A category cannot be its own ancestor."})
+            seen.add(node.pk)
+            node = node.parent if node.parent_id is not None else None
+        new_level = _category_depth(parent) + 1
+        if new_level > 3:
+            raise ValidationError({"parent": "Level 3 categories cannot have children."})
+    if category is not None and new_level + _max_descendant_distance(category) > 3:
+        raise ValidationError({"parent": "Re-parenting would move a descendant below level 3."})
+    return parent
+
 class VendorCategoryListCreateView(_ProcBase):
     """GET (list) / POST (create) vendor categories for an entity.
 
@@ -136,23 +221,154 @@ class VendorCategoryListCreateView(_ProcBase):
 
     def get(self, request):
         entity = resolve_entity(request)
-        qs = VendorCategory.objects.filter(entity=entity).select_related("default_expense_account")
+        qs = VendorCategory.objects.filter(entity=entity).select_related(
+            "default_expense_account", "parent", "parent__parent",
+        ).annotate(
+            # Count only same-entity vendor links even if legacy ORM writes bypassed API validation.
+            vendor_count=Count("vendors", filter=Q(vendors__entity=entity), distinct=True),
+            child_count=Count("children", filter=Q(children__entity=entity), distinct=True),
+        )
+        if (active := request.query_params.get("is_active")) in ("true", "false"):
+            qs = qs.filter(is_active=active == "true")
+        if (search := (request.query_params.get("search") or request.query_params.get("q") or "").strip()):
+            qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
         return self.paginate(request, qs.order_by("code"), VendorCategorySerializer)
 
+    @transaction.atomic
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data
-        if not body.get("code") or not body.get("name"):
+        code = _category_text(body, "code", 32, upper=True)
+        name = _category_text(body, "name", 160)
+        if not code or not name:
             raise ValidationError({"code": "code and name are required."})
-        cat = VendorCategory.objects.create(
-            entity=entity, code=body["code"], name=body["name"],
-            default_expense_account=_resolve_account(
-                entity, body.get("default_expense_account"), "default_expense_account"),
-            is_active=bool(body.get("is_active", True)),
-        )
+        is_active = body.get("is_active", True)
+        is_active = _validate_bool(is_active, "is_active")
+        # Hierarchy edits lock the small entity taxonomy so concurrent re-parenting cannot create cycles.
+        list(VendorCategory.objects.select_for_update().filter(entity=entity).values_list("pk", flat=True))
+        parent = _category_parent(entity, body.get("parent"), active=is_active)
+        try:
+            # The database constraint is the final race-safe duplicate guard.
+            cat = VendorCategory.objects.create(
+                entity=entity, code=code, name=name, parent=parent,
+                default_expense_account=_category_account(
+                    entity, body.get("default_expense_account")),
+                is_active=is_active,
+            )
+        except IntegrityError as exc:
+            raise _category_duplicate_error(exc) from exc
         return success_response(
             "Vendor category created.", data=VendorCategorySerializer(cat).data, status=201,
         )
+
+
+class VendorCategoryDetailView(_ProcBase):
+    """Retrieve or update one category without rewriting linked business documents."""
+
+    @property
+    def rbac_permission(self):
+        return "procurement.category.update" if self.request.method == "PATCH" \
+            else "procurement.category.view"
+
+    def _get(self, entity, pk, *, lock=False):
+        qs = VendorCategory.objects.filter(entity=entity, pk=pk)
+        if lock:
+            # Serialize governance/default changes without locking nullable account joins.
+            category = qs.select_for_update(of=("self",)).first()
+        else:
+            category = qs.select_related(
+                "default_expense_account", "parent", "parent__parent",
+            ).annotate(
+                # Keep the detail aggregate tenant-safe at the join boundary too.
+                vendor_count=Count("vendors", filter=Q(vendors__entity=entity), distinct=True),
+                child_count=Count("children", filter=Q(children__entity=entity), distinct=True),
+            ).first()
+        if category is None:
+            raise NotFound("No such vendor category in this entity.")
+        return category
+
+    def get(self, request, pk):
+        entity = resolve_entity(request)
+        category = self._get(entity, pk)
+        return success_response("Vendor category retrieved.", data=VendorCategorySerializer(category).data)
+
+    @transaction.atomic
+    def patch(self, request, pk):
+        entity = resolve_entity(request)
+        category = self._get(entity, pk, lock=True)
+        body = request.data
+        # Lock the entity's bounded taxonomy before checking ancestry and subtree height.
+        list(VendorCategory.objects.select_for_update().filter(entity=entity).values_list("pk", flat=True))
+        if "code" in body and _normalise_code(body.get("code")) != category.code:
+            raise ValidationError({"code": "Category code cannot be changed after creation."})
+        if "name" in body:
+            category.name = _category_text(body, "name", 160)
+            if not category.name:
+                raise ValidationError({"name": "Category name is required."})
+        if "default_expense_account" in body:
+            category.default_expense_account = _category_account(
+                entity, body.get("default_expense_account"),
+            )
+        desired_active = _validate_bool(body.get("is_active"), "is_active") \
+            if "is_active" in body else category.is_active
+        if not desired_active and category.children.filter(entity=entity, is_active=True).exists():
+            raise ValidationError({"is_active": "Deactivate active child categories first."})
+        if "parent" in body:
+            category.parent = _category_parent(
+                entity, body.get("parent"), category=category, active=desired_active,
+            )
+        elif desired_active and category.parent_id and not category.parent.is_active:
+            raise ValidationError({"is_active": "Activate the parent category first."})
+        category.is_active = desired_active
+        category.save()
+        category.vendor_count = category.vendors.filter(entity=entity).count()
+        category.child_count = category.children.filter(entity=entity).count()
+        return success_response(
+            "Vendor category updated.", data=VendorCategorySerializer(category).data,
+        )
+
+
+class VendorCategoryInsightsView(_ProcBase):
+    """Entity-wide category spend aggregates for the list and detail drawers."""
+
+    rbac_permission = "procurement.report.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        today = timezone.localdate()
+        month_start = today.replace(day=1)
+        prior_end = month_start - datetime.timedelta(days=1)
+        prior_start = prior_end.replace(day=1)
+        year_start = today.replace(month=1, day=1)
+        posted = Q(
+            vendors__entity=entity,
+            vendors__invoices__entity=entity,
+            vendors__invoices__status=DocumentStatus.POSTED,
+        )
+        rows = VendorCategory.objects.filter(entity=entity).annotate(
+            # Invoice joins stay entity-safe through the category -> vendor FK chain.
+            spend_mtd=Sum(
+                "vendors__invoices__total",
+                filter=posted & Q(vendors__invoices__invoice_date__gte=month_start),
+            ),
+            spend_prior_month=Sum(
+                "vendors__invoices__total",
+                filter=posted & Q(
+                    vendors__invoices__invoice_date__gte=prior_start,
+                    vendors__invoices__invoice_date__lte=prior_end,
+                ),
+            ),
+            spend_ytd=Sum(
+                "vendors__invoices__total",
+                filter=posted & Q(vendors__invoices__invoice_date__gte=year_start),
+            ),
+        ).order_by("code")
+        return success_response("Vendor category insights retrieved.", data=[{
+            "category_id": row.id,
+            "spend_mtd": row.spend_mtd or 0,
+            "spend_prior_month": row.spend_prior_month or 0,
+            "spend_ytd": row.spend_ytd or 0,
+        } for row in rows])
 
 
 class VendorListCreateView(_ProcBase):
@@ -213,7 +429,8 @@ class VendorListCreateView(_ProcBase):
         payment_terms = _validate_choice(body.get("payment_terms") or PaymentTerms.NET_30, PaymentTerms.values, "payment_terms")
         try:
             vendor = Vendor.objects.create(
-                entity=entity, code=code, name=name, category=_resolve_category(entity, body.get("category")),
+                entity=entity, code=code, name=name,
+                category=_resolve_assignable_category(entity, body.get("category")),
                 email=_validate_email(_clean_text(body, "email", 254, lower=True)),
                 phone=_clean_text(body, "phone", 32), address=str(body.get("address") or "").strip(), tax_id=tax_id,
                 tax_id_normalized=_normalise_tax_id(tax_id),
@@ -299,7 +516,9 @@ class VendorDetailView(_ProcBase):
             if not vendor.name:
                 raise ValidationError({"name": "Vendor name is required."})
         if "category" in body:
-            vendor.category = _resolve_category(entity, body.get("category"))
+            vendor.category = _resolve_assignable_category(
+                entity, body.get("category"), current_id=vendor.category_id,
+            )
         text_fields = {"email": 254, "phone": 32, "bank_name": 120, "bank_account_name": 160}
         for field, max_length in text_fields.items():
             if field in body:

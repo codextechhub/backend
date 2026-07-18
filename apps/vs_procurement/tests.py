@@ -349,6 +349,317 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(cross.status_code, 404)
 
 
+class VendorCategoryConsoleAPITests(_P2PFixtureMixin, TestCase):
+    """Security-first coverage for category master data and report aggregates."""
+
+    def _client(self, entity, email="category-console@test.com"):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        user = get_user_model().objects.create_user(
+            email=email, password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Category", last_name="Tester",
+        )
+        return TenantAPIClient(user=user)
+
+    def test_list_requires_authentication_and_category_view_permission(self):
+        from rest_framework.test import APIClient
+
+        entity, _, _, _, _ = self.build_p2p()
+        unauthenticated = APIClient().get(f"/v1/procurement/categories/?entity={entity.code}")
+        self.assertIn(unauthenticated.status_code, (401, 403))
+        denied = self._client(entity).get(f"/v1/procurement/categories/?entity={entity.code}")
+        self.assertEqual(denied.status_code, 403)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_list_filters_searches_counts_vendors_and_keeps_empty_shape_stable(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        active = VendorCategory.objects.create(entity=entity, code=" CLOUD ", name="Cloud")
+        VendorCategory.objects.create(entity=entity, code="OLD", name="Legacy", is_active=False)
+        vendor.category = active
+        vendor.save(update_fields=["category", "updated_at"])
+        client = self._client(entity)
+        response = client.get(
+            f"/v1/procurement/categories/?entity={entity.code}&is_active=true&search=cloud",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["data"]), 1)
+        self.assertEqual(response.data["data"][0]["code"], "CLOUD")
+        self.assertEqual(response.data["data"][0]["vendor_count"], 1)
+        vendor.category = None
+        vendor.save(update_fields=["category", "updated_at"])
+        VendorCategory.objects.filter(entity=entity).delete()
+        empty = client.get(f"/v1/procurement/categories/?entity={entity.code}")
+        self.assertIn(empty.data["data"], ({}, []))
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_normalizes_code_and_rejects_case_whitespace_duplicates(self, _permission):
+        entity, _, _, _, _ = self.build_p2p()
+        client = self._client(entity)
+        created = client.post(
+            f"/v1/procurement/categories/?entity={entity.code}",
+            {"code": " cloud ", "name": " Cloud Infrastructure ", "default_expense_account": "5300"},
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.data["data"]["code"], "CLOUD")
+        duplicate = client.post(
+            f"/v1/procurement/categories/?entity={entity.code}",
+            {"code": "  cLoUd  ", "name": "Duplicate"}, format="json",
+        )
+        self.assertEqual(duplicate.status_code, 400)
+        self.assertEqual(VendorCategory.objects.filter(entity=entity).count(), 1)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_hierarchy_derives_three_levels_and_rejects_a_fourth(self, _permission):
+        entity, _, _, _, _ = self.build_p2p()
+        client = self._client(entity)
+        root = client.post(
+            f"/v1/procurement/categories/?entity={entity.code}",
+            {"code": "TECH", "name": "Technology"}, format="json",
+        ).data["data"]
+        child = client.post(
+            f"/v1/procurement/categories/?entity={entity.code}",
+            {"code": "CLOUD", "name": "Cloud", "parent": root["id"]}, format="json",
+        )
+        self.assertEqual(child.status_code, 201)
+        self.assertEqual(child.data["data"]["level"], 2)
+        self.assertEqual(child.data["data"]["parent_code"], "TECH")
+        grandchild = client.post(
+            f"/v1/procurement/categories/?entity={entity.code}",
+            {"code": "HOSTED", "name": "Hosted Cloud", "parent": child.data["data"]["id"]},
+            format="json",
+        )
+        self.assertEqual(grandchild.status_code, 201)
+        self.assertEqual(grandchild.data["data"]["level"], 3)
+        fourth = client.post(
+            f"/v1/procurement/categories/?entity={entity.code}",
+            {"code": "FOURTH", "name": "Too Deep", "parent": grandchild.data["data"]["id"]},
+            format="json",
+        )
+        self.assertEqual(fourth.status_code, 400)
+        listed = client.get(f"/v1/procurement/categories/?entity={entity.code}&page_size=100")
+        levels = {row["code"]: row["level"] for row in listed.data["data"]}
+        self.assertEqual(levels, {"TECH": 1, "CLOUD": 2, "HOSTED": 3})
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_hierarchy_rejects_cross_entity_parent_cycles_and_overdeep_reparent(self, _permission):
+        entity, _, _, _, _ = self.build_p2p()
+        root = VendorCategory.objects.create(entity=entity, code="ROOT", name="Root")
+        child = VendorCategory.objects.create(entity=entity, code="CHILD", name="Child", parent=root)
+        grandchild = VendorCategory.objects.create(
+            entity=entity, code="GRAND", name="Grandchild", parent=child,
+        )
+        other_root = VendorCategory.objects.create(entity=entity, code="OTHER", name="Other")
+        other_child = VendorCategory.objects.create(
+            entity=entity, code="OTHER-CHILD", name="Other Child", parent=other_root,
+        )
+        client = self._client(entity)
+        cycle = client.patch(
+            f"/v1/procurement/categories/{root.id}/?entity={entity.code}",
+            {"parent": grandchild.id}, format="json",
+        )
+        self.assertEqual(cycle.status_code, 400)
+        too_deep = client.patch(
+            f"/v1/procurement/categories/{child.id}/?entity={entity.code}",
+            {"parent": other_child.id}, format="json",
+        )
+        self.assertEqual(too_deep.status_code, 400)
+
+        foreign_entity = LedgerEntity.objects.create(
+            name="Foreign", code="CAT-PARENT-OTHER", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+        foreign = VendorCategory.objects.create(entity=foreign_entity, code="FOREIGN", name="Foreign")
+        cross = client.patch(
+            f"/v1/procurement/categories/{grandchild.id}/?entity={entity.code}",
+            {"parent": foreign.id}, format="json",
+        )
+        self.assertEqual(cross.status_code, 400)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_active_hierarchy_requires_active_parent_and_child_first_deactivation(self, _permission):
+        entity, _, _, _, _ = self.build_p2p()
+        parent = VendorCategory.objects.create(entity=entity, code="PARENT", name="Parent")
+        child = VendorCategory.objects.create(entity=entity, code="CHILD", name="Child", parent=parent)
+        inactive = VendorCategory.objects.create(
+            entity=entity, code="INACTIVE", name="Inactive", is_active=False,
+        )
+        client = self._client(entity)
+        rejected_parent = client.post(
+            f"/v1/procurement/categories/?entity={entity.code}",
+            {"code": "ACTIVE", "name": "Active Child", "parent": inactive.id}, format="json",
+        )
+        self.assertEqual(rejected_parent.status_code, 400)
+        rejected_deactivation = client.patch(
+            f"/v1/procurement/categories/{parent.id}/?entity={entity.code}",
+            {"is_active": False}, format="json",
+        )
+        self.assertEqual(rejected_deactivation.status_code, 400)
+        self.assertEqual(client.patch(
+            f"/v1/procurement/categories/{child.id}/?entity={entity.code}",
+            {"is_active": False}, format="json",
+        ).status_code, 200)
+        self.assertEqual(client.patch(
+            f"/v1/procurement/categories/{parent.id}/?entity={entity.code}",
+            {"is_active": False}, format="json",
+        ).status_code, 200)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_validates_lengths_boolean_and_expense_account_rules(self, _permission):
+        entity, _, _, _, _ = self.build_p2p()
+        client = self._client(entity)
+        base = {"code": "SERV", "name": "Services"}
+        cases = [
+            ({**base, "code": "X" * 33}, "code"),
+            ({**base, "name": "X" * 161}, "name"),
+            ({**base, "is_active": "false"}, "is_active"),
+            ({**base, "default_expense_account": "1100"}, "default_expense_account"),
+        ]
+        for payload, field in cases:
+            with self.subTest(field=field):
+                response = client.post(
+                    f"/v1/procurement/categories/?entity={entity.code}", payload, format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn(field, response.data["error"]["detail"])
+
+        expense = self.acc(entity, "5300")
+        expense.is_active = False
+        expense.save(update_fields=["is_active", "updated_at"])
+        inactive = client.post(
+            f"/v1/procurement/categories/?entity={entity.code}",
+            {**base, "default_expense_account": expense.code}, format="json",
+        )
+        self.assertEqual(inactive.status_code, 400)
+        expense.is_active = True
+        expense.is_postable = False
+        expense.save(update_fields=["is_active", "is_postable", "updated_at"])
+        non_postable = client.post(
+            f"/v1/procurement/categories/?entity={entity.code}",
+            {**base, "default_expense_account": expense.code}, format="json",
+        )
+        self.assertEqual(non_postable.status_code, 400)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_rejects_cross_entity_account(self, _permission):
+        entity, _, _, _, _ = self.build_p2p()
+        other = LedgerEntity.objects.create(
+            name="Other Books", code="CAT-OTHER", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+        seed_chart_of_accounts(other)
+        foreign = self.acc(other, "5300")
+        response = self._client(entity).post(
+            f"/v1/procurement/categories/?entity={entity.code}",
+            {"code": "SERV", "name": "Services", "default_expense_account": foreign.id},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_detail_update_is_entity_scoped_code_immutable_and_non_destructive(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        category = VendorCategory.objects.create(
+            entity=entity, code="SERV", name="Services", default_expense_account=self.acc(entity, "5300"),
+        )
+        vendor.category = category
+        vendor.save(update_fields=["category", "updated_at"])
+        po = self.make_po(entity, vendor, [("5300", 1, 100_000, None)])
+        original_line_ids = list(po.lines.values_list("id", flat=True))
+        client = self._client(entity)
+        detail = client.get(f"/v1/procurement/categories/{category.id}/?entity={entity.code}")
+        self.assertEqual(detail.status_code, 200)
+        self.assertEqual(detail.data["data"]["vendor_count"], 1)
+        changed_code = client.patch(
+            f"/v1/procurement/categories/{category.id}/?entity={entity.code}",
+            {"code": "OTHER"}, format="json",
+        )
+        self.assertEqual(changed_code.status_code, 400)
+        updated = client.patch(
+            f"/v1/procurement/categories/{category.id}/?entity={entity.code}",
+            {"name": "Advisory Services", "is_active": False}, format="json",
+        )
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(list(po.lines.values_list("id", flat=True)), original_line_ids)
+        self.assertEqual(PurchaseOrder.objects.filter(pk=po.pk).count(), 1)
+
+        other = LedgerEntity.objects.create(
+            name="Other", code="CAT-CROSS", kind=LedgerEntity.Kind.TENANT, tenant=entity.tenant,
+        )
+        cross = client.patch(
+            f"/v1/procurement/categories/{category.id}/?entity={other.code}",
+            {"name": "Leaked"}, format="json",
+        )
+        self.assertEqual(cross.status_code, 404)
+
+    def test_update_requires_exact_backend_permission(self):
+        entity, _, _, _, _ = self.build_p2p()
+        category = VendorCategory.objects.create(entity=entity, code="SERV", name="Services")
+        response = self._client(entity).patch(
+            f"/v1/procurement/categories/{category.id}/?entity={entity.code}",
+            {"name": "Changed"}, format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_insights_requires_report_permission(self):
+        entity, _, _, _, _ = self.build_p2p()
+        response = self._client(entity).get(
+            f"/v1/procurement/categories/insights/?entity={entity.code}",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_vendor_assignment_rejects_inactive_but_preserves_existing_link(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        inactive = VendorCategory.objects.create(entity=entity, code="OLD", name="Legacy", is_active=False)
+        client = self._client(entity)
+        rejected = client.post(
+            f"/v1/procurement/vendors/?entity={entity.code}",
+            {"code": "NEW", "name": "New Vendor", "category": inactive.code}, format="json",
+        )
+        self.assertEqual(rejected.status_code, 400)
+        vendor.category = inactive
+        vendor.save(update_fields=["category", "updated_at"])
+        preserved = client.patch(
+            f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}",
+            {"name": "Acme Updated", "category": inactive.code}, format="json",
+        )
+        self.assertEqual(preserved.status_code, 200)
+        self.assertEqual(preserved.data["data"]["category_code"], "OLD")
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_insights_are_report_gated_entity_scoped_and_use_posted_invoices(self, _permission):
+        from django.utils import timezone
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        category = VendorCategory.objects.create(entity=entity, code="CLOUD", name="Cloud")
+        vendor.category = category
+        vendor.save(update_fields=["category", "updated_at"])
+        invoice = self.make_bill(
+            entity, vendor, [("5300", 1, 750_000, None, None)], date=timezone.localdate(),
+        )
+        invoice.status = DocumentStatus.POSTED
+        invoice.subtotal = invoice.total = 750_000
+        invoice.save(update_fields=["status", "subtotal", "total", "updated_at"])
+        response = self._client(entity).get(
+            f"/v1/procurement/categories/insights/?entity={entity.code}",
+        )
+        self.assertEqual(response.status_code, 200)
+        row = next(item for item in response.data["data"] if item["category_id"] == category.id)
+        self.assertEqual(row["spend_mtd"], 750_000)
+        self.assertEqual(row["spend_ytd"], 750_000)
+
+        other = LedgerEntity.objects.create(
+            name="Other", code="INSIGHT-OTHER", kind=LedgerEntity.Kind.TENANT, tenant=entity.tenant,
+        )
+        cross = self._client(entity, "category-cross@test.com").get(
+            f"/v1/procurement/categories/insights/?entity={other.code}",
+        )
+        self.assertEqual(cross.status_code, 200)
+        self.assertIn(cross.data["data"], ({}, []))
+
+
 class VendorEligibilityTests(_P2PFixtureMixin, TestCase):
     def _approved_requisition(self, entity):
         req = PurchaseRequisition.objects.create(
@@ -385,6 +696,28 @@ class VendorEligibilityTests(_P2PFixtureMixin, TestCase):
                 self._approved_requisition(entity), vendor=foreign_vendor,
                 order_date=datetime.date(2026, 1, 5),
             )
+
+    def test_inactive_category_default_does_not_seed_new_commitment(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        category = VendorCategory.objects.create(
+            entity=entity, code="OLD", name="Legacy",
+            default_expense_account=self.acc(entity, "5300"), is_active=False,
+        )
+        vendor.category = category
+        vendor.default_expense_account = None
+        vendor.save(update_fields=["category", "default_expense_account", "updated_at"])
+        req = self._approved_requisition(entity)
+        req.lines.update(expense_account=None)
+        with self.assertRaises(RequisitionError):
+            create_po_from_requisition(
+                req, vendor=vendor, order_date=datetime.date(2026, 1, 5),
+            )
+        category.is_active = True
+        category.save(update_fields=["is_active", "updated_at"])
+        po = create_po_from_requisition(
+            req, vendor=vendor, order_date=datetime.date(2026, 1, 5),
+        )
+        self.assertEqual(po.lines.get().expense_account.code, "5300")
 
 
 class GoodsReceiptTests(_P2PFixtureMixin, TestCase):

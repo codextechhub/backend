@@ -53,12 +53,24 @@ class VendorCategorySerializer(serializers.ModelSerializer):
     default_expense_code = serializers.CharField(
         source="default_expense_account.code", read_only=True, default=None,
     )
+    vendor_count = serializers.IntegerField(read_only=True, default=0)
+    child_count = serializers.IntegerField(read_only=True, default=0)
+    parent_code = serializers.CharField(source="parent.code", read_only=True, default=None)
+    parent_name = serializers.CharField(source="parent.name", read_only=True, default=None)
+    level = serializers.SerializerMethodField()
+
+    def get_level(self, category):
+        # Parent and grandparent are select_related by category views, so depth is query-free.
+        if category.parent_id is None:
+            return 1
+        return 2 if category.parent.parent_id is None else 3
 
     class Meta:
         model = VendorCategory
         fields = [
-            "id", "code", "name", "default_expense_account_id",
-            "default_expense_code", "is_active",
+            "id", "code", "name", "parent_id", "parent_code", "parent_name", "level",
+            "default_expense_account_id", "default_expense_code", "is_active",
+            "vendor_count", "child_count",
         ]
 
 

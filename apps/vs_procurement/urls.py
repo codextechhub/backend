@@ -12,6 +12,8 @@ from . import views
 urlpatterns = [
     # Master data
     path("categories/", views.VendorCategoryListCreateView.as_view(), name="proc-categories"),
+    path("categories/insights/", views.VendorCategoryInsightsView.as_view(), name="proc-category-insights"),
+    path("categories/<int:pk>/", views.VendorCategoryDetailView.as_view(), name="proc-category-detail"),
     path("vendors/", views.VendorListCreateView.as_view(), name="proc-vendors"),
     path("vendors/summary/", views.VendorSummaryView.as_view(), name="proc-vendor-summary"),
     path("vendors/<int:pk>/insights/", views.VendorInsightsView.as_view(), name="proc-vendor-insights"),

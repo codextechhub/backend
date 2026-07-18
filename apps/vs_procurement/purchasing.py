@@ -187,7 +187,9 @@ def create_po_from_requisition(requisition, *, vendor, order_date, actor_user=No
     # A line-specific account wins; this fallback is only used when the requisition did not classify the spend.
     default_expense = (
         vendor.default_expense_account
-        or (vendor.category.default_expense_account if vendor.category_id else None)
+        # Inactive taxonomy remains visible historically but must not seed new commitments.
+        or (vendor.category.default_expense_account
+            if vendor.category_id and vendor.category.is_active else None)
     )
 
     po = PurchaseOrder.objects.create(

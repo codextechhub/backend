@@ -27,7 +27,7 @@ _RESTRICTED = {"SENSITIVE", "CRITICAL"}
 PROCUREMENT_RESOURCES = [
     ("approval",       "spend approvals",       [("approve", "SENSITIVE"), ("approve_senior", "CRITICAL"), ("manage", "SENSITIVE")]),
     ("catalog_item",   "catalog items",         [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL")]),
-    ("category",       "vendor categories",     [("view", "NORMAL"), ("create", "NORMAL")]),
+    ("category",       "vendor categories",     [("view", "NORMAL"), ("create", "NORMAL"), ("update", "SENSITIVE")]),
     ("contract",       "vendor contracts",      [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"),
                                                  ("activate", "SENSITIVE"), ("renew", "SENSITIVE"), ("terminate", "SENSITIVE")]),
     ("goods_receipt",  "goods-received notes",  [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("post", "CRITICAL")]),

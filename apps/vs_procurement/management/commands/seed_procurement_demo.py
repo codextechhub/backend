@@ -59,6 +59,37 @@ class Command(BaseCommand):
             )
             categories.append(category)
 
+        # Persist all three supported depths without inventing transactional links:
+        # equipment (L1) -> cloud (L2) -> managed cloud (L3).
+        category_by_code = {category.code: category for category in categories}
+        equipment = category_by_code["EQUIP"]
+        services = category_by_code["SERV"]
+        cloud = category_by_code["CLOUD"]
+        VendorCategory.objects.filter(pk__in=[equipment.pk, services.pk]).update(parent=None)
+        VendorCategory.objects.filter(pk=cloud.pk).update(parent=equipment)
+        cloud.parent = equipment
+        VendorCategory.objects.update_or_create(
+            entity=entity, code="MCLOUD",
+            defaults={
+                "name": "Managed Cloud Services",
+                "parent": cloud,
+                "default_expense_account": expense,
+                "is_active": True,
+            },
+        )
+
+        # A master-only inactive row verifies governance and historical visibility
+        # without fabricating transactional spend or changing deterministic vendor links.
+        VendorCategory.objects.update_or_create(
+            entity=entity, code="RETIRED",
+            defaults={
+                "name": "Retired Procurement Services",
+                "parent": services,
+                "default_expense_account": expense,
+                "is_active": False,
+            },
+        )
+
         vendors = []
         for index, (code, name) in enumerate((
             ("MAINONE", "MainOne Cloud"),

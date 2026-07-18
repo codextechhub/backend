@@ -143,7 +143,9 @@ def award_quotation(quotation, *, order_date=None, actor_user=None):
         raise SourcingError(reason)
     default_expense = (
         vendor.default_expense_account
-        or (vendor.category.default_expense_account if vendor.category_id else None)
+        # Inactive taxonomy remains visible historically but must not seed new commitments.
+        or (vendor.category.default_expense_account
+            if vendor.category_id and vendor.category.is_active else None)
     )
 
     po = PurchaseOrder.objects.create(

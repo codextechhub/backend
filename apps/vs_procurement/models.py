@@ -79,6 +79,11 @@ class VendorCategory(TimeStampedModel):
     )
     code = models.CharField(max_length=32, help_text="Unique within the entity.")
     name = models.CharField(max_length=160)
+    parent = models.ForeignKey(
+        "self", on_delete=models.PROTECT, related_name="children",
+        null=True, blank=True,
+        help_text="Optional parent category; API governance caps the tree at three levels.",
+    )
     default_expense_account = models.ForeignKey(
         "vs_finance.Account", on_delete=models.PROTECT,
         related_name="vendor_categories", null=True, blank=True,
@@ -90,9 +95,20 @@ class VendorCategory(TimeStampedModel):
             models.UniqueConstraint(
                 fields=["entity", "code"], name="uniq_proc_vendorcat_entity_code",
             ),
+            models.UniqueConstraint(
+                Lower("code"), "entity", name="uniq_proc_vendorcat_entity_code_ci",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["entity", "parent"], name="proc_vcat_entity_parent_idx"),
         ]
         ordering = ["entity", "code"]
         verbose_name_plural = "vendor categories"
+
+    def save(self, *args, **kwargs):
+        """Keep category codes canonical for API and non-API ORM writes."""
+        self.code = str(self.code or "").strip().upper()
+        return super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.code} · {self.name}"
