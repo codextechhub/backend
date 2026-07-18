@@ -356,8 +356,9 @@ class VendorInsightsView(_ProcBase):
         if vendor is None:
             raise NotFound("No such vendor in this entity.")
         year_start = timezone.localdate().replace(month=1, day=1)
-        spend_row = next((row for row in spend_analysis(entity, start_date=year_start).by_vendor if row.key == vendor.code), None)
-        perf_row = next((row for row in vendor_performance(entity, start_date=year_start).rows if row.vendor_id == vendor.id), None)
+        # Scope both reports to this vendor so the drawer doesn't recompute the whole entity.
+        spend_row = next((row for row in spend_analysis(entity, start_date=year_start, vendor=vendor).by_vendor if row.key == vendor.code), None)
+        perf_row = next((row for row in vendor_performance(entity, start_date=year_start, vendor=vendor).rows if row.vendor_id == vendor.id), None)
         return success_response("Vendor insights retrieved.", data={
             "spend_ytd": spend_row.gross if spend_row else 0,
             "invoice_count": spend_row.invoice_count if spend_row else 0,

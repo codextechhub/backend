@@ -402,13 +402,14 @@ class SpendAnalysis:
     invoice_count: int = 0
 
 
-def spend_analysis(entity, *, start_date=None, end_date=None) -> SpendAnalysis:
+def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None) -> SpendAnalysis:
     """Analyse realised spend for ``entity`` from POSTED vendor invoices.
 
     Spend is the gross of POSTED :class:`VendorInvoice` s whose ``invoice_date`` falls
     in ``[start_date, end_date]`` (either bound optional). Rows are returned both by
     vendor and by vendor category (uncategorised vendors roll into an "Uncategorised"
-    bucket), each sorted by descending gross spend.
+    bucket), each sorted by descending gross spend. Pass ``vendor`` to scope the whole
+    computation to a single supplier (the per-vendor insights drawer needs only one).
     """
     from vs_finance.constants import DocumentStatus
 
@@ -419,6 +420,8 @@ def spend_analysis(entity, *, start_date=None, end_date=None) -> SpendAnalysis:
         .filter(entity=entity, status=DocumentStatus.POSTED)
         .select_related("vendor", "vendor__category")
     )
+    if vendor is not None:
+        qs = qs.filter(vendor=vendor)
     if start_date is not None:
         qs = qs.filter(invoice_date__gte=start_date)
     if end_date is not None:
@@ -491,7 +494,7 @@ class VendorPerformanceReport:
     rows: list = field(default_factory=list)
 
 
-def vendor_performance(entity, *, start_date=None, end_date=None) -> VendorPerformanceReport:
+def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None) -> VendorPerformanceReport:
     """Blend ordering, delivery timeliness and payment speed per vendor.
 
     For each vendor with activity in ``[start_date, end_date]``:
@@ -526,6 +529,8 @@ def vendor_performance(entity, *, start_date=None, end_date=None) -> VendorPerfo
     excluded = {DocumentStatus.CANCELLED, DocumentStatus.REVERSED}
 
     po_qs = PurchaseOrder.objects.filter(entity=entity).select_related("vendor").exclude(status__in=excluded)
+    if vendor is not None:
+        po_qs = po_qs.filter(vendor=vendor)
     if start_date is not None:
         po_qs = po_qs.filter(order_date__gte=start_date)
     if end_date is not None:
@@ -540,6 +545,8 @@ def vendor_performance(entity, *, start_date=None, end_date=None) -> VendorPerfo
         .filter(entity=entity, status=DocumentStatus.POSTED)
         .select_related("vendor", "purchase_order")
     )
+    if vendor is not None:
+        grn_qs = grn_qs.filter(vendor=vendor)
     if start_date is not None:
         grn_qs = grn_qs.filter(received_date__gte=start_date)
     if end_date is not None:
@@ -559,6 +566,8 @@ def vendor_performance(entity, *, start_date=None, end_date=None) -> VendorPerfo
         .filter(entity=entity, status=DocumentStatus.POSTED)
         .select_related("vendor")
     )
+    if vendor is not None:
+        inv_qs = inv_qs.filter(vendor=vendor)
     if start_date is not None:
         inv_qs = inv_qs.filter(invoice_date__gte=start_date)
     if end_date is not None:
@@ -575,6 +584,8 @@ def vendor_performance(entity, *, start_date=None, end_date=None) -> VendorPerfo
         .filter(payment__entity=entity, payment__status=DocumentStatus.POSTED)
         .select_related("payment", "payment__vendor", "vendor_invoice")
     )
+    if vendor is not None:
+        alloc_qs = alloc_qs.filter(payment__vendor=vendor)
     paid_seen: dict = {}
     for alloc in alloc_qs:
         pay = alloc.payment
