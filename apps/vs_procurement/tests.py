@@ -1258,6 +1258,8 @@ class GRIRAgingTests(_P2PFixtureMixin, TestCase):
         vi = VendorInvoice.objects.create(
             entity=entity, vendor=vendor, purchase_order=po,
             invoice_date=datetime.date(2026, 1, 10), due_date=datetime.date(2026, 1, 10),
+            # Posting now requires completed approval; this inline bill mirrors make_bill.
+            approval_state=ProcApprovalState.APPROVED,
         )
         VendorInvoiceLine.objects.create(
             vendor_invoice=vi, po_line=po_line, grn_line=grn_line,

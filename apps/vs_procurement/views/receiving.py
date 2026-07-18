@@ -221,7 +221,7 @@ class GoodsReceiptPostView(_ProcBase):
 # --------------------------------------------------------------------------- #
 
 def _invoice_queryset(entity):
-    """One eager-loaded source for invoice detail and list serialization."""
+    """Eager-loaded source for invoice detail (drawer) serialization."""
     return VendorInvoice.objects.filter(entity=entity).select_related(
         "vendor", "purchase_order", "journal",
     ).prefetch_related(
@@ -229,6 +229,12 @@ def _invoice_queryset(entity):
         "lines__po_line", "lines__grn_line__grn",
         "allocations__payment", "journal__lines__account",
     )
+
+
+def _invoice_list_queryset(entity):
+    """Lighter source for the paginated list — the list serializer drops line/journal
+    arrays, so only the vendor + PO needed for the row headline are joined."""
+    return VendorInvoice.objects.filter(entity=entity).select_related("vendor", "purchase_order")
 
 
 def _invoice_display_filter(qs, value):
@@ -379,7 +385,7 @@ class VendorInvoiceListCreateView(_ProcBase):
 
     def get(self, request):
         entity = resolve_entity(request)
-        qs = _invoice_queryset(entity)
+        qs = _invoice_list_queryset(entity)
         for param in ("status", "payment_status", "match_status"):
             if (val := request.query_params.get(param)):
                 qs = qs.filter(**{param: val})
