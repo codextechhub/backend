@@ -81,6 +81,12 @@ urlpatterns = [
     # Spend approvals (vs_workflow)
     path("approvals/default-templates/", views.ApprovalTemplateSetupView.as_view(),
          name="proc-approval-default-templates"),
+    path("approvals/", views.ProcurementApprovalListView.as_view(),
+         name="proc-approvals"),
+    path("approvals/<str:workflow_id>/", views.ProcurementApprovalDetailView.as_view(),
+         name="proc-approval-detail"),
+    path("approvals/<str:workflow_id>/actions/", views.ProcurementApprovalActionView.as_view(),
+         name="proc-approval-action"),
 
     # Inventory / stock ledger
     path("stock-items/", views.StockItemListCreateView.as_view(), name="proc-stock-items"),

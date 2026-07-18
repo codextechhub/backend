@@ -25,22 +25,23 @@ from vs_finance.models import FinanceAuditLog
 from vs_finance.money import format_naira
 
 from .constants import (
+    PROCUREMENT_APPROVAL_TYPES,
     ProcApprovalState,
     WF_DOCTYPE_PURCHASE_ORDER,
     WF_DOCTYPE_REQUISITION,
     WF_DOCTYPE_VENDOR_INVOICE,
+    WF_DOCTYPE_VENDOR_PAYMENT,
 )
-from .models import PurchaseOrder, PurchaseRequisition, Vendor, VendorInvoice
+from .models import (
+    PurchaseOrder,
+    PurchaseRequisition,
+    Vendor,
+    VendorInvoice,
+    VendorPayment,
+)
 from .purchasing import po_receipt_stage
 from .reports import spend_analysis
 
-
-PROCUREMENT_APPROVAL_TYPES = (
-    # Restrict the shared workflow table to document types owned by Procurement.
-    WF_DOCTYPE_REQUISITION,
-    WF_DOCTYPE_PURCHASE_ORDER,
-    WF_DOCTYPE_VENDOR_INVOICE,
-)
 
 PROCUREMENT_AUDIT_ACTIONS = (
     # Keep this allow-list explicit so unrelated finance events never enter the feed.
@@ -263,6 +264,7 @@ def _pending_approvals(entity, user) -> list:
         WF_DOCTYPE_REQUISITION: PurchaseRequisition,
         WF_DOCTYPE_PURCHASE_ORDER: PurchaseOrder,
         WF_DOCTYPE_VENDOR_INVOICE: VendorInvoice,
+        WF_DOCTYPE_VENDOR_PAYMENT: VendorPayment,
     }
     ids_by_type: dict[str, set[int]] = {key: set() for key in models}
     usable = []

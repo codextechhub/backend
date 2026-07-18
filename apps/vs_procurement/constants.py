@@ -134,6 +134,16 @@ WF_DOCTYPE_PURCHASE_ORDER = "procurement.purchase_order"
 WF_DOCTYPE_VENDOR_INVOICE = "procurement.vendor_invoice"
 WF_DOCTYPE_VENDOR_PAYMENT = "procurement.vendor_payment"
 
+# One canonical boundary for every shared-workflow record owned by Procurement.
+# Keep queue/report adapters on this allow-list so adding a new approvable document
+# cannot silently expose unrelated workflows or disappear from one Procurement view.
+PROCUREMENT_APPROVAL_TYPES = (
+    WF_DOCTYPE_REQUISITION,
+    WF_DOCTYPE_PURCHASE_ORDER,
+    WF_DOCTYPE_VENDOR_INVOICE,
+    WF_DOCTYPE_VENDOR_PAYMENT,
+)
+
 #: Template code the default-template provisioner publishes and submission resolves to.
 WF_DEFAULT_TEMPLATE_CODE = "standard"
 

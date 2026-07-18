@@ -1751,6 +1751,57 @@ class ProcurementDashboardTests(_P2PFixtureMixin, TestCase):
             [],
         )
 
+    def test_dashboard_includes_vendor_payment_workflows(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.contenttypes.models import ContentType
+        from django.utils import timezone
+        from vs_procurement.constants import WF_DOCTYPE_VENDOR_PAYMENT
+        from vs_procurement.dashboard import procurement_dashboard
+        from vs_workflow.models import (
+            WorkflowInstance, WorkflowStage, WorkflowStageApprover,
+            WorkflowStageInstance, WorkflowTemplate,
+        )
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        User = get_user_model()
+        requester = User.objects.create_user(
+            email="dash-pay-requester@test.com", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Pay", last_name="Requester",
+        )
+        approver = User.objects.create_user(
+            email="dash-pay-approver@test.com", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Pay", last_name="Approver",
+        )
+        payment = VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 10),
+            gross_amount=1_000_000, net_amount=1_000_000,
+            approval_state=ProcApprovalState.PENDING,
+        )
+        template = WorkflowTemplate.objects.create(
+            tenant=entity.tenant, document_type=WF_DOCTYPE_VENDOR_PAYMENT,
+            code="dashboard-payment", name="Dashboard payment",
+        )
+        stage = WorkflowStage.objects.create(
+            template=template, code="manager", label="Manager approval",
+        )
+        instance = WorkflowInstance.all_objects.create(
+            tenant=entity.tenant, template=template,
+            document_content_type=ContentType.objects.get_for_model(VendorPayment),
+            document_object_id=str(payment.pk), document_type=WF_DOCTYPE_VENDOR_PAYMENT,
+            status="IN_PROGRESS", requested_by=requester, current_stage=stage,
+        )
+        active = WorkflowStageInstance.objects.create(
+            instance=instance, stage=stage, status="ACTIVE", activated_at=timezone.now(),
+        )
+        WorkflowStageApprover.objects.create(stage_instance=active, user=approver, attempt=1)
+
+        data = procurement_dashboard(entity, user=approver, as_of=datetime.date(2026, 1, 20))
+        self.assertEqual(data["kpis"]["pending_approvals"]["count"], 1)
+        self.assertEqual(
+            data["approvals_awaiting_user"][0]["document_type"],
+            WF_DOCTYPE_VENDOR_PAYMENT,
+        )
+
     def test_dashboard_endpoint_requires_report_permission(self):
         from django.contrib.auth import get_user_model
         from core.test_utils import TenantAPIClient
@@ -1981,6 +2032,207 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(instance.status, WorkflowInstanceStatus.REJECTED)
         self.assertEqual(req.approval_state, ProcApprovalState.REJECTED)
         self.assertEqual(req.status, DocumentStatus.CANCELLED)
+
+
+class ProcurementApprovalQueueTests(_P2PFixtureMixin, TestCase):
+    """The Procurement inbox narrows generic workflows to actor + ledger entity."""
+
+    def _user(self, entity, email, first_name):
+        from django.contrib.auth import get_user_model
+
+        return get_user_model().objects.create_user(
+            email=email, password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE",
+            first_name=first_name, last_name="Tester",
+        )
+
+    def _pending(self, entity, *, requester, approver, document_type, document,
+                 on_behalf_of=None, code="queue-test"):
+        from django.contrib.contenttypes.models import ContentType
+        from django.utils import timezone
+        from vs_workflow.models import (
+            WorkflowInstance, WorkflowStage, WorkflowStageApprover,
+            WorkflowStageInstance, WorkflowTemplate,
+        )
+
+        template = WorkflowTemplate.objects.create(
+            tenant=entity.tenant, document_type=document_type,
+            code=code, name="Queue test",
+        )
+        stage = WorkflowStage.objects.create(
+            template=template, code="manager", label="Manager approval",
+            advance_rule="ANY", on_rejection="TERMINAL",
+        )
+        instance = WorkflowInstance.all_objects.create(
+            tenant=entity.tenant, template=template,
+            document_content_type=ContentType.objects.get_for_model(type(document)),
+            document_object_id=str(document.pk), document_type=document_type,
+            status="IN_PROGRESS", requested_by=requester, current_stage=stage,
+            submitted_at=timezone.now(),
+        )
+        stage_instance = WorkflowStageInstance.objects.create(
+            instance=instance, stage=stage, status="ACTIVE",
+            activated_at=timezone.now(),
+        )
+        WorkflowStageApprover.objects.create(
+            stage_instance=stage_instance, user=approver,
+            on_behalf_of=on_behalf_of, attempt=stage_instance.attempt,
+        )
+        return instance, stage_instance
+
+    def test_queue_is_actor_entity_and_document_family_scoped(self):
+        from core.test_utils import TenantAPIClient
+        from vs_procurement.constants import (
+            WF_DOCTYPE_REQUISITION, WF_DOCTYPE_VENDOR_PAYMENT,
+        )
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        other = LedgerEntity.objects.create(
+            name="Other Books", code="QOTHER", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+        requester = self._user(entity, "queue-requester@test.com", "Requester")
+        approver = self._user(entity, "queue-approver@test.com", "Approver")
+        stranger = self._user(entity, "queue-stranger@test.com", "Stranger")
+        req = PurchaseRequisition.objects.create(
+            entity=entity, request_date=datetime.date(2026, 1, 5),
+            requested_by=requester, title="Server refresh", estimated_total=2_500_000,
+            status=DocumentStatus.PENDING_APPROVAL, approval_state=ProcApprovalState.PENDING,
+        )
+        payment = VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 10),
+            gross_amount=1_000_000, net_amount=1_000_000,
+            approval_state=ProcApprovalState.PENDING,
+        )
+        other_req = PurchaseRequisition.objects.create(
+            entity=other, request_date=datetime.date(2026, 1, 5),
+            requested_by=requester, title="Foreign request", estimated_total=3_000_000,
+            status=DocumentStatus.PENDING_APPROVAL, approval_state=ProcApprovalState.PENDING,
+        )
+        own_instance, _ = self._pending(
+            entity, requester=requester, approver=approver,
+            document_type=WF_DOCTYPE_REQUISITION, document=req, code="own",
+        )
+        payment_instance, _ = self._pending(
+            entity, requester=requester, approver=approver,
+            document_type=WF_DOCTYPE_VENDOR_PAYMENT, document=payment, code="payment",
+            on_behalf_of=requester,
+        )
+        self._pending(
+            other, requester=requester, approver=approver,
+            document_type=WF_DOCTYPE_REQUISITION, document=other_req, code="other",
+        )
+        self._pending(
+            entity, requester=requester, approver=approver,
+            document_type="finance.journal", document=req, code="non-proc",
+        )
+
+        response = TenantAPIClient(user=approver).get(
+            f"/v1/procurement/approvals/?entity={entity.code}",
+        )
+        self.assertEqual(response.status_code, 200)
+        rows = response.json()["data"]
+        self.assertEqual({row["id"] for row in rows}, {own_instance.id, payment_instance.id})
+        self.assertEqual({row["document_type"] for row in rows}, {
+            WF_DOCTYPE_REQUISITION, WF_DOCTYPE_VENDOR_PAYMENT,
+        })
+        delegated = next(row for row in rows if row["id"] == payment_instance.id)
+        self.assertEqual(delegated["on_behalf_of"], "Requester Tester")
+        self.assertEqual(
+            TenantAPIClient(user=stranger).get(
+                f"/v1/procurement/approvals/?entity={entity.code}",
+            ).json()["data"],
+            [],
+        )
+
+    def test_detail_hides_foreign_targets_and_raw_audit_context(self):
+        from core.test_utils import TenantAPIClient
+        from vs_procurement.constants import WF_DOCTYPE_REQUISITION
+        from vs_workflow.models import WorkflowAuditLog
+
+        entity, _, _, _, _ = self.build_p2p()
+        other = LedgerEntity.objects.create(
+            name="Other Detail Books", code="QDOTHER", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+        requester = self._user(entity, "detail-requester@test.com", "Requester")
+        approver = self._user(entity, "detail-approver@test.com", "Approver")
+        req = PurchaseRequisition.objects.create(
+            entity=entity, request_date=datetime.date(2026, 1, 5),
+            requested_by=requester, title="Safe request", estimated_total=2_500_000,
+            status=DocumentStatus.PENDING_APPROVAL, approval_state=ProcApprovalState.PENDING,
+        )
+        instance, _ = self._pending(
+            entity, requester=requester, approver=approver,
+            document_type=WF_DOCTYPE_REQUISITION, document=req,
+        )
+        WorkflowAuditLog.objects.create(
+            instance=instance, event_type="INSTANCE_SUBMITTED", actor=requester,
+            message="Submitted for approval.", context={"secret": "never-return-this"},
+        )
+        client = TenantAPIClient(user=approver)
+        detail = client.get(
+            f"/v1/procurement/approvals/{instance.id}/?entity={entity.code}",
+        )
+        self.assertEqual(detail.status_code, 200)
+        activity = detail.json()["data"]["activity"]
+        self.assertEqual(activity[0]["message"], "Submitted for approval.")
+        self.assertNotIn("context", activity[0])
+        self.assertNotIn("never-return-this", str(detail.json()))
+        self.assertEqual(
+            client.get(
+                f"/v1/procurement/approvals/{instance.id}/?entity={other.code}",
+            ).status_code,
+            404,
+        )
+
+    def test_eligible_actor_can_approve_without_manage_permission(self):
+        from core.test_utils import TenantAPIClient
+        from vs_procurement.constants import WF_DOCTYPE_REQUISITION
+
+        entity, _, _, _, _ = self.build_p2p()
+        requester = self._user(entity, "vote-requester@test.com", "Requester")
+        approver = self._user(entity, "vote-approver@test.com", "Approver")
+        req = PurchaseRequisition.objects.create(
+            entity=entity, request_date=datetime.date(2026, 1, 5),
+            requested_by=requester, title="Approve me", estimated_total=2_500_000,
+            status=DocumentStatus.PENDING_APPROVAL, approval_state=ProcApprovalState.PENDING,
+        )
+        instance, _ = self._pending(
+            entity, requester=requester, approver=approver,
+            document_type=WF_DOCTYPE_REQUISITION, document=req,
+        )
+        response = TenantAPIClient(user=approver).post(
+            f"/v1/procurement/approvals/{instance.id}/actions/?entity={entity.code}",
+            {"action": "APPROVED", "comment": "Within budget."}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        req.refresh_from_db()
+        self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
+        self.assertEqual(req.status, DocumentStatus.APPROVED)
+
+    def test_requester_cannot_approve_own_document(self):
+        from core.test_utils import TenantAPIClient
+        from vs_procurement.constants import WF_DOCTYPE_REQUISITION
+
+        entity, _, _, _, _ = self.build_p2p()
+        requester = self._user(entity, "self-requester@test.com", "Requester")
+        req = PurchaseRequisition.objects.create(
+            entity=entity, request_date=datetime.date(2026, 1, 5),
+            requested_by=requester, title="Self approval", estimated_total=2_500_000,
+            status=DocumentStatus.PENDING_APPROVAL, approval_state=ProcApprovalState.PENDING,
+        )
+        instance, _ = self._pending(
+            entity, requester=requester, approver=requester,
+            document_type=WF_DOCTYPE_REQUISITION, document=req,
+        )
+        response = TenantAPIClient(user=requester).post(
+            f"/v1/procurement/approvals/{instance.id}/actions/?entity={entity.code}",
+            {"action": "APPROVED"}, format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+        req.refresh_from_db()
+        self.assertEqual(req.approval_state, ProcApprovalState.PENDING)
 
 
 class StockLedgerTests(_P2PFixtureMixin, TestCase):
