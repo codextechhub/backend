@@ -380,7 +380,8 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
         fields = [
             "id", "document_number", "status", "approval_state", "display_status",
             "vendor_id", "vendor_code", "vendor_name", "requisition_id", "requisition_number",
-            "quotation_number", "order_date", "expected_date", "narration",
+            "quotation_number", "order_date", "expected_date", "delivery_address",
+            "payment_terms", "narration",
             "subtotal", "tax_total", "total", "total_naira",
             "received_pct", "invoiced_pct", "lines", "receipt_documents", "invoice_documents",
         ]
@@ -430,13 +431,18 @@ class PurchaseOrderListSerializer(PurchaseOrderSerializer):
 
 class GRNLineSerializer(serializers.ModelSerializer):
     expense_code = serializers.CharField(source="expense_account.code", read_only=True)
+    description = serializers.SerializerMethodField()
+
+    def get_description(self, obj):
+        # Older receipts may have a blank copied description, so resolve the source PO item for display.
+        return obj.description or (obj.po_line.description if obj.po_line_id else "")
 
     class Meta:
         model = GoodsReceivedNoteLine
         fields = [
             "id", "line_no", "po_line_id", "description",
             "expense_account_id", "expense_code",
-            "accepted_qty", "rejected_qty", "unit_price", "value_amount",
+            "accepted_qty", "rejected_qty", "expected_qty", "unit_price", "value_amount",
         ]
 
 
@@ -469,22 +475,34 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
             return "System"
         return getattr(user, "full_name", "") or user.get_full_name() or user.email
 
+    def _expected_quantity(self, obj):
+        cached = getattr(obj, "_receipt_expected_quantity", None)
+        if cached is not None:
+            return cached
+        # Snapshot totals preserve the PO remainder that this specific receipt was raised against.
+        expected = sum((line.expected_qty for line in obj.lines.all()), 0)
+        if not expected and obj.purchase_order_id:
+            # Legacy/directly-created rows without a snapshot fall back to the original PO total.
+            expected = sum((line.quantity for line in obj.purchase_order.lines.all()), 0)
+        if not expected:
+            expected = sum((line.accepted_qty + line.rejected_qty for line in obj.lines.all()), 0)
+        obj._receipt_expected_quantity = expected
+        return expected
+
     def get_receipt_status(self, obj) -> str:
-        # Quality/receipt state is derived from the accepted and rejected quantities, not the GL posting status.
+        # Quality/receipt state compares this delivery with its expected PO quantity, not the GL posting status.
         accepted = sum((line.accepted_qty for line in obj.lines.all()), 0)
         rejected = sum((line.rejected_qty for line in obj.lines.all()), 0)
         if rejected and not accepted:
             return "REJECTED"
-        return "PARTIAL" if rejected else "FULL"
+        expected = self._expected_quantity(obj)
+        return "PARTIAL" if rejected or accepted < expected else "FULL"
 
     def get_received_item_count(self, obj) -> str:
         return str(sum((line.accepted_qty for line in obj.lines.all()), 0))
 
     def get_ordered_item_count(self, obj) -> str:
-        # A GRN can be created without a PO; accepted + rejected is then its only honest expected quantity.
-        if not obj.purchase_order_id:
-            return str(sum((line.accepted_qty + line.rejected_qty for line in obj.lines.all()), 0))
-        return str(sum((line.quantity for line in obj.purchase_order.lines.all()), 0))
+        return str(self._expected_quantity(obj))
 
 
 # --------------------------------------------------------------------------- #

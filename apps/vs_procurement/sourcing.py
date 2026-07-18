@@ -145,6 +145,8 @@ def award_quotation(quotation, *, order_date=None, actor_user=None):
         vendor=vendor, requisition=rfq.requisition,
         order_date=order_date or datetime.date.today(),
         currency=quotation.currency, created_by=actor_user,
+        # Awarded POs inherit the vendor's configured terms when no buyer form is involved.
+        payment_terms=vendor.payment_terms,
         reference=quotation.reference,
         narration=f"From quotation {quotation.document_number} (RFQ {rfq.document_number}).",
     )

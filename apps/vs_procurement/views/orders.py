@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 
+from django.db import transaction
 from django.db.models import F, Q, Sum
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
@@ -181,6 +182,8 @@ class PurchaseOrderListCreateView(_ProcBase):
             req, vendor=vendor,
             order_date=_date(body.get("order_date"), "order_date", required=True),
             expected_date=_date(body.get("expected_date"), "expected_date"),
+            delivery_address=str(body.get("delivery_address", "")).strip(),
+            payment_terms=str(body.get("payment_terms", vendor.payment_terms)).strip(),
             currency=_resolve_currency(entity, body.get("currency")),
             actor_user=request.user,
         )
@@ -191,7 +194,11 @@ class PurchaseOrderListCreateView(_ProcBase):
 
 class PurchaseOrderDetailView(_ProcBase):
     """docstring-name: Purchase orders"""
-    rbac_permission = "procurement.purchase_order.view"
+
+    @property
+    def rbac_permission(self):
+        return "procurement.purchase_order.update" if self.request.method == "PATCH" \
+            else "procurement.purchase_order.view"
 
     def get(self, request, pk):
         entity = resolve_entity(request)
@@ -203,6 +210,39 @@ class PurchaseOrderDetailView(_ProcBase):
         instance = WorkflowInstance.objects.for_document(po).order_by("-created_at").first()
         data["workflow_instance_id"] = str(instance.id) if instance else None
         return success_response("Purchase order retrieved.", data=data)
+
+    @transaction.atomic
+    def patch(self, request, pk):
+        entity = resolve_entity(request)
+        # Lock only the base row because PostgreSQL rejects row locks over grouped or nullable-join detail queries.
+        po = PurchaseOrder.objects.select_for_update().filter(entity=entity, pk=pk).first()
+        if po is None:
+            raise NotFound("No such purchase order in this entity.")
+        # The workflow overlay can be PENDING while the finance document status still reads DRAFT.
+        if po.status != DocumentStatus.DRAFT or po.approval_state == ProcApprovalState.PENDING:
+            raise ValidationError({"status": "Only a draft purchase order can be edited."})
+
+        body = request.data
+        if "vendor" in body:
+            po.vendor = _resolve_vendor(entity, body.get("vendor"))
+        if "order_date" in body:
+            po.order_date = _date(body.get("order_date"), "order_date", required=True)
+        if "expected_date" in body:
+            po.expected_date = _date(body.get("expected_date"), "expected_date")
+        if "delivery_address" in body:
+            po.delivery_address = str(body.get("delivery_address", "")).strip()
+        if "payment_terms" in body:
+            po.payment_terms = str(body.get("payment_terms", "")).strip()
+        # PO lines remain the approved requisition snapshot; draft edits only change order terms.
+        po.save(update_fields=[
+            "vendor", "order_date", "expected_date", "delivery_address",
+            "payment_terms", "updated_at",
+        ])
+        # Re-read with the drawer's related-document shape after the locked update has completed.
+        updated = _purchase_order_queryset(entity).filter(pk=po.pk).first()
+        return success_response(
+            "Purchase order draft updated.", data=PurchaseOrderSerializer(updated).data,
+        )
 
 
 class PurchaseOrderSummaryView(_ProcBase):
@@ -429,4 +469,3 @@ class QuotationAwardView(_ProcBase):
             f"Quotation awarded → purchase order {po.document_number}.",
             data=PurchaseOrderSerializer(po).data, status=201,
         )
-

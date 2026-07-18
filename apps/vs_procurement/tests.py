@@ -29,6 +29,7 @@ from vs_procurement.constants import (
     ContractStatus,
     MatchStatus,
     MilestoneStatus,
+    ProcApprovalState,
     QuotationStatus,
     RfqStatus,
 )
@@ -179,6 +180,65 @@ class _P2PFixtureMixin:
 
 
 class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_rejects_fractional_or_over_remaining_item_counts(self, _permission):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 8, 100_000, None)])
+        line = po.lines.first()
+        user = get_user_model().objects.create_user(
+            email="grn-quantity@test.com", password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="GRN", last_name="Tester",
+        )
+        client = TenantAPIClient(user=user)
+        base = {
+            "vendor": vendor.code, "purchase_order": po.id,
+            "received_date": "2026-01-08",
+            "lines": [{
+                "po_line": line.id, "description": line.description,
+                "expense_account": "5100", "accepted_qty": 4.5,
+                "rejected_qty": 0, "unit_price": line.unit_price,
+            }],
+        }
+        fractional = client.post(
+            f"/v1/procurement/goods-receipts/?entity={entity.code}", base, format="json",
+        )
+        self.assertEqual(fractional.status_code, 400)
+        self.assertEqual(GoodsReceivedNote.objects.filter(entity=entity).count(), 0)
+
+        base["lines"][0].update({"accepted_qty": 6, "rejected_qty": 3})
+        over_limit = client.post(
+            f"/v1/procurement/goods-receipts/?entity={entity.code}", base, format="json",
+        )
+        self.assertEqual(over_limit.status_code, 400)
+        self.assertEqual(GoodsReceivedNote.objects.filter(entity=entity).count(), 0)
+
+        base["lines"][0].update({"accepted_qty": 3, "rejected_qty": 5})
+        valid = client.post(
+            f"/v1/procurement/goods-receipts/?entity={entity.code}", base, format="json",
+        )
+        self.assertEqual(valid.status_code, 201)
+        data = valid.json()["data"]
+        self.assertEqual(data["received_item_count"], "3.0000")
+        self.assertEqual(data["ordered_item_count"], "8.0000")
+        self.assertEqual(data["total_value"], 300_000)
+        self.assertEqual(data["lines"][0]["value_amount"], 300_000)
+
+    def test_partial_receipt_status_compares_received_with_ordered_quantity(self):
+        from vs_procurement.serializers import GoodsReceivedNoteSerializer
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 12, 100_000, None)])
+        grn = self.make_grn(entity, vendor, po, [(po.lines.first(), 4)])
+        data = GoodsReceivedNoteSerializer(grn).data
+
+        self.assertEqual(data["received_item_count"], "4.0000")
+        self.assertEqual(data["ordered_item_count"], "12.0000")
+        self.assertEqual(data["receipt_status"], "PARTIAL")
+        self.assertEqual(data["lines"][0]["description"], po.lines.first().description)
+
     def test_grn_posts_dr_expense_cr_grir(self):
         entity, _, vendor, _, _ = self.build_p2p()
         po = self.make_po(entity, vendor, [("5100", 10, 100000, None)])
@@ -1063,6 +1123,39 @@ class GRIRAgingTests(_P2PFixtureMixin, TestCase):
 # --------------------------------------------------------------------------- #
 
 class PurchaseOrderConsoleDataTests(_P2PFixtureMixin, TestCase):
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_draft_terms_can_update_but_pending_approval_is_locked(self, _permission):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5300", 4, 250_000, None)])
+        original_lines = list(po.lines.values_list("id", flat=True))
+        user = get_user_model().objects.create_user(
+            email="po-edit@test.com", password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="PO", last_name="Editor",
+        )
+        client = TenantAPIClient(user=user)
+        response = client.patch(
+            f"/v1/procurement/purchase-orders/{po.id}/?entity={entity.code}",
+            {"delivery_address": "12 Marina Road", "payment_terms": "Net 45"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        po.refresh_from_db()
+        self.assertEqual(po.delivery_address, "12 Marina Road")
+        self.assertEqual(po.payment_terms, "Net 45")
+        self.assertEqual(list(po.lines.values_list("id", flat=True)), original_lines)
+
+        # PO workflow submission uses the approval overlay while its base document can remain DRAFT.
+        po.approval_state = ProcApprovalState.PENDING
+        po.save(update_fields=["approval_state", "updated_at"])
+        locked = client.patch(
+            f"/v1/procurement/purchase-orders/{po.id}/?entity={entity.code}",
+            {"payment_terms": "Immediate"}, format="json",
+        )
+        self.assertEqual(locked.status_code, 400)
+
     def test_summary_and_partial_filter_use_derived_receipt_progress(self):
         from vs_procurement.views.orders import (
             _filter_purchase_orders,

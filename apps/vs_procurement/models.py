@@ -763,6 +763,8 @@ class PurchaseOrder(FinanceDocument):
     )
     order_date = models.DateField()
     expected_date = models.DateField(null=True, blank=True)
+    delivery_address = models.TextField(blank=True, default="")
+    payment_terms = models.CharField(max_length=128, blank=True, default="")
     currency = models.ForeignKey(
         "vs_finance.Currency", on_delete=models.PROTECT, related_name="purchase_orders",
         null=True, blank=True,
@@ -953,6 +955,10 @@ class GoodsReceivedNoteLine(TimeStampedModel):
     )
     accepted_qty = models.DecimalField(max_digits=14, decimal_places=4, default=0)
     rejected_qty = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    expected_qty = models.DecimalField(
+        max_digits=14, decimal_places=4, default=0,
+        help_text="PO quantity remaining when this receipt was created.",
+    )
     unit_price = MoneyField(help_text="Price per unit, in kobo (from the PO).")
     value_amount = MoneyField(help_text="accepted_qty × unit_price, in kobo.")
     cost_center = models.ForeignKey(

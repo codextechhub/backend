@@ -149,7 +149,8 @@ def approve_purchase_order(po, *, actor_user=None):
 
 @transaction.atomic
 def create_po_from_requisition(requisition, *, vendor, order_date, actor_user=None,
-                               currency=None, expected_date=None):
+                               currency=None, expected_date=None, delivery_address="",
+                               payment_terms=""):
     """Create a :class:`PurchaseOrder` from an **approved** requisition's lines.
 
     Each requisition line becomes a PO line at its estimated unit price (the buyer can
@@ -174,6 +175,7 @@ def create_po_from_requisition(requisition, *, vendor, order_date, actor_user=No
         entity=requisition.entity, branch=requisition.branch,
         vendor=vendor, requisition=requisition,
         order_date=order_date, expected_date=expected_date,
+        delivery_address=delivery_address, payment_terms=payment_terms or vendor.payment_terms,
         currency=currency, created_by=actor_user,
         narration=requisition.justification,
     )
