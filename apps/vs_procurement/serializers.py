@@ -68,11 +68,18 @@ class VendorSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     default_expense_code = serializers.CharField(
         source="default_expense_account.code", read_only=True, default=None,
     )
+    default_wht_tax_code_value = serializers.CharField(
+        source="default_wht_tax_code.code", read_only=True, default=None,
+    )
 
     # FLS: vendor banking details are PII used for disbursement — only holders of
     # the sensitive grant see them; everyone else gets the record with these
     # fields stripped.
     read_permissions = {
+        "email": "procurement.vendor.view_sensitive",
+        "phone": "procurement.vendor.view_sensitive",
+        "address": "procurement.vendor.view_sensitive",
+        "tax_id": "procurement.vendor.view_sensitive",
         "bank_name": "procurement.vendor.view_sensitive",
         "bank_account_number": "procurement.vendor.view_sensitive",
         "bank_account_name": "procurement.vendor.view_sensitive",
@@ -82,11 +89,27 @@ class VendorSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         model = Vendor
         fields = [
             "id", "code", "name", "category_id", "category_code",
-            "email", "phone", "tax_id",
+            "email", "phone", "address", "tax_id",
             "bank_name", "bank_account_number", "bank_account_name",
             "payable_account_id", "payable_code",
             "default_expense_account_id", "default_expense_code",
+            "default_wht_tax_code_id", "default_wht_tax_code_value",
             "payment_terms", "kyc_status", "risk", "on_hold", "is_active",
+        ]
+
+
+class VendorListSerializer(serializers.ModelSerializer):
+    """Non-sensitive vendor row shape; detail-only fields never leave the list API."""
+
+    category_code = serializers.CharField(source="category.code", read_only=True, default=None)
+    active_po_count = serializers.IntegerField(read_only=True, default=0)
+
+    class Meta:
+        model = Vendor
+        fields = [
+            "id", "code", "name", "category_id", "category_code",
+            "payment_terms", "kyc_status", "risk", "on_hold", "is_active",
+            "active_po_count",
         ]
 
 

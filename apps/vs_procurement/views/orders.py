@@ -224,7 +224,10 @@ class PurchaseOrderDetailView(_ProcBase):
 
         body = request.data
         if "vendor" in body:
-            po.vendor = _resolve_vendor(entity, body.get("vendor"))
+            candidate = _resolve_vendor(entity, body.get("vendor"))
+            if reason := purchasing.vendor_purchase_block_reason(candidate):
+                raise ValidationError({"vendor": reason})
+            po.vendor = candidate
         if "order_date" in body:
             po.order_date = _date(body.get("order_date"), "order_date", required=True)
         if "expected_date" in body:

@@ -25,10 +25,12 @@ is here.
 from __future__ import annotations
 
 import datetime
+import re
 from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
+from django.db.models.functions import Lower
 
 from vs_finance.constants import DocType, InvoicePaymentStatus, PaymentMethod
 from vs_finance.models import FinanceDocument, TimeStampedModel
@@ -127,6 +129,10 @@ class Vendor(TimeStampedModel):
     address = models.TextField(blank=True, default="")
 
     tax_id = models.CharField(max_length=32, blank=True, default="", help_text="TIN / tax identifier.")
+    tax_id_normalized = models.CharField(
+        max_length=32, blank=True, default="", editable=False,
+        help_text="Canonical tax identifier used only for entity-scoped duplicate detection.",
+    )
     bank_name = models.CharField(max_length=120, blank=True, default="")
     bank_account_number = models.CharField(max_length=32, blank=True, default="")
     bank_account_name = models.CharField(max_length=160, blank=True, default="")
@@ -165,6 +171,14 @@ class Vendor(TimeStampedModel):
             models.UniqueConstraint(
                 fields=["entity", "code"], name="uniq_proc_vendor_entity_code",
             ),
+            models.UniqueConstraint(
+                Lower("code"), "entity", name="uniq_proc_vendor_entity_code_ci",
+            ),
+            models.UniqueConstraint(
+                fields=["entity", "tax_id_normalized"],
+                condition=~models.Q(tax_id_normalized=""),
+                name="uniq_proc_vendor_entity_tax_id_norm",
+            ),
         ]
         indexes = [
             models.Index(fields=["entity", "is_active"]),
@@ -172,6 +186,17 @@ class Vendor(TimeStampedModel):
             models.Index(fields=["source_type", "source_id"]),
         ]
         ordering = ["entity", "code"]
+
+    def save(self, *args, **kwargs):
+        """Keep duplicate-detection identifiers canonical for every ORM write path."""
+        self.code = str(self.code or "").strip().upper()
+        self.tax_id = str(self.tax_id or "").strip().upper()
+        self.tax_id_normalized = re.sub(r"[^A-Z0-9]", "", self.tax_id)
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None and "tax_id" in update_fields:
+            # Callers that intentionally update only tax_id must persist its paired key too.
+            kwargs["update_fields"] = set(update_fields) | {"tax_id_normalized"}
+        return super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.code} · {self.name}"

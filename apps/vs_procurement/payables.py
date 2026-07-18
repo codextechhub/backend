@@ -298,13 +298,16 @@ def post_vendor_payment(payment, *, actor_user=None, auto_allocate=True, allocat
 # Support the post vendor payment atomic workflow.
 def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True, allocations=None):
     from vs_finance.models import JournalEntry, JournalLine
-    from .models import VendorInvoice, VendorPayment, VendorPaymentAllocation
+    from .models import Vendor, VendorInvoice, VendorPayment, VendorPaymentAllocation
 
     # Lock the payment first, then invoice rows in stable primary-key order. This
     # prevents duplicate journals and two payments consuming the same bill balance.
     payment = VendorPayment.objects.select_for_update(of=("self",)).select_related(
         "vendor", "payment_account", "wht_tax_code__collected_account",
     ).get(pk=payment.pk)
+    # Lock only the master row before rechecking eligibility. The payable-account
+    # relation is nullable, and PostgreSQL rejects FOR UPDATE across that outer join.
+    payment.vendor = Vendor.objects.select_for_update(of=("self",)).get(pk=payment.vendor_id)
 
     persisted_plan = list(
         VendorPaymentAllocation.objects.select_for_update().filter(payment=payment)

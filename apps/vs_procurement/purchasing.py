@@ -27,7 +27,7 @@ from vs_finance.money import format_naira
 from vs_finance.posting import post_journal, resolve_period
 from vs_finance.receivables import compute_line_net, compute_tax
 
-from .constants import GRIR_CLEARING_CODE
+from .constants import GRIR_CLEARING_CODE, VendorKycStatus
 from .exceptions import MissingControlAccountError, RequisitionError
 
 
@@ -82,6 +82,17 @@ def po_receipt_stage(ordered_qty, received_qty) -> str:
     if received > 0:
         return "PARTIAL"
     return "AWAITING"
+
+
+def vendor_purchase_block_reason(vendor) -> str:
+    """Return the shared reason a vendor cannot receive a new purchasing commitment."""
+    if not vendor.is_active:
+        return f"Vendor {vendor.code} is inactive; new purchasing commitments are blocked."
+    if vendor.on_hold:
+        return f"Vendor {vendor.code} is on hold; new purchasing commitments are blocked."
+    if vendor.kyc_status == VendorKycStatus.REJECTED:
+        return f"Vendor {vendor.code} has rejected KYC; new purchasing commitments are blocked."
+    return ""
 
 
 # --------------------------------------------------------------------------- #
@@ -158,13 +169,20 @@ def create_po_from_requisition(requisition, *, vendor, order_date, actor_user=No
     edit before issuing). The expense account falls back to the vendor's / vendor
     category's default when a line didn't suggest one.
     """
-    from .models import PurchaseOrder, PurchaseOrderLine
+    from .models import PurchaseOrder, PurchaseOrderLine, Vendor
 
     if requisition.status != DocumentStatus.APPROVED:
         raise RequisitionError(
             f"Requisition {requisition.document_number or requisition.pk} must be "
             f"APPROVED before raising a PO (is '{requisition.status}').",
         )
+    if vendor.entity_id != requisition.entity_id:
+        raise RequisitionError("The vendor and requisition must belong to the same entity.")
+    # Serialize this commitment against vendor governance edits; the check and PO
+    # insert therefore observe one stable eligibility state.
+    vendor = Vendor.objects.select_for_update(of=("self",)).get(pk=vendor.pk)
+    if reason := vendor_purchase_block_reason(vendor):
+        raise RequisitionError(reason)
 
     # A line-specific account wins; this fallback is only used when the requisition did not classify the spend.
     default_expense = (

@@ -18,14 +18,24 @@ from vs_finance.constants import FinanceAuditAction
 
 from .constants import ContractStatus, MilestoneStatus
 from .exceptions import ContractError
+from .purchasing import vendor_purchase_block_reason
 
 
 # --------------------------------------------------------------------------- #
 # Contract lifecycle                                                          #
 # --------------------------------------------------------------------------- #
 
+@transaction.atomic
 def activate_contract(contract, *, actor_user=None):
     """Bring a DRAFT contract into force. Requires both a start and an end date."""
+    from .models import Vendor, VendorContract
+
+    supplied_contract = contract
+    contract = VendorContract.objects.select_for_update(of=("self",)).get(pk=contract.pk)
+    if contract.vendor.entity_id != contract.entity_id:
+        raise ContractError("The contract vendor must belong to the same entity.")
+    # Activation and vendor governance updates serialize on the same master row.
+    contract.vendor = Vendor.objects.select_for_update(of=("self",)).get(pk=contract.vendor_id)
     if contract.status != ContractStatus.DRAFT:
         raise ContractError(
             f"Contract {contract.reference} is '{contract.status}'; "
@@ -35,6 +45,8 @@ def activate_contract(contract, *, actor_user=None):
         raise ContractError("A contract needs a start_date and end_date before activation.")
     if contract.end_date < contract.start_date:
         raise ContractError("A contract's end_date cannot precede its start_date.")
+    if reason := vendor_purchase_block_reason(contract.vendor):
+        raise ContractError(reason)
     contract.status = ContractStatus.ACTIVE
     contract.save(update_fields=["status", "updated_at"])
     record(
@@ -44,7 +56,10 @@ def activate_contract(contract, *, actor_user=None):
                 f"({contract.start_date} → {contract.end_date}).",
         vendor_id=contract.vendor_id,
     )
-    return contract
+    # Preserve the service's historical mutation contract for callers that retain
+    # the object they passed in instead of using the return value.
+    supplied_contract.status = contract.status
+    return supplied_contract
 
 
 def terminate_contract(contract, *, reason="", actor_user=None):
@@ -75,7 +90,12 @@ def renew_contract(contract, *, reference, start_date, end_date, contract_value=
     the same value), points its ``renews`` back at the original, and optionally copies the
     PENDING milestones forward. The original flips to RENEWED.
     """
-    from .models import ContractMilestone, VendorContract
+    from .models import ContractMilestone, Vendor, VendorContract
+
+    contract = VendorContract.objects.select_for_update(of=("self",)).get(pk=contract.pk)
+    if contract.vendor.entity_id != contract.entity_id:
+        raise ContractError("The contract vendor must belong to the same entity.")
+    contract.vendor = Vendor.objects.select_for_update(of=("self",)).get(pk=contract.vendor_id)
 
     if contract.status not in (ContractStatus.ACTIVE, ContractStatus.EXPIRED):
         raise ContractError(
@@ -84,6 +104,8 @@ def renew_contract(contract, *, reference, start_date, end_date, contract_value=
         )
     if end_date < start_date:
         raise ContractError("The renewal's end_date cannot precede its start_date.")
+    if reason := vendor_purchase_block_reason(contract.vendor):
+        raise ContractError(reason)
 
     successor = VendorContract.objects.create(
         entity=contract.entity, vendor=contract.vendor, reference=reference,

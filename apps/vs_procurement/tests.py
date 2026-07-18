@@ -34,8 +34,9 @@ from vs_procurement.constants import (
     ProcApprovalState,
     QuotationStatus,
     RfqStatus,
+    VendorKycStatus,
 )
-from vs_procurement.exceptions import ContractError, SourcingError, ThreeWayMatchError
+from vs_procurement.exceptions import ContractError, RequisitionError, SourcingError, ThreeWayMatchError
 from vs_procurement.models import (
     CatalogItem,
     ContractMilestone,
@@ -78,6 +79,7 @@ from vs_procurement.payables import (
     reverse_vendor_payment,
 )
 from vs_procurement.purchasing import (
+    approve_purchase_order,
     approve_requisition,
     create_po_from_requisition,
     post_grn,
@@ -185,6 +187,204 @@ class _P2PFixtureMixin:
                 unit_price=price, tax_code=tax, line_no=i,
             )
         return vi
+
+
+class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
+    def _client(self, entity, email="vendor-console@test.com"):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        user = get_user_model().objects.create_user(
+            email=email, password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Vendor", last_name="Tester",
+        )
+        return TenantAPIClient(user=user)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=False)
+    def test_list_requires_vendor_view_permission(self, _permission):
+        entity, _, _, _, _ = self.build_p2p()
+        response = self._client(entity).get(f"/v1/procurement/vendors/?entity={entity.code}")
+        self.assertEqual(response.status_code, 403)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_list_is_safe_searchable_and_empty_shape_is_stable(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        vendor.email = "accounts@example.com"
+        vendor.bank_account_number = "0123456789"
+        vendor.save(update_fields=["email", "bank_account_number", "updated_at"])
+        client = self._client(entity)
+        response = client.get(f"/v1/procurement/vendors/?entity={entity.code}&search=acme")
+        self.assertEqual(response.status_code, 200)
+        row = response.data["data"][0]
+        self.assertEqual(row["code"], "ACME")
+        self.assertNotIn("email", row)
+        self.assertNotIn("bank_account_number", row)
+        Vendor.objects.filter(entity=entity).delete()
+        empty = client.get(f"/v1/procurement/vendors/?entity={entity.code}")
+        self.assertIn(empty.data["data"], ({}, []))
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_active_po_count_excludes_drafts_and_fully_received_orders(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5300", 2, 100_000, None)])
+        client = self._client(entity)
+
+        draft = client.get(f"/v1/procurement/vendors/?entity={entity.code}")
+        self.assertEqual(draft.data["data"][0]["active_po_count"], 0)
+        approve_purchase_order(po)
+        issued = client.get(f"/v1/procurement/vendors/?entity={entity.code}")
+        self.assertEqual(issued.data["data"][0]["active_po_count"], 1)
+        po.lines.update(received_qty=2)
+        complete = client.get(f"/v1/procurement/vendors/?entity={entity.code}")
+        self.assertEqual(complete.data["data"][0]["active_po_count"], 0)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    @patch("vs_rbac.fls.FieldSecurityMixin._resolve_user_permissions", return_value=set())
+    def test_detail_strips_sensitive_fields_and_is_entity_scoped(self, _fls, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        vendor.email = "accounts@example.com"
+        vendor.tax_id = "TIN-123"
+        vendor.bank_account_number = "0123456789"
+        vendor.save(update_fields=["email", "tax_id", "bank_account_number", "updated_at"])
+        client = self._client(entity)
+        response = client.get(f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}")
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("email", response.data["data"])
+        self.assertIn("email", response.data["data"]["_stripped_fields"])
+        other = LedgerEntity.objects.create(name="Other", code="OTHER", kind=LedgerEntity.Kind.TENANT)
+        cross = client.get(f"/v1/procurement/vendors/{vendor.id}/?entity={other.code}")
+        self.assertEqual(cross.status_code, 404)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    @patch(
+        "vs_rbac.fls.FieldSecurityMixin._resolve_user_permissions",
+        return_value={"procurement.vendor.view_sensitive"},
+    )
+    def test_detail_includes_sensitive_fields_with_exact_grant(self, _fls, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        vendor.email = "accounts@example.com"
+        vendor.save(update_fields=["email", "updated_at"])
+        response = self._client(entity).get(f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}")
+        self.assertEqual(response.data["data"]["email"], "accounts@example.com")
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    @patch("vs_procurement.views.vendors._has_sensitive_access", return_value=True)
+    def test_create_normalizes_identifiers_defaults_governance_and_rejects_duplicates(self, _sensitive, _permission):
+        entity, _, _, _, _ = self.build_p2p()
+        client = self._client(entity)
+        payload = {
+            "code": " new-vendor ", "name": " New Vendor ", "tax_id": " tin-22 33 ",
+            "email": " Accounts@Example.COM ", "payable_account": "2100",
+            "default_expense_account": "5300", "kyc_status": "VERIFIED", "on_hold": True,
+        }
+        response = client.post(f"/v1/procurement/vendors/?entity={entity.code}", payload, format="json")
+        self.assertEqual(response.status_code, 201)
+        vendor = Vendor.objects.get(code="NEW-VENDOR")
+        self.assertEqual(vendor.tax_id_normalized, "TIN2233")
+        self.assertEqual(vendor.email, "accounts@example.com")
+        self.assertEqual(vendor.kyc_status, VendorKycStatus.PENDING)
+        self.assertFalse(vendor.on_hold)
+        duplicate_code = client.post(
+            f"/v1/procurement/vendors/?entity={entity.code}",
+            {"code": "new-vendor", "name": "Duplicate"}, format="json",
+        )
+        self.assertEqual(duplicate_code.status_code, 400)
+        duplicate_tax = client.post(
+            f"/v1/procurement/vendors/?entity={entity.code}",
+            {"code": "OTHER", "name": "Duplicate Tax", "tax_id": "TIN 22-33"}, format="json",
+        )
+        self.assertEqual(duplicate_tax.status_code, 400)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    @patch("vs_procurement.views.vendors._has_sensitive_access", return_value=False)
+    def test_sensitive_update_requires_sensitive_grant(self, _sensitive, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        response = self._client(entity).patch(
+            f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}",
+            {"bank_account_number": "0123456789"}, format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_update_preserves_states_and_cross_entity_ids_are_hidden(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        client = self._client(entity)
+        response = client.patch(
+            f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}",
+            {"kyc_status": "REJECTED", "risk": "HIGH", "on_hold": True, "is_active": False},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        vendor.refresh_from_db()
+        self.assertEqual(vendor.kyc_status, "REJECTED")
+        self.assertTrue(vendor.on_hold)
+        self.assertFalse(vendor.is_active)
+        other = LedgerEntity.objects.create(name="Other", code="OTHER", kind=LedgerEntity.Kind.TENANT)
+        cross = client.patch(
+            f"/v1/procurement/vendors/{vendor.id}/?entity={other.code}",
+            {"risk": "LOW"}, format="json",
+        )
+        self.assertEqual(cross.status_code, 404)
+        invalid_bool = client.patch(
+            f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}",
+            {"on_hold": "false"}, format="json",
+        )
+        self.assertEqual(invalid_bool.status_code, 400)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_insights_are_entity_scoped_and_authoritative(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(entity, vendor, [("5300", 1, 250_000, None, None)])
+        post_vendor_invoice(invoice)
+        response = self._client(entity).get(
+            f"/v1/procurement/vendors/{vendor.id}/insights/?entity={entity.code}",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["spend_ytd"], 250_000)
+        self.assertEqual(response.data["data"]["invoice_count"], 1)
+        other = LedgerEntity.objects.create(name="Other", code="OTHER", kind=LedgerEntity.Kind.TENANT)
+        cross = self._client(entity, "vendor-cross@test.com").get(
+            f"/v1/procurement/vendors/{vendor.id}/insights/?entity={other.code}",
+        )
+        self.assertEqual(cross.status_code, 404)
+
+
+class VendorEligibilityTests(_P2PFixtureMixin, TestCase):
+    def _approved_requisition(self, entity):
+        req = PurchaseRequisition.objects.create(
+            entity=entity, request_date=datetime.date(2026, 1, 2), status=DocumentStatus.APPROVED,
+        )
+        PurchaseRequisitionLine.objects.create(
+            requisition=req, description="Service", quantity=1, estimated_unit_price=100_000,
+            expense_account=self.acc(entity, "5300"), line_no=1,
+        )
+        return req
+
+    def test_new_po_blocks_inactive_on_hold_and_rejected_kyc_vendors(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        for field, value in (("is_active", False), ("on_hold", True), ("kyc_status", "REJECTED")):
+            with self.subTest(field=field):
+                vendor.is_active = True
+                vendor.on_hold = False
+                vendor.kyc_status = VendorKycStatus.VERIFIED
+                setattr(vendor, field, value)
+                vendor.save(update_fields=["is_active", "on_hold", "kyc_status", "updated_at"])
+                with self.assertRaises(RequisitionError):
+                    create_po_from_requisition(
+                        self._approved_requisition(entity), vendor=vendor,
+                        order_date=datetime.date(2026, 1, 5),
+                    )
+
+    def test_new_po_rejects_cross_entity_vendor(self):
+        entity, _, _, _, _ = self.build_p2p()
+        other = LedgerEntity.objects.create(name="Other", code="OTHER", kind=LedgerEntity.Kind.TENANT)
+        foreign_vendor = Vendor.objects.create(entity=other, code="FOREIGN", name="Foreign Vendor")
+
+        with self.assertRaises(RequisitionError):
+            create_po_from_requisition(
+                self._approved_requisition(entity), vendor=foreign_vendor,
+                order_date=datetime.date(2026, 1, 5),
+            )
 
 
 class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
@@ -1294,6 +1494,20 @@ class VendorContractTests(_P2PFixtureMixin, TestCase):
         activate_contract(c)
         c.refresh_from_db()
         self.assertEqual(c.status, ContractStatus.ACTIVE)
+
+    def test_activate_blocks_ineligible_vendor(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        contract = self._contract(
+            entity, vendor, start=datetime.date(2026, 1, 1), end=datetime.date(2026, 12, 31),
+        )
+        vendor.on_hold = True
+        vendor.save(update_fields=["on_hold", "updated_at"])
+
+        with self.assertRaises(ContractError):
+            activate_contract(contract)
+
+        contract.refresh_from_db()
+        self.assertEqual(contract.status, ContractStatus.DRAFT)
 
     def test_renew_builds_successor_and_marks_original_renewed(self):
         entity, _, vendor, _, _ = self.build_p2p()

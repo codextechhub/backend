@@ -397,6 +397,8 @@ class VendorInvoiceListCreateView(_ProcBase):
         for param in ("status", "payment_status", "match_status"):
             if (val := request.query_params.get(param)):
                 qs = qs.filter(**{param: val})
+        if (vendor := request.query_params.get("vendor")):
+            qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
         if (display_status := request.query_params.get("display_status")):
             qs = _invoice_display_filter(qs, display_status)
         if (search := request.query_params.get("search", "").strip()):

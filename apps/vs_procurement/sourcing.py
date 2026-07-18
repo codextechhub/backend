@@ -20,7 +20,7 @@ from vs_finance.receivables import compute_line_net, compute_tax
 
 from .constants import QuotationStatus, RfqStatus
 from .exceptions import SourcingError
-from .purchasing import price_po
+from .purchasing import price_po, vendor_purchase_block_reason
 
 
 # --------------------------------------------------------------------------- #
@@ -119,7 +119,7 @@ def award_quotation(quotation, *, order_date=None, actor_user=None):
     to REJECTED. The PO carries each quoted line's price and expense account (falling back
     to the vendor's / category's default). Returns the created PO.
     """
-    from .models import PurchaseOrder, PurchaseOrderLine
+    from .models import PurchaseOrder, PurchaseOrderLine, Vendor
 
     if quotation.quotation_status != QuotationStatus.SUBMITTED:
         raise SourcingError(
@@ -135,7 +135,12 @@ def award_quotation(quotation, *, order_date=None, actor_user=None):
     if not quotation.lines.exists():
         raise SourcingError("Cannot award a quotation with no lines.")
 
-    vendor = quotation.vendor
+    if quotation.vendor.entity_id != quotation.entity_id:
+        raise SourcingError("The quotation vendor must belong to the same entity.")
+    # Prevent a simultaneous vendor hold/KYC edit from racing the award commitment.
+    vendor = Vendor.objects.select_for_update(of=("self",)).get(pk=quotation.vendor_id)
+    if reason := vendor_purchase_block_reason(vendor):
+        raise SourcingError(reason)
     default_expense = (
         vendor.default_expense_account
         or (vendor.category.default_expense_account if vendor.category_id else None)

@@ -13,6 +13,8 @@ urlpatterns = [
     # Master data
     path("categories/", views.VendorCategoryListCreateView.as_view(), name="proc-categories"),
     path("vendors/", views.VendorListCreateView.as_view(), name="proc-vendors"),
+    path("vendors/summary/", views.VendorSummaryView.as_view(), name="proc-vendor-summary"),
+    path("vendors/<int:pk>/insights/", views.VendorInsightsView.as_view(), name="proc-vendor-insights"),
     path("vendors/<int:pk>/", views.VendorDetailView.as_view(), name="proc-vendor-detail"),
 
     # Item catalog

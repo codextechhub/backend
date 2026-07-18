@@ -13,10 +13,11 @@ from vs_finance.constants import DocumentStatus, PaymentMethod
 from vs_finance.models import Account, BankAccount, FiscalPeriod, LedgerEntity
 from vs_procurement.models import (
     GoodsReceivedNote, GoodsReceivedNoteLine, PurchaseOrder, PurchaseOrderLine,
-    Vendor, VendorCategory, VendorInvoice, VendorInvoiceLine, VendorPayment,
+    Vendor, VendorCategory, VendorContract, VendorInvoice, VendorInvoiceLine, VendorPayment,
     VendorPaymentAllocation,
 )
 from vs_procurement.constants import ProcApprovalState
+from vs_procurement.contracts import activate_contract
 from vs_procurement.approvals import ensure_default_approval_templates, submit_for_approval
 from vs_procurement.payables import (
     post_vendor_invoice, post_vendor_payment, reverse_vendor_payment,
@@ -80,6 +81,35 @@ class Command(BaseCommand):
                 },
             )
             vendors.append(vendor)
+
+        # Master-only fixtures make every vendor governance state visually verifiable
+        # without fabricating transactional spend or payment history.
+        for code, name, kyc_status, is_active in (
+            ("PENDING-KYC", "Northstar Office Supplies", "PENDING", True),
+            ("REJECTED-KYC", "Legacy Field Services", "REJECTED", True),
+            ("INACTIVE-V", "Retired Technology Partners", "VERIFIED", False),
+        ):
+            Vendor.objects.update_or_create(
+                entity=entity, code=code,
+                defaults={
+                    "name": name, "category": categories[2], "payable_account": payable,
+                    "default_expense_account": expense, "kyc_status": kyc_status,
+                    "is_active": is_active, "on_hold": False,
+                },
+            )
+
+        active_contract, _ = VendorContract.objects.update_or_create(
+            entity=entity, reference="CODEX-DEMO-CONTRACT-001",
+            defaults={
+                "vendor": vendors[0], "title": "Cloud hosting and support",
+                "start_date": timezone.localdate().replace(month=1, day=1),
+                "end_date": timezone.localdate().replace(month=12, day=31),
+                "contract_value": 268_000_000, "payment_terms": "NET_30",
+                "created_by": actor,
+            },
+        )
+        if active_contract.status == "DRAFT":
+            activate_contract(active_contract, actor_user=actor)
 
         today = timezone.localdate()
         starts = []
@@ -280,7 +310,7 @@ class Command(BaseCommand):
                 reverse_vendor_payment(reversed_payment, actor_user=actor, date=today)
 
         self.stdout.write(self.style.SUCCESS(
-            f"CODEX procurement demo ready: {len(vendors)} vendors, "
+            f"CODEX procurement demo ready: {Vendor.objects.filter(entity=entity).count()} vendors, "
             f"+{invoice_count} invoices, +{po_count} purchase orders, "
             f"+{payment_count} vendor payments."
         ))
