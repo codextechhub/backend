@@ -19,13 +19,21 @@ from .base import _ProcBase, _date, _money, _resolve_tax, _resolve_vendor
 
 
 def _payment_queryset(entity):
-    """Eager-load every relation used by list/detail serializers and drawer data."""
+    """Eager-load every relation the detail drawer serializes (incl. the posted journal)."""
     return VendorPayment.objects.filter(entity=entity).select_related(
         "vendor", "payment_account", "payment_account__bank_account", "wht_tax_code",
         "journal", "created_by",
     ).prefetch_related(
         "allocations__vendor_invoice", "journal__lines__account",
     )
+
+
+def _payment_list_queryset(entity):
+    """Lighter list source — the list row never serializes the journal lines, so the
+    journal select_related/prefetch the detail drawer needs are dropped here."""
+    return VendorPayment.objects.filter(entity=entity).select_related(
+        "vendor", "payment_account", "payment_account__bank_account", "wht_tax_code", "created_by",
+    ).prefetch_related("allocations__vendor_invoice")
 
 
 def _resolve_bank_account(entity, ref):
@@ -137,7 +145,7 @@ class VendorPaymentListCreateView(_ProcBase):
 
     def get(self, request):
         entity = resolve_entity(request)
-        qs = _payment_queryset(entity)
+        qs = _payment_list_queryset(entity)
         if status := request.query_params.get("status"):
             qs = qs.filter(status=status)
         if approval := request.query_params.get("approval_state"):
