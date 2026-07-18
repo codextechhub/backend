@@ -18,6 +18,7 @@ from vs_finance.constants import (
 from vs_finance.exceptions import PostingError
 from vs_finance.models import (
     Account,
+    BankAccount,
     FinanceAuditLog,
     FiscalPeriod,
     FiscalYear,
@@ -74,6 +75,7 @@ from vs_procurement.sourcing import (
 from vs_procurement.payables import (
     post_vendor_invoice,
     post_vendor_payment,
+    reverse_vendor_payment,
 )
 from vs_procurement.purchasing import (
     approve_requisition,
@@ -120,6 +122,7 @@ class _P2PFixtureMixin:
             entity=entity, code="ACME", name="Acme Supplies",
             payable_account=self.acc(entity, "2100"),
             default_expense_account=self.acc(entity, "5300"),
+            kyc_status="VERIFIED",
         )
         input_vat = TaxCode.objects.create(
             entity=entity, code="VAT-IN", name="Input VAT 7.5%", rate_bps=750,
@@ -496,6 +499,7 @@ class VendorPaymentTests(_P2PFixtureMixin, TestCase):
             entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 15),
             gross_amount=1_000_000, wht_amount=50_000,
             payment_account=self.acc(entity, "1100"), wht_tax_code=wht,
+            approval_state=ProcApprovalState.APPROVED,
         )
         post_vendor_payment(pay)
 
@@ -511,6 +515,179 @@ class VendorPaymentTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(vi.payment_status, InvoicePaymentStatus.PAID)
         self.assertEqual(vi.amount_paid, 1_000_000)
 
+    def test_payment_requires_workflow_approval(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        self._posted_bill(entity, vendor)
+        pay = VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 15),
+            gross_amount=100_000, payment_account=self.acc(entity, "1100"),
+        )
+
+        with self.assertRaisesMessage(PostingError, "must be approved"):
+            post_vendor_payment(pay)
+        pay.refresh_from_db()
+        self.assertIsNone(pay.journal_id)
+
+    def test_explicit_allocation_rejects_another_vendor_invoice(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        other = Vendor.objects.create(
+            entity=entity, code="OTHER", name="Other Vendor", kyc_status="VERIFIED",
+            payable_account=self.acc(entity, "2100"), default_expense_account=self.acc(entity, "5300"),
+        )
+        invoice = self._posted_bill(entity, other)
+        pay = VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 15),
+            gross_amount=100_000, payment_account=self.acc(entity, "1100"),
+            approval_state=ProcApprovalState.APPROVED,
+        )
+
+        with self.assertRaisesMessage(PostingError, "entity and vendor"):
+            post_vendor_payment(pay, allocations=[(invoice, 100_000)])
+
+    def test_explicit_allocation_validates_the_full_plan_before_posting(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        first = self._posted_bill(entity, vendor, total=100_000)
+        second = self._posted_bill(entity, vendor, total=100_000)
+        pay = VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 15),
+            gross_amount=100_000, payment_account=self.acc(entity, "1100"),
+            approval_state=ProcApprovalState.APPROVED,
+        )
+
+        with self.assertRaisesMessage(PostingError, "exceeds the payment gross"):
+            post_vendor_payment(pay, allocations=[(first, 100_000), (second, 100_000)])
+
+        pay.refresh_from_db()
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertIsNone(pay.journal_id)
+        self.assertEqual(first.amount_paid, 0)
+        self.assertEqual(second.amount_paid, 0)
+
+    def test_reversal_restores_invoice_settlement(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self._posted_bill(entity, vendor)
+        pay = VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 15),
+            gross_amount=1_000_000, payment_account=self.acc(entity, "1100"),
+            approval_state=ProcApprovalState.APPROVED,
+        )
+        post_vendor_payment(pay)
+
+        reverse_vendor_payment(pay, date=datetime.date(2026, 1, 20))
+        pay.refresh_from_db()
+        invoice.refresh_from_db()
+        self.assertEqual(pay.status, DocumentStatus.REVERSED)
+        self.assertEqual(pay.journal.status, DocumentStatus.REVERSED)
+        self.assertEqual(invoice.amount_paid, 0)
+        self.assertEqual(invoice.payment_status, InvoicePaymentStatus.UNPAID)
+
+
+class VendorPaymentConsoleAPITests(_P2PFixtureMixin, TestCase):
+    def _posted_bill(self, entity, vendor, total=1_000_000):
+        invoice = self.make_bill(entity, vendor, [("5300", 1, total, None, None)])
+        post_vendor_invoice(invoice)
+        invoice.refresh_from_db()
+        return invoice
+
+    def _client(self, entity):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        user = get_user_model().objects.create_user(
+            email="vendor-payment-console@test.com", password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Payment", last_name="Tester",
+        )
+        return TenantAPIClient(user=user)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=False)
+    def test_list_requires_vendor_payment_view_permission(self, _permission):
+        entity, _, _, _, _ = self.build_p2p()
+        response = self._client(entity).get(
+            f"/v1/procurement/vendor-payments/?entity={entity.code}",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=False)
+    def test_every_vendor_payment_mutation_requires_backend_permission(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        payment = VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 15),
+            gross_amount=100_000, payment_account=self.acc(entity, "1100"),
+        )
+        client = self._client(entity)
+        routes = [
+            ("post", f"/v1/procurement/vendor-payments/?entity={entity.code}"),
+            ("patch", f"/v1/procurement/vendor-payments/{payment.id}/?entity={entity.code}"),
+            ("post", f"/v1/procurement/vendor-payments/{payment.id}/submit/?entity={entity.code}"),
+            ("post", f"/v1/procurement/vendor-payments/{payment.id}/post/?entity={entity.code}"),
+            ("post", f"/v1/procurement/vendor-payments/{payment.id}/cancel/?entity={entity.code}"),
+            ("post", f"/v1/procurement/vendor-payments/{payment.id}/reverse/?entity={entity.code}"),
+        ]
+        for method, url in routes:
+            with self.subTest(url=url):
+                response = getattr(client, method)(url, {}, format="json")
+                self.assertEqual(response.status_code, 403)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_detail_does_not_cross_entity_scope(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        payment = VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 15),
+            gross_amount=100_000, payment_account=self.acc(entity, "1100"),
+        )
+        other = LedgerEntity.objects.create(name="Other Books", code="OTHER", kind=LedgerEntity.Kind.TENANT)
+        response = self._client(entity).get(
+            f"/v1/procurement/vendor-payments/{payment.id}/?entity={other.code}",
+        )
+        self.assertEqual(response.status_code, 404)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_persists_plan_without_settling_invoice(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(entity, vendor, [("5300", 1, 1_000_000, None, None)])
+        post_vendor_invoice(invoice)
+        invoice.refresh_from_db()
+        bank = BankAccount.objects.create(
+            entity=entity, gl_account=self.acc(entity, "1100"), name="Operating Bank",
+        )
+        response = self._client(entity).post(
+            f"/v1/procurement/vendor-payments/?entity={entity.code}",
+            {
+                "vendor": vendor.code, "payment_date": "2026-01-15",
+                "bank_account": bank.id, "method": "BANK_TRANSFER", "wht_amount": 50_000,
+                "allocations": [{"vendor_invoice": invoice.id, "amount": 400_000}],
+            }, format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        invoice.refresh_from_db()
+        payment = VendorPayment.objects.get(pk=response.data["data"]["id"])
+        self.assertEqual(payment.gross_amount, 400_000)
+        self.assertEqual(payment.net_amount, 350_000)
+        self.assertEqual(payment.allocated_amount, 0)
+        self.assertEqual(invoice.amount_paid, 0)
+        self.assertEqual(payment.allocations.get().amount, 400_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_detail_formats_payment_activity_in_naira(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self._posted_bill(entity, vendor)
+        payment = VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 15),
+            gross_amount=400_000, payment_account=self.acc(entity, "1100"),
+            approval_state=ProcApprovalState.APPROVED,
+        )
+        post_vendor_payment(payment, allocations=[(invoice, 400_000)])
+
+        response = self._client(entity).get(
+            f"/v1/procurement/vendor-payments/{payment.id}/?entity={entity.code}",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        messages = " ".join(row["message"] for row in response.data["data"]["activity"])
+        self.assertIn("₦", messages)
+        self.assertNotIn("kobo", messages.lower())
+
     def test_partial_payment_marks_partial(self):
         entity, _, vendor, _, _ = self.build_p2p()
         vi = self._posted_bill(entity, vendor, total=1_000_000)
@@ -519,6 +696,7 @@ class VendorPaymentTests(_P2PFixtureMixin, TestCase):
             entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 15),
             gross_amount=400_000, wht_amount=0,
             payment_account=self.acc(entity, "1100"),
+            approval_state=ProcApprovalState.APPROVED,
         )
         post_vendor_payment(pay)
         vi.refresh_from_db()
@@ -534,6 +712,7 @@ class VendorPaymentTests(_P2PFixtureMixin, TestCase):
         pay = VendorPayment.objects.create(
             entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 15),
             gross_amount=100_000, payment_account=self.acc(entity, "1100"),
+            approval_state=ProcApprovalState.APPROVED,
         )
         from vs_finance.exceptions import PostingError
         with self.assertRaises(PostingError):
@@ -556,6 +735,7 @@ class APReconciliationTests(_P2PFixtureMixin, TestCase):
         pay = VendorPayment.objects.create(
             entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 20),
             gross_amount=600_000, payment_account=self.acc(entity, "1100"),
+            approval_state=ProcApprovalState.APPROVED,
         )
         post_vendor_payment(pay)
 
@@ -609,6 +789,7 @@ class FullChainTests(_P2PFixtureMixin, TestCase):
         pay = VendorPayment.objects.create(
             entity=entity, vendor=vendor, payment_date=datetime.date(2026, 1, 25),
             gross_amount=1_000_000, payment_account=self.acc(entity, "1100"),
+            approval_state=ProcApprovalState.APPROVED,
         )
         post_vendor_payment(pay)
 
@@ -854,6 +1035,7 @@ class ProcurementAnalyticsTests(_P2PFixtureMixin, TestCase):
         pay = VendorPayment.objects.create(
             entity=entity, vendor=vendor, payment_date=paid,
             gross_amount=qty * unit, payment_account=self.acc(entity, "1100"),
+            approval_state=ProcApprovalState.APPROVED,
         )
         post_vendor_payment(pay)
         return pr, po, grn, vi, pay
@@ -984,6 +1166,11 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(quo.quotation_status, QuotationStatus.SUBMITTED)
         self.assertEqual(quo.subtotal, 2_000_000)
         self.assertEqual(quo.total, 2_000_000)
+        message = FinanceAuditLog.objects.get(
+            entity=entity, action=FinanceAuditAction.QUOTATION_SUBMITTED,
+        ).message
+        self.assertIn("₦", message)
+        self.assertNotIn("kobo", message.lower())
 
     def test_award_builds_po_and_rejects_losers(self):
         entity, _, vendor, _, _ = self.build_p2p()
@@ -1016,6 +1203,11 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(winning.awarded_po_id, po.pk)
         self.assertEqual(losing.quotation_status, QuotationStatus.REJECTED)
         self.assertEqual(rfq.rfq_status, RfqStatus.AWARDED)
+        message = FinanceAuditLog.objects.get(
+            entity=entity, action=FinanceAuditAction.QUOTATION_AWARDED,
+        ).message
+        self.assertIn("₦", message)
+        self.assertNotIn("kobo", message.lower())
 
     def test_cannot_award_unsubmitted_quotation(self):
         entity, _, vendor, _, _ = self.build_p2p()
@@ -1617,14 +1809,14 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         )
 
         first = ensure_default_approval_templates()
-        self.assertEqual(len(first), 3)
+        self.assertEqual(len(first), 4)
         # One platform-wide template per approvable document type.
         self.assertEqual(
             WorkflowTemplate.objects.filter(
                 tenant__isnull=True, branch__isnull=True,
                 code=WF_DEFAULT_TEMPLATE_CODE,
             ).count(),
-            3,
+            4,
         )
         req_tmpl = WorkflowTemplate.objects.get(
             document_type=WF_DOCTYPE_REQUISITION, code=WF_DEFAULT_TEMPLATE_CODE,
@@ -1636,10 +1828,10 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(stages[1].inclusion_condition.get("op"), "gte")
         self.assertEqual(stages[1].inclusion_condition.get("field"), "estimated_total")
 
-        # Re-running upserts in place — still exactly three templates / two stages.
+        # Re-running upserts in place — still exactly four templates / two stages.
         ensure_default_approval_templates()
         self.assertEqual(
-            WorkflowTemplate.objects.filter(code=WF_DEFAULT_TEMPLATE_CODE).count(), 3,
+            WorkflowTemplate.objects.filter(code=WF_DEFAULT_TEMPLATE_CODE).count(), 4,
         )
         self.assertEqual(WorkflowStage.objects.filter(template=req_tmpl).count(), 2)
 
@@ -1877,6 +2069,11 @@ class StockLedgerTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(movement.movement_type, "ISSUE")
         self.assertEqual(movement.quantity, -4)
         self.assertEqual(movement.value_amount, -400_000)
+        message = FinanceAuditLog.objects.get(
+            entity=entity, action=FinanceAuditAction.STOCK_ISSUED,
+        ).message
+        self.assertIn("₦", message)
+        self.assertNotIn("kobo", message.lower())
 
     def test_issue_beyond_on_hand_is_blocked_and_audited(self):
         entity, _, vendor, _, _ = self.build_p2p()
@@ -1933,6 +2130,10 @@ class StockLedgerTests(_P2PFixtureMixin, TestCase):
         item.refresh_from_db()
         self.assertEqual(item.on_hand_qty, 10)
         self.assertEqual(item.stock_value, 1_000_000)
+        messages = FinanceAuditLog.objects.filter(
+            entity=entity, action=FinanceAuditAction.STOCK_ADJUSTED,
+        ).values_list("message", flat=True)
+        self.assertTrue(all("₦" in message and "kobo" not in message.lower() for message in messages))
 
     def test_writeup_into_empty_stock_requires_unit_cost(self):
         entity, _, vendor, _, _ = self.build_p2p()

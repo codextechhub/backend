@@ -359,8 +359,16 @@ def _serialize_invoice_detail(invoice):
         "debit": line.debit,
         "credit": line.credit,
     } for line in invoice.journal.lines.all()] if invoice.journal_id else []
+    def display_message(log):
+        # FinanceAuditLog is immutable; use structured metadata to present legacy
+        # minor-unit messages safely without rewriting the authoritative row.
+        if log.action == "VENDOR_INVOICE_POSTED" and "total" in (log.metadata or {}):
+            from vs_finance.money import format_naira
+            return f"Posted bill from {invoice.vendor.code} ({format_naira(log.metadata['total'])})."
+        return log.message
+
     data["activity"] = [{
-        "id": log.id, "action": log.action, "message": log.message,
+        "id": log.id, "action": log.action, "message": display_message(log),
         "status": log.status,
         "actor_name": (
             f"{getattr(log.actor, 'first_name', '')} {getattr(log.actor, 'last_name', '')}".strip()

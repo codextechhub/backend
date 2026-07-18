@@ -132,6 +132,7 @@ class ProcApprovalState(models.TextChoices):
 WF_DOCTYPE_REQUISITION = "procurement.requisition"
 WF_DOCTYPE_PURCHASE_ORDER = "procurement.purchase_order"
 WF_DOCTYPE_VENDOR_INVOICE = "procurement.vendor_invoice"
+WF_DOCTYPE_VENDOR_PAYMENT = "procurement.vendor_payment"
 
 #: Template code the default-template provisioner publishes and submission resolves to.
 WF_DEFAULT_TEMPLATE_CODE = "standard"

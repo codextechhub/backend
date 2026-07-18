@@ -601,27 +601,70 @@ class VendorPaymentAllocationSerializer(serializers.ModelSerializer):
     invoice_number = serializers.CharField(
         source="vendor_invoice.document_number", read_only=True,
     )
+    invoice_date = serializers.DateField(source="vendor_invoice.invoice_date", read_only=True)
+    due_date = serializers.DateField(source="vendor_invoice.due_date", read_only=True)
+    invoice_total = serializers.IntegerField(source="vendor_invoice.total", read_only=True)
+    invoice_balance = serializers.IntegerField(source="vendor_invoice.balance_due", read_only=True)
+    invoice_payment_status = serializers.CharField(source="vendor_invoice.payment_status", read_only=True)
 
     class Meta:
         model = VendorPaymentAllocation
-        fields = ["id", "vendor_invoice_id", "invoice_number", "amount"]
+        fields = [
+            "id", "vendor_invoice_id", "invoice_number", "invoice_date", "due_date",
+            "invoice_total", "invoice_balance", "invoice_payment_status", "amount",
+        ]
 
 
 class VendorPaymentSerializer(serializers.ModelSerializer):
     allocations = VendorPaymentAllocationSerializer(many=True, read_only=True)
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     payment_code = serializers.CharField(source="payment_account.code", read_only=True, default=None)
+    payment_account_name = serializers.CharField(source="payment_account.name", read_only=True, default=None)
+    bank_account_id = serializers.IntegerField(source="payment_account.bank_account.id", read_only=True, default=None)
+    bank_account_name = serializers.CharField(source="payment_account.bank_account.name", read_only=True, default=None)
+    wht_tax_code_value = serializers.CharField(source="wht_tax_code.code", read_only=True, default=None)
+    created_by_name = serializers.SerializerMethodField()
+    unallocated_amount = serializers.IntegerField(read_only=True)
+    allocation_status = serializers.SerializerMethodField()
     net_naira = serializers.SerializerMethodField()
 
     class Meta:
         model = VendorPayment
         fields = [
-            "id", "document_number", "status", "vendor_id", "vendor_code",
+            "id", "document_number", "status", "approval_state", "allocation_status",
+            "vendor_id", "vendor_code", "vendor_name",
             "payment_date", "method",
             "gross_amount", "wht_amount", "net_amount", "net_naira",
-            "allocated_amount", "payment_account_id", "payment_code",
-            "reference", "narration", "journal_id", "allocations",
+            "allocated_amount", "unallocated_amount", "payment_account_id", "payment_code",
+            "payment_account_name", "bank_account_id", "bank_account_name",
+            "wht_tax_code_id", "wht_tax_code_value", "reference", "narration",
+            "journal_id", "created_at", "created_by_name", "allocations",
         ]
 
     def get_net_naira(self, obj) -> str:
         return format_naira(obj.net_amount)
+
+    def get_created_by_name(self, obj) -> str:
+        if not obj.created_by_id:
+            return "System"
+        return (
+            f"{getattr(obj.created_by, 'first_name', '')} {getattr(obj.created_by, 'last_name', '')}".strip()
+            or getattr(obj.created_by, "email", "System")
+        )
+
+    def get_allocation_status(self, obj) -> str:
+        # Draft rows are a planned split; posted rows use the authoritative amount
+        # advanced by the allocation service after the journal succeeds.
+        amount = obj.allocated_amount if obj.status == DocumentStatus.POSTED else sum(
+            allocation.amount for allocation in obj.allocations.all()
+        )
+        if amount <= 0:
+            return "UNALLOCATED"
+        if amount < obj.gross_amount:
+            return "PARTIAL"
+        return "FULL"
+
+
+class VendorPaymentListSerializer(VendorPaymentSerializer):
+    """List contract retains invoice references but omits detail-only activity/GL data."""

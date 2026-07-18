@@ -48,6 +48,7 @@ from .constants import (
     WF_DOCTYPE_PURCHASE_ORDER,
     WF_DOCTYPE_REQUISITION,
     WF_DOCTYPE_VENDOR_INVOICE,
+    WF_DOCTYPE_VENDOR_PAYMENT,
 )
 
 
@@ -1135,6 +1136,9 @@ class VendorPayment(FinanceDocument):
     """
 
     DOC_TYPE = DocType.VENDOR_PAYMENT
+    #: vs_workflow integration — approval is separate from posting status.
+    workflow_document_type = WF_DOCTYPE_VENDOR_PAYMENT
+    workflow_amount_field = "gross_amount"
 
     vendor = models.ForeignKey(Vendor, on_delete=models.PROTECT, related_name="payments")
     payment_date = models.DateField()
@@ -1144,6 +1148,11 @@ class VendorPayment(FinanceDocument):
     )
     method = models.CharField(
         max_length=16, choices=PaymentMethod.choices, default=PaymentMethod.BANK_TRANSFER,
+    )
+    approval_state = models.CharField(
+        max_length=16, choices=ProcApprovalState.choices,
+        default=ProcApprovalState.NOT_SUBMITTED,
+        help_text="Payment-approval state driven by vs_workflow (overlay; not ledger status).",
     )
     gross_amount = MoneyField(help_text="Total liability settled (Dr AP), in kobo.")
     wht_amount = MoneyField(help_text="Withholding tax retained (Cr WHT payable), in kobo.")
@@ -1168,8 +1177,22 @@ class VendorPayment(FinanceDocument):
     class Meta(FinanceDocument.Meta):
         indexes = [
             models.Index(fields=["entity", "status"]),
+            models.Index(fields=["entity", "approval_state"], name="proc_pay_entity_approval_idx"),
             models.Index(fields=["vendor"]),
             models.Index(fields=["entity", "payment_date"]),
+        ]
+        constraints = FinanceDocument.Meta.constraints + [
+            models.CheckConstraint(
+                check=models.Q(gross_amount__gt=0), name="ck_proc_payment_gross_positive",
+            ),
+            models.CheckConstraint(
+                check=models.Q(wht_amount__gte=0) & models.Q(wht_amount__lte=models.F("gross_amount")),
+                name="ck_proc_payment_wht_within_gross",
+            ),
+            models.CheckConstraint(
+                check=models.Q(allocated_amount__gte=0) & models.Q(allocated_amount__lte=models.F("gross_amount")),
+                name="ck_proc_payment_alloc_within_gross",
+            ),
         ]
 
     @property

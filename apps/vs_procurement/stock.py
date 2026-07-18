@@ -27,6 +27,7 @@ from django.db import transaction
 from vs_finance.audit import record, record_rejection
 from vs_finance.constants import FinanceAuditAction, JournalSource
 from vs_finance.exceptions import FinanceError, PostingError
+from vs_finance.money import format_naira
 from vs_finance.posting import post_journal, resolve_period
 
 from .constants import INVENTORY_ADJUSTMENT_CODE, StockMovementType
@@ -181,7 +182,7 @@ def _issue_stock_atomic(stock_item, *, quantity, movement_date, expense_account=
     record(
         entity=stock_item.entity, action=FinanceAuditAction.STOCK_ISSUED,
         actor_user=actor_user, target=stock_item,
-        message=f"Issued {quantity} of {stock_item.code} ({value} kobo to expense).",
+        message=f"Issued {quantity} of {stock_item.code} ({format_naira(value)} to expense).",
         journal_id=entry.pk, value=value,
     )
     return movement
@@ -277,7 +278,7 @@ def _adjust_stock_atomic(stock_item, *, quantity_delta, movement_date,
     record(
         entity=stock_item.entity, action=FinanceAuditAction.STOCK_ADJUSTED,
         actor_user=actor_user, target=stock_item,
-        message=f"Adjusted {stock_item.code} by {delta} ({signed_value} kobo).",
+        message=f"Adjusted {stock_item.code} by {delta} ({format_naira(signed_value)}).",
         journal_id=entry.pk, value=value,
     )
     return movement

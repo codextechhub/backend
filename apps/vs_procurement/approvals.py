@@ -45,14 +45,15 @@ _TEMPLATE_META = {
     "procurement.requisition": ("requisition", "Requisition approval"),
     "procurement.purchase_order": ("purchase order", "Purchase-order approval"),
     "procurement.vendor_invoice": ("vendor invoice", "Vendor-invoice approval"),
+    "procurement.vendor_payment": ("vendor payment", "Vendor-payment approval"),
 }
 
 
 def _doc_models():
-    """Return the three approvable model classes (imported lazily to dodge cycles)."""
-    from .models import PurchaseOrder, PurchaseRequisition, VendorInvoice
+    """Return approvable procurement model classes (imported lazily to dodge cycles)."""
+    from .models import PurchaseOrder, PurchaseRequisition, VendorInvoice, VendorPayment
 
-    return (PurchaseRequisition, PurchaseOrder, VendorInvoice)
+    return (PurchaseRequisition, PurchaseOrder, VendorInvoice, VendorPayment)
 
 
 def ensure_default_approval_templates(
@@ -172,8 +173,9 @@ def apply_approved(document, *, actor_user=None) -> None:
     """Apply a fully-approved workflow outcome to ``document``.
 
     Sets ``approval_state`` APPROVED, then runs the document-type effect: a requisition
-    advances to ``DocumentStatus.APPROVED`` (so a PO can be raised), a PO likewise, and a
-    vendor invoice records an approval audit without touching its posting status.
+    advances to ``DocumentStatus.APPROVED`` (so a PO can be raised), a PO likewise, a
+    vendor invoice records an approval audit, and a vendor payment becomes postable.
+    Invoice/payment ledger status remains independent from workflow approval.
     """
     from .models import PurchaseOrder, PurchaseRequisition, VendorInvoice
     from .purchasing import approve_purchase_order, approve_requisition

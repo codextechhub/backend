@@ -22,6 +22,7 @@ from django.db.models import F
 
 from vs_finance.audit import record, record_rejection
 from vs_finance.constants import (
+    AccountType,
     DocumentStatus,
     FinanceAuditAction,
     InvoicePaymentStatus,
@@ -29,9 +30,12 @@ from vs_finance.constants import (
 )
 from vs_finance.exceptions import FinanceError, PostingError
 from vs_finance.posting import post_journal, resolve_period
+from vs_finance.money import format_naira
 from vs_finance.receivables import compute_line_net, compute_tax
 
-from .constants import MATCH_BLOCKING, MatchStatus, ProcApprovalState, WHT_PAYABLE_CODE
+from .constants import (
+    MATCH_BLOCKING, MatchStatus, ProcApprovalState, VendorKycStatus, WHT_PAYABLE_CODE,
+)
 from .exceptions import ThreeWayMatchError
 from .purchasing import resolve_account
 
@@ -258,7 +262,7 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
     record(  # Log the successful vendor invoice post.
         entity=invoice.entity, action=FinanceAuditAction.VENDOR_INVOICE_POSTED,
         actor_user=actor_user, target=invoice,
-        message=f"Posted bill from {vendor.code} ({invoice.total} kobo).",
+        message=f"Posted bill from {vendor.code} ({format_naira(invoice.total)}).",
         journal_id=entry.pk, total=invoice.total, tax=invoice.tax_total,
         match_status=str(match_status),
     )
@@ -294,14 +298,51 @@ def post_vendor_payment(payment, *, actor_user=None, auto_allocate=True, allocat
 # Support the post vendor payment atomic workflow.
 def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True, allocations=None):
     from vs_finance.models import JournalEntry, JournalLine
+    from .models import VendorInvoice, VendorPayment, VendorPaymentAllocation
+
+    # Lock the payment first, then invoice rows in stable primary-key order. This
+    # prevents duplicate journals and two payments consuming the same bill balance.
+    payment = VendorPayment.objects.select_for_update(of=("self",)).select_related(
+        "vendor", "payment_account", "wht_tax_code__collected_account",
+    ).get(pk=payment.pk)
+
+    persisted_plan = list(
+        VendorPaymentAllocation.objects.select_for_update().filter(payment=payment)
+        .select_related("vendor_invoice").order_by("vendor_invoice_id")
+    )
+    if allocations is None and persisted_plan:
+        allocations = [(row.vendor_invoice, row.amount) for row in persisted_plan]
+
+    explicit_ids = [invoice.pk for invoice, _ in allocations] if allocations else []
+    if explicit_ids:
+        locked = {
+            invoice.pk: invoice for invoice in VendorInvoice.objects.select_for_update()
+            .filter(pk__in=explicit_ids).order_by("pk")
+        }
+        allocations = [(locked.get(invoice.pk, invoice), amount) for invoice, amount in allocations]
+    elif auto_allocate:
+        # Auto-allocation also locks every candidate before the journal is written.
+        list(
+            VendorInvoice.objects.select_for_update().filter(
+                entity=payment.entity, vendor=payment.vendor, status=DocumentStatus.POSTED,
+            ).exclude(payment_status=InvoicePaymentStatus.PAID).order_by("due_date", "invoice_date", "id")
+        )
 
     if payment.status != DocumentStatus.DRAFT:  # Only draft vendor payments can be posted.
         raise PostingError(
             f"Vendor payment {payment.document_number or payment.pk} is '{payment.status}', "
             f"only a draft can be posted.",
         )
+    if payment.approval_state != ProcApprovalState.APPROVED:
+        raise PostingError(
+            f"Vendor payment {payment.document_number or payment.pk} must be approved before posting."
+        )
 
     vendor = payment.vendor  # Vendor drives AP and blocking rules.
+    if not vendor.is_active:
+        raise PostingError(f"Vendor {vendor.code} is inactive; payments are blocked.")
+    if vendor.kyc_status != VendorKycStatus.VERIFIED:
+        raise PostingError(f"Vendor {vendor.code} must be KYC verified before payment.")
     if vendor.on_hold:  # Payments are blocked for vendors on hold.
         raise PostingError(f"Vendor {vendor.code} is on hold; payments are blocked.")
 
@@ -310,6 +351,12 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
         raise PostingError(f"Vendor {vendor.code} has no payable (AP control) account set.")
     if payment.payment_account_id is None:  # A bank/cash account is required for the credit side.
         raise PostingError("Vendor payment has no payment (bank/cash) account set.")
+    if (
+        payment.payment_account.account_type != AccountType.ASSET
+        or not payment.payment_account.is_active
+        or not payment.payment_account.is_postable
+    ):
+        raise PostingError("Vendor payment account must be an active, postable asset account.")
 
     # gross = net + WHT; keep net consistent with the declared gross/WHT.  # Normalize withholding math.
     if payment.gross_amount <= 0:  # Reject zero or negative vendor payments.
@@ -349,6 +396,11 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
             description="WHT withheld", line_no=line_no,
         )
 
+    # Draft allocation rows are approval instructions, not settled sub-ledger rows.
+    # Recreate them through the allocation service only after the journal posts.
+    if persisted_plan:
+        VendorPaymentAllocation.objects.filter(payment=payment).delete()
+
     post_journal(entry, actor_user=actor_user)  # Validate and post the payment journal.
 
     payment.journal = entry  # Link the payment to the posted journal.
@@ -358,13 +410,16 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
     record(  # Log the successful vendor payment post.
         entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_POSTED,
         actor_user=actor_user, target=payment,
-        message=f"Paid {vendor.code} ({payment.net_amount} kobo net, {payment.wht_amount} WHT).",
+        message=(
+            f"Paid {vendor.code} ({format_naira(payment.net_amount)} net, "
+            f"{format_naira(payment.wht_amount)} WHT)."
+        ),
         journal_id=entry.pk, gross=payment.gross_amount,
         net=payment.net_amount, wht=payment.wht_amount,
     )
 
     if allocations:  # Explicit allocations override auto allocation.
-        allocate_vendor_payment(payment, allocations=allocations, actor_user=actor_user)  # Apply the explicit plan.
+        allocate_vendor_payment(payment, allocations=allocations, actor_user=actor_user, strict=True)  # Apply the approved plan.
     elif auto_allocate:  # Otherwise settle oldest open bills when enabled.
         allocate_vendor_payment(payment, actor_user=actor_user)  # Auto-allocate against open bills.
     return payment  # Return the posted vendor payment.
@@ -372,7 +427,7 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
 
 @transaction.atomic
 # Handle the allocate vendor payment workflow.
-def allocate_vendor_payment(payment, *, allocations=None, actor_user=None):
+def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, strict=False):
     """Apply a posted vendor payment's unallocated gross to bills.
 
     ``allocations`` is an optional list of ``(vendor_invoice, gross_amount_kobo)``;
@@ -399,9 +454,42 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None):
     else:  # Caller supplied an explicit allocation split.
         plan = list(allocations)  # Normalize the iterable to a list.
 
+    seen_invoice_ids = set()
+    if strict:
+        planned_total = 0
+        for invoice, requested in plan:
+            requested = int(requested)
+            if invoice.pk in seen_invoice_ids:
+                raise PostingError("A vendor invoice may appear only once in a payment allocation plan.")
+            seen_invoice_ids.add(invoice.pk)
+            if invoice.entity_id != payment.entity_id or invoice.vendor_id != payment.vendor_id:
+                raise PostingError("Every allocated invoice must belong to the payment entity and vendor.")
+            if invoice.status != DocumentStatus.POSTED:
+                raise PostingError(f"Vendor invoice {invoice.document_number or invoice.pk} is not posted.")
+            if requested <= 0:
+                raise PostingError("Allocation amounts must be greater than zero.")
+            if requested > invoice.balance_due:
+                raise PostingError(
+                    f"Allocation for {invoice.document_number or invoice.pk} exceeds its current balance."
+                )
+            planned_total += requested
+        if planned_total > remaining:
+            raise PostingError("Allocation plan exceeds the payment gross amount.")
+
+    seen_invoice_ids.clear()
     for invoice, requested in plan:  # Walk the allocation plan in order.
         if remaining <= 0:  # Stop once the payment is fully allocated.
             break  # Exit the current loop.
+        requested = int(requested)
+        if invoice.pk in seen_invoice_ids:
+            raise PostingError("A vendor invoice may appear only once in a payment allocation plan.")
+        seen_invoice_ids.add(invoice.pk)
+        if invoice.entity_id != payment.entity_id or invoice.vendor_id != payment.vendor_id:
+            raise PostingError("Every allocated invoice must belong to the payment entity and vendor.")
+        if invoice.status != DocumentStatus.POSTED:
+            raise PostingError(f"Vendor invoice {invoice.document_number or invoice.pk} is not posted.")
+        if requested <= 0:
+            raise PostingError("Allocation amounts must be greater than zero.")
         apply_amount = min(int(requested), invoice.balance_due, remaining)  # Cap allocation at requested, bill balance, and remaining payment.
         if apply_amount <= 0:  # Skip zero-value allocations.
             continue
@@ -425,7 +513,41 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None):
         record(  # Write the allocation audit event.
             entity=payment.entity, action=FinanceAuditAction.VENDOR_PAYMENT_ALLOCATED,
             actor_user=actor_user, target=payment,
-            message=f"Allocated {payment.allocated_amount} kobo across {len(created)} bill(s).",
+            message=f"Allocated {format_naira(payment.allocated_amount)} across {len(created)} bill(s).",
             allocated=payment.allocated_amount, unallocated=payment.unallocated_amount,
         )
     return created  # Return allocation rows touched by this call.
+
+
+@transaction.atomic
+def reverse_vendor_payment(payment, *, actor_user=None, date=None):
+    """Reverse a posted vendor payment and restore every settled invoice balance."""
+    from vs_finance.posting import reverse_journal
+    from .models import VendorInvoice, VendorPayment, VendorPaymentAllocation
+
+    payment = VendorPayment.objects.select_for_update(of=("self",)).select_related("journal").get(pk=payment.pk)
+    if payment.status != DocumentStatus.POSTED or payment.journal_id is None:
+        raise PostingError("Only a posted vendor payment with a journal can be reversed.")
+
+    allocations = list(
+        VendorPaymentAllocation.objects.select_for_update().filter(payment=payment)
+        .select_related("vendor_invoice").order_by("vendor_invoice_id")
+    )
+    invoice_ids = [allocation.vendor_invoice_id for allocation in allocations]
+    locked_invoices = {
+        invoice.pk: invoice for invoice in VendorInvoice.objects.select_for_update()
+        .filter(pk__in=invoice_ids).order_by("pk")
+    }
+
+    reversal = reverse_journal(payment.journal, actor_user=actor_user, date=date)
+    for allocation in allocations:
+        invoice = locked_invoices[allocation.vendor_invoice_id]
+        # Allocation history remains attached to the reversed payment; only the
+        # authoritative invoice settlement totals are rolled back.
+        invoice.amount_paid = max(0, invoice.amount_paid - allocation.amount)
+        invoice.refresh_payment_status(save=False)
+        invoice.save(update_fields=["amount_paid", "payment_status", "updated_at"])
+
+    payment.status = DocumentStatus.REVERSED
+    payment.save(update_fields=["status", "updated_at"])
+    return reversal

@@ -21,11 +21,12 @@ from .constants import (
     WF_DOCTYPE_PURCHASE_ORDER,
     WF_DOCTYPE_REQUISITION,
     WF_DOCTYPE_VENDOR_INVOICE,
+    WF_DOCTYPE_VENDOR_PAYMENT,
 )
 
 
 class _ProcApprovalHandler(BaseWorkflowHandler):
-    """Shared behaviour for the three procurement approval handlers.
+    """Shared behaviour for the procurement approval handlers.
 
     Subclasses only declare their ``document_model``; everything else — template
     resolution, the approval-screen summary, and the terminal callbacks — is uniform
@@ -95,3 +96,13 @@ class VendorInvoiceApprovalHandler(_ProcApprovalHandler):
     def document_model(self):
         from .models import VendorInvoice
         return VendorInvoice
+
+
+@register_handler(WF_DOCTYPE_VENDOR_PAYMENT)
+class VendorPaymentApprovalHandler(_ProcApprovalHandler):
+    noun = "Vendor payment"
+
+    @property
+    def document_model(self):
+        from .models import VendorPayment
+        return VendorPayment

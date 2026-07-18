@@ -15,6 +15,7 @@ from django.db import transaction
 
 from vs_finance.audit import record
 from vs_finance.constants import FinanceAuditAction
+from vs_finance.money import format_naira
 from vs_finance.receivables import compute_line_net, compute_tax
 
 from .constants import QuotationStatus, RfqStatus
@@ -103,7 +104,7 @@ def submit_quotation(quotation, *, actor_user=None):
         entity=quotation.entity, action=FinanceAuditAction.QUOTATION_SUBMITTED,
         actor_user=actor_user, target=quotation,
         message=f"Quotation {quotation.document_number} from {quotation.vendor.code} "
-                f"submitted ({quotation.total} kobo).",
+                f"submitted ({format_naira(quotation.total)}).",
         rfq_id=quotation.rfq_id, total=quotation.total,
     )
     return quotation
@@ -182,7 +183,7 @@ def award_quotation(quotation, *, order_date=None, actor_user=None):
         entity=quotation.entity, action=FinanceAuditAction.QUOTATION_AWARDED,
         actor_user=actor_user, target=quotation,
         message=f"Awarded quotation {quotation.document_number} from {vendor.code} → "
-                f"PO {po.document_number} ({po.total} kobo).",
+                f"PO {po.document_number} ({format_naira(po.total)}).",
         rfq_id=rfq.pk, purchase_order_id=po.pk, total=po.total,
     )
     return po

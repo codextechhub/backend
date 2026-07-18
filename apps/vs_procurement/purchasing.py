@@ -23,6 +23,7 @@ from django.db.models import F
 from vs_finance.audit import record, record_rejection
 from vs_finance.constants import DocumentStatus, FinanceAuditAction, JournalSource
 from vs_finance.exceptions import FinanceError, PostingError
+from vs_finance.money import format_naira
 from vs_finance.posting import post_journal, resolve_period
 from vs_finance.receivables import compute_line_net, compute_tax
 
@@ -314,7 +315,7 @@ def _post_grn_atomic(grn, *, actor_user=None):
     record(
         entity=grn.entity, action=FinanceAuditAction.GRN_POSTED,
         actor_user=actor_user, target=grn,
-        message=f"Received goods from {grn.vendor.code} ({total_value} kobo to GR/IR).",
+        message=f"Received goods from {grn.vendor.code} ({format_naira(total_value)} to GR/IR).",
         journal_id=entry.pk, value=total_value,
     )
     return grn
