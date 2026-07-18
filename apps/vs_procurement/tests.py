@@ -15,6 +15,7 @@ from django.test import TestCase
 from vs_finance.constants import (
     DocumentStatus, FinanceAuditAction, FinanceAuditStatus, InvoicePaymentStatus,
 )
+from vs_finance.exceptions import PostingError
 from vs_finance.models import (
     Account,
     FinanceAuditLog,
@@ -169,6 +170,10 @@ class _P2PFixtureMixin:
         vi = VendorInvoice.objects.create(
             entity=entity, vendor=vendor, purchase_order=po,
             invoice_date=date, due_date=date,
+            # Service-level posting now requires the same approved governance
+            # state as the API. Tests that exercise approval start from an
+            # explicitly-created NOT_SUBMITTED invoice instead.
+            approval_state=ProcApprovalState.APPROVED,
         )
         for i, (code, qty, price, tax, po_line) in enumerate(lines, start=1):
             VendorInvoiceLine.objects.create(
@@ -347,6 +352,36 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
 
 
 class VendorInvoiceTests(_P2PFixtureMixin, TestCase):
+    def test_post_requires_completed_approval(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        vi = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+        vi.approval_state = ProcApprovalState.NOT_SUBMITTED
+        vi.save(update_fields=["approval_state"])
+
+        with self.assertRaisesMessage(PostingError, "must be approved"):
+            post_vendor_invoice(vi)
+        vi.refresh_from_db()
+        self.assertEqual(vi.status, DocumentStatus.DRAFT)
+        self.assertFalse(FinanceAuditLog.objects.filter(
+            entity=entity, action=FinanceAuditAction.VENDOR_INVOICE_POSTED,
+        ).exists())
+
+    def test_match_aggregates_split_invoice_rows_for_one_po_line(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 5, 100_000, None)])
+        po_line = po.lines.first()
+        post_grn(self.make_grn(entity, vendor, po, [(po_line, 5)]))
+        vi = self.make_bill(entity, vendor, [
+            ("5100", 3, 100_000, None, po_line),
+            ("5100", 3, 100_000, None, po_line),
+        ], po=po)
+
+        with self.assertRaises(ThreeWayMatchError):
+            post_vendor_invoice(vi)
+        vi.refresh_from_db()
+        self.assertEqual(vi.match_status, MatchStatus.OVER_BILLED)
+
+
     def test_matched_invoice_clears_grir_to_zero(self):
         entity, _, vendor, _, _ = self.build_p2p()
         po = self.make_po(entity, vendor, [("5100", 10, 100000, None)])
@@ -412,6 +447,38 @@ class VendorInvoiceTests(_P2PFixtureMixin, TestCase):
             post_vendor_invoice(vi)
         vi.refresh_from_db()
         self.assertEqual(vi.match_status, MatchStatus.UNDER_RECEIVED)
+
+
+class VendorInvoiceConsoleAPITests(_P2PFixtureMixin, TestCase):
+    def _client(self, entity):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+        user = get_user_model().objects.create_user(
+            email="vendor-invoice-console@test.com", password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Invoice", last_name="Tester",
+        )
+        return TenantAPIClient(user=user)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=False)
+    def test_summary_requires_vendor_invoice_view_permission(self, _permission):
+        entity, _, _, _, _ = self.build_p2p()
+        response = self._client(entity).get(
+            f"/v1/procurement/vendor-invoices/summary/?entity={entity.code}",
+        )
+        self.assertEqual(response.status_code, 403)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_detail_does_not_cross_entity_scope(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+        other = LedgerEntity.objects.create(
+            name="Other Books", code="OTHER", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+        response = self._client(entity).get(
+            f"/v1/procurement/vendor-invoices/{invoice.id}/?entity={other.code}",
+        )
+        self.assertEqual(response.status_code, 404)
 
 
 class VendorPaymentTests(_P2PFixtureMixin, TestCase):

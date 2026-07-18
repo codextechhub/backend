@@ -368,6 +368,13 @@ class VendorInvoiceSubmitApprovalView(_ProcBase):
         inv = VendorInvoice.objects.filter(entity=entity, pk=pk).first()
         if inv is None:
             raise NotFound("No such vendor invoice in this entity.")
+        if inv.status != DocumentStatus.DRAFT:
+            raise ValidationError({"status": "Only a draft vendor invoice can be submitted for approval."})
+        # Approval must review the same priced and matched evidence that posting
+        # later revalidates under row locks.
+        from .. import payables
+        payables.price_vendor_invoice(inv)
+        payables.match_vendor_invoice(inv, save=True)
         instance = approvals.submit_for_approval(inv, actor_user=request.user)
         return _approval_response("Vendor invoice submitted for approval.",
                                   inv, instance, VendorInvoiceSerializer)

@@ -39,7 +39,7 @@ PROCUREMENT_RESOURCES = [
     ("stock",          "stock items",           [("view", "NORMAL"), ("manage", "SENSITIVE"), ("issue", "SENSITIVE"), ("adjust", "SENSITIVE")]),
     ("vendor",         "vendors",               [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                  ("view_sensitive", "SENSITIVE")]),
-    ("vendor_invoice", "vendor invoices",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("submit", "SENSITIVE"),
+    ("vendor_invoice", "vendor invoices",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("submit", "SENSITIVE"),
                                                  ("match", "SENSITIVE"), ("post", "CRITICAL")]),
     ("vendor_payment", "vendor payments",       [("view", "NORMAL"), ("create", "CRITICAL"), ("post", "CRITICAL")]),
 ]

@@ -31,7 +31,7 @@ from vs_finance.exceptions import FinanceError, PostingError
 from vs_finance.posting import post_journal, resolve_period
 from vs_finance.receivables import compute_line_net, compute_tax
 
-from .constants import MATCH_BLOCKING, MatchStatus, WHT_PAYABLE_CODE
+from .constants import MATCH_BLOCKING, MatchStatus, ProcApprovalState, WHT_PAYABLE_CODE
 from .exceptions import ThreeWayMatchError
 from .purchasing import resolve_account
 
@@ -68,17 +68,27 @@ def match_vendor_invoice(invoice, *, save: bool = True) -> str:
 
     A bill with no PO linkage is treated as ``AUTO_MATCHED`` (nothing to match against).
     """
-    from .models import PurchaseOrderLine
-
     status = MatchStatus.AUTO_MATCHED  # Default to matched until a variance is found.
     has_po_line = False  # Track whether this bill has any PO-backed lines.
+    billed_by_po_line: dict[int, Decimal] = defaultdict(Decimal)
+    po_lines = {}
+    price_variance = False
 
     for line in invoice.lines.select_related("po_line").all():
         if line.po_line_id is None:  # Non-PO lines have nothing to three-way match.
             continue
         has_po_line = True  # At least one line is PO-backed.
-        po_line = PurchaseOrderLine.objects.get(pk=line.po_line_id)
-        billed_cum = Decimal(po_line.invoiced_qty) + Decimal(line.quantity)
+        po_line = line.po_line
+        po_lines[po_line.pk] = po_line
+        # Several invoice rows may point at one PO row; aggregate them before
+        # comparing so splitting a quantity cannot bypass the ordered/received cap.
+        billed_by_po_line[po_line.pk] += Decimal(line.quantity)
+        if int(line.unit_price) != int(po_line.unit_price):
+            price_variance = True
+
+    for po_line_id, current_qty in billed_by_po_line.items():
+        po_line = po_lines[po_line_id]
+        billed_cum = Decimal(po_line.invoiced_qty) + current_qty
         ordered = Decimal(po_line.quantity)
         received = Decimal(po_line.received_qty)
 
@@ -88,9 +98,9 @@ def match_vendor_invoice(invoice, *, save: bool = True) -> str:
         if billed_cum > received:  # Cannot bill goods that have not been received.
             status = MatchStatus.UNDER_RECEIVED  # Blocking match status.
             break  # Exit the current loop.
-        if int(line.unit_price) != int(po_line.unit_price):  # Unit price differs from the PO.
-            status = MatchStatus.PRICE_VARIANCE  # Non-blocking variance unless caller disallows it.
-            # keep scanning; a later line could be a harder (blocking) failure  # Do not stop on soft variance.
+
+    if status == MatchStatus.AUTO_MATCHED and price_variance:
+        status = MatchStatus.PRICE_VARIANCE  # Exact-price policy: any difference is visible but non-blocking.
 
     if not has_po_line:  # Non-PO bills have no match source.
         status = MatchStatus.AUTO_MATCHED  # Treat them as matched.
@@ -134,13 +144,30 @@ def post_vendor_invoice(invoice, *, actor_user=None, allow_variance=False):
 def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=False):
     from vs_finance.models import JournalEntry, JournalLine
     from .constants import GRIR_CLEARING_CODE
-    from .models import PurchaseOrderLine
+    from .models import PurchaseOrderLine, VendorInvoice
+
+    # Lock the invoice and every referenced PO row before re-running the match.
+    # This prevents two concurrent bills from both observing the same un-invoiced
+    # quantity and posting beyond what was ordered or received.
+    invoice = VendorInvoice.objects.select_for_update().select_related("vendor").get(pk=invoice.pk)
+    po_line_ids = list(invoice.lines.exclude(po_line_id=None).values_list("po_line_id", flat=True))
+    if po_line_ids:
+        list(PurchaseOrderLine.objects.select_for_update().filter(pk__in=po_line_ids).order_by("pk"))
 
     if invoice.status != DocumentStatus.DRAFT:  # Only draft bills can be posted.
         raise PostingError(
             f"Vendor invoice {invoice.document_number or invoice.pk} is '{invoice.status}', "
             f"only a draft can be posted.",
         )
+    if invoice.approval_state != ProcApprovalState.APPROVED:
+        raise PostingError(
+            f"Vendor invoice {invoice.document_number or invoice.pk} must be approved before posting."
+        )
+
+    # Pricing and matching are repeated under the row locks because approval may
+    # have taken time and another invoice could have consumed PO quantities since.
+    price_vendor_invoice(invoice)
+    match_vendor_invoice(invoice, save=True)
 
     vendor = invoice.vendor  # Vendor drives the AP control account.
     ap_account = vendor.payable_account  # Resolve the vendor payable account.

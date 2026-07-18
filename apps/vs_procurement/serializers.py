@@ -12,6 +12,7 @@ display string so a client never needs to know the divisor.
 from __future__ import annotations
 
 from rest_framework import serializers
+from django.utils import timezone
 
 from vs_finance.constants import DocumentStatus
 from vs_finance.money import format_naira
@@ -535,14 +536,21 @@ class VendorInvoiceLineSerializer(serializers.ModelSerializer):
 class VendorInvoiceSerializer(serializers.ModelSerializer):
     lines = VendorInvoiceLineSerializer(many=True, read_only=True)
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    purchase_order_number = serializers.CharField(
+        source="purchase_order.document_number", read_only=True, default=None,
+    )
     balance_due = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
+    is_overdue = serializers.SerializerMethodField()
+    display_status = serializers.SerializerMethodField()
 
     class Meta:
         model = VendorInvoice
         fields = [
-            "id", "document_number", "status", "match_status", "payment_status",
-            "vendor_id", "vendor_code", "purchase_order_id",
+            "id", "document_number", "status", "approval_state", "match_status", "payment_status",
+            "display_status", "is_overdue",
+            "vendor_id", "vendor_code", "vendor_name", "purchase_order_id", "purchase_order_number",
             "invoice_date", "due_date", "vendor_reference", "narration",
             "subtotal", "tax_total", "total", "total_naira",
             "amount_paid", "balance_due", "journal_id", "lines",
@@ -550,6 +558,39 @@ class VendorInvoiceSerializer(serializers.ModelSerializer):
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
+
+    def get_is_overdue(self, obj) -> bool:
+        # Overdue is a date/payment overlay, never a replacement for POSTED ledger status.
+        return bool(
+            obj.status == DocumentStatus.POSTED and obj.due_date
+            and obj.due_date < timezone.localdate() and obj.balance_due > 0
+        )
+
+    def get_display_status(self, obj) -> str:
+        # The list's single headline status follows the most actionable overlay;
+        # callers still receive every underlying lifecycle field separately.
+        if obj.payment_status == "PAID":
+            return "PAID"
+        if obj.payment_status == "PARTIAL":
+            return "PARTIAL"
+        if self.get_is_overdue(obj):
+            return "OVERDUE"
+        if obj.match_status in ("UNDER_RECEIVED", "OVER_BILLED"):
+            return "DISPUTED"
+        if obj.approval_state == ProcApprovalState.PENDING:
+            return "PENDING_APPROVAL"
+        if obj.approval_state in (ProcApprovalState.APPROVED, ProcApprovalState.REJECTED):
+            return obj.approval_state
+        return obj.status
+
+
+class VendorInvoiceListSerializer(VendorInvoiceSerializer):
+    """List rows omit line arrays; the detail drawer fetches those separately."""
+
+    lines = None
+
+    class Meta(VendorInvoiceSerializer.Meta):
+        fields = [f for f in VendorInvoiceSerializer.Meta.fields if f != "lines"]
 
 
 # --------------------------------------------------------------------------- #

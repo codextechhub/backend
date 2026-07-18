@@ -14,6 +14,7 @@ from vs_procurement.models import (
     GoodsReceivedNote, GoodsReceivedNoteLine, PurchaseOrder, PurchaseOrderLine,
     Vendor, VendorCategory, VendorInvoice, VendorInvoiceLine,
 )
+from vs_procurement.constants import ProcApprovalState
 from vs_procurement.payables import post_vendor_invoice
 from vs_procurement.purchasing import approve_purchase_order, post_grn, price_po
 
@@ -98,6 +99,9 @@ class Command(BaseCommand):
                 due_date=invoice_date + datetime.timedelta(days=14),
                 vendor_reference=reference, created_by=actor,
                 narration="Procurement dashboard verification data",
+                # Standing historical demo bills represent an already-approved
+                # legacy period before the posting service enforces governance.
+                approval_state=ProcApprovalState.APPROVED,
             )
             VendorInvoiceLine.objects.create(
                 vendor_invoice=invoice, description=f"{vendor.name} monthly services",
