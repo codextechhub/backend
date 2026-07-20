@@ -299,6 +299,45 @@ class MyPositionAssignmentsTests(TestCase):
         self.assertNotIn(self.other_assignment.id, returned_ids)
 
 
+class OrganogramTreeTests(TestCase):
+    """build_tree nests active seats and never drops a subtree whose parent seat
+    is inactive/removed (which would blank the chart)."""
+
+    def setUp(self):
+        from vs_user.models import OrgNode
+
+        self.division = OrgNode.objects.create(
+            name="Eng", code="ENG", kind=OrgNode.Kind.DIVISION,
+        )
+
+    def test_active_root_and_child_nest(self):
+        from vs_user.models import Position
+        from vs_user.services.organogram import OrganogramService
+
+        root = Position.objects.create(title="CTO", code="CTO", org_node=self.division)
+        child = Position.objects.create(
+            title="Eng Lead", code="LEAD", org_node=self.division, reports_to=root,
+        )
+        tree = OrganogramService.build_tree()
+        self.assertEqual([n["id"] for n in tree], [root.id])
+        self.assertEqual([c["id"] for c in tree[0]["direct_reports"]], [child.id])
+
+    def test_child_of_inactive_parent_surfaces_as_root(self):
+        from vs_user.models import Position
+        from vs_user.services.organogram import OrganogramService
+
+        parent = Position.objects.create(
+            title="Ghost", code="GHOST", org_node=self.division, is_active=False,
+        )
+        child = Position.objects.create(
+            title="Orphan", code="ORPHAN", org_node=self.division, reports_to=parent,
+        )
+        tree = OrganogramService.build_tree()
+        root_ids = [n["id"] for n in tree]
+        self.assertIn(child.id, root_ids)       # surfaced, not dropped
+        self.assertNotIn(parent.id, root_ids)   # inactive parent excluded
+
+
 class LoginLockoutOracleTests(TestCase):
     """B13 — wrong-password attempts must never reveal the locked state."""
 

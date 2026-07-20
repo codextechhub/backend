@@ -154,10 +154,15 @@ class OrganogramService:
             .select_related('org_node')
             .prefetch_related('assignments__user')
         )
+        active_ids = {pos.id for pos in positions}
         children_by_parent: dict = {}
         roots: list = []
         for pos in positions:
-            children_by_parent.setdefault(pos.reports_to_id, []).append(pos)
+            # A position is a root when it has no manager seat OR its manager
+            # seat is inactive/removed. Without the second case an inactive
+            # parent would silently drop its whole subtree from the chart.
+            parent_id = pos.reports_to_id if pos.reports_to_id in active_ids else None
+            children_by_parent.setdefault(parent_id, []).append(pos)
 
         def node_for(pos: Position) -> dict:
             return {
