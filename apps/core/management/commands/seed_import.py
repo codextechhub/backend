@@ -742,7 +742,127 @@ TEMPLATES: list[dict] = [
                 "column_order":  13,
             },
         ],
-    }
+    },
+
+    {
+        # -----------------------------------------------------------------------
+        # CX Users (CodeX platform staff)
+        # -----------------------------------------------------------------------
+        # One row = one CodeX platform staff member. Each is created through the
+        # normal flow (submitted for approval, invited on approval) by
+        # import_cx_users_row — never a draft. Platform-scoped: no school column.
+        # -----------------------------------------------------------------------
+        "template": {
+            "code": "cx_users_master_v1",
+            "name": "CX Users Master Import",
+            "dataset_type": DatasetTypeChoices.CX_USERS,
+            "status": TemplateStatusChoices.ACTIVE,
+            "default_file_format": FileFormatChoices.CSV,
+            "description": (
+                "Template for bulk-adding CodeX platform staff. Each row is created "
+                "and submitted for approval, then appears under CX Users."
+            ),
+            "instructions": (
+                "Fill one staff member per row. First Name, Last Name, Email and "
+                "Role Key are required; the rest are optional. Role Key is the "
+                "role template key (e.g. xvs_platform_admin). Gender is MALE or "
+                "FEMALE. Employment Type is one of FULL_TIME, PART_TIME, CONTRACT, "
+                "INTERN. Position is an organogram seat id or code. Date Joined is "
+                "YYYY-MM-DD."
+            ),
+            "allow_sample_row": True,
+            "sample_row_data": {
+                "First Name":       "Ada",
+                "Last Name":        "Obi",
+                "Email":            "ada.obi@codexng.com",
+                "Role Key":         "xvs_platform_admin",
+                "Phone":            "+2348012345678",
+                "Gender":           "FEMALE",
+                "Job Title":        "Support Analyst",
+                "Employment Type":  "FULL_TIME",
+                "Position":         "ENG-MGR",
+                "Date Joined":      "2026-07-20",
+            },
+            "validation_rules": {"allow_duplicate_emails": False},
+            "is_download_enabled": True,
+        },
+        "columns": [
+            {
+                "column_name":  "First Name", "target_field": "first_name",
+                "display_name": "First Name", "help_text": "The hire's first name.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True, "max_length": 100,
+                "sample_value": "Ada", "column_order": 1,
+            },
+            {
+                "column_name":  "Last Name", "target_field": "last_name",
+                "display_name": "Last Name", "help_text": "The hire's last name.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True, "max_length": 100,
+                "sample_value": "Obi", "column_order": 2,
+            },
+            {
+                "column_name":  "Email", "target_field": "email",
+                "display_name": "Email", "help_text": "Work email — must be unique across the platform.",
+                "data_type": TemplateColumnDataTypeChoices.EMAIL,
+                "is_required": True, "is_unique": True,
+                "sample_value": "ada.obi@codexng.com", "column_order": 3,
+            },
+            {
+                "column_name":  "Role Key", "target_field": "role",
+                "display_name": "Role Key",
+                "help_text": "Role template key to assign, e.g. xvs_platform_admin.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": True, "max_length": 120,
+                "sample_value": "xvs_platform_admin", "column_order": 4,
+            },
+            {
+                "column_name":  "Phone", "target_field": "phone",
+                "display_name": "Phone", "help_text": "Optional phone number.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False, "max_length": 32,
+                "sample_value": "+2348012345678", "column_order": 5,
+            },
+            {
+                "column_name":  "Gender", "target_field": "gender",
+                "display_name": "Gender", "help_text": "MALE or FEMALE.",
+                "data_type": TemplateColumnDataTypeChoices.CHOICE,
+                "is_required": False, "allowed_values": ["MALE", "FEMALE"],
+                "sample_value": "FEMALE", "column_order": 6,
+            },
+            {
+                "column_name":  "Job Title", "target_field": "job_title",
+                "display_name": "Job Title", "help_text": "Optional job title.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False, "max_length": 120,
+                "sample_value": "Support Analyst", "column_order": 7,
+            },
+            {
+                "column_name":  "Employment Type", "target_field": "employment_type",
+                "display_name": "Employment Type",
+                "help_text": "One of FULL_TIME, PART_TIME, CONTRACT, INTERN.",
+                "data_type": TemplateColumnDataTypeChoices.CHOICE,
+                "is_required": False,
+                "allowed_values": ["FULL_TIME", "PART_TIME", "CONTRACT", "INTERN"],
+                "sample_value": "FULL_TIME", "column_order": 8,
+            },
+            {
+                "column_name":  "Position", "target_field": "position",
+                "display_name": "Position",
+                "help_text": "Optional organogram seat — a Position id or code.",
+                "data_type": TemplateColumnDataTypeChoices.STRING,
+                "is_required": False, "max_length": 80,
+                "sample_value": "ENG-MGR", "column_order": 9,
+            },
+            {
+                "column_name":  "Date Joined", "target_field": "date_joined",
+                "display_name": "Date Joined", "help_text": "Optional YYYY-MM-DD.",
+                "data_type": TemplateColumnDataTypeChoices.DATE,
+                "is_required": False,
+                "sample_value": "2026-07-20", "column_order": 10,
+            },
+        ],
+    },
 ]
 
 

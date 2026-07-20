@@ -48,7 +48,11 @@ class SeedImportConfigurationTests(TestCase):
                     is_download_enabled=True,
                 ).values_list("dataset_type", flat=True)
             ),
-            {DatasetTypeChoices.SCHOOLS, DatasetTypeChoices.BRANCHES},
+            {
+                DatasetTypeChoices.SCHOOLS,
+                DatasetTypeChoices.BRANCHES,
+                DatasetTypeChoices.CX_USERS,
+            },
         )
 
     def test_super_admin_gets_all_import_permissions_and_platform_admin_gets_templates(self):

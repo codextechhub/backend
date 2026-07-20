@@ -1059,10 +1059,13 @@ class CXUsersImportHandlerTests(TestCase):
         )
         self.assertEqual(result.action, "skip")
 
-    def test_cx_users_template_is_seeded(self):
+    def test_cx_users_template_seeds_from_the_import_command(self):
+        from io import StringIO
+        from django.core.management import call_command
         from vs_import_data.models import ImportTemplate
 
-        template = ImportTemplate.objects.get(code="cx_users_master")
+        call_command("seed_import", dataset_type="cx_users", stdout=StringIO())
+        template = ImportTemplate.objects.get(code="cx_users_master_v1")
         self.assertEqual(template.dataset_type, "cx_users")
         self.assertTrue(
             template.columns.filter(target_field="email", is_required=True).exists()
