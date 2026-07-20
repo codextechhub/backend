@@ -117,7 +117,10 @@ class StockItemDetailView(_ProcBase):
         if "unit_of_measure" in body:
             item.unit_of_measure = body["unit_of_measure"] or "each"
         if "catalog_item" in body:
-            item.catalog_item = _resolve_catalog_item(entity, body.get("catalog_item"))
+            # Preserve an existing inactive historical link, but do not permit a new one.
+            item.catalog_item = _resolve_catalog_item(
+                entity, body.get("catalog_item"), current_id=item.catalog_item_id,
+            )
         if "inventory_account" in body:
             inv = _resolve_account(entity, body.get("inventory_account"), "inventory_account")
             if inv is None:
@@ -278,4 +281,3 @@ class StockValuationReportView(_ProcBase):
                 "total_value": _kobo(report["total_value"]),
             },
         )
-

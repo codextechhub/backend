@@ -21,6 +21,7 @@ urlpatterns = [
 
     # Item catalog
     path("catalog-items/", views.CatalogItemListCreateView.as_view(), name="proc-catalog-items"),
+    path("catalog-items/<int:pk>/insights/", views.CatalogItemInsightsView.as_view(), name="proc-catalog-item-insights"),
     path("catalog-items/<int:pk>/", views.CatalogItemDetailView.as_view(), name="proc-catalog-item-detail"),
 
     # Vendor contracts

@@ -244,6 +244,12 @@ class CatalogItem(TimeStampedModel):
         max_length=24, blank=True, default="each", help_text="e.g. 'each', 'box', 'hour'.",
     )
 
+    category = models.ForeignKey(
+        VendorCategory, on_delete=models.PROTECT, related_name="catalog_items",
+        null=True, blank=True,
+        help_text="Optional purchasing taxonomy classification for this item.",
+    )
+
     preferred_vendor = models.ForeignKey(
         Vendor, on_delete=models.SET_NULL, related_name="catalog_items",
         null=True, blank=True,
@@ -268,19 +274,44 @@ class CatalogItem(TimeStampedModel):
             models.UniqueConstraint(
                 fields=["entity", "code"], name="uniq_proc_catalogitem_entity_code",
             ),
+            models.UniqueConstraint(
+                Lower("code"), "entity", name="uniq_proc_catalogitem_entity_code_ci",
+            ),
         ]
         indexes = [
             models.Index(fields=["entity", "is_active"]),
+            models.Index(fields=["entity", "category"], name="proc_catalog_ent_cat_idx"),
             models.Index(fields=["preferred_vendor"]),
         ]
         ordering = ["entity", "code"]
 
+    def save(self, *args, **kwargs):
+        """Keep the integration-facing item code canonical outside the API too."""
+        self.code = str(self.code or "").strip().upper()
+        return super().save(*args, **kwargs)
+
     def line_defaults(self) -> dict:
         """The buying defaults to seed a requisition / RFQ / PO line from this item."""
+        expense = self.default_expense_account
+        if expense is None and self.category_id and self.category.is_active:
+            # Category is a fallback only; an item's explicit account remains authoritative.
+            expense = self.category.default_expense_account
+        if expense is not None and (
+            not expense.is_active or not expense.is_postable or expense.account_type != "EXPENSE"
+        ):
+            # Historical master links remain readable but cannot seed an unusable posting account.
+            expense = None
+        tax = self.default_tax_code
+        if tax is not None:
+            paid = tax.paid_account
+            usable_paid = paid is not None and paid.is_active and paid.is_postable and paid.account_type == "ASSET"
+            if not tax.is_active or (tax.rate_bps and (not tax.is_recoverable or not usable_paid)):
+                # Historical tax links stay visible but cannot seed a line that would fail posting.
+                tax = None
         return {
             "description": self.description or self.name,
-            "expense_account": self.default_expense_account,
-            "tax_code": self.default_tax_code,
+            "expense_account": expense,
+            "tax_code": tax,
             "unit_price": self.standard_unit_price,
         }
 

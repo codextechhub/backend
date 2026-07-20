@@ -10,9 +10,9 @@ from django.db.models import F
 from django.utils import timezone
 
 from vs_finance.constants import DocumentStatus, PaymentMethod
-from vs_finance.models import Account, BankAccount, FiscalPeriod, LedgerEntity
+from vs_finance.models import Account, BankAccount, FiscalPeriod, LedgerEntity, TaxCode
 from vs_procurement.models import (
-    GoodsReceivedNote, GoodsReceivedNoteLine, PurchaseOrder, PurchaseOrderLine,
+    CatalogItem, GoodsReceivedNote, GoodsReceivedNoteLine, PurchaseOrder, PurchaseOrderLine,
     Vendor, VendorCategory, VendorContract, VendorInvoice, VendorInvoiceLine, VendorPayment,
     VendorPaymentAllocation,
 )
@@ -126,6 +126,41 @@ class Command(BaseCommand):
                     "name": name, "category": categories[2], "payable_account": payable,
                     "default_expense_account": expense, "kyc_status": kyc_status,
                     "is_active": is_active, "on_hold": False,
+                },
+            )
+
+        purchase_tax = TaxCode.objects.filter(
+            entity=entity, is_active=True, is_recoverable=True,
+            paid_account__is_active=True, paid_account__is_postable=True,
+        ).first()
+        # Catalog fixtures are master data only: they populate every governance/default
+        # state without retroactively inventing requisition, stock, or PO history.
+        for code, name, description, unit, category, vendor, price, lead_time, active in (
+            (
+                "SRV-R760", "Dell PowerEdge R760 Server", "Rack server for data-centre workloads",
+                "Unit", equipment, vendors[1], 420_000_000, 14, True,
+            ),
+            (
+                "LIC-M365E5", "Microsoft 365 E5 Licence", "Annual enterprise user licence",
+                "Seat / yr", cloud, vendors[0], 12_700_000, 1, True,
+            ),
+            (
+                "SVC-CLOUD", "Managed Cloud Support", "Monthly managed cloud support service",
+                "Month", cloud, vendors[0], 8_500_000, 3, True,
+            ),
+            (
+                "OLD-TAPE", "Legacy Backup Tape", "Retired backup-media specification",
+                "Pack", equipment, None, 48_500_000, None, False,
+            ),
+        ):
+            CatalogItem.objects.update_or_create(
+                entity=entity, code=code,
+                defaults={
+                    "name": name, "description": description, "unit_of_measure": unit,
+                    "category": category, "preferred_vendor": vendor,
+                    "default_expense_account": expense, "default_tax_code": purchase_tax,
+                    "standard_unit_price": price, "lead_time_days": lead_time,
+                    "is_active": active,
                 },
             )
 

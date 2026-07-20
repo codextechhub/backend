@@ -227,6 +227,10 @@ class VendorCategoryListCreateView(_ProcBase):
             # Count only same-entity vendor links even if legacy ORM writes bypassed API validation.
             vendor_count=Count("vendors", filter=Q(vendors__entity=entity), distinct=True),
             child_count=Count("children", filter=Q(children__entity=entity), distinct=True),
+            # Catalog assignments are direct-category counts; descendants keep their own totals.
+            catalog_item_count=Count(
+                "catalog_items", filter=Q(catalog_items__entity=entity), distinct=True,
+            ),
         )
         if (active := request.query_params.get("is_active")) in ("true", "false"):
             qs = qs.filter(is_active=active == "true")
@@ -282,6 +286,9 @@ class VendorCategoryDetailView(_ProcBase):
                 # Keep the detail aggregate tenant-safe at the join boundary too.
                 vendor_count=Count("vendors", filter=Q(vendors__entity=entity), distinct=True),
                 child_count=Count("children", filter=Q(children__entity=entity), distinct=True),
+                catalog_item_count=Count(
+                    "catalog_items", filter=Q(catalog_items__entity=entity), distinct=True,
+                ),
             ).first()
         if category is None:
             raise NotFound("No such vendor category in this entity.")
@@ -323,6 +330,7 @@ class VendorCategoryDetailView(_ProcBase):
         category.save()
         category.vendor_count = category.vendors.filter(entity=entity).count()
         category.child_count = category.children.filter(entity=entity).count()
+        category.catalog_item_count = category.catalog_items.filter(entity=entity).count()
         return success_response(
             "Vendor category updated.", data=VendorCategorySerializer(category).data,
         )

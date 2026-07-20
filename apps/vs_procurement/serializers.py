@@ -55,6 +55,7 @@ class VendorCategorySerializer(serializers.ModelSerializer):
     )
     vendor_count = serializers.IntegerField(read_only=True, default=0)
     child_count = serializers.IntegerField(read_only=True, default=0)
+    catalog_item_count = serializers.IntegerField(read_only=True, default=0)
     parent_code = serializers.CharField(source="parent.code", read_only=True, default=None)
     parent_name = serializers.CharField(source="parent.name", read_only=True, default=None)
     level = serializers.SerializerMethodField()
@@ -70,7 +71,7 @@ class VendorCategorySerializer(serializers.ModelSerializer):
         fields = [
             "id", "code", "name", "parent_id", "parent_code", "parent_name", "level",
             "default_expense_account_id", "default_expense_code", "is_active",
-            "vendor_count", "child_count",
+            "vendor_count", "child_count", "catalog_item_count",
         ]
 
 
@@ -169,26 +170,58 @@ class VendorContractSerializer(serializers.ModelSerializer):
 # --------------------------------------------------------------------------- #
 
 class CatalogItemSerializer(serializers.ModelSerializer):
+    category_code = serializers.CharField(source="category.code", read_only=True, default=None)
+    category_name = serializers.CharField(source="category.name", read_only=True, default=None)
+    category_level = serializers.SerializerMethodField()
+    category_path = serializers.SerializerMethodField()
     preferred_vendor_code = serializers.CharField(
         source="preferred_vendor.code", read_only=True, default=None,
+    )
+    preferred_vendor_name = serializers.CharField(
+        source="preferred_vendor.name", read_only=True, default=None,
     )
     expense_code = serializers.CharField(
         source="default_expense_account.code", read_only=True, default=None,
     )
+    expense_name = serializers.CharField(
+        source="default_expense_account.name", read_only=True, default=None,
+    )
     tax_code = serializers.CharField(
         source="default_tax_code.code", read_only=True, default=None,
     )
+    tax_name = serializers.CharField(
+        source="default_tax_code.name", read_only=True, default=None,
+    )
+    stock_status = serializers.CharField(read_only=True, default=None, allow_null=True)
     standard_unit_price_naira = serializers.SerializerMethodField()
+
+    def get_category_level(self, item):
+        if item.category_id is None:
+            return None
+        if item.category.parent_id is None:
+            return 1
+        return 2 if item.category.parent.parent_id is None else 3
+
+    def get_category_path(self, item):
+        if item.category_id is None:
+            return None
+        nodes = [item.category.name]
+        parent = item.category.parent
+        while parent is not None:
+            nodes.append(parent.name)
+            parent = parent.parent
+        return " / ".join(reversed(nodes))
 
     class Meta:
         model = CatalogItem
         fields = [
             "id", "code", "name", "description", "unit_of_measure",
-            "preferred_vendor_id", "preferred_vendor_code",
-            "default_expense_account_id", "expense_code",
-            "default_tax_code_id", "tax_code",
+            "category_id", "category_code", "category_name", "category_level", "category_path",
+            "preferred_vendor_id", "preferred_vendor_code", "preferred_vendor_name",
+            "default_expense_account_id", "expense_code", "expense_name",
+            "default_tax_code_id", "tax_code", "tax_name",
             "lead_time_days", "standard_unit_price", "standard_unit_price_naira",
-            "is_active",
+            "is_active", "stock_status",
         ]
 
     def get_standard_unit_price_naira(self, obj) -> str:
