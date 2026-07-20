@@ -566,7 +566,7 @@ class ComplianceRuleListCreateView(CreateModelMixin, generics.ListCreateAPIView)
     rbac_permission = "platform.audit.manage"
 
     def get_queryset(self):
-        queryset = ComplianceRule.objects.select_related("school").all()
+        queryset = ComplianceRule.objects.select_related("tenant").all()
 
         i_slug = self.request.query_params.get("i_slug")
         rule_type = self.request.query_params.get("rule_type")
@@ -574,7 +574,7 @@ class ComplianceRuleListCreateView(CreateModelMixin, generics.ListCreateAPIView)
         module_key = self.request.query_params.get("module_key")
 
         if i_slug:
-            queryset = queryset.filter(school__slug=i_slug)
+            queryset = queryset.filter(tenant__slug=i_slug)
 
         if rule_type:
             queryset = queryset.filter(rule_type=rule_type)
@@ -606,7 +606,7 @@ class ComplianceRuleDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyMode
     docstring-name: Compliance rules
     """
 
-    queryset = ComplianceRule.objects.select_related("school").all()
+    queryset = ComplianceRule.objects.select_related("tenant").all()
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "platform.audit.manage"
     lookup_field = "id"

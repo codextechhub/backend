@@ -505,7 +505,7 @@ class ComplianceRule(TimeStampedModel):
         name (CharField): Human-readable identifier shown in admin tools.
         description (TextField): Optional longer explanation of the rule.
         rule_type (CharField): Category such as retention, masking, or export.
-        school (ForeignKey): Tenant that owns the rule, if any.
+        tenant (ForeignKey): Tenant that owns the rule, if any.
         module_key (CharField): Optional module filter that narrows scope.
         action_type (CharField): Optional action filter that narrows scope.
         is_active (BooleanField): Indicates whether enforcement is enabled.

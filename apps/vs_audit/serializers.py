@@ -3,7 +3,7 @@ from __future__ import annotations
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
-from vs_schools.models import School
+from vs_tenants.models import Tenant
 from .models import (
     AuditEvent,
     EntityAuditTrail,
@@ -26,14 +26,14 @@ User = get_user_model()
 # Small reusable serializers
 # -----------------------------------------------------------------------------
 
-class SchoolSlimSerializer(serializers.ModelSerializer):
+class TenantSlimSerializer(serializers.ModelSerializer):
     """
-    Small school serializer.
-    Use this when you only want basic school details inside another response.
+    Small tenant serializer.
+    Use this when you only want basic tenant details inside another response.
     """
 
     class Meta:
-        model = School
+        model = Tenant
         fields = ("id", "name", "slug")
 
 
@@ -240,7 +240,7 @@ class ComplianceRuleListSerializer(serializers.ModelSerializer):
     Lighter serializer for listing compliance rules.
     """
 
-    school = SchoolSlimSerializer(read_only=True)
+    tenant = TenantSlimSerializer(read_only=True)
 
     class Meta:
         model = ComplianceRule
@@ -249,7 +249,7 @@ class ComplianceRuleListSerializer(serializers.ModelSerializer):
             "name",
             "description",
             "rule_type",
-            "school",
+            "tenant",
             "module_key",
             "action_type",
             "is_active",
@@ -263,7 +263,7 @@ class ComplianceRuleDetailSerializer(serializers.ModelSerializer):
     Full serializer for one compliance rule.
     """
 
-    school = SchoolSlimSerializer(read_only=True)
+    tenant = TenantSlimSerializer(read_only=True)
 
     class Meta:
         model = ComplianceRule
@@ -272,7 +272,7 @@ class ComplianceRuleDetailSerializer(serializers.ModelSerializer):
             "name",
             "description",
             "rule_type",
-            "school",
+            "tenant",
             "module_key",
             "action_type",
             "is_active",
@@ -295,7 +295,7 @@ class ComplianceRuleCreateUpdateSerializer(serializers.ModelSerializer):
             "name",
             "description",
             "rule_type",
-            "school",
+            "tenant",
             "module_key",
             "action_type",
             "is_active",
