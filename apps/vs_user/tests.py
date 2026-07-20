@@ -338,6 +338,61 @@ class OrganogramTreeTests(TestCase):
         self.assertNotIn(parent.id, root_ids)   # inactive parent excluded
 
 
+class OrganogramListQueryTests(TestCase):
+    """The org-node and position list endpoints must not be N+1 — three queries
+    per seat (holders/vacancy/open-seats) made the Manage page hang over a
+    high-latency DB. The query count must stay bounded as seats grow."""
+
+    def setUp(self):
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
+        from vs_user.models import OrgNode, Position, PositionAssignment
+
+        tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
+        self.actor = make_cx_user(email="org-viewer@codex.test")
+        super_role = TenantRoleTemplate.objects.create(
+            tenant=tenant, key="xvs_super_admin", name="Super",
+        )
+        TenantUserRoleAssignment.objects.create(
+            tenant=tenant, user=self.actor, role=super_role, assignment_status="ACTIVE",
+        )
+
+        division = OrgNode.objects.create(
+            name="Eng", code="ENG", kind=OrgNode.Kind.DIVISION,
+        )
+        # A dozen occupied seats: under N+1 this list would fire ~36 extra
+        # queries; with the prefetch it is a small constant.
+        for i in range(12):
+            pos = Position.objects.create(
+                title=f"Seat {i}", code=f"SEAT-{i}", org_node=division,
+            )
+            holder = make_cx_user(email=f"holder{i}@codex.test")
+            PositionAssignment.objects.create(user=holder, position=pos)
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.actor)
+
+    def test_positions_list_is_not_n_plus_one(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            resp = self.client.get("/v1/user/organogram/positions/?page_size=100")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(len(resp.json()["data"]), 12)
+        # Bounded well below the ~40+ an N+1 over 12 seats would produce.
+        self.assertLess(len(ctx.captured_queries), 20)
+
+    def test_org_nodes_list_is_not_n_plus_one(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as ctx:
+            resp = self.client.get("/v1/user/organogram/nodes/?page_size=100")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertLess(len(ctx.captured_queries), 20)
+
+
 class LoginLockoutOracleTests(TestCase):
     """B13 — wrong-password attempts must never reveal the locked state."""
 

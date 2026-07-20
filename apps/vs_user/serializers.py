@@ -823,7 +823,7 @@ class OrgNodeSerializer(serializers.ModelSerializer):
         source='head_position', write_only=True, required=False, allow_null=True,
         queryset=Position.objects.all(),
     )
-    head    = UserInlineSerializer(read_only=True)
+    head    = serializers.SerializerMethodField()
     children_count = serializers.SerializerMethodField()
 
     class Meta:
@@ -837,8 +837,23 @@ class OrgNodeSerializer(serializers.ModelSerializer):
         )
         read_only_fields = ('id', 'created_at', 'updated_at')
 
+    # Both fields prefer the annotation / prefetch set by OrgNodeViewSet so the
+    # list costs no per-row queries; each falls back to the live property for the
+    # detail view (single object, no prefetch).
     def get_children_count(self, obj) -> int:
-        return obj.children.count()
+        ann = getattr(obj, '_children_count', None)
+        return ann if ann is not None else obj.children.count()
+
+    def get_head(self, obj):
+        hp = obj.head_position
+        if hp is None:
+            return None
+        pre = getattr(hp, '_current_assignments', None)
+        if pre is not None:
+            user = pre[0].user if pre else None  # primary first (ordered)
+        else:
+            user = obj.head
+        return UserInlineSerializer(user).data if user else None
 
     def validate(self, attrs):
         target = copy.copy(self.instance) if self.instance is not None else OrgNode()
@@ -870,9 +885,9 @@ class PositionSerializer(serializers.ModelSerializer):
         required=False, allow_null=True,
         queryset=TenantRoleTemplate.objects.all(),
     )
-    current_holders = UserInlineSerializer(many=True, read_only=True)
-    is_vacant       = serializers.BooleanField(read_only=True)
-    open_seats      = serializers.IntegerField(read_only=True)
+    current_holders = serializers.SerializerMethodField()
+    is_vacant       = serializers.SerializerMethodField()
+    open_seats      = serializers.SerializerMethodField()
 
     class Meta:
         model = Position
@@ -885,6 +900,23 @@ class PositionSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at',
         )
         read_only_fields = ('id', 'created_at', 'updated_at')
+
+    # Occupancy from a single prefetched set of current assignments
+    # (PositionViewSet.get_queryset) — a 100-row list costs one query, not three
+    # per row. Falls back to the model's live query for the detail view.
+    def _current_users(self, obj):
+        pre = getattr(obj, '_current_assignments', None)
+        assignments = pre if pre is not None else list(obj.current_assignments)
+        return [a.user for a in assignments]
+
+    def get_current_holders(self, obj):
+        return UserInlineSerializer(self._current_users(obj), many=True).data
+
+    def get_is_vacant(self, obj) -> bool:
+        return len(self._current_users(obj)) == 0
+
+    def get_open_seats(self, obj) -> int:
+        return max(obj.headcount - len(self._current_users(obj)), 0)
 
     def validate(self, attrs):
         target = copy.copy(self.instance) if self.instance is not None else Position()

@@ -11,7 +11,7 @@
 #   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet
 
 from __future__ import annotations
-from django.db.models import Q
+from django.db.models import Count, Prefetch, Q
 from rest_framework import status, viewsets, mixins
 from rest_framework.exceptions import ValidationError
 from rest_framework.decorators import action
@@ -207,10 +207,23 @@ class OrgNodeViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         params = self.request.query_params
+        # Prefetch each head seat's CURRENT holders once (primary first) and
+        # annotate the child count, so the serializer's `head`/`children_count`
+        # cost no per-row queries — the list was N+1 (minutes over a high-latency
+        # DB). `_current_assignments` and `_children_count` back those fields.
+        current = (
+            PositionAssignment.objects
+            .filter(end_date__isnull=True, user__is_active=True)
+            .select_related('user')
+            .order_by('-is_primary', 'id')
+        )
         qs = (
             OrgNode.objects
             .select_related('parent', 'head_position')
-            .prefetch_related('head_position__assignments__user')
+            .prefetch_related(
+                Prefetch('head_position__assignments', queryset=current, to_attr='_current_assignments')
+            )
+            .annotate(_children_count=Count('children'))
             .order_by('-updated_at')
         )
 
@@ -250,10 +263,21 @@ class PositionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         params = self.request.query_params
+        # Prefetch the CURRENT holders once so the serializer's occupancy fields
+        # (current_holders / is_vacant / open_seats) cost no per-row queries —
+        # the list was N+1 (3 queries per seat → minutes over a high-latency DB).
+        current = (
+            PositionAssignment.objects
+            .filter(end_date__isnull=True, user__is_active=True)
+            .select_related('user')
+            .order_by('-is_primary', 'id')
+        )
         qs = (
             Position.objects
             .select_related('org_node', 'reports_to', 'default_role')
-            .prefetch_related('assignments__user')
+            .prefetch_related(
+                Prefetch('assignments', queryset=current, to_attr='_current_assignments')
+            )
             .order_by('title')
         )
 
