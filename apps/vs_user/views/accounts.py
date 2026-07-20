@@ -118,7 +118,9 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             qs = qs.filter(status=status_val)
 
         if exclude_status := params.get('exclude_status'):
-            qs = qs.exclude(status=exclude_status)
+            # Accept a comma-separated list, e.g. "PENDING,DRAFT".
+            excluded = [s.strip() for s in exclude_status.split(',') if s.strip()]
+            qs = qs.exclude(status__in=excluded)
 
         if user_type := params.get('user_type'):
             qs = qs.filter(user_type=user_type)
