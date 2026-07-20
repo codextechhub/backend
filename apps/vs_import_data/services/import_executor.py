@@ -84,7 +84,78 @@ def execute_dataset_handler(import_batch, payload: dict, queued_by) -> ImportExe
     if dataset_type == "branches":
         return import_branches_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
 
+    if dataset_type == "cx_users":
+        return import_cx_users_row(import_batch=import_batch, payload=payload, queued_by=queued_by)
+
     raise ValueError(f"Unsupported dataset type: {dataset_type}")
+
+
+# =========================================================
+# CX users handler
+# =========================================================
+def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
+    """
+    Import one CX (CodeX platform) staff row via UserCreateSerializer, entering
+    the NORMAL creation flow — created PENDING_APPROVAL and submitted to the
+    platform-user approval workflow (an invite follows on approval), exactly like
+    a single add. These are never drafts; they land in the CX Users members list.
+
+    Template columns (target_field) this handler reads:
+        first_name        required
+        last_name         required
+        email             required (unique across the platform)
+        role              required – TenantRoleTemplate key on the codex tenant
+        phone             optional
+        gender            optional – MALE / FEMALE
+        job_title         optional
+        employment_type   optional – FULL_TIME / PART_TIME / CONTRACT / INTERN
+        position          optional – organogram Position id or code
+        date_joined       optional – YYYY-MM-DD
+    """
+    from types import SimpleNamespace
+
+    from vs_user.models import User
+    from vs_user.serializers import UserCreateSerializer
+    from vs_user.services.user import UserCreationService
+    from vs_workflow.services.submission import submit_for_approval
+
+    def _s(key: str) -> str:
+        return (payload.get(key) or "").strip()
+
+    email = _s("email").lower()
+    if email and User.objects.filter(email__iexact=email).exists():
+        return ImportExecutionResult(
+            action=ImportRowActionChoices.SKIP,
+            instance=None,
+            target_model="User",
+            message=f"User with email '{email}' already exists — skipped.",
+        )
+
+    data = {"user_type": "CX_STAFF"}
+    for field in (
+        "first_name", "last_name", "email", "role", "phone",
+        "gender", "job_title", "employment_type", "position", "date_joined",
+    ):
+        value = _s(field)
+        if value:
+            data[field] = value
+
+    request = SimpleNamespace(user=queued_by, tenant=queued_by.tenant)
+    serializer = UserCreateSerializer(data=data, context={"request": request})
+    serializer.is_valid(raise_exception=True)
+
+    with transaction.atomic():
+        user = UserCreationService.create_pending(
+            validated_data=serializer.validated_data, requesting_user=queued_by,
+        )
+        submit_for_approval(document=user, requested_by=queued_by)
+
+    return ImportExecutionResult(
+        action=ImportRowActionChoices.CREATE,
+        instance=user,
+        target_model="User",
+        message=f"CX user '{user.email}' created and submitted for approval.",
+    )
 
 
 # =========================================================

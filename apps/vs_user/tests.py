@@ -941,9 +941,9 @@ class PasswordPolicyTests(TestCase):
         self.assertEqual(len(data["requirements"]), 5)
 
 
-class DraftAndBulkUserTests(TestCase):
-    """Save-as-draft and CSV bulk upload park DRAFT CX hires; submit promotes a
-    draft into the normal approval flow."""
+class DraftUserTests(TestCase):
+    """Save-as-draft parks a DRAFT CX hire; submit promotes it into the normal
+    approval flow. (Bulk upload lives in the vs_import_data framework.)"""
 
     def setUp(self):
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
@@ -1012,27 +1012,58 @@ class DraftAndBulkUserTests(TestCase):
         user.refresh_from_db()
         self.assertEqual(user.status, User.Status.DRAFT)
 
-    def test_bulk_template_downloads_csv(self):
-        resp = self.client.get("/v1/user/users/bulk-template/")
-        self.assertEqual(resp.status_code, 200)
-        self.assertIn("text/csv", resp["Content-Type"])
-        header = resp.content.decode("utf-8-sig").splitlines()[0]
-        self.assertIn("first_name", header)
-        self.assertIn("email", header)
 
-    def test_bulk_upload_creates_drafts_and_reports_row_errors(self):
-        from django.core.files.uploadedfile import SimpleUploadedFile
+class CXUsersImportHandlerTests(TestCase):
+    """The vs_import_data cx_users handler creates CX staff through the NORMAL
+    flow (PENDING_APPROVAL + workflow), never as drafts; its template is seeded."""
 
-        csv_body = (
-            "first_name,last_name,email,role,phone,gender,job_title,employment_type,date_joined\n"
-            "Bulk,One,bulk.one@codex.test,,08012345678,MALE,Analyst,FULL_TIME,\n"
-            "Bulk,Two,not-an-email,,,,,,\n"  # invalid email → row-level error
+    def setUp(self):
+        from vs_rbac.models import TenantRoleTemplate
+        from vs_tenants.models import Tenant
+
+        self.tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
+        self.actor = make_cx_user(email="importer@codex.test")
+        self.hire_role = TenantRoleTemplate.objects.create(
+            tenant=self.tenant, key="xvs_platform_admin", name="Platform Admin",
         )
-        upload = SimpleUploadedFile("staff.csv", csv_body.encode("utf-8"), content_type="text/csv")
-        resp = self.client.post("/v1/user/users/bulk-upload/", {"file": upload}, format="multipart")
-        self.assertEqual(resp.status_code, 200, resp.content)
-        data = resp.json()["data"]
-        self.assertEqual(data["summary"]["created"], 1)
-        self.assertEqual(data["summary"]["failed"], 1)
-        self.assertEqual(User.objects.get(email="bulk.one@codex.test").status, User.Status.DRAFT)
-        self.assertEqual(data["errors"][0]["row"], 3)
+
+    def test_handler_creates_pending_user_not_draft(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from vs_import_data.services.import_executor import import_cx_users_row
+
+        with mock.patch("vs_workflow.services.submission.submit_for_approval") as wf:
+            result = import_cx_users_row(
+                import_batch=SimpleNamespace(school=None),
+                payload={
+                    "first_name": "Bulk", "last_name": "Hire",
+                    "email": "bulk.hire@codex.test", "role": self.hire_role.key,
+                    "gender": "MALE",
+                },
+                queued_by=self.actor,
+            )
+        self.assertEqual(result.action, "create")
+        user = User.objects.get(email="bulk.hire@codex.test")
+        self.assertEqual(user.status, User.Status.PENDING_APPROVAL)
+        wf.assert_called_once()
+
+    def test_handler_skips_duplicate_email(self):
+        from types import SimpleNamespace
+        from vs_import_data.services.import_executor import import_cx_users_row
+
+        result = import_cx_users_row(
+            import_batch=SimpleNamespace(school=None),
+            payload={"first_name": "Dupe", "last_name": "X",
+                     "email": self.actor.email, "role": self.hire_role.key},
+            queued_by=self.actor,
+        )
+        self.assertEqual(result.action, "skip")
+
+    def test_cx_users_template_is_seeded(self):
+        from vs_import_data.models import ImportTemplate
+
+        template = ImportTemplate.objects.get(code="cx_users_master")
+        self.assertEqual(template.dataset_type, "cx_users")
+        self.assertTrue(
+            template.columns.filter(target_field="email", is_required=True).exists()
+        )
