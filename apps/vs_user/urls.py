@@ -29,6 +29,7 @@ from .views import (
     ActivationView,
     InvitationResendView,
     # Password
+    PasswordPolicyView,
     PasswordChangeView,
     PasswordResetRequestView,
     PasswordResetConfirmView,
@@ -88,6 +89,7 @@ urlpatterns = [
     path('auth/activate/<uuid:activation_key>/',          ActivationView.as_view(),        name='auth-activate'),
 
     # ── Password ──────────────────────────────────────────────────────────────
+    path('auth/password/policy/',            PasswordPolicyView.as_view(),          name='password-policy'),
     path('auth/password/change/',            PasswordChangeView.as_view(),          name='password-change'),
     path('auth/password/reset/request/',     PasswordResetRequestView.as_view(),    name='password-reset-request'),
     path('auth/reset-password/<uuid:activation_key>/preview/', PasswordResetPreviewView.as_view(),    name='password-reset-preview'),

@@ -179,18 +179,19 @@ WSGI_APPLICATION = "apps.wsgi.application"
 # Password validation
 # https://docs.djangoproject.com/en/5.0/ref/settings/#auth-password-validators
 
+# Canonical policy = 12 chars + uppercase + lowercase + digit + special
+# (PasswordComplexityValidator, the single source of truth in
+# vs_user/password_policy.py), plus not-common and not-similar-to-user-info.
+# MinimumLength/Numeric are dropped — the complexity validator subsumes both.
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
     },
     {
-        "NAME": "django.contrib.auth.password_validation.MinimumLengthValidator",
-    },
-    {
         "NAME": "django.contrib.auth.password_validation.CommonPasswordValidator",
     },
     {
-        "NAME": "django.contrib.auth.password_validation.NumericPasswordValidator",
+        "NAME": "vs_user.password_policy.PasswordComplexityValidator",
     },
 ]
 

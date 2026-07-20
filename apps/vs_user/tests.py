@@ -784,3 +784,38 @@ class InvitationEngineDispatchTests(TestCase):
         self.assertEqual(notif.event_type.key, "user.password_reset")
         self.assertEqual(notif.metadata.get("from_name"), "CodeX System")
         self.assertIn("reset-password", notif.body)
+
+
+class PasswordPolicyTests(TestCase):
+    """The canonical policy (12 + upper/lower/digit/special) is enforced by the
+    validator and advertised, unauthenticated, by the policy endpoint."""
+
+    POLICY_URL = "/v1/user/auth/password/policy/"
+
+    def test_validator_rejects_passwords_that_miss_any_rule(self):
+        from django.contrib.auth.password_validation import validate_password
+        from django.core.exceptions import ValidationError
+
+        weak = [
+            "Sh0rt!Aa",          # only 8 chars — too short
+            "alllowercase1!",    # no uppercase
+            "ALLUPPERCASE1!",    # no lowercase
+            "NoDigitsHere!!",    # no digit
+            "NoSpecialChar12",   # no special character
+        ]
+        for password in weak:
+            with self.assertRaises(ValidationError, msg=f"expected {password!r} to be rejected"):
+                validate_password(password)
+
+    def test_validator_accepts_a_compliant_password(self):
+        from django.contrib.auth.password_validation import validate_password
+
+        validate_password("Str0ng!pass123")  # 14 chars, upper+lower+digit+special
+
+    def test_policy_endpoint_is_public_and_lists_requirements(self):
+        resp = APIClient().get(self.POLICY_URL)
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()["data"]
+        self.assertEqual(data["min_length"], 12)
+        self.assertTrue(data["require_special"])
+        self.assertEqual(len(data["requirements"]), 5)

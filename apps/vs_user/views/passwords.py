@@ -24,12 +24,29 @@ from ..serializers import (
     PasswordResetPreviewSerializer, PasswordChangeSerializer, PasswordResetRequestSerializer, PasswordResetConfirmSerializer,
 )
 from ..services.password   import PasswordService
+from ..password_policy      import password_policy_payload
 
 
 
 # =============================================================================
 # # PASSWORD VIEWS
 # =============================================================================
+
+class PasswordPolicyView(APIView):
+    """
+    GET /auth/password/policy/
+    The canonical password requirements, so every set/change screen can show
+    the same instructions the backend actually enforces. Public — the reset and
+    activation screens are unauthenticated.
+
+    docstring-name: Password policy
+    """
+    permission_classes = [AllowAny]
+    authentication_classes = []
+    tenant_param_required = False
+
+    def get(self, request):
+        return success_response("Password policy.", password_policy_payload())
 
 class PasswordChangeView(APIView):
     """
