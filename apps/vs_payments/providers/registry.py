@@ -43,22 +43,6 @@ def _build(name: str) -> Provider:
             secret_key=secret,
             base_url=getattr(settings, "PAYSTACK_BASE_URL", "https://api.paystack.co"),  # Use the default Paystack API host unless overridden.
         )
-    if name == "OPAY":  # Build an OPay adapter from configured credentials.
-        from .opay import OPayProvider
-        merchant_id = getattr(settings, "OPAY_MERCHANT_ID", "")  # Required merchant identifier.
-        secret = getattr(settings, "OPAY_SECRET_KEY", "")  # Required signing secret.
-        if not (merchant_id and secret):  # Both values are needed before the adapter can work.
-            raise ProviderNotConfiguredError("OPay merchant id / secret key is not configured.")
-        return OPayProvider(  # Return a configured OPay client.
-            merchant_id=merchant_id,
-            secret_key=secret,
-            public_key=getattr(settings, "OPAY_PUBLIC_KEY", ""),  # Public key is optional depending on the flow.
-            base_url=getattr(settings, "OPAY_BASE_URL", "https://api.opaycheckout.com"),  # Default OPay API host.
-            create_path=getattr(settings, "OPAY_CREATE_PATH", ""),  # Custom path overrides when deployed behind proxies.
-            status_path=getattr(settings, "OPAY_STATUS_PATH", ""),
-            transfer_path=getattr(settings, "OPAY_TRANSFER_PATH", ""),
-            transfer_status_path=getattr(settings, "OPAY_TRANSFER_STATUS_PATH", ""),
-        )
     if name == "FAKE":  # Provide a no-network adapter for tests and demos.
         from .fake import FakeProvider
         return FakeProvider()  # Return the in-memory test provider.

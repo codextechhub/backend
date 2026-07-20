@@ -1,7 +1,7 @@
 """Enumerations and well-known constants for vs_payments.  # Shared payment state and provider identifiers.
 
 The payments app is the *gateway* layer that sits in front of the ledger: it talks to
-external PSPs (OPay, Paystack) to **collect** money from customers and **pay out** money
+external PSPs (Paystack) to **collect** money from customers and **pay out** money
 to vendors/beneficiaries, then hands the confirmed cash movement to the existing finance
 services (``vs_finance.receivables.post_payment`` for receipts;
 ``vs_procurement.payables.post_vendor_payment`` for payouts). Money is always integer
@@ -16,7 +16,6 @@ from django.db import models
 class PaymentProvider(models.TextChoices):
     """The external payment service providers we integrate with."""
 
-    OPAY = "OPAY", "OPay"  # OPay live provider.
     PAYSTACK = "PAYSTACK", "Paystack"  # Paystack live provider.
     FAKE = "FAKE", "Fake (testing)"  # In-memory test provider.
 

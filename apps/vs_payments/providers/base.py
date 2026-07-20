@@ -2,8 +2,8 @@
 
 Two capabilities, kept separate per the build plan: :class:`CollectionProvider` (pull
 money in — hosted checkout, dedicated virtual accounts, verification) and
-:class:`PayoutProvider` (push money out — bank transfers). A concrete provider (OPay,
-Paystack, Fake) implements both plus the webhook contract in :class:`WebhookCapable`.
+:class:`PayoutProvider` (push money out — bank transfers). A concrete provider (Paystack,
+Fake) implements both plus the webhook contract in :class:`WebhookCapable`.
 
 Every method speaks in **neutral result dataclasses** carrying integer **kobo** and our
 own status vocabulary (``CollectionStatus`` / ``PayoutStatus`` string values), so the
@@ -171,4 +171,4 @@ class PayoutProvider(WebhookCapable):
 
 # Group behavior for Provider.
 class Provider(CollectionProvider, PayoutProvider):
-    """A provider that can do both directions (OPay, Paystack, Fake all do)."""
+    """A provider that can do both directions (Paystack, Fake all do)."""

@@ -1,7 +1,7 @@
 """Validate live payment-provider credentials end-to-end, without touching the ledger.
 
-This talks to the **real** provider API (use Paystack *test mode* keys, or OPay sandbox
-credentials) to prove your keys, base URL and network path actually work before you wire
+This talks to the **real** provider API (use Paystack *test mode* keys) to prove your
+keys, base URL and network path actually work before you wire
 the UI or go live. It deliberately does NOT create any ``CollectionIntent`` / ``Payment``
 rows — it is a pure connectivity check against the provider, so it is safe to run against
 a production database.
@@ -46,7 +46,7 @@ class Command(BaseCommand):
         parser.add_argument(
             "--provider",
             default=None,
-            help="Provider name (PAYSTACK / OPAY). Defaults to PAYMENTS_DEFAULT_PROVIDER.",
+            help="Provider name (PAYSTACK). Defaults to PAYMENTS_DEFAULT_PROVIDER.",
         )
         parser.add_argument(
             "--amount",
