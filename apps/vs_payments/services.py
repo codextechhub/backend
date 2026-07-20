@@ -559,6 +559,7 @@ def _book_vendor_payment(payout, *, actor_user=None):
         )
     from vs_procurement.models import Vendor, VendorPayment
     from vs_procurement.payables import post_vendor_payment
+    from vs_procurement.constants import ProcApprovalState
 
     vendor = Vendor.objects.get(pk=int(payout.vendor_source_id))
     wht = int((payout.metadata or {}).get("wht_amount", 0))
@@ -572,6 +573,12 @@ def _book_vendor_payment(payout, *, actor_user=None):
         ),
         reference=payout.reference,
         narration=payout.narration or f"Gateway payout {payout.reference}",
+        # System-approved: this vendor payment records a disbursement the gateway
+        # has already made against an authorised payout instruction, so it does
+        # not re-enter the interactive vendor-payment approval workflow.
+        approval_state=ProcApprovalState.APPROVED,
     )
-    post_vendor_payment(vp, actor_user=actor_user)  # Post the AP movement for the paid payout.
+    # System-originated: the gateway has already disbursed against an authorised
+    # payout, so posting skips the pre-disbursement governance/eligibility gates.
+    post_vendor_payment(vp, actor_user=actor_user, system_originated=True)  # Post the AP movement.
     payout.vendor_payment_id = vp.pk  # Link the payout instruction to the vendor payment.

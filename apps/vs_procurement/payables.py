@@ -274,17 +274,24 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
 # --------------------------------------------------------------------------- #
 
 # Handle the post vendor payment workflow.
-def post_vendor_payment(payment, *, actor_user=None, auto_allocate=True, allocations=None):
+def post_vendor_payment(payment, *, actor_user=None, auto_allocate=True, allocations=None,
+                        system_originated=False):
     """Post a :class:`VendorPayment` (Dr AP, Cr bank net, Cr WHT) and allocate it.
 
     ``allocations`` (a list of ``(vendor_invoice, gross_amount_kobo)``) applies an
     explicit split; otherwise ``auto_allocate`` settles the vendor's oldest open bills
     first.
+
+    ``system_originated`` marks a post that records an already-completed disbursement
+    (e.g. booking a gateway payout that has paid). Such posts skip the pre-disbursement
+    governance/eligibility gates — those belong upstream, at payout initiation — while
+    every ledger-integrity check still applies.
     """
     try:  # The atomic worker owns the GL and allocation work.
         return _post_vendor_payment_atomic(  # Post the payment and optionally allocate it.
             payment, actor_user=actor_user,
             auto_allocate=auto_allocate, allocations=allocations,
+            system_originated=system_originated,
         )
     except FinanceError as exc:  # Log rejected payment posts durably.
         record_rejection(  # Record the failed vendor payment post.
@@ -296,7 +303,8 @@ def post_vendor_payment(payment, *, actor_user=None, auto_allocate=True, allocat
 
 @transaction.atomic
 # Support the post vendor payment atomic workflow.
-def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True, allocations=None):
+def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True, allocations=None,
+                                system_originated=False):
     from vs_finance.models import JournalEntry, JournalLine
     from .models import Vendor, VendorInvoice, VendorPayment, VendorPaymentAllocation
 
@@ -336,18 +344,23 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
             f"Vendor payment {payment.document_number or payment.pk} is '{payment.status}', "
             f"only a draft can be posted.",
         )
-    if payment.approval_state != ProcApprovalState.APPROVED:
-        raise PostingError(
-            f"Vendor payment {payment.document_number or payment.pk} must be approved before posting."
-        )
-
     vendor = payment.vendor  # Vendor drives AP and blocking rules.
-    if not vendor.is_active:
-        raise PostingError(f"Vendor {vendor.code} is inactive; payments are blocked.")
-    if vendor.kyc_status != VendorKycStatus.VERIFIED:
-        raise PostingError(f"Vendor {vendor.code} must be KYC verified before payment.")
-    if vendor.on_hold:  # Payments are blocked for vendors on hold.
-        raise PostingError(f"Vendor {vendor.code} is on hold; payments are blocked.")
+    # Pre-disbursement governance + vendor-eligibility gates. A system-originated
+    # post records a disbursement that has already happened (e.g. a gateway
+    # payout), so it skips these — refusing the ledger entry after the money has
+    # left would strand the payment. Eligibility is enforced upstream at payout
+    # initiation. Ledger-integrity checks below still apply either way.
+    if not system_originated:
+        if payment.approval_state != ProcApprovalState.APPROVED:
+            raise PostingError(
+                f"Vendor payment {payment.document_number or payment.pk} must be approved before posting."
+            )
+        if not vendor.is_active:
+            raise PostingError(f"Vendor {vendor.code} is inactive; payments are blocked.")
+        if vendor.kyc_status != VendorKycStatus.VERIFIED:
+            raise PostingError(f"Vendor {vendor.code} must be KYC verified before payment.")
+        if vendor.on_hold:  # Payments are blocked for vendors on hold.
+            raise PostingError(f"Vendor {vendor.code} is on hold; payments are blocked.")
 
     ap_account = vendor.payable_account  # Resolve the AP control account.
     if ap_account is None:  # Cannot debit AP without a payable account.

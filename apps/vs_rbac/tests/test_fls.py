@@ -120,6 +120,10 @@ class SensitiveSerializerWiringTest(TestCase):
         self.assertEqual(
             VendorSerializer.read_permissions,
             {
+                "email": "procurement.vendor.view_sensitive",
+                "phone": "procurement.vendor.view_sensitive",
+                "address": "procurement.vendor.view_sensitive",
+                "tax_id": "procurement.vendor.view_sensitive",
                 "bank_name": "procurement.vendor.view_sensitive",
                 "bank_account_number": "procurement.vendor.view_sensitive",
                 "bank_account_name": "procurement.vendor.view_sensitive",
