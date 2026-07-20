@@ -114,8 +114,12 @@ class Command(BaseCommand):
         nodes: dict[str, OrgNode] = {}
         for code, name, kind, parent_code in ORG_NODES:
             parent = nodes.get(parent_code) if parent_code else None
+            # OrgNode.save() prefixes the code by tier (DV-/DT-/TM-), so look up
+            # by the prefixed code — matching on the bare code would never find
+            # an existing node and would duplicate-key on every re-run.
+            lookup_code = f"{OrgNode._KIND_PREFIX.get(kind, '')}{code}"
             node, created = OrgNode.objects.get_or_create(
-                code=code,
+                code=lookup_code,
                 defaults={"name": name, "kind": kind, "parent": parent},
             )
             nodes[code] = node

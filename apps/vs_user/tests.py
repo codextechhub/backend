@@ -393,6 +393,32 @@ class OrganogramListQueryTests(TestCase):
         self.assertLess(len(ctx.captured_queries), 20)
 
 
+class SeedOrganogramCommandTests(TestCase):
+    """`seed_organogram` builds a non-empty tree and seats CX staff — an empty
+    chart is usually just this seed not having been run."""
+
+    def test_seed_builds_tree_and_seats_staff(self):
+        from django.core.management import call_command
+        from vs_user.services.organogram import OrganogramService
+
+        u1 = make_cx_user(email="seed1@codex.test")
+        make_cx_user(email="seed2@codex.test")
+
+        call_command("seed_organogram", verbosity=0)
+
+        tree = OrganogramService.build_tree()
+        self.assertEqual([n["code"] for n in tree], ["VP-TECH"])  # single root, not empty
+        self.assertTrue(
+            u1.position_assignments.filter(end_date__isnull=True).exists()
+        )
+
+        # Idempotent: a second run adds nothing new.
+        from vs_user.models import Position
+        before = Position.objects.count()
+        call_command("seed_organogram", verbosity=0)
+        self.assertEqual(Position.objects.count(), before)
+
+
 class LoginLockoutOracleTests(TestCase):
     """B13 — wrong-password attempts must never reveal the locked state."""
 
