@@ -819,3 +819,100 @@ class PasswordPolicyTests(TestCase):
         self.assertEqual(data["min_length"], 12)
         self.assertTrue(data["require_special"])
         self.assertEqual(len(data["requirements"]), 5)
+
+
+class DraftAndBulkUserTests(TestCase):
+    """Save-as-draft and CSV bulk upload park DRAFT CX hires; submit promotes a
+    draft into the normal approval flow."""
+
+    def setUp(self):
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
+
+        self.tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
+        self.actor = make_cx_user(email="bulk.creator@codex.test")
+        self.hire_role = TenantRoleTemplate.objects.create(
+            tenant=self.tenant, key="xvs_platform_admin", name="Platform Admin",
+        )
+        # Super-admin assignment gives the actor the RBAC bypass used by the
+        # sibling platform-user tests.
+        self.super_role = TenantRoleTemplate.objects.create(
+            tenant=self.tenant, key="xvs_super_admin", name="XVS Super Admin",
+        )
+        TenantUserRoleAssignment.objects.create(
+            tenant=self.tenant, user=self.actor, role=self.super_role,
+            assignment_status="ACTIVE",
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.actor)
+
+    def test_save_as_draft_creates_draft_without_role_or_workflow(self):
+        from vs_rbac.models import TenantUserRoleAssignment
+
+        resp = self.client.post("/v1/user/users/", {
+            "first_name": "Draft", "last_name": "Hire",
+            "email": "draft.hire@codex.test", "gender": "MALE",
+            "save_as_draft": True,
+        }, format="json")
+        self.assertEqual(resp.status_code, 201, resp.content)
+        user = User.objects.get(email="draft.hire@codex.test")
+        self.assertEqual(user.status, User.Status.DRAFT)
+        self.assertFalse(user.is_active)
+        # No role given → no assignment written until the draft is submitted.
+        self.assertFalse(TenantUserRoleAssignment.objects.filter(user=user).exists())
+
+    def test_submit_draft_with_role_enters_approval(self):
+        self.client.post("/v1/user/users/", {
+            "first_name": "Ready", "last_name": "Hire",
+            "email": "ready.hire@codex.test", "gender": "FEMALE",
+            "role": self.hire_role.key, "save_as_draft": True,
+        }, format="json")
+        user = User.objects.get(email="ready.hire@codex.test")
+        self.assertEqual(user.status, User.Status.DRAFT)
+
+        with mock.patch("vs_user.views.accounts._wf_submit") as wf, \
+                mock.patch("vs_user.views.accounts._WFInstanceSerializer") as wf_ser:
+            wf.return_value = object()
+            wf_ser.return_value.data = {"id": "wf-1"}
+            resp = self.client.post(f"/v1/user/users/{user.id}/submit/", {}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        user.refresh_from_db()
+        self.assertEqual(user.status, User.Status.PENDING_APPROVAL)
+        wf.assert_called_once()
+
+    def test_submit_draft_without_role_is_rejected(self):
+        self.client.post("/v1/user/users/", {
+            "first_name": "Roleless", "last_name": "Draft",
+            "email": "roleless.draft@codex.test", "gender": "MALE",
+            "save_as_draft": True,
+        }, format="json")
+        user = User.objects.get(email="roleless.draft@codex.test")
+        resp = self.client.post(f"/v1/user/users/{user.id}/submit/", {}, format="json")
+        self.assertEqual(resp.status_code, 400, resp.content)
+        user.refresh_from_db()
+        self.assertEqual(user.status, User.Status.DRAFT)
+
+    def test_bulk_template_downloads_csv(self):
+        resp = self.client.get("/v1/user/users/bulk-template/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("text/csv", resp["Content-Type"])
+        header = resp.content.decode("utf-8-sig").splitlines()[0]
+        self.assertIn("first_name", header)
+        self.assertIn("email", header)
+
+    def test_bulk_upload_creates_drafts_and_reports_row_errors(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        csv_body = (
+            "first_name,last_name,email,role,phone,gender,job_title,employment_type,date_joined\n"
+            "Bulk,One,bulk.one@codex.test,,08012345678,MALE,Analyst,FULL_TIME,\n"
+            "Bulk,Two,not-an-email,,,,,,\n"  # invalid email → row-level error
+        )
+        upload = SimpleUploadedFile("staff.csv", csv_body.encode("utf-8"), content_type="text/csv")
+        resp = self.client.post("/v1/user/users/bulk-upload/", {"file": upload}, format="multipart")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        data = resp.json()["data"]
+        self.assertEqual(data["summary"]["created"], 1)
+        self.assertEqual(data["summary"]["failed"], 1)
+        self.assertEqual(User.objects.get(email="bulk.one@codex.test").status, User.Status.DRAFT)
+        self.assertEqual(data["errors"][0]["row"], 3)

@@ -101,6 +101,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         PARENT            = 'PARENT',        'Parent/Guardian'
 
     class Status(models.TextChoices):
+        DRAFT            = 'DRAFT',            'Draft'
         PENDING_APPROVAL = 'PENDING_APPROVAL', 'Pending Approval'
         PENDING          = 'PENDING',          'Pending Activation'
         ACTIVE           = 'ACTIVE',           'Active'

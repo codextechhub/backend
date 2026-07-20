@@ -39,11 +39,15 @@ class UserCreationService:
 
     @staticmethod
     @transaction.atomic
-    def create_pending(validated_data: dict, requesting_user, request=None) -> User:
-        """Creates the User record in PENDING_APPROVAL status and assigns the role.
+    def create_pending(validated_data: dict, requesting_user, request=None,
+                       status: str = User.Status.PENDING_APPROVAL) -> User:
+        """Creates the User record and assigns the role.
 
-        No invitation is created and no email is sent — the workflow engine
-        drives the next step. Call finalize_invitation() on approval.
+        ``status`` defaults to PENDING_APPROVAL (the workflow engine drives the
+        next step; call finalize_invitation() on approval). Pass
+        ``User.Status.DRAFT`` to park an incomplete hire: the role becomes
+        optional (no assignment is written until a role is present) and the
+        caller must NOT submit it to the workflow or invite it.
         """
         role_instance = validated_data.pop('role_instance', None)
         position_instance = validated_data.pop('position_instance', None)
@@ -62,21 +66,22 @@ class UserCreationService:
             branch=validated_data.get('branch') if validated_data.get('branch') else None,
             invited_by=requesting_user,
             invited_by_name=getattr(requesting_user, 'full_name', '') or '',
-            status=User.Status.PENDING_APPROVAL,
+            status=status,
             is_active=False,
             is_staff=True if validated_data['user_type'] == "CX_STAFF" else False,
         )
 
-        # role_instance is now a native TenantRoleTemplate resolved by the
-        # serializer within the target tenant — no legacy bridge needed.
-        role = role_instance
-        TenantUserRoleAssignment.objects.create(
-            tenant=user.tenant,
-            branch=user.branch if role.branch_id else None,
-            user=user,
-            role=role,
-            assigned_by=requesting_user,
-        )
+        # role_instance is a native TenantRoleTemplate resolved by the serializer
+        # within the target tenant. Drafts may not have one yet — the assignment
+        # is written when the draft is submitted (see submit_draft).
+        if role_instance is not None:
+            TenantUserRoleAssignment.objects.create(
+                tenant=user.tenant,
+                branch=user.branch if role_instance.branch_id else None,
+                user=user,
+                role=role_instance,
+                assigned_by=requesting_user,
+            )
 
         if user.user_type == User.UserType.CX_STAFF:
             from ..models import PlatformStaffProfile
@@ -113,6 +118,45 @@ class UserCreationService:
             event=AuthEventLog.Event.USER_CREATED, request=request,
         )
 
+        return user
+
+    @staticmethod
+    @transaction.atomic
+    def submit_draft(user: User, requesting_user, request=None, role_instance=None) -> User:
+        """Promote a DRAFT hire into the normal approval flow (PENDING_APPROVAL).
+
+        A role must be assigned first: either the draft already carries one, or
+        ``role_instance`` is supplied here to assign it now. The caller submits
+        the returned user to the workflow (mirrors the single-create path).
+        """
+        if user.status != User.Status.DRAFT:
+            raise ValueError({'error_code': 'NOT_A_DRAFT',
+                              'message': 'Only draft accounts can be submitted.'})
+        if not (user.first_name and user.last_name and user.email):
+            raise ValueError({'error_code': 'INCOMPLETE_DRAFT',
+                              'message': 'First name, last name and email are required before submitting.'})
+
+        assignment = TenantUserRoleAssignment.objects.filter(
+            user=user, assignment_status='ACTIVE',
+        ).first()
+        if assignment is None:
+            if role_instance is None:
+                raise ValueError({'error_code': 'ROLE_REQUIRED',
+                                  'message': 'A role must be assigned before this draft can be submitted.'})
+            TenantUserRoleAssignment.objects.create(
+                tenant=user.tenant,
+                branch=user.branch if role_instance.branch_id else None,
+                user=user, role=role_instance, assigned_by=requesting_user,
+            )
+            user.role = role_instance.name
+
+        user.status = User.Status.PENDING_APPROVAL
+        user.save(update_fields=['status', 'role', 'updated_at'])
+
+        log_auth_event(
+            actor=requesting_user, subject=user, tenant=user.tenant,
+            event=AuthEventLog.Event.USER_CREATED, request=request,
+        )
         return user
 
     @staticmethod

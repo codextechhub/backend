@@ -229,14 +229,10 @@ class UserCreateSerializer(serializers.Serializer):
     # branch passed as UUID; resolved to an object in validate(). The target
     # tenant is derived from request context, not a school input.
     branch      = serializers.UUIDField(required=False, allow_null=True, default=None)
+    # Required for a real create; optional when saving a draft (context['draft']),
+    # where the role can be filled in before the draft is submitted.
     role        = serializers.CharField(
-        max_length=120,
-        required=True,
-        error_messages={
-            'required': 'A role must be assigned to the user.',
-            'blank':    'A role must be assigned to the user.',
-            'null':     'A role must be assigned to the user.',
-        },
+        max_length=120, required=False, allow_blank=True, allow_null=True, default='',
     )
     # Optional organogram seat to slot a CX hire into. Accepts a Position PK or
     # code. Resolved here and materialised into a real (effective-dated) primary
@@ -330,26 +326,36 @@ class UserCreateSerializer(serializers.Serializer):
         # Role input is a TenantRoleTemplate KEY, resolved within the target
         # tenant natively. The backfill in vs_rbac.0004 set each migrated
         # tenant-role key to str(legacy_pk), so legacy role slugs keep resolving.
-        role_key = attrs['role']
-        try:
-            role = TenantRoleTemplate.objects.get(tenant=target_tenant, key=role_key)
-        except TenantRoleTemplate.DoesNotExist:
-            raise serializers.ValidationError(
-                {'role': f'Role with key "{role_key}" not found in the target tenant.'}
-            )
-        if user_type == User.UserType.CX_STAFF and role_key == 'xvs_super_admin':
-            from vs_rbac.models import TenantUserRoleAssignment
-            if TenantUserRoleAssignment.objects.filter(
-                role__key='xvs_super_admin',
-                role__tenant__kind='PLATFORM',
-                assignment_status='ACTIVE',
-            ).exists():
+        # In draft mode the role is optional and left unresolved until submit.
+        draft = self.context.get('draft', False)
+        role_key = (attrs.get('role') or '').strip()
+        if not role_key:
+            if not draft:
                 raise serializers.ValidationError(
-                    {'role': 'A Vision Super Admin already exists. Only one is allowed.'}
+                    {'role': 'A role must be assigned to the user.'}
                 )
+            attrs['role'] = ''
+            attrs['role_instance'] = None
+        else:
+            try:
+                role = TenantRoleTemplate.objects.get(tenant=target_tenant, key=role_key)
+            except TenantRoleTemplate.DoesNotExist:
+                raise serializers.ValidationError(
+                    {'role': f'Role with key "{role_key}" not found in the target tenant.'}
+                )
+            if user_type == User.UserType.CX_STAFF and role_key == 'xvs_super_admin':
+                from vs_rbac.models import TenantUserRoleAssignment
+                if TenantUserRoleAssignment.objects.filter(
+                    role__key='xvs_super_admin',
+                    role__tenant__kind='PLATFORM',
+                    assignment_status='ACTIVE',
+                ).exists():
+                    raise serializers.ValidationError(
+                        {'role': 'A Vision Super Admin already exists. Only one is allowed.'}
+                    )
 
-        attrs['role'] = role.name
-        attrs['role_instance'] = role
+            attrs['role'] = role.name
+            attrs['role_instance'] = role
 
         # Resolve the optional organogram seat (PK or code). CX staff only.
         position_ref = attrs.pop('position', None)

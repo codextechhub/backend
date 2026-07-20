@@ -14,11 +14,12 @@ from __future__ import annotations
 from django.db import transaction
 from django.db.models import Prefetch, Q
 from rest_framework import status, viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
-from vs_rbac.models import TenantUserRoleAssignment
+from vs_rbac.models import TenantUserRoleAssignment, TenantRoleTemplate
 from vs_tenants.models import Tenant
 from core.mixins import (
     XVSModelViewSetMixin,
@@ -38,6 +39,29 @@ from vs_workflow.serializers import WorkflowInstanceListSerializer as _WFInstanc
 
 
 from .me import _get_date_param
+
+
+def _is_truthy(value) -> bool:
+    """Coerce a JSON bool or a form/string flag ('true'/'1'/'yes') to bool."""
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+# Columns for the bulk CX-staff draft template (order == template column order).
+# Keep in sync with UserCreateSerializer fields. Role is a TenantRoleTemplate
+# key and is optional — a draft can be created without it and completed later.
+BULK_USER_COLUMNS = [
+    "first_name", "last_name", "email", "role",
+    "phone", "gender", "job_title", "employment_type", "date_joined",
+]
+BULK_USER_EXAMPLE = {
+    "first_name": "Ada", "last_name": "Obi", "email": "ada.obi@example.com",
+    "role": "", "phone": "+2348012345678", "gender": "FEMALE",
+    "job_title": "Support Analyst", "employment_type": "FULL_TIME",
+    "date_joined": "2026-07-20",
+}
+BULK_UPLOAD_MAX_ROWS = 500
 
 
 # =============================================================================
@@ -168,6 +192,9 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             'list':           'platform.team.view',
             'retrieve':       'platform.team.view',
             'create':         'platform.team.create',
+            'submit':         'platform.team.create',
+            'bulk_template':  'platform.team.create',
+            'bulk_upload':    'platform.team.create',
             'update':         'platform.team.update',
             'partial_update': 'platform.team.update',
             'destroy':        'platform.team.delete',
@@ -176,8 +203,21 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def create(self, request, *args, **kwargs):
+        save_as_draft = _is_truthy(request.data.get("save_as_draft"))
         serializer = self.get_serializer(data=request.data)
+        # Draft mode relaxes the role requirement (filled in before submit).
+        serializer.context["draft"] = save_as_draft
         serializer.is_valid(raise_exception=True)
+
+        # Draft: park the record; no workflow, no invite. Applies to any type.
+        if save_as_draft:
+            user = UserCreationService.create_pending(
+                validated_data=serializer.validated_data,
+                requesting_user=request.user,
+                request=request,
+                status=User.Status.DRAFT,
+            )
+            return Response(UserReadSerializer(user).data, status=status.HTTP_201_CREATED)
 
         # Workflow gate only applies to platform (CX_STAFF) user creation.
         if serializer.validated_data.get("user_type") == User.UserType.CX_STAFF:
@@ -204,6 +244,133 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         )
         UserCreationService.finalize_invitation(user=user, requested_by=request.user)
         return Response(UserReadSerializer(user).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=["post"], url_path="submit")
+    def submit(self, request, *args, **kwargs):
+        """POST /user/users/<id>/submit/ — promote a DRAFT into the normal flow.
+
+        Optionally accepts a ``role`` key to assign the role at submit time when
+        the draft doesn't already have one. CX staff enter the approval workflow;
+        other user types are invited immediately (mirrors single-create).
+        """
+        user = self.get_object()
+
+        role_instance = None
+        role_key = (request.data.get("role") or "").strip()
+        if role_key:
+            role_instance = TenantRoleTemplate.objects.filter(
+                tenant=user.tenant, key=role_key,
+            ).first()
+            if role_instance is None:
+                return error_response(
+                    message="Invalid role.",
+                    error={"role": f'Role with key "{role_key}" not found in the target tenant.'},
+                )
+
+        try:
+            with transaction.atomic():
+                UserCreationService.submit_draft(
+                    user=user, requesting_user=request.user, request=request,
+                    role_instance=role_instance,
+                )
+                if user.user_type == User.UserType.CX_STAFF:
+                    wf_instance = _wf_submit(document=user, requested_by=request.user)
+                else:
+                    UserCreationService.finalize_invitation(user=user, requested_by=request.user)
+                    wf_instance = None
+        except ValueError as exc:
+            raw = exc.args[0] if exc.args else {}
+            detail = raw if isinstance(raw, dict) else {"detail": str(raw)}
+            return error_response(
+                message=detail.get("message", "Could not submit this draft."), error=detail,
+            )
+
+        payload = {"user": UserReadSerializer(user).data}
+        if wf_instance is not None:
+            payload["workflow_instance"] = _WFInstanceSerializer(wf_instance).data
+        return Response(payload, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=["get"], url_path="bulk-template")
+    def bulk_template(self, request, *args, **kwargs):
+        """GET /user/users/bulk-template/ — download the CSV template to fill in."""
+        import csv
+        from django.http import HttpResponse
+
+        response = HttpResponse(content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="cx-staff-bulk-template.csv"'
+        writer = csv.DictWriter(response, fieldnames=BULK_USER_COLUMNS)
+        writer.writeheader()
+        writer.writerow(BULK_USER_EXAMPLE)  # one example row; replace or delete it.
+        return response
+
+    @action(detail=False, methods=["post"], url_path="bulk-upload")
+    def bulk_upload(self, request, *args, **kwargs):
+        """POST /user/users/bulk-upload/ — create DRAFT CX staff from a CSV.
+
+        Multipart ``file`` (the filled template). Each row is validated
+        independently: valid rows are saved as drafts, invalid rows are returned
+        with per-row errors, so one bad row never blocks the rest.
+        """
+        import csv
+        import io
+
+        upload = request.FILES.get("file")
+        if upload is None:
+            return error_response(message="No file uploaded.", error={"file": "A CSV file is required."})
+        if not upload.name.lower().endswith(".csv"):
+            return error_response(message="Invalid file type.", error={"file": "Upload a .csv file."})
+
+        try:
+            text = upload.read().decode("utf-8-sig")
+        except UnicodeDecodeError:
+            return error_response(message="Unreadable file.", error={"file": "The file must be UTF-8 CSV."})
+
+        reader = csv.DictReader(io.StringIO(text))
+        if not reader.fieldnames or not {"first_name", "last_name", "email"} <= set(
+            (h or "").strip() for h in reader.fieldnames
+        ):
+            return error_response(
+                message="Missing columns.",
+                error={"file": "The CSV must include at least first_name, last_name and email columns."},
+            )
+
+        created, errors = [], []
+        row_count = 0
+        for index, raw in enumerate(reader, start=2):  # row 1 is the header
+            row = {k.strip(): (v or "").strip() for k, v in raw.items() if k}
+            if not any(row.get(c) for c in BULK_USER_COLUMNS):
+                continue  # skip blank lines
+            row_count += 1
+            if row_count > BULK_UPLOAD_MAX_ROWS:
+                errors.append({"row": index, "email": row.get("email", ""),
+                               "errors": {"file": f"Row limit is {BULK_UPLOAD_MAX_ROWS} per upload."}})
+                break
+
+            payload = {c: row.get(c, "") for c in BULK_USER_COLUMNS if row.get(c)}
+            serializer = UserCreateSerializer(data=payload, context={"request": request, "draft": True})
+            if not serializer.is_valid():
+                errors.append({"row": index, "email": row.get("email", ""), "errors": serializer.errors})
+                continue
+            try:
+                user = UserCreationService.create_pending(
+                    validated_data=serializer.validated_data,
+                    requesting_user=request.user, request=request,
+                    status=User.Status.DRAFT,
+                )
+            except Exception as exc:  # a row-level failure must not abort the batch
+                errors.append({"row": index, "email": row.get("email", ""),
+                               "errors": {"detail": str(exc)}})
+                continue
+            created.append({"row": index, "id": str(user.id), "email": user.email})
+
+        return success_response(
+            message=f"{len(created)} draft(s) created, {len(errors)} row(s) failed.",
+            data={
+                "summary": {"created": len(created), "failed": len(errors)},
+                "created": created,
+                "errors": errors,
+            },
+        )
 
     def perform_destroy(self, instance):
         # Never hard-delete. Records and audit history are always preserved.
