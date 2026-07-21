@@ -3844,3 +3844,382 @@ class StockLedgerTests(_P2PFixtureMixin, TestCase):
         by_code = {r["code"]: r for r in valuation["rows"]}
         self.assertEqual(by_code["LOW"]["stock_value"], 1_000_000)
         self.assertEqual(by_code["OK"]["stock_value"], 500_000)
+
+
+class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
+    """Security-first coverage for the stock-item / movement REST surface."""
+
+    def _client(self, entity, email="stock-console@test.com"):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        user = get_user_model().objects.create_user(
+            email=email, password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Stock", last_name="Tester",
+        )
+        return TenantAPIClient(user=user)
+
+    def _item(self, entity, *, code="WIDGET", reorder_level=0, reorder_qty=0, is_active=True):
+        return StockItem.objects.create(
+            entity=entity, code=code, name=f"Stock {code}",
+            inventory_account=self.acc(entity, "1400"),
+            default_expense_account=self.acc(entity, "5100"),
+            reorder_level=reorder_level, reorder_qty=reorder_qty, is_active=is_active,
+        )
+
+    def _receive(self, entity, vendor, item, *, qty, unit_price):
+        """Post a single-line stock GRN (real receipt) so on-hand/value are ledger-built."""
+        from vs_procurement.purchasing import price_po
+
+        po = PurchaseOrder.objects.create(
+            entity=entity, vendor=vendor, order_date=datetime.date(2026, 1, 5),
+        )
+        po_line = PurchaseOrderLine.objects.create(
+            purchase_order=po, description=item.name,
+            expense_account=self.acc(entity, "5100"), quantity=qty,
+            unit_price=unit_price, line_no=1,
+        )
+        price_po(po)
+        grn = GoodsReceivedNote.objects.create(
+            entity=entity, vendor=vendor, purchase_order=po,
+            received_date=datetime.date(2026, 1, 8),
+        )
+        GoodsReceivedNoteLine.objects.create(
+            grn=grn, po_line=po_line, stock_item=item,
+            expense_account=self.acc(entity, "5100"),
+            accepted_qty=qty, unit_price=unit_price, line_no=1,
+        )
+        post_grn(grn)
+        item.refresh_from_db()
+        return grn
+
+    # --- permission gating ------------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=False)
+    def test_every_endpoint_is_rbac_gated(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        item = self._item(entity)
+        client = self._client(entity)
+        e = f"?entity={entity.code}"
+        denied = [
+            ("get", f"/v1/procurement/stock-items/{e}"),
+            ("post", f"/v1/procurement/stock-items/{e}"),
+            ("get", f"/v1/procurement/stock-items/summary/{e}"),
+            ("get", f"/v1/procurement/stock-items/{item.pk}/{e}"),
+            ("patch", f"/v1/procurement/stock-items/{item.pk}/{e}"),
+            ("post", f"/v1/procurement/stock-items/{item.pk}/issue/{e}"),
+            ("post", f"/v1/procurement/stock-items/{item.pk}/adjust/{e}"),
+            ("get", f"/v1/procurement/stock-movements/{e}"),
+            ("get", f"/v1/procurement/reports/stock-reorder/{e}"),
+            ("get", f"/v1/procurement/reports/stock-valuation/{e}"),
+        ]
+        for method, url in denied:
+            response = getattr(client, method)(url, {}, format="json")
+            self.assertEqual(response.status_code, 403, f"{method} {url}")
+
+    @patch("vs_rbac.permissions.is_vision_super_admin", return_value=False)
+    @patch("vs_rbac.permissions.has_permission")
+    def test_verbs_resolve_distinct_permission_keys(self, mock_has, _super):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._item(entity)
+        self._receive(entity, vendor, item, qty=10, unit_price=100_000)
+        client = self._client(entity)
+        e = f"?entity={entity.code}"
+        # view grants list/detail/summary/movements but NOT manage/issue/adjust.
+        mock_has.side_effect = _deny_keys(
+            "procurement.stock.manage", "procurement.stock.issue", "procurement.stock.adjust")
+        self.assertEqual(client.get(f"/v1/procurement/stock-items/{e}").status_code, 200)
+        self.assertEqual(client.get(f"/v1/procurement/stock-items/summary/{e}").status_code, 200)
+        self.assertEqual(client.get(f"/v1/procurement/stock-items/{item.pk}/{e}").status_code, 200)
+        self.assertEqual(
+            client.patch(f"/v1/procurement/stock-items/{item.pk}/{e}", {"name": "x"},
+                         format="json").status_code, 403)
+        self.assertEqual(
+            client.post(f"/v1/procurement/stock-items/{item.pk}/issue/{e}", {"quantity": 1},
+                        format="json").status_code, 403)
+        self.assertEqual(
+            client.post(f"/v1/procurement/stock-items/{item.pk}/adjust/{e}",
+                        {"quantity_delta": 1, "unit_cost": 1000}, format="json").status_code, 403)
+        # reports resolve on report.view — denied even when stock.view is held.
+        mock_has.side_effect = _deny_keys("procurement.report.view")
+        self.assertEqual(
+            client.get(f"/v1/procurement/reports/stock-reorder/{e}").status_code, 403)
+        self.assertEqual(
+            client.get(f"/v1/procurement/reports/stock-valuation/{e}").status_code, 403)
+
+    # --- entity isolation -------------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_cross_entity_item_is_not_reachable(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        other = LedgerEntity.objects.create(name="Other", code="OTHER", kind=LedgerEntity.Kind.TENANT)
+        seed_chart_of_accounts(other)
+        foreign = self._item(other, code="FOREIGN")
+        client = self._client(entity)
+        e = f"?entity={entity.code}"
+        self.assertEqual(client.get(f"/v1/procurement/stock-items/{foreign.pk}/{e}").status_code, 404)
+        for method, url, body in [
+            ("patch", f"/v1/procurement/stock-items/{foreign.pk}/{e}", {"name": "x"}),
+            ("post", f"/v1/procurement/stock-items/{foreign.pk}/issue/{e}", {"quantity": 1}),
+            ("post", f"/v1/procurement/stock-items/{foreign.pk}/adjust/{e}",
+             {"quantity_delta": 1, "unit_cost": 1000}),
+        ]:
+            self.assertEqual(getattr(client, method)(url, body, format="json").status_code, 404,
+                             f"{method} {url}")
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_cross_entity_account_reference_is_rejected(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        other = LedgerEntity.objects.create(name="Other", code="OTHER", kind=LedgerEntity.Kind.TENANT)
+        seed_chart_of_accounts(other)
+        client = self._client(entity)
+        # 1400 exists in *other* only under its own rows; resolving it against my entity's
+        # chart still finds my own 1400 (codes are per-entity), so name it by a foreign id.
+        foreign_inv = Account.objects.get(entity=other, code="1400")
+        response = client.post(
+            f"/v1/procurement/stock-items/?entity={entity.code}",
+            {"code": "X", "name": "X", "inventory_account": foreign_inv.pk}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    # --- create / patch validation ----------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_normalizes_code_and_returns_detail(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        client = self._client(entity)
+        response = client.post(
+            f"/v1/procurement/stock-items/?entity={entity.code}",
+            {"code": " sw-01 ", "name": " Widget ", "inventory_account": "1400",
+             "default_expense_account": "5100", "reorder_level": 5, "reorder_qty": 10},
+            format="json")
+        self.assertEqual(response.status_code, 201)
+        data = response.data["data"]
+        self.assertEqual(data["code"], "SW-01")           # trimmed + upper-cased
+        self.assertEqual(data["name"], "Widget")
+        self.assertEqual(data["inventory_code"], "1400")
+        self.assertEqual(data["expense_code"], "5100")
+        self.assertEqual(data["movements"], [])            # detail shape, empty ledger
+        self.assertEqual(data["activity"], [])
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_rejects_bad_account_types_and_negative_reorder(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        client = self._client(entity)
+        base = f"/v1/procurement/stock-items/?entity={entity.code}"
+        # inventory_account must be ASSET — 2100 is a LIABILITY.
+        self.assertEqual(client.post(base, {
+            "code": "A", "name": "A", "inventory_account": "2100"}, format="json").status_code, 400)
+        # default_expense_account must be EXPENSE — 1400 is an ASSET.
+        self.assertEqual(client.post(base, {
+            "code": "B", "name": "B", "inventory_account": "1400",
+            "default_expense_account": "1400"}, format="json").status_code, 400)
+        # inventory_account is required.
+        self.assertEqual(client.post(base, {
+            "code": "C", "name": "C"}, format="json").status_code, 400)
+        # blank name / negative reorder.
+        self.assertEqual(client.post(base, {
+            "code": "D", "name": "  ", "inventory_account": "1400"}, format="json").status_code, 400)
+        self.assertEqual(client.post(base, {
+            "code": "E", "name": "E", "inventory_account": "1400",
+            "reorder_level": -1}, format="json").status_code, 400)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_patch_code_is_immutable_but_same_code_is_accepted(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        item = self._item(entity, code="WIDGET")
+        client = self._client(entity)
+        url = f"/v1/procurement/stock-items/{item.pk}/?entity={entity.code}"
+        # A different code is refused with the immutability message.
+        changed = client.patch(url, {"code": "OTHER"}, format="json")
+        self.assertEqual(changed.status_code, 400)
+        self.assertIn("cannot be changed", str(changed.data).lower())
+        # The same code (any case) is a no-op, not an error.
+        same = client.patch(url, {"code": "widget", "name": "Renamed"}, format="json")
+        self.assertEqual(same.status_code, 200)
+        self.assertEqual(same.data["data"]["name"], "Renamed")
+        item.refresh_from_db()
+        self.assertEqual(item.code, "WIDGET")
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_patch_never_touches_balances(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._item(entity)
+        self._receive(entity, vendor, item, qty=10, unit_price=100_000)
+        client = self._client(entity)
+        url = f"/v1/procurement/stock-items/{item.pk}/?entity={entity.code}"
+        client.patch(url, {"on_hand_qty": 999, "stock_value": 1}, format="json")
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 10)             # ledger-owned, unchanged
+        self.assertEqual(item.stock_value, 1_000_000)
+
+    # --- issue ------------------------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_issue_posts_dr_expense_cr_inventory_at_average(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._item(entity)
+        self._receive(entity, vendor, item, qty=10, unit_price=100_000)    # avg 1000.00
+        self._receive(entity, vendor, item, qty=10, unit_price=200_000)    # avg 1500.00
+        client = self._client(entity)
+        response = client.post(
+            f"/v1/procurement/stock-items/{item.pk}/issue/?entity={entity.code}",
+            {"quantity": 4, "movement_date": "2026-01-20"}, format="json")
+        self.assertEqual(response.status_code, 201)
+        movement = StockMovement.objects.get(id=response.data["data"]["movement"]["id"])
+        lines = {l.account.code: l for l in movement.journal.lines.all()}
+        self.assertEqual(lines["5100"].debit, 600_000)     # Dr expense at moving average
+        self.assertEqual(lines["1400"].credit, 600_000)    # Cr inventory relief
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 16)
+        self.assertEqual(item.stock_value, 2_400_000)
+        # The detail payload reflects the new balance and carries the movement ledger.
+        stock_item = response.data["data"]["stock_item"]
+        self.assertEqual(stock_item["stock_value"], 2_400_000)
+        self.assertEqual(stock_item["movements"][0]["movement_type"], "ISSUE")
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_issue_over_on_hand_is_rejected_and_leaves_balance(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._item(entity)
+        self._receive(entity, vendor, item, qty=5, unit_price=100_000)
+        client = self._client(entity)
+        response = client.post(
+            f"/v1/procurement/stock-items/{item.pk}/issue/?entity={entity.code}",
+            {"quantity": 8}, format="json")
+        # Over-issue is a domain conflict (InsufficientStockError → 409), not bad input.
+        self.assertEqual(response.status_code, 409)
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 5)              # never negative
+        self.assertEqual(item.stock_value, 500_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_issue_rejects_bad_quantity_and_date(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._item(entity)
+        self._receive(entity, vendor, item, qty=5, unit_price=100_000)
+        client = self._client(entity)
+        url = f"/v1/procurement/stock-items/{item.pk}/issue/?entity={entity.code}"
+        for body in ({"quantity": 0}, {"quantity": -1}, {"quantity": "NaN"},
+                     {"quantity": 1, "movement_date": "not-a-date"}):
+            self.assertEqual(client.post(url, body, format="json").status_code, 400, body)
+
+    # --- adjust ------------------------------------------------------------ #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_adjust_writeup_and_shrinkage_post_correct_sides(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._item(entity)
+        self._receive(entity, vendor, item, qty=10, unit_price=100_000)    # 10 @ 1000.00
+        client = self._client(entity)
+        base = f"/v1/procurement/stock-items/{item.pk}/adjust/?entity={entity.code}"
+        # Shrinkage: −2 at average → Dr 5150, Cr 1400.
+        shrink = client.post(base, {"quantity_delta": -2, "movement_date": "2026-01-14"},
+                             format="json")
+        self.assertEqual(shrink.status_code, 201)
+        s_lines = {l.account.code: l for l in
+                   StockMovement.objects.get(id=shrink.data["data"]["movement"]["id"]).journal.lines.all()}
+        self.assertEqual(s_lines["5150"].debit, 200_000)
+        self.assertEqual(s_lines["1400"].credit, 200_000)
+        # Write-up: +2 at average → Dr 1400, Cr 5150.
+        writeup = client.post(base, {"quantity_delta": 2, "movement_date": "2026-01-15"},
+                              format="json")
+        self.assertEqual(writeup.status_code, 201)
+        w_lines = {l.account.code: l for l in
+                   StockMovement.objects.get(id=writeup.data["data"]["movement"]["id"]).journal.lines.all()}
+        self.assertEqual(w_lines["1400"].debit, 200_000)
+        self.assertEqual(w_lines["5150"].credit, 200_000)
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 10)
+        self.assertEqual(item.stock_value, 1_000_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_adjust_rejects_zero_delta_over_decrease_and_float_unit_cost(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._item(entity)
+        self._receive(entity, vendor, item, qty=3, unit_price=100_000)
+        client = self._client(entity)
+        base = f"/v1/procurement/stock-items/{item.pk}/adjust/?entity={entity.code}"
+        # A zero delta is bad input (validation → 400).
+        self.assertEqual(client.post(base, {"quantity_delta": 0}, format="json").status_code, 400)
+        # Decrease beyond on-hand is a domain conflict (InsufficientStockError → 409).
+        self.assertEqual(client.post(base, {"quantity_delta": -5}, format="json").status_code, 409)
+        # A float unit_cost must not coerce across the kobo boundary (validation → 400).
+        self.assertEqual(client.post(base, {"quantity_delta": 2, "unit_cost": 12.5},
+                                     format="json").status_code, 400)
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 3)
+        self.assertEqual(item.stock_value, 300_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_adjust_write_up_from_empty_requires_unit_cost(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        item = self._item(entity)
+        client = self._client(entity)
+        base = f"/v1/procurement/stock-items/{item.pk}/adjust/?entity={entity.code}"
+        # No existing average and no unit_cost → the service refuses (StockError → 409).
+        # Date lands in the fixture's open Jan-2026 period so the 409 is the missing-cost
+        # refusal, not a closed-period rejection.
+        self.assertEqual(
+            client.post(base, {"quantity_delta": 5, "movement_date": "2026-01-15"},
+                        format="json").status_code, 409)
+        # With a unit_cost the opening write-up posts Dr 1400 / Cr 5150.
+        ok = client.post(base, {"quantity_delta": 5, "unit_cost": 50_000,
+                                "movement_date": "2026-01-15"}, format="json")
+        self.assertEqual(ok.status_code, 201)
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 5)
+        self.assertEqual(item.stock_value, 250_000)
+
+    # --- summary / reports / movements ------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_summary_counts_states_and_is_entity_scoped(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        in_stock = self._item(entity, code="INSTOCK", reorder_level=2)
+        low = self._item(entity, code="LOW", reorder_level=20)
+        self._item(entity, code="OUT", reorder_level=2)               # never received → 0
+        self._item(entity, code="RETIRED", reorder_level=2, is_active=False)
+        self._receive(entity, vendor, in_stock, qty=10, unit_price=100_000)   # 10 > 2
+        self._receive(entity, vendor, low, qty=10, unit_price=50_000)         # 10 <= 20
+        # A foreign item must not leak into this entity's aggregate.
+        other = LedgerEntity.objects.create(name="Other", code="OTHER", kind=LedgerEntity.Kind.TENANT)
+        seed_chart_of_accounts(other)
+        self._item(other, code="FOREIGN")
+        client = self._client(entity)
+        data = client.get(f"/v1/procurement/stock-items/summary/?entity={entity.code}").data["data"]
+        self.assertEqual(data["tracked"], 4)              # excludes the foreign item
+        self.assertEqual(data["active"], 3)               # RETIRED excluded
+        self.assertEqual(data["low_stock"], 1)            # LOW only (> 0 and <= level)
+        self.assertEqual(data["out_of_stock"], 1)         # OUT only
+        self.assertEqual(data["total_value"], 1_500_000)  # 1,000,000 + 500,000
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_reorder_and_valuation_reports_carry_real_state(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        low = self._item(entity, code="LOW", reorder_level=20, reorder_qty=50)
+        ok = self._item(entity, code="OK", reorder_level=2, reorder_qty=10)
+        self._receive(entity, vendor, low, qty=10, unit_price=100_000)
+        self._receive(entity, vendor, ok, qty=10, unit_price=50_000)
+        client = self._client(entity)
+        reorder = client.get(f"/v1/procurement/reports/stock-reorder/?entity={entity.code}")
+        self.assertEqual({r["code"] for r in reorder.data["data"]["rows"]}, {"LOW"})
+        valuation = client.get(f"/v1/procurement/reports/stock-valuation/?entity={entity.code}")
+        self.assertEqual(valuation.data["data"]["total_value"]["kobo"], 1_500_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_movements_ledger_preserves_grn_receipt_and_is_empty_shape_stable(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._item(entity)
+        client = self._client(entity)
+        # Empty ledger serialises as {} (paginator's empty-list shape).
+        empty = client.get(f"/v1/procurement/stock-movements/?entity={entity.code}")
+        self.assertIn(empty.data["data"], ({}, []))
+        # A GRN receipt lands as a RECEIPT movement snapshotting the running balance.
+        self._receive(entity, vendor, item, qty=10, unit_price=100_000)
+        rows = client.get(
+            f"/v1/procurement/stock-movements/?entity={entity.code}&movement_type=RECEIPT"
+        ).data["data"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["movement_type"], "RECEIPT")
+        self.assertEqual(rows[0]["balance_qty"], "10.0000")
+        self.assertEqual(rows[0]["balance_value"], 1_000_000)

@@ -13,9 +13,9 @@ from vs_finance.constants import DocumentStatus, PaymentMethod
 from vs_finance.models import Account, BankAccount, FiscalPeriod, LedgerEntity, TaxCode
 from vs_procurement.models import (
     CatalogItem, ContractMilestone, GoodsReceivedNote, GoodsReceivedNoteLine, PurchaseOrder,
-    PurchaseOrderLine, RequestForQuotation, RfqLine, Vendor, VendorCategory, VendorContract,
-    VendorInvoice, VendorInvoiceLine, VendorPayment, VendorPaymentAllocation, VendorQuotation,
-    VendorQuotationLine,
+    PurchaseOrderLine, RequestForQuotation, RfqLine, StockItem, Vendor, VendorCategory,
+    VendorContract, VendorInvoice, VendorInvoiceLine, VendorPayment, VendorPaymentAllocation,
+    VendorQuotation, VendorQuotationLine,
 )
 from vs_procurement.constants import ProcApprovalState, RfqStatus
 from vs_procurement.contracts import (
@@ -26,6 +26,7 @@ from vs_procurement.payables import (
     post_vendor_invoice, post_vendor_payment, reverse_vendor_payment,
 )
 from vs_procurement.purchasing import approve_purchase_order, post_grn, price_po
+from vs_procurement.stock import adjust_stock, issue_stock
 from vs_procurement.sourcing import (
     award_quotation, cancel_rfq, issue_rfq, price_quotation, set_rfq_invitations,
     submit_quotation,
@@ -562,8 +563,104 @@ class Command(BaseCommand):
             cancel_rfq(cancelled_rfq, reason="Requirement withdrawn", actor_user=actor)
         rfq_count += int(created)
 
+        # ── Inventory: stock items + a real receipt→issue→adjustment history ──────
+        # Items are master data (always created); on-hand balances only ever move through
+        # the real ledger services (issue/adjust/GRN post) — never a raw quantity write. The
+        # movement blocks are guarded on the item having no movements yet, so a re-run neither
+        # double-posts nor drifts the weighted-average valuation.
+        inventory_acc = Account.objects.filter(entity=entity, code="1400").first()
+        cost_of_sales = Account.objects.filter(entity=entity, code="5100").first()
+        stock_item_count = 0
+        # Opening balances / the GRN receipt all date to today, so they need an open period.
+        period_covers_today = FiscalPeriod.objects.filter(
+            entity=entity, start_date__lte=today, end_date__gte=today,
+        ).exists()
+        if inventory_acc and cost_of_sales:
+            # Link a stock item to its buying catalog entry where one shares the code, so the
+            # Category column resolves to a real catalog reference.
+            catalog_by_code = {c.code: c for c in CatalogItem.objects.filter(entity=entity)}
+
+            def ensure_stock_item(code, name, uom, reorder_level, reorder_qty):
+                nonlocal stock_item_count
+                item, created = StockItem.objects.get_or_create(
+                    entity=entity, code=code,
+                    defaults={
+                        "name": name, "unit_of_measure": uom,
+                        "catalog_item": catalog_by_code.get(code),
+                        "inventory_account": inventory_acc,
+                        "default_expense_account": cost_of_sales,
+                        "reorder_level": reorder_level, "reorder_qty": reorder_qty,
+                        "is_active": True,
+                    },
+                )
+                stock_item_count += int(created)
+                return item
+
+            # In stock (well above reorder), low stock (at/below reorder but > 0), and
+            # out of stock (never received). Opening quantities are booked as a real
+            # positive adjustment (an opening stock count) — a genuine journal, not a write.
+            for code, name, uom, rl, rq, opening, unit_cost in (
+                ("SRV-R760", "Dell PowerEdge R760 Server", "Unit", 2, 5, 6, 41_800_000),
+                ("LTO-9", "LTO-9 Backup Tape (20-pack)", "Pack", 20, 50, 15, 1_850_000),
+                ("PWR-APC5K", "APC Smart-UPS 5kVA", "Unit", 2, 4, 0, 0),
+            ):
+                item = ensure_stock_item(code, name, uom, rl, rq)
+                if period_covers_today and opening > 0 and not item.movements.exists():
+                    adjust_stock(
+                        item, quantity_delta=opening, movement_date=today,
+                        unit_cost=unit_cost, actor_user=actor,
+                        reference="OPENING", narration="Opening stock count",
+                    )
+
+            # One item carries a full lifecycle: goods received into stock (Dr inventory,
+            # Cr GR/IR via the GRN journal), then an issue (Dr COS, Cr inventory), then a
+            # small shrinkage adjustment — populating valuation and the movement ledger.
+            scanner = ensure_stock_item(
+                "SCN-I4850", "Kodak i4850 Production Scanner", "Unit", 3, 10,
+            )
+            if period_covers_today and not scanner.movements.exists():
+                po = PurchaseOrder.objects.create(
+                    entity=entity, vendor=vendors[1],
+                    order_date=today - datetime.timedelta(days=6),
+                    expected_date=today, reference="CODEX-DEMO-STOCK-PO",
+                    created_by=actor,
+                )
+                po_line = PurchaseOrderLine.objects.create(
+                    purchase_order=po, description=scanner.name,
+                    expense_account=cost_of_sales, quantity=20,
+                    unit_price=6_400_000, line_no=1,
+                )
+                price_po(po)
+                if po.status == DocumentStatus.DRAFT:
+                    approve_purchase_order(po, actor_user=actor)
+                grn = GoodsReceivedNote.objects.create(
+                    entity=entity, vendor=po.vendor, purchase_order=po,
+                    received_date=today - datetime.timedelta(days=3),
+                    reference="CODEX-DEMO-STOCK-GRN", created_by=actor,
+                )
+                GoodsReceivedNoteLine.objects.create(
+                    grn=grn, po_line=po_line, stock_item=scanner,
+                    expense_account=cost_of_sales, accepted_qty=20,
+                    unit_price=po_line.unit_price, line_no=1,
+                )
+                post_grn(grn, actor_user=actor)
+                scanner.refresh_from_db()
+                issue_stock(
+                    scanner, quantity=6, movement_date=today - datetime.timedelta(days=2),
+                    actor_user=actor, reference="ISSUE-OPS",
+                    narration="Issued to operations",
+                )
+                scanner.refresh_from_db()
+                adjust_stock(
+                    scanner, quantity_delta=-1, movement_date=today,
+                    actor_user=actor, reference="COUNT-ADJ",
+                    narration="Cycle-count shrinkage",
+                )
+
         self.stdout.write(self.style.SUCCESS(
             f"CODEX procurement demo ready: {Vendor.objects.filter(entity=entity).count()} vendors, "
             f"+{invoice_count} invoices, +{po_count} purchase orders, "
-            f"+{payment_count} vendor payments, +{rfq_count} RFQs."
+            f"+{payment_count} vendor payments, +{rfq_count} RFQs, "
+            f"+{stock_item_count} stock items "
+            f"({StockItem.objects.filter(entity=entity).count()} total)."
         ))

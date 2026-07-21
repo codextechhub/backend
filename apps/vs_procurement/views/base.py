@@ -120,6 +120,46 @@ def _quantity(value, field):
     return qty
 
 
+def _nonneg_qty(value, field):
+    """A non-negative, finite quantity within the line model's 14,4 precision.
+
+    Used for master-data thresholds (``reorder_level`` / ``reorder_qty``) where zero is a
+    legitimate value but NaN/inf/negative are not. Kept separate from :func:`_dec` (which
+    other document types rely on accepting any parseable number) and from :func:`_quantity`
+    (which rejects zero).
+    """
+    try:
+        qty = Decimal(str(value))
+    except (InvalidOperation, TypeError):
+        raise ValidationError({field: "Expected a number."})
+    if not qty.is_finite():  # Rejects NaN and ±Infinity, which Decimal will happily parse.
+        raise ValidationError({field: "Expected a finite number."})
+    if qty < 0:
+        raise ValidationError({field: "Cannot be negative."})
+    if qty > _MAX_QTY:
+        raise ValidationError({field: "Value is too large."})
+    return qty
+
+
+def _signed_qty(value, field):
+    """A signed, non-zero, finite quantity within the 14,4 precision (a stock delta).
+
+    A stock adjustment must move the count, so zero is rejected here; the sign carries the
+    direction (``+`` write-up, ``−`` shrinkage). NaN/inf are rejected the same way.
+    """
+    try:
+        qty = Decimal(str(value))
+    except (InvalidOperation, TypeError):
+        raise ValidationError({field: "Expected a number."})
+    if not qty.is_finite():  # Rejects NaN and ±Infinity, which Decimal will happily parse.
+        raise ValidationError({field: "Expected a finite number."})
+    if qty == 0:
+        raise ValidationError({field: "The adjustment must change the quantity."})
+    if abs(qty) > _MAX_QTY:
+        raise ValidationError({field: "Value is too large."})
+    return qty
+
+
 def _strict_kobo(value, field):
     """Coerce to non-negative **integer** kobo, rejecting float/bool naira mistakes.
 
@@ -174,6 +214,24 @@ def _resolve_expense_account(entity, ref, field="expense_account"):
 
     if not (account.account_type == AccountType.EXPENSE and account.is_active and account.is_postable):
         raise ValidationError({field: "Select an active, postable EXPENSE account in this entity."})
+    return account
+
+
+def _resolve_asset_account(entity, ref, field="inventory_account"):
+    """Resolve an active, postable **ASSET** account in ``entity`` (or ``None``).
+
+    A stock item's inventory-value must be carried in a genuinely postable balance-sheet
+    asset account — the same active/postable rule :func:`_resolve_expense_account` enforces
+    for expenses — so an item can never carry its value onto a header/liability/inactive
+    account.
+    """
+    account = _resolve_account(entity, ref, field)
+    if account is None:
+        return None
+    from vs_finance.constants import AccountType
+
+    if not (account.account_type == AccountType.ASSET and account.is_active and account.is_postable):
+        raise ValidationError({field: "Select an active, postable ASSET account in this entity."})
     return account
 
 

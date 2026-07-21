@@ -316,7 +316,10 @@ class CatalogItemSerializer(serializers.ModelSerializer):
 # Inventory / stock ledger                                                    #
 # --------------------------------------------------------------------------- #
 
-class StockItemSerializer(serializers.ModelSerializer):
+class StockItemListSerializer(serializers.ModelSerializer):
+    """Lean stock-item list row. ``unit_cost``/``needs_reorder`` are model properties;
+    the ``*_id`` fields carry the picker prefills the edit form re-hydrates from."""
+
     inventory_code = serializers.CharField(
         source="inventory_account.code", read_only=True, default=None,
     )
@@ -350,10 +353,33 @@ class StockItemSerializer(serializers.ModelSerializer):
         return format_naira(obj.stock_value)
 
 
+class StockItemDetailSerializer(StockItemListSerializer):
+    """Full stock-item record for the detail drawer: header, recent movements, activity.
+
+    ``movements`` is the last 50 ledger rows for this item, newest first. The detail view
+    prefetches ``movements`` (with ``created_by``) ordered ``-id``, so slicing the cached
+    relation here re-uses that prefetch and never issues a per-row query."""
+
+    movements = serializers.SerializerMethodField()
+    activity = serializers.SerializerMethodField()
+
+    class Meta(StockItemListSerializer.Meta):
+        fields = StockItemListSerializer.Meta.fields + ["movements", "activity"]
+
+    def get_movements(self, obj):
+        # Prefetched newest-first; take the most recent 50 from the cached list (no re-query).
+        return StockMovementSerializer(list(obj.movements.all())[:50], many=True).data
+
+    def get_activity(self, obj):
+        # Finance-audit feed (issues/adjustments record with target=stock_item).
+        return _sourcing_activity(obj.entity_id, "StockItem", obj.pk)
+
+
 class StockMovementSerializer(serializers.ModelSerializer):
     stock_item_code = serializers.CharField(
         source="stock_item.code", read_only=True, default=None,
     )
+    created_by_name = serializers.SerializerMethodField()
     value_amount_naira = serializers.SerializerMethodField()
     balance_value_naira = serializers.SerializerMethodField()
 
@@ -363,8 +389,19 @@ class StockMovementSerializer(serializers.ModelSerializer):
             "id", "stock_item_id", "stock_item_code", "movement_type",
             "movement_date", "quantity", "value_amount", "value_amount_naira",
             "balance_qty", "balance_value", "balance_value_naira",
-            "grn_id", "journal_id", "reference", "narration", "created_at",
+            "grn_id", "journal_id", "reference", "narration",
+            "created_by_name", "created_at",
         ]
+
+    def get_created_by_name(self, obj) -> str:
+        # The actor who recorded the movement, else "System" (GRN receipts may be unattributed).
+        user = obj.created_by
+        if user is None:
+            return "System"
+        return (
+            f"{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}".strip()
+            or getattr(user, "email", "System")
+        )
 
     def get_value_amount_naira(self, obj) -> str:
         return format_naira(obj.value_amount)

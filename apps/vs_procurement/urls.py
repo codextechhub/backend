@@ -100,6 +100,8 @@ urlpatterns = [
 
     # Inventory / stock ledger
     path("stock-items/", views.StockItemListCreateView.as_view(), name="proc-stock-items"),
+    # "summary" is registered before "<pk>" so the literal is not captured as an id.
+    path("stock-items/summary/", views.StockItemSummaryView.as_view(), name="proc-stock-item-summary"),
     path("stock-items/<int:pk>/", views.StockItemDetailView.as_view(), name="proc-stock-item-detail"),
     path("stock-items/<int:pk>/issue/", views.StockIssueView.as_view(), name="proc-stock-issue"),
     path("stock-items/<int:pk>/adjust/", views.StockAdjustView.as_view(), name="proc-stock-adjust"),
