@@ -13,16 +13,20 @@ from vs_finance.constants import DocumentStatus, PaymentMethod
 from vs_finance.models import Account, BankAccount, FiscalPeriod, LedgerEntity, TaxCode
 from vs_procurement.models import (
     CatalogItem, GoodsReceivedNote, GoodsReceivedNoteLine, PurchaseOrder, PurchaseOrderLine,
-    Vendor, VendorCategory, VendorContract, VendorInvoice, VendorInvoiceLine, VendorPayment,
-    VendorPaymentAllocation,
+    RequestForQuotation, RfqLine, Vendor, VendorCategory, VendorContract, VendorInvoice,
+    VendorInvoiceLine, VendorPayment, VendorPaymentAllocation, VendorQuotation, VendorQuotationLine,
 )
-from vs_procurement.constants import ProcApprovalState
+from vs_procurement.constants import ProcApprovalState, RfqStatus
 from vs_procurement.contracts import activate_contract
 from vs_procurement.approvals import ensure_default_approval_templates, submit_for_approval
 from vs_procurement.payables import (
     post_vendor_invoice, post_vendor_payment, reverse_vendor_payment,
 )
 from vs_procurement.purchasing import approve_purchase_order, post_grn, price_po
+from vs_procurement.sourcing import (
+    award_quotation, cancel_rfq, issue_rfq, price_quotation, set_rfq_invitations,
+    submit_quotation,
+)
 from vs_workflow.constants import WorkflowInstanceStatus, WorkflowStageAction
 from vs_workflow.services import actions as workflow_actions
 
@@ -128,6 +132,17 @@ class Command(BaseCommand):
                     "is_active": is_active, "on_hold": False,
                 },
             )
+
+        # One extra purchase-eligible vendor is invited to an RFQ but never responds, so
+        # the RFQ's Vendors Invited tab shows a genuine "Awaited" row.
+        Vendor.objects.update_or_create(
+            entity=entity, code="SIDMACH",
+            defaults={
+                "name": "Sidmach Technologies", "category": categories[0],
+                "payable_account": payable, "default_expense_account": expense,
+                "kyc_status": "VERIFIED", "is_active": True, "on_hold": False,
+            },
+        )
 
         purchase_tax = TaxCode.objects.filter(
             entity=entity, is_active=True, is_recoverable=True,
@@ -375,8 +390,105 @@ class Command(BaseCommand):
                 post_vendor_payment(reversed_payment, actor_user=actor, auto_allocate=False)
                 reverse_vendor_payment(reversed_payment, actor_user=actor, date=today)
 
+        # ── Sourcing: RFQs + vendor quotations (no GL effect) ─────────────────
+        # Every fixture below runs through the real services (issue/submit/award/cancel);
+        # none writes a status field directly. Idempotency guards on the RFQ title, which
+        # is unique per fixture, so a re-run neither duplicates nor re-quotes.
+        eligible = list(
+            Vendor.objects.filter(entity=entity, is_active=True, on_hold=False)
+            .exclude(kyc_status="REJECTED").order_by("id")[:4]
+        )
+
+        def seed_rfq(title, line_specs, *, issue=False, invited=(), budget=None):
+            existing = RequestForQuotation.objects.filter(entity=entity, title=title).first()
+            if existing is not None:
+                return existing, False
+            rfq = RequestForQuotation.objects.create(
+                entity=entity, title=title, issue_date=today,
+                response_due_date=today + datetime.timedelta(days=10),
+                budget_estimate=budget,
+                notes="Procurement sourcing verification data", created_by=actor,
+            )
+            for line_no, (description, quantity) in enumerate(line_specs, start=1):
+                RfqLine.objects.create(
+                    rfq=rfq, description=description, quantity=quantity,
+                    expense_account=expense, line_no=line_no,
+                )
+            # Invite the addressee vendors while the RFQ is still a draft — issuing now
+            # requires at least one invitation.
+            if invited:
+                set_rfq_invitations(rfq, list(invited), actor_user=actor)
+            if issue:
+                issue_rfq(rfq, actor_user=actor)
+            return rfq, True
+
+        def seed_quote(rfq, vendor, prices, *, lead_time, submit=True):
+            quo = VendorQuotation.objects.create(
+                entity=entity, rfq=rfq, vendor=vendor, quote_date=today,
+                valid_until=today + datetime.timedelta(days=30),
+                lead_time_days=lead_time, reference=f"{vendor.code}-Q{rfq.pk}",
+                created_by=actor,
+            )
+            for line_no, (rfq_line, price) in enumerate(
+                zip(rfq.lines.order_by("line_no", "id"), prices), start=1,
+            ):
+                VendorQuotationLine.objects.create(
+                    quotation=quo, rfq_line=rfq_line, description=rfq_line.description,
+                    expense_account=expense, quantity=rfq_line.quantity,
+                    unit_price=price, line_no=line_no,
+                )
+            price_quotation(quo)
+            if submit:
+                submit_quotation(quo, actor_user=actor)
+            return quo
+
+        rfq_count = 0
+        _, created = seed_rfq(
+            "Demo sourcing — office laptops (draft)",
+            [("15-inch business laptop", 25), ("Docking station", 25), ("3-year onsite warranty", 25)],
+            invited=eligible[:2], budget=95_000_000,
+        )
+        rfq_count += int(created)
+
+        # An issued RFQ with three competing submitted quotes plus a fourth invited vendor
+        # who does not respond (so the Vendors Invited tab shows a real "Awaited" row).
+        issued_rfq, created = seed_rfq(
+            "Demo sourcing — data-centre switches",
+            [("48-port managed switch", 6), ("10G SFP+ transceiver", 24)],
+            issue=True, invited=eligible[:4], budget=48_000_000,
+        )
+        if created and len(eligible) >= 3:
+            seed_quote(issued_rfq, eligible[0], [42_000_000, 3_200_000], lead_time=21)
+            seed_quote(issued_rfq, eligible[1], [39_500_000, 3_600_000], lead_time=30)
+            seed_quote(issued_rfq, eligible[2], [44_000_000, 2_900_000], lead_time=14)
+            # eligible[3] (SIDMACH) is invited but deliberately never quotes → Awaited.
+        rfq_count += int(created)
+
+        # An awarded RFQ: the cheaper quote wins (real DRAFT PO), the sibling is rejected.
+        awarded_rfq, created = seed_rfq(
+            "Demo sourcing — managed cloud (awarded)",
+            [("Managed cloud support — annual", 1)],
+            issue=True, invited=eligible[:2], budget=110_000_000,
+        )
+        if created and len(eligible) >= 2:
+            winner = seed_quote(awarded_rfq, eligible[0], [96_000_000], lead_time=7)
+            seed_quote(awarded_rfq, eligible[1], [104_000_000], lead_time=10)
+            award_quotation(winner, actor_user=actor)
+        rfq_count += int(created)
+
+        # A cancelled RFQ with one live quote, so the reject-on-cancel path is seeded too.
+        cancelled_rfq, created = seed_rfq(
+            "Demo sourcing — cancelled pilot",
+            [("Pilot hardware bundle", 2)],
+            issue=True, invited=eligible[:1],
+        )
+        if created and len(eligible) >= 1:
+            seed_quote(cancelled_rfq, eligible[0], [15_000_000], lead_time=20)
+            cancel_rfq(cancelled_rfq, reason="Requirement withdrawn", actor_user=actor)
+        rfq_count += int(created)
+
         self.stdout.write(self.style.SUCCESS(
             f"CODEX procurement demo ready: {Vendor.objects.filter(entity=entity).count()} vendors, "
             f"+{invoice_count} invoices, +{po_count} purchase orders, "
-            f"+{payment_count} vendor payments."
+            f"+{payment_count} vendor payments, +{rfq_count} RFQs."
         ))

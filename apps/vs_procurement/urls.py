@@ -43,8 +43,10 @@ urlpatterns = [
 
     # Requests for quotation (sourcing)
     path("rfqs/", views.RfqListCreateView.as_view(), name="proc-rfqs"),
+    path("rfqs/summary/", views.RfqSummaryView.as_view(), name="proc-rfq-summary"),
     path("rfqs/<int:pk>/", views.RfqDetailView.as_view(), name="proc-rfq-detail"),
     path("rfqs/<int:pk>/issue/", views.RfqIssueView.as_view(), name="proc-rfq-issue"),
+    path("rfqs/<int:pk>/close/", views.RfqCloseView.as_view(), name="proc-rfq-close"),
     path("rfqs/<int:pk>/cancel/", views.RfqCancelView.as_view(), name="proc-rfq-cancel"),
 
     # Vendor quotations (sourcing)

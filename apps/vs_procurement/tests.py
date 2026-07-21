@@ -47,6 +47,7 @@ from vs_procurement.models import (
     PurchaseRequisition,
     PurchaseRequisitionLine,
     RequestForQuotation,
+    RfqInvitation,
     RfqLine,
     StockItem,
     StockMovement,
@@ -70,7 +71,9 @@ from vs_procurement.contracts import (
 from vs_procurement.sourcing import (
     award_quotation,
     cancel_rfq,
+    close_rfq,
     issue_rfq,
+    set_rfq_invitations,
     submit_quotation,
 )
 from vs_procurement.payables import (
@@ -1646,7 +1649,7 @@ class ProcurementAnalyticsTests(_P2PFixtureMixin, TestCase):
 class SourcingTests(_P2PFixtureMixin, TestCase):
     """RFQ lifecycle, quotation submission and award-into-PO conversion."""
 
-    def _make_rfq(self, entity, *, lines=None):
+    def _make_rfq(self, entity, *, lines=None, invite=None):
         rfq = RequestForQuotation.objects.create(
             entity=entity, title="Office chairs",
             issue_date=datetime.date(2026, 1, 3),
@@ -1656,6 +1659,16 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
                 rfq=rfq, description=desc, quantity=qty, line_no=i,
                 expense_account=self.acc(entity, "5300"),
             )
+        # Default: invite every purchase-eligible vendor in the entity so the RFQ can be
+        # issued (issue now requires ≥1 invitation) and any of them may quote. Pass an
+        # explicit ``invite=[]`` to exercise the no-invitation path.
+        if invite is None:
+            invite = list(
+                Vendor.objects.filter(entity=entity, is_active=True, on_hold=False)
+                .exclude(kyc_status=VendorKycStatus.REJECTED)
+            )
+        if invite:
+            set_rfq_invitations(rfq, invite)
         return rfq
 
     def _make_quotation(self, entity, rfq, vendor, *, lines):
@@ -1760,6 +1773,549 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         with self.assertRaises(SourcingError):
             cancel_rfq(rfq)
 
+    def test_close_only_issued_and_rejects_live_quotes(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        draft = self._make_rfq(entity)
+        with self.assertRaises(SourcingError):  # a draft was never open
+            close_rfq(draft)
+        rfq = self._make_rfq(entity)
+        issue_rfq(rfq)
+        quo = self._make_quotation(entity, rfq, vendor, lines=[("Mesh chair", 10, 200_000)])
+        submit_quotation(quo)
+        close_rfq(rfq, reason="No suitable bid")
+        rfq.refresh_from_db()
+        quo.refresh_from_db()
+        self.assertEqual(rfq.rfq_status, RfqStatus.CLOSED)
+        self.assertEqual(quo.quotation_status, QuotationStatus.REJECTED)
+        self.assertTrue(FinanceAuditLog.objects.filter(
+            entity=entity, action=FinanceAuditAction.RFQ_CLOSED).exists())
+        self.assertTrue(FinanceAuditLog.objects.filter(
+            entity=entity, action=FinanceAuditAction.QUOTATION_REJECTED,
+            target_type="VendorQuotation", target_id=str(quo.pk)).exists())
+
+    def test_cancel_issued_rfq_rejects_live_quotes(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._make_rfq(entity)
+        issue_rfq(rfq)
+        quo = self._make_quotation(entity, rfq, vendor, lines=[("Mesh chair", 10, 200_000)])
+        submit_quotation(quo)
+        cancel_rfq(rfq, reason="Withdrawn")
+        rfq.refresh_from_db()
+        quo.refresh_from_db()
+        self.assertEqual(rfq.rfq_status, RfqStatus.CANCELLED)
+        self.assertEqual(quo.quotation_status, QuotationStatus.REJECTED)
+
+    def test_submit_blocks_ineligible_vendor(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._make_rfq(entity)
+        issue_rfq(rfq)
+        quo = self._make_quotation(entity, rfq, vendor, lines=[("Mesh chair", 10, 200_000)])
+        vendor.on_hold = True
+        vendor.save(update_fields=["on_hold", "updated_at"])
+        with self.assertRaises(SourcingError):
+            submit_quotation(quo)
+
+    def test_award_rejects_lapsed_quotation(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._make_rfq(entity)
+        issue_rfq(rfq)
+        quo = self._make_quotation(entity, rfq, vendor, lines=[("Mesh chair", 10, 200_000)])
+        submit_quotation(quo)
+        # A validity date in the past makes the offer stale — award must refuse it.
+        VendorQuotation.objects.filter(pk=quo.pk).update(
+            valid_until=datetime.date.today() - datetime.timedelta(days=1),
+        )
+        quo.refresh_from_db()
+        with self.assertRaises(SourcingError):
+            award_quotation(quo)
+        quo.refresh_from_db()
+        rfq.refresh_from_db()
+        self.assertEqual(quo.quotation_status, QuotationStatus.SUBMITTED)
+        self.assertEqual(rfq.rfq_status, RfqStatus.ISSUED)
+
+    # --- invited vendors --------------------------------------------------- #
+
+    def test_set_invitations_validates_and_dedupes(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._make_rfq(entity, invite=[])
+        # A duplicated vendor collapses to a single invitation.
+        set_rfq_invitations(rfq, [vendor, vendor])
+        self.assertEqual(rfq.invitations.count(), 1)
+        # An ineligible (on-hold) vendor is rejected.
+        onhold = Vendor.objects.create(
+            entity=entity, code="HOLD", name="Held", payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"), kyc_status="VERIFIED", on_hold=True)
+        with self.assertRaises(SourcingError):
+            set_rfq_invitations(rfq, [vendor, onhold])
+        # A cross-entity vendor is rejected.
+        other = LedgerEntity.objects.create(name="Other", code="OTHER2", kind=LedgerEntity.Kind.TENANT)
+        seed_chart_of_accounts(other)
+        foreign = Vendor.objects.create(
+            entity=other, code="FRV", name="Foreign",
+            payable_account=Account.objects.get(entity=other, code="2100"),
+            default_expense_account=Account.objects.get(entity=other, code="5300"),
+            kyc_status="VERIFIED")
+        with self.assertRaises(SourcingError):
+            set_rfq_invitations(rfq, [foreign])
+
+    def test_issue_requires_invitation(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._make_rfq(entity, invite=[])  # has lines, no invitation
+        with self.assertRaises(SourcingError):
+            issue_rfq(rfq)
+        set_rfq_invitations(rfq, [vendor])
+        issue_rfq(rfq)
+        rfq.refresh_from_db()
+        self.assertEqual(rfq.rfq_status, RfqStatus.ISSUED)
+
+    def test_set_invitations_rejects_removing_responded_vendor(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rival = Vendor.objects.create(
+            entity=entity, code="RIVAL2", name="Rival", payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"), kyc_status="VERIFIED")
+        rfq = self._make_rfq(entity, invite=[vendor])
+        # A quotation from `vendor` marks it responded (derived, never stored).
+        self._make_quotation(entity, rfq, vendor, lines=[("Mesh chair", 10, 200_000)])
+        with self.assertRaises(SourcingError):
+            set_rfq_invitations(rfq, [rival])  # would strand the responded vendor's bid
+        # Keeping the responded vendor while adding another is allowed.
+        set_rfq_invitations(rfq, [vendor, rival])
+        self.assertEqual(rfq.invitations.count(), 2)
+
+    def test_submit_blocked_when_vendor_uninvited(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._make_rfq(entity, invite=[vendor])
+        issue_rfq(rfq)
+        quo = self._make_quotation(entity, rfq, vendor, lines=[("Mesh chair", 10, 200_000)])
+        # Withdraw the invitation directly (the API can't on an issued RFQ) — submit must
+        # then refuse the now-uninvited vendor's quote.
+        RfqInvitation.objects.filter(rfq=rfq, vendor=vendor).delete()
+        with self.assertRaises(SourcingError):
+            submit_quotation(quo)
+
+
+def _deny_keys(*denied):
+    """side_effect for ``vs_rbac.permissions.has_permission`` denying only *denied* keys."""
+    def _check(user, permission_key, *args, **kwargs):
+        return permission_key not in denied
+    return _check
+
+
+class SourcingConsoleAPITests(_P2PFixtureMixin, TestCase):
+    """Security-first coverage for the RFQ / quotation REST surface."""
+
+    def _client(self, entity, email="sourcing-console@test.com"):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        user = get_user_model().objects.create_user(
+            email=email, password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Sourcing", last_name="Tester",
+        )
+        return TenantAPIClient(user=user)
+
+    def _issued_rfq(self, entity, *, lines=None, invite=None):
+        rfq = RequestForQuotation.objects.create(
+            entity=entity, title="Switches", issue_date=datetime.date(2026, 1, 3),
+        )
+        for i, (desc, qty) in enumerate(lines or [("48-port switch", 5)], start=1):
+            RfqLine.objects.create(
+                rfq=rfq, description=desc, quantity=qty, line_no=i,
+                expense_account=self.acc(entity, "5300"),
+            )
+        # Invite every purchase-eligible vendor so the RFQ can be issued and any of them
+        # may quote (invited-only enforcement).
+        if invite is None:
+            invite = list(
+                Vendor.objects.filter(entity=entity, is_active=True, on_hold=False)
+                .exclude(kyc_status=VendorKycStatus.REJECTED)
+            )
+        if invite:
+            set_rfq_invitations(rfq, invite)
+        issue_rfq(rfq)
+        return rfq
+
+    def _submitted_quote(self, entity, rfq, vendor, *, price=200_000):
+        quo = VendorQuotation.objects.create(
+            entity=entity, rfq=rfq, vendor=vendor, quote_date=datetime.date(2026, 1, 4),
+        )
+        for i, rline in enumerate(rfq.lines.all().order_by("line_no", "id"), start=1):
+            VendorQuotationLine.objects.create(
+                quotation=quo, rfq_line=rline, description=rline.description,
+                expense_account=self.acc(entity, "5300"), quantity=rline.quantity,
+                unit_price=price, line_no=i,
+            )
+        submit_quotation(quo)
+        return quo
+
+    # --- permission gating ------------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=False)
+    def test_every_endpoint_is_rbac_gated(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._issued_rfq(entity)
+        quo = VendorQuotation.objects.create(
+            entity=entity, rfq=rfq, vendor=vendor, quote_date=datetime.date(2026, 1, 4),
+        )
+        client = self._client(entity)
+        e = f"?entity={entity.code}"
+        denied = [
+            ("get", f"/v1/procurement/rfqs/{e}"),
+            ("post", f"/v1/procurement/rfqs/{e}"),
+            ("get", f"/v1/procurement/rfqs/summary/{e}"),
+            ("get", f"/v1/procurement/rfqs/{rfq.pk}/{e}"),
+            ("patch", f"/v1/procurement/rfqs/{rfq.pk}/{e}"),
+            ("post", f"/v1/procurement/rfqs/{rfq.pk}/issue/{e}"),
+            ("post", f"/v1/procurement/rfqs/{rfq.pk}/close/{e}"),
+            ("post", f"/v1/procurement/rfqs/{rfq.pk}/cancel/{e}"),
+            ("get", f"/v1/procurement/quotations/{e}"),
+            ("post", f"/v1/procurement/quotations/{e}"),
+            ("get", f"/v1/procurement/quotations/{quo.pk}/{e}"),
+            ("patch", f"/v1/procurement/quotations/{quo.pk}/{e}"),
+            ("post", f"/v1/procurement/quotations/{quo.pk}/submit/{e}"),
+            ("post", f"/v1/procurement/quotations/{quo.pk}/award/{e}"),
+        ]
+        for method, url in denied:
+            response = getattr(client, method)(url, {}, format="json")
+            self.assertEqual(response.status_code, 403, f"{method} {url}")
+
+    @patch("vs_rbac.permissions.is_vision_super_admin", return_value=False)
+    @patch("vs_rbac.permissions.has_permission")
+    def test_patch_requires_dedicated_update_key(self, mock_has, _super):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = RequestForQuotation.objects.create(
+            entity=entity, title="Draft", issue_date=datetime.date(2026, 1, 3),
+        )
+        RfqLine.objects.create(
+            rfq=rfq, description="Item", quantity=1, line_no=1,
+            expense_account=self.acc(entity, "5300"),
+        )
+        quo = VendorQuotation.objects.create(
+            entity=entity, rfq=rfq, vendor=vendor, quote_date=datetime.date(2026, 1, 4),
+        )
+        client = self._client(entity)
+        # Deny only the update keys: reads succeed, PATCH is refused for both documents.
+        mock_has.side_effect = _deny_keys(
+            "procurement.rfq.update", "procurement.quotation.update",
+        )
+        self.assertEqual(
+            client.get(f"/v1/procurement/rfqs/{rfq.pk}/?entity={entity.code}").status_code, 200)
+        self.assertEqual(
+            client.patch(f"/v1/procurement/rfqs/{rfq.pk}/?entity={entity.code}",
+                         {"title": "New"}, format="json").status_code, 403)
+        self.assertEqual(
+            client.get(f"/v1/procurement/quotations/{quo.pk}/?entity={entity.code}").status_code, 200)
+        self.assertEqual(
+            client.patch(f"/v1/procurement/quotations/{quo.pk}/?entity={entity.code}",
+                         {"reference": "R2"}, format="json").status_code, 403)
+
+    # --- summary ----------------------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_summary_counts_are_entity_scoped(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        # Draft, open (issued), plus one issued that closes within 7 days, and a response.
+        RequestForQuotation.objects.create(
+            entity=entity, title="Draft", issue_date=datetime.date(2026, 1, 3))
+        open_rfq = self._issued_rfq(entity)
+        closing = self._issued_rfq(entity, lines=[("Cable", 2)])
+        closing.response_due_date = datetime.date.today() + datetime.timedelta(days=3)
+        closing.save(update_fields=["response_due_date", "updated_at"])
+        self._submitted_quote(entity, open_rfq, vendor)
+
+        other = LedgerEntity.objects.create(name="Other", code="OTHER", kind=LedgerEntity.Kind.TENANT)
+        seed_chart_of_accounts(other)
+        RequestForQuotation.objects.create(
+            entity=other, title="Foreign", issue_date=datetime.date(2026, 1, 3))
+
+        data = self._client(entity).get(
+            f"/v1/procurement/rfqs/summary/?entity={entity.code}").data["data"]
+        self.assertEqual(data["draft"], 1)          # only this entity's draft
+        self.assertEqual(data["open"], 2)           # two issued RFQs
+        self.assertEqual(data["responses_in"], 1)   # one submitted quote on an issued RFQ
+        self.assertEqual(data["closing_soon"], 1)   # the one due in 3 days
+
+    # --- list annotations + empty shape ------------------------------------ #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_list_annotations_filters_and_empty_shape(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._issued_rfq(entity, lines=[("Switch", 5), ("Module", 2)])
+        self._submitted_quote(entity, rfq, vendor)
+        client = self._client(entity)
+        row = client.get(f"/v1/procurement/rfqs/?entity={entity.code}").data["data"][0]
+        self.assertEqual(row["line_count"], 2)
+        self.assertEqual(row["response_count"], 1)
+        # ?status filter and ?q search.
+        self.assertEqual(
+            len(client.get(f"/v1/procurement/rfqs/?entity={entity.code}&status=ISSUED").data["data"]), 1)
+        self.assertEqual(
+            len(client.get(f"/v1/procurement/rfqs/?entity={entity.code}&status=DRAFT").data["data"]), 0)
+        self.assertEqual(
+            len(client.get(f"/v1/procurement/rfqs/?entity={entity.code}&q=switch").data["data"]), 1)
+        # Quotations hold a PROTECT FK to the RFQ, so clear them first.
+        VendorQuotation.objects.filter(entity=entity).delete()
+        RequestForQuotation.objects.filter(entity=entity).delete()
+        empty = client.get(f"/v1/procurement/rfqs/?entity={entity.code}")
+        self.assertIn(empty.data["data"], ({}, []))
+        empty_q = client.get(f"/v1/procurement/quotations/?entity={entity.code}")
+        self.assertIn(empty_q.data["data"], ({}, []))
+
+    # --- cross-entity isolation -------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_cross_entity_ids_are_404_or_rejected(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        other = LedgerEntity.objects.create(name="Other", code="OTHER", kind=LedgerEntity.Kind.TENANT)
+        seed_chart_of_accounts(other)
+        other_vendor = Vendor.objects.create(
+            entity=other, code="FARV", name="Foreign", payable_account=Account.objects.get(entity=other, code="2100"),
+            default_expense_account=Account.objects.get(entity=other, code="5300"), kyc_status="VERIFIED",
+        )
+        other_tax = TaxCode.objects.create(
+            entity=other, code="F-VAT", name="Foreign VAT", rate_bps=750,
+            paid_account=Account.objects.get(entity=other, code="1300"),
+        )
+        rfq = self._issued_rfq(entity)
+        quo = self._submitted_quote(entity, rfq, vendor)
+        client = self._client(entity)
+        # RFQ / quotation ids are invisible under the wrong entity.
+        self.assertEqual(client.get(
+            f"/v1/procurement/rfqs/{rfq.pk}/?entity={other.code}").status_code, 404)
+        self.assertEqual(client.get(
+            f"/v1/procurement/quotations/{quo.pk}/?entity={other.code}").status_code, 404)
+        # Cross-entity vendor / tax code / rfq_line on quotation create are all rejected.
+        base = {"rfq": rfq.pk, "quote_date": "2026-01-04",
+                "lines": [{"description": "x", "quantity": 1, "unit_price": 100}]}
+        self.assertEqual(client.post(
+            f"/v1/procurement/quotations/?entity={entity.code}",
+            {**base, "vendor": other_vendor.pk}, format="json").status_code, 400)
+        self.assertEqual(client.post(
+            f"/v1/procurement/quotations/?entity={entity.code}",
+            {**base, "vendor": vendor.code,
+             "lines": [{"description": "x", "quantity": 1, "unit_price": 100, "tax_code": other_tax.pk}]},
+            format="json").status_code, 400)
+        foreign_rfq = self._issued_rfq(entity, lines=[("Other", 1)])
+        foreign_line = foreign_rfq.lines.first()
+        self.assertEqual(client.post(
+            f"/v1/procurement/quotations/?entity={entity.code}",
+            {**base, "vendor": vendor.code,
+             "lines": [{"description": "x", "quantity": 1, "unit_price": 100, "rfq_line": foreign_line.pk}]},
+            format="json").status_code, 400)
+
+    # --- validation bounds ------------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_rfq_create_validation_bounds(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        client = self._client(entity)
+        url = f"/v1/procurement/rfqs/?entity={entity.code}"
+
+        def line(**over):
+            base = {"description": "Item", "quantity": 1, "expense_account": "5300"}
+            base.update(over)
+            return base
+
+        def create(**over):
+            body = {"title": "R", "issue_date": "2026-01-03", "lines": [line()]}
+            body.update(over)
+            return client.post(url, body, format="json")
+
+        self.assertEqual(create(lines=[line(quantity=0)]).status_code, 400)
+        self.assertEqual(create(lines=[line(quantity=-3)]).status_code, 400)
+        self.assertEqual(create(lines=[line(quantity="NaN")]).status_code, 400)
+        self.assertEqual(create(title="x" * 201).status_code, 400)
+        # Closing before issue date.
+        self.assertEqual(create(response_due_date="2026-01-01").status_code, 400)
+        # A LIABILITY (non-EXPENSE) account is rejected.
+        self.assertEqual(create(lines=[line(expense_account="2100")]).status_code, 400)
+        # An inactive EXPENSE account is rejected.
+        expense = self.acc(entity, "5300")
+        expense.is_active = False
+        expense.save(update_fields=["is_active", "updated_at"])
+        self.assertEqual(create().status_code, 400)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_quotation_create_validation_and_issued_requirement(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        draft_rfq = RequestForQuotation.objects.create(
+            entity=entity, title="Draft", issue_date=datetime.date(2026, 1, 3))
+        RfqLine.objects.create(
+            rfq=draft_rfq, description="Item", quantity=1, line_no=1,
+            expense_account=self.acc(entity, "5300"))
+        issued = self._issued_rfq(entity)
+        client = self._client(entity)
+        url = f"/v1/procurement/quotations/?entity={entity.code}"
+
+        def create(rfq, **over):
+            body = {"rfq": rfq.pk, "vendor": vendor.code, "quote_date": "2026-01-04",
+                    "lines": [{"description": "x", "quantity": 1, "unit_price": 100}]}
+            body.update(over)
+            return client.post(url, body, format="json")
+
+        # Quotation against a non-issued RFQ is rejected.
+        self.assertEqual(create(draft_rfq).status_code, 400)
+        # Float / negative kobo unit price rejected.
+        self.assertEqual(create(
+            issued, lines=[{"description": "x", "quantity": 1, "unit_price": 100.5}]).status_code, 400)
+        self.assertEqual(create(
+            issued, lines=[{"description": "x", "quantity": 1, "unit_price": -5}]).status_code, 400)
+        # valid_until before quote_date rejected.
+        self.assertEqual(create(issued, valid_until="2026-01-01").status_code, 400)
+        # lead_time out of range rejected.
+        self.assertEqual(create(issued, lead_time_days=5000).status_code, 400)
+        # Happy path.
+        self.assertEqual(create(issued).status_code, 201)
+
+    # --- eligibility + lifecycle via the API ------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_quotation_create_blocks_ineligible_vendor(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._issued_rfq(entity)  # vendor invited while still eligible
+        # Vendor goes on hold after issue: its quotation must be refused on eligibility.
+        vendor.on_hold = True
+        vendor.save(update_fields=["on_hold", "updated_at"])
+        response = self._client(entity).post(
+            f"/v1/procurement/quotations/?entity={entity.code}",
+            {"rfq": rfq.pk, "vendor": vendor.code, "quote_date": "2026-01-04",
+             "lines": [{"description": "x", "quantity": 1, "unit_price": 100}]}, format="json")
+        self.assertEqual(response.status_code, 400)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_patch_is_draft_only(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._issued_rfq(entity)  # already issued → not editable
+        quo = self._submitted_quote(entity, rfq, vendor)  # submitted → not editable
+        client = self._client(entity)
+        self.assertEqual(client.patch(
+            f"/v1/procurement/rfqs/{rfq.pk}/?entity={entity.code}",
+            {"title": "New"}, format="json").status_code, 400)
+        self.assertEqual(client.patch(
+            f"/v1/procurement/quotations/{quo.pk}/?entity={entity.code}",
+            {"reference": "R"}, format="json").status_code, 400)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_award_via_api_builds_draft_po_and_rejects_losers(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rival = Vendor.objects.create(
+            entity=entity, code="RIVAL", name="Rival", payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"), kyc_status="VERIFIED")
+        rfq = self._issued_rfq(entity)
+        winner = self._submitted_quote(entity, rfq, vendor, price=200_000)
+        loser = self._submitted_quote(entity, rfq, rival, price=250_000)
+        response = self._client(entity).post(
+            f"/v1/procurement/quotations/{winner.pk}/award/?entity={entity.code}", {}, format="json")
+        self.assertEqual(response.status_code, 201)
+        po = PurchaseOrder.objects.get(pk=response.data["data"]["id"])
+        self.assertEqual(po.status, DocumentStatus.DRAFT)
+        self.assertEqual(po.vendor_id, vendor.pk)
+        self.assertEqual(po.entity_id, entity.pk)
+        loser.refresh_from_db()
+        rfq.refresh_from_db()
+        self.assertEqual(loser.quotation_status, QuotationStatus.REJECTED)
+        self.assertEqual(rfq.rfq_status, RfqStatus.AWARDED)
+        # A second award on the same RFQ is refused.
+        self.assertEqual(self._client(entity, "second@test.com").post(
+            f"/v1/procurement/quotations/{loser.pk}/award/?entity={entity.code}", {},
+            format="json").status_code, 422)
+
+    # --- invited vendors + budget over the API ----------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_invited_only_quotation_create(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        uninvited = Vendor.objects.create(
+            entity=entity, code="UNINV", name="Uninvited", payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"), kyc_status="VERIFIED")
+        # Only `vendor` is on the RFQ's addressee list.
+        rfq = self._issued_rfq(entity, invite=[vendor])
+        client = self._client(entity)
+
+        def create(v):
+            return client.post(
+                f"/v1/procurement/quotations/?entity={entity.code}",
+                {"rfq": rfq.pk, "vendor": v.code, "quote_date": "2026-01-04",
+                 "lines": [{"description": "x", "quantity": 1, "unit_price": 100}]}, format="json")
+
+        # Uninvited but otherwise-eligible vendor is rejected; the invited vendor succeeds.
+        self.assertEqual(create(uninvited).status_code, 400)
+        self.assertEqual(create(vendor).status_code, 201)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_budget_estimate_validation(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        client = self._client(entity)
+        url = f"/v1/procurement/rfqs/?entity={entity.code}"
+
+        def create(**over):
+            body = {"title": "R", "issue_date": "2026-01-03",
+                    "lines": [{"description": "Item", "quantity": 1, "expense_account": "5300"}]}
+            body.update(over)
+            return client.post(url, body, format="json")
+
+        created = create(budget_estimate=9_500_000)
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.data["data"]["budget_estimate"], 9_500_000)
+        # Float and negative kobo are rejected (integer-kobo boundary).
+        self.assertEqual(create(budget_estimate=100.5).status_code, 400)
+        self.assertEqual(create(budget_estimate=-5).status_code, 400)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_patch_replaces_and_protects_invite_set(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        other = Vendor.objects.create(
+            entity=entity, code="OTHV", name="Other", payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"), kyc_status="VERIFIED")
+        client = self._client(entity)
+        created = client.post(
+            f"/v1/procurement/rfqs/?entity={entity.code}",
+            {"title": "Draft", "issue_date": "2026-01-03", "invited_vendors": [vendor.code],
+             "lines": [{"description": "Item", "quantity": 1, "expense_account": "5300"}]},
+            format="json")
+        self.assertEqual(created.status_code, 201)
+        rfq_id = created.data["data"]["id"]
+        # PATCH replaces the invite set on a draft.
+        patched = client.patch(
+            f"/v1/procurement/rfqs/{rfq_id}/?entity={entity.code}",
+            {"invited_vendors": [other.code]}, format="json")
+        self.assertEqual(patched.status_code, 200)
+        self.assertEqual([i["vendor_code"] for i in patched.data["data"]["invitations"]], ["OTHV"])
+        # A responded vendor cannot be dropped: attach a quotation for `other`, then try.
+        rfq = RequestForQuotation.objects.get(pk=rfq_id)
+        VendorQuotation.objects.create(
+            entity=entity, rfq=rfq, vendor=other, quote_date=datetime.date(2026, 1, 4))
+        self.assertEqual(client.patch(
+            f"/v1/procurement/rfqs/{rfq_id}/?entity={entity.code}",
+            {"invited_vendors": [vendor.code]}, format="json").status_code, 422)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_rfq_detail_invitations_responded_derivation(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rival = Vendor.objects.create(
+            entity=entity, code="RIV3", name="Rival", payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"), kyc_status="VERIFIED")
+        rfq = self._issued_rfq(entity, invite=[vendor, rival])
+        quo = self._submitted_quote(entity, rfq, vendor)
+        # A foreign entity's RFQ must not inflate this entity's invited_count.
+        other = LedgerEntity.objects.create(name="Other", code="OTHER3", kind=LedgerEntity.Kind.TENANT)
+        seed_chart_of_accounts(other)
+        RequestForQuotation.objects.create(
+            entity=other, title="Foreign", issue_date=datetime.date(2026, 1, 3))
+        client = self._client(entity)
+        detail = client.get(
+            f"/v1/procurement/rfqs/{rfq.pk}/?entity={entity.code}").data["data"]
+        self.assertEqual(detail["invited_count"], 2)
+        by_vendor = {i["vendor_code"]: i for i in detail["invitations"]}
+        self.assertTrue(by_vendor[vendor.code]["responded"])
+        self.assertEqual(by_vendor[vendor.code]["quotation_id"], quo.pk)
+        self.assertFalse(by_vendor[rival.code]["responded"])
+        self.assertIsNone(by_vendor[rival.code]["quotation_id"])
+        # The list annotation is entity-scoped too.
+        row = next(r for r in client.get(
+            f"/v1/procurement/rfqs/?entity={entity.code}").data["data"] if r["id"] == rfq.pk)
+        self.assertEqual(row["invited_count"], 2)
+
 
 # --------------------------------------------------------------------------- #
 # Item catalog                                                                #
@@ -1798,6 +2354,72 @@ class CatalogItemTests(_P2PFixtureMixin, TestCase):
         CatalogItem.objects.create(entity=entity, code="DUP", name="First")
         with self.assertRaises(IntegrityError), transaction.atomic():
             CatalogItem.objects.create(entity=entity, code="DUP", name="Second")
+
+
+class CatalogItemConsoleAPITests(_P2PFixtureMixin, TestCase):
+    """Backfilled security-first coverage for the catalog REST surface.
+
+    Grouped separately from the sourcing suite so it can be committed on its own.
+    """
+
+    def _client(self, entity, email="catalog-console@test.com"):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        user = get_user_model().objects.create_user(
+            email=email, password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Catalog", last_name="Tester",
+        )
+        return TenantAPIClient(user=user)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=False)
+    def test_insights_requires_report_permission(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        item = CatalogItem.objects.create(entity=entity, code="ITEM", name="Item")
+        response = self._client(entity).get(
+            f"/v1/procurement/catalog-items/{item.pk}/insights/?entity={entity.code}")
+        self.assertEqual(response.status_code, 403)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_insights_is_entity_scoped(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        item = CatalogItem.objects.create(entity=entity, code="ITEM", name="Item")
+        other = LedgerEntity.objects.create(name="Other", code="OTHER", kind=LedgerEntity.Kind.TENANT)
+        seed_chart_of_accounts(other)
+        # The same id must not resolve under a different entity.
+        self.assertEqual(self._client(entity).get(
+            f"/v1/procurement/catalog-items/{item.pk}/insights/?entity={other.code}").status_code, 404)
+        self.assertEqual(self._client(entity, "cat2@test.com").get(
+            f"/v1/procurement/catalog-items/{item.pk}/insights/?entity={entity.code}").status_code, 200)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_rejects_inactive_category_and_validates_bounds(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        inactive = VendorCategory.objects.create(
+            entity=entity, code="OLD", name="Legacy", is_active=False)
+        client = self._client(entity)
+        url = f"/v1/procurement/catalog-items/?entity={entity.code}"
+        # Inactive category cannot be assigned to a new item.
+        self.assertEqual(client.post(url, {
+            "code": "A", "name": "A", "category": inactive.pk}, format="json").status_code, 400)
+        # Non-integer price is rejected at the kobo boundary.
+        self.assertEqual(client.post(url, {
+            "code": "B", "name": "B", "standard_unit_price": 100.5}, format="json").status_code, 400)
+        # A non-EXPENSE default account is rejected.
+        self.assertEqual(client.post(url, {
+            "code": "C", "name": "C", "default_expense_account": "2100"}, format="json").status_code, 400)
+        self.assertEqual(client.post(url, {"code": "D", "name": "D"}, format="json").status_code, 201)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_code_is_immutable_after_creation(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        item = CatalogItem.objects.create(entity=entity, code="KEEP", name="Item")
+        response = self._client(entity).patch(
+            f"/v1/procurement/catalog-items/{item.pk}/?entity={entity.code}",
+            {"code": "CHANGED"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        item.refresh_from_db()
+        self.assertEqual(item.code, "KEEP")
 
 
 # --------------------------------------------------------------------------- #

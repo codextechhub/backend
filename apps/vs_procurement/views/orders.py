@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 
 from django.db import transaction
-from django.db.models import F, Q, Sum
+from django.db.models import Count, F, Prefetch, Q, Sum
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, ValidationError
 
@@ -15,12 +15,13 @@ from vs_finance.views import resolve_entity
 from vs_workflow.models import WorkflowInstance
 
 from .. import purchasing, sourcing
-from ..constants import ProcApprovalState
+from ..constants import ProcApprovalState, QuotationStatus, RfqStatus
 from ..models import (
     PurchaseOrder,
     PurchaseRequisition,
     PurchaseRequisitionLine,
     RequestForQuotation,
+    RfqInvitation,
     RfqLine,
     VendorQuotation,
     VendorQuotationLine,
@@ -28,8 +29,10 @@ from ..models import (
 from ..serializers import (
     PurchaseOrderListSerializer,
     PurchaseOrderSerializer,
-    RequestForQuotationSerializer,
-    VendorQuotationSerializer,
+    QuotationDetailSerializer,
+    QuotationListSerializer,
+    RfqDetailSerializer,
+    RfqListSerializer,
 )
 
 
@@ -37,12 +40,17 @@ from .base import (
     _ProcBase,
     _date,
     _dec,
+    _lead_time_days,
     _money,
+    _quantity,
     _require_lines,
     _resolve_account,
     _resolve_currency,
+    _resolve_expense_account,
     _resolve_tax,
     _resolve_vendor,
+    _strict_kobo,
+    _text,
 )
 
 # --------------------------------------------------------------------------- #
@@ -261,6 +269,87 @@ class PurchaseOrderSummaryView(_ProcBase):
 # Requests for quotation (sourcing)                                           #
 # --------------------------------------------------------------------------- #
 
+def _rfq_list_queryset(entity):
+    """Entity-scoped RFQ list with the counts the list row needs, as annotations.
+
+    ``line_count`` and ``response_count`` are computed once in SQL (not per-row) so a
+    long RFQ list stays a single query. A *response* is any non-draft quotation — a
+    vendor's actual reply, not a half-captured draft.
+    """
+    return RequestForQuotation.objects.filter(entity=entity).select_related("requisition").annotate(
+        line_count=Count("lines", distinct=True),
+        response_count=Count(
+            "quotations",
+            filter=~Q(quotations__quotation_status=QuotationStatus.DRAFT),
+            distinct=True,
+        ),
+        invited_count=Count("invitations", distinct=True),
+    )
+
+
+def _rfq_detail_queryset(entity):
+    """Entity-scoped RFQ prefetched for the detail drawer (lines + invitations + quotes)."""
+    return RequestForQuotation.objects.filter(entity=entity).select_related("requisition").prefetch_related(
+        "lines", "lines__expense_account",
+        # Invited vendors + quotations are joined in Python in the serializer to derive
+        # each invitation's "responded" flag without a per-row query.
+        "invitations__vendor",
+        # Quotations are re-sorted by total in the serializer (in Python) to reuse this cache.
+        Prefetch("quotations", queryset=VendorQuotation.objects.select_related("vendor")),
+    )
+
+
+def _write_rfq_lines(entity, rfq, lines):
+    """Validate and (re)create an RFQ's spec lines — a full replacement on edit.
+
+    Shared by create and the draft PATCH so both apply identical validation:
+    positive/bounded quantity, active-postable EXPENSE account, entity-scoped tax code,
+    and a requisition line that genuinely lives in this entity.
+    """
+    rfq.lines.all().delete()  # Full replace: the payload is the new authoritative line set.
+    for i, ln in enumerate(lines, start=1):
+        req_line = None
+        if ln.get("requisition_line"):
+            req_line = PurchaseRequisitionLine.objects.filter(
+                requisition__entity=entity, pk=ln["requisition_line"]).first()
+            if req_line is None:
+                raise ValidationError(
+                    {"requisition_line": f"No such requisition line {ln['requisition_line']}."})
+        RfqLine.objects.create(
+            rfq=rfq, line_no=ln.get("line_no", i),
+            description=_text(ln.get("description"), "description", 255, required=True),
+            quantity=_quantity(ln.get("quantity", 1), "quantity"),
+            requisition_line=req_line,
+            expense_account=_resolve_expense_account(entity, ln.get("expense_account"), "expense_account"),
+            tax_code=_resolve_tax(entity, ln.get("tax_code")),
+        )
+
+
+def _validate_rfq_dates(issue_date, response_due_date):
+    # A closing date must not precede the issue date.
+    if response_due_date is not None and response_due_date < issue_date:
+        raise ValidationError({"response_due_date": "Response due date cannot be before the issue date."})
+
+
+def _resolve_invited_vendors(entity, raw):
+    """Resolve an ``invited_vendors`` payload (list of codes or ids) to Vendor objects.
+
+    Each reference is resolved inside ``entity`` (unknown/cross-entity → 400 via
+    ``_resolve_vendor``); eligibility + de-duplication are enforced downstream by
+    :func:`vs_procurement.sourcing.set_rfq_invitations`.
+    """
+    if not isinstance(raw, list):
+        raise ValidationError({"invited_vendors": "Expected a list of vendor codes or ids."})
+    return [_resolve_vendor(entity, ref) for ref in raw]
+
+
+def _budget_estimate(value, field="budget_estimate"):
+    """Optional integer-kobo budget ceiling; strictly rejects float/negative amounts."""
+    if value in (None, ""):
+        return None
+    return _strict_kobo(value, field)
+
+
 class RfqListCreateView(_ProcBase):
     """GET (list) / POST (create draft RFQ + lines).
 
@@ -274,11 +363,14 @@ class RfqListCreateView(_ProcBase):
 
     def get(self, request):
         entity = resolve_entity(request)
-        qs = RequestForQuotation.objects.filter(entity=entity).prefetch_related("lines")
+        qs = _rfq_list_queryset(entity)
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(rfq_status=status_)
-        return self.paginate(request, qs.order_by("-id"), RequestForQuotationSerializer)
+        if (q := (request.query_params.get("q") or request.query_params.get("search") or "").strip()):
+            qs = qs.filter(Q(document_number__icontains=q) | Q(title__icontains=q))
+        return self.paginate(request, qs.order_by("-id"), RfqListSerializer)
 
+    @transaction.atomic
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data
@@ -289,45 +381,84 @@ class RfqListCreateView(_ProcBase):
                 entity=entity, pk=body["requisition"]).first()
             if requisition is None:
                 raise ValidationError({"requisition": "No such requisition in this entity."})
+        issue_date = _date(body.get("issue_date"), "issue_date", required=True)
+        response_due_date = _date(body.get("response_due_date"), "response_due_date")
+        _validate_rfq_dates(issue_date, response_due_date)
         rfq = RequestForQuotation.objects.create(
             entity=entity, requisition=requisition,
-            title=body.get("title", ""),
-            issue_date=_date(body.get("issue_date"), "issue_date", required=True),
-            response_due_date=_date(body.get("response_due_date"), "response_due_date"),
-            notes=body.get("notes", ""),
+            title=_text(body.get("title"), "title", 200),
+            issue_date=issue_date, response_due_date=response_due_date,
+            budget_estimate=_budget_estimate(body.get("budget_estimate")),
+            notes=_text(body.get("notes"), "notes", 255),
             created_by=request.user if request.user.is_authenticated else None,
         )
-        for i, ln in enumerate(lines, start=1):
-            req_line = None
-            if ln.get("requisition_line"):
-                req_line = PurchaseRequisitionLine.objects.filter(
-                    requisition__entity=entity, pk=ln["requisition_line"]).first()
-                if req_line is None:
-                    raise ValidationError(
-                        {"requisition_line": f"No such requisition line {ln['requisition_line']}."})
-            RfqLine.objects.create(
-                rfq=rfq, line_no=ln.get("line_no", i),
-                description=ln.get("description", ""),
-                quantity=_dec(ln.get("quantity", 1), "quantity"),
-                requisition_line=req_line,
-                expense_account=_resolve_account(entity, ln.get("expense_account"), "expense_account"),
-                tax_code=_resolve_tax(entity, ln.get("tax_code")),
+        _write_rfq_lines(entity, rfq, lines)
+        # Invited vendors may be empty at draft-create (issue is what requires ≥1); still
+        # validate + persist any provided so the draft carries its addressee list.
+        if "invited_vendors" in body:
+            sourcing.set_rfq_invitations(
+                rfq, _resolve_invited_vendors(entity, body["invited_vendors"]),
+                actor_user=request.user,
             )
+        rfq = _rfq_detail_queryset(entity).get(pk=rfq.pk)
         return success_response(
-            "RFQ created.", data=RequestForQuotationSerializer(rfq).data, status=201,
+            "RFQ created.", data=RfqDetailSerializer(rfq).data, status=201,
         )
 
 
 class RfqDetailView(_ProcBase):
-    """docstring-name: RFQs"""
-    rbac_permission = "procurement.rfq.view"
+    """GET (detail) / PATCH (edit a DRAFT RFQ's header + full line replacement).
+
+    docstring-name: RFQs
+    """
+
+    @property
+    def rbac_permission(self):
+        return "procurement.rfq.update" if self.request.method == "PATCH" \
+            else "procurement.rfq.view"
 
     def get(self, request, pk):
         entity = resolve_entity(request)
-        rfq = RequestForQuotation.objects.filter(entity=entity, pk=pk).first()
+        rfq = _rfq_detail_queryset(entity).filter(pk=pk).first()
         if rfq is None:
             raise NotFound("No such RFQ in this entity.")
-        return success_response("RFQ retrieved.", data=RequestForQuotationSerializer(rfq).data)
+        return success_response("RFQ retrieved.", data=RfqDetailSerializer(rfq).data)
+
+    @transaction.atomic
+    def patch(self, request, pk):
+        entity = resolve_entity(request)
+        rfq = RequestForQuotation.objects.select_for_update().filter(entity=entity, pk=pk).first()
+        if rfq is None:
+            raise NotFound("No such RFQ in this entity.")
+        # Only a draft is editable; once issued its lines are a firm invitation vendors quote against.
+        if rfq.rfq_status != RfqStatus.DRAFT:
+            raise ValidationError(
+                {"rfq_status": f"Only a draft RFQ can be edited (this one is '{rfq.rfq_status}')."})
+        body = request.data
+        if "title" in body:
+            rfq.title = _text(body.get("title"), "title", 200)
+        if "issue_date" in body:
+            rfq.issue_date = _date(body.get("issue_date"), "issue_date", required=True)
+        if "response_due_date" in body:
+            rfq.response_due_date = _date(body.get("response_due_date"), "response_due_date")
+        if "notes" in body:
+            rfq.notes = _text(body.get("notes"), "notes", 255)
+        if "budget_estimate" in body:
+            rfq.budget_estimate = _budget_estimate(body.get("budget_estimate"))
+        _validate_rfq_dates(rfq.issue_date, rfq.response_due_date)
+        rfq.save(update_fields=[
+            "title", "issue_date", "response_due_date", "budget_estimate", "notes", "updated_at",
+        ])
+        if "lines" in body:
+            _write_rfq_lines(entity, rfq, _require_lines(body))
+        # Replacing the invite set is subject to the responded-vendor protection in the service.
+        if "invited_vendors" in body:
+            sourcing.set_rfq_invitations(
+                rfq, _resolve_invited_vendors(entity, body["invited_vendors"]),
+                actor_user=request.user,
+            )
+        rfq = _rfq_detail_queryset(entity).get(pk=rfq.pk)
+        return success_response("RFQ updated.", data=RfqDetailSerializer(rfq).data)
 
 
 class RfqIssueView(_ProcBase):
@@ -340,7 +471,25 @@ class RfqIssueView(_ProcBase):
         if rfq is None:
             raise NotFound("No such RFQ in this entity.")
         sourcing.issue_rfq(rfq, actor_user=request.user)
-        return success_response("RFQ issued.", data=RequestForQuotationSerializer(rfq).data)
+        rfq = _rfq_detail_queryset(entity).get(pk=rfq.pk)
+        return success_response("RFQ issued.", data=RfqDetailSerializer(rfq).data)
+
+
+class RfqCloseView(_ProcBase):
+    """POST — close an ISSUED RFQ without an award; rejects its live quotations.
+
+    docstring-name: Close an RFQ
+    """
+    rbac_permission = "procurement.rfq.issue"
+
+    def post(self, request, pk):
+        entity = resolve_entity(request)
+        rfq = RequestForQuotation.objects.filter(entity=entity, pk=pk).first()
+        if rfq is None:
+            raise NotFound("No such RFQ in this entity.")
+        sourcing.close_rfq(rfq, reason=request.data.get("reason", ""), actor_user=request.user)
+        rfq = _rfq_detail_queryset(entity).get(pk=rfq.pk)
+        return success_response("RFQ closed.", data=RfqDetailSerializer(rfq).data)
 
 
 class RfqCancelView(_ProcBase):
@@ -353,12 +502,82 @@ class RfqCancelView(_ProcBase):
         if rfq is None:
             raise NotFound("No such RFQ in this entity.")
         sourcing.cancel_rfq(rfq, reason=request.data.get("reason", ""), actor_user=request.user)
-        return success_response("RFQ cancelled.", data=RequestForQuotationSerializer(rfq).data)
+        rfq = _rfq_detail_queryset(entity).get(pk=rfq.pk)
+        return success_response("RFQ cancelled.", data=RfqDetailSerializer(rfq).data)
+
+
+class RfqSummaryView(_ProcBase):
+    """Entity-scoped KPI counts for the RFQ list header (Draft · Open · Responses · Closing)."""
+    rbac_permission = "procurement.rfq.view"
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        today = timezone.localdate()
+        # One aggregate over the RFQ table for the three RFQ-status counts.
+        counts = RequestForQuotation.objects.filter(entity=entity).aggregate(
+            draft=Count("id", filter=Q(rfq_status=RfqStatus.DRAFT)),
+            open=Count("id", filter=Q(rfq_status=RfqStatus.ISSUED)),
+            closing_soon=Count("id", filter=Q(
+                rfq_status=RfqStatus.ISSUED,
+                response_due_date__gte=today,
+                response_due_date__lte=today + datetime.timedelta(days=7),
+            )),
+        )
+        # A second cheap query: submitted responses currently sitting on issued RFQs.
+        responses_in = VendorQuotation.objects.filter(
+            entity=entity, rfq__rfq_status=RfqStatus.ISSUED,
+        ).exclude(quotation_status=QuotationStatus.DRAFT).count()
+        return success_response("RFQ summary retrieved.", data={
+            "draft": counts["draft"] or 0,
+            "open": counts["open"] or 0,
+            "responses_in": responses_in,
+            "closing_soon": counts["closing_soon"] or 0,
+        })
 
 
 # --------------------------------------------------------------------------- #
 # Vendor quotations (sourcing)                                                #
 # --------------------------------------------------------------------------- #
+
+def _quotation_detail_queryset(entity):
+    return VendorQuotation.objects.filter(entity=entity).select_related(
+        "vendor", "rfq", "awarded_po",
+    ).prefetch_related("lines", "lines__expense_account")
+
+
+def _write_quotation_lines(entity, quotation, rfq, lines):
+    """Validate and (re)create a quotation's priced lines — full replacement on edit.
+
+    Every ``rfq_line`` reference must belong to *this* RFQ (not merely the entity),
+    closing a cross-RFQ line-leak: a quote may only price lines of the RFQ it answers.
+    """
+    quotation.lines.all().delete()
+    for i, ln in enumerate(lines, start=1):
+        rfq_line = None
+        if ln.get("rfq_line"):
+            # Scope to the referenced RFQ, so a line from a different RFQ cannot be smuggled in.
+            rfq_line = RfqLine.objects.filter(rfq=rfq, pk=ln["rfq_line"]).first()
+            if rfq_line is None:
+                raise ValidationError({"rfq_line": f"No such RFQ line {ln['rfq_line']} on this RFQ."})
+        expense = _resolve_expense_account(entity, ln.get("expense_account"), "expense_account") \
+            or (rfq_line.expense_account if rfq_line else None)
+        VendorQuotationLine.objects.create(
+            quotation=quotation, rfq_line=rfq_line, line_no=ln.get("line_no", i),
+            description=_text(
+                ln.get("description", rfq_line.description if rfq_line else ""),
+                "description", 255, required=True,
+            ),
+            expense_account=expense,
+            quantity=_quantity(ln.get("quantity", rfq_line.quantity if rfq_line else 1), "quantity"),
+            unit_price=_strict_kobo(ln.get("unit_price", 0), "unit_price"),
+            tax_code=_resolve_tax(entity, ln.get("tax_code")),
+        )
+
+
+def _validate_quote_dates(quote_date, valid_until):
+    if valid_until is not None and valid_until < quote_date:
+        raise ValidationError({"valid_until": "Valid-until date cannot be before the quote date."})
+
 
 class QuotationListCreateView(_ProcBase):
     """GET (list) / POST (create draft quotation + priced lines) against an RFQ.
@@ -373,16 +592,22 @@ class QuotationListCreateView(_ProcBase):
 
     def get(self, request):
         entity = resolve_entity(request)
-        qs = VendorQuotation.objects.filter(entity=entity).select_related(
-            "vendor", "rfq").prefetch_related("lines")
+        qs = VendorQuotation.objects.filter(entity=entity).select_related("vendor", "rfq")
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(quotation_status=status_)
         if (rfq := request.query_params.get("rfq")):
             qs = qs.filter(rfq_id=rfq)
         if (vendor := request.query_params.get("vendor")):
             qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() else qs.filter(vendor__code=vendor)
-        return self.paginate(request, qs.order_by("-id"), VendorQuotationSerializer)
+        if (q := (request.query_params.get("q") or request.query_params.get("search") or "").strip()):
+            qs = qs.filter(
+                Q(document_number__icontains=q) | Q(reference__icontains=q)
+                | Q(vendor__name__icontains=q) | Q(vendor__code__icontains=q)
+                | Q(rfq__document_number__icontains=q)
+            )
+        return self.paginate(request, qs.order_by("-id"), QuotationListSerializer)
 
+    @transaction.atomic
     def post(self, request):
         entity = resolve_entity(request)
         body = request.data
@@ -390,48 +615,89 @@ class QuotationListCreateView(_ProcBase):
         rfq = RequestForQuotation.objects.filter(entity=entity, pk=body.get("rfq")).first()
         if rfq is None:
             raise ValidationError({"rfq": "An RFQ is required."})
+        # A quotation is an offer against a *live* invitation — the RFQ must be issued.
+        if rfq.rfq_status != RfqStatus.ISSUED:
+            raise ValidationError(
+                {"rfq": f"Quotations can only be captured against an ISSUED RFQ (this one is '{rfq.rfq_status}')."})
         vendor = _resolve_vendor(entity, body.get("vendor"))
+        # Governance gate: an inactive / on-hold / KYC-rejected vendor cannot enter contention.
+        if reason := purchasing.vendor_purchase_block_reason(vendor):
+            raise ValidationError({"vendor": reason})
+        # Invited-only: an RFQ is a request sent to invited vendors, so only an invited
+        # vendor may quote against it.
+        if not RfqInvitation.objects.filter(rfq=rfq, vendor=vendor).exists():
+            raise ValidationError(
+                {"vendor": f"Vendor {vendor.code} is not invited to RFQ {rfq.document_number}."})
+        quote_date = _date(body.get("quote_date"), "quote_date", required=True)
+        valid_until = _date(body.get("valid_until"), "valid_until")
+        _validate_quote_dates(quote_date, valid_until)
         quotation = VendorQuotation.objects.create(
             entity=entity, rfq=rfq, vendor=vendor,
-            quote_date=_date(body.get("quote_date"), "quote_date", required=True),
-            valid_until=_date(body.get("valid_until"), "valid_until"),
+            quote_date=quote_date, valid_until=valid_until,
             currency=_resolve_currency(entity, body.get("currency")),
-            lead_time_days=body.get("lead_time_days") or None,
-            reference=body.get("reference", ""), notes=body.get("notes", ""),
+            lead_time_days=_lead_time_days(body.get("lead_time_days")),
+            reference=_text(body.get("reference"), "reference", 64),
+            notes=_text(body.get("notes"), "notes", 255),
             created_by=request.user if request.user.is_authenticated else None,
         )
-        for i, ln in enumerate(lines, start=1):
-            rfq_line = None
-            if ln.get("rfq_line"):
-                rfq_line = RfqLine.objects.filter(rfq__entity=entity, pk=ln["rfq_line"]).first()
-                if rfq_line is None:
-                    raise ValidationError({"rfq_line": f"No such RFQ line {ln['rfq_line']}."})
-            expense = _resolve_account(entity, ln.get("expense_account"), "expense_account") \
-                or (rfq_line.expense_account if rfq_line else None)
-            VendorQuotationLine.objects.create(
-                quotation=quotation, rfq_line=rfq_line, line_no=ln.get("line_no", i),
-                description=ln.get("description", rfq_line.description if rfq_line else ""),
-                expense_account=expense,
-                quantity=_dec(ln.get("quantity", rfq_line.quantity if rfq_line else 1), "quantity"),
-                unit_price=_money(ln.get("unit_price", 0), "unit_price"),
-                tax_code=_resolve_tax(entity, ln.get("tax_code")),
-            )
+        _write_quotation_lines(entity, quotation, rfq, lines)
         sourcing.price_quotation(quotation)
+        quotation = _quotation_detail_queryset(entity).get(pk=quotation.pk)
         return success_response(
-            "Quotation created.", data=VendorQuotationSerializer(quotation).data, status=201,
+            "Quotation created.", data=QuotationDetailSerializer(quotation).data, status=201,
         )
 
 
 class QuotationDetailView(_ProcBase):
-    """docstring-name: Quotations"""
-    rbac_permission = "procurement.quotation.view"
+    """GET (detail) / PATCH (edit a DRAFT quotation's header + priced-line replacement).
+
+    docstring-name: Quotations
+    """
+
+    @property
+    def rbac_permission(self):
+        return "procurement.quotation.update" if self.request.method == "PATCH" \
+            else "procurement.quotation.view"
 
     def get(self, request, pk):
         entity = resolve_entity(request)
-        quotation = VendorQuotation.objects.filter(entity=entity, pk=pk).first()
+        quotation = _quotation_detail_queryset(entity).filter(pk=pk).first()
         if quotation is None:
             raise NotFound("No such quotation in this entity.")
-        return success_response("Quotation retrieved.", data=VendorQuotationSerializer(quotation).data)
+        return success_response("Quotation retrieved.", data=QuotationDetailSerializer(quotation).data)
+
+    @transaction.atomic
+    def patch(self, request, pk):
+        entity = resolve_entity(request)
+        quotation = VendorQuotation.objects.select_for_update().select_related("rfq").filter(
+            entity=entity, pk=pk).first()
+        if quotation is None:
+            raise NotFound("No such quotation in this entity.")
+        # Submitted/awarded/rejected offers are firm and immutable — only a draft edits.
+        if quotation.quotation_status != QuotationStatus.DRAFT:
+            raise ValidationError(
+                {"quotation_status": f"Only a draft quotation can be edited (this one is "
+                                     f"'{quotation.quotation_status}')."})
+        body = request.data
+        if "quote_date" in body:
+            quotation.quote_date = _date(body.get("quote_date"), "quote_date", required=True)
+        if "valid_until" in body:
+            quotation.valid_until = _date(body.get("valid_until"), "valid_until")
+        if "lead_time_days" in body:
+            quotation.lead_time_days = _lead_time_days(body.get("lead_time_days"))
+        if "reference" in body:
+            quotation.reference = _text(body.get("reference"), "reference", 64)
+        if "notes" in body:
+            quotation.notes = _text(body.get("notes"), "notes", 255)
+        _validate_quote_dates(quotation.quote_date, quotation.valid_until)
+        quotation.save(update_fields=[
+            "quote_date", "valid_until", "lead_time_days", "reference", "notes", "updated_at",
+        ])
+        if "lines" in body:
+            _write_quotation_lines(entity, quotation, quotation.rfq, _require_lines(body))
+        sourcing.price_quotation(quotation)  # Re-roll net/tax/totals after any edit.
+        quotation = _quotation_detail_queryset(entity).get(pk=quotation.pk)
+        return success_response("Quotation updated.", data=QuotationDetailSerializer(quotation).data)
 
 
 class QuotationSubmitView(_ProcBase):
@@ -444,9 +710,9 @@ class QuotationSubmitView(_ProcBase):
         if quotation is None:
             raise NotFound("No such quotation in this entity.")
         sourcing.submit_quotation(quotation, actor_user=request.user)
-        quotation.refresh_from_db()
+        quotation = _quotation_detail_queryset(entity).get(pk=quotation.pk)
         return success_response(
-            "Quotation submitted.", data=VendorQuotationSerializer(quotation).data,
+            "Quotation submitted.", data=QuotationDetailSerializer(quotation).data,
         )
 
 

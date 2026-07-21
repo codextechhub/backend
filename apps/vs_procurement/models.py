@@ -677,6 +677,9 @@ class RequestForQuotation(FinanceDocument):
     response_due_date = models.DateField(
         null=True, blank=True, help_text="Closing date for vendor responses.",
     )
+    budget_estimate = MoneyField(
+        null=True, blank=True, help_text="Optional buyer budget ceiling, in kobo.",
+    )
     notes = models.CharField(max_length=255, blank=True, default="")
 
     class Meta(FinanceDocument.Meta):
@@ -687,6 +690,41 @@ class RequestForQuotation(FinanceDocument):
 
     def __str__(self) -> str:
         return f"{self.document_number or 'RFQ?'} · {self.title}"
+
+
+class RfqInvitation(TimeStampedModel):
+    """A vendor invited to quote on an RFQ — the RFQ's addressee list.
+
+    An RFQ is fundamentally a *request for quotation sent to invited vendors*, so this
+    join row records exactly which vendors were asked to bid. Invited-vendor semantics:
+    a vendor may submit a :class:`VendorQuotation` against an RFQ **only if it holds an
+    invitation on that RFQ** (enforced in the quotation-create view and defensively in
+    :func:`vs_procurement.sourcing.submit_quotation`).
+
+    There is deliberately **no status field**: "responded" is *derived* from whether a
+    quotation exists from this vendor on this RFQ, so the invitation stays a pure
+    addressee record that can never drift out of sync with the real quotations.
+    """
+
+    # CASCADE: an invitation is meaningless without its RFQ and carries no GL weight, so
+    # deleting a draft RFQ takes its invitations with it.
+    rfq = models.ForeignKey(
+        RequestForQuotation, on_delete=models.CASCADE, related_name="invitations",
+    )
+    # PROTECT: who was invited to quote is part of the sourcing audit trail; deleting a
+    # vendor must not silently erase the record that it was asked.
+    vendor = models.ForeignKey(
+        Vendor, on_delete=models.PROTECT, related_name="rfq_invitations",
+    )
+
+    class Meta:
+        # A vendor is either invited to an RFQ or not — never invited twice.
+        unique_together = (("rfq", "vendor"),)
+        ordering = ["rfq", "id"]
+        indexes = [models.Index(fields=["rfq"])]
+
+    def __str__(self) -> str:
+        return f"RFQ {self.rfq_id} → {self.vendor_id}"
 
 
 class RfqLine(TimeStampedModel):

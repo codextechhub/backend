@@ -333,6 +333,46 @@ class RequisitionSerializer(serializers.ModelSerializer):
 
 
 # --------------------------------------------------------------------------- #
+# Sourcing — shared helpers                                                   #
+# --------------------------------------------------------------------------- #
+
+def _sourcing_activity(entity, target_type, target_id):
+    """Finance-audit activity feed for one sourcing document.
+
+    Same shape/pattern as the vendor-invoice / vendor-payment drawers: the immutable
+    :class:`FinanceAuditLog` rows for this exact document, newest first, capped. Only
+    called on single-record detail reads, so the bounded query is not an N+1 concern.
+    """
+    from vs_finance.models import FinanceAuditLog
+
+    return [{
+        "id": log.id, "action": log.action, "message": log.message, "status": log.status,
+        "actor_name": (
+            f"{getattr(log.actor, 'first_name', '')} {getattr(log.actor, 'last_name', '')}".strip()
+            or getattr(log.actor, "email", "System")
+        ) if log.actor_id else "System",
+        "created_at": log.created_at,
+    } for log in FinanceAuditLog.objects.filter(
+        entity=entity, target_type=target_type, target_id=str(target_id),
+    ).select_related("actor").order_by("-created_at")[:20]]
+
+
+def _quotation_is_expired(quotation) -> bool:
+    """Display-only overlay: a SUBMITTED quote whose validity date has passed.
+
+    Never persisted (there is no expiry scheduler); computed against today so the list
+    and drawer can flag a lapsed bid without rewriting its authoritative status.
+    """
+    from .constants import QuotationStatus
+
+    return bool(
+        quotation.quotation_status == QuotationStatus.SUBMITTED
+        and quotation.valid_until is not None
+        and quotation.valid_until < timezone.localdate()
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Request for quotation (sourcing)                                            #
 # --------------------------------------------------------------------------- #
 
@@ -347,15 +387,111 @@ class RfqLineSerializer(serializers.ModelSerializer):
         ]
 
 
-class RequestForQuotationSerializer(serializers.ModelSerializer):
-    lines = RfqLineSerializer(many=True, read_only=True)
+class RfqListSerializer(serializers.ModelSerializer):
+    """Lean list row. ``line_count``/``response_count`` are queryset annotations
+    (see :func:`RfqListCreateView.get`) — never per-row counts, so the list stays O(1)."""
+
+    requisition_number = serializers.CharField(
+        source="requisition.document_number", read_only=True, default=None,
+    )
+    line_count = serializers.IntegerField(read_only=True)
+    response_count = serializers.IntegerField(read_only=True)
+    invited_count = serializers.IntegerField(read_only=True)
 
     class Meta:
         model = RequestForQuotation
         fields = [
             "id", "document_number", "rfq_status", "title",
-            "requisition_id", "issue_date", "response_due_date", "notes", "lines",
+            "requisition_id", "requisition_number", "issue_date", "response_due_date",
+            "budget_estimate", "line_count", "response_count", "invited_count",
         ]
+
+
+class RfqQuotationSummarySerializer(serializers.ModelSerializer):
+    """A received quotation as it appears in the RFQ drawer's Quotations tab."""
+
+    vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    is_expired = serializers.SerializerMethodField()
+
+    class Meta:
+        model = VendorQuotation
+        fields = [
+            "id", "document_number", "vendor_code", "vendor_name",
+            "quotation_status", "total", "lead_time_days",
+            "quote_date", "valid_until", "is_expired",
+        ]
+
+    def get_is_expired(self, obj) -> bool:
+        return _quotation_is_expired(obj)
+
+
+class RfqDetailSerializer(serializers.ModelSerializer):
+    """Full RFQ record for the detail drawer: lines, received quotations, activity."""
+
+    requisition_number = serializers.CharField(
+        source="requisition.document_number", read_only=True, default=None,
+    )
+    line_count = serializers.SerializerMethodField()
+    response_count = serializers.SerializerMethodField()
+    invited_count = serializers.SerializerMethodField()
+    lines = RfqLineSerializer(many=True, read_only=True)
+    invitations = serializers.SerializerMethodField()
+    quotations = serializers.SerializerMethodField()
+    activity = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RequestForQuotation
+        fields = [
+            "id", "document_number", "rfq_status", "title",
+            "requisition_id", "requisition_number", "issue_date", "response_due_date",
+            "budget_estimate", "notes", "line_count", "response_count", "invited_count",
+            "lines", "invitations", "quotations", "activity",
+        ]
+
+    def get_line_count(self, obj) -> int:
+        return len(obj.lines.all())
+
+    def get_response_count(self, obj) -> int:
+        from .constants import QuotationStatus
+
+        # A "response" is any quotation a vendor has actually submitted (not a draft).
+        return sum(
+            1 for q in obj.quotations.all()
+            if q.quotation_status != QuotationStatus.DRAFT
+        )
+
+    def get_invited_count(self, obj) -> int:
+        return len(obj.invitations.all())
+
+    def get_invitations(self, obj):
+        # Derive each invitation's "responded" flag by joining the invited vendors to
+        # this RFQ's quotations in Python (both prefetched) — never a per-row query.
+        quote_by_vendor = {}
+        for q in obj.quotations.all():
+            # Keep the first (lowest-id) quotation per vendor as its canonical response.
+            quote_by_vendor.setdefault(q.vendor_id, q)
+        rows = []
+        for inv in obj.invitations.all():
+            quote = quote_by_vendor.get(inv.vendor_id)
+            rows.append({
+                "vendor_id": inv.vendor_id,
+                "vendor_code": inv.vendor.code,
+                "vendor_name": inv.vendor.name,
+                "responded": quote is not None,
+                "quotation_id": quote.id if quote else None,
+                "quotation_status": quote.quotation_status if quote else None,
+                "quotation_total": quote.total if quote else None,
+            })
+        return rows
+
+    def get_quotations(self, obj):
+        # Sort in Python to reuse the view's prefetch cache (an .order_by() would re-query).
+        quotes = sorted(obj.quotations.all(), key=lambda q: (q.total, q.id))
+        return RfqQuotationSummarySerializer(quotes, many=True).data
+
+    def get_activity(self, obj):
+        return _sourcing_activity(obj.entity_id, "RequestForQuotation", obj.pk)
 
 
 # --------------------------------------------------------------------------- #
@@ -374,25 +510,64 @@ class VendorQuotationLineSerializer(serializers.ModelSerializer):
         ]
 
 
-class VendorQuotationSerializer(serializers.ModelSerializer):
-    lines = VendorQuotationLineSerializer(many=True, read_only=True)
+class QuotationListSerializer(serializers.ModelSerializer):
+    """Lean quotation list row. ``is_expired`` is a display overlay, never persisted."""
+
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
     rfq_number = serializers.CharField(source="rfq.document_number", read_only=True)
     total_naira = serializers.SerializerMethodField()
+    is_expired = serializers.SerializerMethodField()
 
     class Meta:
         model = VendorQuotation
         fields = [
             "id", "document_number", "quotation_status",
-            "rfq_id", "rfq_number", "vendor_id", "vendor_code",
-            "quote_date", "valid_until", "currency_id", "lead_time_days",
-            "reference", "notes",
-            "subtotal", "tax_total", "total", "total_naira",
-            "awarded_po_id", "lines",
+            "rfq_id", "rfq_number", "vendor_id", "vendor_code", "vendor_name",
+            "quote_date", "valid_until", "lead_time_days", "reference",
+            "total", "total_naira", "is_expired", "awarded_po_id",
         ]
 
     def get_total_naira(self, obj) -> str:
         return format_naira(obj.total)
+
+    def get_is_expired(self, obj) -> bool:
+        return _quotation_is_expired(obj)
+
+
+class QuotationDetailSerializer(serializers.ModelSerializer):
+    """Full quotation record for the detail drawer: lines, totals, PO link, activity."""
+
+    vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    rfq_number = serializers.CharField(source="rfq.document_number", read_only=True)
+    awarded_po_number = serializers.CharField(
+        source="awarded_po.document_number", read_only=True, default=None,
+    )
+    total_naira = serializers.SerializerMethodField()
+    is_expired = serializers.SerializerMethodField()
+    lines = VendorQuotationLineSerializer(many=True, read_only=True)
+    activity = serializers.SerializerMethodField()
+
+    class Meta:
+        model = VendorQuotation
+        fields = [
+            "id", "document_number", "quotation_status",
+            "rfq_id", "rfq_number", "vendor_id", "vendor_code", "vendor_name",
+            "quote_date", "valid_until", "currency_id", "lead_time_days",
+            "reference", "notes", "is_expired",
+            "subtotal", "tax_total", "total", "total_naira",
+            "awarded_po_id", "awarded_po_number", "lines", "activity",
+        ]
+
+    def get_total_naira(self, obj) -> str:
+        return format_naira(obj.total)
+
+    def get_is_expired(self, obj) -> bool:
+        return _quotation_is_expired(obj)
+
+    def get_activity(self, obj):
+        return _sourcing_activity(obj.entity_id, "VendorQuotation", obj.pk)
 
 
 # --------------------------------------------------------------------------- #

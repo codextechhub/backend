@@ -96,6 +96,87 @@ def _dec(value, field):
         raise ValidationError({field: "Expected a number."})
 
 
+#: Upper bound implied by the line models' ``DecimalField(max_digits=14, decimal_places=4)``.
+_MAX_QTY = Decimal("9999999.9999")
+
+
+def _quantity(value, field):
+    """A strictly positive, finite quantity within the line model's 14,4 precision.
+
+    Sourcing-specific hardening (NaN/inf/zero/negative are all real payloads a client
+    can send). Deliberately *not* folded into :func:`_dec` — other document types rely
+    on ``_dec`` accepting any parseable number, and this change must not alter them.
+    """
+    try:
+        qty = Decimal(str(value))
+    except (InvalidOperation, TypeError):
+        raise ValidationError({field: "Expected a number."})
+    if not qty.is_finite():  # Rejects NaN and ±Infinity, which Decimal will happily parse.
+        raise ValidationError({field: "Quantity must be a finite number."})
+    if qty <= 0:
+        raise ValidationError({field: "Quantity must be greater than zero."})
+    if qty > _MAX_QTY:
+        raise ValidationError({field: "Quantity is too large."})
+    return qty
+
+
+def _strict_kobo(value, field):
+    """Coerce to non-negative **integer** kobo, rejecting float/bool naira mistakes.
+
+    Stricter than :func:`_money` (which silently truncates a float): a JSON float or
+    bool must never cross the integer-kobo boundary by coercion.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValidationError({field: "Expected a whole integer amount in kobo."})
+    if value < 0:
+        raise ValidationError({field: "Amount cannot be negative."})
+    if value > 9_223_372_036_854_775_807:  # Fits BIGINT — the MoneyField storage width.
+        raise ValidationError({field: "Amount is too large."})
+    return value
+
+
+def _text(value, field, max_length, *, required=False):
+    """Trim and length-bound a free-text field before it reaches the model."""
+    text = str(value or "").strip()
+    if required and not text:
+        raise ValidationError({field: "This field is required."})
+    if len(text) > max_length:
+        raise ValidationError({field: f"Ensure this field has no more than {max_length} characters."})
+    return text
+
+
+def _lead_time_days(value, field="lead_time_days"):
+    """Optional integer delivery lead time, bounded to a sane 0–3650 day window."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        raise ValidationError({field: "Expected a whole number of days."})
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        raise ValidationError({field: "Expected a whole number of days."})
+    if days < 0 or days > 3650:
+        raise ValidationError({field: "Lead time must be between 0 and 3650 days."})
+    return days
+
+
+def _resolve_expense_account(entity, ref, field="expense_account"):
+    """Resolve an active, postable **EXPENSE** account in ``entity`` (or ``None``).
+
+    Sourcing line accounts must be genuinely postable expense accounts — the same rule
+    the catalog/category defaults enforce — so an award cannot carry a header/income/
+    inactive account onto the resulting PO line.
+    """
+    account = _resolve_account(entity, ref, field)
+    if account is None:
+        return None
+    from vs_finance.constants import AccountType
+
+    if not (account.account_type == AccountType.EXPENSE and account.is_active and account.is_postable):
+        raise ValidationError({field: "Select an active, postable EXPENSE account in this entity."})
+    return account
+
+
 def _money(value, field):
     """Coerce to non-negative integer kobo, rejecting floats-as-naira mistakes."""
     try:
