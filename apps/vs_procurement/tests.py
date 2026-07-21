@@ -2560,6 +2560,262 @@ class VendorContractTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(soon.status, ContractStatus.EXPIRED)
 
 
+class ContractConsoleAPITests(_P2PFixtureMixin, TestCase):
+    """Security-first coverage for the vendor-contract REST surface."""
+
+    def _client(self, entity, email="contract-console@test.com"):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        user = get_user_model().objects.create_user(
+            email=email, password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Contract", last_name="Tester",
+        )
+        return TenantAPIClient(user=user)
+
+    def _contract(self, entity, vendor, *, ref="C-API-1", start, end, value=12_000_000,
+                  status=None):
+        c = VendorContract.objects.create(
+            entity=entity, vendor=vendor, reference=ref, title="Support",
+            start_date=start, end_date=end, contract_value=value,
+        )
+        if status:
+            VendorContract.objects.filter(pk=c.pk).update(status=status)
+            c.refresh_from_db()
+        return c
+
+    # --- permission gating ------------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=False)
+    def test_every_endpoint_is_rbac_gated(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        c = self._contract(entity, vendor, start=datetime.date(2026, 1, 1),
+                           end=datetime.date(2026, 12, 31))
+        client = self._client(entity)
+        e = f"?entity={entity.code}"
+        denied = [
+            ("get", f"/v1/procurement/contracts/{e}"),
+            ("post", f"/v1/procurement/contracts/{e}"),
+            ("get", f"/v1/procurement/contracts/summary/{e}"),
+            ("get", f"/v1/procurement/contracts/renewals/{e}"),
+            ("get", f"/v1/procurement/contracts/{c.pk}/{e}"),
+            ("patch", f"/v1/procurement/contracts/{c.pk}/{e}"),
+            ("get", f"/v1/procurement/contracts/{c.pk}/linked-pos/{e}"),
+            ("post", f"/v1/procurement/contracts/{c.pk}/activate/{e}"),
+            ("post", f"/v1/procurement/contracts/{c.pk}/renew/{e}"),
+            ("post", f"/v1/procurement/contracts/{c.pk}/terminate/{e}"),
+        ]
+        for method, url in denied:
+            response = getattr(client, method)(url, {}, format="json")
+            self.assertEqual(response.status_code, 403, f"{method} {url}")
+
+    @patch("vs_rbac.permissions.is_vision_super_admin", return_value=False)
+    @patch("vs_rbac.permissions.has_permission")
+    def test_linked_pos_gated_on_purchase_order_key(self, mock_has, _super):
+        entity, _, vendor, _, _ = self.build_p2p()
+        c = self._contract(entity, vendor, start=datetime.date(2026, 1, 1),
+                           end=datetime.date(2026, 12, 31))
+        client = self._client(entity)
+        # A user who can view the contract but not purchase orders is refused Linked POs.
+        mock_has.side_effect = _deny_keys("procurement.purchase_order.view")
+        self.assertEqual(
+            client.get(f"/v1/procurement/contracts/{c.pk}/?entity={entity.code}").status_code, 200)
+        self.assertEqual(
+            client.get(f"/v1/procurement/contracts/{c.pk}/linked-pos/?entity={entity.code}"
+                       ).status_code, 403)
+
+    # --- entity isolation -------------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_cross_entity_contract_is_not_reachable(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        other = LedgerEntity.objects.create(name="Other", code="OTHER", kind=LedgerEntity.Kind.TENANT)
+        seed_chart_of_accounts(other)
+        ovendor = Vendor.objects.create(
+            entity=other, code="OV", name="Other Vendor",
+            payable_account=Account.objects.get(entity=other, code="2100"), kyc_status="VERIFIED")
+        foreign = self._contract(other, ovendor, ref="C-OTHER",
+                                 start=datetime.date(2026, 1, 1), end=datetime.date(2026, 12, 31))
+        client = self._client(entity)
+        e = f"?entity={entity.code}"
+        # Reading/acting on another entity's contract id inside my entity → 404. (GETs are
+        # called without a body — a data dict on .get() would fold into the query string and
+        # drop ?entity.)
+        self.assertEqual(client.get(f"/v1/procurement/contracts/{foreign.pk}/{e}").status_code, 404)
+        self.assertEqual(
+            client.get(f"/v1/procurement/contracts/{foreign.pk}/linked-pos/{e}").status_code, 404)
+        for method, url in [
+            ("patch", f"/v1/procurement/contracts/{foreign.pk}/{e}"),
+            ("post", f"/v1/procurement/contracts/{foreign.pk}/activate/{e}"),
+            ("post", f"/v1/procurement/contracts/{foreign.pk}/terminate/{e}"),
+        ]:
+            self.assertEqual(getattr(client, method)(url, {}, format="json").status_code, 404,
+                             f"{method} {url}")
+
+    # --- create / reference auto-generation / validation ------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_autogenerates_unique_reference(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        client = self._client(entity)
+        body = {"vendor": vendor.code, "title": "No ref supplied",
+                "start_date": "2026-02-01", "end_date": "2026-11-30", "contract_value": 5_000_000}
+        r1 = client.post(f"/v1/procurement/contracts/?entity={entity.code}", body, format="json")
+        r2 = client.post(f"/v1/procurement/contracts/?entity={entity.code}", body, format="json")
+        self.assertEqual(r1.status_code, 201)
+        self.assertEqual(r2.status_code, 201)
+        ref1, ref2 = r1.data["data"]["reference"], r2.data["data"]["reference"]
+        self.assertTrue(ref1 and ref2 and ref1 != ref2)  # generated and distinct
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_and_patch_reject_bad_input(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        client = self._client(entity)
+        base = f"/v1/procurement/contracts/?entity={entity.code}"
+        # end before start
+        self.assertEqual(client.post(base, {
+            "vendor": vendor.code, "title": "X", "start_date": "2026-06-01",
+            "end_date": "2026-01-01"}, format="json").status_code, 400)
+        # negative / non-integer kobo
+        self.assertEqual(client.post(base, {
+            "vendor": vendor.code, "title": "X", "contract_value": -5}, format="json").status_code, 400)
+        # missing title
+        self.assertEqual(client.post(base, {"vendor": vendor.code}, format="json").status_code, 400)
+        # terminal contracts cannot be edited
+        c = self._contract(entity, vendor, start=datetime.date(2026, 1, 1),
+                           end=datetime.date(2026, 6, 1), status=ContractStatus.TERMINATED)
+        self.assertEqual(client.patch(
+            f"/v1/procurement/contracts/{c.pk}/?entity={entity.code}",
+            {"title": "nope"}, format="json").status_code, 400)
+
+    # --- summary / linked-pos / list --------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_summary_counts_are_entity_scoped(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        today = datetime.date.today()
+        self._contract(entity, vendor, ref="A", start=today - datetime.timedelta(days=30),
+                       end=today + datetime.timedelta(days=200), value=10_000_000,
+                       status=ContractStatus.ACTIVE)
+        self._contract(entity, vendor, ref="EXP", start=today - datetime.timedelta(days=300),
+                       end=today + datetime.timedelta(days=15), value=20_000_000,
+                       status=ContractStatus.ACTIVE)   # expiring soon (also active)
+        self._contract(entity, vendor, ref="OLD", start=today - datetime.timedelta(days=400),
+                       end=today - datetime.timedelta(days=5), value=30_000_000,
+                       status=ContractStatus.ACTIVE)   # active-but-past → expired
+        other = LedgerEntity.objects.create(name="Other", code="OTHER", kind=LedgerEntity.Kind.TENANT)
+        seed_chart_of_accounts(other)
+        ov = Vendor.objects.create(entity=other, code="OV2", name="V",
+                                   payable_account=Account.objects.get(entity=other, code="2100"),
+                                   kyc_status="VERIFIED")
+        self._contract(other, ov, ref="FOREIGN", start=today, end=today + datetime.timedelta(days=10),
+                       status=ContractStatus.ACTIVE)
+        data = self._client(entity).get(
+            f"/v1/procurement/contracts/summary/?entity={entity.code}").data["data"]
+        self.assertEqual(data["active"], 2)         # A + expiring (OLD is past → not active)
+        self.assertEqual(data["expiring_soon"], 1)  # only EXP
+        self.assertEqual(data["expired"], 1)        # OLD (active but past end)
+        self.assertEqual(data["total_active_value"], 60_000_000)  # 10+20+30, all ACTIVE status
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_linked_pos_scoped_to_vendor_and_term(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        other_vendor = Vendor.objects.create(
+            entity=entity, code="OTHV", name="Other", payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"), kyc_status="VERIFIED")
+        c = self._contract(entity, vendor, start=datetime.date(2026, 1, 1),
+                           end=datetime.date(2026, 12, 31), status=ContractStatus.ACTIVE)
+        inside = self.make_po(entity, vendor, [("5300", 1, 100_000, None)])  # order_date 2026-01-05
+        # Same vendor but a PO dated outside the term.
+        outside = self.make_po(entity, vendor, [("5300", 1, 100_000, None)])
+        PurchaseOrder.objects.filter(pk=outside.pk).update(order_date=datetime.date(2027, 3, 1))
+        # A PO for a different vendor inside the term.
+        self.make_po(entity, other_vendor, [("5300", 1, 100_000, None)])
+        rows = self._client(entity).get(
+            f"/v1/procurement/contracts/{c.pk}/linked-pos/?entity={entity.code}").data["data"]
+        ids = {r["id"] for r in rows}
+        self.assertEqual(ids, {inside.pk})  # only same-vendor, in-term
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_linked_pos_explicit_link_and_fallback(self, _perm):
+        # An explicit call-off shows as "linked" (even dated outside the term); an
+        # unlinked same-vendor PO in the term shows as "association"; and a PO linked
+        # to a *different* overlapping contract of the same vendor never leaks in.
+        entity, _, vendor, _, _ = self.build_p2p()
+        c1 = self._contract(entity, vendor, ref="C-1", start=datetime.date(2026, 1, 1),
+                            end=datetime.date(2026, 12, 31), status=ContractStatus.ACTIVE)
+        c2 = self._contract(entity, vendor, ref="C-2", start=datetime.date(2026, 1, 1),
+                            end=datetime.date(2026, 12, 31), status=ContractStatus.ACTIVE)
+        linked = self.make_po(entity, vendor, [("5300", 1, 100_000, None)])
+        PurchaseOrder.objects.filter(pk=linked.pk).update(
+            contract=c1, order_date=datetime.date(2030, 6, 1))  # explicit, outside term
+        assoc = self.make_po(entity, vendor, [("5300", 1, 100_000, None)])  # unlinked, in term
+        other = self.make_po(entity, vendor, [("5300", 1, 100_000, None)])
+        PurchaseOrder.objects.filter(pk=other.pk).update(contract=c2)  # linked to c2, not c1
+        rows = self._client(entity).get(
+            f"/v1/procurement/contracts/{c1.pk}/linked-pos/?entity={entity.code}").data["data"]
+        by_id = {r["id"]: r["link_type"] for r in rows}
+        self.assertEqual(by_id, {linked.pk: "linked", assoc.pk: "association"})
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_po_contract_link_rejects_cross_vendor_and_non_active(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        other_vendor = Vendor.objects.create(
+            entity=entity, code="OTHV2", name="Other", payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"), kyc_status="VERIFIED")
+        active = self._contract(entity, vendor, ref="C-A", start=datetime.date(2026, 1, 1),
+                                end=datetime.date(2026, 12, 31), status=ContractStatus.ACTIVE)
+        draft = self._contract(entity, vendor, ref="C-D", start=datetime.date(2026, 1, 1),
+                               end=datetime.date(2026, 12, 31), status=ContractStatus.DRAFT)
+        po = self.make_po(entity, vendor, [("5300", 1, 100_000, None)])
+        client = self._client(entity)
+        url = f"/v1/procurement/purchase-orders/{po.pk}/?entity={entity.code}"
+        # A draft (non-ACTIVE) contract cannot be called off.
+        self.assertEqual(client.patch(url, {"contract": "C-D"}, format="json").status_code, 400)
+        # A contract owned by a different vendor is rejected.
+        cross = VendorContract.objects.create(
+            entity=entity, vendor=other_vendor, reference="C-X", title="x",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+            status=ContractStatus.ACTIVE)
+        self.assertEqual(client.patch(url, {"contract": "C-X"}, format="json").status_code, 400)
+        # An active same-vendor contract links, and clearing removes the link.
+        self.assertEqual(client.patch(url, {"contract": "C-A"}, format="json").status_code, 200)
+        po.refresh_from_db(); self.assertEqual(po.contract_id, active.pk)
+        self.assertEqual(client.patch(url, {"contract": ""}, format="json").status_code, 200)
+        po.refresh_from_db(); self.assertIsNone(po.contract_id)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_list_expiring_filter_and_empty_shape(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        today = datetime.date.today()
+        self._contract(entity, vendor, ref="SOON", start=today - datetime.timedelta(days=100),
+                       end=today + datetime.timedelta(days=10), status=ContractStatus.ACTIVE)
+        self._contract(entity, vendor, ref="LATER", start=today, end=today + datetime.timedelta(days=300),
+                       status=ContractStatus.ACTIVE)
+        client = self._client(entity)
+        rows = client.get(
+            f"/v1/procurement/contracts/?expiring=1&entity={entity.code}").data["data"]
+        self.assertEqual([r["reference"] for r in rows], ["SOON"])
+        # empty-list still serialises to a JSON array, not {}
+        empty = client.get(
+            f"/v1/procurement/contracts/?status=TERMINATED&entity={entity.code}").data["data"]
+        self.assertEqual(empty, [])
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_renew_creates_successor_and_marks_source_renewed(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        c = self._contract(entity, vendor, start=datetime.date(2026, 1, 1),
+                           end=datetime.date(2026, 12, 31), status=ContractStatus.ACTIVE)
+        r = self._client(entity).post(
+            f"/v1/procurement/contracts/{c.pk}/renew/?entity={entity.code}",
+            {"start_date": "2027-01-01", "end_date": "2027-12-31"}, format="json")
+        self.assertEqual(r.status_code, 201)
+        c.refresh_from_db()
+        self.assertEqual(c.status, ContractStatus.RENEWED)
+        self.assertTrue(r.data["data"]["reference"])          # successor got an auto ref
+        self.assertEqual(r.data["data"]["renews_id"], c.pk)
+
+
 # --------------------------------------------------------------------------- #
 # AP cash-requirements forecast + GR/IR aging                                 #
 # --------------------------------------------------------------------------- #

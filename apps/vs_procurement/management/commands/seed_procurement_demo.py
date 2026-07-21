@@ -12,12 +12,15 @@ from django.utils import timezone
 from vs_finance.constants import DocumentStatus, PaymentMethod
 from vs_finance.models import Account, BankAccount, FiscalPeriod, LedgerEntity, TaxCode
 from vs_procurement.models import (
-    CatalogItem, GoodsReceivedNote, GoodsReceivedNoteLine, PurchaseOrder, PurchaseOrderLine,
-    RequestForQuotation, RfqLine, Vendor, VendorCategory, VendorContract, VendorInvoice,
-    VendorInvoiceLine, VendorPayment, VendorPaymentAllocation, VendorQuotation, VendorQuotationLine,
+    CatalogItem, ContractMilestone, GoodsReceivedNote, GoodsReceivedNoteLine, PurchaseOrder,
+    PurchaseOrderLine, RequestForQuotation, RfqLine, Vendor, VendorCategory, VendorContract,
+    VendorInvoice, VendorInvoiceLine, VendorPayment, VendorPaymentAllocation, VendorQuotation,
+    VendorQuotationLine,
 )
 from vs_procurement.constants import ProcApprovalState, RfqStatus
-from vs_procurement.contracts import activate_contract
+from vs_procurement.contracts import (
+    activate_contract, complete_milestone, mark_expired, renew_contract,
+)
 from vs_procurement.approvals import ensure_default_approval_templates, submit_for_approval
 from vs_procurement.payables import (
     post_vendor_invoice, post_vendor_payment, reverse_vendor_payment,
@@ -191,6 +194,71 @@ class Command(BaseCommand):
         )
         if active_contract.status == "DRAFT":
             activate_contract(active_contract, actor_user=actor)
+        # Milestones on the standing active contract (one delivered, two ahead) — added once.
+        if not active_contract.milestones.exists():
+            m1 = ContractMilestone.objects.create(
+                contract=active_contract, line_no=1, name="Onboarding & migration",
+                due_date=active_contract.start_date + datetime.timedelta(days=30), amount=40_000_000)
+            complete_milestone(m1, actor_user=actor)
+            ContractMilestone.objects.create(
+                contract=active_contract, line_no=2, name="Mid-term service review",
+                due_date=active_contract.start_date + datetime.timedelta(days=180), amount=0)
+            ContractMilestone.objects.create(
+                contract=active_contract, line_no=3, name="Annual renewal review",
+                due_date=active_contract.end_date - datetime.timedelta(days=30), amount=0)
+
+        today_c = timezone.localdate()
+        # A draft contract (never activated) — exercises the DRAFT list/edit/activate path.
+        VendorContract.objects.update_or_create(
+            entity=entity, reference="CODEX-DEMO-CONTRACT-DRAFT",
+            defaults={
+                "vendor": vendors[1], "title": "Hardware maintenance (draft)", "status": "DRAFT",
+                "start_date": today_c, "end_date": today_c + datetime.timedelta(days=365),
+                "contract_value": 24_000_000, "payment_terms": "NET_30", "created_by": actor,
+            },
+        )
+        # An ACTIVE contract ending inside the 30-day window → surfaces as "Expiring".
+        expiring, _ = VendorContract.objects.update_or_create(
+            entity=entity, reference="CODEX-DEMO-CONTRACT-EXPIRING",
+            defaults={
+                "vendor": vendors[1], "title": "Colocation (expiring soon)",
+                "start_date": today_c - datetime.timedelta(days=340),
+                "end_date": today_c + datetime.timedelta(days=20),
+                "contract_value": 46_800_000, "payment_terms": "NET_30", "created_by": actor,
+            },
+        )
+        if expiring.status == "DRAFT":
+            activate_contract(expiring, actor_user=actor)
+        # An ACTIVE contract already past its end_date, then swept to EXPIRED by the real service.
+        VendorContract.objects.update_or_create(
+            entity=entity, reference="CODEX-DEMO-CONTRACT-EXPIRED",
+            defaults={
+                "vendor": vendors[1], "title": "Connectivity (expired)",
+                "start_date": today_c - datetime.timedelta(days=400),
+                "end_date": today_c - datetime.timedelta(days=20),
+                "contract_value": 54_200_000, "payment_terms": "NET_30",
+                "status": "ACTIVE", "created_by": actor,
+            },
+        )
+        mark_expired(entity)
+        # A renewed chain: an active source contract renewed into a live successor.
+        renew_source, _ = VendorContract.objects.update_or_create(
+            entity=entity, reference="CODEX-DEMO-CONTRACT-RENEWSRC",
+            defaults={
+                "vendor": vendors[0], "title": "Managed services (renewed)",
+                "start_date": today_c - datetime.timedelta(days=200),
+                "end_date": today_c + datetime.timedelta(days=10),
+                "contract_value": 38_400_000, "payment_terms": "NET_30",
+                "status": "ACTIVE", "created_by": actor,
+            },
+        )
+        if renew_source.status == "ACTIVE" and not renew_source.renewed_by.exists():
+            renew_contract(
+                renew_source, reference="CODEX-DEMO-CONTRACT-RENEWED",
+                start_date=today_c + datetime.timedelta(days=11),
+                end_date=today_c + datetime.timedelta(days=376),
+                copy_milestones=False, actor_user=actor,
+            )
 
         today = timezone.localdate()
         starts = []
@@ -277,6 +345,13 @@ class Command(BaseCommand):
                     accepted_qty=received, unit_price=line.unit_price, line_no=1,
                 )
                 post_grn(grn, actor_user=actor)
+
+        # Explicitly link one in-term MainOne order as a call-off so the active contract's
+        # Linked POs tab shows a real "Linked" row alongside the in-term association rows.
+        first_po = PurchaseOrder.objects.filter(entity=entity, reference="CODEX-DEMO-PO-1").first()
+        if first_po and first_po.contract_id is None and first_po.vendor_id == active_contract.vendor_id:
+            first_po.contract = active_contract
+            first_po.save(update_fields=["contract", "updated_at"])
 
         payment_count = 0
         bank, _ = BankAccount.objects.update_or_create(

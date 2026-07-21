@@ -15,7 +15,7 @@ from vs_finance.views import resolve_entity
 from vs_workflow.models import WorkflowInstance
 
 from .. import purchasing, sourcing
-from ..constants import ProcApprovalState, QuotationStatus, RfqStatus
+from ..constants import ContractStatus, ProcApprovalState, QuotationStatus, RfqStatus
 from ..models import (
     PurchaseOrder,
     PurchaseRequisition,
@@ -23,6 +23,7 @@ from ..models import (
     RequestForQuotation,
     RfqInvitation,
     RfqLine,
+    VendorContract,
     VendorQuotation,
     VendorQuotationLine,
 )
@@ -70,9 +71,39 @@ def _po_base_queryset(entity):
     """
     return (
         PurchaseOrder.objects.filter(entity=entity)
-        .select_related("vendor", "requisition")
+        # ``contract`` is select_related so the serializer's contract_reference never
+        # costs a per-row query on either the list or the detail read.
+        .select_related("vendor", "requisition", "contract")
         .annotate(ordered_qty=Sum("lines__quantity"), received_qty=Sum("lines__received_qty"))
     )
+
+
+def _resolve_po_contract(entity, vendor, raw):
+    """Resolve an optional 'Against contract' call-off link for a purchase order.
+
+    A PO may link only to ITS own vendor's *live* contract: the reference (id or
+    ``reference``) is resolved inside ``entity`` (unknown/cross-entity → 400), a
+    contract belonging to a different vendor is rejected (a PO cannot call off another
+    vendor's contract), and a non-ACTIVE contract is rejected (call-offs are raised
+    against a live contract, not a draft/expired/terminated one). Returns the
+    :class:`VendorContract`, or ``None`` when no link is requested.
+    """
+    if raw in (None, ""):
+        return None
+    qs = VendorContract.objects.filter(entity=entity)
+    contract = (
+        qs.filter(pk=int(raw)).first() if str(raw).isdigit()
+        else qs.filter(reference=str(raw)).first()
+    )
+    if contract is None:
+        raise ValidationError({"contract": f"No such contract '{raw}' in this entity."})
+    if contract.vendor_id != vendor.id:
+        raise ValidationError(
+            {"contract": "A purchase order can only be linked to its own vendor's contract."})
+    if contract.status != ContractStatus.ACTIVE:
+        raise ValidationError(
+            {"contract": "Call-offs can only be raised against an ACTIVE contract."})
+    return contract
 
 
 def _purchase_order_queryset(entity):
@@ -186,6 +217,8 @@ class PurchaseOrderListCreateView(_ProcBase):
         if req is None:
             raise ValidationError({"requisition": "An approved requisition is required."})
         vendor = _resolve_vendor(entity, body.get("vendor"))
+        # Optional explicit call-off link; validated against this PO's own vendor.
+        contract = _resolve_po_contract(entity, vendor, body.get("contract"))
         po = purchasing.create_po_from_requisition(
             req, vendor=vendor,
             order_date=_date(body.get("order_date"), "order_date", required=True),
@@ -195,6 +228,9 @@ class PurchaseOrderListCreateView(_ProcBase):
             currency=_resolve_currency(entity, body.get("currency")),
             actor_user=request.user,
         )
+        if contract is not None:
+            po.contract = contract
+            po.save(update_fields=["contract", "updated_at"])
         return success_response(
             "Purchase order created.", data=PurchaseOrderSerializer(po).data, status=201,
         )
@@ -244,10 +280,17 @@ class PurchaseOrderDetailView(_ProcBase):
             po.delivery_address = str(body.get("delivery_address", "")).strip()
         if "payment_terms" in body:
             po.payment_terms = str(body.get("payment_terms", "")).strip()
+        if "contract" in body:
+            # Re-resolve against the PO's (possibly just-changed) vendor; blank clears the link.
+            po.contract = _resolve_po_contract(entity, po.vendor, body.get("contract"))
+        elif po.contract_id and po.contract.vendor_id != po.vendor_id:
+            # A vendor change without re-sending the link would strand a cross-vendor call-off.
+            raise ValidationError(
+                {"contract": "Clear or re-select the contract link — it belongs to the previous vendor."})
         # PO lines remain the approved requisition snapshot; draft edits only change order terms.
         po.save(update_fields=[
             "vendor", "order_date", "expected_date", "delivery_address",
-            "payment_terms", "updated_at",
+            "payment_terms", "contract", "updated_at",
         ])
         # Re-read with the drawer's related-document shape after the locked update has completed.
         updated = _purchase_order_queryset(entity).filter(pk=po.pk).first()

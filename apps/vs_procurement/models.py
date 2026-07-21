@@ -872,6 +872,16 @@ class PurchaseOrder(FinanceDocument):
         PurchaseRequisition, on_delete=models.PROTECT, related_name="purchase_orders",
         null=True, blank=True,
     )
+    contract = models.ForeignKey(
+        "VendorContract", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="purchase_orders",
+        help_text=(
+            "Explicit call-off link to the vendor contract this PO is raised against. "
+            "SET_NULL so a contract deletion never blocks the order; optional so "
+            "requisition-/award-spawned POs stay unlinked. The Contracts 'Linked POs' "
+            "tab falls back to a vendor+term association only for POs where this is null."
+        ),
+    )
     order_date = models.DateField()
     expected_date = models.DateField(null=True, blank=True)
     delivery_address = models.TextField(blank=True, default="")

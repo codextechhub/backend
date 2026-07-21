@@ -144,25 +144,109 @@ class ContractMilestoneSerializer(serializers.ModelSerializer):
         return format_naira(obj.amount)
 
 
-class VendorContractSerializer(serializers.ModelSerializer):
-    milestones = ContractMilestoneSerializer(many=True, read_only=True)
+def _contract_is_expired(contract) -> bool:
+    """Display-only overlay: an ACTIVE contract whose end_date has already passed.
+
+    Computed against today so the list/detail can flag a lapsed contract without a
+    scheduler rewriting its authoritative status (``mark_expired`` remains a batch job).
+    """
+    from .constants import ContractStatus
+
+    return bool(
+        contract.status == ContractStatus.ACTIVE
+        and contract.end_date is not None
+        and contract.end_date < timezone.localdate()
+    )
+
+
+def _contract_activity(entity, contract_id):
+    """Finance-audit activity feed for one contract (same shape as the invoice drawer).
+
+    The immutable :class:`FinanceAuditLog` rows targeting this exact contract, newest
+    first, capped. Contract lifecycle *and* milestone-completion events both record with
+    ``target=contract``, so they all land here. Only called on single-record detail reads.
+    """
+    from vs_finance.models import FinanceAuditLog
+
+    return [{
+        "id": log.id, "action": log.action, "message": log.message, "status": log.status,
+        "actor_name": (
+            f"{getattr(log.actor, 'first_name', '')} {getattr(log.actor, 'last_name', '')}".strip()
+            or getattr(log.actor, "email", "System")
+        ) if log.actor_id else "System",
+        "created_at": log.created_at,
+    } for log in FinanceAuditLog.objects.filter(
+        entity=entity, target_type="VendorContract", target_id=str(contract_id),
+    ).select_related("actor").order_by("-created_at")[:20]]
+
+
+class VendorContractListSerializer(serializers.ModelSerializer):
+    """Lean contract list row. ``milestone_count`` is a queryset annotation (see
+    :meth:`ContractListCreateView.get`) — never a per-row count, so the list stays O(1).
+    ``is_expired`` is a computed display overlay, never a persisted status."""
+
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
-    renewal_window_start = serializers.DateField(read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    milestone_count = serializers.IntegerField(read_only=True)
+    is_expired = serializers.SerializerMethodField()
     contract_value_naira = serializers.SerializerMethodField()
 
     class Meta:
         model = VendorContract
         fields = [
             "id", "reference", "title", "status",
-            "vendor_id", "vendor_code",
-            "start_date", "end_date", "renewal_window_start",
+            "vendor_id", "vendor_code", "vendor_name",
+            "start_date", "end_date",
             "contract_value", "contract_value_naira", "payment_terms",
-            "auto_renew", "renewal_notice_days", "renews_id", "notes",
-            "milestones",
+            "auto_renew", "milestone_count", "is_expired",
+        ]
+
+    def get_is_expired(self, obj) -> bool:
+        return _contract_is_expired(obj)
+
+    def get_contract_value_naira(self, obj) -> str:
+        return format_naira(obj.contract_value)
+
+
+class VendorContractSerializer(serializers.ModelSerializer):
+    """Full contract record for the detail drawer: header, milestones, renewal chain
+    and the finance-audit activity feed."""
+
+    milestones = ContractMilestoneSerializer(many=True, read_only=True)
+    vendor_code = serializers.CharField(source="vendor.code", read_only=True)
+    vendor_name = serializers.CharField(source="vendor.name", read_only=True)
+    renewal_window_start = serializers.DateField(read_only=True)
+    contract_value_naira = serializers.SerializerMethodField()
+    is_expired = serializers.SerializerMethodField()
+    renews_reference = serializers.CharField(source="renews.reference", read_only=True, default=None)
+    renewed_by_reference = serializers.SerializerMethodField()
+    activity = serializers.SerializerMethodField()
+
+    class Meta:
+        model = VendorContract
+        fields = [
+            "id", "reference", "title", "status",
+            "vendor_id", "vendor_code", "vendor_name",
+            "start_date", "end_date", "renewal_window_start", "is_expired",
+            "contract_value", "contract_value_naira", "payment_terms",
+            "auto_renew", "renewal_notice_days",
+            "renews_id", "renews_reference", "renewed_by_reference", "notes",
+            "milestones", "activity",
         ]
 
     def get_contract_value_naira(self, obj) -> str:
         return format_naira(obj.contract_value)
+
+    def get_is_expired(self, obj) -> bool:
+        return _contract_is_expired(obj)
+
+    def get_renewed_by_reference(self, obj) -> str | None:
+        # The successor that renews this contract, if one exists (reverse of ``renews``).
+        successor = obj.renewed_by.order_by("id").first()
+        return successor.reference if successor else None
+
+    def get_activity(self, obj):
+        return _contract_activity(obj.entity_id, obj.pk)
 
 
 # --------------------------------------------------------------------------- #
@@ -611,6 +695,9 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
     requisition_number = serializers.CharField(
         source="requisition.document_number", read_only=True, default=None,
     )
+    contract_reference = serializers.CharField(
+        source="contract.reference", read_only=True, default=None,
+    )
     total_naira = serializers.SerializerMethodField()
     received_pct = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True)
     invoiced_pct = serializers.DecimalField(max_digits=5, decimal_places=2, read_only=True)
@@ -624,6 +711,7 @@ class PurchaseOrderSerializer(serializers.ModelSerializer):
         fields = [
             "id", "document_number", "status", "approval_state", "display_status",
             "vendor_id", "vendor_code", "vendor_name", "requisition_id", "requisition_number",
+            "contract_id", "contract_reference",
             "quotation_number", "order_date", "expected_date", "delivery_address",
             "payment_terms", "narration",
             "subtotal", "tax_total", "total", "total_naira",

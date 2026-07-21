@@ -98,6 +98,16 @@ class ContractStatus(models.TextChoices):
     RENEWED = "RENEWED", "Renewed"
 
 
+#: Document-number token for auto-generated vendor-contract references. Contracts are
+#: plain master data (not a :class:`~vs_finance.models.FinanceDocument`), so they are not
+#: in :class:`~vs_finance.constants.DocType`; this literal token is fed straight to the
+#: shared :func:`~vs_finance.numbering.next_document_number` allocator, yielding an
+#: entity-scoped, collision-safe reference like ``COD-CT-2600001``. Choices on
+#: ``DocumentSequence.doc_type`` are not DB-enforced, so reusing the allocator with a
+#: dedicated token needs no migration.
+CONTRACT_DOC_TYPE = "CT"
+
+
 class MilestoneStatus(models.TextChoices):
     """Delivery state of a contract milestone.
 

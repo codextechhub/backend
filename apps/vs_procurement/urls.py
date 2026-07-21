@@ -26,8 +26,11 @@ urlpatterns = [
 
     # Vendor contracts
     path("contracts/", views.ContractListCreateView.as_view(), name="proc-contracts"),
+    path("contracts/summary/", views.ContractSummaryView.as_view(), name="proc-contract-summary"),
     path("contracts/renewals/", views.ContractRenewalsView.as_view(), name="proc-contract-renewals"),
     path("contracts/<int:pk>/", views.ContractDetailView.as_view(), name="proc-contract-detail"),
+    path("contracts/<int:pk>/linked-pos/", views.ContractLinkedPurchaseOrdersView.as_view(),
+         name="proc-contract-linked-pos"),
     path("contracts/<int:pk>/activate/", views.ContractActivateView.as_view(), name="proc-contract-activate"),
     path("contracts/<int:pk>/renew/", views.ContractRenewView.as_view(), name="proc-contract-renew"),
     path("contracts/<int:pk>/terminate/", views.ContractTerminateView.as_view(), name="proc-contract-terminate"),
