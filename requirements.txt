@@ -1,6 +1,6 @@
 # Pinned to the versions in the project venv (cx/). Upgrade deliberately:
 # bump a pin, run the test suite, then deploy.
-Django==5.2.10
+Django==6.0.6
 djangorestframework==3.17.1
 djangorestframework-simplejwt==5.5.1
 django-cors-headers==4.9.0
