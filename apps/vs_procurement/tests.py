@@ -52,6 +52,7 @@ from vs_procurement.models import (
     StockItem,
     StockMovement,
     Vendor,
+    VendorAssessment,
     VendorContract,
     VendorInvoice,
     VendorInvoiceLine,
@@ -1640,6 +1641,685 @@ class ProcurementAnalyticsTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(stages["invoice_to_payment"].avg_days, 15.0)  # 01-10 → 01-25
         self.assertEqual(report.end_to_end_avg_days, 23.0)           # 01-02 → 01-25
         self.assertEqual(report.end_to_end_count, 1)
+
+
+class ProcurementAnalyticsReportAPITests(_P2PFixtureMixin, TestCase):
+    """Security-first API coverage for the read-only analytics report endpoints
+    (AP aging, spend analysis, vendor performance): permission gating, cross-entity
+    isolation, the ``as_of`` regression fix, and the ``by_period`` trend series.
+    """
+
+    def _client(self, user):
+        from core.test_utils import TenantAPIClient
+
+        return TenantAPIClient(user=user)
+
+    def _user(self, entity, email):
+        from django.contrib.auth import get_user_model
+
+        return get_user_model().objects.create_user(
+            email=email, password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Rep", last_name="Ort",
+        )
+
+    def _second_entity(self):
+        """A second fully-seeded entity (chart + open Jan period + vendor) for isolation."""
+        entity = LedgerEntity.objects.create(
+            name="Other Books", code="OBOOK", kind=LedgerEntity.Kind.TENANT,
+        )
+        seed_chart_of_accounts(entity)
+        year = FiscalYear.objects.create(
+            entity=entity, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        FiscalPeriod.objects.create(
+            entity=entity, fiscal_year=year, period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+        )
+        vendor = Vendor.objects.create(
+            entity=entity, code="OTHERCO", name="Other Supplies",
+            payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"),
+            kyc_status="VERIFIED",
+        )
+        return entity, vendor
+
+    def _posted_bill(self, entity, vendor, *, amount=1_000_000, date=datetime.date(2026, 1, 10)):
+        vi = self.make_bill(entity, vendor, [("5300", 1, amount, None, None)], date=date)
+        post_vendor_invoice(vi)
+        return vi
+
+    # --- permission gating (report.view) ---------------------------------- #
+
+    def test_report_endpoints_require_report_permission(self):
+        entity, _, _, _, _ = self.build_p2p()
+        client = self._client(self._user(entity, "no-report-grant@test.com"))
+        e = f"?entity={entity.code}"
+        for url in (
+            f"/v1/procurement/reports/ap-aging/{e}",
+            f"/v1/procurement/reports/spend-analysis/{e}",
+            f"/v1/procurement/reports/vendor-performance/{e}",
+        ):
+            self.assertEqual(client.get(url).status_code, 403, url)
+
+    # --- as_of regression + aging shape ------------------------------------ #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_ap_aging_accepts_as_of_query_param(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        self._posted_bill(entity, vendor)  # due 2026-01-10, 1,000,000
+        client = self._client(self._user(entity, "ap-aging@test.com"))
+        resp = client.get(
+            f"/v1/procurement/reports/ap-aging/?entity={entity.code}&as_of=2026-02-15")
+        # Regression: a raw string as_of used to reach ``as_of - due_date`` and 500.
+        self.assertEqual(resp.status_code, 200)
+        data = resp.data["data"]
+        self.assertEqual(data["as_of"], "2026-02-15")
+        self.assertEqual(data["total_net"]["kobo"], 1_000_000)
+        # 36 days overdue on 2026-02-15 → "31-60" bucket.
+        self.assertEqual(data["bucket_totals"]["31-60"]["kobo"], 1_000_000)
+        self.assertEqual(data["rows"][0]["code"], "ACME")
+
+    # --- cross-entity isolation -------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_ap_aging_is_entity_scoped(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        self._posted_bill(entity, vendor)
+        other, other_vendor = self._second_entity()
+        self._posted_bill(other, other_vendor)  # a foreign entity's bill
+        client = self._client(self._user(entity, "ap-scope@test.com"))
+        resp = client.get(f"/v1/procurement/reports/ap-aging/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200)
+        codes = {r["code"] for r in resp.data["data"]["rows"]}
+        self.assertEqual(codes, {"ACME"})  # never the foreign OTHERCO
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_spend_and_vendor_performance_are_entity_scoped(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        self._posted_bill(entity, vendor)
+        other, other_vendor = self._second_entity()
+        self._posted_bill(other, other_vendor)
+        # Service-level isolation of both reports.
+        self.assertEqual({r.key for r in spend_analysis(entity).by_vendor}, {"ACME"})
+        self.assertEqual({r.code for r in vendor_performance(entity).rows}, {"ACME"})
+        # API-level: vendor-performance for A never lists the foreign vendor.
+        client = self._client(self._user(entity, "vp-scope@test.com"))
+        resp = client.get(f"/v1/procurement/reports/vendor-performance/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual({r["code"] for r in resp.data["data"]["rows"]}, {"ACME"})
+
+    # --- spend by_period trend --------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_spend_analysis_by_period_shape_and_monthly_gross(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        self._posted_bill(entity, vendor, amount=1_000_000, date=datetime.date(2026, 1, 10))
+        client = self._client(self._user(entity, "spend@test.com"))
+        resp = client.get(f"/v1/procurement/reports/spend-analysis/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.data["data"]
+        self.assertEqual(data["total_gross"]["kobo"], 1_000_000)
+        self.assertEqual(len(data["by_period"]), 1)
+        period = data["by_period"][0]
+        self.assertEqual(period["period"], "2026-01")
+        self.assertEqual(period["label"], "Jan 2026")
+        self.assertEqual(period["gross"]["kobo"], 1_000_000)
+        self.assertEqual(period["invoice_count"], 1)
+
+    def test_spend_by_period_orders_months_chronologically(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        # Open a second (Feb) period so a February bill can post.
+        year = FiscalYear.objects.get(entity=entity, year=2026)
+        FiscalPeriod.objects.create(
+            entity=entity, fiscal_year=year, period_no=2, name="Feb 2026",
+            start_date=datetime.date(2026, 2, 1), end_date=datetime.date(2026, 2, 28),
+        )
+        self._posted_bill(entity, vendor, amount=1_000_000, date=datetime.date(2026, 2, 5))
+        self._posted_bill(entity, vendor, amount=500_000, date=datetime.date(2026, 1, 20))
+        report = spend_analysis(entity)
+        # Ascending by month regardless of insertion order.
+        self.assertEqual([p.period for p in report.by_period], ["2026-01", "2026-02"])
+        self.assertEqual(report.by_period[0].gross, 500_000)
+        self.assertEqual(report.by_period[1].gross, 1_000_000)
+
+    # --- empty-entity shapes ----------------------------------------------- #
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_empty_entity_report_shapes_do_not_error(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()  # no posted documents at all
+        client = self._client(self._user(entity, "empty@test.com"))
+        e = f"?entity={entity.code}"
+        aging = client.get(f"/v1/procurement/reports/ap-aging/{e}")
+        self.assertEqual(aging.status_code, 200)
+        self.assertEqual(aging.data["data"]["rows"], [])
+        self.assertEqual(aging.data["data"]["total_net"]["kobo"], 0)
+        spend = client.get(f"/v1/procurement/reports/spend-analysis/{e}")
+        self.assertEqual(spend.status_code, 200)
+        self.assertEqual(spend.data["data"]["by_period"], [])
+        self.assertEqual(spend.data["data"]["by_vendor"], [])
+        self.assertEqual(spend.data["data"]["invoice_count"], 0)
+        vp = client.get(f"/v1/procurement/reports/vendor-performance/{e}")
+        self.assertEqual(vp.status_code, 200)
+        self.assertEqual(vp.data["data"]["rows"], [])
+
+
+class VendorAssessmentTests(_P2PFixtureMixin, TestCase):
+    """VendorAssessment scorecards: weighted score/grade, create gating, entity
+    isolation, score validation, and latest-per-vendor feeding vendor_performance.
+    """
+
+    def _client(self, user):
+        from core.test_utils import TenantAPIClient
+
+        return TenantAPIClient(user=user)
+
+    def _user(self, entity, email):
+        from django.contrib.auth import get_user_model
+
+        return get_user_model().objects.create_user(
+            email=email, password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Assess", last_name="Or",
+        )
+
+    def _second_entity(self):
+        entity = LedgerEntity.objects.create(
+            name="Other Books", code="OBOOK", kind=LedgerEntity.Kind.TENANT,
+        )
+        seed_chart_of_accounts(entity)
+        vendor = Vendor.objects.create(
+            entity=entity, code="OTHERCO", name="Other Supplies",
+            payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"),
+            kyc_status="VERIFIED",
+        )
+        return entity, vendor
+
+    def _payload(self, vendor, **over):
+        data = {
+            "vendor": vendor.code,
+            "on_time_delivery": 85, "quality_acceptance": 90,
+            "invoice_accuracy": 85, "responsiveness": 80,
+            "notes": "Solid quarter.",
+        }
+        data.update(over)
+        return data
+
+    # --- computed score + grade -------------------------------------------- #
+
+    def test_weighted_score_and_grade_bands(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+
+        def score(otd, q, ia, r):
+            a = VendorAssessment(
+                entity=entity, vendor=vendor, on_time_delivery=otd,
+                quality_acceptance=q, invoice_accuracy=ia, responsiveness=r,
+            )
+            return a.overall_score, a.grade
+
+        self.assertEqual(score(85, 90, 85, 80), (86, "B"))   # 85.75 → 86 → B
+        self.assertEqual(score(94, 97, 89, 82), (92, "A"))   # 92.1  → 92 → A
+        self.assertEqual(score(75, 75, 75, 75), (75, "C"))   # 75    → C
+        self.assertEqual(score(90, 90, 90, 90), (90, "A"))   # boundary A
+        self.assertEqual(score(76, 76, 76, 76), (76, "B"))   # boundary B
+
+    # --- create gating ----------------------------------------------------- #
+
+    @patch("vs_rbac.permissions.is_vision_super_admin", return_value=False)
+    @patch("vs_rbac.permissions.has_permission")
+    def test_create_needs_assessment_key_but_list_rides_report_view(self, mock_has, _super):
+        entity, _, vendor, _, _ = self.build_p2p()
+        client = self._client(self._user(entity, "assess-gate@test.com"))
+        e = f"?entity={entity.code}"
+        # Without the create key, POST is denied but GET (report.view) still works.
+        mock_has.side_effect = _deny_keys("procurement.vendor_assessment.create")
+        denied = client.post(f"/v1/procurement/vendor-assessments/{e}", self._payload(vendor), format="json")
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(client.get(f"/v1/procurement/vendor-assessments/{e}").status_code, 200)
+        # Deny report.view instead → listing is 403.
+        mock_has.side_effect = _deny_keys("procurement.report.view")
+        self.assertEqual(client.get(f"/v1/procurement/vendor-assessments/{e}").status_code, 403)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_succeeds_and_computes_scorecard(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        user = self._user(entity, "assess-ok@test.com")
+        resp = self._client(user).post(
+            f"/v1/procurement/vendor-assessments/?entity={entity.code}",
+            self._payload(vendor), format="json")
+        self.assertEqual(resp.status_code, 201)
+        data = resp.data["data"]
+        self.assertEqual(data["overall_score"], 86)
+        self.assertEqual(data["grade"], "B")
+        self.assertEqual(data["vendor_code"], "ACME")
+        self.assertTrue(data["assessor"])
+        row = VendorAssessment.objects.get(entity=entity, vendor=vendor)
+        self.assertEqual(row.assessor_id, user.id)  # assessor is the caller
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_rejects_out_of_range_score(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        resp = self._client(self._user(entity, "assess-bad@test.com")).post(
+            f"/v1/procurement/vendor-assessments/?entity={entity.code}",
+            self._payload(vendor, on_time_delivery=150), format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_cannot_assess_another_entitys_vendor(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        _other, other_vendor = self._second_entity()
+        resp = self._client(self._user(entity, "assess-x@test.com")).post(
+            f"/v1/procurement/vendor-assessments/?entity={entity.code}",
+            self._payload(other_vendor), format="json")
+        self.assertEqual(resp.status_code, 400)  # foreign vendor unresolvable in this entity
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_list_is_entity_scoped(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        other, other_vendor = self._second_entity()
+        VendorAssessment.objects.create(
+            entity=entity, vendor=vendor,
+            on_time_delivery=80, quality_acceptance=80, invoice_accuracy=80, responsiveness=80)
+        VendorAssessment.objects.create(
+            entity=other, vendor=other_vendor,
+            on_time_delivery=60, quality_acceptance=60, invoice_accuracy=60, responsiveness=60)
+        resp = self._client(self._user(entity, "assess-list@test.com")).get(
+            f"/v1/procurement/vendor-assessments/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual({a["vendor_code"] for a in resp.data["data"]}, {"ACME"})
+
+    # --- feeds the performance report -------------------------------------- #
+
+    def test_latest_assessment_feeds_vendor_performance(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        VendorAssessment.objects.create(
+            entity=entity, vendor=vendor, assessment_date=datetime.date(2026, 1, 1),
+            on_time_delivery=50, quality_acceptance=50, invoice_accuracy=50, responsiveness=50)
+        VendorAssessment.objects.create(
+            entity=entity, vendor=vendor, assessment_date=datetime.date(2026, 3, 1),
+            on_time_delivery=94, quality_acceptance=97, invoice_accuracy=89, responsiveness=82)
+        vi = self.make_bill(entity, vendor, [("5300", 1, 1_000_000, None, None)])
+        post_vendor_invoice(vi)  # give the vendor activity so it appears in the report
+        report = vendor_performance(entity)
+        row = next(r for r in report.rows if r.vendor_id == vendor.id)
+        self.assertIsNotNone(row.latest_assessment)
+        self.assertEqual(row.latest_assessment.assessment_date, datetime.date(2026, 3, 1))  # newest wins
+        self.assertEqual(row.latest_assessment.overall_score, 92)
+        self.assertEqual(row.latest_assessment.grade, "A")
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_vendor_performance_serializes_latest_assessment(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        vi = self.make_bill(entity, vendor, [("5300", 1, 1_000_000, None, None)])
+        post_vendor_invoice(vi)
+        VendorAssessment.objects.create(
+            entity=entity, vendor=vendor,
+            on_time_delivery=94, quality_acceptance=97, invoice_accuracy=89, responsiveness=82)
+        resp = self._client(self._user(entity, "vp-assess@test.com")).get(
+            f"/v1/procurement/reports/vendor-performance/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200)
+        row = next(r for r in resp.data["data"]["rows"] if r["code"] == "ACME")
+        self.assertEqual(row["latest_assessment"]["grade"], "A")
+        self.assertEqual(row["latest_assessment"]["overall_score"], 92)
+        self.assertEqual(row["latest_assessment"]["quality_acceptance"], 97)
+        # on_time_rate stays the COMPUTED value (no rated receipts → None), never overwritten.
+        self.assertIsNone(row["on_time_rate"])
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_vendor_performance_null_assessment_when_unrated(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        vi = self.make_bill(entity, vendor, [("5300", 1, 1_000_000, None, None)])
+        post_vendor_invoice(vi)
+        resp = self._client(self._user(entity, "vp-noassess@test.com")).get(
+            f"/v1/procurement/reports/vendor-performance/?entity={entity.code}")
+        row = next(r for r in resp.data["data"]["rows"] if r["code"] == "ACME")
+        self.assertIsNone(row["latest_assessment"])
+
+
+class AnalyticsDrawerEndpointTests(_P2PFixtureMixin, TestCase):
+    """Report.view-gated drawer detail endpoints: AP per-vendor open bills, GR/IR
+    per-GRN links, and the spend per-category scope. Security + real data.
+    """
+
+    def _client(self, user):
+        from core.test_utils import TenantAPIClient
+
+        return TenantAPIClient(user=user)
+
+    def _user(self, entity, email):
+        from django.contrib.auth import get_user_model
+
+        return get_user_model().objects.create_user(
+            email=email, password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Drawer", last_name="Viewer",
+        )
+
+    def _second_entity(self):
+        entity = LedgerEntity.objects.create(
+            name="Other Books", code="OBOOK", kind=LedgerEntity.Kind.TENANT,
+        )
+        seed_chart_of_accounts(entity)
+        vendor = Vendor.objects.create(
+            entity=entity, code="OTHERCO", name="Other Supplies",
+            payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"),
+            kyc_status="VERIFIED",
+        )
+        return entity, vendor
+
+    def _posted_bill(self, entity, vendor, *, amount=1_000_000, date=datetime.date(2026, 1, 10)):
+        vi = self.make_bill(entity, vendor, [("5300", 1, amount, None, None)], date=date)
+        post_vendor_invoice(vi)
+        return vi
+
+    @patch("vs_rbac.permissions.is_vision_super_admin", return_value=False)
+    @patch("vs_rbac.permissions.has_permission")
+    def test_drawer_endpoints_require_report_view(self, mock_has, _super):
+        entity, _, vendor, _, _ = self.build_p2p()
+        client = self._client(self._user(entity, "drawer-gate@test.com"))
+        mock_has.side_effect = _deny_keys("procurement.report.view")
+        e = f"?entity={entity.code}"
+        for url in (
+            f"/v1/procurement/reports/ap-aging/vendor/{e}&vendor={vendor.code}",
+            f"/v1/procurement/reports/grir-aging/grn/{e}&grn=1",
+        ):
+            self.assertEqual(client.get(url).status_code, 403, url)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_ap_vendor_open_bills_detail(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        self._posted_bill(entity, vendor)  # due 2026-01-10, 1,000,000
+        resp = self._client(self._user(entity, "ap-vendor@test.com")).get(
+            f"/v1/procurement/reports/ap-aging/vendor/?entity={entity.code}"
+            f"&vendor={vendor.code}&as_of=2026-02-15")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.data["data"]
+        self.assertEqual(data["vendor"]["code"], "ACME")
+        self.assertEqual(data["net"]["kobo"], 1_000_000)
+        self.assertEqual(len(data["invoices"]), 1)
+        inv = data["invoices"][0]
+        self.assertEqual(inv["balance_due"]["kobo"], 1_000_000)
+        self.assertEqual(inv["bucket"], "31-60")  # 36 days overdue on 2026-02-15
+        self.assertEqual(inv["payment_status"], "UNPAID")
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_ap_vendor_detail_is_entity_scoped(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        _other, other_vendor = self._second_entity()
+        resp = self._client(self._user(entity, "ap-vendor-x@test.com")).get(
+            f"/v1/procurement/reports/ap-aging/vendor/?entity={entity.code}&vendor={other_vendor.code}")
+        self.assertEqual(resp.status_code, 400)  # foreign vendor unresolvable here
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_grir_grn_detail_links_po_and_reconciles(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        grn = self.make_grn(entity, vendor, po, [(po.lines.first(), 10)])
+        post_grn(grn)  # GR/IR credit 1,000,000, still open
+        po.refresh_from_db()
+        resp = self._client(self._user(entity, "grir-grn@test.com")).get(
+            f"/v1/procurement/reports/grir-aging/grn/?entity={entity.code}"
+            f"&grn={grn.id}&as_of=2026-01-10")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.data["data"]
+        self.assertEqual(data["received_value"]["kobo"], 1_000_000)
+        self.assertEqual(data["invoiced_value"]["kobo"], 0)
+        self.assertEqual(data["open_value"]["kobo"], 1_000_000)
+        self.assertEqual(data["po_number"], po.document_number or None)
+        self.assertEqual(data["invoices"], [])
+        # A foreign entity's GRN id is a 404, not a cross-entity read.
+        other, _ = self._second_entity()
+        cross = self._client(self._user(other, "grir-x@test.com")).get(
+            f"/v1/procurement/reports/grir-aging/grn/?entity={other.code}&grn={grn.id}")
+        self.assertEqual(cross.status_code, 404)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_grir_grn_detail_shows_matched_invoice(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        po_line = po.lines.first()
+        grn = self.make_grn(entity, vendor, po, [(po_line, 10)])
+        post_grn(grn)
+        grn_line = grn.lines.first()
+        vi = VendorInvoice.objects.create(
+            entity=entity, vendor=vendor, purchase_order=po,
+            invoice_date=datetime.date(2026, 1, 10), due_date=datetime.date(2026, 1, 10),
+            approval_state=ProcApprovalState.APPROVED)
+        VendorInvoiceLine.objects.create(
+            vendor_invoice=vi, po_line=po_line, grn_line=grn_line,
+            expense_account=self.acc(entity, "5100"), quantity=10, unit_price=100_000, line_no=1)
+        post_vendor_invoice(vi)  # clears GR/IR
+        resp = self._client(self._user(entity, "grir-matched@test.com")).get(
+            f"/v1/procurement/reports/grir-aging/grn/?entity={entity.code}"
+            f"&grn={grn.id}&as_of=2026-01-12")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.data["data"]
+        self.assertEqual(data["open_value"]["kobo"], 0)
+        self.assertEqual(len(data["invoices"]), 1)
+        self.assertEqual(data["invoices"][0]["net"]["kobo"], 1_000_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_spend_category_scope_filters_to_that_category(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        office = VendorCategory.objects.create(entity=entity, code="OFFICE", name="Office")
+        itx = VendorCategory.objects.create(entity=entity, code="ITX", name="IT")
+        vendor.category = office
+        vendor.save(update_fields=["category"])
+        v2 = Vendor.objects.create(
+            entity=entity, code="TECHCO", name="Tech Co",
+            payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"),
+            category=itx, kyc_status="VERIFIED")
+        self._posted_bill(entity, vendor, amount=1_000_000)
+        self._posted_bill(entity, v2, amount=400_000)
+        resp = self._client(self._user(entity, "spend-cat@test.com")).get(
+            f"/v1/procurement/reports/spend-analysis/?entity={entity.code}&category=OFFICE")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.data["data"]
+        self.assertEqual(data["category"], "OFFICE")
+        self.assertEqual(data["total_gross"]["kobo"], 1_000_000)  # only OFFICE vendor's bill
+        self.assertEqual({r["key"] for r in data["by_vendor"]}, {"ACME"})
+
+
+class GRIRPoLinesTests(_P2PFixtureMixin, TestCase):
+    """PO-line-grain GR/IR report + its per-line drawer. Security + aggregation +
+    status derivation over real POSTED goods receipts and vendor invoices.
+    """
+
+    def _client(self, user):
+        from core.test_utils import TenantAPIClient
+
+        return TenantAPIClient(user=user)
+
+    def _user(self, entity, email):
+        from django.contrib.auth import get_user_model
+
+        return get_user_model().objects.create_user(
+            email=email, password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="GR", last_name="Lines",
+        )
+
+    def _other_entity(self):
+        entity = LedgerEntity.objects.create(
+            name="Other GRIR", code="OGRIR", kind=LedgerEntity.Kind.TENANT,
+        )
+        seed_chart_of_accounts(entity)
+        FiscalPeriod.objects.create(
+            entity=entity,
+            fiscal_year=FiscalYear.objects.create(
+                entity=entity, year=2026,
+                start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+            ),
+            period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+        )
+        vendor = Vendor.objects.create(
+            entity=entity, code="OTHERCO", name="Other Supplies",
+            payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"),
+            kyc_status="VERIFIED",
+        )
+        return entity, vendor
+
+    def _post_bill(self, entity, vendor, po, po_line, qty, *, grn_line=None, allow_variance=False):
+        vi = VendorInvoice.objects.create(
+            entity=entity, vendor=vendor, purchase_order=po,
+            invoice_date=datetime.date(2026, 1, 10), due_date=datetime.date(2026, 1, 10),
+            approval_state=ProcApprovalState.APPROVED,
+        )
+        VendorInvoiceLine.objects.create(
+            vendor_invoice=vi, po_line=po_line, grn_line=grn_line,
+            expense_account=po_line.expense_account, quantity=qty,
+            unit_price=po_line.unit_price, line_no=1,
+        )
+        post_vendor_invoice(vi, allow_variance=allow_variance)
+        return vi
+
+    def _cleared_line(self, entity, vendor):
+        # Ordered 10, received 10, invoiced 10 → Cleared, balance 0.
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        pl = po.lines.first()
+        grn = self.make_grn(entity, vendor, po, [(pl, 10)])
+        post_grn(grn)
+        pl.refresh_from_db()
+        self._post_bill(entity, vendor, po, pl, 10, grn_line=grn.lines.first())
+        return po, pl
+
+    def _received_gt_invoiced_line(self, entity, vendor):
+        # Ordered 10, received 10, no invoice → Received > Invoiced, balance +1,000,000.
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        pl = po.lines.first()
+        grn = self.make_grn(entity, vendor, po, [(pl, 10)])
+        post_grn(grn)
+        return po, pl
+
+    def _invoiced_gt_received_line(self, entity, vendor):
+        # Ordered 10, received 5, invoiced 10 → Invoiced > Received, balance -500,000.
+        # Billing ahead of receipt is an under-received variance, posted with override.
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        pl = po.lines.first()
+        grn = self.make_grn(entity, vendor, po, [(pl, 5)])
+        post_grn(grn)
+        pl.refresh_from_db()
+        self._post_bill(entity, vendor, po, pl, 10, grn_line=grn.lines.first(), allow_variance=True)
+        return po, pl
+
+    def _rows_by_line(self, data):
+        return {r["po_line_id"]: r for r in data["rows"]}
+
+    @patch("vs_rbac.permissions.is_vision_super_admin", return_value=False)
+    @patch("vs_rbac.permissions.has_permission")
+    def test_grir_lines_require_report_view(self, mock_has, _super):
+        entity, _, _, _, _ = self.build_p2p()
+        client = self._client(self._user(entity, "grir-lines-gate@test.com"))
+        mock_has.side_effect = _deny_keys("procurement.report.view")
+        e = f"?entity={entity.code}"
+        for url in (
+            f"/v1/procurement/reports/grir-lines/{e}",
+            f"/v1/procurement/reports/grir-lines/detail/{e}&po_line=1",
+        ):
+            self.assertEqual(client.get(url).status_code, 403, url)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_grir_lines_aggregation_and_status(self, _perm):
+        from decimal import Decimal
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        _, cleared = self._cleared_line(entity, vendor)
+        _, recv_gt = self._received_gt_invoiced_line(entity, vendor)
+        _, inv_gt = self._invoiced_gt_received_line(entity, vendor)
+
+        resp = self._client(self._user(entity, "grir-lines-agg@test.com")).get(
+            f"/v1/procurement/reports/grir-lines/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200)
+        rows = self._rows_by_line(resp.data["data"])
+        # All three lines have activity and appear.
+        self.assertEqual(set(rows), {cleared.id, recv_gt.id, inv_gt.id})
+
+        c = rows[cleared.id]
+        self.assertEqual(Decimal(c["ordered_qty"]), 10)
+        self.assertEqual(Decimal(c["received_qty"]), 10)
+        self.assertEqual(Decimal(c["invoiced_qty"]), 10)
+        self.assertEqual(c["received_value"]["kobo"], 1_000_000)
+        self.assertEqual(c["invoiced_value"]["kobo"], 1_000_000)
+        self.assertEqual(c["grir_balance"]["kobo"], 0)
+        self.assertEqual(c["status"], "Cleared")
+
+        r = rows[recv_gt.id]
+        self.assertEqual(Decimal(r["received_qty"]), 10)
+        self.assertEqual(Decimal(r["invoiced_qty"]), 0)
+        self.assertEqual(r["grir_balance"]["kobo"], 1_000_000)
+        self.assertEqual(r["status"], "Received > Invoiced")
+
+        i = rows[inv_gt.id]
+        self.assertEqual(Decimal(i["received_qty"]), 5)
+        self.assertEqual(Decimal(i["invoiced_qty"]), 10)
+        self.assertEqual(i["received_value"]["kobo"], 500_000)
+        self.assertEqual(i["invoiced_value"]["kobo"], 1_000_000)
+        self.assertEqual(i["grir_balance"]["kobo"], -500_000)
+        self.assertEqual(i["status"], "Invoiced > Received")
+        # PO-line ref is "<PO document_number>-<line_no>".
+        self.assertTrue(i["po_line_ref"].endswith("-1"))
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_grir_lines_excludes_inactive_lines_and_cancelled_pos(self, _perm):
+        from vs_finance.constants import DocumentStatus
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        # A PO line with no receipt and no invoice must not appear (no activity).
+        self.make_po(entity, vendor, [("5100", 4, 50_000, None)])
+        # A cancelled PO's received line is excluded even though it has receipt activity.
+        po = self.make_po(entity, vendor, [("5100", 3, 100_000, None)])
+        pl = po.lines.first()
+        grn = self.make_grn(entity, vendor, po, [(pl, 3)])
+        post_grn(grn)
+        po.status = DocumentStatus.CANCELLED
+        po.save(update_fields=["status"])
+
+        resp = self._client(self._user(entity, "grir-lines-excl@test.com")).get(
+            f"/v1/procurement/reports/grir-lines/?entity={entity.code}")
+        self.assertEqual(resp.data["data"]["rows"], [])
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_grir_lines_empty_entity_shape(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()  # a vendor exists but no PO activity
+        resp = self._client(self._user(entity, "grir-lines-empty@test.com")).get(
+            f"/v1/procurement/reports/grir-lines/?entity={entity.code}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["data"]["rows"], [])
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_grir_line_detail_links_documents(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        po, pl = self._cleared_line(entity, vendor)
+        resp = self._client(self._user(entity, "grir-line-detail@test.com")).get(
+            f"/v1/procurement/reports/grir-lines/detail/?entity={entity.code}&po_line={pl.id}")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.data["data"]
+        self.assertEqual(data["po_line_id"], pl.id)
+        self.assertEqual(data["status"], "Cleared")
+        self.assertEqual(data["received_value"]["kobo"], 1_000_000)
+        self.assertEqual(data["invoiced_value"]["kobo"], 1_000_000)
+        self.assertEqual(data["po_number"], po.document_number)
+        self.assertEqual(len(data["grns"]), 1)
+        self.assertEqual(data["grns"][0]["value"]["kobo"], 1_000_000)
+        self.assertEqual(len(data["invoices"]), 1)
+        self.assertEqual(data["invoices"][0]["net"]["kobo"], 1_000_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_grir_lines_are_entity_scoped(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        _, pl = self._cleared_line(entity, vendor)
+        other, other_vendor = self._other_entity()
+        # Other entity's report never contains this entity's PO line.
+        listing = self._client(self._user(other, "grir-x-list@test.com")).get(
+            f"/v1/procurement/reports/grir-lines/?entity={other.code}")
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.data["data"]["rows"], [])
+        # A foreign PO-line id is a 404 from the other entity, not a cross-entity read.
+        cross = self._client(self._user(other, "grir-x-detail@test.com")).get(
+            f"/v1/procurement/reports/grir-lines/detail/?entity={other.code}&po_line={pl.id}")
+        self.assertEqual(cross.status_code, 404)
 
 
 # --------------------------------------------------------------------------- #

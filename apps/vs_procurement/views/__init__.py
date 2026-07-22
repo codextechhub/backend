@@ -12,4 +12,5 @@ from .receiving import *        # noqa: F401,F403
 from .vendor_payments import *  # noqa: F401,F403
 from .approval_queue import *   # noqa: F401,F403
 from .reports import *          # noqa: F401,F403
+from .assessments import *      # noqa: F401,F403
 from .stock import *            # noqa: F401,F403

@@ -13,9 +13,9 @@ from vs_finance.constants import DocumentStatus, PaymentMethod
 from vs_finance.models import Account, BankAccount, FiscalPeriod, LedgerEntity, TaxCode
 from vs_procurement.models import (
     CatalogItem, ContractMilestone, GoodsReceivedNote, GoodsReceivedNoteLine, PurchaseOrder,
-    PurchaseOrderLine, RequestForQuotation, RfqLine, StockItem, Vendor, VendorCategory,
-    VendorContract, VendorInvoice, VendorInvoiceLine, VendorPayment, VendorPaymentAllocation,
-    VendorQuotation, VendorQuotationLine,
+    PurchaseOrderLine, RequestForQuotation, RfqLine, StockItem, Vendor, VendorAssessment,
+    VendorCategory, VendorContract, VendorInvoice, VendorInvoiceLine, VendorPayment,
+    VendorPaymentAllocation, VendorQuotation, VendorQuotationLine,
 )
 from vs_procurement.constants import ProcApprovalState, RfqStatus
 from vs_procurement.contracts import (
@@ -657,10 +657,31 @@ class Command(BaseCommand):
                     narration="Cycle-count shrinkage",
                 )
 
+        # Vendor Performance scorecards. Idempotent per (vendor, date). MainOne carries a
+        # two-row history (both A) so the drawer's history table is populated; Rack is a B.
+        # Inlaks is deliberately left unassessed so the "Not assessed" state is demonstrable.
+        assessment_specs = (
+            (vendors[0], datetime.date(today.year, 6, 15),
+             dict(on_time_delivery=96, quality_acceptance=98, invoice_accuracy=92, responsiveness=88),
+             "Strong delivery and billing accuracy this quarter."),
+            (vendors[0], datetime.date(today.year, 4, 10),
+             dict(on_time_delivery=90, quality_acceptance=94, invoice_accuracy=90, responsiveness=85),
+             ""),
+            (vendors[2], datetime.date(today.year, 6, 20),
+             dict(on_time_delivery=82, quality_acceptance=90, invoice_accuracy=80, responsiveness=72),
+             "Occasional late deliveries; quality acceptable."),
+        )
+        for vendor, when, scores, note in assessment_specs:
+            VendorAssessment.objects.get_or_create(
+                entity=entity, vendor=vendor, assessment_date=when,
+                defaults={**scores, "assessor": actor, "notes": note},
+            )
+
         self.stdout.write(self.style.SUCCESS(
             f"CODEX procurement demo ready: {Vendor.objects.filter(entity=entity).count()} vendors, "
             f"+{invoice_count} invoices, +{po_count} purchase orders, "
             f"+{payment_count} vendor payments, +{rfq_count} RFQs, "
             f"+{stock_item_count} stock items "
-            f"({StockItem.objects.filter(entity=entity).count()} total)."
+            f"({StockItem.objects.filter(entity=entity).count()} total), "
+            f"{VendorAssessment.objects.filter(entity=entity).count()} vendor assessments."
         ))

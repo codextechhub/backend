@@ -37,6 +37,7 @@ class AgingRow:
     vendor_id: int
     code: str
     name: str
+    payment_terms: str = ""       # vendor's standard net terms (e.g. "NET_30"), for the table subtitle
     buckets: dict = field(default_factory=lambda: {b: 0 for b in AGING_BUCKETS})
     outstanding: int = 0          # gross of unapplied debit
     unallocated_credit: int = 0   # open payment (prepayment) not yet applied
@@ -73,6 +74,7 @@ def ap_aging(entity, *, as_of=None) -> APAgingReport:
         if r is None:
             r = AgingRow(
                 vendor_id=vendor.id, code=vendor.code, name=vendor.name,
+                payment_terms=vendor.payment_terms,
                 buckets={b: 0 for b in AGING_BUCKETS},
             )
             rows[vendor.id] = r
@@ -328,6 +330,375 @@ def grir_aging(entity, *, as_of=None) -> GRIRAgingReport:
     return report
 
 
+@dataclass
+class APVendorOpenBill:
+    """One open POSTED bill for a vendor, aged for the AP drawer (kobo)."""
+
+    invoice_id: int
+    document_number: str
+    invoice_date: object
+    due_date: object
+    days_overdue: int
+    bucket: str
+    balance_due: int
+    payment_status: str
+
+
+@dataclass
+class APVendorDetail:
+    """A single vendor's AP position for the AP-aging drawer (buckets + open bills)."""
+
+    vendor_id: int
+    code: str
+    name: str
+    as_of: object
+    buckets: dict = field(default_factory=lambda: {b: 0 for b in AGING_BUCKETS})
+    outstanding: int = 0
+    unallocated_credit: int = 0
+    net: int = 0
+    invoices: list = field(default_factory=list)
+
+
+def ap_vendor_open_bills(entity, vendor, *, as_of=None) -> APVendorDetail:
+    """Age one vendor's open bills for the AP drawer — buckets + the invoice list.
+
+    Scoped to a single ``vendor`` (entity-checked by the caller), this mirrors
+    :func:`ap_aging`'s per-vendor arithmetic but returns the underlying open invoices too:
+    each POSTED, not-fully-paid bill's ``balance_due`` aged off its ``due_date`` (falling
+    back to ``invoice_date``). All amounts are integer kobo.
+    """
+    from .models import VendorInvoice, VendorPayment
+
+    as_of = as_of or timezone.now().date()
+    detail = APVendorDetail(
+        vendor_id=vendor.id, code=vendor.code, name=vendor.name, as_of=as_of,
+        buckets={b: 0 for b in AGING_BUCKETS},
+    )
+
+    open_invoices = (
+        VendorInvoice.objects
+        .filter(entity=entity, vendor=vendor, status="POSTED")
+        .exclude(payment_status="PAID")
+        .order_by("due_date", "invoice_date", "id")
+    )
+    for inv in open_invoices:
+        due = inv.balance_due
+        if due <= 0:
+            continue
+        ref_date = inv.due_date or inv.invoice_date
+        days_overdue = (as_of - ref_date).days
+        bucket = _bucket_for(days_overdue)
+        detail.buckets[bucket] += due
+        detail.outstanding += due
+        detail.invoices.append(APVendorOpenBill(
+            invoice_id=inv.id, document_number=inv.document_number or str(inv.pk),
+            invoice_date=inv.invoice_date, due_date=inv.due_date,
+            days_overdue=days_overdue, bucket=bucket,
+            balance_due=due, payment_status=inv.payment_status,
+        ))
+
+    # Net the vendor's unallocated (prepayment) credit, exactly as ap_aging does.
+    for pay in VendorPayment.objects.filter(entity=entity, vendor=vendor, status="POSTED"):
+        credit = pay.unallocated_amount
+        if credit > 0:
+            detail.unallocated_credit += credit
+    detail.net = detail.outstanding - detail.unallocated_credit
+    return detail
+
+
+@dataclass
+class GRIRGrnDetail:
+    """One GRN's GR/IR reconciliation + the documents around it, for the GR/IR drawer."""
+
+    grn_id: int
+    reference: str
+    vendor_code: str
+    vendor_name: str
+    received_date: object
+    days: int
+    bucket: str
+    po_number: str
+    received_value: int
+    invoiced_value: int
+    open_value: int
+    invoices: list = field(default_factory=list)   # [{id, document_number, invoice_date, net}]
+
+
+def grir_grn_detail(entity, grn_id, *, as_of=None) -> GRIRGrnDetail | None:
+    """The GR/IR position and linked documents for one GRN (drawer detail).
+
+    Returns the GRN's received value, the value of POSTED vendor-invoice lines that
+    reference its GRN lines (which cleared it), the remaining ``open_value`` aged off the
+    received date, its source PO number, and the distinct matched invoices. Entity-scoped;
+    ``None`` when the GRN is not in ``entity``. All amounts are integer kobo.
+    """
+    from .models import GoodsReceivedNote, VendorInvoiceLine
+
+    as_of = as_of or timezone.now().date()
+    grn = (
+        GoodsReceivedNote.objects
+        .filter(entity=entity, pk=grn_id)
+        .select_related("vendor", "purchase_order")
+        .first()
+    )
+    if grn is None:
+        return None
+
+    invoiced = 0
+    invoices: dict[int, dict] = {}
+    inv_lines = (
+        VendorInvoiceLine.objects
+        .filter(grn_line__grn=grn, vendor_invoice__status="POSTED")
+        .select_related("vendor_invoice")
+    )
+    for line in inv_lines:
+        invoiced += line.net_amount
+        vi = line.vendor_invoice
+        # Accumulate the GR/IR-clearing net per distinct matched invoice.
+        row = invoices.get(vi.id)
+        if row is None:
+            row = invoices[vi.id] = {
+                "id": vi.id, "document_number": vi.document_number or str(vi.pk),
+                "invoice_date": str(vi.invoice_date), "net": 0,
+            }
+        row["net"] += line.net_amount
+
+    days = (as_of - grn.received_date).days
+    return GRIRGrnDetail(
+        grn_id=grn.id, reference=grn.document_number or str(grn.pk),
+        vendor_code=grn.vendor.code, vendor_name=grn.vendor.name,
+        received_date=grn.received_date, days=days, bucket=_bucket_for(days),
+        po_number=(grn.purchase_order.document_number if grn.purchase_order else ""),
+        received_value=grn.total_value, invoiced_value=invoiced,
+        open_value=grn.total_value - invoiced,
+        invoices=list(invoices.values()),
+    )
+
+
+#: GR/IR line status labels — mirror the prototype's per-PO-line status chips.
+GRIR_LINE_CLEARED = "Cleared"
+GRIR_LINE_RECV_GT_INV = "Received > Invoiced"
+GRIR_LINE_INV_GT_RECV = "Invoiced > Received"
+
+
+def _grir_line_status(received_qty, invoiced_qty, balance) -> str:
+    """Derive a PO line's GR/IR status from its received vs invoiced quantities.
+
+    Quantity is the headline the table shows, so it leads the derivation; the monetary
+    ``balance`` (received value − invoiced value) only breaks the tie when the two
+    quantities are equal (a pure price variance still reads as an imbalance, not cleared).
+    """
+    if received_qty > invoiced_qty:
+        return GRIR_LINE_RECV_GT_INV
+    if invoiced_qty > received_qty:
+        return GRIR_LINE_INV_GT_RECV
+    # Equal quantities: cleared only when the value nets to zero too.
+    if balance == 0:
+        return GRIR_LINE_CLEARED
+    return GRIR_LINE_RECV_GT_INV if balance > 0 else GRIR_LINE_INV_GT_RECV
+
+
+@dataclass
+class GRIRPoLineRow:
+    """One PO line's GR/IR position at the line grain (quantities + kobo values)."""
+
+    po_line_id: int
+    po_line_ref: str        # "<PO document_number>-<line_no>"
+    item: str               # PO line description
+    vendor_code: str
+    vendor_name: str
+    ordered_qty: str        # decimal serialised as string (exact, no float drift)
+    received_qty: str
+    invoiced_qty: str
+    received_value: int     # Σ accepted GRN value (kobo)
+    invoiced_value: int     # Σ invoiced net (kobo)
+    grir_balance: int       # received_value − invoiced_value (kobo)
+    status: str
+
+
+@dataclass
+class GRIRPoLinesReport:
+    entity_id: int
+    as_of: object
+    rows: list = field(default_factory=list)
+
+
+def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
+    """Line-level GR/IR: per PO line, ordered vs received vs invoiced (qty + value).
+
+    Where :func:`grir_aging` ages the balance per *goods receipt*, this drills it to the
+    **PO line** the prototype's GR/IR table lists. For each line on a live PO (CANCELLED /
+    REVERSED orders excluded), ``received_qty``/``received_value`` sum the POSTED
+    ``GoodsReceivedNoteLine``s pointing at it, and ``invoiced_qty``/``invoiced_value`` sum
+    the POSTED ``VendorInvoiceLine``s pointing at it (the direct ``po_line`` FK — the same
+    link that advances ``PurchaseOrderLine.invoiced_qty`` in the three-way match). Only
+    lines with any receipt or invoice activity are returned. All amounts are integer kobo.
+    """
+    from collections import defaultdict
+    from decimal import Decimal
+
+    from django.db.models import Sum
+
+    from .models import GoodsReceivedNoteLine, PurchaseOrderLine, VendorInvoiceLine
+
+    as_of = as_of or timezone.now().date()
+    report = GRIRPoLinesReport(entity_id=entity.id, as_of=as_of)
+
+    # Live PO lines only — a cancelled/reversed order is not an open GR/IR obligation.
+    po_lines = (
+        PurchaseOrderLine.objects
+        .filter(purchase_order__entity=entity)
+        .exclude(purchase_order__status__in=("CANCELLED", "REVERSED"))
+        .select_related("purchase_order", "purchase_order__vendor")
+        .order_by("purchase_order__order_date", "purchase_order_id", "line_no", "id")
+    )
+
+    # Two bulk aggregates keyed by po_line — no per-line query (avoids N+1).
+    # Received side: accepted qty + booked value from POSTED goods-receipt lines.
+    recv = defaultdict(lambda: (Decimal(0), 0))
+    grn_agg = (
+        GoodsReceivedNoteLine.objects
+        .filter(po_line__purchase_order__entity=entity, grn__status="POSTED")
+        .values("po_line")
+        .annotate(qty=Sum("accepted_qty"), value=Sum("value_amount"))
+    )
+    for r in grn_agg:
+        recv[r["po_line"]] = (Decimal(r["qty"] or 0), int(r["value"] or 0))
+
+    # Invoiced side: billed qty + net from POSTED vendor-invoice lines on that PO line.
+    inv = defaultdict(lambda: (Decimal(0), 0))
+    inv_agg = (
+        VendorInvoiceLine.objects
+        .filter(po_line__purchase_order__entity=entity, vendor_invoice__status="POSTED")
+        .values("po_line")
+        .annotate(qty=Sum("quantity"), net=Sum("net_amount"))
+    )
+    for r in inv_agg:
+        inv[r["po_line"]] = (Decimal(r["qty"] or 0), int(r["net"] or 0))
+
+    rows = []
+    for line in po_lines:
+        received_qty, received_value = recv.get(line.id, (Decimal(0), 0))
+        invoiced_qty, invoiced_value = inv.get(line.id, (Decimal(0), 0))
+        # Skip lines with no receipt and no invoice — nothing to reconcile yet.
+        if received_qty == 0 and invoiced_qty == 0:
+            continue
+        balance = received_value - invoiced_value
+        po = line.purchase_order
+        ref = f"{po.document_number or po.pk}-{line.line_no}"
+        rows.append(GRIRPoLineRow(
+            po_line_id=line.id, po_line_ref=ref, item=line.description,
+            vendor_code=po.vendor.code, vendor_name=po.vendor.name,
+            ordered_qty=str(line.quantity),
+            received_qty=str(received_qty), invoiced_qty=str(invoiced_qty),
+            received_value=received_value, invoiced_value=invoiced_value,
+            grir_balance=balance,
+            status=_grir_line_status(received_qty, invoiced_qty, balance),
+        ))
+
+    report.rows = rows
+    return report
+
+
+@dataclass
+class GRIRPoLineDetail:
+    """One PO line's GR/IR reconciliation + its linked POSTED GRNs and invoices."""
+
+    po_line_id: int
+    po_line_ref: str
+    item: str
+    vendor_code: str
+    vendor_name: str
+    po_number: str
+    ordered_qty: str
+    received_qty: str
+    invoiced_qty: str
+    received_value: int
+    invoiced_value: int
+    grir_balance: int
+    status: str
+    unit_price: int
+    grns: list = field(default_factory=list)      # [{id, reference, received_date, accepted_qty, value}]
+    invoices: list = field(default_factory=list)  # [{id, document_number, invoice_date, quantity, net}]
+
+
+def grir_po_line_detail(entity, po_line_id, *, as_of=None) -> GRIRPoLineDetail | None:
+    """The GR/IR reconciliation and linked documents for a single PO line (drawer).
+
+    Entity-scoped: a PO line on another entity's order returns ``None`` (the view 404s,
+    never leaks). Lists each POSTED goods-receipt line and POSTED vendor-invoice line that
+    references this PO line, alongside the received/invoiced/balance reconciliation. All
+    amounts are integer kobo.
+    """
+    from decimal import Decimal
+
+    from .models import GoodsReceivedNoteLine, PurchaseOrderLine, VendorInvoiceLine
+
+    line = (
+        PurchaseOrderLine.objects
+        # Scope through the parent PO's entity so a foreign line id cannot be read.
+        .filter(purchase_order__entity=entity, pk=po_line_id)
+        .select_related("purchase_order", "purchase_order__vendor")
+        .first()
+    )
+    if line is None:
+        return None
+
+    received_qty, received_value = Decimal(0), 0
+    grns = []
+    grn_lines = (
+        GoodsReceivedNoteLine.objects
+        .filter(po_line=line, grn__status="POSTED")
+        .select_related("grn")
+        .order_by("grn__received_date", "grn_id", "id")
+    )
+    for gl in grn_lines:
+        received_qty += Decimal(gl.accepted_qty)
+        received_value += int(gl.value_amount)
+        grns.append({
+            "id": gl.grn_id,
+            "reference": gl.grn.document_number or str(gl.grn_id),
+            "received_date": str(gl.grn.received_date),
+            "accepted_qty": str(gl.accepted_qty),
+            "value": int(gl.value_amount),
+        })
+
+    invoiced_qty, invoiced_value = Decimal(0), 0
+    invoices = []
+    inv_lines = (
+        VendorInvoiceLine.objects
+        .filter(po_line=line, vendor_invoice__status="POSTED")
+        .select_related("vendor_invoice")
+        .order_by("vendor_invoice__invoice_date", "vendor_invoice_id", "id")
+    )
+    for il in inv_lines:
+        invoiced_qty += Decimal(il.quantity)
+        invoiced_value += int(il.net_amount)
+        vi = il.vendor_invoice
+        invoices.append({
+            "id": vi.id,
+            "document_number": vi.document_number or str(vi.id),
+            "invoice_date": str(vi.invoice_date),
+            "quantity": str(il.quantity),
+            "net": int(il.net_amount),
+        })
+
+    balance = received_value - invoiced_value
+    po = line.purchase_order
+    return GRIRPoLineDetail(
+        po_line_id=line.id, po_line_ref=f"{po.document_number or po.pk}-{line.line_no}",
+        item=line.description, vendor_code=po.vendor.code, vendor_name=po.vendor.name,
+        po_number=po.document_number or str(po.pk),
+        ordered_qty=str(line.quantity),
+        received_qty=str(received_qty), invoiced_qty=str(invoiced_qty),
+        received_value=received_value, invoiced_value=invoiced_value,
+        grir_balance=balance,
+        status=_grir_line_status(received_qty, invoiced_qty, balance),
+        unit_price=int(line.unit_price),
+        grns=grns, invoices=invoices,
+    )
+
+
 def grir_balance(entity) -> int:
     """Net balance of the GR/IR clearing account for ``entity`` (kobo, signed credit).
 
@@ -388,6 +759,16 @@ class SpendRow:
 
 
 @dataclass
+class SpendPeriod:
+    """One calendar month's realised gross spend (kobo)."""
+
+    period: str          # "YYYY-MM" — sorts chronologically as a plain string
+    label: str           # "Mon YYYY" (e.g. "Jan 2026")
+    gross: int = 0
+    invoice_count: int = 0
+
+
+@dataclass
 class SpendAnalysis:
     """Spend over a window, broken down by vendor and by vendor category (kobo)."""
 
@@ -396,20 +777,23 @@ class SpendAnalysis:
     end_date: object
     by_vendor: list = field(default_factory=list)
     by_category: list = field(default_factory=list)
+    by_period: list = field(default_factory=list)   # monthly trend, chronological
     total_net: int = 0
     total_tax: int = 0
     total_gross: int = 0
     invoice_count: int = 0
 
 
-def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None) -> SpendAnalysis:
+def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, category=None) -> SpendAnalysis:
     """Analyse realised spend for ``entity`` from POSTED vendor invoices.
 
     Spend is the gross of POSTED :class:`VendorInvoice` s whose ``invoice_date`` falls
     in ``[start_date, end_date]`` (either bound optional). Rows are returned both by
     vendor and by vendor category (uncategorised vendors roll into an "Uncategorised"
     bucket), each sorted by descending gross spend. Pass ``vendor`` to scope the whole
-    computation to a single supplier (the per-vendor insights drawer needs only one).
+    computation to a single supplier; pass ``category`` (a category code, or the literal
+    ``"UNCATEGORISED"``) to scope it to one purchasing category — the per-category drawer
+    reuses this so its by_vendor / by_period reflect only that category.
     """
     from vs_finance.constants import DocumentStatus
 
@@ -422,6 +806,13 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None) -> Sp
     )
     if vendor is not None:
         qs = qs.filter(vendor=vendor)
+    if category is not None:
+        # "UNCATEGORISED" is the synthetic key for vendors with no category (mirrors the
+        # by_category grouping below); a real code matches the vendor's category code.
+        if category == "UNCATEGORISED":
+            qs = qs.filter(vendor__category__isnull=True)
+        else:
+            qs = qs.filter(vendor__category__code=category)
     if start_date is not None:
         qs = qs.filter(invoice_date__gte=start_date)
     if end_date is not None:
@@ -429,6 +820,7 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None) -> Sp
 
     vendors: dict = {}
     categories: dict = {}
+    periods: dict = {}
     report = SpendAnalysis(entity_id=entity.id, start_date=start_date, end_date=end_date)
 
     for inv in qs:
@@ -436,6 +828,17 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None) -> Sp
         report.total_tax += inv.tax_total
         report.total_gross += inv.total
         report.invoice_count += 1
+
+        # Monthly trend: bucket each bill on its invoice_date month in this same pass
+        # (no second query). The "YYYY-MM" key sorts chronologically as a plain string.
+        pkey = f"{inv.invoice_date.year:04d}-{inv.invoice_date.month:02d}"
+        prow = periods.get(pkey)
+        if prow is None:
+            prow = periods[pkey] = SpendPeriod(
+                period=pkey, label=inv.invoice_date.strftime("%b %Y"),
+            )
+        prow.gross += inv.total
+        prow.invoice_count += 1
 
         v = inv.vendor
         vrow = vendors.get(v.id)
@@ -459,6 +862,8 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None) -> Sp
 
     report.by_vendor = sorted(vendors.values(), key=lambda r: r.gross, reverse=True)
     report.by_category = sorted(categories.values(), key=lambda r: r.gross, reverse=True)
+    # Ascending by month key = chronological (a plain "YYYY-MM" string sort).
+    report.by_period = [periods[k] for k in sorted(periods)]
     return report
 
 
@@ -469,6 +874,7 @@ class VendorPerformanceRow:
     vendor_id: int
     code: str
     name: str
+    category: str = ""   # vendor's category name (table subtitle), "" when uncategorised
     po_count: int = 0
     total_ordered: int = 0
     receipt_count: int = 0
@@ -479,6 +885,7 @@ class VendorPerformanceRow:
     payment_count: int = 0
     total_paid: int = 0
     avg_payment_days: float | None = None
+    latest_assessment: object = None   # most-recent VendorAssessment, or None
 
     @property
     def on_time_rate(self) -> float | None:
@@ -606,6 +1013,29 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None) -
 
     for vid, days in pay_days.items():
         rows[vid].avg_payment_days = _avg_days(days)
+
+    # Attach each vendor's category name — one query for every row's vendor (no N+1),
+    # used as the performance table's per-vendor subtitle.
+    if rows:
+        from .models import Vendor
+
+        for v in Vendor.objects.filter(id__in=list(rows.keys())).select_related("category"):
+            rows[v.id].category = v.category.name if v.category_id else ""
+
+    # Attach each vendor's most-recent point-in-time assessment (one query for all
+    # vendors in the report; the first row seen per vendor is the newest by ordering).
+    if rows:
+        from .models import VendorAssessment
+
+        for assessment in (
+            VendorAssessment.objects
+            .filter(entity=entity, vendor_id__in=list(rows.keys()))
+            .select_related("vendor")
+            .order_by("vendor_id", "-assessment_date", "-id")
+        ):
+            row = rows[assessment.vendor_id]
+            if row.latest_assessment is None:
+                row.latest_assessment = assessment
 
     ordered_rows = sorted(rows.values(), key=lambda r: r.total_billed, reverse=True)
     return VendorPerformanceReport(

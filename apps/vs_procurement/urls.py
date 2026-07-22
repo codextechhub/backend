@@ -107,13 +107,22 @@ urlpatterns = [
     path("stock-items/<int:pk>/adjust/", views.StockAdjustView.as_view(), name="proc-stock-adjust"),
     path("stock-movements/", views.StockMovementListView.as_view(), name="proc-stock-movements"),
 
+    # Vendor assessments (list rides report.view; create needs vendor_assessment.create)
+    path("vendor-assessments/", views.VendorAssessmentListCreateView.as_view(), name="proc-vendor-assessments"),
+
     # AP reports
     path("reports/dashboard/", views.ProcurementDashboardView.as_view(), name="proc-dashboard"),
+    # "ap-aging/vendor" is registered before "ap-aging" (both literal; order harmless here).
+    path("reports/ap-aging/vendor/", views.APAgingVendorDetailView.as_view(), name="proc-ap-aging-vendor"),
     path("reports/ap-aging/", views.APAgingView.as_view(), name="proc-ap-aging"),
     path("reports/ap-reconciliation/", views.APReconciliationView.as_view(), name="proc-ap-reconciliation"),
     path("reports/grir/", views.GRIRBalanceView.as_view(), name="proc-grir"),
     path("reports/ap-cash-requirements/", views.APCashRequirementsView.as_view(), name="proc-ap-cash-requirements"),
+    path("reports/grir-aging/grn/", views.GRIRGrnDetailView.as_view(), name="proc-grir-aging-grn"),
     path("reports/grir-aging/", views.GRIRAgingView.as_view(), name="proc-grir-aging"),
+    # GR/IR at the PO-line grain (detail literal before list; both literal, order harmless).
+    path("reports/grir-lines/detail/", views.GRIRPoLineDetailView.as_view(), name="proc-grir-lines-detail"),
+    path("reports/grir-lines/", views.GRIRPoLinesView.as_view(), name="proc-grir-lines"),
     path("reports/spend-analysis/", views.SpendAnalysisView.as_view(), name="proc-spend-analysis"),
     path("reports/vendor-performance/", views.VendorPerformanceView.as_view(), name="proc-vendor-performance"),
     path("reports/cycle-time/", views.ProcurementCycleTimeView.as_view(), name="proc-cycle-time"),

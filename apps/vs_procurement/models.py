@@ -26,9 +26,10 @@ from __future__ import annotations
 
 import datetime
 import re
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from django.conf import settings
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.db.models.functions import Lower
 
@@ -1356,3 +1357,77 @@ class VendorPaymentAllocation(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.payment_id}→{self.vendor_invoice_id}: {self.amount}"
+
+
+# --------------------------------------------------------------------------- #
+# Vendor assessment (point-in-time scorecard — immutable audit record)         #
+# --------------------------------------------------------------------------- #
+
+#: Fixed scorecard weights (sum to 1.0). Weighted overall = Σ (score × weight).
+VENDOR_ASSESSMENT_WEIGHTS = {
+    "on_time_delivery": Decimal("0.35"),
+    "quality_acceptance": Decimal("0.30"),
+    "invoice_accuracy": Decimal("0.20"),
+    "responsiveness": Decimal("0.15"),
+}
+
+
+class VendorAssessment(TimeStampedModel):
+    """A point-in-time vendor scorecard — an immutable audit record.
+
+    Captures four 0–100 criteria (on-time delivery, quality acceptance, invoice
+    accuracy, responsiveness) scored by an ``assessor`` on a date. ``overall_score``
+    and the letter ``grade`` are **computed** from :data:`VENDOR_ASSESSMENT_WEIGHTS`,
+    never stored, so the banding can evolve without a data migration. Create-only:
+    an assessment is never edited or deleted — a newer one supersedes it.
+    """
+
+    entity = models.ForeignKey(
+        "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="vendor_assessments",
+    )
+    vendor = models.ForeignKey(
+        Vendor, on_delete=models.PROTECT, related_name="assessments",
+    )
+    assessor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="vendor_assessments", null=True, blank=True,
+    )
+    assessment_date = models.DateField(default=datetime.date.today)
+
+    on_time_delivery = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(0), MaxValueValidator(100)])
+    quality_acceptance = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(0), MaxValueValidator(100)])
+    invoice_accuracy = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(0), MaxValueValidator(100)])
+    responsiveness = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(0), MaxValueValidator(100)])
+
+    notes = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ["-assessment_date", "-id"]
+        indexes = [models.Index(fields=["entity", "vendor"])]
+
+    @property
+    def overall_score(self) -> int:
+        # Weighted mean of the four criteria, rounded half-up to a whole 0–100 score.
+        total = sum(
+            (Decimal(getattr(self, field)) * weight
+             for field, weight in VENDOR_ASSESSMENT_WEIGHTS.items()),
+            Decimal(0),
+        )
+        return int(total.to_integral_value(rounding=ROUND_HALF_UP))
+
+    @property
+    def grade(self) -> str:
+        # Bands: A ≥ 90, B ≥ 76, otherwise C.
+        score = self.overall_score
+        if score >= 90:
+            return "A"
+        if score >= 76:
+            return "B"
+        return "C"
+
+    def __str__(self) -> str:
+        return f"{self.vendor_id} · {self.assessment_date} · {self.grade}"
