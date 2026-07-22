@@ -50,7 +50,10 @@ _TEMPLATE_META = {
 
 
 def _doc_models():
-    """Return approvable procurement model classes (imported lazily to dodge cycles)."""
+    """Return the closed set of procurement models the workflow bridge accepts.
+
+    Lazy imports avoid the model/handler/service cycle during Django app loading.
+    """
     from .models import PurchaseOrder, PurchaseRequisition, VendorInvoice, VendorPayment
 
     return (PurchaseRequisition, PurchaseOrder, VendorInvoice, VendorPayment)
@@ -74,7 +77,8 @@ def ensure_default_approval_templates(
     Templates are platform-scoped (``school=None, branch=None``) so they act as the
     universal fallback; a branch- or school-specific template still wins via the engine's
     branch → school → platform cascade. Re-running upserts in place (safe to seed often).
-    Returns the published :class:`~vs_workflow.models.WorkflowTemplate` objects.
+    ``threshold`` is integer kobo, matching every model's workflow amount field. Returns
+    the published :class:`~vs_workflow.models.WorkflowTemplate` objects.
     """
     from vs_workflow.services.templates import publish_template
 
@@ -125,6 +129,7 @@ def ensure_default_approval_templates(
 # --------------------------------------------------------------------------- #
 
 def _label(document) -> str:
+    """Build an audit/error label without assuming numbering has already run."""
     return f"{type(document).__name__} {document.document_number or document.pk}"
 
 
@@ -137,7 +142,9 @@ def submit_for_approval(document, *, actor_user, template_code: str | None = Non
     seeded template's stages all auto-skip (no eligible approvers), the engine may reach
     a terminal decision synchronously and the on-approved callback runs before this
     returns. Raises :class:`ApprovalWorkflowError` if the document is already PENDING or
-    APPROVED. Returns the :class:`~vs_workflow.models.WorkflowInstance`.
+    APPROVED. The document update and workflow submission share this transaction, so a
+    template/routing failure cannot leave a document marked PENDING without an instance.
+    Returns the :class:`~vs_workflow.models.WorkflowInstance`.
     """
     from vs_workflow.services.submission import submit_for_approval as wf_submit
 
@@ -175,7 +182,8 @@ def apply_approved(document, *, actor_user=None) -> None:
     Sets ``approval_state`` APPROVED, then runs the document-type effect: a requisition
     advances to ``DocumentStatus.APPROVED`` (so a PO can be raised), a PO likewise, a
     vendor invoice records an approval audit, and a vendor payment becomes postable.
-    Invoice/payment ledger status remains independent from workflow approval.
+    Invoice/payment ledger status remains independent from workflow approval: governance
+    makes them eligible to post but never manufactures a journal here.
     """
     from .models import PurchaseOrder, PurchaseRequisition, VendorInvoice
     from .purchasing import approve_purchase_order, approve_requisition
@@ -200,6 +208,8 @@ def apply_rejected(document, *, reason: str = "", actor_user=None) -> None:
 
     Sets ``approval_state`` REJECTED and, for a requisition that was sitting in
     PENDING_APPROVAL, cancels the ledger document (there is no REJECTED ledger status).
+    Other document types retain their independent ledger status and only change the
+    approval overlay.
     """
     from .models import PurchaseRequisition
 

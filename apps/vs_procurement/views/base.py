@@ -1,4 +1,9 @@
-"""Shared request-parsing helpers and the RBAC-gated base view.
+"""Shared request parsing, entity-safe resolvers, and the RBAC-gated base view.
+
+The helpers in this module are deliberately the narrow waist of procurement's
+write API: endpoints pass user-supplied references through them before a model
+or posting service sees the value.  Keeping tenant checks, money units, and
+numeric bounds here makes those invariants consistent across document types.
 """
 from __future__ import annotations
 
@@ -41,6 +46,7 @@ def _resolve_account(entity, ref, field):
 
 
 def _resolve_tax(entity, ref, field="tax_code"):
+    """Resolve an optional tax code without allowing a cross-entity reference."""
     if ref in (None, ""):
         return None
     from vs_finance.models import TaxCode
@@ -55,6 +61,7 @@ def _resolve_tax(entity, ref, field="tax_code"):
 
 
 def _resolve_currency(entity, ref, field="currency"):
+    """Resolve an optional global currency by canonical, case-insensitive code."""
     if ref in (None, ""):
         return None
     from vs_finance.models import Currency
@@ -66,6 +73,11 @@ def _resolve_currency(entity, ref, field="currency"):
 
 
 def _resolve_vendor(entity, ref):
+    """Resolve a required vendor by id or code, always inside ``entity``.
+
+    A reference belonging to another tenant is reported exactly like a missing
+    reference so the API cannot be used to discover cross-tenant vendor ids.
+    """
     if ref in (None, ""):
         raise ValidationError({"vendor": "A vendor is required."})
     qs = Vendor.objects.filter(entity=entity)
@@ -79,6 +91,7 @@ def _resolve_vendor(entity, ref):
 
 
 def _date(value, field, *, required=False):
+    """Parse an optional ISO calendar date; reject ambiguous locale formats."""
     if value in (None, ""):
         if required:
             raise ValidationError({field: "An ISO date (YYYY-MM-DD) is required."})
@@ -90,6 +103,7 @@ def _date(value, field, *, required=False):
 
 
 def _dec(value, field):
+    """Parse a decimal value for legacy callers that apply their own bounds."""
     try:
         return Decimal(str(value))
     except (InvalidOperation, TypeError):
@@ -236,7 +250,11 @@ def _resolve_asset_account(entity, ref, field="inventory_account"):
 
 
 def _money(value, field):
-    """Coerce to non-negative integer kobo, rejecting floats-as-naira mistakes."""
+    """Coerce to non-negative integer kobo.
+
+    Procurement and finance persist money in the smallest currency unit.  API
+    callers must therefore send kobo, never formatted naira strings.
+    """
     try:
         amount = int(value)
     except (TypeError, ValueError):
@@ -253,6 +271,7 @@ def _kobo(amount):
 
 
 def _require_lines(body):
+    """Return a non-empty document-line array or raise a field-level error."""
     lines = body.get("lines")
     if not lines or not isinstance(lines, list):
         raise ValidationError({"lines": "At least one line is required."})
@@ -260,6 +279,10 @@ def _require_lines(body):
 
 
 class _ProcBase(APIView):
+    """Common procurement API base enforcing active-user authentication and RBAC."""
+
+    # Each concrete view supplies the resource/verb permission consumed by
+    # HasRBACPermission; entity isolation is then applied in every endpoint query.
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
     def paginate(self, request, qs, serializer_cls, **ser_kwargs):
@@ -268,8 +291,9 @@ class _ProcBase(APIView):
         from core.pagination import XVSPagination
 
         paginator = XVSPagination()
+        # Bound list reads before serialization; serializers may traverse
+        # preloaded relations supplied by their endpoint-specific queryset.
         paginator.page_size = 25
         page = paginator.paginate_queryset(qs, request, view=self)
         return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)
-
 

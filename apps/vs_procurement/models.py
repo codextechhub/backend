@@ -56,7 +56,12 @@ from .constants import (
 
 
 def _pct(part, whole) -> Decimal:
-    """Percentage ``part/whole`` as a 2dp Decimal; 0 when ``whole`` is 0."""
+    """Return ``part / whole`` as a two-decimal percentage, never a ratio.
+
+    Quantities are :class:`Decimal` values while API percentage fields expect the
+    human scale (``50.00`` rather than ``0.50``). A zero denominator is a valid empty
+    document state, so it deliberately reports ``0.00`` instead of raising.
+    """
     whole = Decimal(whole or 0)
     if whole == 0:
         return Decimal("0.00")
@@ -376,6 +381,8 @@ class StockItem(TimeStampedModel):
         max_digits=16, decimal_places=4, default=0,
         help_text="Live quantity on hand (maintained by the stock ledger).",
     )
+    # Denormalized ledger balances: stock services update these under a row lock and
+    # append the matching StockMovement. Ordinary model/API writes must not own them.
     stock_value = MoneyField(
         help_text="Total value of on-hand stock, in kobo (weighted-average basis).",
     )
@@ -403,6 +410,7 @@ class StockItem(TimeStampedModel):
 
     @property
     def needs_reorder(self) -> bool:
+        """Whether the live balance has reached the item's inclusive reorder point."""
         return self.on_hand_qty <= self.reorder_level
 
     def __str__(self) -> str:
@@ -440,10 +448,14 @@ class StockMovement(TimeStampedModel):
     )
     balance_value = MoneyField(help_text="Stock value (kobo) after this movement.")
 
+    # SET_NULL preserves the immutable movement even if a non-posted/draft receipt is
+    # later removed; the movement's reference, balances, and protected journal survive.
     grn = models.ForeignKey(
         "GoodsReceivedNote", on_delete=models.SET_NULL, related_name="stock_movements",
         null=True, blank=True,
     )
+    # PROTECT the accounting proof even if surrounding procurement master data changes;
+    # posted stock history must always retain the journal that valued it.
     journal = models.ForeignKey(
         "vs_finance.JournalEntry", on_delete=models.PROTECT, related_name="stock_movements",
         null=True, blank=True,
@@ -606,6 +618,11 @@ class PurchaseRequisition(FinanceDocument):
         ]
 
     def recompute_total(self, *, save: bool = True) -> None:
+        """Roll line estimates into the denormalized requisition header total.
+
+        The service layer calls this after line mutation. ``save=False`` supports a
+        caller that is already assembling a wider atomic write.
+        """
         # Requisition value is the sum of each estimated line value; it has no tax posting at this intent stage.
         total = sum((ln.estimated_line_total for ln in self.lines.all()), 0)
         self.estimated_total = total
@@ -803,6 +820,7 @@ class VendorQuotation(FinanceDocument):
         ]
 
     def recompute_totals(self, *, save: bool = True) -> None:
+        """Roll quotation line net/tax values into its denormalized header totals."""
         # Quotation gross is the sum of line net values plus their calculated tax.
         agg = self.lines.aggregate(
             net=models.Sum("net_amount"), tax=models.Sum("tax_amount"),
@@ -911,6 +929,7 @@ class PurchaseOrder(FinanceDocument):
         ]
 
     def recompute_totals(self, *, save: bool = True) -> None:
+        """Roll priced lines into the PO's denormalized net, tax, and gross totals."""
         # PO gross commitment is the sum of line net values plus their calculated tax.
         agg = self.lines.aggregate(
             net=models.Sum("net_amount"), tax=models.Sum("tax_amount"),
@@ -970,6 +989,8 @@ class PurchaseOrderLine(TimeStampedModel):
     tax_amount = MoneyField(help_text="Tax on the net, in kobo.")
     received_qty = models.DecimalField(max_digits=14, decimal_places=4, default=0)
     invoiced_qty = models.DecimalField(max_digits=14, decimal_places=4, default=0)
+    # Both progress counters are service-owned denormalizations. Receipt/invoice posting
+    # advances them under transaction control; clients describe source quantities only.
     cost_center = models.ForeignKey(
         "vs_finance.CostCenter", on_delete=models.PROTECT, related_name="po_lines",
         null=True, blank=True,
@@ -985,14 +1006,17 @@ class PurchaseOrderLine(TimeStampedModel):
 
     @property
     def outstanding_qty(self) -> Decimal:
+        """Ordered quantity not yet accepted on posted receipts."""
         return Decimal(self.quantity) - Decimal(self.received_qty)
 
     @property
     def received_pct(self) -> Decimal:
+        """Accepted receipt progress on the human 0–100 percentage scale."""
         return _pct(self.received_qty, self.quantity)
 
     @property
     def invoiced_pct(self) -> Decimal:
+        """Billed progress on the human 0–100 percentage scale."""
         return _pct(self.invoiced_qty, self.quantity)
 
     def __str__(self) -> str:
@@ -1040,6 +1064,7 @@ class GoodsReceivedNote(FinanceDocument):
         ]
 
     def recompute_total(self, *, save: bool = True) -> None:
+        """Roll accepted line values into the receipt's denormalized kobo total."""
         # Receipt value is the sum of accepted line extensions; rejected quantities never enter the GL value.
         agg = self.lines.aggregate(v=models.Sum("value_amount"))
         self.total_value = agg["v"] or 0
@@ -1136,6 +1161,8 @@ class VendorInvoice(FinanceDocument):
     tax_total = MoneyField(help_text="Total tax, in kobo.")
     total = MoneyField(help_text="subtotal + tax_total, in kobo.")
     amount_paid = MoneyField(help_text="Cash allocated to this bill, in kobo.")
+    # Settlement fields are allocation-owned denormalizations, not editable payment
+    # instructions. Posting/reversal services advance them from durable allocations.
     payment_status = models.CharField(
         max_length=8, choices=InvoicePaymentStatus.choices,
         default=InvoicePaymentStatus.UNPAID,
@@ -1143,6 +1170,8 @@ class VendorInvoice(FinanceDocument):
     match_status = models.CharField(
         max_length=16, choices=MatchStatus.choices, default=MatchStatus.NOT_MATCHED,
     )
+    # Matching and approval are independent gates over the shared document lifecycle:
+    # matching services own match_status; vs_workflow owns approval_state.
     approval_state = models.CharField(
         max_length=16, choices=ProcApprovalState.choices,
         default=ProcApprovalState.NOT_SUBMITTED,
@@ -1167,6 +1196,7 @@ class VendorInvoice(FinanceDocument):
         return self.total - self.amount_paid
 
     def recompute_totals(self, *, save: bool = True) -> None:
+        """Roll invoice line net/tax values into the authoritative gross payable."""
         # Invoice gross payable is the sum of line net values plus their calculated tax.
         agg = self.lines.aggregate(
             net=models.Sum("net_amount"), tax=models.Sum("tax_amount"),
@@ -1178,6 +1208,11 @@ class VendorInvoice(FinanceDocument):
             self.save(update_fields=["subtotal", "tax_total", "total", "updated_at"])
 
     def refresh_payment_status(self, *, save: bool = True) -> None:
+        """Refresh the settlement label from allocation-owned ``amount_paid``.
+
+        Posting status remains independent: an invoice can be POSTED in the ledger while
+        its AP settlement lifecycle is UNPAID, PARTIAL, or PAID.
+        """
         # Payment status is derived from allocated cash versus gross invoice value, including overpayment as paid.
         if self.amount_paid <= 0:
             status = InvoicePaymentStatus.UNPAID
@@ -1279,6 +1314,8 @@ class VendorPayment(FinanceDocument):
     wht_amount = MoneyField(help_text="Withholding tax retained (Cr WHT payable), in kobo.")
     net_amount = MoneyField(help_text="Cash actually paid out (Cr bank) = gross − WHT, in kobo.")
     allocated_amount = MoneyField(help_text="Gross applied to bills, in kobo.")
+    # The posting/allocation service owns this denormalized counter. Draft allocation
+    # rows are instructions and do not become authoritative until posting succeeds.
     payment_account = models.ForeignKey(
         "vs_finance.Account", on_delete=models.PROTECT, related_name="vendor_payments",
         null=True, blank=True,
@@ -1331,6 +1368,9 @@ class VendorPaymentAllocation(TimeStampedModel):
     which bills that AP debit settles.
     """
 
+    # Allocations are lifecycle-owned children of the payment instruction, but invoices
+    # are durable AP documents: removing a draft payment may remove its split; removing
+    # an invoice must never silently erase settlement history.
     payment = models.ForeignKey(
         VendorPayment, on_delete=models.CASCADE, related_name="allocations",
     )
@@ -1341,6 +1381,8 @@ class VendorPaymentAllocation(TimeStampedModel):
 
     class Meta:
         constraints = [
+            # One row per payment/invoice pair makes retries idempotent and prevents a
+            # duplicated split from inflating both invoice and payment settlement totals.
             models.UniqueConstraint(
                 fields=["payment", "vendor_invoice"],
                 name="uniq_proc_alloc_payment_invoice",

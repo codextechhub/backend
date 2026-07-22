@@ -1,4 +1,9 @@
-"""Vendor contracts and milestones.
+"""Vendor contracts, immutable milestone history, call-offs, and renewals.
+
+Contract references and completed milestones are historical identifiers/evidence.
+Edits change only non-terminal terms and append milestones; lifecycle actions are
+delegated to the contract service so activation, termination, and renewal enforce
+one consistent state machine.
 """
 from __future__ import annotations
 
@@ -66,7 +71,31 @@ def _notice_days(value, field="renewal_notice_days"):
     return days
 
 
+def _strict_bool(value, field):
+    """Reject string/number lookalikes instead of coercing contract flags."""
+    if not isinstance(value, bool):
+        raise ValidationError({field: "Enter a valid boolean value."})
+    return value
+
+
+def _within_days(value, field="within_days"):
+    """Validate an optional renewal horizon as an integer from 0 through 3650."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise ValidationError({field: "Expected a whole number of days."})
+    if isinstance(value, str):
+        value = value.strip()
+        if not value or not (value.isdigit() or (value.startswith("-") and value[1:].isdigit())):
+            raise ValidationError({field: "Expected a whole number of days."})
+    days = int(value)
+    if days < 0 or days > 3650:
+        raise ValidationError({field: "Renewal horizon must be between 0 and 3650 days."})
+    return days
+
+
 def _check_date_order(start_date, end_date):
+    """Reject an inverted optional contract term."""
     if start_date is not None and end_date is not None and end_date < start_date:
         raise ValidationError({"end_date": "The end date cannot precede the start date."})
 
@@ -97,10 +126,12 @@ class ContractListCreateView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Require contract creation for POST and view access for listing."""
         return "procurement.contract.create" if self.request.method == "POST" \
             else "procurement.contract.view"
 
     def get(self, request):
+        """List entity contracts with bounded filters and milestone counts."""
         entity = resolve_entity(request)
         today = timezone.localdate()
         qs = VendorContract.objects.filter(entity=entity).select_related("vendor").annotate(
@@ -126,6 +157,7 @@ class ContractListCreateView(_ProcBase):
 
     @transaction.atomic
     def post(self, request):
+        """Create a draft contract and optional integer-kobo milestones atomically."""
         entity = resolve_entity(request)
         body = request.data
         vendor = _resolve_vendor(entity, body.get("vendor"))
@@ -142,7 +174,7 @@ class ContractListCreateView(_ProcBase):
             start_date=start_date, end_date=end_date,
             contract_value=_strict_kobo(body.get("contract_value", 0), "contract_value"),
             payment_terms=_payment_terms(body.get("payment_terms")),
-            auto_renew=bool(body.get("auto_renew", False)),
+            auto_renew=_strict_bool(body.get("auto_renew", False), "auto_renew"),
             renewal_notice_days=_notice_days(body.get("renewal_notice_days")),
             notes=_text(body.get("notes"), "notes", 255),
             created_by=request.user if request.user.is_authenticated else None,
@@ -161,10 +193,12 @@ class ContractDetailView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Separate non-terminal contract edits from ordinary reads."""
         return "procurement.contract.update" if self.request.method == "PATCH" \
             else "procurement.contract.view"
 
     def _get(self, entity, pk):
+        """Resolve one contract inside the selected entity or return an opaque 404."""
         contract = VendorContract.objects.filter(entity=entity, pk=pk).select_related(
             "vendor", "renews").first()
         if contract is None:
@@ -172,12 +206,14 @@ class ContractDetailView(_ProcBase):
         return contract
 
     def get(self, request, pk):
+        """Return one contract with its vendor, renewal link, and milestones."""
         entity = resolve_entity(request)
         contract = self._get(entity, pk)
         return success_response("Vendor contract retrieved.", data=VendorContractSerializer(contract).data)
 
     @transaction.atomic
     def patch(self, request, pk):
+        """Edit non-terminal terms and append, never replace, milestone history."""
         entity = resolve_entity(request)
         contract = self._get(entity, pk)
         # Only DRAFT / ACTIVE are editable; terminal states are a settled record.
@@ -197,7 +233,7 @@ class ContractDetailView(_ProcBase):
         if "payment_terms" in body:
             contract.payment_terms = _payment_terms(body.get("payment_terms"))
         if "auto_renew" in body:
-            contract.auto_renew = bool(body["auto_renew"])
+            contract.auto_renew = _strict_bool(body["auto_renew"], "auto_renew")
         if "renewal_notice_days" in body:
             contract.renewal_notice_days = _notice_days(body.get("renewal_notice_days"))
         if "notes" in body:
@@ -217,6 +253,7 @@ class ContractSummaryView(_ProcBase):
     rbac_permission = "procurement.contract.view"
 
     def get(self, request):
+        """Derive date-honest KPIs and active value in integer kobo."""
         entity = resolve_entity(request)
         today = timezone.localdate()
         qs = VendorContract.objects.filter(entity=entity)
@@ -258,12 +295,14 @@ class ContractLinkedPurchaseOrdersView(_ProcBase):
     rbac_permission = "procurement.purchase_order.view"
 
     def get(self, request, pk):
+        """Separate explicit call-offs from honest same-vendor term associations."""
         entity = resolve_entity(request)
         contract = VendorContract.objects.filter(entity=entity, pk=pk).first()
         if contract is None:
             raise NotFound("No such contract in this entity.")
 
         def _row(po, link_type):
+            """Render a bounded PO association with explicit integer-kobo value."""
             return {
                 "id": po.id, "document_number": po.document_number,
                 "total": po.total, "total_naira": format_naira(po.total),
@@ -296,7 +335,10 @@ class ContractLinkedPurchaseOrdersView(_ProcBase):
 
 
 class _ContractActionBase(_ProcBase):
+    """Entity-safe lookup shared by contract lifecycle commands."""
+
     def _get(self, request, pk):
+        """Resolve the action target without revealing foreign-entity contracts."""
         entity = resolve_entity(request)
         contract = VendorContract.objects.filter(entity=entity, pk=pk).first()
         if contract is None:
@@ -305,20 +347,22 @@ class _ContractActionBase(_ProcBase):
 
 
 class ContractActivateView(_ContractActionBase):
-    """docstring-name: Activate a contract"""
+    """Activate an eligible draft through the contract state machine."""
     rbac_permission = "procurement.contract.activate"
 
     def post(self, request, pk):
+        """Delegate activation guards and audit effects to the contract service."""
         contract = self._get(request, pk)
         contracts.activate_contract(contract, actor_user=request.user)
         return success_response("Vendor contract activated.", data=VendorContractSerializer(contract).data)
 
 
 class ContractTerminateView(_ContractActionBase):
-    """docstring-name: Terminate a contract"""
+    """Terminate a live contract while retaining the settled record."""
     rbac_permission = "procurement.contract.terminate"
 
     def post(self, request, pk):
+        """Delegate terminal transition and reason capture to the service."""
         contract = self._get(request, pk)
         contracts.terminate_contract(
             contract, reason=_text(request.data.get("reason"), "reason", 255),
@@ -335,6 +379,7 @@ class ContractRenewView(_ContractActionBase):
     rbac_permission = "procurement.contract.renew"
 
     def post(self, request, pk):
+        """Create a dated successor and mark the source as renewed atomically."""
         contract = self._get(request, pk)
         entity = contract.entity
         body = request.data
@@ -368,6 +413,7 @@ class ContractMilestoneCompleteView(_ProcBase):
     rbac_permission = "procurement.contract.update"
 
     def post(self, request, pk, milestone_id):
+        """Complete only a milestone belonging to this entity contract."""
         entity = resolve_entity(request)
         milestone = ContractMilestone.objects.filter(
             contract__entity=entity, contract_id=pk, pk=milestone_id).first()
@@ -392,11 +438,12 @@ class ContractRenewalsView(_ProcBase):
     rbac_permission = "procurement.contract.view"
 
     def get(self, request):
+        """Return active contracts inside their notice or requested date horizon."""
         entity = resolve_entity(request)
         as_of = _date(request.query_params.get("as_of"), "as_of")
-        within = request.query_params.get("within_days")
+        within = _within_days(request.query_params.get("within_days"))
         rows = contracts.expiring_contracts(
-            entity, as_of=as_of, within_days=int(within) if within else None,
+            entity, as_of=as_of, within_days=within,
         )
         return success_response(
             "Contracts due for renewal retrieved.",

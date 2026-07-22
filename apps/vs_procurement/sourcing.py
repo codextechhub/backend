@@ -188,7 +188,11 @@ def close_rfq(rfq, *, reason="", actor_user=None):
 # --------------------------------------------------------------------------- #
 
 def price_quotation(quotation) -> None:
-    """Compute each quotation line's ``net_amount``/``tax_amount`` and roll up totals."""
+    """Reprice quotation lines and roll exact integer-kobo totals to the header.
+
+    Shared finance helpers apply the same basis-point rounding later used by PO and bill
+    pricing, preventing an awarded quote from changing value merely through conversion.
+    """
     from .models import VendorQuotationLine
 
     for line in quotation.lines.all():
@@ -251,13 +255,15 @@ def award_quotation(quotation, *, order_date=None, actor_user=None):
     Sets the quotation AWARDED, links the new :class:`PurchaseOrder` it produced, marks
     the RFQ AWARDED, and flips every other still-in-contention quotation on the same RFQ
     to REJECTED. The PO carries each quoted line's price and expense account (falling back
-    to the vendor's / category's default). Returns the created PO.
+    to the vendor's / category's default). Quotation, RFQ, vendor eligibility, PO creation,
+    loser rejection, and audit all commit or roll back together. Returns the created PO.
     """
     from .models import (
         PurchaseOrder, PurchaseOrderLine, RequestForQuotation, Vendor, VendorQuotation,
     )
 
-    # Lock the quotation and its RFQ up front so two concurrent awards on the same RFQ
+    # Lock order is quotation → RFQ → vendor. Lock the quotation and its RFQ up front so
+    # two concurrent awards on the same RFQ
     # serialise: the second waits here, then re-reads the RFQ as AWARDED and is rejected
     # below — closing the double-award race that a lock-free read/modify/write allowed.
     quotation = (

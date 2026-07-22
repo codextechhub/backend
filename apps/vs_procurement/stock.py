@@ -40,6 +40,7 @@ from .purchasing import resolve_account
 # --------------------------------------------------------------------------- #
 
 def _dec(value) -> Decimal:
+    """Normalise model/input quantities without a binary-float round trip."""
     return value if isinstance(value, Decimal) else Decimal(str(value))
 
 
@@ -48,8 +49,8 @@ def _record_movement(stock_item, *, movement_type, quantity, value_amount,
                      reference="", narration=""):
     """Apply a signed (qty, value) delta to ``stock_item`` and append a ledger row.
 
-    Mutates and saves the item's running ``on_hand_qty`` / ``stock_value`` first, then
-    snapshots those post-movement balances onto the immutable
+    Applies the signed quantity/value deltas to the item's running ``on_hand_qty`` /
+    ``stock_value`` first, then snapshots those post-movement balances onto the immutable
     :class:`~vs_procurement.models.StockMovement`. Caller owns the transaction.
     """
     from .models import StockMovement
@@ -71,9 +72,10 @@ def _record_movement(stock_item, *, movement_type, quantity, value_amount,
 def _issue_value(stock_item, quantity: Decimal) -> int:
     """Weighted-average value (kobo) of issuing ``quantity`` — proportion of total value.
 
-    Computed as ``stock_value × quantity / on_hand_qty`` so repeated issues never drift
-    from the carried value (the final issue empties ``stock_value`` exactly when it clears
-    ``on_hand_qty``). Avoids storing a fractional unit cost.
+    Computed as ``stock_value × quantity / on_hand_qty`` and rounded once to integer
+    kobo. When ``quantity == on_hand_qty`` the ratio returns the entire carried value,
+    so exact depletion cannot strand a rounding residue in ``stock_value``. This avoids
+    persisting a fractional unit cost between movements.
     """
     on_hand = _dec(stock_item.on_hand_qty)
     if on_hand <= 0:
@@ -133,6 +135,11 @@ def issue_stock(stock_item, *, quantity, movement_date, expense_account=None,
 @transaction.atomic
 def _issue_stock_atomic(stock_item, *, quantity, movement_date, expense_account=None,
                         actor_user=None, reference="", narration=""):
+    """Post inventory relief and append its signed movement in one transaction.
+
+    The journal owns the GL effect (Dr expense, Cr inventory); the movement owns the
+    perpetual-stock running balances. Any validation or posting failure rolls both back.
+    """
     from vs_finance.models import JournalEntry, JournalLine
 
     quantity = _dec(quantity)
@@ -173,6 +180,8 @@ def _issue_stock_atomic(stock_item, *, quantity, movement_date, expense_account=
     )
     post_journal(entry, actor_user=actor_user)
 
+    # Outflows are stored as negative deltas, while balance_qty/balance_value snapshot
+    # the state after applying them. This makes a movement independently auditable.
     movement = _record_movement(
         stock_item, movement_type=StockMovementType.ISSUE,
         quantity=-quantity, value_amount=-value, movement_date=movement_date,
@@ -217,6 +226,12 @@ def adjust_stock(stock_item, *, quantity_delta, movement_date, adjustment_accoun
 def _adjust_stock_atomic(stock_item, *, quantity_delta, movement_date,
                          adjustment_account=None, unit_cost=None, actor_user=None,
                          reference="", narration=""):
+    """Value and post one signed correction, then snapshot the resulting stock state.
+
+    Positive deltas write inventory up; negative deltas relieve inventory at its moving
+    average. The GL journal and stock movement share this transaction, so neither side
+    can survive without the other.
+    """
     from vs_finance.models import JournalEntry, JournalLine
 
     delta = _dec(quantity_delta)
@@ -268,6 +283,8 @@ def _adjust_stock_atomic(stock_item, *, quantity_delta, movement_date,
     )
     post_journal(entry, actor_user=actor_user)
 
+    # Journal lines are unsigned debit/credit amounts; the stock ledger instead records
+    # direction explicitly, so shrinkage carries a negative quantity and value snapshot.
     signed_value = value if delta > 0 else -value
     movement = _record_movement(
         stock_item, movement_type=StockMovementType.ADJUSTMENT,
@@ -289,7 +306,11 @@ def _adjust_stock_atomic(stock_item, *, quantity_delta, movement_date,
 # --------------------------------------------------------------------------- #
 
 def reorder_report(entity) -> list:
-    """Active stock items at/below their reorder level, with a suggested order qty."""
+    """Active stock items at/below their reorder level, with a suggested order qty.
+
+    The entity predicate is the tenant boundary; inactive catalogue rows are excluded
+    from replenishment even though they remain available to historical movements.
+    """
     from .models import StockItem
 
     rows = []
@@ -310,7 +331,11 @@ def reorder_report(entity) -> list:
 
 
 def stock_valuation(entity) -> dict:
-    """On-hand value per active item plus the grand total (ties to inventory GL)."""
+    """On-hand value per entity item plus the grand total (ties to inventory GL).
+
+    Unlike :func:`reorder_report`, valuation includes inactive items: deactivation does
+    not erase stock already held or its control-account reconciliation obligation.
+    """
     from .models import StockItem
 
     qs = StockItem.objects.filter(entity=entity).order_by("code")

@@ -1,4 +1,15 @@
-"""Seed a small, repeatable CODEX procurement dataset for screen verification."""
+"""Seed a repeatable CODEX procurement dataset for end-to-end screen verification.
+
+This is a development fixture, not production bootstrap data. It builds intentionally
+varied master and transaction states across contracts, AP invoices/payments, sourcing,
+inventory, and vendor scorecards so UI filters and drawers can be inspected with real
+relationships.
+
+The command is idempotent at each fixture's stable business key (code, reference, title,
+or vendor/date). Lifecycle transitions and all ledger mutations go through the same
+domain services as the API: reruns must never duplicate journals, allocations, workflow
+instances, or stock movements. All monetary literals are integer kobo.
+"""
 from __future__ import annotations
 
 import calendar
@@ -36,9 +47,16 @@ from vs_workflow.services import actions as workflow_actions
 
 
 class Command(BaseCommand):
+    """Build the CODEX-only procurement verification graph through domain services."""
+
     help = "Seed idempotent CODEX procurement data for populated UI verification."
 
     def handle(self, *args, **options):
+        """Create missing fixtures and leave previously-transitioned records untouched."""
+
+        # ── Prerequisites and actors ──────────────────────────────────────────
+        # Procurement deliberately consumes the finance demo's tenant, chart, periods,
+        # tax, and bank foundations rather than creating a parallel accounting universe.
         entity = LedgerEntity.objects.filter(code="CODEX", is_active=True).first()
         if entity is None:
             raise CommandError("CODEX does not exist; run seed_finance_ar_demo --all first.")
@@ -55,6 +73,8 @@ class Command(BaseCommand):
             .exclude(pk=getattr(actor, "pk", None)).order_by("id").first()
             or actor
         )
+
+        # ── Vendor and catalog master data ────────────────────────────────────
         categories = []
         for code, name in (
             ("CLOUD", "Cloud Infrastructure"),
@@ -183,6 +203,9 @@ class Command(BaseCommand):
                 },
             )
 
+        # ── Contracts and milestone lifecycle states ─────────────────────────
+        # update_or_create keeps descriptive/date fixtures current; transition services
+        # run only from the state in which the action is legal, preserving rerun safety.
         active_contract, _ = VendorContract.objects.update_or_create(
             entity=entity, reference="CODEX-DEMO-CONTRACT-001",
             defaults={
@@ -193,6 +216,7 @@ class Command(BaseCommand):
                 "created_by": actor,
             },
         )
+
         if active_contract.status == "DRAFT":
             activate_contract(active_contract, actor_user=actor)
         # Milestones on the standing active contract (one delivered, two ahead) — added once.
@@ -262,6 +286,8 @@ class Command(BaseCommand):
             )
 
         today = timezone.localdate()
+
+        # ── Historical AP invoice trend ───────────────────────────────────────
         starts = []
         cursor = today.replace(day=1)
         # Walk backward via the day before each month start, then restore chronology.
@@ -307,6 +333,8 @@ class Command(BaseCommand):
             invoice_count += 1
 
         po_count = 0
+
+        # ── Purchase orders and receipt progress ──────────────────────────────
         # Ordered/received pairs cover untouched, partial, complete, and draft-origin POs.
         for index, (qty, received) in enumerate(((10, 0), (12, 4), (8, 8), (5, 0)), start=1):
             reference = f"CODEX-DEMO-PO-{index}"
@@ -355,6 +383,10 @@ class Command(BaseCommand):
             first_po.save(update_fields=["contract", "updated_at"])
 
         payment_count = 0
+
+        # ── Payment approval and settlement states ────────────────────────────
+        # Payments reuse the finance demo's bank-backed GL account. The workflow and
+        # payables services remain the sole authorities for approval/posting state.
         bank, _ = BankAccount.objects.update_or_create(
             gl_account=Account.objects.get(entity=entity, code="1100"),
             defaults={
@@ -373,6 +405,7 @@ class Command(BaseCommand):
         )
 
         def make_payment(reference, invoice, amount):
+            """Create one stable draft payment/allocation pair, or return the existing one."""
             nonlocal payment_count
             payment = VendorPayment.objects.filter(entity=entity, reference=reference).first()
             if payment is not None:
@@ -393,6 +426,11 @@ class Command(BaseCommand):
             return payment, True
 
         def decide_payment(payment, action):
+            """Drive the payment's real workflow to approval or rejection.
+
+            Template thresholds may yield one or two active stages, so this follows the
+            instance rather than hard-coding a particular approval topology.
+            """
             if payment.approval_state == ProcApprovalState.NOT_SUBMITTED:
                 instance = submit_for_approval(payment, actor_user=requester)
             else:
@@ -476,6 +514,7 @@ class Command(BaseCommand):
         )
 
         def seed_rfq(title, line_specs, *, issue=False, invited=(), budget=None):
+            """Create one title-keyed RFQ graph and optionally issue it exactly once."""
             existing = RequestForQuotation.objects.filter(entity=entity, title=title).first()
             if existing is not None:
                 return existing, False
@@ -499,6 +538,11 @@ class Command(BaseCommand):
             return rfq, True
 
         def seed_quote(rfq, vendor, prices, *, lead_time, submit=True):
+            """Build, price, and optionally submit a quote for a newly-created RFQ.
+
+            Callers invoke this only inside an RFQ ``created`` guard; that outer guard is
+            the quotation idempotency boundary and prevents duplicate vendor responses.
+            """
             quo = VendorQuotation.objects.create(
                 entity=entity, rfq=rfq, vendor=vendor, quote_date=today,
                 valid_until=today + datetime.timedelta(days=30),
@@ -581,6 +625,7 @@ class Command(BaseCommand):
             catalog_by_code = {c.code: c for c in CatalogItem.objects.filter(entity=entity)}
 
             def ensure_stock_item(code, name, uom, reorder_level, reorder_qty):
+                """Get a code-keyed stock master without writing its ledger balances."""
                 nonlocal stock_item_count
                 item, created = StockItem.objects.get_or_create(
                     entity=entity, code=code,

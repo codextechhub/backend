@@ -2,9 +2,11 @@
 
 The AP mirror of :mod:`vs_finance.reports`: an aging of what the entity owes its
 vendors, the cardinal **sub-ledger == control** reconciliation, and the GR/IR clearing
-balance (goods received but not yet invoiced, or invoiced but not received).
+balance (goods received but not yet invoiced, or invoiced but not received). The lower
+half adds realised-spend, vendor-performance, and procure-to-pay cycle analytics.
 
-All amounts are integer kobo.
+All amounts are integer kobo. Every public query starts from ``entity`` (or traverses an
+entity-scoped parent), which is the read-side tenant boundary for these reports.
 """
 from __future__ import annotations
 
@@ -14,11 +16,21 @@ from django.utils import timezone
 
 from vs_finance.reports import _account_gl_net
 
+
+# --------------------------------------------------------------------------- #
+# AP aging and sub-ledger/control reconciliation                              #
+# --------------------------------------------------------------------------- #
+
 #: Aging bucket labels, in order. "current" = not yet overdue.
 AGING_BUCKETS = ("current", "1-30", "31-60", "61-90", "90+")
 
 
 def _bucket_for(days_overdue: int) -> str:
+    """Map an overdue-day count to inclusive AP/GRIR aging boundaries.
+
+    Due today and future-dated items are ``current``; day 30 remains ``1-30``, day 60
+    remains ``31-60``, and day 90 remains ``61-90``. Only day 91 onward is ``90+``.
+    """
     if days_overdue <= 0:
         return "current"
     if days_overdue <= 30:
@@ -61,7 +73,9 @@ def ap_aging(entity, *, as_of=None) -> APAgingReport:
     A bill ages off its ``due_date`` (falling back to ``invoice_date``). Only POSTED,
     not-fully-paid bills contribute, by their ``balance_due``. Each vendor's unallocated
     payment (a prepayment/debit) is reported and netted, so ``total_net`` equals the AP
-    control account's GL balance (see :func:`reconcile_ap`).
+    control account's GL balance (see :func:`reconcile_ap`). Bucket totals remain gross
+    open invoices; unapplied payments reduce only the vendor/report net. ``as_of`` is the
+    aging reference date, not an implicit transaction-date cutoff.
     """
     from .models import VendorInvoice, VendorPayment
 
@@ -80,6 +94,8 @@ def ap_aging(entity, *, as_of=None) -> APAgingReport:
             rows[vendor.id] = r
         return r
 
+    # Entity scoping is applied before any vendor grouping; callers cannot mix tenant
+    # balances merely by passing a vendor id from another ledger entity.
     posted_invoices = (
         VendorInvoice.objects
         .filter(entity=entity, status="POSTED")
@@ -97,6 +113,8 @@ def ap_aging(entity, *, as_of=None) -> APAgingReport:
         r.buckets[bucket] += due
         r.outstanding += due
 
+    # A posted but unallocated payment is an AP debit/prepayment. It is not aged into an
+    # invoice bucket because no bill/due date owns that credit yet.
     posted_payments = (
         VendorPayment.objects.filter(entity=entity, status="POSTED").select_related("vendor")
     )
@@ -137,12 +155,16 @@ def reconcile_ap(entity, *, as_of=None) -> APReconciliation:
     The cardinal AP control: the sum of what the entity owes every vendor must equal
     the balance of the payable control account(s) in the ledger. Any drift means a
     posting bypassed the sub-ledger (or vice-versa) and must be investigated.
+    ``_account_gl_net`` expresses each credit-normal AP account as a positive liability,
+    matching the sub-ledger's ``outstanding - unallocated_credit`` sign convention.
     """
     from .models import Vendor
 
     aging = ap_aging(entity, as_of=as_of)
     subledger_total = aging.total_net
 
+    # De-duplicate shared AP controls: several vendors may point at the same account,
+    # but its GL balance must enter the reconciliation exactly once.
     control_accounts = {
         v.payable_account
         for v in Vendor.objects.filter(entity=entity).select_related("payable_account")
@@ -167,6 +189,11 @@ FORECAST_BUCKETS = ("overdue", "0-7", "8-30", "31-60", "61-90", "90+")
 
 
 def _forecast_bucket(days_until_due: int) -> str:
+    """Map a due-date delta to inclusive forward cash windows.
+
+    Negative values are overdue; zero means due today and starts the ``0-7`` bucket.
+    Boundary days 7, 30, 60, and 90 stay in their named lower window.
+    """
     if days_until_due < 0:
         return "overdue"
     if days_until_due <= 7:
@@ -207,7 +234,8 @@ def ap_cash_requirements(entity, *, as_of=None) -> CashRequirementsForecast:
     ``balance_due`` is bucketed by ``due_date - as_of`` into overdue / 0-7 / 8-30 / 31-60
     / 61-90 / 90+ days, per vendor, so treasury can see how much cash each window needs.
     A bill with no ``due_date`` falls back to ``invoice_date`` (typically landing in
-    ``overdue``). All amounts are integer kobo.
+    ``overdue``). All amounts are integer kobo. ``as_of`` supplies the forecast clock;
+    it does not itself exclude bills dated after that day.
     """
     from .models import VendorInvoice
 
@@ -287,7 +315,9 @@ def grir_aging(entity, *, as_of=None) -> GRIRAgingReport:
     reference its lines (which debited GR/IR clearing it). The remaining ``open_value`` is
     aged off the GRN's ``received_date``. The GL ``control_balance`` is carried alongside;
     a non-zero ``difference`` flags price variances or non-PO postings the GRN walk can't
-    see. All amounts are integer kobo.
+    see. ``open_value`` is signed: positive means received-not-invoiced; negative means
+    invoiced value exceeded the receipt. Bucket totals preserve that sign rather than
+    converting every row to an absolute exposure. All amounts are integer kobo.
     """
     from django.db.models import Sum
 
@@ -309,6 +339,8 @@ def grir_aging(entity, *, as_of=None) -> GRIRAgingReport:
             .filter(grn_line__grn=grn, vendor_invoice__status="POSTED")
             .aggregate(v=Sum("net_amount"))["v"] or 0
         )
+        # GRN credit less matched invoice debit: positive is an uncleared receipt;
+        # negative is an over-clear/price-variance position and remains visible.
         open_value = grn.total_value - invoiced
         if open_value == 0:
             continue
@@ -326,8 +358,15 @@ def grir_aging(entity, *, as_of=None) -> GRIRAgingReport:
     report.rows = rows
     control = grir_balance(entity)
     report.control_balance = control
+    # The detail rows preserve direction, while the dashboard's control headline is
+    # presented as a magnitude; abs normalises that GL headline before comparison.
     report.difference = report.total_open - abs(control)
     return report
+
+
+# --------------------------------------------------------------------------- #
+# AP and GR/IR drill-downs                                                     #
+# --------------------------------------------------------------------------- #
 
 
 @dataclass
@@ -430,7 +469,9 @@ def grir_grn_detail(entity, grn_id, *, as_of=None) -> GRIRGrnDetail | None:
     Returns the GRN's received value, the value of POSTED vendor-invoice lines that
     reference its GRN lines (which cleared it), the remaining ``open_value`` aged off the
     received date, its source PO number, and the distinct matched invoices. Entity-scoped;
-    ``None`` when the GRN is not in ``entity``. All amounts are integer kobo.
+    ``None`` when the GRN is not in ``entity``. The entity-qualified lookup is the
+    tenant boundary even when a caller guesses a valid foreign ``grn_id``. All amounts
+    are integer kobo.
     """
     from .models import GoodsReceivedNote, VendorInvoiceLine
 
@@ -487,6 +528,8 @@ def _grir_line_status(received_qty, invoiced_qty, balance) -> str:
     Quantity is the headline the table shows, so it leads the derivation; the monetary
     ``balance`` (received value − invoiced value) only breaks the tie when the two
     quantities are equal (a pure price variance still reads as an imbalance, not cleared).
+    ``balance`` is signed ``received_value - invoiced_value``: positive selects the
+    received-heavy label; negative selects invoiced-heavy.
     """
     if received_qty > invoiced_qty:
         return GRIR_LINE_RECV_GT_INV
@@ -532,7 +575,9 @@ def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
     ``GoodsReceivedNoteLine``s pointing at it, and ``invoiced_qty``/``invoiced_value`` sum
     the POSTED ``VendorInvoiceLine``s pointing at it (the direct ``po_line`` FK — the same
     link that advances ``PurchaseOrderLine.invoiced_qty`` in the three-way match). Only
-    lines with any receipt or invoice activity are returned. All amounts are integer kobo.
+    lines with any receipt or invoice activity are returned. ``as_of`` labels the report
+    snapshot but does not impose an additional receipt/invoice date cutoff. All amounts
+    are integer kobo.
     """
     from collections import defaultdict
     from decimal import Decimal
@@ -700,11 +745,12 @@ def grir_po_line_detail(entity, po_line_id, *, as_of=None) -> GRIRPoLineDetail |
 
 
 def grir_balance(entity) -> int:
-    """Net balance of the GR/IR clearing account for ``entity`` (kobo, signed credit).
+    """Net balance of the GR/IR clearing account for ``entity`` (kobo, normal-balance signed).
 
     The GR/IR control nets to **zero** when every received good has been invoiced (and
-    vice-versa). A non-zero balance is the value of goods received-not-invoiced (credit)
-    or invoiced-not-received (debit) — the headline number a GR/IR aging drills into.
+    vice-versa). Because GR/IR is normally credit, a positive result is received-not-
+    invoiced and a negative result is a net debit/invoice-first position — the headline
+    number a GR/IR aging drills into.
     """
     from vs_finance.models import Account
 
@@ -793,7 +839,8 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, categ
     bucket), each sorted by descending gross spend. Pass ``vendor`` to scope the whole
     computation to a single supplier; pass ``category`` (a category code, or the literal
     ``"UNCATEGORISED"``) to scope it to one purchasing category — the per-category drawer
-    reuses this so its by_vendor / by_period reflect only that category.
+    reuses this so its by_vendor / by_period reflect only that category. Both supplied
+    date bounds are inclusive, and every amount remains gross/net/tax integer kobo.
     """
     from vs_finance.constants import DocumentStatus
 
@@ -889,6 +936,7 @@ class VendorPerformanceRow:
 
     @property
     def on_time_rate(self) -> float | None:
+        """On-time share of receipts that had an expected date, not all receipts."""
         rated = self.on_time_receipts + self.late_receipts
         return round(self.on_time_receipts / rated, 4) if rated else None
 
@@ -912,7 +960,12 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None) -
       on-time vs late against their PO's ``expected_date`` (receipts whose PO has no
       expected date are not rated).
     * **Billing & payment** — POSTED vendor invoices and the average days from
-      ``invoice_date`` to the settling payment's ``payment_date`` (over allocations).
+      ``invoice_date`` to each allocating payment's ``payment_date``. The denominator is
+      allocation rows, while ``payment_count`` de-duplicates payment documents per vendor.
+
+    Date bounds are inclusive and are applied to the date owned by each metric (PO order,
+    GRN receipt, or invoice date); the attached assessment is the latest overall snapshot,
+    not constrained to the activity window.
     """
     from vs_finance.constants import DocumentStatus
 
@@ -985,7 +1038,8 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None) -
         r.invoice_count += 1
         r.total_billed += inv.total
 
-    # Average days-to-pay: invoice_date → settling payment's payment_date, per allocation.
+    # Average days-to-pay: invoice_date → allocating payment date. Each allocation is a
+    # sample, so a bill paid in instalments contributes once per payment allocation.
     alloc_qs = (
         VendorPaymentAllocation.objects
         .filter(payment__entity=entity, payment__status=DocumentStatus.POSTED)
@@ -1023,7 +1077,8 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None) -
             rows[v.id].category = v.category.name if v.category_id else ""
 
     # Attach each vendor's most-recent point-in-time assessment (one query for all
-    # vendors in the report; the first row seen per vendor is the newest by ordering).
+    # vendors). Descending assessment_date/id makes the first row per vendor authoritative
+    # when multiple assessments share a day.
     if rows:
         from .models import VendorAssessment
 
@@ -1076,10 +1131,12 @@ def procurement_cycle_time(entity, *, start_date=None, end_date=None) -> Procure
     * **receipt → invoice** receipt ``received_date`` → bill ``invoice_date``
     * **invoice → payment** bill ``invoice_date`` → payment ``payment_date``
 
-    The chain is anchored on the **payment** (``payment_date`` in the window); each hop
+    The chain is anchored on the **payment** (``payment_date`` in the inclusive window); each hop
     is only counted when both of its endpoints exist, so a stage's sample size may be
     smaller than the others. ``end_to_end`` is requisition → payment for chains where
-    every link is present.
+    every link is present. PO timing uses the earliest POSTED receipt; when an invoice
+    has multiple allocation rows, it is measured once using the first allocation yielded
+    by the allocation query.
     """
     from vs_finance.constants import DocumentStatus
 
@@ -1092,6 +1149,7 @@ def procurement_cycle_time(entity, *, start_date=None, end_date=None) -> Procure
     end_to_end: list = []
 
     # Cache the earliest POSTED receipt per PO so we don't re-query in the loop.
+    # Chronological ordering plus setdefault deliberately keeps the first receipt only.
     first_receipt: dict = {}
     for grn in (
         GoodsReceivedNote.objects
@@ -1117,7 +1175,8 @@ def procurement_cycle_time(entity, *, start_date=None, end_date=None) -> Procure
             continue
         inv = alloc.vendor_invoice
         if inv.id in seen_invoices:
-            continue  # measure each bill's chain once (first settling payment)
+            # Multiple allocations must not overweight one invoice's operational chain.
+            continue
         seen_invoices.add(inv.id)
 
         invoice_to_payment.append((pay.payment_date - inv.invoice_date).days)

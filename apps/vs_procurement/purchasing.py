@@ -55,7 +55,11 @@ def resolve_account(entity, code: str, *, label: str = ""):
 
 
 def price_po(po) -> None:
-    """Compute each PO line's ``net_amount``/``tax_amount`` and roll up the totals."""
+    """Reprice every PO line and roll its integer-kobo totals up to the header.
+
+    The shared finance pricing helpers own basis-point tax rounding, keeping quoted,
+    ordered, and invoiced values on the same ``ROUND_HALF_UP`` convention.
+    """
     from .models import PurchaseOrderLine
 
     for line in po.lines.all():
@@ -167,7 +171,10 @@ def create_po_from_requisition(requisition, *, vendor, order_date, actor_user=No
 
     Each requisition line becomes a PO line at its estimated unit price (the buyer can
     edit before issuing). The expense account falls back to the vendor's / vendor
-    category's default when a line didn't suggest one.
+    category's default when a line didn't suggest one. The transaction is all-or-nothing:
+    an unclassifiable line rolls back the PO and every line already copied. The vendor
+    master row is locked before eligibility is checked so a concurrent hold/KYC change
+    cannot slip between validation and creation.
     """
     from .models import PurchaseOrder, PurchaseOrderLine, Vendor
 
@@ -242,6 +249,13 @@ def post_grn(grn, *, actor_user=None):
 
 @transaction.atomic
 def _post_grn_atomic(grn, *, actor_user=None):
+    """Raise the receipt journal, PO counters, and stock movements as one unit.
+
+    Only ``accepted_qty`` is capitalised or expensed: rejected units neither create a
+    GR/IR liability nor enter perpetual stock. ``post_journal`` owns GL validation and
+    period-lock enforcement; this worker owns the procurement-side quantities and the
+    stock sub-ledger updates that must commit with that journal.
+    """
     from vs_finance.models import JournalEntry, JournalLine
     from .models import GoodsReceivedNoteLine, PurchaseOrderLine
 
@@ -250,7 +264,8 @@ def _post_grn_atomic(grn, *, actor_user=None):
             f"GRN {grn.document_number or grn.pk} is '{grn.status}', only a draft can be posted.",
         )
 
-    # Value each line (accepted_qty × unit_price) and roll up the receipt total. A
+    # Value each line (accepted_qty × unit_price) and roll up the receipt total. Rejected
+    # quantity is operational evidence only: it must not create cost, stock, or GR/IR. A
     # stock-tracked line capitalises to its item's inventory account instead of the
     # line expense account (perpetual inventory: Dr inventory rather than Dr expense).
     expense_by_account: dict[int, int] = defaultdict(int)
@@ -305,6 +320,8 @@ def _post_grn_atomic(grn, *, actor_user=None):
         description=f"GR/IR: {grn.vendor.code}", line_no=line_no,
     )
 
+    # The finance posting service validates balance and the accounting-period lock;
+    # procurement does not duplicate those controls around its source journal.
     post_journal(entry, actor_user=actor_user)
 
     # Advance received quantities on the PO lines.
@@ -314,8 +331,9 @@ def _post_grn_atomic(grn, *, actor_user=None):
                 received_qty=F("received_qty") + line.accepted_qty,
             )
 
-    # Raise the perpetual stock ledger for any stock-tracked lines (GL already booked
-    # the inventory debit above; this updates the sub-ledger and writes the movement).
+    # Raise the perpetual stock ledger for any stock-tracked lines. The GL inventory
+    # debit belongs to this GRN journal; receive_stock must therefore update only the
+    # quantity/value sub-ledger, otherwise the same receipt would hit inventory twice.
     from .stock import receive_stock
 
     for line in lines:

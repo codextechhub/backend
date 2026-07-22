@@ -30,6 +30,7 @@ def _score(value, field):
 
 
 def _assessor_name(user):
+    """Render the persisted assessor without returning the full user object."""
     if user is None:
         return None
     return getattr(user, "full_name", "") or user.get_full_name() or user.email
@@ -62,11 +63,13 @@ class VendorAssessmentListCreateView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Separate scorecard creation from report-level read access."""
         # Create is gated on the sensitive assessment key; listing rides report.view.
         return "procurement.vendor_assessment.create" if self.request.method == "POST" \
             else "procurement.report.view"
 
     def get(self, request):
+        """List immutable entity scorecards, optionally for one resolved vendor."""
         entity = resolve_entity(request)
         qs = (
             VendorAssessment.objects
@@ -84,6 +87,7 @@ class VendorAssessmentListCreateView(_ProcBase):
         )
 
     def post(self, request):
+        """Record a point-in-time scorecard; later corrections require a new row."""
         entity = resolve_entity(request)
         body = request.data
         # Entity-scoped vendor resolution rejects assessing another entity's vendor.

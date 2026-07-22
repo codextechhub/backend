@@ -1,4 +1,9 @@
-"""Purchase orders, RFQs and quotations.
+"""Purchase-order commitments and the RFQ/quotation sourcing lifecycle.
+
+Draft documents remain editable intent.  Issuing an RFQ freezes the invitation
+vendors price, submitting a quotation makes the offer firm, and awarding creates
+a draft PO while preserving the sourcing evidence.  All money values crossing
+these APIs are integer kobo; quantities use bounded decimal units.
 """
 from __future__ import annotations
 
@@ -202,15 +207,18 @@ class PurchaseOrderListCreateView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Require create permission for POST and PO visibility for GET."""
         return "procurement.purchase_order.create" if self.request.method == "POST" \
             else "procurement.purchase_order.view"
 
     def get(self, request):
+        """List entity POs with server-derived receipt progress and filters."""
         entity = resolve_entity(request)
         qs = _filter_purchase_orders(_purchase_order_list_queryset(entity), request.query_params)
         return self.paginate(request, qs.order_by("-id"), PurchaseOrderListSerializer)
 
     def post(self, request):
+        """Create a draft commitment from an entity-scoped approved requisition."""
         entity = resolve_entity(request)
         body = request.data
         req = PurchaseRequisition.objects.filter(entity=entity, pk=body.get("requisition")).first()
@@ -237,14 +245,20 @@ class PurchaseOrderListCreateView(_ProcBase):
 
 
 class PurchaseOrderDetailView(_ProcBase):
-    """docstring-name: Purchase orders"""
+    """Read an order's document flow or edit only its draft commercial terms.
+
+    PO lines are the requisition snapshot and are not rewritten by this endpoint;
+    receipt, invoice, and workflow history therefore remain referentially stable.
+    """
 
     @property
     def rbac_permission(self):
+        """Separate draft commercial-term edits from PO read access."""
         return "procurement.purchase_order.update" if self.request.method == "PATCH" \
             else "procurement.purchase_order.view"
 
     def get(self, request, pk):
+        """Return one entity PO with related documents and workflow overlay."""
         entity = resolve_entity(request)
         po = _purchase_order_queryset(entity).filter(pk=pk).first()
         if po is None:
@@ -257,6 +271,7 @@ class PurchaseOrderDetailView(_ProcBase):
 
     @transaction.atomic
     def patch(self, request, pk):
+        """Lock and update mutable draft terms without changing approved line intent."""
         entity = resolve_entity(request)
         # Lock only the base row because PostgreSQL rejects row locks over grouped or nullable-join detail queries.
         po = PurchaseOrder.objects.select_for_update().filter(entity=entity, pk=pk).first()
@@ -304,6 +319,7 @@ class PurchaseOrderSummaryView(_ProcBase):
     rbac_permission = "procurement.purchase_order.view"
 
     def get(self, request):
+        """Compute entity-wide commitment KPIs independent of list pagination."""
         entity = resolve_entity(request)
         return success_response("Purchase order summary retrieved.", data=purchase_order_summary(entity))
 
@@ -369,6 +385,7 @@ def _write_rfq_lines(entity, rfq, lines):
 
 
 def _validate_rfq_dates(issue_date, response_due_date):
+    """Ensure an RFQ cannot close before its issue date."""
     # A closing date must not precede the issue date.
     if response_due_date is not None and response_due_date < issue_date:
         raise ValidationError({"response_due_date": "Response due date cannot be before the issue date."})
@@ -401,10 +418,12 @@ class RfqListCreateView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Require RFQ creation for POST and sourcing visibility for GET."""
         return "procurement.rfq.create" if self.request.method == "POST" \
             else "procurement.rfq.view"
 
     def get(self, request):
+        """List sourcing events with SQL-derived invitation and response counts."""
         entity = resolve_entity(request)
         qs = _rfq_list_queryset(entity)
         if (status_ := request.query_params.get("status")):
@@ -415,6 +434,7 @@ class RfqListCreateView(_ProcBase):
 
     @transaction.atomic
     def post(self, request):
+        """Create an editable RFQ specification and optional invitation set."""
         entity = resolve_entity(request)
         body = request.data
         lines = _require_lines(body)
@@ -457,10 +477,12 @@ class RfqDetailView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Separate draft RFQ edits from ordinary sourcing reads."""
         return "procurement.rfq.update" if self.request.method == "PATCH" \
             else "procurement.rfq.view"
 
     def get(self, request, pk):
+        """Return one entity RFQ with prefetched specifications, invitees, and bids."""
         entity = resolve_entity(request)
         rfq = _rfq_detail_queryset(entity).filter(pk=pk).first()
         if rfq is None:
@@ -469,6 +491,7 @@ class RfqDetailView(_ProcBase):
 
     @transaction.atomic
     def patch(self, request, pk):
+        """Replace draft sourcing terms under lock; issued invitations are immutable."""
         entity = resolve_entity(request)
         rfq = RequestForQuotation.objects.select_for_update().filter(entity=entity, pk=pk).first()
         if rfq is None:
@@ -505,10 +528,11 @@ class RfqDetailView(_ProcBase):
 
 
 class RfqIssueView(_ProcBase):
-    """docstring-name: Issue an RFQ"""
+    """Issue a complete RFQ through the sourcing lifecycle service."""
     rbac_permission = "procurement.rfq.issue"
 
     def post(self, request, pk):
+        """Freeze and publish a draft invitation after service eligibility checks."""
         entity = resolve_entity(request)
         rfq = RequestForQuotation.objects.filter(entity=entity, pk=pk).first()
         if rfq is None:
@@ -526,6 +550,7 @@ class RfqCloseView(_ProcBase):
     rbac_permission = "procurement.rfq.issue"
 
     def post(self, request, pk):
+        """Close an issued event without award and preserve rejected bid history."""
         entity = resolve_entity(request)
         rfq = RequestForQuotation.objects.filter(entity=entity, pk=pk).first()
         if rfq is None:
@@ -536,10 +561,11 @@ class RfqCloseView(_ProcBase):
 
 
 class RfqCancelView(_ProcBase):
-    """docstring-name: Cancel an RFQ"""
+    """Cancel an eligible RFQ through the sourcing lifecycle service."""
     rbac_permission = "procurement.rfq.issue"
 
     def post(self, request, pk):
+        """Cancel without deleting the invitation and quotation audit trail."""
         entity = resolve_entity(request)
         rfq = RequestForQuotation.objects.filter(entity=entity, pk=pk).first()
         if rfq is None:
@@ -554,6 +580,7 @@ class RfqSummaryView(_ProcBase):
     rbac_permission = "procurement.rfq.view"
 
     def get(self, request):
+        """Return entity-wide sourcing KPIs, never page-local approximations."""
         entity = resolve_entity(request)
         today = timezone.localdate()
         # One aggregate over the RFQ table for the three RFQ-status counts.
@@ -583,6 +610,7 @@ class RfqSummaryView(_ProcBase):
 # --------------------------------------------------------------------------- #
 
 def _quotation_detail_queryset(entity):
+    """Build the entity detail shape with vendor, RFQ, award, and priced lines."""
     return VendorQuotation.objects.filter(entity=entity).select_related(
         "vendor", "rfq", "awarded_po",
     ).prefetch_related("lines", "lines__expense_account")
@@ -618,6 +646,7 @@ def _write_quotation_lines(entity, quotation, rfq, lines):
 
 
 def _validate_quote_dates(quote_date, valid_until):
+    """Ensure an offer cannot expire before it is made."""
     if valid_until is not None and valid_until < quote_date:
         raise ValidationError({"valid_until": "Valid-until date cannot be before the quote date."})
 
@@ -630,10 +659,12 @@ class QuotationListCreateView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Require quotation creation for POST and quotation view for GET."""
         return "procurement.quotation.create" if self.request.method == "POST" \
             else "procurement.quotation.view"
 
     def get(self, request):
+        """List entity quotations with bounded relational filters and search."""
         entity = resolve_entity(request)
         qs = VendorQuotation.objects.filter(entity=entity).select_related("vendor", "rfq")
         if (status_ := request.query_params.get("status")):
@@ -652,6 +683,7 @@ class QuotationListCreateView(_ProcBase):
 
     @transaction.atomic
     def post(self, request):
+        """Capture an invited vendor's draft offer and derive totals server-side."""
         entity = resolve_entity(request)
         body = request.data
         lines = _require_lines(body)
@@ -699,10 +731,12 @@ class QuotationDetailView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Separate draft offer edits from quotation visibility."""
         return "procurement.quotation.update" if self.request.method == "PATCH" \
             else "procurement.quotation.view"
 
     def get(self, request, pk):
+        """Return one entity-scoped offer with its priced line evidence."""
         entity = resolve_entity(request)
         quotation = _quotation_detail_queryset(entity).filter(pk=pk).first()
         if quotation is None:
@@ -711,6 +745,7 @@ class QuotationDetailView(_ProcBase):
 
     @transaction.atomic
     def patch(self, request, pk):
+        """Replace only a draft offer and reprice its integer-kobo totals."""
         entity = resolve_entity(request)
         quotation = VendorQuotation.objects.select_for_update().select_related("rfq").filter(
             entity=entity, pk=pk).first()
@@ -744,10 +779,11 @@ class QuotationDetailView(_ProcBase):
 
 
 class QuotationSubmitView(_ProcBase):
-    """docstring-name: Submit a quotation"""
+    """Make a draft vendor offer firm through the sourcing service."""
     rbac_permission = "procurement.quotation.submit"
 
     def post(self, request, pk):
+        """Submit the offer while preserving the captured pricing snapshot."""
         entity = resolve_entity(request)
         quotation = VendorQuotation.objects.filter(entity=entity, pk=pk).first()
         if quotation is None:
@@ -768,6 +804,7 @@ class QuotationAwardView(_ProcBase):
     rbac_permission = "procurement.quotation.award"
 
     def post(self, request, pk):
+        """Award a live offer, create a draft PO, and retain losing-bid evidence."""
         entity = resolve_entity(request)
         quotation = VendorQuotation.objects.filter(entity=entity, pk=pk).first()
         if quotation is None:

@@ -1,4 +1,10 @@
-"""Vendor-payment console endpoints and lifecycle actions."""
+"""Vendor-payment drafts, approval hand-off, posting, cancellation, and reversal.
+
+Allocations on a draft are an editable settlement *plan*.  They do not reduce
+invoice balances until the approved payment is posted by the payables service.
+This boundary is important: workflow approval authorizes the plan; posting is
+the separate accounting mutation that creates ledger history.
+"""
 from __future__ import annotations
 
 from django.db import transaction
@@ -37,6 +43,7 @@ def _payment_list_queryset(entity):
 
 
 def _resolve_bank_account(entity, ref):
+    """Resolve an active entity bank account backed by a postable GL account."""
     if ref in (None, ""):
         raise ValidationError({"bank_account": "An active bank or cash account is required."})
     from vs_finance.models import BankAccount
@@ -51,6 +58,11 @@ def _resolve_bank_account(entity, ref):
 
 
 def _validate_vendor_for_payment(vendor):
+    """Enforce vendor operational gates before money can enter a payment draft.
+
+    Active status alone is insufficient: KYC must be verified and an explicit
+    payment hold always wins, including while editing an older draft.
+    """
     if not vendor.is_active:
         raise ValidationError({"vendor": "Inactive vendors cannot be paid."})
     if vendor.kyc_status != VendorKycStatus.VERIFIED:
@@ -60,6 +72,7 @@ def _validate_vendor_for_payment(vendor):
 
 
 def _validate_method(value):
+    """Return a supported finance payment method, defaulting to bank transfer."""
     method = value or PaymentMethod.BANK_TRANSFER
     if method not in PaymentMethod.values:
         raise ValidationError({"method": "Select a valid payment method."})
@@ -67,6 +80,11 @@ def _validate_method(value):
 
 
 def _allocation_plan(entity, vendor, payload):
+    """Validate a unique posted-invoice allocation plan for one entity/vendor.
+
+    Client totals are ignored.  The server resolves posted invoices, checks each
+    live balance, and returns the exact rows used to derive gross payment value.
+    """
     if not isinstance(payload, list) or not payload:
         raise ValidationError({"allocations": "Select at least one posted vendor invoice."})
     invoice_ids = [item.get("vendor_invoice") for item in payload]
@@ -92,6 +110,7 @@ def _allocation_plan(entity, vendor, payload):
 
 
 def _replace_plan(payment, plan):
+    """Replace draft instructions without touching invoice settlement balances."""
     # Draft allocation rows are instructions only; invoice balances remain unchanged.
     payment.allocations.all().delete()
     VendorPaymentAllocation.objects.bulk_create([
@@ -111,6 +130,12 @@ def _activity_message(log):
 
 
 def _serialize_detail(payment):
+    """Overlay workflow, posting, and audit context onto the canonical serializer.
+
+    The overlay is read-only presentation data: it does not duplicate workflow or
+    ledger state on the payment model.  Audit metadata is rendered into safe,
+    human-readable activity rather than exposing the raw JSON field.
+    """
     from vs_finance.models import FinanceAuditLog
     from vs_workflow.models import WorkflowInstance
 
@@ -138,12 +163,16 @@ def _serialize_detail(payment):
 
 
 class VendorPaymentListCreateView(_ProcBase):
+    """List entity payments or create a gated, allocated payment draft."""
+
     @property
     def rbac_permission(self):
+        """Require create permission for POST and view permission for GET."""
         return "procurement.vendor_payment.create" if self.request.method == "POST" \
             else "procurement.vendor_payment.view"
 
     def get(self, request):
+        """Return a paginated, filterable payment console for the current entity."""
         entity = resolve_entity(request)
         qs = _payment_list_queryset(entity)
         if status := request.query_params.get("status"):
@@ -157,6 +186,7 @@ class VendorPaymentListCreateView(_ProcBase):
 
     @transaction.atomic
     def post(self, request):
+        """Create a draft from server-resolved invoices and derived kobo totals."""
         entity = resolve_entity(request)
         body = request.data
         vendor = _resolve_vendor(entity, body.get("vendor"))
@@ -185,9 +215,15 @@ class VendorPaymentListCreateView(_ProcBase):
 
 
 class VendorPaymentEligibleInvoiceView(_ProcBase):
+    """List up to 100 posted, unpaid invoices eligible for allocation.
+
+    The optional vendor reference is resolved inside the current entity before
+    filtering, so it cannot become a cross-tenant invoice-discovery channel.
+    """
     rbac_permission = "procurement.vendor_payment.view"
 
     def get(self, request):
+        """Return oldest-due eligible invoices, optionally for one vendor."""
         entity = resolve_entity(request)
         qs = VendorInvoice.objects.filter(entity=entity, status=DocumentStatus.POSTED).exclude(payment_status="PAID")
         if vendor := request.query_params.get("vendor"):
@@ -204,12 +240,16 @@ class VendorPaymentEligibleInvoiceView(_ProcBase):
 
 
 class VendorPaymentDetailView(_ProcBase):
+    """Read a payment detail overlay or edit a mutable draft under row lock."""
+
     @property
     def rbac_permission(self):
+        """Separate read access from permission to rewrite settlement intent."""
         return "procurement.vendor_payment.update" if self.request.method == "PATCH" \
             else "procurement.vendor_payment.view"
 
     def get(self, request, pk):
+        """Return one entity-scoped payment without leaking foreign ids."""
         entity = resolve_entity(request)
         payment = _payment_queryset(entity).filter(pk=pk).first()
         if payment is None:
@@ -218,7 +258,10 @@ class VendorPaymentDetailView(_ProcBase):
 
     @transaction.atomic
     def patch(self, request, pk):
+        """Replace an unsubmitted/rejected draft and its allocation plan atomically."""
         entity = resolve_entity(request)
+        # Serialize competing edits so an allocation plan and its derived totals
+        # cannot be saved from different request snapshots.
         payment = VendorPayment.objects.select_for_update().filter(entity=entity, pk=pk).first()
         if payment is None:
             raise NotFound("No such vendor payment in this entity.")
@@ -253,9 +296,11 @@ class VendorPaymentDetailView(_ProcBase):
 
 
 class VendorPaymentSubmitView(_ProcBase):
+    """Hand a complete draft to workflow; submission does not post accounting."""
     rbac_permission = "procurement.vendor_payment.submit"
 
     def post(self, request, pk):
+        """Submit a draft allocation plan for approval eligibility checks."""
         entity = resolve_entity(request)
         payment = _payment_queryset(entity).filter(pk=pk).first()
         if payment is None:
@@ -271,15 +316,19 @@ class VendorPaymentSubmitView(_ProcBase):
 
 
 class VendorPaymentPostView(_ProcBase):
+    """Post an approved payment through the payables accounting boundary."""
     rbac_permission = "procurement.vendor_payment.post"
 
     def post(self, request, pk):
+        """Create settlement effects from the approved allocation plan."""
         entity = resolve_entity(request)
         payment = _payment_queryset(entity).filter(pk=pk).first()
         if payment is None:
             raise NotFound("No such vendor payment in this entity.")
         if not payment.allocations.exists():
             raise ValidationError({"allocations": "An approved invoice-allocation plan is required before posting."})
+        # Explicit allocations are approval evidence; never let posting silently
+        # invent a different oldest-first plan.
         payables.post_vendor_payment(payment, actor_user=request.user, auto_allocate=False)
         return success_response(
             f"Vendor payment {payment.document_number} posted.",
@@ -288,10 +337,12 @@ class VendorPaymentPostView(_ProcBase):
 
 
 class VendorPaymentCancelView(_ProcBase):
+    """Cancel only a non-pending draft; posted history is never deleted here."""
     rbac_permission = "procurement.vendor_payment.cancel"
 
     @transaction.atomic
     def post(self, request, pk):
+        """Lock and cancel an eligible draft without racing submission/posting."""
         entity = resolve_entity(request)
         payment = VendorPayment.objects.select_for_update().filter(entity=entity, pk=pk).first()
         if payment is None:
@@ -304,9 +355,11 @@ class VendorPaymentCancelView(_ProcBase):
 
 
 class VendorPaymentReverseView(_ProcBase):
+    """Reverse a posted payment through the accounting service."""
     rbac_permission = "procurement.vendor_payment.reverse"
 
     def post(self, request, pk):
+        """Create dated reversing effects while preserving the original payment."""
         entity = resolve_entity(request)
         payment = _payment_queryset(entity).filter(pk=pk).first()
         if payment is None:

@@ -1,4 +1,9 @@
-"""Purchase requisitions and approval submission.
+"""Purchase intent, budget availability, and workflow submission boundaries.
+
+Requisitions are editable estimates until submitted.  Approval authorizes the
+intent but does not itself create a PO, receive goods, or post accounting.  Every
+line default is snapshotted from entity-scoped master data and the header total is
+derived server-side in integer kobo.
 """
 from __future__ import annotations
 
@@ -112,10 +117,12 @@ class RequisitionListCreateView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Require create permission for POST and requisition view for GET."""
         return "procurement.requisition.create" if self.request.method == "POST" \
             else "procurement.requisition.view"
 
     def get(self, request):
+        """List entity requisitions with requester, cost center, and lines preloaded."""
         entity = resolve_entity(request)
         qs = PurchaseRequisition.objects.filter(entity=entity).select_related(
             "requested_by", "cost_center",
@@ -125,6 +132,7 @@ class RequisitionListCreateView(_ProcBase):
 
     @transaction.atomic
     def post(self, request):
+        """Create a draft estimate and its server-priced line snapshot atomically."""
         entity = resolve_entity(request)
         body = request.data
         lines = _require_lines(body)
@@ -145,14 +153,16 @@ class RequisitionListCreateView(_ProcBase):
 
 
 class RequisitionDetailView(_ProcBase):
-    """docstring-name: Requisitions"""
+    """Read requisition evidence or replace only a mutable draft estimate."""
 
     @property
     def rbac_permission(self):
+        """Separate draft-intent edits from requisition visibility."""
         return "procurement.requisition.update" if self.request.method == "PATCH" \
             else "procurement.requisition.view"
 
     def get(self, request, pk):
+        """Return one entity requisition with a safe workflow-instance overlay."""
         entity = resolve_entity(request)
         req = PurchaseRequisition.objects.filter(entity=entity, pk=pk).select_related(
             "requested_by", "cost_center",
@@ -167,6 +177,7 @@ class RequisitionDetailView(_ProcBase):
 
     @transaction.atomic
     def patch(self, request, pk):
+        """Serialize draft edits; submitted and approved intent is immutable."""
         entity = resolve_entity(request)
         req = PurchaseRequisition.objects.select_for_update().filter(entity=entity, pk=pk).first()
         if req is None:
@@ -193,6 +204,7 @@ class RequisitionSummaryView(_ProcBase):
     rbac_permission = "procurement.requisition.view"
 
     def get(self, request):
+        """Return entity-wide, same-period KPI comparisons in integer kobo."""
         entity = resolve_entity(request)
         as_of = timezone.localdate()
         current_start = as_of.replace(day=1)
@@ -223,6 +235,7 @@ class RequisitionSummaryView(_ProcBase):
         )["amount"] or 0
 
         def percent_change(current, previous):
+            """Return a comparable trend only when the prior denominator exists."""
             # A zero prior period has no valid percentage denominator, so the UI receives null rather than a false 0%.
             return round(((current - previous) / previous) * 100, 1) if previous else None
 
@@ -251,6 +264,7 @@ class RequisitionBudgetAvailabilityView(_ProcBase):
     rbac_permission = "procurement.requisition.view"
 
     def get(self, request):
+        """Compare one entity cost center's annual approved plan with open commitments."""
         entity = resolve_entity(request)
         cost_center = _resolve_cost_center(entity, request.query_params.get("cost_center"))
         if cost_center is None:
@@ -317,6 +331,7 @@ class RequisitionSubmitView(_ProcBase):
     rbac_permission = "procurement.requisition.submit"
 
     def post(self, request, pk):
+        """Submit entity-scoped intent; workflow owns threshold and approver routing."""
         entity = resolve_entity(request)
         req = PurchaseRequisition.objects.filter(entity=entity, pk=pk).first()
         if req is None:
@@ -346,10 +361,11 @@ def _approval_response(message, document, instance, serializer_cls):
 
 
 class PurchaseOrderSubmitApprovalView(_ProcBase):
-    """docstring-name: Submit a purchase order for approval"""
+    """Submit a draft PO for approval without issuing or posting it."""
     rbac_permission = "procurement.purchase_order.submit"
 
     def post(self, request, pk):
+        """Hand entity-scoped commitment intent to the workflow engine."""
         entity = resolve_entity(request)
         po = PurchaseOrder.objects.filter(entity=entity, pk=pk).first()
         if po is None:
@@ -360,10 +376,11 @@ class PurchaseOrderSubmitApprovalView(_ProcBase):
 
 
 class VendorInvoiceSubmitApprovalView(_ProcBase):
-    """docstring-name: Submit a vendor invoice for approval"""
+    """Price and match a draft bill, then submit that evidence for approval."""
     rbac_permission = "procurement.vendor_invoice.submit"
 
     def post(self, request, pk):
+        """Freeze current match evidence for workflow; posting remains separate."""
         entity = resolve_entity(request)
         inv = VendorInvoice.objects.filter(entity=entity, pk=pk).first()
         if inv is None:
@@ -391,6 +408,7 @@ class ApprovalTemplateSetupView(_ProcBase):
     rbac_permission = "procurement.approval.manage"
 
     def post(self, request):
+        """Idempotently upsert shared threshold templates from validated settings."""
         body = request.data or {}
         kwargs = {}
         if "threshold" in body:

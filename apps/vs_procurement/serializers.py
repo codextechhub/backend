@@ -50,6 +50,13 @@ from .models import (
 # --------------------------------------------------------------------------- #
 
 class VendorCategorySerializer(serializers.ModelSerializer):
+    """Category tree row with queryset-provided usage counts and parent labels.
+
+    The view selects both parent levels and annotates the three counts. Keeping those
+    values read-only prevents serializer evaluation from turning a category list into
+    recursive count/parent queries.
+    """
+
     default_expense_code = serializers.CharField(
         source="default_expense_account.code", read_only=True, default=None,
     )
@@ -76,6 +83,13 @@ class VendorCategorySerializer(serializers.ModelSerializer):
 
 
 class VendorSerializer(FieldSecurityMixin, serializers.ModelSerializer):
+    """Vendor detail shape with account labels and field-level sensitive-data gates.
+
+    ``FieldSecurityMixin`` removes protected contact, tax, and banking fields when the
+    caller lacks ``procurement.vendor.view_sensitive``; it does not reject the whole
+    vendor record, so ordinary purchasing screens retain non-PII master data.
+    """
+
     category_code = serializers.CharField(source="category.code", read_only=True, default=None)
     payable_code = serializers.CharField(source="payable_account.code", read_only=True, default=None)
     default_expense_code = serializers.CharField(
@@ -131,6 +145,8 @@ class VendorListSerializer(serializers.ModelSerializer):
 # --------------------------------------------------------------------------- #
 
 class ContractMilestoneSerializer(serializers.ModelSerializer):
+    """Contract checkpoint with its kobo amount mirrored as a Naira display string."""
+
     amount_naira = serializers.SerializerMethodField()
 
     class Meta:
@@ -254,6 +270,12 @@ class VendorContractSerializer(serializers.ModelSerializer):
 # --------------------------------------------------------------------------- #
 
 class CatalogItemSerializer(serializers.ModelSerializer):
+    """Catalog defaults plus their human-readable related labels and category path.
+
+    ``stock_status`` is an optional queryset annotation used by catalog screens; it is
+    not inventory state stored on :class:`CatalogItem` itself.
+    """
+
     category_code = serializers.CharField(source="category.code", read_only=True, default=None)
     category_name = serializers.CharField(source="category.name", read_only=True, default=None)
     category_level = serializers.SerializerMethodField()
@@ -280,6 +302,7 @@ class CatalogItemSerializer(serializers.ModelSerializer):
     standard_unit_price_naira = serializers.SerializerMethodField()
 
     def get_category_level(self, item):
+        """Return the one-based depth from the two-level ``select_related`` chain."""
         if item.category_id is None:
             return None
         if item.category.parent_id is None:
@@ -287,6 +310,7 @@ class CatalogItemSerializer(serializers.ModelSerializer):
         return 2 if item.category.parent.parent_id is None else 3
 
     def get_category_path(self, item):
+        """Render the selected category's root-to-leaf breadcrumb without new queries."""
         if item.category_id is None:
             return None
         nodes = [item.category.name]
@@ -376,6 +400,12 @@ class StockItemDetailSerializer(StockItemListSerializer):
 
 
 class StockMovementSerializer(serializers.ModelSerializer):
+    """One immutable stock-ledger event with signed and running-balance values.
+
+    Raw integer values remain the accounting contract; ``*_naira`` fields are display
+    mirrors. The surrounding detail queryset selects ``created_by`` and ``stock_item``.
+    """
+
     stock_item_code = serializers.CharField(
         source="stock_item.code", read_only=True, default=None,
     )
@@ -415,6 +445,8 @@ class StockMovementSerializer(serializers.ModelSerializer):
 # --------------------------------------------------------------------------- #
 
 class RequisitionLineSerializer(serializers.ModelSerializer):
+    """Read-only requisition estimate line, including its derived kobo extension."""
+
     expense_code = serializers.CharField(source="expense_account.code", read_only=True, default=None)
     estimated_line_total = serializers.IntegerField(read_only=True)
 
@@ -427,6 +459,12 @@ class RequisitionLineSerializer(serializers.ModelSerializer):
 
 
 class RequisitionSerializer(serializers.ModelSerializer):
+    """Requisition header and lines with document and workflow states kept separate.
+
+    ``status`` is the shared finance-document lifecycle while ``approval_state`` is the
+    spend-workflow overlay. Clients receive both and must not infer one from the other.
+    """
+
     lines = RequisitionLineSerializer(many=True, read_only=True)
     estimated_total_naira = serializers.SerializerMethodField()
     requested_by_name = serializers.SerializerMethodField()
@@ -498,6 +536,8 @@ def _quotation_is_expired(quotation) -> bool:
 # --------------------------------------------------------------------------- #
 
 class RfqLineSerializer(serializers.ModelSerializer):
+    """RFQ specification line; pricing arrives later on vendor quotation lines."""
+
     expense_code = serializers.CharField(source="expense_account.code", read_only=True, default=None)
 
     class Meta:
@@ -620,6 +660,8 @@ class RfqDetailSerializer(serializers.ModelSerializer):
 # --------------------------------------------------------------------------- #
 
 class VendorQuotationLineSerializer(serializers.ModelSerializer):
+    """Priced vendor response line with integer-kobo net and tax amounts."""
+
     expense_code = serializers.CharField(source="expense_account.code", read_only=True, default=None)
 
     class Meta:
@@ -696,6 +738,8 @@ class QuotationDetailSerializer(serializers.ModelSerializer):
 # --------------------------------------------------------------------------- #
 
 class POLineSerializer(serializers.ModelSerializer):
+    """PO line including service-owned receipt and invoice progress counters."""
+
     expense_code = serializers.CharField(source="expense_account.code", read_only=True)
 
     class Meta:
@@ -708,6 +752,8 @@ class POLineSerializer(serializers.ModelSerializer):
 
 
 class POReceiptDocumentSerializer(serializers.ModelSerializer):
+    """Compact GRN link embedded in a PO detail response."""
+
     item_count = serializers.SerializerMethodField()
 
     class Meta:
@@ -720,12 +766,21 @@ class POReceiptDocumentSerializer(serializers.ModelSerializer):
 
 
 class POInvoiceDocumentSerializer(serializers.ModelSerializer):
+    """Compact vendor-invoice link embedded in a PO detail response."""
+
     class Meta:
         model = VendorInvoice
         fields = ["id", "document_number", "invoice_date", "total", "status", "match_status"]
 
 
 class PurchaseOrderSerializer(serializers.ModelSerializer):
+    """Full PO read model: commercial totals, progress, source, and child documents.
+
+    The API deliberately exposes inherited ``status``, workflow ``approval_state``, and
+    the UI-only ``display_status`` together. Receipt/invoice arrays and progress methods
+    rely on the detail view's prefetched relations; list responses use the subclass below.
+    """
+
     lines = POLineSerializer(many=True, read_only=True)
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
@@ -799,6 +854,8 @@ class PurchaseOrderListSerializer(PurchaseOrderSerializer):
 # --------------------------------------------------------------------------- #
 
 class GRNLineSerializer(serializers.ModelSerializer):
+    """Receipt line with a compatibility description for pre-snapshot rows."""
+
     expense_code = serializers.CharField(source="expense_account.code", read_only=True)
     description = serializers.SerializerMethodField()
 
@@ -816,6 +873,13 @@ class GRNLineSerializer(serializers.ModelSerializer):
 
 
 class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
+    """GRN header/lines plus a delivery-quality overlay independent of posting status.
+
+    ``status`` says whether the accounting document posted. ``receipt_status`` compares
+    accepted/rejected quantities with the receipt-time expectation and therefore answers
+    a different operational question.
+    """
+
     lines = GRNLineSerializer(many=True, read_only=True)
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
@@ -845,6 +909,12 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
         return getattr(user, "full_name", "") or user.get_full_name() or user.email
 
     def _expected_quantity(self, obj):
+        """Resolve this receipt's expected quantity, including legacy fallbacks.
+
+        New rows persist ``expected_qty`` per line. Older/directly-created fixtures may
+        not, so the original PO quantity is the next-best source, followed by the receipt
+        itself. The object-local cache keeps three serializer fields on one query path.
+        """
         cached = getattr(obj, "_receipt_expected_quantity", None)
         if cached is not None:
             return cached
@@ -890,6 +960,8 @@ class GoodsReceivedNoteListSerializer(GoodsReceivedNoteSerializer):
 # --------------------------------------------------------------------------- #
 
 class VendorInvoiceLineSerializer(serializers.ModelSerializer):
+    """Billed line with optional PO/GRN provenance used by three-way matching."""
+
     expense_code = serializers.CharField(source="expense_account.code", read_only=True)
 
     class Meta:
@@ -902,6 +974,13 @@ class VendorInvoiceLineSerializer(serializers.ModelSerializer):
 
 
 class VendorInvoiceSerializer(serializers.ModelSerializer):
+    """AP invoice read model spanning posting, approval, match, and settlement states.
+
+    Each lifecycle remains available as an authoritative field. ``display_status`` is
+    only a precedence-based UI overlay and never mutates or replaces those source states.
+    ``amount_paid``/``balance_due`` reflect posted allocation authority.
+    """
+
     lines = VendorInvoiceLineSerializer(many=True, read_only=True)
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)
@@ -966,6 +1045,12 @@ class VendorInvoiceListSerializer(VendorInvoiceSerializer):
 # --------------------------------------------------------------------------- #
 
 class VendorPaymentAllocationSerializer(serializers.ModelSerializer):
+    """A payment split enriched with the target invoice's current settlement snapshot.
+
+    The allocation ``amount`` is gross AP settled; it is intentionally not the payment's
+    net bank outflow when withholding tax is present.
+    """
+
     invoice_number = serializers.CharField(
         source="vendor_invoice.document_number", read_only=True,
     )
@@ -984,6 +1069,13 @@ class VendorPaymentAllocationSerializer(serializers.ModelSerializer):
 
 
 class VendorPaymentSerializer(serializers.ModelSerializer):
+    """Vendor disbursement with approval, posting, allocation, and bank context.
+
+    Draft allocation rows express the intended split. Once POSTED, the header's
+    ``allocated_amount`` is authoritative because the service updates it only after the
+    journal succeeds; :meth:`get_allocation_status` preserves that distinction.
+    """
+
     allocations = VendorPaymentAllocationSerializer(many=True, read_only=True)
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
     vendor_name = serializers.CharField(source="vendor.name", read_only=True)

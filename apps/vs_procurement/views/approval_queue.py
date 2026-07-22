@@ -51,6 +51,7 @@ DOCUMENT_LABELS = {
 
 
 def _user_name(user) -> str:
+    """Render an actor label without exposing email or other account metadata."""
     if user is None:
         return "System"
     return (
@@ -139,6 +140,7 @@ def _pending_snapshots(user, *, workflow_id=None):
 
 
 def _list_row(entity, snapshot, document, object_id):
+    """Project one workflow snapshot into the procurement inbox response shape."""
     instance = snapshot.stage_instance.instance
     amount_field = getattr(document, "workflow_amount_field", "")
     return {
@@ -160,6 +162,7 @@ def _list_row(entity, snapshot, document, object_id):
 
 
 def _pending_context(entity, user, workflow_id):
+    """Resolve an actionable workflow and its real document without existence leaks."""
     snapshots = _pending_snapshots(user, workflow_id=workflow_id)
     usable, documents = _document_map(entity, snapshots)
     if not usable:
@@ -175,6 +178,7 @@ def _pending_context(entity, user, workflow_id):
 
 
 def _stage_rows(instance):
+    """Serialize prefetched stage evidence without per-stage database queries."""
     rows = []
     for stage_instance in instance.stage_instances.all():
         actions = []
@@ -213,6 +217,7 @@ def _stage_rows(instance):
 
 
 def _detail(entity, instance, snapshot, document, object_id):
+    """Overlay workflow history on the entity-verified procurement summary row."""
     data = _list_row(entity, snapshot, document, object_id)
     data.update({
         "document_status": getattr(document, "status", ""),
@@ -231,10 +236,16 @@ def _detail(entity, instance, snapshot, document, object_id):
 
 
 class ProcurementApprovalListView(APIView):
-    """The signed-in actor's pending Procurement decisions for one ledger entity."""
+    """The signed-in actor's pending Procurement decisions for one ledger entity.
+
+    Ordinary resource RBAC is intentionally not the authorization rule here.
+    Being frozen into the active workflow stage is the narrower, instance-level
+    eligibility grant; users who cannot currently vote see no row at all.
+    """
     permission_classes = [IsAuthenticatedAndActive]
 
     def get(self, request):
+        """Return entity-verified, currently actionable snapshots for this actor."""
         entity = resolve_entity(request)
         usable, documents = _document_map(entity, _pending_snapshots(request.user))
         rows = []
@@ -260,10 +271,15 @@ class ProcurementApprovalListView(APIView):
 
 
 class ProcurementApprovalDetailView(APIView):
-    """Safe workflow evidence for one currently actionable Procurement record."""
+    """Safe workflow evidence for one currently actionable Procurement record.
+
+    The same eligibility lookup as the list is repeated here; possession of a
+    workflow UUID is never enough to read another approver's decision evidence.
+    """
     permission_classes = [IsAuthenticatedAndActive]
 
     def get(self, request, workflow_id):
+        """Return the prefetched stage timeline for an eligible entity document."""
         entity = resolve_entity(request)
         instance, snapshot, document, object_id = _pending_context(
             entity, request.user, workflow_id,
@@ -287,10 +303,16 @@ class ProcurementApprovalDetailView(APIView):
 
 
 class ProcurementApprovalActionView(APIView):
-    """Validate entity/document scope, then record the vote in ``vs_workflow``."""
+    """Validate entity/document scope, then record the vote in ``vs_workflow``.
+
+    Workflow eligibility replaces a broad approve-resource permission: the
+    shared workflow service rechecks active attempt, quorum, and transition
+    rules under its own locks when it records the decision.
+    """
     permission_classes = [IsAuthenticatedAndActive]
 
     def post(self, request, workflow_id):
+        """Validate a decision payload and delegate the state transition atomically."""
         entity = resolve_entity(request)
         instance, _, _, _ = _pending_context(entity, request.user, workflow_id)
         serializer = StageActionWriteSerializer(data=request.data)

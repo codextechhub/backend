@@ -1,4 +1,9 @@
-"""Goods receipts and vendor invoices (3-way match).
+"""Physical receiving, vendor billing, three-way matching, and AP posting.
+
+Draft GRNs and bills are editable evidence only.  Posting a GRN advances receipt
+quantities and GR/IR; matching compares the PO, posted receipt, and bill; posting
+the approved invoice creates AP.  Keeping those boundaries separate prevents an
+approval or edit from silently becoming an accounting mutation.
 """
 from __future__ import annotations
 
@@ -112,10 +117,12 @@ class GoodsReceiptListCreateView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Require receipt creation for POST and receipt view for GET."""
         return "procurement.goods_receipt.create" if self.request.method == "POST" \
             else "procurement.goods_receipt.view"
 
     def get(self, request):
+        """List entity receipts with the relations needed for progress display."""
         entity = resolve_entity(request)
         qs = GoodsReceivedNote.objects.filter(entity=entity).select_related("vendor", "purchase_order", "received_by").prefetch_related("lines__po_line", "purchase_order__lines")
         if (status_ := request.query_params.get("status")):
@@ -124,6 +131,7 @@ class GoodsReceiptListCreateView(_ProcBase):
 
     @transaction.atomic
     def post(self, request):
+        """Create a draft physical-receipt snapshot without advancing PO quantities."""
         # Invalid line quantities must roll back the receipt header created earlier in this request.
         entity = resolve_entity(request)
         body = request.data
@@ -153,14 +161,16 @@ class GoodsReceiptListCreateView(_ProcBase):
 
 
 class GoodsReceiptDetailView(_ProcBase):
-    """docstring-name: Goods receipts"""
+    """Read a GRN or rewrite only its unposted physical-count evidence."""
 
     @property
     def rbac_permission(self):
+        """Separate draft receipt correction from receipt visibility."""
         return "procurement.goods_receipt.update" if self.request.method == "PATCH" \
             else "procurement.goods_receipt.view"
 
     def get(self, request, pk):
+        """Return one entity receipt with its PO and line snapshots."""
         entity = resolve_entity(request)
         grn = GoodsReceivedNote.objects.filter(entity=entity, pk=pk).select_related("vendor", "purchase_order", "received_by").prefetch_related("lines__po_line", "purchase_order__lines").first()
         if grn is None:
@@ -169,6 +179,7 @@ class GoodsReceiptDetailView(_ProcBase):
 
     @transaction.atomic
     def patch(self, request, pk):
+        """Lock and edit a draft; posted receipt history is immutable."""
         entity = resolve_entity(request)
         # Lock only the base row: PostgreSQL rejects FOR UPDATE over the outer joins
         # that select_related on the nullable purchase_order / received_by would add.
@@ -204,6 +215,7 @@ class GoodsReceiptPostView(_ProcBase):
     rbac_permission = "procurement.goods_receipt.post"
 
     def post(self, request, pk):
+        """Delegate inventory/GRIR effects to the purchasing posting service."""
         entity = resolve_entity(request)
         grn = GoodsReceivedNote.objects.filter(entity=entity, pk=pk).first()
         if grn is None:
@@ -324,6 +336,8 @@ def _serialize_invoice_detail(invoice):
     from vs_workflow.models import WorkflowInstance
 
     data = VendorInvoiceSerializer(invoice).data
+    # Workflow, match comparisons, allocations, journal lines, and activity are
+    # response overlays; their authoritative state remains in their owning models.
     workflow = WorkflowInstance.all_objects.filter(
         document_type="procurement.vendor_invoice", document_object_id=str(invoice.pk),
     ).order_by("-created_at").first()
@@ -360,6 +374,7 @@ def _serialize_invoice_detail(invoice):
         "credit": line.credit,
     } for line in invoice.journal.lines.all()] if invoice.journal_id else []
     def display_message(log):
+        """Render immutable audit metadata without leaking raw JSON or kobo prose."""
         # FinanceAuditLog is immutable; use structured metadata to present legacy
         # minor-unit messages safely without rewriting the authoritative row.
         if log.action == "VENDOR_INVOICE_POSTED" and "total" in (log.metadata or {}):
@@ -388,10 +403,12 @@ class VendorInvoiceListCreateView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Require bill creation for POST and invoice view for GET."""
         return "procurement.vendor_invoice.create" if self.request.method == "POST" \
             else "procurement.vendor_invoice.view"
 
     def get(self, request):
+        """List entity bills using persisted lifecycle fields for console tabs."""
         entity = resolve_entity(request)
         qs = _invoice_list_queryset(entity)
         for param in ("status", "payment_status", "match_status"):
@@ -409,6 +426,7 @@ class VendorInvoiceListCreateView(_ProcBase):
 
     @transaction.atomic
     def post(self, request):
+        """Create and price a draft bill from entity-validated PO/GRN references."""
         entity = resolve_entity(request)
         body = request.data
         lines = _require_lines(body)
@@ -441,6 +459,7 @@ class VendorInvoiceSummaryView(_ProcBase):
     rbac_permission = "procurement.vendor_invoice.view"
 
     def get(self, request):
+        """Return entity-wide counts and overdue balance in integer kobo."""
         entity = resolve_entity(request)
         qs = VendorInvoice.objects.filter(entity=entity)
         today = timezone.localdate()
@@ -456,13 +475,15 @@ class VendorInvoiceSummaryView(_ProcBase):
 
 
 class VendorInvoiceDetailView(_ProcBase):
-    """docstring-name: Vendor invoices"""
+    """Read a bill's workflow/accounting overlay or edit mutable draft evidence."""
     @property
     def rbac_permission(self):
+        """Separate draft-bill correction from invoice visibility."""
         return "procurement.vendor_invoice.update" if self.request.method == "PATCH" \
             else "procurement.vendor_invoice.view"
 
     def get(self, request, pk):
+        """Return one entity bill with match, payment, posting, and audit context."""
         entity = resolve_entity(request)
         invoice = _invoice_queryset(entity).filter(pk=pk).first()
         if invoice is None:
@@ -471,6 +492,7 @@ class VendorInvoiceDetailView(_ProcBase):
 
     @transaction.atomic
     def patch(self, request, pk):
+        """Replace an unsubmitted/rejected draft and invalidate its prior match."""
         entity = resolve_entity(request)
         invoice = VendorInvoice.objects.select_for_update().select_related("vendor", "purchase_order").filter(entity=entity, pk=pk).first()
         if invoice is None:
@@ -516,6 +538,7 @@ class VendorInvoiceMatchView(_ProcBase):
     rbac_permission = "procurement.vendor_invoice.match"
 
     def post(self, request, pk):
+        """Reprice and compare bill evidence without posting the liability."""
         entity = resolve_entity(request)
         invoice = _invoice_queryset(entity).filter(pk=pk).first()
         if invoice is None:
@@ -538,6 +561,7 @@ class VendorInvoicePostView(_ProcBase):
     rbac_permission = "procurement.vendor_invoice.post"
 
     def post(self, request, pk):
+        """Post an eligible bill; variance override is explicit and permission-gated."""
         entity = resolve_entity(request)
         invoice = _invoice_queryset(entity).filter(pk=pk).first()
         if invoice is None:

@@ -59,17 +59,17 @@ standard paginated `{pagination, data}` envelope.
 | `GET /catalog-items/<pk>/` | `procurement.catalog_item.view` | — | Item with permission-gated stock overlay |
 | `PATCH /catalog-items/<pk>/` | `procurement.catalog_item.update` | Same mutable defaults; `code` cannot change | Updated item (`views/catalog.py:281-323`) |
 | `GET /catalog-items/<pk>/insights/` | `procurement.report.view` | — | Usage and approved-PO price history (`views/catalog.py:326-370`) |
-| `GET /contracts/` | `procurement.contract.view` | Query `status`, `expiring`, `vendor`, `search`/`q` | Paginated contract rows (`views/contracts.py:110-133`) |
-| `POST /contracts/` | `procurement.contract.create` | `vendor`, `reference?`, `title`, dates, `contract_value`, `payment_terms?`, `auto_renew?`, `renewal_notice_days?`, `notes?`, `milestones?` | `201` DRAFT contract (`views/contracts.py:135-162`) |
+| `GET /contracts/` | `procurement.contract.view` | Query `status`, `expiring`, `vendor`, `search`/`q` | Paginated contract rows (`views/contracts.py:133-156`) |
+| `POST /contracts/` | `procurement.contract.create` | `vendor`, `reference?`, `title`, dates, `contract_value`, `payment_terms?`, `auto_renew?`, `renewal_notice_days?`, `notes?`, `milestones?` | `201` DRAFT contract (`views/contracts.py:159-186`) |
 | `GET /contracts/<pk>/` | `procurement.contract.view` | — | Header, milestones, renewal lineage, audit activity |
-| `PATCH /contracts/<pk>/` | `procurement.contract.update` | Header fields above + appended `milestones?` | Updated non-terminal contract (`views/contracts.py:191-222`) |
-| `GET /contracts/summary/` | `procurement.contract.view` | — | Active/expiring/expired counts + active kobo value (`views/contracts.py:232-261`) |
-| `GET /contracts/renewals/` | `procurement.contract.view` | Query `as_of?`, `within_days?` | Active contracts in renewal window (`views/contracts.py:417-428`) |
-| `GET /contracts/<pk>/linked-pos/` | `procurement.purchase_order.view` | — | Explicit call-offs + unlinked same-vendor term associations (`views/contracts.py:264-311`) |
+| `PATCH /contracts/<pk>/` | `procurement.contract.update` | Header fields above + appended `milestones?` | Updated non-terminal contract (`views/contracts.py:215-246`) |
+| `GET /contracts/summary/` | `procurement.contract.view` | — | Active/expiring/expired counts + active kobo value (`views/contracts.py:255-284`) |
+| `GET /contracts/renewals/` | `procurement.contract.view` | Query `as_of?`, `within_days?` | Active contracts in renewal window (`views/contracts.py:440-452`) |
+| `GET /contracts/<pk>/linked-pos/` | `procurement.purchase_order.view` | — | Explicit call-offs + unlinked same-vendor term associations (`views/contracts.py:287-334`) |
 | `POST /contracts/<pk>/activate/` | `procurement.contract.activate` | — | ACTIVE contract |
 | `POST /contracts/<pk>/terminate/` | `procurement.contract.terminate` | `reason?` | TERMINATED contract |
-| `POST /contracts/<pk>/renew/` | `procurement.contract.renew` | `reference?`, `start_date`, `end_date`, `contract_value?`, `copy_milestones?` | `201` ACTIVE successor (`views/contracts.py:350-381`) |
-| `POST /contracts/<pk>/milestones/<milestone_id>/complete/` | `procurement.contract.update` | `completed_date?` | Contract with completed milestone (`views/contracts.py:384-406`) |
+| `POST /contracts/<pk>/renew/` | `procurement.contract.renew` | `reference?`, `start_date`, `end_date`, `contract_value?`, `copy_milestones?` | `201` ACTIVE successor (`views/contracts.py:373-404`) |
+| `POST /contracts/<pk>/milestones/<milestone_id>/complete/` | `procurement.contract.update` | `completed_date?` | Contract with completed milestone (`views/contracts.py:407-429`) |
 
 Vendor detail FLS removes email, phone, address, tax id, and bank fields without
 `procurement.vendor.view_sensitive` (`serializers.py:85-125`). Writing any of those
@@ -142,12 +142,12 @@ rewrite that line and this request creates no journal (`models.py:231-240,299-32
 
 ## 8. Gotchas / known limitations
 
-- **Recommend fix:** `auto_renew` uses Python `bool(...)` on request values, so the JSON
-  string `"false"` is truthy and is stored as `true`; unlike catalog/vendor booleans,
-  contract create/update has no strict boolean validator (`views/contracts.py:154,212-213`).
-- **Recommend fix:** `GET /contracts/renewals/?within_days=...` calls `int(...)` directly;
-  malformed input can produce a 500 and negative horizons are accepted
-  (`views/contracts.py:420-424`).
+- ✅ **Strict `auto_renew` validation:** contract create/update now accepts only real JSON
+  booleans; strings, numbers, and `null` return a field-level 400 instead of being
+  truthiness-coerced (`views/contracts.py:74-79,176,236`).
+- ✅ **Bounded renewal horizon:** `within_days` now accepts only whole days from 0 through
+  3650; malformed, negative, boolean, and excessive values return a field-level 400
+  instead of reaching `int(...)` unsafely (`views/contracts.py:81-96,440-446`).
 - **Recommend fix:** termination and milestone completion do not lock their rows, so a
   concurrent renewal/termination or duplicate completion can race even though renewal
   and activation are serialized (`contracts.py:87-107,173-187`).
@@ -191,7 +191,7 @@ visibility (`views/contracts.py:264-272`).
 
 ## 11. Test coverage & gaps
 
-The current procurement suite is **190 green**. Relevant groups are
+The current procurement suite is **195 green**. Relevant groups are
 `VendorConsoleAPITests` (`tests.py:197`), `VendorCategoryConsoleAPITests` (`:357`),
 `VendorEligibilityTests` (`:668`), `CatalogItemTests` / `CatalogItemConsoleAPITests`
 (`:3008`, `:3043`), and `VendorContractTests` / `ContractConsoleAPITests`
@@ -199,9 +199,9 @@ The current procurement suite is **190 green**. Relevant groups are
 inactive-link preservation, vendor eligibility, catalog bounds, contract lifecycle, and
 linked-PO scoping.
 
-Still needed before shipping fixes from §8:
+The fixed validation paths now cover real `false` on create/update, non-boolean
+rejection, valid renewal horizons, and malformed/negative/excessive horizon rejection.
+Still needed before shipping any remaining §8 changes:
 
-- strict contract boolean tests for `false`, `"false"`, `0`, and `null`;
-- invalid/negative `within_days` API tests;
 - concurrent renew-versus-terminate and milestone completion tests;
 - explicit permission tests for any future KYC/risk/hold governance verb split.

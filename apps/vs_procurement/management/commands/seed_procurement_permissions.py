@@ -1,8 +1,10 @@
 """Seed vs_procurement permission keys and grant them to platform roles (idempotent).
 
 Registers every ``procurement.<resource>.<action>`` key enforced by the
-vs_procurement views into the RBAC Permission registry and grants them to the
-platform admin roles.
+vs_procurement views into the RBAC Permission registry and grants newly-created links
+to the platform admin roles. Existing permission rows and explicit role-link decisions
+are never rewritten, which makes the command safe to re-run after administrators have
+customised RBAC data.
 
 Run order::
 
@@ -50,10 +52,18 @@ PROCUREMENT_RESOURCES = [
 
 
 class Command(BaseCommand):
+    """Materialise procurement's declarative permission matrix in platform RBAC.
+
+    The surrounding transaction prevents a partially seeded matrix: action verbs,
+    module/resources, permission keys, and platform-role grants either complete together
+    or roll back. Every write uses a natural key, so reruns converge instead of duplicate.
+    """
+
     help = "Seed vs_procurement permission keys and grant them to platform admin roles."
 
     @transaction.atomic
     def handle(self, *args, **options):
+        """Create missing registry rows and additive grants without overwriting policy."""
         from vs_rbac.models import (
             Permission,
             PermissionAction,
@@ -110,6 +120,8 @@ class Command(BaseCommand):
 
                 perm = Permission.objects.filter(key=expected_key).first()
                 if perm is None:
+                    # Existing permissions are policy-owned: a rerun must not silently
+                    # reset sensitivity/restriction changes made by RBAC administrators.
                     perm = Permission(
                         module=module,
                         resource=resource,
@@ -149,6 +161,8 @@ class Command(BaseCommand):
                         permission=perm,
                         defaults={"granted": True, "granted_by": None},
                     )
+                    # An existing denied/revoked link stays untouched; seeding is additive,
+                    # not an authority to reverse an administrator's explicit decision.
                     if link_created:
                         granted += 1
                 self.stdout.write(

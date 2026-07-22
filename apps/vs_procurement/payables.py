@@ -146,6 +146,12 @@ def post_vendor_invoice(invoice, *, actor_user=None, allow_variance=False):
 @transaction.atomic
 # Support the post vendor invoice atomic workflow.
 def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=False):
+    """Revalidate and post one approved bill under invoice/PO-line locks.
+
+    Lock order is invoice first, then referenced PO lines in primary-key order. Repricing
+    and matching happen again under those locks; only after the journal posts are the PO
+    invoiced counters and invoice status advanced in the same transaction.
+    """
     from vs_finance.models import JournalEntry, JournalLine
     from .constants import GRIR_CLEARING_CODE
     from .models import PurchaseOrderLine, VendorInvoice
@@ -305,6 +311,14 @@ def post_vendor_payment(payment, *, actor_user=None, auto_allocate=True, allocat
 # Support the post vendor payment atomic workflow.
 def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True, allocations=None,
                                 system_originated=False):
+    """Post one payment and turn its approved allocation plan into settlements atomically.
+
+    Locks are acquired in stable domain order: payment, vendor, persisted plan rows, then
+    invoices (explicit targets by primary key; automatic targets in due/invoice/id
+    settlement order). Draft allocation rows are approval instructions; only rows
+    recreated after ``post_journal`` represent posted sub-ledger settlement. The payment
+    journal itself reduces AP once, regardless of allocation.
+    """
     from vs_finance.models import JournalEntry, JournalLine
     from .models import Vendor, VendorInvoice, VendorPayment, VendorPaymentAllocation
 
@@ -449,7 +463,9 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, stric
     ``allocations`` is an optional list of ``(vendor_invoice, gross_amount_kobo)``;
     without it the vendor's open posted bills are settled oldest-first (by due date,
     then invoice date). Never allocates past a bill's balance due or the payment's
-    remaining gross. Returns the list of created allocation rows.
+    remaining gross. Allocations change invoice settlement state only: the posted payment
+    already produced the AP/bank/WHT journal, so this service must not create another GL
+    entry. Returns the list of created allocation rows.
     """
     from .models import VendorInvoice, VendorPaymentAllocation
 
@@ -537,7 +553,12 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, stric
 
 @transaction.atomic
 def reverse_vendor_payment(payment, *, actor_user=None, date=None):
-    """Reverse a posted vendor payment and restore every settled invoice balance."""
+    """Reverse a posted payment and restore every invoice settlement it funded.
+
+    Lock order mirrors posting: payment, allocation rows by invoice id, then invoices by
+    primary key. The reversal journal restores the GL; allocation rows remain as history
+    while invoice ``amount_paid`` and derived payment status are rolled back.
+    """
     from vs_finance.posting import reverse_journal
     from .models import VendorInvoice, VendorPayment, VendorPaymentAllocation
 

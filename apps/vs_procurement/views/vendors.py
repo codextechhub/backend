@@ -1,4 +1,9 @@
-"""Vendor categories and vendor master data.
+"""Vendor category governance, vendor master data, and sensitive-field policy.
+
+Codes and historical category links are stable business identifiers.  Updates
+may deactivate master data but do not rewrite snapshots already embedded in
+purchase documents.  Contact, tax, and bank fields are additionally protected
+by field-level RBAC on both serialization and mutation paths.
 """
 from __future__ import annotations
 
@@ -46,15 +51,18 @@ _SENSITIVE_VENDOR_FIELDS = {
 
 
 def _normalise_code(value):
+    """Canonicalize a stable vendor/category identifier for comparison."""
     return str(value or "").strip().upper()
 
 
 def _normalise_tax_id(value):
+    """Canonicalize tax ids so punctuation cannot bypass entity uniqueness."""
     # Tax identifiers compare without punctuation/case so formatting cannot bypass uniqueness.
     return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
 
 
 def _clean_text(body, field, max_length, *, upper=False, lower=False):
+    """Normalize bounded vendor text before it reaches a model field."""
     value = str(body.get(field) or "").strip()
     value = value.upper() if upper else value.lower() if lower else value
     if len(value) > max_length:
@@ -63,6 +71,7 @@ def _clean_text(body, field, max_length, *, upper=False, lower=False):
 
 
 def _validate_email(value):
+    """Validate optional contact email while returning its normalized value."""
     if value:
         try:
             validate_email(value)
@@ -72,6 +81,7 @@ def _validate_email(value):
 
 
 def _has_sensitive_access(request):
+    """Check field-level access using the same tenant/branch RBAC context as the view."""
     if is_vision_super_admin(request.user):
         return True
     tenant = getattr(request, "rbac_tenant", None) or getattr(request, "tenant", None)
@@ -82,11 +92,13 @@ def _has_sensitive_access(request):
 
 
 def _require_sensitive_access(request, body):
+    """Reject writes to PII/bank fields unless field-level RBAC permits them."""
     if _SENSITIVE_VENDOR_FIELDS.intersection(body) and not _has_sensitive_access(request):
         raise PermissionDenied("You do not have permission to modify sensitive vendor fields.")
 
 
 def _resolve_category(entity, ref):
+    """Resolve an optional category inside the selected ledger entity."""
     if ref in (None, ""):
         return None
     qs = VendorCategory.objects.filter(entity=entity)
@@ -105,6 +117,7 @@ def _resolve_assignable_category(entity, ref, *, current_id=None):
 
 
 def _validate_account_type(account, field, allowed):
+    """Require a usable postable account of an allowed accounting type."""
     if account is not None and account.account_type not in allowed:
         labels = ", ".join(sorted(allowed))
         raise ValidationError({field: f"Select an active {labels} account in this entity."})
@@ -114,18 +127,21 @@ def _validate_account_type(account, field, allowed):
 
 
 def _validate_choice(value, choices, field):
+    """Require an exact model choice without permissive coercion."""
     if value not in choices:
         raise ValidationError({field: "Select a valid value."})
     return value
 
 
 def _validate_bool(value, field):
+    """Reject string/number lookalikes for governance booleans."""
     if not isinstance(value, bool):
         raise ValidationError({field: "Enter a valid boolean value."})
     return value
 
 
 def _duplicate_error(exc):
+    """Map vendor code/tax-id uniqueness races to stable field errors."""
     text = str(exc)
     if "tax_id" in text:
         return ValidationError({"tax_id": "A vendor with this tax identifier already exists in this entity."})
@@ -133,10 +149,12 @@ def _duplicate_error(exc):
 
 
 def _category_duplicate_error(exc):
+    """Map the category entity/code constraint to a public validation error."""
     return ValidationError({"code": "A category with this code already exists in this entity."})
 
 
 def _category_text(body, field, max_length, *, upper=False):
+    """Normalize and bound category text independently of vendor payloads."""
     value = str(body.get(field) or "").strip()
     value = value.upper() if upper else value
     if len(value) > max_length:
@@ -145,6 +163,7 @@ def _category_text(body, field, max_length, *, upper=False):
 
 
 def _category_account(entity, ref):
+    """Resolve an optional active, postable expense default for a category."""
     account = _resolve_account(entity, ref, "default_expense_account")
     return _validate_account_type(account, "default_expense_account", {AccountType.EXPENSE})
 
@@ -180,6 +199,11 @@ def _max_descendant_distance(category):
 
 
 def _category_parent(entity, ref, *, category=None, active=True):
+    """Resolve a parent and prove the resulting tree is acyclic and at most 3 deep.
+
+    For a re-parent, both the prospective ancestry and the existing subtree
+    height matter; validating only the new parent would allow deep descendants.
+    """
     if ref in (None, ""):
         parent = None
     else:
@@ -216,10 +240,12 @@ class VendorCategoryListCreateView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Require taxonomy create permission for POST and view for GET."""
         return "procurement.category.create" if self.request.method == "POST" \
             else "procurement.category.view"
 
     def get(self, request):
+        """List category nodes with entity-filtered direct-link usage counts."""
         entity = resolve_entity(request)
         qs = VendorCategory.objects.filter(entity=entity).select_related(
             "default_expense_account", "parent", "parent__parent",
@@ -240,6 +266,7 @@ class VendorCategoryListCreateView(_ProcBase):
 
     @transaction.atomic
     def post(self, request):
+        """Create one taxonomy node while serializing hierarchy validation."""
         entity = resolve_entity(request)
         body = request.data
         code = _category_text(body, "code", 32, upper=True)
@@ -271,10 +298,12 @@ class VendorCategoryDetailView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Separate category governance from taxonomy visibility."""
         return "procurement.category.update" if self.request.method == "PATCH" \
             else "procurement.category.view"
 
     def _get(self, entity, pk, *, lock=False):
+        """Resolve a category with read aggregates or a narrow write lock."""
         qs = VendorCategory.objects.filter(entity=entity, pk=pk)
         if lock:
             # Serialize governance/default changes without locking nullable account joins.
@@ -295,12 +324,14 @@ class VendorCategoryDetailView(_ProcBase):
         return category
 
     def get(self, request, pk):
+        """Retrieve one category and its direct, entity-safe usage aggregates."""
         entity = resolve_entity(request)
         category = self._get(entity, pk)
         return success_response("Vendor category retrieved.", data=VendorCategorySerializer(category).data)
 
     @transaction.atomic
     def patch(self, request, pk):
+        """Update mutable category governance while preserving its stable code."""
         entity = resolve_entity(request)
         category = self._get(entity, pk, lock=True)
         body = request.data
@@ -342,6 +373,7 @@ class VendorCategoryInsightsView(_ProcBase):
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Return posted-invoice spend in integer kobo for bounded date windows."""
         entity = resolve_entity(request)
         today = timezone.localdate()
         month_start = today.replace(day=1)
@@ -387,10 +419,12 @@ class VendorListCreateView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Require vendor create permission for POST and view for GET."""
         return "procurement.vendor.create" if self.request.method == "POST" \
             else "procurement.vendor.view"
 
     def get(self, request):
+        """List entity vendors; serializer context controls sensitive-field exposure."""
         entity = resolve_entity(request)
         qs = Vendor.objects.filter(entity=entity).select_related("category").annotate(
             # Only issued POs with at least one unreceived line remain open commitments.
@@ -418,6 +452,7 @@ class VendorListCreateView(_ProcBase):
 
     @transaction.atomic
     def post(self, request):
+        """Onboard a pending-KYC vendor without allowing self-approved risk state."""
         entity = resolve_entity(request)
         body = request.data
         code = _clean_text(body, "code", 32, upper=True)
@@ -464,6 +499,7 @@ class VendorSummaryView(_ProcBase):
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Return entity counts plus posted YTD spend in integer kobo."""
         entity = resolve_entity(request)
         vendors = Vendor.objects.filter(entity=entity)
         year_start = timezone.localdate().replace(month=1, day=1)
@@ -482,13 +518,19 @@ class VendorSummaryView(_ProcBase):
 
 
 class VendorDetailView(_ProcBase):
-    """docstring-name: Vendors"""
+    """Retrieve or govern one vendor with field-level sensitive-data controls.
+
+    Existing inactive category/account links remain readable for historical
+    fidelity; new assignments must satisfy today's active/postable rules.
+    """
 
     @property
     def rbac_permission(self):
+        """Separate vendor governance from ordinary vendor visibility."""
         return "procurement.vendor.update" if self.request.method == "PATCH" else "procurement.vendor.view"
 
     def _get(self, entity, pk, *, lock=False):
+        """Fetch an entity vendor, optionally locking only its mutable master row."""
         if lock:
             # Lock only the vendor row; nullable account/category joins cannot be locked by PostgreSQL.
             vendor = Vendor.objects.select_for_update(of=("self",)).filter(entity=entity, pk=pk).first()
@@ -504,6 +546,7 @@ class VendorDetailView(_ProcBase):
         return vendor
 
     def get(self, request, pk):
+        """Serialize one vendor; the serializer applies sensitive-field FLS."""
         entity = resolve_entity(request)
         vendor = self._get(entity, pk)
         return success_response(
@@ -512,6 +555,7 @@ class VendorDetailView(_ProcBase):
 
     @transaction.atomic
     def patch(self, request, pk):
+        """Apply validated governance changes while preserving the vendor code."""
         entity = resolve_entity(request)
         body = request.data
         _require_sensitive_access(request, body)
@@ -576,6 +620,7 @@ class VendorInsightsView(_ProcBase):
     rbac_permission = "procurement.report.view"
 
     def get(self, request, pk):
+        """Return report-derived YTD spend, fulfilment, and payment metrics."""
         from ..reports import spend_analysis, vendor_performance
 
         entity = resolve_entity(request)

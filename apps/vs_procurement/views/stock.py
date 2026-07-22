@@ -1,4 +1,9 @@
-"""Stock items and movements.
+"""Perpetual-inventory masters, immutable movements, and valuation reports.
+
+Master endpoints never patch balances.  Issues and adjustments cross the stock
+service boundary, which owns row locking, moving-average costing, availability,
+and journal creation.  Quantities are bounded decimals; monetary unit costs and
+values are integer kobo.
 """
 from __future__ import annotations
 
@@ -65,10 +70,12 @@ class StockItemListCreateView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Require stock management for creation and stock visibility for reads."""
         return "procurement.stock.manage" if self.request.method == "POST" \
             else "procurement.stock.view"
 
     def get(self, request):
+        """List inventory masters for users with explicit stock visibility."""
         entity = resolve_entity(request)
         qs = StockItem.objects.filter(entity=entity).select_related(
             "inventory_account", "default_expense_account", "catalog_item")
@@ -81,6 +88,7 @@ class StockItemListCreateView(_ProcBase):
         return self.paginate(request, qs.order_by("code"), StockItemListSerializer)
 
     def post(self, request):
+        """Create a stock master with validated asset/expense accounting defaults."""
         entity = resolve_entity(request)
         body = request.data
         # Codes are entity-unique identifiers — normalise to trimmed upper-case so the
@@ -121,10 +129,12 @@ class StockItemDetailView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Separate stock-master governance from balance/movement visibility."""
         return "procurement.stock.manage" if self.request.method == "PATCH" \
             else "procurement.stock.view"
 
     def get(self, request, pk):
+        """Return one item with its newest-first immutable movement ledger."""
         entity = resolve_entity(request)
         item = _stock_detail(entity, pk)
         if item is None:
@@ -133,6 +143,7 @@ class StockItemDetailView(_ProcBase):
             "Stock item retrieved.", data=StockItemDetailSerializer(item).data)
 
     def patch(self, request, pk):
+        """Update master defaults without mutating ledger-owned quantity/value."""
         entity = resolve_entity(request)
         item = StockItem.objects.filter(entity=entity, pk=pk).first()
         if item is None:
@@ -188,6 +199,7 @@ class StockIssueView(_ProcBase):
     rbac_permission = "procurement.stock.issue"
 
     def post(self, request, pk):
+        """Issue positive quantity at service-computed moving-average cost."""
         entity = resolve_entity(request)
         item = StockItem.objects.filter(entity=entity, pk=pk).first()
         if item is None:
@@ -225,6 +237,7 @@ class StockAdjustView(_ProcBase):
     rbac_permission = "procurement.stock.adjust"
 
     def post(self, request, pk):
+        """Post a signed count correction through the locked stock service."""
         entity = resolve_entity(request)
         item = StockItem.objects.filter(entity=entity, pk=pk).first()
         if item is None:
@@ -266,6 +279,7 @@ class StockItemSummaryView(_ProcBase):
     rbac_permission = "procurement.stock.view"
 
     def get(self, request):
+        """Return entity-wide stock counts and carried value in integer kobo."""
         entity = resolve_entity(request)
         # ONE aggregate over the item rows — conditional counts avoid loading any rows.
         # low_stock: active, at/below its reorder level but still holding something;
@@ -303,6 +317,7 @@ class StockMovementListView(_ProcBase):
     rbac_permission = "procurement.stock.view"
 
     def get(self, request):
+        """List the entity movement ledger with optional item/type filters."""
         entity = resolve_entity(request)
         qs = StockMovement.objects.filter(entity=entity).select_related(
             "stock_item", "created_by")
@@ -315,10 +330,11 @@ class StockMovementListView(_ProcBase):
 
 
 class StockReorderReportView(_ProcBase):
-    """docstring-name: Stock reorder report"""
+    """Report active items at/below reorder policy, with explicit money units."""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Return quantity strings and {kobo, naira} unit-cost objects."""
         entity = resolve_entity(request)
         rows = stock.reorder_report(entity)
         return success_response(
@@ -340,10 +356,11 @@ class StockReorderReportView(_ProcBase):
 
 
 class StockValuationReportView(_ProcBase):
-    """docstring-name: Stock valuation report"""
+    """Report moving-average stock valuation with explicit money units."""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Return entity rows and total as {kobo, naira} report values."""
         entity = resolve_entity(request)
         report = stock.stock_valuation(entity)
         return success_response(

@@ -3373,6 +3373,52 @@ class ContractConsoleAPITests(_P2PFixtureMixin, TestCase):
             f"/v1/procurement/contracts/{c.pk}/?entity={entity.code}",
             {"title": "nope"}, format="json").status_code, 400)
 
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_auto_renew_json_false_is_stored_false_on_create_and_patch(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        client = self._client(entity)
+        created = client.post(
+            f"/v1/procurement/contracts/?entity={entity.code}",
+            {"vendor": vendor.code, "title": "Strict flag", "auto_renew": False},
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201)
+        contract = VendorContract.objects.get(reference=created.data["data"]["reference"])
+        self.assertIs(contract.auto_renew, False)
+
+        VendorContract.objects.filter(pk=contract.pk).update(auto_renew=True)
+        updated = client.patch(
+            f"/v1/procurement/contracts/{contract.pk}/?entity={entity.code}",
+            {"auto_renew": False}, format="json",
+        )
+        self.assertEqual(updated.status_code, 200)
+        contract.refresh_from_db()
+        self.assertIs(contract.auto_renew, False)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_auto_renew_non_boolean_values_are_rejected_on_create_and_patch(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        client = self._client(entity)
+        contract = self._contract(
+            entity, vendor, start=datetime.date(2026, 1, 1), end=datetime.date(2026, 12, 31),
+        )
+        for invalid in ("false", "true", 0, 1, None):
+            with self.subTest(method="POST", invalid=invalid):
+                response = client.post(
+                    f"/v1/procurement/contracts/?entity={entity.code}",
+                    {"vendor": vendor.code, "title": "Invalid flag", "auto_renew": invalid},
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("auto_renew", response.data["error"]["detail"])
+            with self.subTest(method="PATCH", invalid=invalid):
+                response = client.patch(
+                    f"/v1/procurement/contracts/{contract.pk}/?entity={entity.code}",
+                    {"auto_renew": invalid}, format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("auto_renew", response.data["error"]["detail"])
+
     # --- summary / linked-pos / list --------------------------------------- #
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
@@ -3485,6 +3531,51 @@ class ContractConsoleAPITests(_P2PFixtureMixin, TestCase):
         empty = client.get(
             f"/v1/procurement/contracts/?status=TERMINATED&entity={entity.code}").data["data"]
         self.assertEqual(empty, [])
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_renewals_accepts_valid_within_days_horizon(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        as_of = datetime.date(2026, 6, 1)
+        self._contract(
+            entity, vendor, ref="DUE", start=datetime.date(2026, 1, 1),
+            end=as_of + datetime.timedelta(days=10), status=ContractStatus.ACTIVE,
+        )
+        self._contract(
+            entity, vendor, ref="LATER", start=datetime.date(2026, 1, 1),
+            end=as_of + datetime.timedelta(days=20), status=ContractStatus.ACTIVE,
+        )
+        response = self._client(entity).get(
+            f"/v1/procurement/contracts/renewals/?entity={entity.code}"
+            f"&as_of={as_of.isoformat()}&within_days=15",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["reference"] for row in response.data["data"]], ["DUE"])
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_renewals_rejects_malformed_within_days(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        client = self._client(entity)
+        for invalid in ("abc", "1.5", ""):
+            with self.subTest(invalid=invalid):
+                response = client.get(
+                    f"/v1/procurement/contracts/renewals/?entity={entity.code}"
+                    f"&within_days={invalid}",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("within_days", response.data["error"]["detail"])
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_renewals_rejects_negative_and_excessive_within_days(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        client = self._client(entity)
+        for invalid in (-1, 3651):
+            with self.subTest(invalid=invalid):
+                response = client.get(
+                    f"/v1/procurement/contracts/renewals/"
+                    f"?entity={entity.code}&within_days={invalid}",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("within_days", response.data["error"]["detail"])
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_renew_creates_successor_and_marks_source_renewed(self, _perm):

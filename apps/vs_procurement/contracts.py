@@ -44,7 +44,12 @@ def next_contract_reference(entity):
 
 @transaction.atomic
 def activate_contract(contract, *, actor_user=None):
-    """Bring a DRAFT contract into force. Requires both a start and an end date."""
+    """Bring a DRAFT contract into force after dates and vendor governance pass.
+
+    The contract row is locked before its vendor master row. Re-reading both inside the
+    transaction makes the eligibility decision against authoritative state while the
+    stable lock order aligns with renewal.
+    """
     from .models import Vendor, VendorContract
 
     supplied_contract = contract
@@ -80,7 +85,11 @@ def activate_contract(contract, *, actor_user=None):
 
 
 def terminate_contract(contract, *, reason="", actor_user=None):
-    """End a contract early. Idempotent on terminal states; refuses on DRAFT."""
+    """End a contract early. Idempotent on terminal states; refuses on DRAFT.
+
+    Termination changes commercial lifecycle only—there is no journal or retroactive
+    effect on POs/invoices already raised under the agreement.
+    """
     if contract.status in (ContractStatus.TERMINATED, ContractStatus.EXPIRED,
                            ContractStatus.RENEWED):
         return contract
@@ -105,7 +114,9 @@ def renew_contract(contract, *, reference, start_date, end_date, contract_value=
 
     The new contract starts ACTIVE (carrying the vendor, terms and — unless overridden —
     the same value), points its ``renews`` back at the original, and optionally copies the
-    PENDING milestones forward. The original flips to RENEWED.
+    PENDING milestones forward. The original flips to RENEWED. Contract then vendor are
+    locked in the same order as activation, so governance changes and competing renewals
+    cannot be validated against different master-data snapshots.
     """
     from .models import ContractMilestone, Vendor, VendorContract
 
@@ -134,6 +145,8 @@ def renew_contract(contract, *, reference, start_date, end_date, contract_value=
         renews=contract, notes=contract.notes, created_by=actor_user,
     )
     if copy_milestones:
+        # Only unfinished obligations carry forward; completed/missed rows remain part
+        # of the predecessor's historical performance record.
         pending = contract.milestones.filter(status=MilestoneStatus.PENDING).order_by("line_no", "id")
         for ms in pending:
             ContractMilestone.objects.create(
@@ -175,7 +188,11 @@ def complete_milestone(milestone, *, on=None, actor_user=None):
 
 
 def flag_missed_milestones(entity, *, as_of=None):
-    """Flip PENDING milestones whose due_date has passed to MISSED. Returns the count."""
+    """Flip tenant PENDING milestones strictly before ``as_of`` to MISSED.
+
+    A milestone due on ``as_of`` is still due today, not missed. Returns the bulk-update
+    count without firing per-row saves or audit events.
+    """
     as_of = as_of or datetime.date.today()
     from .models import ContractMilestone
 
@@ -190,7 +207,11 @@ def flag_missed_milestones(entity, *, as_of=None):
 # --------------------------------------------------------------------------- #
 
 def mark_expired(entity, *, as_of=None):
-    """Flip ACTIVE contracts past their end_date to EXPIRED. Returns the count."""
+    """Flip tenant ACTIVE contracts ending strictly before ``as_of`` to EXPIRED.
+
+    End dates are inclusive, so a contract remains active through its stated final day.
+    Returns the bulk-update count.
+    """
     as_of = as_of or datetime.date.today()
     from .models import VendorContract
 

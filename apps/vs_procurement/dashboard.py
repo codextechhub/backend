@@ -67,6 +67,10 @@ PROCUREMENT_AUDIT_ACTIONS = (
 )
 
 
+# --------------------------------------------------------------------------- #
+# Date/money helpers                                                          #
+# --------------------------------------------------------------------------- #
+
 def _money(kobo: int) -> dict:
     # API money is always integer minor units; the formatted value is display-only.
     value = int(kobo or 0)
@@ -90,6 +94,7 @@ def _month_end(day: datetime.date) -> datetime.date:
 
 
 def _spend_kobo(entity, start: datetime.date, end: datetime.date) -> int:
+    """Sum realised gross spend in the inclusive invoice-date window."""
     # Spend is recognised only when a vendor invoice is posted, never while draft.
     return int(
         VendorInvoice.objects.filter(
@@ -102,6 +107,7 @@ def _spend_kobo(entity, start: datetime.date, end: datetime.date) -> int:
 
 
 def _delta_pct(current: int, prior: int) -> float | None:
+    """Return one-decimal period change, or ``None`` for a zero denominator."""
     if not prior:
         # A zero prior period has no meaningful percentage denominator.
         return None
@@ -170,7 +176,12 @@ def _po_status(entity) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# Chart aggregates                                                            #
+# --------------------------------------------------------------------------- #
+
 def _spend_by_category(entity, start: datetime.date, end: datetime.date) -> dict:
+    """Return the five largest category slices plus one exact long-tail slice."""
     report = spend_analysis(entity, start_date=start, end_date=end)
     # Limit the legend to five named categories; merge the long tail into Other.
     top = report.by_category[:5]
@@ -187,6 +198,7 @@ def _spend_by_category(entity, start: datetime.date, end: datetime.date) -> dict
 
 
 def _monthly_trend(entity, as_of: datetime.date) -> dict:
+    """Return eight calendar-month slots ending at ``as_of`` (current month is MTD)."""
     # Offsets -7…0 produce a stable eight-month window ending in the current month.
     starts = [_shift_month(_month_start(as_of), offset) for offset in range(-7, 1)]
     # Group posted invoice totals in SQL, keyed by each month's first day.
@@ -213,6 +225,7 @@ def _monthly_trend(entity, as_of: datetime.date) -> dict:
 
 
 def _requester_name(user) -> str:
+    """Choose a display-safe actor label without exposing the user record."""
     if user is None:
         return "System"
     return (
@@ -225,6 +238,11 @@ def _requester_name(user) -> str:
 
 
 def _pending_approvals(entity, user) -> list:
+    """Build the actor's current procurement queue, constrained to ``entity``.
+
+    This returns the complete de-duplicated queue; the dashboard composer owns the
+    four-card presentation cap so the count KPI can still report the full queue.
+    """
     if user is None or not getattr(user, "is_authenticated", False):
         return []
 
@@ -328,6 +346,7 @@ def _pending_approvals(entity, user) -> list:
 
 
 def _recent_activity(entity) -> list:
+    """Return the five newest successful procurement audit events for ``entity``."""
     rows = (
         FinanceAuditLog.objects.filter(
             entity=entity,
@@ -360,7 +379,13 @@ def _recent_activity(entity) -> list:
 
 
 def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = None) -> dict:
-    """Return the complete Procurement Dashboard payload for one ledger entity."""
+    """Return the complete Procurement Dashboard payload for one ledger entity.
+
+    ``as_of`` closes the current MTD spend/trend and supplies the overdue-invoice clock.
+    The comparison period is the same elapsed day count in the previous month, clamped
+    to that month's end. Activity is capped at five events and the visible approval panel
+    at four cards; ``pending_approvals.count`` still reflects every eligible item.
+    """
     as_of = as_of or timezone.localdate()
     current_start = _month_start(as_of)
     previous_start = _shift_month(current_start, -1)
@@ -376,6 +401,7 @@ def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = No
     po_status = _po_status(entity)
     approvals = _pending_approvals(entity, user)
 
+    # Strictly earlier due dates are overdue; an invoice due on as_of remains current.
     overdue = VendorInvoice.objects.filter(
         entity=entity,
         status=DocumentStatus.POSTED,
@@ -417,6 +443,7 @@ def procurement_dashboard(entity, *, user=None, as_of: datetime.date | None = No
         "purchase_order_status": {"items": po_status["items"]},
         "monthly_spend_trend": _monthly_trend(entity, as_of),
         "recent_activity": _recent_activity(entity),
-        # Four cards fit the prototype panel; the full queue remains a click away.
+        # Four cards fit the prototype panel; the full queue remains a click away and
+        # the KPI above deliberately uses len(approvals) before this presentation cap.
         "approvals_awaiting_user": approvals[:4],
     }

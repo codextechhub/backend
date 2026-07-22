@@ -1,4 +1,9 @@
-"""AP reports and procurement analytics.
+"""Read-only AP reconciliation and procurement analytics adapters.
+
+Views resolve the ledger entity before invoking report services, parse every date
+filter into a real calendar date, and expose money as explicit ``{kobo, naira}``
+objects.  Detail drawers stay report-gated and repeat entity scope so report access
+does not imply broad access to the underlying operational resources.
 """
 from __future__ import annotations
 
@@ -23,10 +28,11 @@ from .base import (
 # --------------------------------------------------------------------------- #
 
 class APAgingView(_ProcBase):
-    """docstring-name: AP aging report"""
+    """Age posted open AP by vendor and due-date bucket."""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Return entity AP aging with explicit minor-unit money values."""
         from ..reports import AGING_BUCKETS, ap_aging
 
         entity = resolve_entity(request)
@@ -57,10 +63,11 @@ class APAgingView(_ProcBase):
 
 
 class APReconciliationView(_ProcBase):
-    """docstring-name: AP reconciliation report"""
+    """Reconcile entity AP subledger balances to the GL control account."""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Return subledger, control, and difference in explicit money units."""
         from ..reports import reconcile_ap
 
         entity = resolve_entity(request)
@@ -81,10 +88,11 @@ class APReconciliationView(_ProcBase):
 
 
 class GRIRBalanceView(_ProcBase):
-    """docstring-name: GR/IR balance"""
+    """Return the entity's received-not-invoiced clearing balance."""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Return the entity control balance as explicit kobo/naira data."""
         from ..reports import grir_balance
 
         entity = resolve_entity(request)
@@ -100,10 +108,11 @@ class GRIRBalanceView(_ProcBase):
 
 
 class APCashRequirementsView(_ProcBase):
-    """docstring-name: AP cash requirements"""
+    """Forecast posted unpaid invoice balances by future due window."""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Return an entity/as-of cash forecast with explicit money objects."""
         from ..reports import FORECAST_BUCKETS, ap_cash_requirements
 
         entity = resolve_entity(request)
@@ -129,10 +138,11 @@ class APCashRequirementsView(_ProcBase):
 
 
 class GRIRAgingView(_ProcBase):
-    """docstring-name: GR/IR aging report"""
+    """Age posted receipt value not yet cleared by vendor invoices."""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Return GRN-grain clearing evidence and GL reconciliation totals."""
         from ..reports import AGING_BUCKETS, grir_aging
 
         entity = resolve_entity(request)
@@ -172,6 +182,7 @@ class APAgingVendorDetailView(_ProcBase):
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Return one entity vendor's report-scoped open-bill evidence."""
         from ..reports import AGING_BUCKETS, ap_vendor_open_bills
 
         entity = resolve_entity(request)
@@ -213,6 +224,7 @@ class GRIRGrnDetailView(_ProcBase):
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Return one entity GRN's clearing evidence or an indistinguishable 404."""
         from ..reports import grir_grn_detail
 
         entity = resolve_entity(request)
@@ -256,6 +268,7 @@ class GRIRPoLinesView(_ProcBase):
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Return line-grain quantity and kobo reconciliation for one entity."""
         from ..reports import grir_po_lines
 
         entity = resolve_entity(request)
@@ -293,6 +306,7 @@ class GRIRPoLineDetailView(_ProcBase):
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Return one entity PO line's posted receipt and invoice evidence."""
         from ..reports import grir_po_line_detail
 
         entity = resolve_entity(request)
@@ -342,10 +356,11 @@ class GRIRPoLineDetailView(_ProcBase):
 # --------------------------------------------------------------------------- #
 
 class ProcurementDashboardView(_ProcBase):
-    """docstring-name: Procurement dashboard"""
+    """Return the permission-aware procurement dashboard for one entity."""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Delegate KPI composition while preserving user-dependent visibility."""
         from ..dashboard import procurement_dashboard
 
         entity = resolve_entity(request)
@@ -356,10 +371,11 @@ class ProcurementDashboardView(_ProcBase):
 
 
 class SpendAnalysisView(_ProcBase):
-    """docstring-name: Spend analysis"""
+    """Analyze posted invoice spend across isolated date/category filters."""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Apply one filter set consistently to vendor, category, period, and totals."""
         from ..reports import spend_analysis
 
         entity = resolve_entity(request)
@@ -370,6 +386,7 @@ class SpendAnalysisView(_ProcBase):
         report = spend_analysis(entity, start_date=start, end_date=end, category=category)
 
         def _rows(rows):
+            """Render one grouped spend dimension with explicit money units."""
             return [
                 {
                     "key": r.key, "label": r.label,
@@ -404,10 +421,11 @@ class SpendAnalysisView(_ProcBase):
 
 
 class VendorPerformanceView(_ProcBase):
-    """docstring-name: Vendor performance"""
+    """Compare computed fulfilment/payment evidence with recorded assessments."""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Return entity vendor metrics for one isolated date window."""
         from ..reports import vendor_performance
 
         entity = resolve_entity(request)
@@ -454,10 +472,11 @@ class VendorPerformanceView(_ProcBase):
 
 
 class ProcurementCycleTimeView(_ProcBase):
-    """docstring-name: Procurement cycle time"""
+    """Measure evidence-backed elapsed days between procurement lifecycle stages."""
     rbac_permission = "procurement.report.view"
 
     def get(self, request):
+        """Return per-stage and end-to-end samples for one entity/date window."""
         from ..reports import procurement_cycle_time
 
         entity = resolve_entity(request)
@@ -481,4 +500,3 @@ class ProcurementCycleTimeView(_ProcBase):
                 "end_to_end_count": report.end_to_end_count,
             },
         )
-

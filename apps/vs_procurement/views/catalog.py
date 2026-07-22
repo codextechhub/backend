@@ -1,4 +1,9 @@
-"""Entity-scoped purchasing catalog master data and real usage insights."""
+"""Entity-scoped purchasing catalog defaults and realized usage insights.
+
+Catalog records are reusable defaults, not accounting entries.  Historical PO
+lines retain their own description, unit, tax, and price snapshots when a catalog
+item changes or becomes inactive.
+"""
 from __future__ import annotations
 
 from django.db import IntegrityError, transaction
@@ -17,6 +22,7 @@ from .base import _ProcBase, _resolve_account, _resolve_tax
 
 
 def _has_permission(request, permission):
+    """Evaluate optional feature visibility in the request's tenant/branch context."""
     if is_vision_super_admin(request.user):
         return True
     tenant = getattr(request, "rbac_tenant", None) or getattr(request, "tenant", None)
@@ -28,6 +34,7 @@ def _has_permission(request, permission):
 
 
 def _clean_text(body, field, max_length, *, upper=False):
+    """Normalize bounded catalog text, optionally to a stable uppercase code."""
     value = str(body.get(field) or "").strip()
     value = value.upper() if upper else value
     if len(value) > max_length:
@@ -36,12 +43,14 @@ def _clean_text(body, field, max_length, *, upper=False):
 
 
 def _strict_bool(value, field):
+    """Reject truthy strings/numbers instead of coercing master-data flags."""
     if not isinstance(value, bool):
         raise ValidationError({field: "Enter a valid boolean value."})
     return value
 
 
 def _strict_price(value):
+    """Accept a non-negative integer-kobo standard price without JSON coercion."""
     # JSON booleans and floats must not cross the integer-kobo boundary by coercion.
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValidationError({"standard_unit_price": "Expected a whole integer amount in kobo."})
@@ -53,6 +62,7 @@ def _strict_price(value):
 
 
 def _lead_time(value):
+    """Validate an optional non-negative small-integer lead time."""
     if value in (None, ""):
         return None
     if isinstance(value, bool) or not isinstance(value, int):
@@ -63,6 +73,7 @@ def _lead_time(value):
 
 
 def _resolve_category(entity, ref, *, current_id=None):
+    """Resolve an active category, preserving an item's existing inactive link."""
     if ref in (None, ""):
         return None
     qs = VendorCategory.objects.filter(entity=entity).select_related("parent", "parent__parent")
@@ -75,6 +86,7 @@ def _resolve_category(entity, ref, *, current_id=None):
 
 
 def _resolve_optional_vendor(entity, ref, field="preferred_vendor", *, current_id=None):
+    """Resolve a purchase-eligible preferred vendor without breaking legacy links."""
     if ref in (None, ""):
         return None
     qs = Vendor.objects.filter(entity=entity)
@@ -88,6 +100,7 @@ def _resolve_optional_vendor(entity, ref, field="preferred_vendor", *, current_i
 
 
 def _resolve_expense(entity, ref, *, current_id=None):
+    """Resolve a usable expense default, retaining the current historical choice."""
     account = _resolve_account(entity, ref, "default_expense_account")
     if account is None:
         return None
@@ -100,6 +113,7 @@ def _resolve_expense(entity, ref, *, current_id=None):
 
 
 def _resolve_purchase_tax(entity, ref, *, current_id=None):
+    """Resolve an active recoverable purchase tax backed by a usable asset account."""
     tax = _resolve_tax(entity, ref, "default_tax_code")
     if tax is None:
         return None
@@ -132,6 +146,11 @@ def _resolve_catalog_item(entity, ref, field="catalog_item", *, current_id=None)
 
 
 def _catalog_queryset(entity, *, include_stock):
+    """Build the catalog source, conditionally attaching permission-gated stock state.
+
+    Callers without ``procurement.stock.view`` receive the same item rows with a
+    null stock overlay; merely viewing catalog data cannot infer inventory levels.
+    """
     qs = CatalogItem.objects.filter(entity=entity).select_related(
         "category", "category__parent", "category__parent__parent",
         "preferred_vendor", "default_expense_account", "default_tax_code",
@@ -172,6 +191,7 @@ def _catalog_queryset(entity, *, include_stock):
 
 
 def _duplicate_error(exc):
+    """Translate an entity/code constraint race into a stable field error."""
     return ValidationError({"code": "A catalog item with this code already exists in this entity."})
 
 
@@ -180,10 +200,12 @@ class CatalogItemListCreateView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Require create permission for writes and catalog view for reads."""
         return "procurement.catalog_item.create" if self.request.method == "POST" \
             else "procurement.catalog_item.view"
 
     def get(self, request):
+        """List catalog defaults with stock state only when separately authorized."""
         entity = resolve_entity(request)
         qs = _catalog_queryset(
             entity, include_stock=_has_permission(request, "procurement.stock.view"),
@@ -206,6 +228,7 @@ class CatalogItemListCreateView(_ProcBase):
 
     @transaction.atomic
     def post(self, request):
+        """Create an item from entity-validated defaults and integer-kobo price."""
         entity = resolve_entity(request)
         body = request.data
         code = _clean_text(body, "code", 40, upper=True)
@@ -241,10 +264,12 @@ class CatalogItemDetailView(_ProcBase):
 
     @property
     def rbac_permission(self):
+        """Separate catalog governance from ordinary item visibility."""
         return "procurement.catalog_item.update" if self.request.method == "PATCH" \
             else "procurement.catalog_item.view"
 
     def get(self, request, pk):
+        """Retrieve an entity item with permission-dependent stock visibility."""
         entity = resolve_entity(request)
         item = _catalog_queryset(
             entity, include_stock=_has_permission(request, "procurement.stock.view"),
@@ -255,6 +280,7 @@ class CatalogItemDetailView(_ProcBase):
 
     @transaction.atomic
     def patch(self, request, pk):
+        """Update defaults under lock while keeping the item code immutable."""
         entity = resolve_entity(request)
         item = CatalogItem.objects.select_for_update().filter(entity=entity, pk=pk).first()
         if item is None:
@@ -303,6 +329,7 @@ class CatalogItemInsightsView(_ProcBase):
     rbac_permission = "procurement.report.view"
 
     def get(self, request, pk):
+        """Summarize realized approved-order usage; drafts are not purchase history."""
         entity = resolve_entity(request)
         item = CatalogItem.objects.filter(entity=entity, pk=pk).first()
         if item is None:

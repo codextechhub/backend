@@ -11,11 +11,15 @@ from vs_finance.exceptions import FinanceError, PostingError
 
 
 class ProcurementError(FinanceError):
+    """Base for non-posting procurement validation and lifecycle failures."""
+
     error_code = "PROCUREMENT_ERROR"
     default_message = "A procurement error occurred."
 
 
 class RequisitionError(ProcurementError):
+    """Raised when requisition creation, submission, or conversion is invalid."""
+
     error_code = "REQUISITION_ERROR"
     default_message = "The requisition could not be processed."
 
@@ -52,7 +56,9 @@ class InsufficientStockError(StockError):
     default_message = "Not enough stock on hand for this issue."
 
     def __init__(self, *, item_code="", requested=None, on_hand=None, **kwargs):
+        """Attach machine-readable requested/on-hand quantities to the error payload."""
         self.item_code = item_code
+        # String conversion keeps Decimal quantities JSON-safe for the shared exception handler.
         super().__init__(
             f"Cannot issue {requested} of '{item_code}': only {on_hand} on hand.",
             item_code=item_code, requested=str(requested), on_hand=str(on_hand),
@@ -67,6 +73,7 @@ class ThreeWayMatchError(PostingError):
     http_status = 409
 
     def __init__(self, match_status, message=None, **kwargs):
+        """Preserve the exact match outcome for API clients and rejection audits."""
         self.match_status = match_status
         super().__init__(
             message or f"Vendor invoice match status is '{match_status}'; cannot post.",
@@ -80,6 +87,7 @@ class MissingControlAccountError(PostingError):
     default_message = "A required control account is not configured for this entity."
 
     def __init__(self, code, *, label="", **kwargs):
+        """Identify the missing chart code without leaking any cross-entity account data."""
         self.code = code
         super().__init__(
             f"No {label or 'control'} account '{code}' found in this entity's chart of accounts.",
