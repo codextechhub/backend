@@ -316,19 +316,34 @@ def award_quotation(quotation, *, order_date=None, actor_user=None):
         reference=quotation.reference,
         narration=f"From quotation {quotation.document_number} (RFQ {rfq.document_number}).",
     )
-    for qline in quotation.lines.all().order_by("line_no", "id"):
+    # Load the complete source-line chain once: cost-centre ownership follows the
+    # originating requisition line when present, then the RFQ header requisition.
+    # Assigning the FK id avoids a separate CostCenter lookup for every awarded line.
+    header_cost_center_id = rfq.requisition.cost_center_id if rfq.requisition_id else None
+    quotation_lines = quotation.lines.select_related(
+        "expense_account", "tax_code", "rfq_line__requisition_line__requisition",
+    ).order_by("line_no", "id")
+    for qline in quotation_lines:
         expense = qline.expense_account or default_expense
         if expense is None:
             raise SourcingError(
                 f"Quotation line '{qline.description}' has no expense account and the "
                 f"vendor has no default — set one before awarding.",
             )
+        requisition_line = (
+            qline.rfq_line.requisition_line
+            if qline.rfq_line_id and qline.rfq_line.requisition_line_id else None
+        )
+        cost_center_id = (
+            requisition_line.requisition.cost_center_id
+            if requisition_line is not None else header_cost_center_id
+        )
         PurchaseOrderLine.objects.create(
             purchase_order=po,
-            requisition_line=qline.rfq_line.requisition_line if qline.rfq_line_id else None,
+            requisition_line=requisition_line,
             description=qline.description, expense_account=expense,
             quantity=qline.quantity, unit_price=qline.unit_price,
-            tax_code=qline.tax_code, line_no=qline.line_no,
+            tax_code=qline.tax_code, cost_center_id=cost_center_id, line_no=qline.line_no,
         )
     price_po(po)
 

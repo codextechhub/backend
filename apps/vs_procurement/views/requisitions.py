@@ -39,8 +39,8 @@ from ..serializers import (
 from .base import (
     _ProcBase,
     _date,
-    _dec,
     _money,
+    _quantity,
     _require_lines,
     _resolve_account,
     _resolve_tax,
@@ -77,7 +77,7 @@ def _write_requisition_lines(req, entity, lines):
         PurchaseRequisitionLine.objects.create(
             requisition=req, line_no=ln.get("line_no", i), catalog_item=item,
             description=ln.get("description") or defaults.get("description", ""),
-            quantity=_dec(ln.get("quantity", 1), "quantity"),
+            quantity=_quantity(ln.get("quantity", 1), "quantity"),
             unit=str(ln.get("unit") or (item.unit_of_measure if item else "Unit"))[:24],
             estimated_unit_price=_money(unit_price or 0, "estimated_unit_price"),
             expense_account=expense, tax_code=tax,

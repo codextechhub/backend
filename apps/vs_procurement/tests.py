@@ -1510,6 +1510,54 @@ class RequisitionConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(denied.status_code, 400)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_and_patch_reject_invalid_quantities_without_surviving_rows(self, _permission):
+        entity, _, _, _, _ = self.build_p2p()
+        client = self.client_for(entity)
+        create_url = f"/v1/procurement/requisitions/?entity={entity.code}"
+
+        def payload(quantity, *, title="Quantity validation"):
+            return {
+                "title": title, "request_date": "2026-01-10",
+                "lines": [{
+                    "description": "Measured item", "quantity": quantity,
+                    "estimated_unit_price": 100_000,
+                }],
+            }
+
+        invalid_quantities = (0, -1, "NaN", "Infinity", "-Infinity", "10000000000.0000")
+        for quantity in invalid_quantities:
+            with self.subTest(method="POST", quantity=quantity):
+                response = client.post(
+                    create_url, payload(quantity, title="Invalid quantity"), format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("quantity", response.data["error"]["detail"])
+                self.assertFalse(PurchaseRequisition.objects.filter(
+                    entity=entity, title="Invalid quantity",
+                ).exists())
+                self.assertFalse(PurchaseRequisitionLine.objects.filter(
+                    requisition__entity=entity,
+                ).exists())
+
+        created = client.post(create_url, payload("1.2500"), format="json")
+        self.assertEqual(created.status_code, 201)
+        requisition = PurchaseRequisition.objects.get(pk=created.data["data"]["id"])
+        original_line = requisition.lines.get()
+        self.assertEqual(str(original_line.quantity), "1.2500")
+
+        patch_url = f"/v1/procurement/requisitions/{requisition.pk}/?entity={entity.code}"
+        for quantity in invalid_quantities:
+            with self.subTest(method="PATCH", quantity=quantity):
+                response = client.patch(
+                    patch_url, {"lines": payload(quantity)["lines"]}, format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertIn("quantity", response.data["error"]["detail"])
+                self.assertEqual(requisition.lines.count(), 1)
+                self.assertEqual(requisition.lines.get().pk, original_line.pk)
+                self.assertEqual(str(requisition.lines.get().quantity), "1.2500")
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_rejected_filter_uses_approval_overlay(self, _permission):
         entity, _, _, _, _ = self.build_p2p()
         from vs_procurement.constants import ProcApprovalState
@@ -2512,6 +2560,7 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         line = po.lines.first()
         self.assertEqual(line.unit_price, 200_000)
         self.assertEqual(line.expense_account, self.acc(entity, "5300"))
+        self.assertIsNone(line.cost_center_id)
 
         winning.refresh_from_db()
         losing.refresh_from_db()
@@ -2525,6 +2574,82 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         ).message
         self.assertIn("₦", message)
         self.assertNotIn("kobo", message.lower())
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_award_carries_lineage_cost_centers_into_budget_commitments(self, _permission):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+        from vs_finance.constants import BudgetStatus
+        from vs_finance.models import Budget, BudgetLine, CostCenter
+
+        entity, period, vendor, _, _ = self.build_p2p()
+        line_center = CostCenter.objects.create(
+            entity=entity, code="LINE", name="Line owner",
+        )
+        header_center = CostCenter.objects.create(
+            entity=entity, code="HEAD", name="RFQ owner",
+        )
+        origin = PurchaseRequisition.objects.create(
+            entity=entity, title="Origin", request_date=datetime.date(2026, 1, 2),
+            cost_center=line_center,
+        )
+        origin_line = PurchaseRequisitionLine.objects.create(
+            requisition=origin, description="Line-owned item", quantity=2,
+            estimated_unit_price=200_000, expense_account=self.acc(entity, "5300"), line_no=1,
+        )
+        header = PurchaseRequisition.objects.create(
+            entity=entity, title="RFQ header", request_date=datetime.date(2026, 1, 2),
+            cost_center=header_center,
+        )
+        rfq = RequestForQuotation.objects.create(
+            entity=entity, requisition=header, title="Mixed ownership",
+            issue_date=datetime.date(2026, 1, 3),
+        )
+        RfqLine.objects.create(
+            rfq=rfq, requisition_line=origin_line, description="Line-owned item",
+            quantity=2, expense_account=self.acc(entity, "5300"), line_no=1,
+        )
+        RfqLine.objects.create(
+            rfq=rfq, description="Header-owned item", quantity=3,
+            expense_account=self.acc(entity, "5300"), line_no=2,
+        )
+        set_rfq_invitations(rfq, [vendor])
+        issue_rfq(rfq)
+        quotation = self._make_quotation(
+            entity, rfq, vendor,
+            lines=[("Line-owned item", 2, 200_000), ("Header-owned item", 3, 300_000)],
+        )
+        submit_quotation(quotation)
+
+        po = award_quotation(quotation, order_date=datetime.date(2026, 1, 10))
+        po_lines = list(po.lines.order_by("line_no"))
+        self.assertEqual(po.status, DocumentStatus.DRAFT)
+        self.assertEqual(po_lines[0].requisition_line_id, origin_line.pk)
+        self.assertEqual(po_lines[0].cost_center_id, line_center.pk)
+        self.assertEqual(po_lines[1].cost_center_id, header_center.pk)
+
+        # Once the awarded draft enters a commitment status, the existing budget view
+        # sees the line-origin cost centre without any special sourced-PO fallback.
+        PurchaseOrder.objects.filter(pk=po.pk).update(status=DocumentStatus.PENDING_APPROVAL)
+        budget = Budget.objects.create(
+            entity=entity, fiscal_year=period.fiscal_year, name="Line owner 2026",
+            status=BudgetStatus.APPROVED, approved_at=timezone.now(),
+        )
+        BudgetLine.objects.create(
+            budget=budget, account=self.acc(entity, "5300"), cost_center=line_center,
+            period_no=1, amount=2_000_000,
+        )
+        user = get_user_model().objects.create_user(
+            email="sourced-budget@test.com", password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Budget", last_name="Tester",
+        )
+        response = TenantAPIClient(user=user).get(
+            f"/v1/procurement/requisitions/budget-availability/"
+            f"?entity={entity.code}&cost_center={line_center.code}&date=2026-01-15",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["committed"], 400_000)
+        self.assertEqual(response.data["data"]["available"], 1_600_000)
 
     def test_cannot_award_unsubmitted_quotation(self):
         entity, _, vendor, _, _ = self.build_p2p()

@@ -14,7 +14,7 @@ invitation, quoted prices, and selection of a winning offer**. Routes are mounte
   vendors; `RfqInvitation` is the durable addressee list (`models.py:674-745`).
 - A `VendorQuotation` is an invited vendor's priced response. Awarding a submitted offer
   rejects the competing submitted offers and creates a **DRAFT purchase order**
-  (`sourcing.py:251-354`).
+  (`sourcing.py:251-369`).
 
 **This does NOT post to the General Ledger.** Requisition approval authorizes intent;
 RFQ issue, quotation submission, and award preserve commercial evidence. Even the PO
@@ -96,7 +96,7 @@ issue; quotation create/submit requires ISSUED RFQ, an invitation, and a vendor 
 active, not on hold, and not KYC-rejected (`sourcing.py:30-107,209-248`;
 `purchasing.py:91-99`). Award locks the quotation, RFQ, and vendor, requires a live
 SUBMITTED offer, and performs PO creation plus winner/loser/RFQ state changes in one
-transaction (`sourcing.py:251-354`).
+transaction (`sourcing.py:251-369`).
 
 ## 5. Calculations
 
@@ -123,14 +123,15 @@ transaction (`sourcing.py:251-354`).
 
 Nothing in this slice posts, so there are no Dr/Cr lines. Requisition submission and
 approval write workflow/document state; sourcing actions write RFQ/quotation state and
-finance audit rows (`approvals.py:136-203`; `sourcing.py:85-183,209-354`).
+finance audit rows (`approvals.py:136-203`; `sourcing.py:85-183,209-369`).
 
 Award creates a DRAFT PO and carries the winning quotation's entity, branch, vendor,
 currency, vendor payment terms, reference, and RFQ requisition link. Per line it carries
 description, quantity, unit price, tax code, line number, expense account (with
 vendor/category fallback), and the source requisition line reached through the RFQ line
-(`sourcing.py:296-333`). It drops quotation notes and lead time. It currently also drops
-the requisition cost center from awarded PO lines; see §8.
+(`sourcing.py:296-348`). It drops quotation notes and lead time. The originating
+requisition line's cost center now survives; when no source line exists, the RFQ header
+requisition's cost center is the fallback (`sourcing.py:319-347`).
 
 ## 7. Worked example
 
@@ -178,23 +179,23 @@ The server derives, rather than reads, the money fields:
 After submit, `POST /quotations/<pk>/award/` changes this offer to AWARDED, rejects
 other submitted offers, closes the RFQ as AWARDED, and returns a DRAFT PO priced to the
 same `322500` kobo. There is still no journal (`views/orders.py:684-723,781-820`;
-`sourcing.py:190-206,251-354`).
+`sourcing.py:190-206,251-369`).
 
 ## 8. Gotchas / known limitations
 
-- **Recommend fix — awarded sourcing can disappear from departmental commitments.**
-  Direct requisition-to-PO conversion copies the requisition cost center onto each PO
-  line, but quotation award does not. Since budget availability sums PO-line cost center,
-  an awarded RFQ sourced from a requisition can understate committed spend
-  (`purchasing.py:217-225`; `sourcing.py:326-332`; `views/requisitions.py:299-310`).
+- ✅ **Awarded sourcing remains visible in departmental commitments.** Award now copies
+  the originating requisition line's cost center, falls back to the RFQ header
+  requisition's center, and loads that lineage in the quotation-line query rather than
+  adding a query per line. Budget availability therefore sees the resulting PO-line
+  commitment (`sourcing.py:319-347`; `views/requisitions.py:299-310`).
 - **Recommend fix — RFQ source lineage can contradict its header.** An RFQ may point to
   requisition A while one of its `requisition_line` ids comes from requisition B in the
   same entity. Award then creates a PO whose header says A and whose line traces to B
-  (`views/orders.py:361-384,441-458`; `sourcing.py:309-332`).
-- **Recommend fix — requisition quantity uses the permissive legacy decimal parser.**
-  RFQ and quotation lines reject zero, negative, non-finite, and oversized quantities;
-  requisition lines do not, so malformed estimates can reach model/database arithmetic
-  (`views/requisitions.py:65-86`; `views/base.py:105-134`).
+  (`views/orders.py:361-384,441-458`; `sourcing.py:309-347`).
+- ✅ **Requisition quantities use the strict shared sourcing boundary.** POST and PATCH
+  now reject zero, negative, non-finite, and oversized quantities before rewriting any
+  line, matching RFQ/quotation behavior (`views/requisitions.py:65-86`;
+  `views/base.py:113-134`).
 - **Judgment call — an invited vendor can create multiple quotations for one RFQ.**
   There is no `(rfq, vendor)` uniqueness rule or create guard. The invitation panel then
   treats the lowest-id quotation as the canonical response even if a later offer is the
@@ -244,17 +245,17 @@ the RFQ `issue` authority (`management/commands/seed_procurement_permissions.py:
 
 ## 11. Test coverage & gaps
 
-The current procurement suite is **203 green**. Requisition console coverage verifies
+The current procurement suite is **205 green**. Requisition console coverage verifies
 entity-scoped summaries, create/derived totals, foreign cost-center rejection, status
-filtering/search, annual budget commitment math, and endpoint RBAC
-(`tests.py:1430-1644`). Workflow coverage verifies manager approval, senior threshold
-escalation, and rejection-to-cancellation (`tests.py:4304-4518`).
+filtering/search, strict quantity validation/rollback, annual budget commitment math,
+and endpoint RBAC (`tests.py:1430-1683`). Workflow coverage verifies manager approval,
+senior threshold escalation, and rejection-to-cancellation (`tests.py:4429-4646`).
 
 `SourcingTests` and `SourcingConsoleAPITests` cover pricing/lifecycle services, invited
 vendor eligibility, issue/close/cancel/award behavior, expired-offer refusal, list and
 empty shapes, permissions, cross-entity ids, validation bounds, invitation replacement,
-detail derivation, and API award conversion (`tests.py:2420-3088`).
+detail derivation, API award conversion, cost-center precedence, and sourced commitment
+visibility in the budget endpoint (`tests.py:2468-3219`).
 
-Missing regression coverage mirrors §8: requisition quantity bounds; RFQ header/line
-source consistency; awarded cost-center carry-through into budget commitments; duplicate
+Remaining gaps mirror the open §8 items: RFQ header/line source consistency; duplicate
 vendor offers/revision policy; late responses; and issue/submit concurrency.
