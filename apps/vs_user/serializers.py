@@ -836,6 +836,13 @@ class OrgNodeSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at',
         )
         read_only_fields = ('id', 'created_at', 'updated_at')
+        # DRF misrepresents these conditional constraints in two ways: the
+        # top-level name constraint becomes an unconditional field validator,
+        # and the sibling constraint makes optional parent_id required. Let
+        # OrgNode.clean() below perform the intended parent-scoped validation;
+        # the database constraints remain the concurrency-safe guard.
+        extra_kwargs = {'name': {'validators': []}}
+        validators = []
 
     # Both fields prefer the annotation / prefetch set by OrgNodeViewSet so the
     # list costs no per-row queries; each falls back to the live property for the

@@ -338,6 +338,64 @@ class OrganogramTreeTests(TestCase):
         self.assertNotIn(parent.id, root_ids)   # inactive parent excluded
 
 
+class OrgNodeSerializerUniquenessTests(TestCase):
+    """Org-node names are unique among siblings, not across hierarchy tiers."""
+
+    def setUp(self):
+        from vs_user.models import OrgNode
+
+        self.division = OrgNode.objects.create(
+            name="Operations", code="OPS", kind=OrgNode.Kind.DIVISION,
+        )
+
+    def test_department_may_have_same_name_as_its_division(self):
+        from vs_user.models import OrgNode
+        from vs_user.serializers import OrgNodeSerializer
+
+        serializer = OrgNodeSerializer(data={
+            "name": self.division.name,
+            "code": "OPS-DEPT",
+            "kind": OrgNode.Kind.DEPARTMENT,
+            "parent_id": self.division.pk,
+        })
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        department = serializer.save()
+        self.assertEqual(department.name, self.division.name)
+        self.assertEqual(department.parent, self.division)
+
+    def test_sibling_departments_may_not_share_a_name(self):
+        from vs_user.models import OrgNode
+        from vs_user.serializers import OrgNodeSerializer
+
+        OrgNode.objects.create(
+            name="People", code="PEOPLE-ONE", kind=OrgNode.Kind.DEPARTMENT,
+            parent=self.division,
+        )
+        serializer = OrgNodeSerializer(data={
+            "name": "People",
+            "code": "PEOPLE-TWO",
+            "kind": OrgNode.Kind.DEPARTMENT,
+            "parent_id": self.division.pk,
+        })
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("name", serializer.errors)
+
+    def test_top_level_divisions_may_not_share_a_name(self):
+        from vs_user.models import OrgNode
+        from vs_user.serializers import OrgNodeSerializer
+
+        serializer = OrgNodeSerializer(data={
+            "name": self.division.name,
+            "code": "OPS-TWO",
+            "kind": OrgNode.Kind.DIVISION,
+        })
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("name", serializer.errors)
+
+
 class OrganogramListQueryTests(TestCase):
     """The org-node and position list endpoints must not be N+1 — three queries
     per seat (holders/vacancy/open-seats) made the Manage page hang over a
