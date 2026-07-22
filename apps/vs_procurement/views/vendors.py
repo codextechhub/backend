@@ -48,6 +48,7 @@ _SENSITIVE_VENDOR_FIELDS = {
     "email", "phone", "address", "tax_id",
     "bank_name", "bank_account_number", "bank_account_name",
 }
+_COMPLIANCE_VENDOR_FIELDS = {"kyc_status", "risk", "on_hold"}
 
 
 def _normalise_code(value):
@@ -95,6 +96,23 @@ def _require_sensitive_access(request, body):
     """Reject writes to PII/bank fields unless field-level RBAC permits them."""
     if _SENSITIVE_VENDOR_FIELDS.intersection(body) and not _has_sensitive_access(request):
         raise PermissionDenied("You do not have permission to modify sensitive vendor fields.")
+
+
+def _has_vendor_manage_access(request):
+    """Check compliance-governance access in the request's tenant/branch context."""
+    if is_vision_super_admin(request.user):
+        return True
+    tenant = getattr(request, "rbac_tenant", None) or getattr(request, "tenant", None)
+    return user_has_rbac_permission(
+        request.user, "procurement.vendor.manage",
+        tenant=tenant or getattr(request.user, "tenant", None), branch=getattr(request, "branch", None),
+    )
+
+
+def _require_vendor_manage_access(request, body):
+    """Require the compliance permission only for KYC, risk, and hold changes."""
+    if _COMPLIANCE_VENDOR_FIELDS.intersection(body) and not _has_vendor_manage_access(request):
+        raise PermissionDenied("You do not have permission to modify vendor compliance fields.")
 
 
 def _resolve_category(entity, ref):
@@ -559,6 +577,9 @@ class VendorDetailView(_ProcBase):
         entity = resolve_entity(request)
         body = request.data
         _require_sensitive_access(request, body)
+        # The route still requires vendor.update; compliance fields add a second,
+        # narrower authority and are rejected before the vendor row is mutated.
+        _require_vendor_manage_access(request, body)
         vendor = self._get(entity, pk, lock=True)
 
         if "code" in body and _normalise_code(body.get("code")) != vendor.code:

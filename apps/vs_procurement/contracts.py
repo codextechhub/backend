@@ -84,15 +84,23 @@ def activate_contract(contract, *, actor_user=None):
     return supplied_contract
 
 
+@transaction.atomic
 def terminate_contract(contract, *, reason="", actor_user=None):
     """End a contract early. Idempotent on terminal states; refuses on DRAFT.
 
     Termination changes commercial lifecycle only—there is no journal or retroactive
-    effect on POs/invoices already raised under the agreement.
+    effect on POs/invoices already raised under the agreement. Re-reading the locked
+    row serializes this transition with renewal and makes stale callers idempotent.
     """
+    from .models import VendorContract
+
+    supplied_contract = contract
+    contract = VendorContract.objects.select_for_update(of=("self",)).get(pk=contract.pk)
     if contract.status in (ContractStatus.TERMINATED, ContractStatus.EXPIRED,
                            ContractStatus.RENEWED):
-        return contract
+        supplied_contract.status = contract.status
+        supplied_contract.updated_at = contract.updated_at
+        return supplied_contract
     if contract.status == ContractStatus.DRAFT:
         raise ContractError("A draft contract cannot be terminated; cancel/delete it instead.")
     contract.status = ContractStatus.TERMINATED
@@ -104,7 +112,9 @@ def terminate_contract(contract, *, reason="", actor_user=None):
                 + (f" Reason: {reason}" if reason else ""),
         vendor_id=contract.vendor_id,
     )
-    return contract
+    supplied_contract.status = contract.status
+    supplied_contract.updated_at = contract.updated_at
+    return supplied_contract
 
 
 @transaction.atomic
@@ -170,10 +180,20 @@ def renew_contract(contract, *, reference, start_date, end_date, contract_value=
 # Milestones                                                                  #
 # --------------------------------------------------------------------------- #
 
+@transaction.atomic
 def complete_milestone(milestone, *, on=None, actor_user=None):
-    """Tick off a milestone as COMPLETED (idempotent). Sets ``completed_date``."""
+    """Lock and tick off a milestone once, preserving caller-visible mutation."""
+    from .models import ContractMilestone
+
+    supplied_milestone = milestone
+    milestone = ContractMilestone.objects.select_for_update(of=("self",)).select_related(
+        "contract__entity",
+    ).get(pk=milestone.pk)
     if milestone.status == MilestoneStatus.COMPLETED:
-        return milestone
+        supplied_milestone.status = milestone.status
+        supplied_milestone.completed_date = milestone.completed_date
+        supplied_milestone.updated_at = milestone.updated_at
+        return supplied_milestone
     milestone.status = MilestoneStatus.COMPLETED
     milestone.completed_date = on or datetime.date.today()
     milestone.save(update_fields=["status", "completed_date", "updated_at"])
@@ -184,7 +204,10 @@ def complete_milestone(milestone, *, on=None, actor_user=None):
                 f"{milestone.contract.reference}.",
         contract_id=milestone.contract_id, milestone_id=milestone.pk,
     )
-    return milestone
+    supplied_milestone.status = milestone.status
+    supplied_milestone.completed_date = milestone.completed_date
+    supplied_milestone.updated_at = milestone.updated_at
+    return supplied_milestone
 
 
 def flag_missed_milestones(entity, *, as_of=None):

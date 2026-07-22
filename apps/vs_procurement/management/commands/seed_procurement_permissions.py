@@ -40,7 +40,7 @@ PROCUREMENT_RESOURCES = [
     ("rfq",            "requests for quotation", [("view", "NORMAL"), ("create", "NORMAL"), ("update", "NORMAL"), ("issue", "SENSITIVE")]),
     ("stock",          "stock items",           [("view", "NORMAL"), ("manage", "SENSITIVE"), ("issue", "SENSITIVE"), ("adjust", "SENSITIVE")]),
     ("vendor",         "vendors",               [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"),
-                                                 ("view_sensitive", "SENSITIVE")]),
+                                                 ("manage", "SENSITIVE"), ("view_sensitive", "SENSITIVE")]),
     # Viewing assessments rides procurement.report.view; only recording one needs this key.
     ("vendor_assessment", "vendor assessments",  [("create", "SENSITIVE")]),
     ("vendor_invoice", "vendor invoices",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("submit", "SENSITIVE"),

@@ -8,9 +8,11 @@ WHT correctly. Run against MySQL:
     ../cx/bin/python manage.py test vs_procurement --settings=apps.settings.local
 """
 import datetime
+import threading
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.db import close_old_connections
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from vs_finance.constants import (
@@ -311,7 +313,67 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(response.status_code, 403)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
-    def test_update_preserves_states_and_cross_entity_ids_are_hidden(self, _permission):
+    @patch("vs_procurement.views.vendors.is_vision_super_admin", return_value=False)
+    @patch("vs_procurement.views.vendors.user_has_rbac_permission", return_value=False)
+    def test_compliance_update_requires_vendor_manage_in_entity_context(
+        self, mock_has_permission, _super_admin, _update_permission,
+    ):
+        entity, _, vendor, _, _ = self.build_p2p()
+        response = self._client(entity).patch(
+            f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}",
+            {"kyc_status": "REJECTED", "risk": "HIGH", "on_hold": True}, format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+        vendor.refresh_from_db()
+        self.assertEqual(vendor.kyc_status, VendorKycStatus.VERIFIED)
+        self.assertEqual(vendor.risk, "LOW")
+        self.assertFalse(vendor.on_hold)
+        mock_has_permission.assert_called_once()
+        self.assertEqual(mock_has_permission.call_args.args[1], "procurement.vendor.manage")
+        self.assertEqual(mock_has_permission.call_args.kwargs["tenant"], entity.tenant)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    @patch("vs_procurement.views.vendors.is_vision_super_admin", return_value=False)
+    @patch("vs_procurement.views.vendors.user_has_rbac_permission", return_value=True)
+    def test_compliance_update_succeeds_with_update_and_manage_permissions(
+        self, mock_has_permission, _super_admin, _update_permission,
+    ):
+        entity, _, vendor, _, _ = self.build_p2p()
+        response = self._client(entity).patch(
+            f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}",
+            {"kyc_status": "REJECTED", "risk": "HIGH", "on_hold": True}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        vendor.refresh_from_db()
+        self.assertEqual(vendor.kyc_status, VendorKycStatus.REJECTED)
+        self.assertEqual(vendor.risk, "HIGH")
+        self.assertTrue(vendor.on_hold)
+        self.assertEqual(mock_has_permission.call_args.args[1], "procurement.vendor.manage")
+        self.assertEqual(mock_has_permission.call_args.kwargs["tenant"], entity.tenant)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    @patch("vs_procurement.views.vendors.is_vision_super_admin", return_value=False)
+    @patch("vs_procurement.views.vendors.user_has_rbac_permission", return_value=False)
+    def test_non_compliance_update_does_not_require_vendor_manage(
+        self, mock_has_permission, mock_super_admin, _update_permission,
+    ):
+        entity, _, vendor, _, _ = self.build_p2p()
+        response = self._client(entity).patch(
+            f"/v1/procurement/vendors/{vendor.id}/?entity={entity.code}",
+            {"name": "Renamed vendor", "is_active": False}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        vendor.refresh_from_db()
+        self.assertEqual(vendor.name, "Renamed vendor")
+        self.assertFalse(vendor.is_active)
+        mock_has_permission.assert_not_called()
+        mock_super_admin.assert_not_called()
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    @patch("vs_procurement.views.vendors._has_vendor_manage_access", return_value=True)
+    def test_update_preserves_states_and_cross_entity_ids_are_hidden(
+        self, _manage_permission, _update_permission,
+    ):
         entity, _, vendor, _, _ = self.build_p2p()
         client = self._client(entity)
         response = client.patch(
@@ -352,6 +414,31 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
             f"/v1/procurement/vendors/{vendor.id}/insights/?entity={other.code}",
         )
         self.assertEqual(cross.status_code, 404)
+
+
+class SeedProcurementPermissionsTests(TestCase):
+    """Procurement permission seeding includes compliance governance idempotently."""
+
+    def test_vendor_manage_is_sensitive_and_granted_to_platform_roles_idempotently(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+        from vs_rbac.models import Permission, TenantRolePermission
+
+        output = StringIO()
+        call_command("seed_actions", verbosity=0, stdout=output)
+        call_command("seed_procurement_permissions", verbosity=0, stdout=output)
+        call_command("seed_procurement_permissions", verbosity=0, stdout=output)
+
+        permission = Permission.objects.get(key="procurement.vendor.manage")
+        self.assertEqual(permission.sensitivity_level, Permission.Sensitivity.SENSITIVE)
+        self.assertTrue(permission.is_restricted)
+        for role_key in ("xvs_super_admin", "xvs_platform_admin"):
+            links = TenantRolePermission.objects.filter(
+                role__key=role_key, role__tenant__kind="PLATFORM",
+                permission=permission, granted=True,
+            )
+            self.assertEqual(links.count(), 1, role_key)
 
 
 class VendorCategoryConsoleAPITests(_P2PFixtureMixin, TestCase):
@@ -3185,6 +3272,26 @@ class VendorContractTests(_P2PFixtureMixin, TestCase):
         terminate_contract(draft)
         self.assertEqual(draft.status, ContractStatus.TERMINATED)
 
+    def test_terminate_stale_instance_is_idempotent_with_single_audit(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        contract = self._contract(
+            entity, vendor, start=datetime.date(2026, 1, 1),
+            end=datetime.date(2026, 12, 31), status=ContractStatus.ACTIVE,
+        )
+        stale = VendorContract.objects.get(pk=contract.pk)
+
+        self.assertIs(terminate_contract(contract), contract)
+        self.assertIs(terminate_contract(stale), stale)
+        self.assertEqual(contract.status, ContractStatus.TERMINATED)
+        self.assertEqual(stale.status, ContractStatus.TERMINATED)
+        self.assertEqual(
+            FinanceAuditLog.objects.filter(
+                entity=entity, action=FinanceAuditAction.VENDOR_CONTRACT_TERMINATED,
+                target_id=str(contract.pk),
+            ).count(),
+            1,
+        )
+
     def test_complete_milestone_sets_date_and_status(self):
         entity, _, vendor, _, _ = self.build_p2p()
         c = self._contract(
@@ -3198,6 +3305,32 @@ class VendorContractTests(_P2PFixtureMixin, TestCase):
         ms.refresh_from_db()
         self.assertEqual(ms.status, MilestoneStatus.COMPLETED)
         self.assertEqual(ms.completed_date, datetime.date(2026, 1, 30))
+
+    def test_complete_stale_milestone_is_idempotent_with_single_audit(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        contract = self._contract(
+            entity, vendor, start=datetime.date(2026, 1, 1), end=datetime.date(2026, 12, 31),
+        )
+        milestone = ContractMilestone.objects.create(
+            contract=contract, name="Kickoff", due_date=datetime.date(2026, 2, 1),
+            amount=1_000_000, line_no=1,
+        )
+        stale = ContractMilestone.objects.get(pk=milestone.pk)
+
+        self.assertIs(
+            complete_milestone(milestone, on=datetime.date(2026, 1, 30)), milestone,
+        )
+        self.assertIs(
+            complete_milestone(stale, on=datetime.date(2026, 1, 31)), stale,
+        )
+        self.assertEqual(milestone.status, MilestoneStatus.COMPLETED)
+        self.assertEqual(stale.status, MilestoneStatus.COMPLETED)
+        self.assertEqual(stale.completed_date, datetime.date(2026, 1, 30))
+        audit = FinanceAuditLog.objects.get(
+            entity=entity, action=FinanceAuditAction.CONTRACT_MILESTONE_COMPLETED,
+            target_id=str(contract.pk),
+        )
+        self.assertEqual(audit.metadata["milestone_id"], milestone.pk)
 
     def test_flag_missed_milestones(self):
         entity, _, vendor, _, _ = self.build_p2p()
@@ -3242,6 +3375,157 @@ class VendorContractTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(moved, 1)
         soon.refresh_from_db()
         self.assertEqual(soon.status, ContractStatus.EXPIRED)
+
+
+class VendorContractConcurrencyTests(_P2PFixtureMixin, TransactionTestCase):
+    """PostgreSQL row locks serialize competing contract lifecycle transitions."""
+
+    # LedgerEntity's platform fallback depends on migration-seeded ``codex`` tenant
+    # data; TransactionTestCase flushes between methods, so restore serialized seed data.
+    serialized_rollback = True
+
+    def _contract(self, entity, vendor, *, ref="C-RACE"):
+        return VendorContract.objects.create(
+            entity=entity, vendor=vendor, reference=ref, title="Race",
+            status=ContractStatus.ACTIVE, start_date=datetime.date(2026, 1, 1),
+            end_date=datetime.date(2026, 12, 31), contract_value=12_000_000,
+        )
+
+    def test_terminate_serializes_against_concurrent_renewal(self):
+        from vs_procurement import contracts as contract_services
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        contract = self._contract(entity, vendor)
+        audit_entered = threading.Event()
+        release_termination = threading.Event()
+        renewal_attempting = threading.Event()
+        renewal_done = threading.Event()
+        outcomes = {}
+
+        def blocking_record(**kwargs):
+            audit_entered.set()
+            if not release_termination.wait(5):
+                raise TimeoutError("termination test did not release the audit boundary")
+
+        def terminate_worker():
+            close_old_connections()
+            try:
+                current = VendorContract.objects.get(pk=contract.pk)
+                result = terminate_contract(current)
+                outcomes["termination"] = result.status
+            except Exception as exc:  # pragma: no cover - asserted in the parent thread
+                outcomes["termination_error"] = exc
+            finally:
+                close_old_connections()
+
+        def renew_worker():
+            close_old_connections()
+            try:
+                current = VendorContract.objects.get(pk=contract.pk)
+                renewal_attempting.set()
+                renew_contract(
+                    current, reference="C-RACE-R", start_date=datetime.date(2027, 1, 1),
+                    end_date=datetime.date(2027, 12, 31),
+                )
+                outcomes["renewal"] = "succeeded"
+            except Exception as exc:  # The serialized loser must see TERMINATED.
+                outcomes["renewal_error"] = exc
+            finally:
+                close_old_connections()
+                renewal_done.set()
+
+        terminate_thread = threading.Thread(target=terminate_worker, daemon=True)
+        renew_thread = threading.Thread(target=renew_worker, daemon=True)
+        with patch.object(contract_services, "record", side_effect=blocking_record) as audit_record:
+            terminate_thread.start()
+            try:
+                self.assertTrue(audit_entered.wait(5))
+                renew_thread.start()
+                self.assertTrue(renewal_attempting.wait(5))
+                self.assertFalse(renewal_done.wait(0.25))
+            finally:
+                release_termination.set()
+            terminate_thread.join(5)
+            renew_thread.join(5)
+
+        self.assertFalse(terminate_thread.is_alive())
+        self.assertFalse(renew_thread.is_alive())
+        self.assertNotIn("termination_error", outcomes)
+        self.assertEqual(outcomes.get("termination"), ContractStatus.TERMINATED)
+        self.assertIsInstance(outcomes.get("renewal_error"), ContractError)
+        self.assertEqual(audit_record.call_count, 1)
+        contract.refresh_from_db()
+        self.assertEqual(contract.status, ContractStatus.TERMINATED)
+        self.assertFalse(VendorContract.objects.filter(reference="C-RACE-R").exists())
+
+    def test_concurrent_milestone_completions_transition_once(self):
+        from vs_procurement import contracts as contract_services
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        contract = self._contract(entity, vendor)
+        milestone = ContractMilestone.objects.create(
+            contract=contract, name="Kickoff", due_date=datetime.date(2026, 2, 1),
+            amount=1_000_000, line_no=1,
+        )
+        audit_entered = threading.Event()
+        release_first = threading.Event()
+        second_attempting = threading.Event()
+        second_done = threading.Event()
+        outcomes = {}
+
+        def blocking_record(**kwargs):
+            audit_entered.set()
+            if not release_first.wait(5):
+                raise TimeoutError("milestone test did not release the audit boundary")
+
+        def complete_worker(name, on, *, attempting=None, done=None):
+            close_old_connections()
+            try:
+                current = ContractMilestone.objects.get(pk=milestone.pk)
+                if attempting is not None:
+                    attempting.set()
+                result = complete_milestone(current, on=on)
+                outcomes[name] = (result.status, result.completed_date)
+            except Exception as exc:  # pragma: no cover - asserted in the parent thread
+                outcomes[f"{name}_error"] = exc
+            finally:
+                close_old_connections()
+                if done is not None:
+                    done.set()
+
+        first_thread = threading.Thread(
+            target=complete_worker,
+            args=("first", datetime.date(2026, 1, 30)),
+            daemon=True,
+        )
+        second_thread = threading.Thread(
+            target=complete_worker,
+            args=("second", datetime.date(2026, 1, 31)),
+            kwargs={"attempting": second_attempting, "done": second_done},
+            daemon=True,
+        )
+        with patch.object(contract_services, "record", side_effect=blocking_record) as audit_record:
+            first_thread.start()
+            try:
+                self.assertTrue(audit_entered.wait(5))
+                second_thread.start()
+                self.assertTrue(second_attempting.wait(5))
+                self.assertFalse(second_done.wait(0.25))
+            finally:
+                release_first.set()
+            first_thread.join(5)
+            second_thread.join(5)
+
+        self.assertFalse(first_thread.is_alive())
+        self.assertFalse(second_thread.is_alive())
+        self.assertNotIn("first_error", outcomes)
+        self.assertNotIn("second_error", outcomes)
+        expected = (MilestoneStatus.COMPLETED, datetime.date(2026, 1, 30))
+        self.assertEqual(outcomes.get("first"), expected)
+        self.assertEqual(outcomes.get("second"), expected)
+        self.assertEqual(audit_record.call_count, 1)
+        milestone.refresh_from_db()
+        self.assertEqual((milestone.status, milestone.completed_date), expected)
 
 
 class ContractConsoleAPITests(_P2PFixtureMixin, TestCase):

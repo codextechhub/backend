@@ -43,17 +43,17 @@ standard paginated `{pagination, data}` envelope.
 
 | Method + path | permission key | request body / query | response |
 |---|---|---|---|
-| `GET /categories/` | `procurement.category.view` | Query `is_active`, `search`/`q` | Paginated categories + direct vendor/child/catalog counts (`views/vendors.py:247-265`) |
-| `POST /categories/` | `procurement.category.create` | `code`, `name`, `parent?`, `default_expense_account?`, `is_active?` | `201` category (`views/vendors.py:268-293`) |
+| `GET /categories/` | `procurement.category.view` | Query `is_active`, `search`/`q` | Paginated categories + direct vendor/child/catalog counts (`views/vendors.py:265-283`) |
+| `POST /categories/` | `procurement.category.create` | `code`, `name`, `parent?`, `default_expense_account?`, `is_active?` | `201` category (`views/vendors.py:286-311`) |
 | `GET /categories/<pk>/` | `procurement.category.view` | — | Category + direct counts |
-| `PATCH /categories/<pk>/` | `procurement.category.update` | `code?` (must be unchanged), `name?`, `parent?`, `default_expense_account?`, `is_active?` | Updated category (`views/vendors.py:326-367`) |
-| `GET /categories/insights/` | `procurement.report.view` | — | Category activity/spend insight (`views/vendors.py:370-411`) |
-| `GET /vendors/` | `procurement.vendor.view` | Query `is_active`, `on_hold`, `kyc_status`, `purchase_eligible`, `search`/`q` | Paginated non-sensitive vendor rows (`views/vendors.py:426-451`) |
-| `POST /vendors/` | `procurement.vendor.create` | `code`, `name`, category/contact/bank/tax fields, `payable_account?`, `default_expense_account?`, `default_wht_tax_code?`, `payment_terms?` | `201` vendor; KYC/risk/hold/activity are server defaults (`views/vendors.py:454-493`) |
+| `PATCH /categories/<pk>/` | `procurement.category.update` | `code?` (must be unchanged), `name?`, `parent?`, `default_expense_account?`, `is_active?` | Updated category (`views/vendors.py:344-385`) |
+| `GET /categories/insights/` | `procurement.report.view` | — | Category activity/spend insight (`views/vendors.py:388-429`) |
+| `GET /vendors/` | `procurement.vendor.view` | Query `is_active`, `on_hold`, `kyc_status`, `purchase_eligible`, `search`/`q` | Paginated non-sensitive vendor rows (`views/vendors.py:444-469`) |
+| `POST /vendors/` | `procurement.vendor.create` | `code`, `name`, category/contact/bank/tax fields, `payable_account?`, `default_expense_account?`, `default_wht_tax_code?`, `payment_terms?` | `201` vendor; KYC/risk/hold/activity are server defaults (`views/vendors.py:472-511`) |
 | `GET /vendors/<pk>/` | `procurement.vendor.view` | — | Vendor detail; sensitive fields are FLS-masked |
-| `PATCH /vendors/<pk>/` | `procurement.vendor.update` | All mutable detail fields, including KYC/risk/hold/activity; `code` cannot change | Updated vendor (`views/vendors.py:557-614`) |
-| `GET /vendors/summary/` | `procurement.report.view` | — | Counts, YTD posted spend, average terms (`views/vendors.py:501-517`) |
-| `GET /vendors/<pk>/insights/` | `procurement.report.view` | — | Spend/performance insight (`views/vendors.py:617-632`) |
+| `PATCH /vendors/<pk>/` | `procurement.vendor.update`; additionally `procurement.vendor.manage` for KYC/risk/hold | All mutable detail fields; `code` cannot change | Updated vendor (`views/vendors.py:575-632`) |
+| `GET /vendors/summary/` | `procurement.report.view` | — | Counts, YTD posted spend, average terms (`views/vendors.py:519-535`) |
+| `GET /vendors/<pk>/insights/` | `procurement.report.view` | — | Spend/performance insight (`views/vendors.py:638-653`) |
 | `GET /catalog-items/` | `procurement.catalog_item.view` | Query `is_active`, `vendor`, `category`, `search`/`q` | Paginated items; `stock_status` only with `procurement.stock.view` (`views/catalog.py:207-227`) |
 | `POST /catalog-items/` | `procurement.catalog_item.create` | `code`, `name`, `description?`, `unit_of_measure?`, category/vendor/account/tax defaults, `lead_time_days?`, `standard_unit_price?`, `is_active?` | `201` item (`views/catalog.py:229-259`) |
 | `GET /catalog-items/<pk>/` | `procurement.catalog_item.view` | — | Item with permission-gated stock overlay |
@@ -91,19 +91,19 @@ Milestone: PENDING ─complete─▶ COMPLETED
 Activation requires dates in order and an active, non-held vendor whose KYC is not
 rejected (`contracts.py:45-84`). Renewal accepts ACTIVE or EXPIRED, creates an ACTIVE
 successor, optionally copies only pending milestones, and marks the source RENEWED in
-one transaction (`contracts.py:110-166`). End dates are inclusive; batch expiry/missed
-checks use strictly-before comparisons (`contracts.py:190-221`).
+one transaction (`contracts.py:121-176`). End dates are inclusive; batch expiry/missed
+checks use strictly-before comparisons (`contracts.py:213-244`).
 
 ## 5. Calculations
 
 - Category `level` is root `1`, child `2`, grandchild `3`; API hierarchy validation
   considers both ancestry and descendant height (`serializers.py:70-74`;
-  `views/vendors.py:171-231`).
+  `views/vendors.py:189-249`).
 - `renewal_window_start = end_date − renewal_notice_days`. A contract is due when
   `window_start ≤ as_of ≤ end_date`; `within_days` replaces the per-contract notice with
-  `end_date ≤ as_of + within_days` (`models.py:541-545`; `contracts.py:224-248`).
+  `end_date ≤ as_of + within_days` (`models.py:541-545`; `contracts.py:247-271`).
 - Vendor summary spend is the sum of POSTED invoice gross totals from January 1; average
-  payment days is the mean of configured term days (`views/vendors.py:501-517`).
+  payment days is the mean of configured term days (`views/vendors.py:519-535`).
 - Catalog insight min/max prices and quantities come only from APPROVED POs whose source
   requisition line points to the catalog item (`views/catalog.py:338-358`).
 
@@ -118,7 +118,7 @@ accounts are merely copied as defaults; the later GRN/invoice/payment services d
 and validate the real journal (`models.py:299-322`; `contracts.py:74-80`).
 
 Contract-linked POs also remain separate documents. Terminating or renewing a contract
-does not reverse or rewrite POs/invoices already raised under it (`contracts.py:87-107`).
+does not reverse or rewrite POs/invoices already raised under it (`contracts.py:88-117`).
 
 ## 7. Worked example
 
@@ -148,18 +148,21 @@ rewrite that line and this request creates no journal (`models.py:231-240,299-32
 - ✅ **Bounded renewal horizon:** `within_days` now accepts only whole days from 0 through
   3650; malformed, negative, boolean, and excessive values return a field-level 400
   instead of reaching `int(...)` unsafely (`views/contracts.py:81-96,440-446`).
-- **Recommend fix:** termination and milestone completion do not lock their rows, so a
-  concurrent renewal/termination or duplicate completion can race even though renewal
-  and activation are serialized (`contracts.py:87-107,173-187`).
-- **Judgment call:** vendor `update` can change KYC, risk, hold, and activity directly.
-  There is FLS for PII/bank data, but no separate compliance permission for these
-  governance fields (`views/vendors.py:598-607`).
+- ✅ **Serialized contract actions:** termination and milestone completion now lock and
+  re-read their target rows inside atomic transactions. A competing renewal waits and
+  then sees the terminal state; repeated milestone completion preserves the first date
+  and writes only one audit event (`contracts.py:87-117,183-208`).
+- ✅ **Separate vendor compliance authority:** vendor PATCH still requires
+  `procurement.vendor.update`, while changing `kyc_status`, `risk`, or `on_hold` also
+  requires the seeded, restricted `procurement.vendor.manage` permission. Ordinary
+  profile/activity edits do not require it (`views/vendors.py:51,101-116,575-582`;
+  `management/commands/seed_procurement_permissions.py:42-43`).
 - **Justified by design:** category depth is enforced by API governance rather than a DB
   constraint; direct ORM/import writers must reuse that boundary (`models.py:88-92`;
-  `views/vendors.py:201-231`).
+  `views/vendors.py:219-249`).
 - **Justified by design:** contract expiry/missed status needs a scheduled call to
   `mark_expired` / `flag_missed_milestones`; serializers and summary views still derive
-  date-honest display state before that sweep runs (`contracts.py:190-221`;
+  date-honest display state before that sweep runs (`contracts.py:213-244`;
   `serializers.py:163-175`).
 
 ## 9. Permissions & tenant isolation
@@ -170,7 +173,7 @@ Related category/vendor/account/tax references are resolved inside the same enti
 foreign ids therefore behave as missing rather than leaking another tenant's row.
 
 Resources/verbs are distinct: category and catalog have view/create/update; vendor adds
-`view_sensitive`; contract adds activate/renew/terminate; insight/summary endpoints use
+`view_sensitive` and compliance `manage`; contract adds activate/renew/terminate; insight/summary endpoints use
 `procurement.report.view`, except contract summary/renewals use contract view. The
 linked-PO panel correctly requires `procurement.purchase_order.view`, not merely contract
 visibility (`views/contracts.py:264-272`).
@@ -191,17 +194,16 @@ visibility (`views/contracts.py:264-272`).
 
 ## 11. Test coverage & gaps
 
-The current procurement suite is **195 green**. Relevant groups are
-`VendorConsoleAPITests` (`tests.py:197`), `VendorCategoryConsoleAPITests` (`:357`),
-`VendorEligibilityTests` (`:668`), `CatalogItemTests` / `CatalogItemConsoleAPITests`
-(`:3008`, `:3043`), and `VendorContractTests` / `ContractConsoleAPITests`
-(`:3113`, `:3247`). They cover permissions, empty list shape, cross-entity access,
+The current procurement suite is **203 green**. Relevant groups are
+`VendorConsoleAPITests` (`tests.py:199`), `VendorCategoryConsoleAPITests` (`:444`),
+`VendorEligibilityTests` (`:755`), `CatalogItemTests` / `CatalogItemConsoleAPITests`
+(`:3095`, `:3130`), and `VendorContractTests` / `VendorContractConcurrencyTests` /
+`ContractConsoleAPITests` (`:3200`, `:3380`, `:3531`). They cover permissions, empty list shape, cross-entity access,
 inactive-link preservation, vendor eligibility, catalog bounds, contract lifecycle, and
 linked-PO scoping.
 
 The fixed validation paths now cover real `false` on create/update, non-boolean
 rejection, valid renewal horizons, and malformed/negative/excessive horizon rejection.
-Still needed before shipping any remaining §8 changes:
-
-- concurrent renew-versus-terminate and milestone completion tests;
-- explicit permission tests for any future KYC/risk/hold governance verb split.
+The selected §8 fixes add real PostgreSQL concurrency tests, stale-instance/single-audit
+tests, vendor update-only denial and manage-grant success, ordinary-update preservation,
+and idempotent permission-seed coverage (`tests.py:199-442,3200-3530`).
