@@ -41,7 +41,8 @@ One request to collect money in. Money is integer **kobo** (`amount`, a
 Key fields:
 - `entity` → `vs_finance.LedgerEntity` (PROTECT) — the tenant scope (`models.py:97-99`).
 - `reference` — **our** merchant reference / idempotency key, `unique` globally
-  (a `CXP-<uuid>` string, `services.py:42-44`); `provider_reference` is what the
+  (`CXP-<tenant_id><YYMMDD><daily_sequence>`, generated from the entity's tenant
+  at `services.py:42-48`); `provider_reference` is what the
   PSP returns (`models.py:104-108`).
 - `provider` (`PaymentProvider`: OPAY / PAYSTACK / FAKE), `channel`
   (`CollectionChannel`: CHECKOUT / VIRTUAL_ACCOUNT / CARD / BANK_TRANSFER / USSD),
@@ -219,9 +220,9 @@ Using the `FakeProvider` (test wiring, `tests.py:119-151`,
    status PENDING. Intent saved **PROCESSING**. Response (201):
    ```json
    { "id": 1, "provider": "PAYSTACK", "channel": "CHECKOUT",
-     "reference": "CXP-…", "provider_reference": "FAKE-CXP-…",
+     "reference": "CXP-12607221", "provider_reference": "FAKE-CXP-12607221",
      "amount": 50000, "amount_naira": "₦500.00", "status": "PROCESSING",
-     "customer_code": "CUST1", "invoice_id": 7, "checkout_url": "https://fake.test/checkout/CXP-…",
+     "customer_code": "CUST1", "invoice_id": 7, "checkout_url": "https://fake.test/checkout/CXP-12607221",
      "payment_id": null, "confirmed_at": null }
    ```
 3. Provider now reports success (`fake.forced_status[ref]="SUCCEEDED"`).

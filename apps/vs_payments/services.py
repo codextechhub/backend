@@ -14,7 +14,6 @@ Amounts stay integer **kobo** throughout.
 from __future__ import annotations
 
 import datetime
-import uuid
 
 from django.db import transaction
 from django.utils import timezone
@@ -40,9 +39,13 @@ from .providers.registry import get_provider
 
 
 # Support the new reference workflow.
-def _new_reference() -> str:
-    """A unique merchant reference / idempotency key for an outbound request."""
-    return f"{REFERENCE_PREFIX}-{uuid.uuid4().hex[:20].upper()}"  # Prefix plus random suffix keeps references readable.
+def _new_reference(entity) -> str:
+    """Allocate a tenant-level daily merchant reference for an outbound request."""
+    from vs_tenants.numbering import next_tenant_document_number
+
+    return next_tenant_document_number(
+        tenant=entity.tenant, document_code=REFERENCE_PREFIX,
+    )
 
 
 # Support the entity currency workflow.
@@ -72,7 +75,7 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
     channel = channel or CollectionChannel.CHECKOUT  # Default to a checkout-style collection.
     provider_name = provider or getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")  # Fall back to the configured PSP.
     client = get_provider(provider_name)  # Resolve the PSP client once for this request.
-    reference = _new_reference()  # Generate a unique reference for the provider and our ledger.
+    reference = _new_reference(entity)  # Generate a unique reference for the provider and our ledger.
     callback_url = callback_url or getattr(settings, "PAYMENTS_CALLBACK_URL", "")  # Use the configured callback URL if none is provided.
     currency = currency or _entity_currency(entity)  # Keep the collection in the entity's currency by default.
     if invoice is not None and customer is None:  # Allow invoice-driven collections to infer the customer.
@@ -146,7 +149,7 @@ def create_virtual_account(*, entity, customer, provider=None, deposit_account=N
         raise ValidationError(
             {"customer": "This customer already has an active virtual account with this provider."})
     client = get_provider(provider_name)  # Reuse the configured PSP client.
-    reference = _new_reference()  # Give the PSP request its own reference.
+    reference = _new_reference(entity)  # Give the PSP request its own reference.
     result = client.create_virtual_account(  # Ask the PSP to provision the account.
         reference=reference, customer_name=customer.name,
         customer_email=customer.billing_email, bank_code=bank_code,
@@ -297,7 +300,7 @@ def initiate_payout(*, entity, amount, beneficiary_name, beneficiary_account_num
 
     provider_name = provider or getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")  # Resolve the PSP to use.
     client = get_provider(provider_name)  # Prepare the transfer client up front.
-    reference = _new_reference()  # Assign a unique payout reference.
+    reference = _new_reference(entity)  # Assign a unique payout reference.
     currency = currency or _entity_currency(entity)  # Default to the entity currency for outbound transfers.
 
     payout = PayoutInstruction.objects.create(
@@ -382,7 +385,7 @@ def create_payout_batch(*, entity, items, provider=None, source_account=None,
     provider_name = provider or getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")  # Resolve the batch PSP.
     get_provider(provider_name)  # Validate the provider configuration before creating batch rows.
     currency = currency or _entity_currency(entity)  # Default the batch currency to the entity currency.
-    batch_reference = _new_reference()  # Use one reference for the whole batch.
+    batch_reference = _new_reference(entity)  # Use one reference for the whole batch.
 
     with transaction.atomic():
         batch = PayoutBatch.objects.create(
@@ -399,7 +402,7 @@ def create_payout_batch(*, entity, items, provider=None, source_account=None,
             vendor = item.get("vendor")
             PayoutInstruction.objects.create(
                 entity=entity, batch=batch, provider=provider_name,
-                reference=_new_reference(), amount=amount, currency=currency,
+                reference=_new_reference(entity), amount=amount, currency=currency,
                 beneficiary_name=item["beneficiary_name"],
                 beneficiary_account_number=item["beneficiary_account_number"],
                 beneficiary_bank_code=item.get("beneficiary_bank_code", ""),

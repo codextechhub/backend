@@ -177,7 +177,8 @@ bogus journal.
 Paystack collection webhook (from `test_webhook_confirms_collection`,
 `tests.py:258-274`, via the `FakeProvider` wired over `PAYSTACK`):
 
-1. `initiate_collection(...)` creates a PROCESSING intent with `reference=CXP-…`.
+1. `initiate_collection(...)` creates a PROCESSING intent with a tenant-daily
+   reference such as `CXP-12607221` (`services.py:42-48,78`).
 2. The provider (test double) reports success: `fake.forced_status[ref] = "SUCCEEDED"`.
 3. `build_webhook(event="charge.success", reference=ref, status="SUCCEEDED",
    amount=40000)` returns `(raw_body, {x-fake-signature: HMAC})`.

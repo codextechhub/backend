@@ -77,3 +77,37 @@ class TenantOwnedModel(models.Model):
 
     class Meta:
         abstract = True
+
+
+class TenantDocumentSequence(models.Model):
+    """Last number allocated for one tenant, document code, and local date.
+
+    All human-facing document numbers route through this tenant-level counter so
+    ledger entities and branches owned by the same tenant cannot open competing
+    series for the same document code.
+    """
+
+    tenant = models.ForeignKey(
+        Tenant, on_delete=models.PROTECT, related_name="document_sequences",
+    )
+    document_code = models.CharField(max_length=16)
+    date = models.DateField()
+    last_number = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "document_code", "date"],
+                name="uniq_tenant_docseq_code_date",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["tenant", "date"], name="tenant_docseq_tenant_date_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}/{self.document_code}/{self.date}: {self.last_number}"

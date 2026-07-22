@@ -280,45 +280,57 @@ class NumberingTests(TestCase):
         # Use the platform entity seeded by migration 0002 (code CODEX).
         self.platform = LedgerEntity.objects.platform()
 
-    # Verify format and increment with branch behavior.
-    def test_format_and_increment_with_branch(self):
+    def test_format_and_increment_uses_tenant_and_date(self):
+        day = datetime.date(2026, 7, 22)
         n1 = next_document_number(
-            entity=self.entity, branch=self.branch, doc_type=DocType.INVOICE, fiscal_year=2026,
+            entity=self.entity, doc_type=DocType.INVOICE, allocation_date=day,
         )
         n2 = next_document_number(
-            entity=self.entity, branch=self.branch, doc_type=DocType.INVOICE, fiscal_year=2026,
+            entity=self.entity, doc_type=DocType.INVOICE, allocation_date=day,
         )
-        self.assertEqual(n1, f"{self.entity.number_code}-B{self.branch.code:02d}-IV-2600001")
-        self.assertEqual(n2, f"{self.entity.number_code}-B{self.branch.code:02d}-IV-2600002")
+        self.assertEqual(n1, f"IV-{self.entity.tenant_id}2607221")
+        self.assertEqual(n2, f"IV-{self.entity.tenant_id}2607222")
 
-    # Verify entity level doc omits branch segment behavior.
-    def test_entity_level_doc_omits_branch_segment(self):
+    def test_different_code_starts_its_own_series(self):
+        day = datetime.date(2026, 7, 22)
         n = next_document_number(
-            entity=self.platform, branch=None, doc_type=DocType.PAYMENT, fiscal_year=2026,
+            entity=self.entity, doc_type=DocType.PAYMENT, allocation_date=day,
         )
-        self.assertEqual(n, f"{self.platform.number_code}-PY-2600001")
+        self.assertEqual(n, f"PY-{self.entity.tenant_id}2607221")
 
-    # Verify scopes are independent behavior.
-    def test_scopes_are_independent(self):
-        inv = next_document_number(
-            entity=self.entity, branch=self.branch, doc_type=DocType.INVOICE, fiscal_year=2026,
+    def test_next_date_resets_series(self):
+        first = next_document_number(
+            entity=self.entity, doc_type=DocType.INVOICE,
+            allocation_date=datetime.date(2026, 7, 22),
         )
-        po = next_document_number(
-            entity=self.entity, branch=self.branch, doc_type=DocType.PURCHASE_ORDER, fiscal_year=2026,
+        next_day = next_document_number(
+            entity=self.entity, doc_type=DocType.INVOICE,
+            allocation_date=datetime.date(2026, 7, 23),
         )
-        self.assertTrue(inv.endswith("IV-2600001"))
-        self.assertTrue(po.endswith("PO-2600001"))
+        self.assertTrue(first.endswith("2607221"))
+        self.assertTrue(next_day.endswith("2607231"))
 
-    # Verify two entities keep independent series behavior.
-    def test_two_entities_keep_independent_series(self):
+    def test_two_entities_for_same_tenant_share_series(self):
+        other = LedgerEntity.objects.create(
+            name="Other Books", code="OTHER", kind=LedgerEntity.Kind.TENANT,
+            tenant=self.school.tenant,
+        )
+        day = datetime.date(2026, 7, 22)
         a = next_document_number(
-            entity=self.entity, branch=None, doc_type=DocType.JOURNAL, fiscal_year=2026,
+            entity=self.entity, doc_type=DocType.JOURNAL, allocation_date=day,
         )
         b = next_document_number(
-            entity=self.platform, branch=None, doc_type=DocType.JOURNAL, fiscal_year=2026,
+            entity=other, doc_type=DocType.JOURNAL, allocation_date=day,
         )
-        self.assertEqual(a, f"{self.entity.number_code}-JN-2600001")
-        self.assertEqual(b, f"{self.platform.number_code}-JN-2600001")
+        self.assertEqual(a, f"JN-{self.entity.tenant_id}2607221")
+        self.assertEqual(b, f"JN-{self.entity.tenant_id}2607222")
+
+    def test_existing_document_number_is_preserved(self):
+        invoice = Invoice(
+            entity=self.entity, customer=Customer(entity=self.entity),
+            document_number="LEGACY-IV-0001",
+        )
+        self.assertEqual(invoice.assign_number(), "LEGACY-IV-0001")
 
 
 # Group tests for G L Fixture Mixin.
@@ -400,7 +412,7 @@ class PostingTests(_GLFixtureMixin, TestCase):
         entry.refresh_from_db()
         self.assertEqual(entry.status, DocumentStatus.POSTED)
         self.assertIsNotNone(entry.posted_at)
-        self.assertTrue(entry.document_number.startswith("TBO-JN-"))
+        self.assertTrue(entry.document_number.startswith(f"JN-{entry.entity.tenant_id}"))
 
         cash_bal = AccountBalance.objects.get(
             account__code="1100", period=period,
@@ -683,7 +695,7 @@ class InvoicePostingTests(_ARFixtureMixin, TestCase):
         self.assertEqual(inv.tax_total, 7500)
         self.assertEqual(inv.total, 107500)
         self.assertEqual(inv.payment_status, InvoicePaymentStatus.UNPAID)
-        self.assertTrue(inv.document_number.startswith("TBO-IV-"))
+        self.assertTrue(inv.document_number.startswith(f"IV-{inv.entity.tenant_id}"))
 
         # Journal: Dr AR 107,500 ; Cr Revenue 100,000 ; Cr VAT 7,500.
         debit, credit = inv.journal.totals()
@@ -821,7 +833,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
         # CRN total = 40,000 + 7.5% = 43,000; balanced journal that credits AR.
         self.assertEqual(note.status, "POSTED")
         self.assertEqual(note.total, 43000)
-        self.assertTrue(note.document_number.startswith("TBO-CN-"))
+        self.assertTrue(note.document_number.startswith(f"CN-{note.entity.tenant_id}"))
         debit, credit = note.journal.totals()
         self.assertEqual(debit, credit)
         self.assertEqual(credit, 43000)
@@ -850,7 +862,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
         post_credit_note(note)
         note.refresh_from_db()
         self.assertEqual(note.total, 25000)
-        self.assertTrue(note.document_number.startswith("TBO-DN-"))
+        self.assertTrue(note.document_number.startswith(f"DN-{note.entity.tenant_id}"))
         # Dr AR (debit note raises the receivable).
         ar_bal = AccountBalance.objects.get(account__code="1200", period=period)
         self.assertEqual(ar_bal.debit_total, 25000)
@@ -1059,7 +1071,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
         post_refund(refund)
         refund.refresh_from_db()
         self.assertEqual(refund.status, "POSTED")
-        self.assertTrue(refund.document_number.startswith("TBO-RF-"))
+        self.assertTrue(refund.document_number.startswith(f"RF-{refund.entity.tenant_id}"))
         debit, credit = refund.journal.totals()
         self.assertEqual(debit, credit)
         cc_bal = AccountBalance.objects.get(account__code="2140", period=period)
@@ -1133,7 +1145,7 @@ class ConcessionTests(_ARFixtureMixin, TestCase):
         inv.refresh_from_db()
 
         self.assertEqual(concession.status, "POSTED")
-        self.assertTrue(concession.document_number.startswith("TBO-CC-"))
+        self.assertTrue(concession.document_number.startswith(f"CC-{concession.entity.tenant_id}"))
         # Dr 4910 Discounts & Concessions, Cr AR — balanced.
         debit, credit = concession.journal.totals()
         self.assertEqual(debit, credit)
@@ -1186,7 +1198,7 @@ class PaymentPlanTests(_ARFixtureMixin, TestCase):
             installment_count=4, total_amount=inv.balance_due,
         )
         build_installments(plan)
-        self.assertTrue(plan.document_number.startswith("TBO-PP-"))
+        self.assertTrue(plan.document_number.startswith(f"PP-{plan.entity.tenant_id}"))
         installs = list(plan.installments.order_by("seq_no"))
         self.assertEqual([i.amount for i in installs], [25000, 25000, 25000, 25000])
         self.assertEqual(
@@ -1439,7 +1451,7 @@ class DunningTests(_ARFixtureMixin, TestCase):
         self.assertEqual(notice.notice_status, "PENDING")
         self.assertEqual(notice.amount_due, 100000)
         self.assertEqual(notice.days_overdue, 35)
-        self.assertTrue(notice.document_number.startswith("TBO-DU-"))
+        self.assertTrue(notice.document_number.startswith(f"DU-{notice.entity.tenant_id}"))
         self.assertTrue(
             FinanceAuditLog.objects.filter(action="DUNNING_RUN_GENERATED").exists()
         )
@@ -3862,7 +3874,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
             ]}, format="json")
         self.assertEqual(resp.status_code, 201, resp.content)
         b = resp.json()["data"]
-        self.assertTrue(b["code"].startswith(f"{entity.number_code}-BG-"))
+        self.assertTrue(b["code"].startswith(f"BG-{entity.tenant_id}"))
         self.assertEqual(len(b["lines"]), 3)
         bid = b["id"]
 

@@ -55,8 +55,8 @@ class DocumentStatus(models.TextChoices):
 class DocType(models.TextChoices):
     """Document-type tokens used by the numbering sequence.
 
-    The token becomes the middle segment of a document number, e.g. ``IV`` in
-    ``LEK-B01-IV-2600821``. Keep tokens short (2 chars), uppercase, unique and
+    The token becomes the prefix of a document number, e.g. ``IV`` in
+    ``IV-12607221``. Keep tokens short (2 chars), uppercase, unique and
     stable — they are persisted inside human-facing identifiers.
     """
     JOURNAL = "JN", "Journal Entry"

@@ -13,9 +13,9 @@ Routes covered (mounted at `/v1/finance/`):
 ## 1. What it is (and what it is NOT)
 
 - A **`LedgerEntity`** is a distinct *set of books* — the accounting entity that
-  owns documents and numbering. It is **the tenant, not a School**: a school may
-  own several entities, Codex's own platform books are an entity with no school,
-  and future products plug in the same way (`models/core.py:62`).
+  owns finance documents. Numbering is owned one level higher by its canonical
+  tenant: several entities belonging to the same tenant share each document-code
+  series (`models/core.py:220-227`; `vs_tenants/numbering.py:11-39`).
 - An **`Account`** is one node in that entity's chart-of-accounts tree. **Header**
   accounts (`is_postable=False`) only roll up totals; only **leaf, postable**
   accounts take journal lines (`models/gl.py:103`).
@@ -37,10 +37,19 @@ Routes covered (mounted at `/v1/finance/`):
 
 | Model | File | Key fields | Scoping / constraints |
 |---|---|---|---|
-| `LedgerEntity` | `models/core.py:62` | `code` (uppercase, in doc numbers), `name`, `kind` (PLATFORM/TENANT/PRODUCT/OTHER), `source_school` (nullable, **non-unique**), `base_currency` (FK→Currency, default NGN), `is_active` | `code` **globally unique**; `source_school` 1-tenant→many-entities |
+| `LedgerEntity` | `models/core.py:83` | `code` (uppercase lookup/display code; **not** in new document numbers), `name`, `kind` (PLATFORM/TENANT/PRODUCT/OTHER), `tenant`, `base_currency` (FK→Currency, default NGN), `is_active` | `code` **globally unique**; one tenant may own many entities |
 | `Account` | `models/gl.py:103` | `code`, `name`, `account_type`, `normal_balance` (derived), `is_contra`, `is_postable`, `parent` (self-FK tree), `subtype`, `ifrs_line` | `unique(entity, code)` — two entities can both run a `1000` |
-| `FiscalYear` | `models/gl.py:182` | `year` (label used in doc numbers), `start_date`, `end_date`, `status` | `unique(entity, year)` |
+| `FiscalYear` | `models/gl.py:182` | `year` (accounting label; document numbers use their allocation date instead), `start_date`, `end_date`, `status` | `unique(entity, year)` |
 | `FiscalPeriod` | `models/gl.py:212` | `period_no` (1–12, 13+ adjustment), `name`, `start/end_date`, `status`, `closed_at/by` | `unique(fiscal_year, period_no)` |
+
+- **New document-number format:** `<CODE>-<tenant_id><YYMMDD><daily_sequence>`,
+  for example `IV-12607221`. The sequence is unpadded, starts at 1 each local
+  calendar day, and is independent per `(tenant, document code, date)`. The row
+  is protected by a unique constraint plus `select_for_update`
+  (`vs_tenants/models.py:82-110`; `vs_tenants/numbering.py:10-39`).
+- Existing stored numbers are not rewritten. The former entity/fiscal-year
+  `DocumentSequence` remains only as legacy counter metadata
+  (`models/core.py:169-184`).
 
 - **Money is kobo** everywhere (integer minor units); no floats. `Currency` is
   **global** reference data, not entity-scoped (`models/gl.py:34`).
@@ -206,7 +215,8 @@ seeded control codes those services expect include `1100` Cash & Bank, `1200` AR
 
 | File | Responsibility |
 |---|---|
-| `models/core.py` | `LedgerEntity`, `DocumentSequence`, `FinanceDocument` base (numbering) |
+| `models/core.py` | `LedgerEntity`, `FinanceDocument` numbering adapter; legacy `DocumentSequence` metadata |
+| `vs_tenants/models.py`, `vs_tenants/numbering.py` | Shared tenant/code/day counter and concurrency-safe formatter |
 | `models/gl.py` | `Account`, `FiscalYear`, `FiscalPeriod`, `Currency`, balances |
 | `views.py` | `EntityListCreateView`, `AccountListCreateView`, `AccountDetailView`, `FiscalPeriod/YearListView`, `resolve_entity` |
 | `serializers.py` | `LedgerEntity(Create)Serializer`, `AccountSerializer`, `FiscalPeriod/YearSerializer` |

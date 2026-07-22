@@ -26,21 +26,16 @@ from .purchasing import vendor_purchase_block_reason
 # --------------------------------------------------------------------------- #
 
 def next_contract_reference(entity):
-    """Allocate a sequential, entity-scoped contract reference (e.g. ``COD-CT-2600001``).
+    """Allocate a tenant-level daily contract reference (e.g. ``CT-12607221``).
 
     Reuses finance's :func:`~vs_finance.numbering.next_document_number`, which locks the
-    per-``(entity, doc_type, fiscal_year)`` :class:`~vs_finance.models.DocumentSequence`
-    row with ``select_for_update`` — so two concurrent creates can never be handed the
-    same number. Contracts are entity-level master data (no branch), so ``branch=None``.
+    tenant/code/date counter row with ``select_for_update`` — so two concurrent creates
+    can never be handed the same number.
     The unique-per-entity ``reference`` constraint remains the final safety net.
     """
-    from django.utils import timezone
     from vs_finance.numbering import next_document_number
 
-    return next_document_number(
-        entity=entity, branch=None, doc_type=CONTRACT_DOC_TYPE,
-        fiscal_year=timezone.now().year,
-    )
+    return next_document_number(entity=entity, doc_type=CONTRACT_DOC_TYPE)
 
 
 # --------------------------------------------------------------------------- #

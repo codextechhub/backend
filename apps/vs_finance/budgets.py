@@ -39,15 +39,13 @@ def _ensure_pl_account(account):
 def create_budget(entity, *, name, fiscal_year, lines=None, actor_user=None):
     """Create a draft budget with an auto-allocated code, optionally with its lines.
 
-    The code is drawn from the same per-entity document sequence as invoices/receipts
-    (``CFX-<entity>-BDG-<year>-NNNNN``), so every budget has a stable unique reference.
+    The code is drawn from the same tenant-level daily document sequence as other
+    finance records, so every budget has a stable unique reference.
     """
     from .models import Budget
     from .numbering import next_document_number
 
-    code = next_document_number(  # Allocate a unique budget code for the fiscal year.
-        entity=entity, branch=None, doc_type=DocType.BUDGET, fiscal_year=fiscal_year.year,  # Budget numbers are entity-scoped.
-    )
+    code = next_document_number(entity=entity, doc_type=DocType.BUDGET)
     budget = Budget.objects.create(
         entity=entity, code=code, fiscal_year=fiscal_year, name=name,  # Persist entity, document code, year, and name.
     )

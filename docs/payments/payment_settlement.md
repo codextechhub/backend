@@ -45,7 +45,8 @@ One request to send money out. Money is integer **kobo** (`amount`).
 - `entity` (PROTECT) — tenant scope; `batch` → `PayoutBatch` (nullable, the bulk
   envelope this belongs to).
 - `reference` — our merchant reference / idempotency key, `unique`
-  (`CXP-<uuid>`); `provider_reference` / `recipient_code` — the PSP's ids.
+  (`CXP-<tenant_id><YYMMDD><daily_sequence>`, allocated per tenant/local day);
+  `provider_reference` / `recipient_code` — the PSP's ids (`services.py:42-48`).
 - `provider`, `amount`, `currency`.
 - `beneficiary_name`, `beneficiary_account_number` (**both FLS-masked** — PII, §9),
   `beneficiary_bank_code`.

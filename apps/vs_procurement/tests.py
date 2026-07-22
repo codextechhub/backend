@@ -11,6 +11,7 @@ import datetime
 from unittest.mock import patch
 
 from django.test import TestCase
+from django.utils import timezone
 
 from vs_finance.constants import (
     DocumentStatus, FinanceAuditAction, FinanceAuditStatus, InvoicePaymentStatus,
@@ -880,7 +881,10 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         grn.refresh_from_db()
         self.assertEqual(grn.status, DocumentStatus.POSTED)
         self.assertEqual(grn.total_value, 1_000_000)
-        self.assertTrue(grn.document_number.startswith("TBO-GN-"))
+        self.assertEqual(
+            grn.document_number,
+            f"GN-{grn.entity.tenant_id}{timezone.localdate():%y%m%d}1",
+        )
 
         lines = {l.account.code: l for l in grn.journal.lines.all()}
         self.assertEqual(lines["5100"].debit, 1_000_000)
@@ -3345,7 +3349,8 @@ class ContractConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(r1.status_code, 201)
         self.assertEqual(r2.status_code, 201)
         ref1, ref2 = r1.data["data"]["reference"], r2.data["data"]["reference"]
-        self.assertTrue(ref1 and ref2 and ref1 != ref2)  # generated and distinct
+        prefix = f"CT-{entity.tenant_id}{timezone.localdate():%y%m%d}"
+        self.assertEqual((ref1, ref2), (f"{prefix}1", f"{prefix}2"))
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_create_and_patch_reject_bad_input(self, _perm):

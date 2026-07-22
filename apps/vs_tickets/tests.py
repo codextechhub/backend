@@ -4,6 +4,7 @@ from unittest import mock
 
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from vs_rbac.models import (
@@ -122,7 +123,8 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
             priority="HIGH",
         )
 
-        self.assertTrue(ticket.ticket_number.startswith(f"{ticket.tenant.slug.upper()}-CX"))
+        today = timezone.localdate()
+        self.assertEqual(ticket.ticket_number, f"TK-{ticket.tenant_id}{today:%y%m%d}1")
         self.assertEqual(ticket.requester_id, self.requester.pk)
         self.assertEqual(ticket.school_id, self.school_a.pk)
         self.assertEqual(ticket.branch_id, self.branch_a.pk)
@@ -137,10 +139,10 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
             actor=self.requester, title="Two", description="x", category="HELP", priority="LOW",
         )
         self.assertNotEqual(first.ticket_number, second.ticket_number)
-        # <SLUG>-CX<YYMMDD><n>: same tenant + day share the prefix; n is a plain,
+        # TK-<tenant_id><YYMMDD><n>: same tenant + day share the prefix; n is a plain,
         # un-padded integer that starts at 1 and increments.
         from django.utils import timezone
-        prefix = f"{first.tenant.slug.upper()}-CX{timezone.localdate():%y%m%d}"
+        prefix = f"TK-{first.tenant_id}{timezone.localdate():%y%m%d}"
         self.assertTrue(first.ticket_number.startswith(prefix))
         self.assertEqual(first.ticket_number[len(prefix):], "1")
         self.assertEqual(second.ticket_number[len(prefix):], "2")
@@ -160,9 +162,9 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
         )
         self.assertNotEqual(a1.tenant_id, b1.tenant_id)
         today = f"{timezone.localdate():%y%m%d}"
-        self.assertEqual(a1.ticket_number, f"{a1.tenant.slug.upper()}-CX{today}1")
-        self.assertEqual(b1.ticket_number, f"{b1.tenant.slug.upper()}-CX{today}1")
-        self.assertEqual(a2.ticket_number, f"{a2.tenant.slug.upper()}-CX{today}2")
+        self.assertEqual(a1.ticket_number, f"TK-{a1.tenant_id}{today}1")
+        self.assertEqual(b1.ticket_number, f"TK-{b1.tenant_id}{today}1")
+        self.assertEqual(a2.ticket_number, f"TK-{a2.tenant_id}{today}2")
 
     def test_anyone_authenticated_can_file_a_ticket_and_follow_replies(self):
         # No role grants at all: filing and following your own thread still works.

@@ -147,6 +147,10 @@ class CollectionTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(intent.status, CollectionStatus.PROCESSING)
         self.assertTrue(intent.checkout_url)
         self.assertTrue(intent.provider_reference)
+        self.assertEqual(
+            intent.reference,
+            f"CXP-{entity.tenant_id}{timezone.localdate():%y%m%d}1",
+        )
         self.assertTrue(
             PaymentEvent.objects.filter(
                 action="COLLECTION_INITIATED", reference=intent.reference, succeeded=True,
@@ -394,6 +398,10 @@ class PayoutTests(_PaymentsFixtureMixin, TestCase):
             vendor=vendor, narration="Settle bill",
         )
         self.assertEqual(payout.status, PayoutStatus.PROCESSING)
+        self.assertEqual(
+            payout.reference,
+            f"CXP-{entity.tenant_id}{timezone.localdate():%y%m%d}1",
+        )
         payout = services.confirm_payout(payout, status=PayoutStatus.PAID)
         self.assertEqual(payout.status, PayoutStatus.PAID)
         self.assertIsNotNone(payout.vendor_payment_id)
@@ -513,6 +521,12 @@ class PayoutBatchTests(_PaymentsFixtureMixin, TestCase):
         self.assertEqual(batch.item_count, 3)
         self.assertEqual(batch.total_amount, 60000)
         self.assertEqual(batch.instructions.count(), 3)
+        prefix = f"CXP-{entity.tenant_id}{timezone.localdate():%y%m%d}"
+        self.assertEqual(batch.reference, f"{prefix}1")
+        self.assertEqual(
+            set(batch.instructions.values_list("reference", flat=True)),
+            {f"{prefix}{n}" for n in range(2, 5)},
+        )
         self.assertTrue(
             all(p.status == PayoutStatus.PENDING for p in batch.instructions.all())
         )

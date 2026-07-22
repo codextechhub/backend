@@ -15,7 +15,7 @@ Routes covered (mounted at `/v1/finance/`):
 ## 1. What it is (and what it is NOT)
 
 - A **`JournalEntry`** (`models/gl.py:359`) is a numbered, entity-scoped document
-  (`CFX-<ENTITY>-JNL-<year>-<seq>`) whose **`JournalLine`** rows must net to zero
+  (`JN-<tenant_id><YYMMDD><daily_sequence>`) whose **`JournalLine`** rows must net to zero
   (Σdebit = Σcredit) before it can post.
 - **Posting** (`posting.post_journal`, `posting.py:148`) is the *only* sanctioned
   way to make a journal affect balances. It runs the guards, updates the
@@ -50,8 +50,9 @@ Routes covered (mounted at `/v1/finance/`):
   `ck_finance_line_one_sided` (`debit=0 OR credit=0`) and
   `ck_finance_line_non_negative`. The balance guard catches the zero/zero case at
   post time.
-- `JournalEntry` inherits entity scoping + numbering from `FinanceDocument`
-  (see `finance_chart_of_accounts` §1); `DOC_TYPE = JOURNAL`.
+- `JournalEntry` inherits entity scoping + numbering from `FinanceDocument`;
+  `DOC_TYPE = JOURNAL` supplies the `JN` prefix, while the owning tenant supplies
+  the tenant id and daily counter (`models/core.py:271-299`; `numbering.py:9-28`).
 - **`source`** (`JournalSource`, `constants.py:136`) is `MANUAL`, `SALES`,
   `PURCHASE`, `BANK`, `SYSTEM` (reversals), `OPENING` (direct entries), etc. —
   for filtering/audit only, never for posting logic.
@@ -174,9 +175,9 @@ original's period unless a `date` is given.
 ```json
 {
   "success": true,
-  "message": "Direct entry posted as CFX-LEKKI-JNL-2026-00012.",
+  "message": "Direct entry posted as JN-12606011.",
   "data": {
-    "id": 312, "document_number": "CFX-LEKKI-JNL-2026-00012",
+    "id": 312, "document_number": "JN-12606011",
     "date": "2026-06-01", "period": "Jun 2026", "source": "OPENING",
     "status": "POSTED", "narration": "Owner capital injection",
     "total_debit": 5000000, "total_credit": 5000000,

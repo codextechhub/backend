@@ -15,7 +15,8 @@ Routes (mounted at `/v1/finance/`): `budgets/`, `budgets/<pk>/`,
 
 - **`Budget`** (`models/ops.py:909`): `fiscal_year`, `name`, `status` — two states
   only, `DRAFT → APPROVED` (approval *is* the lock) — auto code
-  `CFX-<entity>-BDG-<year>-NNNNN` from the shared document sequence.
+  `BG-<tenant_id><YYMMDD><daily_sequence>` from the shared tenant document
+  sequence (`budgets.py:39-50`; `vs_tenants/numbering.py:11-39`).
 - **`BudgetLine`** (`:956`): one budgeted cell; `unique(budget, account, cost_center,
   period_no)`.
 
@@ -81,8 +82,8 @@ variance        = actual − budget            (per row and in total)
 
 ## 7. Worked example
 
-`POST /budgets/ {name: "FY26 Plan", fiscal_year: <id>}` → DRAFT with code
-`CFX-LEKKI-BDG-2026-00001`. Add a cell: `POST /budgets/<pk>/lines/
+For tenant 1 on 2026-07-22, `POST /budgets/ {name: "FY26 Plan", fiscal_year: <id>}`
+→ DRAFT with code `BG-12607221`. Add a cell: `POST /budgets/<pk>/lines/
 {account: "6100", period_no: 1, amount: 5000000, cost_center: "PRI"}`. `approve/` →
 locked. Post ₦45,000 of salaries in period 1 → `variance/?period_no=1` shows budget
 ₦50,000, actual ₦45,000, variance −₦5,000 (under-spend).

@@ -93,8 +93,8 @@ class LedgerEntity(TimeStampedModel):
         name: Human-friendly name of the entity/company keeping the books.
         code: Short, uppercase, unique identifier. Reserved code ``CODEX`` is the
             platform entity.
-        number_code: The 2–3 char code embedded in document numbers (e.g. ``COD`` in
-            ``COD-IV-2600001``); auto-derived from ``code`` and kept unique.
+        number_code: A unique 2–3 character reporting code, auto-derived from
+            ``code``. It is retained for display/reporting but not document numbering.
         kind: Classification (platform / tenant / product / other).
         tenant: Canonical owner. The originating school (when any) is derived from
             the tenant's ``school_profile``; platform/product tenants have none.
@@ -166,7 +166,7 @@ class LedgerEntity(TimeStampedModel):
 
 
 class DocumentSequence(models.Model):
-    """Per-scope counter that issues gap-free document numbers.
+    """Legacy per-entity/fiscal-year numbering metadata.
 
     One row exists per ``(entity, branch, doc_type, fiscal_year)`` combination and
     holds the last number handed out. Allocation locks the row with
@@ -175,8 +175,8 @@ class DocumentSequence(models.Model):
     optional sub-scope used by entities that actually have branches (school tenants);
     platform/product entities leave it null.
 
-    Intentionally tiny and central: every numbered document in finance *and*
-    procurement routes through it, so the locking logic is written and tested once.
+    New allocations use ``vs_tenants.TenantDocumentSequence``. This model is
+    retained so historical counter metadata is not destroyed by the refactor.
     """
 
     entity = models.ForeignKey(
@@ -223,8 +223,8 @@ class FinanceDocument(TimeStampedModel):
     first-class. ``vs_rbac`` scoping (for school entities) keys off these; platform
     books are governed by platform-level access, not school boundaries.
 
-    Document numbers are unique *within an entity*, not globally: each entity keeps
-    its own clean ``…-IV-2600001`` series.
+    New document numbers use the owning tenant's daily, per-code series, for
+    example ``IV-12607221``.
     """
 
     #: Override in concrete subclasses, e.g. ``DOC_TYPE = DocType.INVOICE``.
@@ -268,7 +268,7 @@ class FinanceDocument(TimeStampedModel):
         """
         return getattr(self.entity.tenant, "school_profile", None)
 
-    def assign_number(self, *, fiscal_year: int | None = None) -> str:
+    def assign_number(self) -> str:
         """Allocate and store this document's number if it does not have one yet.
 
         Idempotent: returns the existing number unchanged once assigned. Must run
@@ -285,9 +285,8 @@ class FinanceDocument(TimeStampedModel):
         if self.entity_id is None:
             raise DocumentNumberingError("Document needs an entity before a number can be allocated.")
 
-        year = fiscal_year if fiscal_year is not None else timezone.now().year
         self.document_number = next_document_number(
-            entity=self.entity, branch=self.branch, doc_type=self.DOC_TYPE, fiscal_year=year,
+            entity=self.entity, doc_type=self.DOC_TYPE,
         )
         return self.document_number
 

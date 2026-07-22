@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models, transaction
+from django.db import models
 from django.utils import timezone
 
 from vs_rbac.managers import TenantAwareManager
@@ -25,12 +25,10 @@ def ticket_attachment_upload_to(instance: "TicketAttachment", filename: str) -> 
 
 
 class TicketSequence(models.Model):
-    """Per-tenant, per-day counter backing ticket numbers (<SLUG>-CX<YYMMDD><n>).
+    """Legacy per-tenant/day ticket counter retained for historical metadata.
 
-    Each (tenant, day) pair has its own counter that starts at 1 and is not
-    zero-padded. Allocation locks the row with ``select_for_update`` so
-    concurrent creators serialise and can never be handed the same number —
-    same pattern as ``vs_finance.numbering.DocumentSequence``.
+    New tickets use ``vs_tenants.TenantDocumentSequence`` with document code
+    ``TK``. Keeping this table avoids a data-destructive migration.
     """
 
     tenant = models.ForeignKey(
@@ -48,7 +46,7 @@ class TicketSequence(models.Model):
 
 
 class Ticket(TimeStampedModel):
-    # Wide enough for <SLUG>-CX<YYMMDD><n> with the longest allowed tenant slug.
+    # Existing legacy values can be longer than the new TK-<tenant><YYMMDD><n> format.
     ticket_number = models.CharField(max_length=100, unique=True, editable=False)
     title = models.CharField(max_length=220)
     description = models.TextField()
@@ -148,18 +146,10 @@ class Ticket(TimeStampedModel):
 
     @staticmethod
     def _allocate_ticket_number(tenant) -> str:
-        """Allocate ``<SLUG>-CX<YYMMDD><n>`` — n resets to 1 each day per tenant.
+        """Allocate ``TK-<tenant_id><YYMMDD><n>`` from the shared tenant counter."""
+        from vs_tenants.numbering import next_tenant_document_number
 
-        ``CX`` marks a CodeX ticket; ``<SLUG>`` is the raising tenant's slug.
-        """
-        with transaction.atomic():
-            today = timezone.localdate()
-            TicketSequence.objects.get_or_create(tenant=tenant, date=today)
-            seq = TicketSequence.objects.select_for_update().get(tenant=tenant, date=today)
-            seq.last_number += 1
-            seq.save(update_fields=["last_number"])
-            slug = (tenant.slug or "").upper()
-            return f"{slug}-CX{today:%y%m%d}{seq.last_number}"
+        return next_tenant_document_number(tenant=tenant, document_code="TK")
 
     def __str__(self) -> str:
         return f"{self.ticket_number}: {self.title[:40]}"

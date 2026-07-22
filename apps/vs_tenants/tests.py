@@ -1,3 +1,5 @@
+import datetime
+
 from django.http import HttpResponse
 from django.test import RequestFactory, TestCase
 from rest_framework.exceptions import NotFound, ValidationError
@@ -5,6 +7,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 from vs_schools.models import School, SchoolStatus
 from vs_rbac.tests.helpers import make_vision_user
 from vs_tenants.models import Tenant
+from vs_tenants.numbering import next_tenant_document_number
 from vs_tenants.resolution import resolve_tenant
 from vs_user.models import User
 
@@ -47,6 +50,53 @@ class TenantFoundationTests(TestCase):
     def test_matching_slug_resolves(self):
         tenant = resolve_tenant(self.request("?tenant=cedar-academy"))
         self.assertEqual(tenant, self.school.tenant)
+
+
+class TenantDocumentNumberTests(TestCase):
+    def setUp(self):
+        self.a = Tenant.objects.create(
+            name="Alpha", slug="alpha", kind=Tenant.Kind.ORGANIZATION,
+            status=Tenant.Status.ACTIVE,
+        )
+        self.b = Tenant.objects.create(
+            name="Beta", slug="beta", kind=Tenant.Kind.ORGANIZATION,
+            status=Tenant.Status.ACTIVE,
+        )
+        self.day = datetime.date(2026, 7, 22)
+
+    def test_exact_format_and_same_scope_increment(self):
+        first = next_tenant_document_number(
+            tenant=self.a, document_code="iv", allocation_date=self.day,
+        )
+        second = next_tenant_document_number(
+            tenant=self.a, document_code="IV", allocation_date=self.day,
+        )
+        self.assertEqual(first, f"IV-{self.a.pk}2607221")
+        self.assertEqual(second, f"IV-{self.a.pk}2607222")
+
+    def test_tenants_and_document_codes_have_independent_series(self):
+        a_invoice = next_tenant_document_number(
+            tenant=self.a, document_code="IV", allocation_date=self.day,
+        )
+        b_invoice = next_tenant_document_number(
+            tenant=self.b, document_code="IV", allocation_date=self.day,
+        )
+        a_payment = next_tenant_document_number(
+            tenant=self.a, document_code="PY", allocation_date=self.day,
+        )
+        self.assertTrue(a_invoice.endswith("2607221"))
+        self.assertTrue(b_invoice.endswith("2607221"))
+        self.assertTrue(a_payment.endswith("2607221"))
+
+    def test_next_date_starts_at_one(self):
+        next_tenant_document_number(
+            tenant=self.a, document_code="IV", allocation_date=self.day,
+        )
+        result = next_tenant_document_number(
+            tenant=self.a, document_code="IV",
+            allocation_date=datetime.date(2026, 7, 23),
+        )
+        self.assertEqual(result, f"IV-{self.a.pk}2607231")
 
 
 class TenantAuthorityTests(TestCase):
