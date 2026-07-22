@@ -82,18 +82,25 @@ def set_rfq_invitations(rfq, vendors, *, actor_user=None):
 # RFQ lifecycle                                                                #
 # --------------------------------------------------------------------------- #
 
+@transaction.atomic
 def issue_rfq(rfq, *, actor_user=None):
     """Move a DRAFT RFQ to ISSUED so vendors can quote against it.
 
     Requires at least one line **and** at least one invited vendor — an RFQ is a request
     for quotation *sent to vendors*, so issuing one with no addressees is meaningless.
+    The RFQ row is re-read under lock so draft edits and issue cannot cross in flight.
     """
+    from .models import RequestForQuotation
+
+    supplied_rfq = rfq
+    rfq = RequestForQuotation.objects.select_for_update(of=("self",)).get(pk=rfq.pk)
     if rfq.rfq_status != RfqStatus.DRAFT:
         raise SourcingError(
             f"RFQ {rfq.document_number or rfq.pk} is '{rfq.rfq_status}'; "
             f"only a draft RFQ can be issued.",
         )
-    if not rfq.lines.exists():
+    line_count = rfq.lines.count()
+    if not line_count:
         raise SourcingError("An RFQ needs at least one line before it can be issued.")
     if not rfq.invitations.exists():
         raise SourcingError("An RFQ must invite at least one vendor before it can be issued.")
@@ -102,9 +109,13 @@ def issue_rfq(rfq, *, actor_user=None):
     record(
         entity=rfq.entity, action=FinanceAuditAction.RFQ_ISSUED,
         actor_user=actor_user, target=rfq,
-        message=f"Issued RFQ {rfq.document_number} ({rfq.lines.count()} line(s)).",
+        message=f"Issued RFQ {rfq.document_number} ({line_count} line(s)).",
     )
-    return rfq
+    # Preserve the historical caller contract: mutate and return the object supplied.
+    supplied_rfq.rfq_status = rfq.rfq_status
+    supplied_rfq.document_number = rfq.document_number
+    supplied_rfq.updated_at = rfq.updated_at
+    return supplied_rfq
 
 
 def _reject_live_quotations(rfq, *, actor_user=None):
@@ -114,9 +125,11 @@ def _reject_live_quotations(rfq, *, actor_user=None):
     left dangling in an active state on a finished RFQ. Each rejection is audited on the
     quotation so it shows in that quote's own activity feed.
     """
-    live = list(rfq.quotations.filter(
+    # The caller already holds the RFQ lock. Lock live bids in id order before
+    # transitioning them so every RFQ-changing action follows RFQ → quotation.
+    live = list(rfq.quotations.select_for_update(of=("self",)).select_related("vendor").filter(
         quotation_status__in=(QuotationStatus.DRAFT, QuotationStatus.SUBMITTED),
-    ))
+    ).order_by("id"))
     for quotation in live:
         quotation.quotation_status = QuotationStatus.REJECTED
         quotation.save(update_fields=["quotation_status", "updated_at"])
@@ -206,16 +219,32 @@ def price_quotation(quotation) -> None:
     quotation.recompute_totals(save=True)
 
 
+@transaction.atomic
 def submit_quotation(quotation, *, actor_user=None):
-    """Record a vendor's quotation as a firm SUBMITTED offer against an issued RFQ."""
+    """Lock RFQ → quotation → vendor, then record one authoritative submission."""
+    from .models import RequestForQuotation, RfqInvitation, Vendor, VendorQuotation
+
+    supplied_quotation = quotation
+    # RFQ-first matches close/cancel/award. Quotation-second serializes against draft
+    # PATCH, and vendor-last rechecks governance after any concurrent master-data edit.
+    rfq = RequestForQuotation.objects.select_for_update(of=("self",)).get(
+        pk=quotation.rfq_id,
+    )
+    quotation = VendorQuotation.objects.select_for_update(of=("self",)).get(
+        pk=quotation.pk,
+    )
+    vendor = Vendor.objects.select_for_update(of=("self",)).get(pk=quotation.vendor_id)
+    quotation.rfq = rfq
+    quotation.vendor = vendor
+
     if quotation.quotation_status != QuotationStatus.DRAFT:
         raise SourcingError(
             f"Quotation {quotation.document_number or quotation.pk} is "
             f"'{quotation.quotation_status}'; only a draft quotation can be submitted.",
         )
-    if quotation.rfq.rfq_status != RfqStatus.ISSUED:
+    if rfq.rfq_status != RfqStatus.ISSUED:
         raise SourcingError(
-            f"RFQ {quotation.rfq.document_number} is '{quotation.rfq.rfq_status}'; "
+            f"RFQ {rfq.document_number} is '{rfq.rfq_status}'; "
             f"quotations can only be submitted while it is ISSUED.",
         )
     if not quotation.lines.exists():
@@ -223,16 +252,14 @@ def submit_quotation(quotation, *, actor_user=None):
     # Invited-only: a quote may only be submitted by a vendor still invited on its RFQ.
     # Defensive — the create path already enforces this, but an invitation could have
     # been withdrawn while the draft sat around.
-    from .models import RfqInvitation
-
-    if not RfqInvitation.objects.filter(rfq=quotation.rfq, vendor=quotation.vendor).exists():
+    if not RfqInvitation.objects.filter(rfq=rfq, vendor=vendor).exists():
         raise SourcingError(
-            f"Vendor {quotation.vendor.code} is not invited to RFQ "
-            f"{quotation.rfq.document_number or quotation.rfq_id}.",
+            f"Vendor {vendor.code} is not invited to RFQ "
+            f"{rfq.document_number or rfq.pk}.",
         )
     # Governance gate at submission too (not just award): a vendor that went on hold /
     # inactive / KYC-rejected after drafting cannot firm up a competing offer.
-    if reason := vendor_purchase_block_reason(quotation.vendor):
+    if reason := vendor_purchase_block_reason(vendor):
         raise SourcingError(reason)
 
     price_quotation(quotation)
@@ -241,11 +268,18 @@ def submit_quotation(quotation, *, actor_user=None):
     record(
         entity=quotation.entity, action=FinanceAuditAction.QUOTATION_SUBMITTED,
         actor_user=actor_user, target=quotation,
-        message=f"Quotation {quotation.document_number} from {quotation.vendor.code} "
+        message=f"Quotation {quotation.document_number} from {vendor.code} "
                 f"submitted ({format_naira(quotation.total)}).",
         rfq_id=quotation.rfq_id, total=quotation.total,
     )
-    return quotation
+    # Preserve mutation/identity for direct service callers while all decisions use
+    # the locked authoritative row.
+    supplied_quotation.quotation_status = quotation.quotation_status
+    supplied_quotation.subtotal = quotation.subtotal
+    supplied_quotation.tax_total = quotation.tax_total
+    supplied_quotation.total = quotation.total
+    supplied_quotation.updated_at = quotation.updated_at
+    return supplied_quotation
 
 
 @transaction.atomic
@@ -262,17 +296,18 @@ def award_quotation(quotation, *, order_date=None, actor_user=None):
         PurchaseOrder, PurchaseOrderLine, RequestForQuotation, Vendor, VendorQuotation,
     )
 
-    # Lock order is quotation → RFQ → vendor. Lock the quotation and its RFQ up front so
-    # two concurrent awards on the same RFQ
-    # serialise: the second waits here, then re-reads the RFQ as AWARDED and is rejected
-    # below — closing the double-award race that a lock-free read/modify/write allowed.
+    # RFQ → quotation → vendor is the shared sourcing lock order. Two awards on the
+    # same RFQ serialize at the parent row; the second then observes the committed
+    # AWARDED/rejected state, preserving double-award protection without deadlocking
+    # RFQ-first close/cancel/submit transitions.
+    rfq = RequestForQuotation.objects.select_for_update(of=("self",)).select_related(
+        "requisition",
+    ).get(pk=quotation.rfq_id)
     quotation = (
         VendorQuotation.objects.select_for_update(of=("self",))
         .select_related("vendor", "currency", "branch")
         .get(pk=quotation.pk)
     )
-    rfq = RequestForQuotation.objects.select_for_update(of=("self",)).select_related(
-        "requisition").get(pk=quotation.rfq_id)
 
     if quotation.quotation_status != QuotationStatus.SUBMITTED:
         raise SourcingError(

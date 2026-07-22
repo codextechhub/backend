@@ -2790,6 +2790,156 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
             submit_quotation(quo)
 
 
+class SourcingConcurrencyTests(_P2PFixtureMixin, TransactionTestCase):
+    """Real PostgreSQL races for RFQ-first sourcing transitions."""
+
+    serialized_rollback = True
+
+    def _draft_rfq(self, entity, vendor):
+        rfq = RequestForQuotation.objects.create(
+            entity=entity, title="Concurrent sourcing", issue_date=datetime.date(2026, 1, 3),
+        )
+        RfqLine.objects.create(
+            rfq=rfq, description="Switch", quantity=1, line_no=1,
+            expense_account=self.acc(entity, "5300"),
+        )
+        set_rfq_invitations(rfq, [vendor])
+        return rfq
+
+    def test_issue_waits_for_draft_edit_and_rechecks_committed_lines(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._draft_rfq(entity, vendor)
+        stale = RequestForQuotation.objects.get(pk=rfq.pk)
+        edit_locked = threading.Event()
+        release_edit = threading.Event()
+        issue_attempting = threading.Event()
+        issue_done = threading.Event()
+        outcomes = {}
+
+        def edit_worker():
+            close_old_connections()
+            try:
+                from django.db import transaction
+
+                with transaction.atomic():
+                    current = RequestForQuotation.objects.select_for_update().get(pk=rfq.pk)
+                    current.lines.all().delete()
+                    current.title = "Committed edit"
+                    current.save(update_fields=["title", "updated_at"])
+                    edit_locked.set()
+                    if not release_edit.wait(5):
+                        raise TimeoutError("issue race did not release the draft edit")
+                outcomes["edit"] = "committed"
+            except Exception as exc:  # pragma: no cover - asserted in the parent thread
+                outcomes["edit_error"] = exc
+            finally:
+                close_old_connections()
+
+        def issue_worker():
+            close_old_connections()
+            try:
+                issue_attempting.set()
+                result = issue_rfq(stale)
+                outcomes["issue"] = result.rfq_status
+            except Exception as exc:
+                outcomes["issue_error"] = exc
+            finally:
+                close_old_connections()
+                issue_done.set()
+
+        edit_thread = threading.Thread(target=edit_worker, daemon=True)
+        issue_thread = threading.Thread(target=issue_worker, daemon=True)
+        edit_thread.start()
+        try:
+            self.assertTrue(edit_locked.wait(5))
+            issue_thread.start()
+            self.assertTrue(issue_attempting.wait(5))
+            self.assertFalse(issue_done.wait(0.25))
+        finally:
+            release_edit.set()
+        edit_thread.join(5)
+        issue_thread.join(5)
+
+        self.assertFalse(edit_thread.is_alive())
+        self.assertFalse(issue_thread.is_alive())
+        self.assertNotIn("edit_error", outcomes)
+        self.assertEqual(outcomes.get("edit"), "committed")
+        self.assertIsInstance(outcomes.get("issue_error"), SourcingError)
+        rfq.refresh_from_db()
+        self.assertEqual(rfq.title, "Committed edit")
+        self.assertEqual(rfq.rfq_status, RfqStatus.DRAFT)
+        self.assertFalse(rfq.lines.exists())
+        self.assertFalse(FinanceAuditLog.objects.filter(
+            entity=entity, action=FinanceAuditAction.RFQ_ISSUED,
+            target_id=str(rfq.pk),
+        ).exists())
+
+    def test_simultaneous_submit_has_one_authoritative_winner(self):
+        from vs_procurement import sourcing as sourcing_services
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._draft_rfq(entity, vendor)
+        issue_rfq(rfq)
+        quotation = VendorQuotation.objects.create(
+            entity=entity, rfq=rfq, vendor=vendor, quote_date=datetime.date(2026, 1, 4),
+        )
+        VendorQuotationLine.objects.create(
+            quotation=quotation, rfq_line=rfq.lines.get(), description="Switch",
+            quantity=1, unit_price=200_000, expense_account=self.acc(entity, "5300"), line_no=1,
+        )
+        first_in_audit = threading.Event()
+        release_first = threading.Event()
+        second_attempting = threading.Event()
+        second_done = threading.Event()
+        outcomes = {}
+
+        def blocking_record(**kwargs):
+            first_in_audit.set()
+            if not release_first.wait(5):
+                raise TimeoutError("submit race did not release the first transaction")
+
+        def submit_worker(name, *, attempting=None, done=None):
+            close_old_connections()
+            try:
+                current = VendorQuotation.objects.get(pk=quotation.pk)
+                if attempting is not None:
+                    attempting.set()
+                result = submit_quotation(current)
+                outcomes[name] = (result is current, result.quotation_status)
+            except Exception as exc:
+                outcomes[f"{name}_error"] = exc
+            finally:
+                close_old_connections()
+                if done is not None:
+                    done.set()
+
+        first_thread = threading.Thread(target=submit_worker, args=("first",), daemon=True)
+        second_thread = threading.Thread(
+            target=submit_worker, args=("second",),
+            kwargs={"attempting": second_attempting, "done": second_done}, daemon=True,
+        )
+        with patch.object(sourcing_services, "record", side_effect=blocking_record) as audit_record:
+            first_thread.start()
+            try:
+                self.assertTrue(first_in_audit.wait(5))
+                second_thread.start()
+                self.assertTrue(second_attempting.wait(5))
+                self.assertFalse(second_done.wait(0.25))
+            finally:
+                release_first.set()
+            first_thread.join(5)
+            second_thread.join(5)
+
+        self.assertFalse(first_thread.is_alive())
+        self.assertFalse(second_thread.is_alive())
+        self.assertNotIn("first_error", outcomes)
+        self.assertEqual(outcomes.get("first"), (True, QuotationStatus.SUBMITTED))
+        self.assertIsInstance(outcomes.get("second_error"), SourcingError)
+        self.assertEqual(audit_record.call_count, 1)
+        quotation.refresh_from_db()
+        self.assertEqual(quotation.quotation_status, QuotationStatus.SUBMITTED)
+
+
 def _deny_keys(*denied):
     """side_effect for ``vs_rbac.permissions.has_permission`` denying only *denied* keys."""
     def _check(user, permission_key, *args, **kwargs):
@@ -3002,6 +3152,79 @@ class SourcingConsoleAPITests(_P2PFixtureMixin, TestCase):
     # --- validation bounds ------------------------------------------------- #
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_rfq_source_line_must_match_header_requisition_with_patch_rollback(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        first = PurchaseRequisition.objects.create(
+            entity=entity, title="First source", request_date=datetime.date(2026, 1, 2),
+        )
+        first_line = PurchaseRequisitionLine.objects.create(
+            requisition=first, description="First item", quantity=1,
+            estimated_unit_price=100_000, expense_account=self.acc(entity, "5300"), line_no=1,
+        )
+        second = PurchaseRequisition.objects.create(
+            entity=entity, title="Second source", request_date=datetime.date(2026, 1, 2),
+        )
+        second_line = PurchaseRequisitionLine.objects.create(
+            requisition=second, description="Second item", quantity=1,
+            estimated_unit_price=100_000, expense_account=self.acc(entity, "5300"), line_no=1,
+        )
+        client = self._client(entity)
+        url = f"/v1/procurement/rfqs/?entity={entity.code}"
+
+        def body(title, requisition, source_line):
+            payload = {
+                "title": title, "issue_date": "2026-01-03",
+                "lines": [{
+                    "description": title, "quantity": 1,
+                    "expense_account": "5300", "requisition_line": source_line.pk,
+                }],
+            }
+            if requisition is not None:
+                payload["requisition"] = requisition.pk
+            return payload
+
+        accepted = client.post(url, body("Accepted", first, first_line), format="json")
+        self.assertEqual(accepted.status_code, 201)
+        rfq = RequestForQuotation.objects.get(pk=accepted.data["data"]["id"])
+        original = rfq.lines.get()
+        self.assertEqual(original.requisition_line_id, first_line.pk)
+
+        rejected = client.post(url, body("Mismatched", first, second_line), format="json")
+        self.assertEqual(rejected.status_code, 400)
+        self.assertIn("requisition_line", rejected.data["error"]["detail"])
+        self.assertFalse(RequestForQuotation.objects.filter(
+            entity=entity, title="Mismatched",
+        ).exists())
+
+        # Headerless RFQs retain the existing entity-scoped source-line behavior.
+        headerless = client.post(url, body("Headerless", None, second_line), format="json")
+        self.assertEqual(headerless.status_code, 201)
+        self.assertEqual(
+            RequestForQuotation.objects.get(pk=headerless.data["data"]["id"])
+            .lines.get().requisition_line_id,
+            second_line.pk,
+        )
+
+        patch_url = f"/v1/procurement/rfqs/{rfq.pk}/?entity={entity.code}"
+        bad_patch = client.patch(
+            patch_url, {"lines": body("Bad replacement", first, second_line)["lines"]},
+            format="json",
+        )
+        self.assertEqual(bad_patch.status_code, 400)
+        self.assertIn("requisition_line", bad_patch.data["error"]["detail"])
+        self.assertEqual(rfq.lines.count(), 1)
+        preserved = rfq.lines.get()
+        self.assertEqual(preserved.pk, original.pk)
+        self.assertEqual(preserved.requisition_line_id, first_line.pk)
+
+        valid_patch = client.patch(
+            patch_url, {"lines": body("Valid replacement", first, first_line)["lines"]},
+            format="json",
+        )
+        self.assertEqual(valid_patch.status_code, 200)
+        self.assertEqual(rfq.lines.get().requisition_line_id, first_line.pk)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_rfq_create_validation_bounds(self, _perm):
         entity, _, _, _, _ = self.build_p2p()
         client = self._client(entity)
@@ -3211,6 +3434,39 @@ class SourcingConsoleAPITests(_P2PFixtureMixin, TestCase):
         row = next(r for r in client.get(
             f"/v1/procurement/rfqs/?entity={entity.code}").data["data"] if r["id"] == rfq.pk)
         self.assertEqual(row["invited_count"], 2)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_rfq_detail_uses_newest_quotation_per_vendor_and_latest_first_order(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        rfq = self._issued_rfq(entity, invite=[vendor])
+        older = VendorQuotation.objects.create(
+            entity=entity, rfq=rfq, vendor=vendor,
+            quote_date=datetime.date(2026, 1, 4),
+            quotation_status=QuotationStatus.SUBMITTED, total=100_000,
+        )
+        newer = VendorQuotation.objects.create(
+            entity=entity, rfq=rfq, vendor=vendor,
+            quote_date=datetime.date(2026, 1, 5),
+            quotation_status=QuotationStatus.DRAFT, total=250_000,
+        )
+        now = timezone.now()
+        VendorQuotation.objects.filter(pk=older.pk).update(
+            created_at=now - datetime.timedelta(days=1),
+        )
+        VendorQuotation.objects.filter(pk=newer.pk).update(created_at=now)
+
+        detail = self._client(entity).get(
+            f"/v1/procurement/rfqs/{rfq.pk}/?entity={entity.code}",
+        ).data["data"]
+        invitation = detail["invitations"][0]
+        self.assertTrue(invitation["responded"])
+        self.assertEqual(invitation["quotation_id"], newer.pk)
+        self.assertEqual(invitation["quotation_status"], QuotationStatus.DRAFT)
+        self.assertEqual(invitation["quotation_total"], 250_000)
+        self.assertEqual(
+            [quotation["id"] for quotation in detail["quotations"]],
+            [newer.pk, older.pk],
+        )
 
 
 # --------------------------------------------------------------------------- #

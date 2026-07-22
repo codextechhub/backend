@@ -627,10 +627,11 @@ class RfqDetailSerializer(serializers.ModelSerializer):
 
     def get_invitations(self, obj):
         # Derive each invitation's "responded" flag by joining the invited vendors to
-        # this RFQ's quotations in Python (both prefetched) — never a per-row query.
+        # this RFQ's newest-first quotations in Python (both prefetched) — never a
+        # per-row query. Multiple quotations are allowed; the newest is canonical.
         quote_by_vendor = {}
         for q in obj.quotations.all():
-            # Keep the first (lowest-id) quotation per vendor as its canonical response.
+            # The view orders created_at DESC, id DESC, so first is deterministically newest.
             quote_by_vendor.setdefault(q.vendor_id, q)
         rows = []
         for inv in obj.invitations.all():
@@ -647,9 +648,8 @@ class RfqDetailSerializer(serializers.ModelSerializer):
         return rows
 
     def get_quotations(self, obj):
-        # Sort in Python to reuse the view's prefetch cache (an .order_by() would re-query).
-        quotes = sorted(obj.quotations.all(), key=lambda q: (q.total, q.id))
-        return RfqQuotationSummarySerializer(quotes, many=True).data
+        # Reuse the view's explicit newest-first prefetch cache; ordering here would re-query.
+        return RfqQuotationSummarySerializer(obj.quotations.all(), many=True).data
 
     def get_activity(self, obj):
         return _sourcing_activity(obj.entity_id, "RequestForQuotation", obj.pk)

@@ -353,8 +353,14 @@ def _rfq_detail_queryset(entity):
         # Invited vendors + quotations are joined in Python in the serializer to derive
         # each invitation's "responded" flag without a per-row query.
         "invitations__vendor",
-        # Quotations are re-sorted by total in the serializer (in Python) to reuse this cache.
-        Prefetch("quotations", queryset=VendorQuotation.objects.select_related("vendor")),
+        # Multiple bids from one vendor are retained. Newest-first prefetch order is the
+        # canonical response order reused by both invitation summaries and the quote list.
+        Prefetch(
+            "quotations",
+            queryset=VendorQuotation.objects.select_related("vendor").order_by(
+                "-created_at", "-id",
+            ),
+        ),
     )
 
 
@@ -363,17 +369,26 @@ def _write_rfq_lines(entity, rfq, lines):
 
     Shared by create and the draft PATCH so both apply identical validation:
     positive/bounded quantity, active-postable EXPENSE account, entity-scoped tax code,
-    and a requisition line that genuinely lives in this entity.
+    and a requisition line that genuinely lives in this entity. When the RFQ header
+    names a requisition, a supplied source line must belong to that exact document.
     """
     rfq.lines.all().delete()  # Full replace: the payload is the new authoritative line set.
     for i, ln in enumerate(lines, start=1):
         req_line = None
         if ln.get("requisition_line"):
-            req_line = PurchaseRequisitionLine.objects.filter(
-                requisition__entity=entity, pk=ln["requisition_line"]).first()
+            req_lines = PurchaseRequisitionLine.objects.filter(
+                requisition__entity=entity, pk=ln["requisition_line"],
+            )
+            if rfq.requisition_id is not None:
+                req_lines = req_lines.filter(requisition_id=rfq.requisition_id)
+            req_line = req_lines.first()
             if req_line is None:
-                raise ValidationError(
-                    {"requisition_line": f"No such requisition line {ln['requisition_line']}."})
+                message = (
+                    f"No such requisition line {ln['requisition_line']} on this RFQ's requisition."
+                    if rfq.requisition_id is not None
+                    else f"No such requisition line {ln['requisition_line']}."
+                )
+                raise ValidationError({"requisition_line": message})
         RfqLine.objects.create(
             rfq=rfq, line_no=ln.get("line_no", i),
             description=_text(ln.get("description"), "description", 255, required=True),

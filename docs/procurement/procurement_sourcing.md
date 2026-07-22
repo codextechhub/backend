@@ -14,7 +14,7 @@ invitation, quoted prices, and selection of a winning offer**. Routes are mounte
   vendors; `RfqInvitation` is the durable addressee list (`models.py:674-745`).
 - A `VendorQuotation` is an invited vendor's priced response. Awarding a submitted offer
   rejects the competing submitted offers and creates a **DRAFT purchase order**
-  (`sourcing.py:251-369`).
+  (`sourcing.py:285-404`).
 
 **This does NOT post to the General Ledger.** Requisition approval authorizes intent;
 RFQ issue, quotation submission, and award preserve commercial evidence. Even the PO
@@ -50,20 +50,20 @@ standard paginated `{pagination, data}` envelope (`views/base.py:281-298`).
 | `GET /requisitions/<pk>/` | `procurement.requisition.view` | Read one entity requisition | — | Requisition + lines + `workflow_instance_id` (`views/requisitions.py:164-176`) |
 | `PATCH /requisitions/<pk>/` | `procurement.requisition.update` | Edit a DRAFT; `lines` is a full replacement | Header and line fields accepted by POST, all optional | Updated requisition (`views/requisitions.py:178-199`) |
 | `POST /requisitions/<pk>/submit/` | `procurement.requisition.submit` | Hand the requisition to `vs_workflow` | — | Workflow id/status, approval state, and refreshed requisition (`views/requisitions.py:322-341`) |
-| `GET /rfqs/` | `procurement.rfq.view` | List sourcing events with SQL-derived counts | Query `status`, `q`/`search` | Paginated RFQ rows (`views/orders.py:331-346,413-433`; `serializers.py:551-568`) |
-| `POST /rfqs/` | `procurement.rfq.create` | Create a DRAFT specification and optional invitation set | `requisition?`, `title?`, `issue_date`, `response_due_date?`, `budget_estimate?`, `notes?`, `invited_vendors?`; `lines[]`: `line_no?`, `description`, `quantity?`, `requisition_line?`, `expense_account?`, `tax_code?` | `201` full RFQ detail (`views/orders.py:435-469`) |
-| `GET /rfqs/summary/` | `procurement.rfq.view` | Count drafts/open events/responses/near deadlines | — | `{draft, open, responses_in, closing_soon}` (`views/orders.py:578-605`) |
-| `GET /rfqs/<pk>/` | `procurement.rfq.view` | Read lines, invitations, quotations, activity | — | Full RFQ detail (`views/orders.py:484-490`; `serializers.py:590-655`) |
-| `PATCH /rfqs/<pk>/` | `procurement.rfq.update` | Edit a DRAFT; lines/invitations are full replacements when present | `title?`, `issue_date?`, `response_due_date?`, `budget_estimate?`, `notes?`, `lines?`, `invited_vendors?` | Updated full RFQ (`views/orders.py:492-527`) |
-| `POST /rfqs/<pk>/issue/` | `procurement.rfq.issue` | Freeze a DRAFT with at least one line and invitee as ISSUED | — | Full issued RFQ (`views/orders.py:530-542`; `sourcing.py:85-107`) |
-| `POST /rfqs/<pk>/close/` | `procurement.rfq.issue` | Close an ISSUED event without award and reject live bids | `reason?` | Full closed RFQ (`views/orders.py:545-560`; `sourcing.py:158-183`) |
-| `POST /rfqs/<pk>/cancel/` | `procurement.rfq.issue` | Abandon a non-awarded event and reject live bids | `reason?` | Full cancelled RFQ (`views/orders.py:563-575`; `sourcing.py:133-155`) |
-| `GET /quotations/` | `procurement.quotation.view` | List/search offers | Query `status`, `rfq`, `vendor`, `q`/`search` | Paginated quotation rows (`views/orders.py:654-682`; `serializers.py:676-698`) |
-| `POST /quotations/` | `procurement.quotation.create` | Create and price an invited eligible vendor's DRAFT offer against an ISSUED RFQ | `rfq`, `vendor`, `quote_date`, `valid_until?`, `currency?`, `lead_time_days?`, `reference?`, `notes?`; `lines[]`: `line_no?`, `rfq_line?`, `description?`, `expense_account?`, `quantity?`, `unit_price`, `tax_code?` | `201` quotation + priced lines/totals/activity (`views/orders.py:684-723`) |
-| `GET /quotations/<pk>/` | `procurement.quotation.view` | Read one offer | — | Full quotation detail (`views/orders.py:738-744`; `serializers.py:701-733`) |
-| `PATCH /quotations/<pk>/` | `procurement.quotation.update` | Edit/reprice a DRAFT; lines are a full replacement | `quote_date?`, `valid_until?`, `lead_time_days?`, `reference?`, `notes?`, `lines?` | Updated full quotation (`views/orders.py:746-778`) |
-| `POST /quotations/<pk>/submit/` | `procurement.quotation.submit` | Make a DRAFT offer firm | — | Submitted full quotation (`views/orders.py:781-795`; `sourcing.py:209-248`) |
-| `POST /quotations/<pk>/award/` | `procurement.quotation.award` | Select a submitted offer and atomically create its DRAFT PO | `order_date?` | `201` full purchase order (`views/orders.py:798-820`; `serializers.py:776-812`) |
+| `GET /rfqs/` | `procurement.rfq.view` | List sourcing events with SQL-derived counts | Query `status`, `q`/`search` | Paginated RFQ rows (`views/orders.py:331-346,428-448`; `serializers.py:551-568`) |
+| `POST /rfqs/` | `procurement.rfq.create` | Create a DRAFT specification and optional invitation set | `requisition?`, `title?`, `issue_date`, `response_due_date?`, `budget_estimate?`, `notes?`, `invited_vendors?`; `lines[]`: `line_no?`, `description`, `quantity?`, `requisition_line?`, `expense_account?`, `tax_code?` | `201` full RFQ detail (`views/orders.py:450-484`) |
+| `GET /rfqs/summary/` | `procurement.rfq.view` | Count drafts/open events/responses/near deadlines | — | `{draft, open, responses_in, closing_soon}` (`views/orders.py:593-620`) |
+| `GET /rfqs/<pk>/` | `procurement.rfq.view` | Read lines, invitations, newest-first quotations, activity | — | Full RFQ detail (`views/orders.py:499-505`; `serializers.py:590-655`) |
+| `PATCH /rfqs/<pk>/` | `procurement.rfq.update` | Edit a DRAFT; lines/invitations are full replacements when present | `title?`, `issue_date?`, `response_due_date?`, `budget_estimate?`, `notes?`, `lines?`, `invited_vendors?` | Updated full RFQ (`views/orders.py:507-542`) |
+| `POST /rfqs/<pk>/issue/` | `procurement.rfq.issue` | Freeze a DRAFT with at least one line and invitee as ISSUED | — | Full issued RFQ (`views/orders.py:545-557`; `sourcing.py:85-118`) |
+| `POST /rfqs/<pk>/close/` | `procurement.rfq.issue` | Close an ISSUED event without award and reject live bids | `reason?` | Full closed RFQ (`views/orders.py:560-575`; `sourcing.py:171-196`) |
+| `POST /rfqs/<pk>/cancel/` | `procurement.rfq.issue` | Abandon a non-awarded event and reject live bids | `reason?` | Full cancelled RFQ (`views/orders.py:578-590`; `sourcing.py:146-168`) |
+| `GET /quotations/` | `procurement.quotation.view` | List/search offers | Query `status`, `rfq`, `vendor`, `q`/`search` | Paginated quotation rows (`views/orders.py:669-697`; `serializers.py:676-698`) |
+| `POST /quotations/` | `procurement.quotation.create` | Create and price an invited eligible vendor's DRAFT offer against an ISSUED RFQ | `rfq`, `vendor`, `quote_date`, `valid_until?`, `currency?`, `lead_time_days?`, `reference?`, `notes?`; `lines[]`: `line_no?`, `rfq_line?`, `description?`, `expense_account?`, `quantity?`, `unit_price`, `tax_code?` | `201` quotation + priced lines/totals/activity (`views/orders.py:699-738`) |
+| `GET /quotations/<pk>/` | `procurement.quotation.view` | Read one offer | — | Full quotation detail (`views/orders.py:753-759`; `serializers.py:701-733`) |
+| `PATCH /quotations/<pk>/` | `procurement.quotation.update` | Edit/reprice a DRAFT; lines are a full replacement | `quote_date?`, `valid_until?`, `lead_time_days?`, `reference?`, `notes?`, `lines?` | Updated full quotation (`views/orders.py:761-793`) |
+| `POST /quotations/<pk>/submit/` | `procurement.quotation.submit` | Make a DRAFT offer firm | — | Submitted full quotation (`views/orders.py:796-810`; `sourcing.py:222-282`) |
+| `POST /quotations/<pk>/award/` | `procurement.quotation.award` | Select a submitted offer and atomically create its DRAFT PO | `order_date?` | `201` full purchase order (`views/orders.py:813-835`; `serializers.py:776-812`) |
 
 ## 4. Lifecycle / state machine
 
@@ -93,10 +93,10 @@ a manager stage and adds a senior stage at `estimated_total >= 50,000,000` kobo
 
 Only DRAFT RFQs and quotations are editable. An RFQ needs a line and invitation before
 issue; quotation create/submit requires ISSUED RFQ, an invitation, and a vendor that is
-active, not on hold, and not KYC-rejected (`sourcing.py:30-107,209-248`;
-`purchasing.py:91-99`). Award locks the quotation, RFQ, and vendor, requires a live
+active, not on hold, and not KYC-rejected (`sourcing.py:30-118,222-282`;
+`purchasing.py:91-99`). Award locks the RFQ, quotation, and vendor in that order, requires a live
 SUBMITTED offer, and performs PO creation plus winner/loser/RFQ state changes in one
-transaction (`sourcing.py:251-369`).
+transaction (`sourcing.py:285-404`).
 
 ## 5. Calculations
 
@@ -104,10 +104,10 @@ transaction (`sourcing.py:251-369`).
   property uses Decimal's integral rounding, then the header sums all line estimates
   (`models.py:620-630,661-664`). Example: `2.5 × 120,000 = 300,000` kobo.
 - Quotation line net: `quantity × unit_price`, rounded `ROUND_HALF_UP` to whole kobo
-  (`receivables.py:42-45`; `sourcing.py:190-206`). Example:
+  (`receivables.py:42-45`; `sourcing.py:203-219`). Example:
   `2.5 × 120,000 = 300,000` kobo.
 - Line tax: `round_half_up(net × rate_bps ÷ 10,000)` kobo
-  (`receivables.py:49-57`; `sourcing.py:198-206`). At 7.5% (`750` bps),
+  (`receivables.py:49-57`; `sourcing.py:211-219`). At 7.5% (`750` bps),
   `300,000 × 750 ÷ 10,000 = 22,500` kobo.
 - Quotation `subtotal = Σ line.net_amount`; `tax_total = Σ line.tax_amount`;
   `total = subtotal + tax_total` (`models.py:822-832`). The example totals
@@ -123,15 +123,15 @@ transaction (`sourcing.py:251-369`).
 
 Nothing in this slice posts, so there are no Dr/Cr lines. Requisition submission and
 approval write workflow/document state; sourcing actions write RFQ/quotation state and
-finance audit rows (`approvals.py:136-203`; `sourcing.py:85-183,209-369`).
+finance audit rows (`approvals.py:136-203`; `sourcing.py:85-196,222-404`).
 
 Award creates a DRAFT PO and carries the winning quotation's entity, branch, vendor,
 currency, vendor payment terms, reference, and RFQ requisition link. Per line it carries
 description, quantity, unit price, tax code, line number, expense account (with
 vendor/category fallback), and the source requisition line reached through the RFQ line
-(`sourcing.py:296-348`). It drops quotation notes and lead time. The originating
+(`sourcing.py:331-383`). It drops quotation notes and lead time. The originating
 requisition line's cost center now survives; when no source line exists, the RFQ header
-requisition's cost center is the fallback (`sourcing.py:319-347`).
+requisition's cost center is the fallback (`sourcing.py:354-382`).
 
 ## 7. Worked example
 
@@ -178,8 +178,8 @@ The server derives, rather than reads, the money fields:
 
 After submit, `POST /quotations/<pk>/award/` changes this offer to AWARDED, rejects
 other submitted offers, closes the RFQ as AWARDED, and returns a DRAFT PO priced to the
-same `322500` kobo. There is still no journal (`views/orders.py:684-723,781-820`;
-`sourcing.py:190-206,251-369`).
+same `322500` kobo. There is still no journal (`views/orders.py:699-738,796-835`;
+`sourcing.py:203-219,285-404`).
 
 ## 8. Gotchas / known limitations
 
@@ -187,30 +187,32 @@ same `322500` kobo. There is still no journal (`views/orders.py:684-723,781-820`
   the originating requisition line's cost center, falls back to the RFQ header
   requisition's center, and loads that lineage in the quotation-line query rather than
   adding a query per line. Budget availability therefore sees the resulting PO-line
-  commitment (`sourcing.py:319-347`; `views/requisitions.py:299-310`).
-- **Recommend fix — RFQ source lineage can contradict its header.** An RFQ may point to
-  requisition A while one of its `requisition_line` ids comes from requisition B in the
-  same entity. Award then creates a PO whose header says A and whose line traces to B
-  (`views/orders.py:361-384,441-458`; `sourcing.py:309-347`).
+  commitment (`sourcing.py:354-382`; `views/requisitions.py:299-310`).
+- ✅ **RFQ header and line lineage agree.** When an RFQ names a requisition, create and
+  DRAFT PATCH accept source lines only from that same requisition; a mismatched
+  same-entity line returns a field-level 400 and the atomic replacement preserves the
+  previous lines. Headerless RFQs retain optional entity-scoped line lineage
+  (`views/orders.py:367-399,450-484,507-542`).
 - ✅ **Requisition quantities use the strict shared sourcing boundary.** POST and PATCH
   now reject zero, negative, non-finite, and oversized quantities before rewriting any
   line, matching RFQ/quotation behavior (`views/requisitions.py:65-86`;
   `views/base.py:113-134`).
-- **Judgment call — an invited vendor can create multiple quotations for one RFQ.**
-  There is no `(rfq, vendor)` uniqueness rule or create guard. The invitation panel then
-  treats the lowest-id quotation as the canonical response even if a later offer is the
-  submitted one (`models.py:787-820`; `serializers.py:628-646`). Decide whether revised
-  bids should replace one offer or be explicit revisions.
-- **Judgment call — response deadlines are informative, not enforced.** Create/submit
+- ✅ **Multiple vendor quotations are retained by design.** The RFQ detail prefetch orders
+  them by `created_at DESC, id DESC`; the newest offer is the invitation's canonical
+  response and the quotation list uses the same newest-to-oldest cache without N+1
+  queries (`views/orders.py:349-364`; `serializers.py:628-652`).
+- **Justified by design:** response deadlines are informative, not enforced. Create/submit
   checks that the RFQ is ISSUED but does not reject a quote after `response_due_date`;
-  buyers must close the RFQ manually (`views/orders.py:684-708`; `sourcing.py:209-240`).
-- **Recommend fix — issue and quotation submit are not serialized.** Unlike close,
-  cancel, and award, they do not lock/re-read their authoritative rows inside atomic
-  transactions. A simultaneous draft edit/issue or submit/close can therefore make a
-  transition using stale state (`sourcing.py:85-107,133-183,209-248,251-275`).
+  buyers close the RFQ manually when bidding ends (`views/orders.py:699-723`;
+  `sourcing.py:222-267`).
+- ✅ **Sourcing transitions are serialized.** Issue re-locks/rechecks the RFQ; submit and
+  award use the shared `RFQ → quotation → vendor` order; close/cancel lock live bids in
+  id order after the RFQ. Concurrent edits and lifecycle actions therefore observe the
+  committed authoritative state without reverse lock cycles
+  (`sourcing.py:85-196,222-310`).
 - **Justified by design:** quotation expiry is a display-only `is_expired` overlay; award
   still enforces `valid_until`, so no scheduler is needed to rewrite historical offer
-  status (`serializers.py:519-531`; `sourcing.py:287-294`).
+  status (`serializers.py:519-531`; `sourcing.py:322-329`).
 
 ## 9. Permissions & tenant isolation
 
@@ -219,7 +221,7 @@ selected ledger entity, and scope document `pk` lookups to it (`views/base.py:28
 Cost centers, vendors, accounts, tax codes, requisitions, and RFQ/quotation targets are
 entity-scoped; quotation RFQ-line references are additionally scoped to the selected
 RFQ (`views/requisitions.py:54-62`; `views/base.py:55-90,217-231`;
-`views/orders.py:619-645`). A foreign id therefore behaves as missing/invalid rather
+`views/orders.py:634-660`). A foreign id therefore behaves as missing/invalid rather
 than exposing another entity's row.
 
 The seeded matrix separates requisition view/create/update/submit, RFQ
@@ -245,17 +247,21 @@ the RFQ `issue` authority (`management/commands/seed_procurement_permissions.py:
 
 ## 11. Test coverage & gaps
 
-The current procurement suite is **205 green**. Requisition console coverage verifies
+The current procurement suite is **209 green**. Requisition console coverage verifies
 entity-scoped summaries, create/derived totals, foreign cost-center rejection, status
 filtering/search, strict quantity validation/rollback, annual budget commitment math,
 and endpoint RBAC (`tests.py:1430-1683`). Workflow coverage verifies manager approval,
-senior threshold escalation, and rejection-to-cancellation (`tests.py:4429-4646`).
+senior threshold escalation, and rejection-to-cancellation (`tests.py:4685-4902`).
 
 `SourcingTests` and `SourcingConsoleAPITests` cover pricing/lifecycle services, invited
 vendor eligibility, issue/close/cancel/award behavior, expired-offer refusal, list and
 empty shapes, permissions, cross-entity ids, validation bounds, invitation replacement,
 detail derivation, API award conversion, cost-center precedence, and sourced commitment
-visibility in the budget endpoint (`tests.py:2468-3219`).
+visibility in the budget endpoint, source-line consistency with PATCH rollback, and
+newest-quotation canonical ordering (`tests.py:2468-2792,2950-3475`). Real PostgreSQL
+race coverage proves issue waits for a draft edit and rechecks its committed lines, and
+only one simultaneous quotation submission succeeds (`tests.py:2793-2949`).
 
-Remaining gaps mirror the open §8 items: RFQ header/line source consistency; duplicate
-vendor offers/revision policy; late responses; and issue/submit concurrency.
+The remaining deadline/expiry behaviors are intentional §8 decisions, not uncovered
+fixes. Direct ORM/import writers must still preserve RFQ parent locking and source-line
+consistency because those rules are enforced at the service/API boundary.
