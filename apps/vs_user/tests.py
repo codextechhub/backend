@@ -24,6 +24,7 @@ class PlatformUserCreationTests(TestCase):
     def setUp(self):
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
+        from vs_user.models import OrgNode, Position
 
         self.tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
         self.actor = make_cx_user(email="creator@codex.test")
@@ -39,6 +40,20 @@ class PlatformUserCreationTests(TestCase):
         TenantUserRoleAssignment.objects.create(
             tenant=self.tenant, user=self.actor, role=self.super_role,
             assignment_status="ACTIVE",
+        )
+        division = OrgNode.objects.create(
+            name="Product", code="PRODUCT", kind=OrgNode.Kind.DIVISION,
+        )
+        department = OrgNode.objects.create(
+            name="Engineering", code="ENGINEERING", kind=OrgNode.Kind.DEPARTMENT,
+            parent=division,
+        )
+        team = OrgNode.objects.create(
+            name="Platform", code="PLATFORM", kind=OrgNode.Kind.TEAM,
+            parent=department,
+        )
+        self.position = Position.objects.create(
+            title="Platform Engineer", code="PLATFORM-ENG", org_node=team,
         )
 
     def _validated_data(self, email, employee_id=None):
@@ -56,7 +71,7 @@ class PlatformUserCreationTests(TestCase):
             "role": self.hire_role.name,
             "role_instance": self.hire_role,
             "branch": None,
-            "position_instance": None,
+            "position_instance": self.position,
             "profile_prefill": profile_prefill,
         }
 
@@ -95,10 +110,38 @@ class PlatformUserCreationTests(TestCase):
             "gender": "FEMALE",
             "phone": "08012345678",
             "role": self.hire_role.key,
+            "position": self.position.code,
         }, context={"request": request})
 
         self.assertTrue(serializer.is_valid(), serializer.errors)
         self.assertEqual(serializer.validated_data["phone"], "08012345678")
+
+    def test_non_draft_cx_hire_requires_position(self):
+        from types import SimpleNamespace
+        from vs_user.serializers import UserCreateSerializer
+
+        serializer = UserCreateSerializer(data={
+            "first_name": "No", "last_name": "Seat",
+            "email": "no.seat@codex.test", "gender": "FEMALE",
+            "phone": "08012345678", "role": self.hire_role.key,
+        }, context={"request": SimpleNamespace(user=self.actor, tenant=self.tenant)})
+
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("position", serializer.errors)
+
+    def test_position_populates_employment_hierarchy_and_job_title(self):
+        from vs_user.services.user import UserCreationService
+
+        user = UserCreationService.create_pending(
+            self._validated_data("position.derived@codex.test"), self.actor,
+        )
+        profile = user.platform_staff_profile
+
+        self.assertEqual(profile.position, self.position)
+        self.assertEqual(profile.job_title, self.position.title)
+        self.assertEqual(profile.org_node.name, "Platform")
+        self.assertEqual(profile.department.name, "Engineering")
+        self.assertEqual(profile.division.name, "Product")
 
     def test_workflow_failure_rolls_back_the_pending_user(self):
         from vs_workflow.exceptions import TemplateNotFoundError
@@ -116,6 +159,7 @@ class PlatformUserCreationTests(TestCase):
                 "gender": "MALE",
                 "phone": "08012345678",
                 "role": self.hire_role.key,
+                "position": self.position.code,
             }, format="json")
 
         self.assertEqual(response.status_code, 404)
@@ -134,6 +178,7 @@ class PlatformUserCreationTests(TestCase):
                 "gender": "FEMALE",
                 "phone": "08012345678",
                 "role": self.hire_role.key,
+                "position": self.position.code,
             }, format="json")
 
         self.assertEqual(response.status_code, 201, response.content)
@@ -1006,6 +1051,7 @@ class DraftUserTests(TestCase):
     def setUp(self):
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
         from vs_tenants.models import Tenant
+        from vs_user.models import OrgNode, Position
 
         self.tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
         self.actor = make_cx_user(email="bulk.creator@codex.test")
@@ -1020,6 +1066,12 @@ class DraftUserTests(TestCase):
         TenantUserRoleAssignment.objects.create(
             tenant=self.tenant, user=self.actor, role=self.super_role,
             assignment_status="ACTIVE",
+        )
+        node = OrgNode.objects.create(
+            name="Draft Operations", code="DRAFT-OPS", kind=OrgNode.Kind.DIVISION,
+        )
+        self.position = Position.objects.create(
+            title="Operations Analyst", code="OPS-ANALYST", org_node=node,
         )
         self.client = APIClient()
         self.client.force_authenticate(user=self.actor)
@@ -1052,11 +1104,16 @@ class DraftUserTests(TestCase):
                 mock.patch("vs_user.views.accounts._WFInstanceSerializer") as wf_ser:
             wf.return_value = object()
             wf_ser.return_value.data = {"id": "wf-1"}
-            resp = self.client.post(f"/v1/user/users/{user.id}/submit/", {}, format="json")
+            resp = self.client.post(
+                f"/v1/user/users/{user.id}/submit/",
+                {"position": self.position.code}, format="json",
+            )
         self.assertEqual(resp.status_code, 200, resp.content)
         user.refresh_from_db()
         self.assertEqual(user.status, User.Status.PENDING_APPROVAL)
         wf.assert_called_once()
+        self.assertEqual(user.platform_staff_profile.position, self.position)
+        self.assertEqual(user.platform_staff_profile.job_title, self.position.title)
 
     def test_submit_draft_without_role_is_rejected(self):
         self.client.post("/v1/user/users/", {
@@ -1065,8 +1122,26 @@ class DraftUserTests(TestCase):
             "save_as_draft": True,
         }, format="json")
         user = User.objects.get(email="roleless.draft@codex.test")
-        resp = self.client.post(f"/v1/user/users/{user.id}/submit/", {}, format="json")
+        resp = self.client.post(
+            f"/v1/user/users/{user.id}/submit/",
+            {"position": self.position.code}, format="json",
+        )
         self.assertEqual(resp.status_code, 400, resp.content)
+        user.refresh_from_db()
+        self.assertEqual(user.status, User.Status.DRAFT)
+
+    def test_submit_draft_without_position_is_rejected(self):
+        self.client.post("/v1/user/users/", {
+            "first_name": "Seatless", "last_name": "Draft",
+            "email": "seatless.draft@codex.test", "gender": "MALE",
+            "role": self.hire_role.key, "save_as_draft": True,
+        }, format="json")
+        user = User.objects.get(email="seatless.draft@codex.test")
+
+        resp = self.client.post(f"/v1/user/users/{user.id}/submit/", {}, format="json")
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        self.assertEqual(resp.json()["error"]["error_code"], "POSITION_REQUIRED")
         user.refresh_from_db()
         self.assertEqual(user.status, User.Status.DRAFT)
 
@@ -1078,11 +1153,18 @@ class CXUsersImportHandlerTests(TestCase):
     def setUp(self):
         from vs_rbac.models import TenantRoleTemplate
         from vs_tenants.models import Tenant
+        from vs_user.models import OrgNode, Position
 
         self.tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
         self.actor = make_cx_user(email="importer@codex.test")
         self.hire_role = TenantRoleTemplate.objects.create(
             tenant=self.tenant, key="xvs_platform_admin", name="Platform Admin",
+        )
+        node = OrgNode.objects.create(
+            name="Import Division", code="IMPORT", kind=OrgNode.Kind.DIVISION,
+        )
+        self.position = Position.objects.create(
+            title="Import Analyst", code="IMPORT-ANALYST", org_node=node,
         )
 
     def test_handler_creates_pending_user_not_draft(self):
@@ -1096,14 +1178,32 @@ class CXUsersImportHandlerTests(TestCase):
                 payload={
                     "first_name": "Bulk", "last_name": "Hire",
                     "email": "bulk.hire@codex.test", "role": self.hire_role.key,
-                    "gender": "MALE",
+                    "gender": "MALE", "position": self.position.code,
                 },
                 queued_by=self.actor,
             )
         self.assertEqual(result.action, "create")
         user = User.objects.get(email="bulk.hire@codex.test")
         self.assertEqual(user.status, User.Status.PENDING_APPROVAL)
+        self.assertEqual(user.platform_staff_profile.position, self.position)
+        self.assertEqual(user.platform_staff_profile.job_title, self.position.title)
         wf.assert_called_once()
+
+    def test_handler_rejects_missing_position(self):
+        from types import SimpleNamespace
+        from rest_framework.exceptions import ValidationError
+        from vs_import_data.services.import_executor import import_cx_users_row
+
+        with self.assertRaises(ValidationError) as caught:
+            import_cx_users_row(
+                import_batch=SimpleNamespace(school=None),
+                payload={
+                    "first_name": "No", "last_name": "Seat",
+                    "email": "bulk.no.seat@codex.test", "role": self.hire_role.key,
+                },
+                queued_by=self.actor,
+            )
+        self.assertIn("position", caught.exception.detail)
 
     def test_handler_skips_duplicate_email(self):
         from types import SimpleNamespace
@@ -1128,3 +1228,7 @@ class CXUsersImportHandlerTests(TestCase):
         self.assertTrue(
             template.columns.filter(target_field="email", is_required=True).exists()
         )
+        self.assertTrue(
+            template.columns.filter(target_field="position", is_required=True).exists()
+        )
+        self.assertFalse(template.columns.filter(target_field="job_title").exists())

@@ -53,6 +53,21 @@ class UserCreationService:
         position_instance = validated_data.pop('position_instance', None)
         profile_prefill = validated_data.pop('profile_prefill', None) or {}
 
+        if (
+            validated_data.get('user_type') == User.UserType.CX_STAFF
+            and status != User.Status.DRAFT
+            and position_instance is None
+        ):
+            raise ValueError({
+                'error_code': 'POSITION_REQUIRED',
+                'message': 'A position must be assigned to CX staff.',
+            })
+
+        if position_instance is not None:
+            # Position is authoritative even for callers that bypass the API
+            # serializer and invoke the creation service directly.
+            profile_prefill['job_title'] = position_instance.title
+
         user = User.objects.create_user(
             email=validated_data['email'].lower().strip(),
             password=None,
@@ -98,7 +113,7 @@ class UserCreationService:
             # InvitationService.create() later get_or_creates this same profile
             # (idempotent), so the only effect of doing it here is that the
             # captured-at-creation HR data is already present.
-            PlatformStaffProfile.objects.update_or_create(
+            profile, _ = PlatformStaffProfile.objects.update_or_create(
                 user=user, defaults=profile_prefill,
             )
 
@@ -112,6 +127,11 @@ class UserCreationService:
                 OrganogramService.assign_position(
                     user=user, position=position_instance, assigned_by=requesting_user,
                 )
+                # update_or_create may leave this same profile instance cached
+                # on `user`; keep the immediate create response consistent with
+                # the assignment that OrganogramService just persisted.
+                profile.position = position_instance
+                profile.job_title = position_instance.title
 
         log_auth_event(
             actor=requesting_user, subject=user, tenant=user.tenant,

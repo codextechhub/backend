@@ -763,12 +763,13 @@ TEMPLATES: list[dict] = [
                 "and submitted for approval, then appears under CX Users."
             ),
             "instructions": (
-                "Fill one staff member per row. First Name, Last Name, Email and "
-                "Role Key are required; the rest are optional. Role Key is the "
+                "Fill one staff member per row. First Name, Last Name, Email, "
+                "Role Key and Position are required; the rest are optional. Role Key is the "
                 "role template key (e.g. xvs_platform_admin). Gender is MALE or "
                 "FEMALE. Employment Type is one of FULL_TIME, PART_TIME, CONTRACT, "
-                "INTERN. Position is an organogram seat id or code. Date Joined is "
-                "YYYY-MM-DD."
+                "INTERN. Position is an active organogram seat id or code; its title "
+                "and organisation hierarchy populate the employment profile. Date "
+                "Joined is YYYY-MM-DD."
             ),
             "allow_sample_row": True,
             "sample_row_data": {
@@ -778,7 +779,6 @@ TEMPLATES: list[dict] = [
                 "Role Key":         "xvs_platform_admin",
                 "Phone":            "+2348012345678",
                 "Gender":           "FEMALE",
-                "Job Title":        "Support Analyst",
                 "Employment Type":  "FULL_TIME",
                 "Position":         "ENG-MGR",
                 "Date Joined":      "2026-07-20",
@@ -831,35 +831,32 @@ TEMPLATES: list[dict] = [
                 "sample_value": "FEMALE", "column_order": 6,
             },
             {
-                "column_name":  "Job Title", "target_field": "job_title",
-                "display_name": "Job Title", "help_text": "Optional job title.",
-                "data_type": TemplateColumnDataTypeChoices.STRING,
-                "is_required": False, "max_length": 120,
-                "sample_value": "Support Analyst", "column_order": 7,
-            },
-            {
                 "column_name":  "Employment Type", "target_field": "employment_type",
                 "display_name": "Employment Type",
                 "help_text": "One of FULL_TIME, PART_TIME, CONTRACT, INTERN.",
                 "data_type": TemplateColumnDataTypeChoices.CHOICE,
                 "is_required": False,
                 "allowed_values": ["FULL_TIME", "PART_TIME", "CONTRACT", "INTERN"],
-                "sample_value": "FULL_TIME", "column_order": 8,
+                "sample_value": "FULL_TIME", "column_order": 7,
             },
             {
                 "column_name":  "Position", "target_field": "position",
                 "display_name": "Position",
-                "help_text": "Optional organogram seat — a Position id or code.",
+                "help_text": (
+                    "Required active organogram seat id or code. Its title becomes "
+                    "the job title; division, department, team and reporting lines "
+                    "are derived from its organisation node."
+                ),
                 "data_type": TemplateColumnDataTypeChoices.STRING,
-                "is_required": False, "max_length": 80,
-                "sample_value": "ENG-MGR", "column_order": 9,
+                "is_required": True, "max_length": 80,
+                "sample_value": "ENG-MGR", "column_order": 8,
             },
             {
                 "column_name":  "Date Joined", "target_field": "date_joined",
                 "display_name": "Date Joined", "help_text": "Optional YYYY-MM-DD.",
                 "data_type": TemplateColumnDataTypeChoices.DATE,
                 "is_required": False,
-                "sample_value": "2026-07-20", "column_order": 10,
+                "sample_value": "2026-07-20", "column_order": 9,
             },
         ],
     },

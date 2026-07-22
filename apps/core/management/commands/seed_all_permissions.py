@@ -23,7 +23,7 @@ Seed order
                                → both platform roles
 4. seed_import_permissions   — all import permissions → super-admin;
                                template management only → platform-admin
-4b. seed_import              — canonical school + branch bulk-upload templates
+4b. seed_import              — canonical bulk-upload templates, including CX staff
 5. seed_workflow_permissions — workflow engine permissions → both platform roles
 6. seed_config_permissions   — vs_config permissions → both platform roles
 7. seed_finance_permissions  — vs_finance permissions → both platform roles

@@ -107,9 +107,9 @@ def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecuti
         role              required – TenantRoleTemplate key on the codex tenant
         phone             optional
         gender            optional – MALE / FEMALE
-        job_title         optional
         employment_type   optional – FULL_TIME / PART_TIME / CONTRACT / INTERN
-        position          optional – organogram Position id or code
+        position          required – active organogram Position id or code;
+                          supplies job title and organisation hierarchy
         date_joined       optional – YYYY-MM-DD
     """
     from types import SimpleNamespace
@@ -134,7 +134,7 @@ def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecuti
     data = {"user_type": "CX_STAFF"}
     for field in (
         "first_name", "last_name", "email", "role", "phone",
-        "gender", "job_title", "employment_type", "position", "date_joined",
+        "gender", "employment_type", "position", "date_joined",
     ):
         value = _s(field)
         if value:

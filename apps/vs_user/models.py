@@ -756,7 +756,8 @@ class PlatformStaffProfile(TimeStampedModel):
     # ── Employment ────────────────────────────────────────────────────────────
     # Human-facing staff number, distinct from User.uid.
     employee_id       = models.CharField(max_length=32, null=True, blank=True, unique=True)
-    job_title         = models.CharField(max_length=120, blank=True, default='')
+    # Mirrors Position.title because a primary seat is the source of truth.
+    job_title         = models.CharField(max_length=150, blank=True, default='')
     position          = models.ForeignKey(
         'Position',
         on_delete=models.SET_NULL, null=True, blank=True,

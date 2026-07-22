@@ -104,9 +104,16 @@ class OrganogramService:
         if profile is None:
             return
         new_position_id = position.pk if position else None
+        new_job_title = position.title if position else ''
+        update_fields = []
         if profile.position_id != new_position_id:
             profile.position_id = new_position_id
-            profile.save(update_fields=['position', 'updated_at'])
+            update_fields.append('position')
+        if profile.job_title != new_job_title:
+            profile.job_title = new_job_title
+            update_fields.append('job_title')
+        if update_fields:
+            profile.save(update_fields=[*update_fields, 'updated_at'])
 
     # ── Manager-chain resolution ───────────────────────────────────────────────
 

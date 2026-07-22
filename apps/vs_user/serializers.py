@@ -110,6 +110,8 @@ class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     tenant_name = serializers.CharField(source='tenant.name', read_only=True)
     branch_name      = serializers.CharField(source='branch.name', read_only=True, default=None)
     invited_by_name  = serializers.SerializerMethodField()
+    position_id      = serializers.SerializerMethodField()
+    position_title   = serializers.SerializerMethodField()
 
     # Security-sensitive fields: only platform staff with team-management
     # access should see account security metadata for other users.
@@ -137,6 +139,8 @@ class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
             'tenant_name',
             'branch_id',
             'branch_name',
+            'position_id',
+            'position_title',
             'invited_by_id',
             'invited_by_name',
             'password_changed_at',
@@ -153,6 +157,14 @@ class UserReadSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         if obj.invited_by:
             return obj.invited_by.full_name
         return None
+
+    def get_position_id(self, obj):
+        profile = getattr(obj, 'platform_staff_profile', None)
+        return profile.position_id if profile else None
+
+    def get_position_title(self, obj) -> str | None:
+        profile = getattr(obj, 'platform_staff_profile', None)
+        return profile.position.title if profile and profile.position_id else None
 
 
 class UserListSerializer(FieldSecurityMixin, serializers.ModelSerializer):
@@ -234,11 +246,11 @@ class UserCreateSerializer(serializers.Serializer):
     role        = serializers.CharField(
         max_length=120, required=False, allow_blank=True, allow_null=True, default='',
     )
-    # Optional organogram seat to slot a CX hire into. Accepts a Position PK or
-    # code. Resolved here and materialised into a real (effective-dated) primary
-    # PositionAssignment by UserCreationService.create_pending.
+    # Organogram seat for a CX hire. Drafts may omit it while incomplete, but a
+    # real CX create requires it. Accepts a Position PK or code and is
+    # materialised into an effective-dated primary PositionAssignment.
     position    = serializers.CharField(required=False, allow_blank=True, allow_null=True, default=None)
-    job_title       = serializers.CharField(max_length=120, required=False, allow_blank=True, default='')
+    job_title       = serializers.CharField(max_length=150, required=False, allow_blank=True, default='')
     employee_id     = serializers.CharField(max_length=32, required=False, allow_blank=True, allow_null=True, default=None)
     employment_type = serializers.ChoiceField(
         choices=PlatformStaffProfile.EmploymentType.choices,
@@ -357,9 +369,14 @@ class UserCreateSerializer(serializers.Serializer):
             attrs['role'] = role.name
             attrs['role_instance'] = role
 
-        # Resolve the optional organogram seat (PK or code). CX staff only.
+        # Resolve the organogram seat (PK or code). It is mandatory for a real
+        # CX hire; only an incomplete draft may omit it.
         position_ref = attrs.pop('position', None)
         position_instance = None
+        if user_type == User.UserType.CX_STAFF and not draft and not position_ref:
+            raise serializers.ValidationError(
+                {'position': 'A position must be assigned to CX staff.'}
+            )
         if position_ref:
             if user_type != User.UserType.CX_STAFF:
                 raise serializers.ValidationError(
@@ -388,7 +405,12 @@ class UserCreateSerializer(serializers.Serializer):
         state_of_origin = (attrs.pop('state_of_origin', '') or '').strip()
 
         profile_prefill = {}
-        if job_title:
+        # A seat is the source of truth for job title. Ignore a conflicting
+        # client/import value; OrganogramService also enforces this on every
+        # later primary-position change.
+        if position_instance is not None:
+            profile_prefill['job_title'] = position_instance.title
+        elif job_title:
             profile_prefill['job_title'] = job_title
         if employee_id:
             profile_prefill['employee_id'] = employee_id

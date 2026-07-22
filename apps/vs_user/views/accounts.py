@@ -27,7 +27,7 @@ from core.mixins import (
 from core.pagination import XVSPagination
 from core.response import success_response, error_response
 from ..models import (
-    User,
+    Position, User,
 )
 from ..serializers import (
     UserReadSerializer, UserListSerializer, UserCreateSerializer, UserUpdateSerializer,
@@ -234,8 +234,9 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         """POST /user/users/<id>/submit/ — promote a DRAFT into the normal flow.
 
         Optionally accepts a ``role`` key to assign the role at submit time when
-        the draft doesn't already have one. CX staff enter the approval workflow;
-        other user types are invited immediately (mirrors single-create).
+        the draft doesn't already have one. CX drafts must already have a position
+        or submit one by id/code. CX staff enter the approval workflow; other user
+        types are invited immediately (mirrors single-create).
         """
         user = self.get_object()
 
@@ -251,8 +252,38 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                     error={"role": f'Role with key "{role_key}" not found in the target tenant.'},
                 )
 
+        position_instance = None
+        position_ref = str(request.data.get("position") or "").strip()
+        if position_ref:
+            positions = Position.objects.filter(is_active=True)
+            position_instance = (
+                positions.filter(pk=position_ref).first()
+                if position_ref.isdigit()
+                else positions.filter(code__iexact=position_ref).first()
+            )
+            if position_instance is None:
+                return error_response(
+                    message="Invalid position.",
+                    error={"position": f'Active position "{position_ref}" not found.'},
+                )
+
         try:
             with transaction.atomic():
+                if user.user_type == User.UserType.CX_STAFF:
+                    existing_position = getattr(
+                        getattr(user, "platform_staff_profile", None), "position", None,
+                    )
+                    position_instance = position_instance or existing_position
+                    if position_instance is None:
+                        raise ValueError({
+                            "error_code": "POSITION_REQUIRED",
+                            "message": "A position must be assigned before this draft can be submitted.",
+                        })
+                    if existing_position != position_instance:
+                        from ..services.organogram import OrganogramService
+                        OrganogramService.assign_position(
+                            user=user, position=position_instance, assigned_by=request.user,
+                        )
                 UserCreationService.submit_draft(
                     user=user, requesting_user=request.user, request=request,
                     role_instance=role_instance,
