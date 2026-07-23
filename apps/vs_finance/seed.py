@@ -33,7 +33,7 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     # Liabilities  # Liability root and default liability accounts.
     ("2000", "Liabilities", AccountType.LIABILITY, False, False),  # Liability section header.
     ("2100", "Accounts Payable", AccountType.LIABILITY, True, False),  # AP control account.
-    ("2140", "Customer Credit Balances", AccountType.LIABILITY, True, False),  # Customer credits liability.
+    ("2140", "Customer Credit", AccountType.LIABILITY, True, False),  # Customer credits liability.
     ("2150", "GR/IR Clearing", AccountType.LIABILITY, True, False),  # Goods-received/invoice-received clearing.
     ("2200", "Output VAT (Payable)", AccountType.LIABILITY, True, False),  # Output VAT payable.
     ("2300", "WHT Payable", AccountType.LIABILITY, True, False),  # Withholding tax payable.
@@ -49,7 +49,7 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("4000", "Income", AccountType.INCOME, False, False),  # Income section header.
     ("4100", "Operating Revenue", AccountType.INCOME, True, False),  # Primary operating revenue.
     ("4900", "Sales Returns & Allowances", AccountType.INCOME, True, True),  # Contra-revenue returns account.
-    ("4910", "Discounts & Concessions Allowed", AccountType.INCOME, True, True),  # Contra-revenue discounts account.
+    ("4910", "Discounts & Concessions", AccountType.INCOME, True, True),  # Contra-revenue discounts account.
     # Expenses  # Expense root and default expense accounts.
     ("5000", "Expenses", AccountType.EXPENSE, False, False),  # Expense section header.
     ("5100", "Cost of Sales", AccountType.EXPENSE, True, False),  # Cost of sales account.
