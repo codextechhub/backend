@@ -9,6 +9,7 @@ rendered by ``core.exceptions.custom_exception_handler`` (the typed-exception pa
 the views stay thin.
 """
 from __future__ import annotations
+from shutil import which
 
 from django.http import HttpResponse
 from rest_framework import generics
@@ -188,10 +189,9 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
 
     # Support the with balance workflow.
     def _with_balance(self):
-        return self.request.query_params.get("with_balance") == "true"
+        return self.request.query_params.get("with_balance") == "true" 
 
     # POST added manually (not using CreateAPIView or ListCreateAPIView)
-    # Handle POST requests for this endpoint.
     def post(self, request):
         """Create a new chart-of-accounts node for the entity."""
         from .constants import AccountType
@@ -232,7 +232,6 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
             f"Account {account.code} created.", data=AccountSerializer(account).data, status=201,
         )
 
-    # Handle the entity qs workflow.
     def entity_qs(self, entity):
         qs = Account.objects.filter(entity=entity).select_related("parent").order_by("code")
         params = self.request.query_params
@@ -242,7 +241,7 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
             qs = qs.annotate(
                 _bal_dr=Coalesce(Sum(F("balances__opening_debit") + F("balances__debit_total")), 0),
                 _bal_cr=Coalesce(Sum(F("balances__opening_credit") + F("balances__credit_total")), 0),
-            )
+            )  # Annotate the GL net for each account (used by the chart's Balance column).
         if (atype := params.get("account_type")):
             # accepts a single type or a comma list (e.g. INCOME,EXPENSE for budgets)
             types = [t.strip() for t in atype.split(",") if t.strip()]
@@ -252,7 +251,6 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
                 qs = qs.filter(is_postable=postable.lower() == "true")
         return qs
 
-    # Handle the get serializer context workflow.
     def get_serializer_context(self):
         ctx = super().get_serializer_context()
         if self._with_balance():
@@ -262,15 +260,15 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
             control = set(
                 Customer.objects.filter(entity=entity).exclude(receivable_account=None)
                 .values_list("receivable_account_id", flat=True)
-            )
+            )  # Control accounts for customers (AR) and vendors (AP) are tagged in the chart.
             try:  # Start protected finance operation.
                 from vs_procurement.models import Vendor
                 control |= set(
                     Vendor.objects.filter(entity=entity).exclude(payable_account=None)
                     .values_list("payable_account_id", flat=True)
                 )
-            except Exception:  # pragma: no cover - procurement optional
-                pass  # No operation required for this branch.
+            except Exception:
+                pass
             ctx["control_ids"] = control
             ctx["cash_ids"] = set(
                 Account.objects.filter(entity=entity, code=CASH_BANK_CODE).values_list("id", flat=True)
@@ -302,11 +300,9 @@ class AccountDetailView(APIView):
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
     @property
-    # Handle the rbac permission workflow.
     def rbac_permission(self):
         return "finance.account.update" if self.request.method == "PATCH" else "finance.account.view"
 
-    # Support the get workflow.
     def _get(self, entity, pk):
         from .models import Account
         acc = Account.objects.filter(entity=entity, pk=pk).select_related("parent").first()
@@ -314,7 +310,6 @@ class AccountDetailView(APIView):
             raise NotFound("No such account in this entity.")
         return acc
 
-    # Handle GET requests for this endpoint.
     def get(self, request, pk):
         import datetime
         from .constants import DocumentStatus, NormalBalance, AccountType
@@ -360,11 +355,12 @@ class AccountDetailView(APIView):
                 "credit": _money(ln.credit),
                 "running_balance": _money(running),
             })
-        activity.reverse()
+        activity.reverse()  # Newer first for the activity list (oldest first was used to accumulate the running balance).
 
-        # Headline balance uses the canonical denormalised GL net (same source as
-        # the chart's Balance column) so the two always agree; the activity list's
-        # running balance reflects the actual posted lines.
+        """The main balance shown at the top comes from the saved GL balance, 
+        which is also used in the chart. Therefore, both numbers will always match. 
+        However, the activity list calculates its running balance from the individual 
+        transactions actually posted."""
         return success_response(
             "Account detail retrieved.",
             data={
@@ -380,7 +376,6 @@ class AccountDetailView(APIView):
             },
         )
 
-    # Handle PATCH requests for this endpoint.
     def patch(self, request, pk):
         entity = resolve_entity(request)
         acc = self._get(entity, pk)
@@ -403,7 +398,6 @@ class AccountDetailView(APIView):
         return success_response(f"Account {acc.code} updated.", data=AccountSerializer(acc).data)
 
 
-# Group endpoint behavior for Fiscal Period List View.
 class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
     """GET /finance/periods/?entity= — the entity's fiscal periods.
 
