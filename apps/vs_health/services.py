@@ -14,7 +14,13 @@ from django.db.models import Count, Sum, Avg, Q, F
 from django.db.models.functions import Trunc
 from django.utils import timezone
 
-from .constants import LATENCY_BUCKETS_MS, HISTOGRAM_SIZE, HealthStatus, worst_status
+from .constants import (
+    LATENCY_BUCKETS_MS,
+    HISTOGRAM_SIZE,
+    MIN_P95_SAMPLE,
+    HealthStatus,
+    worst_status,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -182,10 +188,16 @@ def golden_signals(tr: TimeRange, tenant_id=None) -> dict:
     # Saturation currently comes from datastore probes rather than request rows.
     saturation = _saturation(tr)
 
+    # Short windows on a low-traffic instance hold a handful of requests; the
+    # p95/error-rate numbers are still shown, but their status badges are only
+    # claimed once the window carries enough samples to support them.
+    enough_samples = totals["requests"] >= MIN_P95_SAMPLE
+
     return {
         "latency": {
             "value": p95, "unit": "ms", "delta": _delta(p95, prev_p95),
-            "status": _status_for_latency(p95), "spark": spark_latency,
+            "status": _status_for_latency(p95) if enough_samples else HealthStatus.UNKNOWN,
+            "spark": spark_latency,
         },
         "traffic": {
             "value": rpm, "unit": "/min", "delta": _delta(rpm, prev_rpm),
@@ -194,7 +206,9 @@ def golden_signals(tr: TimeRange, tenant_id=None) -> dict:
         "errors": {
             "value": totals["error_rate"], "unit": "%",
             "delta": _delta(totals["error_rate"], prev_totals["error_rate"]),
-            "status": _status_for_error_rate(totals["error_rate"]), "spark": spark_errors,
+            "status": (_status_for_error_rate(totals["error_rate"])
+                       if enough_samples else HealthStatus.UNKNOWN),
+            "spark": spark_errors,
         },
         "saturation": {
             "value": saturation["value"], "unit": "%", "delta": 0.0,
@@ -263,9 +277,13 @@ def _saturation(tr: TimeRange) -> dict:
 
 # Convert p95 latency into the shared health status vocabulary.
 def _status_for_latency(p95: float) -> str:
-    if p95 >= 600:
+    # Tuned for the deployment we actually run on (Render starter, 0.5 CPU),
+    # where heavy billing/report aggregates legitimately take several hundred
+    # ms. 400/600 were instance-sized for a bigger box and flagged normal work
+    # as degraded.
+    if p95 >= 1500:
         return HealthStatus.CRITICAL
-    if p95 >= 400:
+    if p95 >= 800:
         return HealthStatus.WARNING
     return HealthStatus.HEALTHY
 
@@ -277,6 +295,21 @@ def _status_for_error_rate(rate: float) -> str:
     if rate >= 1:
         return HealthStatus.WARNING
     return HealthStatus.HEALTHY
+
+
+# Single choke point for "what status does this traffic window deserve?".
+def window_status(requests: int, error_rate: float, p95: float) -> str:
+    """Status for one traffic window, or UNKNOWN when the sample is too small.
+
+    Both inputs are ratio/percentile estimates: below ``MIN_P95_SAMPLE``
+    requests they are dominated by individual requests, so the honest answer is
+    "no signal" rather than a green we cannot back or a red one slow report
+    caused. Every place a windowed p95/error-rate drives a *status* routes
+    through here.
+    """
+    if not requests or requests < MIN_P95_SAMPLE:
+        return HealthStatus.UNKNOWN
+    return worst_status([_status_for_error_rate(error_rate), _status_for_latency(p95)])
 
 
 # ---------------------------------------------------------------------------
@@ -322,8 +355,9 @@ def endpoint_stats(tr: TimeRange, tenant_id=None) -> list:
                 "x2": g["s2"] or 0, "x3": g["s3"] or 0,
                 "x4": g["s4"] or 0, "x5": s5,
             },
-            "status": (_status_for_error_rate(err) if err
-                       else _status_for_latency(percentile_from_hist(merged, 95))),
+            # Percentiles above stay visible as raw numbers; the *status* badge
+            # is withheld until the route has enough requests to mean anything.
+            "status": window_status(reqs, err, percentile_from_hist(merged, 95)),
         })
     return out
 
@@ -400,8 +434,7 @@ def tenant_stats(tr: TimeRange) -> list:
             "error_rate": err,
             "p95": p95,
             "noisy": noisy,
-            "status": (_status_for_error_rate(err) if err
-                       else _status_for_latency(p95)),
+            "status": window_status(reqs, err, p95),
         })
     return out
 

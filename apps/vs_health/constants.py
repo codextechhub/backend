@@ -60,6 +60,21 @@ LATENCY_BUCKETS_MS = [
 ]
 HISTOGRAM_SIZE = len(LATENCY_BUCKETS_MS) + 1
 
+# ---------------------------------------------------------------------------
+# Small-sample floor for ratio/percentile signals
+# ---------------------------------------------------------------------------
+# Production traffic on this platform is roughly 1-2 requests/minute, so a 15
+# minute window routinely holds only a couple of dozen requests. A p95 (or a
+# 5xx error rate) computed from that few samples is noise, not signal: ONE slow
+# report request flips p95 past any latency threshold and opens a SEV2, and one
+# 500 makes a 20% error rate. Below this floor we have no statistically usable
+# signal, so percentile/ratio-driven statuses report UNKNOWN and alert rules
+# skip evaluation entirely — never a claimed green, never a noisy red.
+# 30 is the conventional smallest sample at which a tail estimate is worth
+# quoting at all (at n=30 the p95 still rests on the top ~2 observations, so
+# treat it as a floor, not a guarantee).
+MIN_P95_SAMPLE = 30
+
 # Bucket width, in seconds, that request metrics are aggregated into.
 # Request metrics are folded into minute buckets before persistence.
 METRIC_BUCKET_SECONDS = 60

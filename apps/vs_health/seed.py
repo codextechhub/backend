@@ -134,20 +134,42 @@ def seed_alert_rules(stdout=None):
 
     rules = [
         ("API error rate", M.ERROR_RATE, C.GT, 5, 300, Severity.SEV1, "api", "", "PagerDuty", True),
-        ("p95 latency SLO", M.P95_LATENCY, C.GT, 400, 600, Severity.SEV2, None, "", "Slack #sre", True),
+        # 800ms matches services._status_for_latency's warning band, sized for
+        # the Render starter (0.5 CPU) this runs on; the old 400 was tuned for a
+        # bigger instance and fired on ordinary billing/report aggregates.
+        ("p95 latency SLO", M.P95_LATENCY, C.GT, 800, 600, Severity.SEV2, None, "", "Slack #sre", True),
         ("Notifications backlog", M.QUEUE_DEPTH, C.GT, 2000, 0, Severity.SEV2, None, "notifications", "Zoho Cliq", True),
         ("SSL expiry", M.SSL_DAYS_LEFT, C.LT, 14, 0, Severity.SEV3, "dns", "", "Email", True),
         ("API uptime SLO", M.UPTIME_PCT, C.LT, 99.5, 0, Severity.SEV2, "api", "", "PagerDuty", True),
     ]
+    repaired = 0
     for name, metric, comp, thresh, dur, sev, skey, queue, channel, on in rules:
-        AlertRule.objects.get_or_create(
-            name=name,
-            defaults={"metric": metric, "comparator": comp, "threshold": thresh,
-                      "duration_sec": dur, "severity": sev,
-                      "target_service": svc.get(skey) if skey else None,
-                      "target_queue": queue, "channel": channel, "is_enabled": on},
-        )
-    _log(stdout, f"  alert rules: {AlertRule.objects.count()}")
+        target = svc.get(skey) if skey else None
+        # These rules are system configuration, like the uptime checks above:
+        # re-seeding must repair stale thresholds on already-deployed rows (a
+        # plain get_or_create would leave the old 400ms p95 threshold firing
+        # forever). The operator's own is_enabled toggle is preserved.
+        rule = AlertRule.objects.filter(name=name).first()
+        if rule is None:
+            AlertRule.objects.create(
+                name=name, metric=metric, comparator=comp, threshold=thresh,
+                duration_sec=dur, severity=sev, target_service=target,
+                target_queue=queue, channel=channel, is_enabled=on,
+            )
+            continue
+        changed = []
+        for field, value in (("metric", metric), ("comparator", comp),
+                             ("threshold", thresh), ("duration_sec", dur),
+                             ("severity", sev), ("target_service", target),
+                             ("target_queue", queue), ("channel", channel)):
+            if getattr(rule, field) != value:
+                setattr(rule, field, value)
+                changed.append(field)
+        if changed:
+            rule.save(update_fields=changed)
+            repaired += 1
+            _log(stdout, f"  alert rule repaired: {name} ({', '.join(changed)})")
+    _log(stdout, f"  alert rules: {AlertRule.objects.count()} ({repaired} repaired)")
 
 
 # Seed availability SLO targets for services shown in reliability screens.

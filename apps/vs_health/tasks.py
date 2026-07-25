@@ -76,11 +76,12 @@ def refresh_module_service_statuses(window_minutes: int = 15) -> int:
     The "module" services (schools/billing/reports) are route groups of the
     monolith, not separate processes — nothing can probe them independently.
     Their honest status is the observed error rate + p95 latency of their own
-    routes over the trailing window; with zero traffic there is no signal and
-    the status is UNKNOWN, never a claimed green.
+    routes over the trailing window; with too little traffic (see
+    ``MIN_P95_SAMPLE``) there is no usable signal and the status is UNKNOWN,
+    never a claimed green nor a red one slow request produced.
     """
     from .models import MonitoredService, RequestMetric
-    from .services import _status_for_error_rate, _status_for_latency, percentile_from_hist
+    from .services import percentile_from_hist, window_status
     from .constants import HISTOGRAM_SIZE
 
     since = timezone.now() - timedelta(minutes=window_minutes)
@@ -104,16 +105,11 @@ def refresh_module_service_statuses(window_minutes: int = 15) -> int:
             for i, count in enumerate(row[2][:HISTOGRAM_SIZE]):
                 hist[i] += count
 
-        if requests == 0:
-            # No traffic is no signal; do not report green for an unobserved module.
-            svc.set_status(HealthStatus.UNKNOWN)
-        else:
-            error_rate = round(errors / requests * 100, 2)
-            p95 = percentile_from_hist(hist, 95)
-            svc.set_status(worst_status([
-                _status_for_error_rate(error_rate),
-                _status_for_latency(p95),
-            ]))
+        error_rate = round(errors / requests * 100, 2) if requests else 0.0
+        p95 = percentile_from_hist(hist, 95)
+        # window_status returns UNKNOWN for zero traffic *and* for windows below
+        # the small-sample floor — both are "no signal", not a claim.
+        svc.set_status(window_status(requests, error_rate, p95))
         updated += 1
     return updated
 
@@ -236,9 +232,14 @@ def _next_incident_code() -> str:
 
 # Resolve the current observed value for an alert rule metric.
 def _current_metric_value(rule):
-    """Resolve the live value a rule is evaluated against, or None."""
+    """Resolve the live value a rule is evaluated against, or None.
+
+    None means "no evaluable signal this run": ``AlertRule.breaches(None)`` is
+    False, so the rule neither fires nor blocks an open alert from resolving.
+    """
     from .models import QueueSnapshot, UptimeDailyRollup, UptimeCheckResult, AlertRule, CheckType
     from . import services
+    from .constants import MIN_P95_SAMPLE
 
     tr = services.parse_range("15m")
     # Widen the window to the rule's sustained-for duration when it's longer.
@@ -246,11 +247,18 @@ def _current_metric_value(rule):
         # Sustained rules evaluate over their configured duration when it exceeds 15m.
         tr.start = tr.end - timedelta(seconds=rule.duration_sec)
 
-    if rule.metric == AlertRule.Metric.ERROR_RATE:
-        return services._totals(services._base_qs(tr.start, tr.end))["error_rate"]
-    if rule.metric == AlertRule.Metric.P95_LATENCY:
-        return services.percentile_from_hist(
-            services._merged_hist(services._base_qs(tr.start, tr.end)), 95)
+    # Both request-derived metrics are ratio/percentile estimates: on a window
+    # of a handful of requests one slow (or one failed) request swings them past
+    # any threshold and auto-opens an incident. Below the floor there is nothing
+    # to evaluate.
+    if rule.metric in (AlertRule.Metric.ERROR_RATE, AlertRule.Metric.P95_LATENCY):
+        qs = services._base_qs(tr.start, tr.end)
+        totals = services._totals(qs)
+        if totals["requests"] < MIN_P95_SAMPLE:
+            return None
+        if rule.metric == AlertRule.Metric.ERROR_RATE:
+            return totals["error_rate"]
+        return services.percentile_from_hist(services._merged_hist(qs), 95)
     if rule.metric == AlertRule.Metric.QUEUE_DEPTH:
         latest = (QueueSnapshot.objects.filter(queue_name=rule.target_queue or "celery")
                   .order_by("-captured_at").first())
