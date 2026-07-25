@@ -112,8 +112,11 @@ def seed_checks(stdout=None):
 
     mk("web", "Web frontend", CheckType.HTTP, getattr(settings, "FRONTEND_BASE_URL", PROBE_BASE),
        {"status": 200, "warn_ms": 800})
-    mk("api", "API health", CheckType.HTTP, f"{PROBE_BASE}/v1/", {"status": 200, "warn_ms": 600})
-    mk("auth", "Auth endpoint", CheckType.HTTP, f"{PROBE_BASE}/v1/user/", {"warn_ms": 600})
+    # HTTP probe warn levels align with the 800ms latency warning band in
+    # services._status_for_latency: a single synthetic request on the starter
+    # instance should not be held to a stricter bar than the app-wide p95.
+    mk("api", "API health", CheckType.HTTP, f"{PROBE_BASE}/v1/", {"status": 200, "warn_ms": 800})
+    mk("auth", "Auth endpoint", CheckType.HTTP, f"{PROBE_BASE}/v1/user/", {"warn_ms": 800})
     mk("postgres", "Postgres SELECT 1", CheckType.POSTGRES, expected={"warn_ms": 100})
     mk("redis", "Redis ping", CheckType.REDIS, expected={"warn_ms": 50})
     mk("dns", "SSL certificate", CheckType.SSL, SSL_DOMAIN, {"warn_days": 14, "critical_days": 5}, 3600)
