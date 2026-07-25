@@ -101,6 +101,7 @@ ACTIONS: list[tuple[str, str]] = [
     # ── Platform / DevOps ────────────────────────────────────────────────────
     ("impersonate","Act as another user for audited support diagnostics (platform staff only)."),
     ("end",          "End or terminate an active session (impersonation, etc.)."),
+    ("start",        "Start an audited session (school-scoped impersonation proxy, etc.)."),
     ("start_all",    "Start impersonating any user across the platform, including CX staff."),
     ("start_cx",     "Start impersonating platform (CX) staff only."),
     ("start_school", "Start impersonating school users only."),

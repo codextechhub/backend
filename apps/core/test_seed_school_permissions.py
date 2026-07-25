@@ -70,8 +70,19 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            41,
+            44,
         )
+
+    def test_impersonation_keys_are_critical_and_restricted(self):
+        _run_school_seed()
+        for key in (
+            "school.impersonation.start",
+            "school.impersonation.end",
+            "school.impersonation.view",
+        ):
+            perm = Permission.objects.get(key=key)
+            self.assertEqual(perm.sensitivity_level, "CRITICAL", key)
+            self.assertTrue(perm.is_restricted, key)
 
     def test_sensitivity_levels_applied(self):
         _run_school_seed()
@@ -106,8 +117,20 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
             .values_list("permission_id", flat=True)
         )
 
-    def test_school_admin_gets_all_41(self):
-        self.assertEqual(len(self._defaults("school_admin")), 41)
+    def test_school_admin_gets_all_44(self):
+        self.assertEqual(len(self._defaults("school_admin")), 44)
+
+    def test_only_school_admin_gets_impersonation_by_default(self):
+        # The most powerful school keys must never be a branch_admin/teacher
+        # default — they are opt-in for anyone below the school admin.
+        impersonation = {
+            "school.impersonation.start",
+            "school.impersonation.end",
+            "school.impersonation.view",
+        }
+        self.assertTrue(impersonation <= self._defaults("school_admin"))
+        self.assertFalse(impersonation & self._defaults("branch_admin"))
+        self.assertFalse(impersonation & self._defaults("teacher"))
 
     def test_branch_admin_default_count(self):
         self.assertEqual(len(self._defaults("branch_admin")), 22)
@@ -156,11 +179,17 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        # school_admin defaults are all 41 keys.
-        self.assertEqual(len(keys), 41)
+        # school_admin defaults are all 44 keys.
+        self.assertEqual(len(keys), 44)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
         self.assertIn("academics.classes.assign", keys)
+        # The backfill is what gives ALREADY-provisioned schools the new
+        # impersonation keys — provision_role_from_prebuilt only copies
+        # prebuilt permissions on fresh role creation.
+        self.assertIn("school.impersonation.start", keys)
+        self.assertIn("school.impersonation.end", keys)
+        self.assertIn("school.impersonation.view", keys)
 
     def test_backfill_is_idempotent(self):
         _run_school_seed()

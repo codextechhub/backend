@@ -30,13 +30,26 @@ def _user_label(user) -> str:
     return user.full_name or user.email
 
 
-# Write platform audit bookends for every proxy-session lifecycle change.
+# Impersonation is initiated by either PLATFORM (CX) staff or a school actor.
+# The actor's home tenant kind — never the asserted tenant — decides which
+# permission namespace, target pool and audit module apply.
+def is_platform_actor(actor) -> bool:
+    """True when *actor* belongs to the PLATFORM (Codex) tenant."""
+    from vs_tenants.models import Tenant
+
+    return getattr(getattr(actor, "tenant", None), "kind", None) == Tenant.Kind.PLATFORM
+
+
+# Write audit bookends for every proxy-session lifecycle change.
 def _emit_proxy_lifecycle_event(*, action_type, actor, target, tenant, session, summary):
     """Write the durable, human-readable bookend for a proxy session."""
     from vs_audit.services import emit_audit_event
 
     emit_audit_event(
-        module_key="PLATFORM",
+        # Scope the row to the surface that initiated it: a school-initiated
+        # proxy is a SCHOOL event (already tenant-scoped to that school), so it
+        # never lands in the platform-only audit stream.
+        module_key="PLATFORM" if is_platform_actor(actor) else "SCHOOL",
         action_type=action_type,
         entity_type="ImpersonationSession",
         entity_id=str(session.pk),
@@ -91,14 +104,43 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     platform_cross_tenant_param = True
 
     def get_permissions(self):
+        # The actor's home tenant picks the namespace. School actors are
+        # authorised ONLY by school.impersonation.*; platform staff ONLY by
+        # platform.impersonation.*. The two sets are never unioned, so a school
+        # role that somehow carried a platform key still gets no extra reach.
+        actor = getattr(self.request, "actor_user", None) or getattr(
+            self.request, "user", None,
+        )
+        if is_platform_actor(actor):
+            self.rbac_permission = self._platform_rbac_permission()
+        else:
+            self.rbac_permission = {
+                # One start key covers the whole (own-tenant) target pool —
+                # there is no tiering to do when reach stops at the tenant edge.
+                "targets": "school.impersonation.start",
+                "start": "school.impersonation.start",
+                # A starter must always be able to exit their own session; the
+                # dedicated end key is the school's kill switch for ANY session
+                # in the tenant (mirrors the platform contract).
+                "end": [
+                    "school.impersonation.end",
+                    "school.impersonation.start",
+                ],
+                "list": "school.impersonation.view",
+                "retrieve": "school.impersonation.view",
+            }.get(self.action, "school.impersonation.view")
+        return super().get_permissions()
+
+    def _platform_rbac_permission(self):
+        """The tiered platform.impersonation.* matrix (CX staff only)."""
         # Target search accepts any start permission; final scope is enforced in the queryset.
         if self.action == "targets":
-            self.rbac_permission = [
+            return [
                 "platform.impersonation.start_all",
                 "platform.impersonation.start_cx",
                 "platform.impersonation.start_school",
             ]
-        elif self.action == "start":
+        if self.action == "start":
             # The required scope depends on WHO is being impersonated: the target
             # lives in the asserted tenant (request.tenant), so its kind decides
             # the key. Any-of — start_all always suffices; the narrow key covers
@@ -107,47 +149,45 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             tenant = getattr(self.request, "tenant", None)
             # Starting a CX proxy and a school proxy are distinct RBAC capabilities.
             if getattr(tenant, "kind", None) == "PLATFORM":
-                self.rbac_permission = [
+                return [
                     "platform.impersonation.start_all",
                     "platform.impersonation.start_cx",
                 ]
-            else:
-                self.rbac_permission = [
-                    "platform.impersonation.start_all",
-                    "platform.impersonation.start_school",
-                ]
-        else:
-            self.rbac_permission = {
-                # A starter must always be able to exit their own session.
-                # Inside the action, start_* keys stay owner-only while the
-                # dedicated end key is the admin kill switch for ANY session.
-                "end": [
-                    "platform.impersonation.end",
-                    "platform.impersonation.start_all",
-                    "platform.impersonation.start_cx",
-                    "platform.impersonation.start_school",
-                ],
-                "list": "platform.impersonation.view",
-                "retrieve": "platform.impersonation.view",
-            }.get(self.action, "platform.impersonation.view")
-        return super().get_permissions()
+            return [
+                "platform.impersonation.start_all",
+                "platform.impersonation.start_school",
+            ]
+        return {
+            # A starter must always be able to exit their own session.
+            # Inside the action, start_* keys stay owner-only while the
+            # dedicated end key is the admin kill switch for ANY session.
+            "end": [
+                "platform.impersonation.end",
+                "platform.impersonation.start_all",
+                "platform.impersonation.start_cx",
+                "platform.impersonation.start_school",
+            ],
+            "list": "platform.impersonation.view",
+            "retrieve": "platform.impersonation.view",
+        }.get(self.action, "platform.impersonation.view")
 
-    # Search the users a platform actor may impersonate in the asserted tenant scope.
+    # Search the users the actor may impersonate in the scope their tenant allows.
     @action(detail=False, methods=["get"], url_path="targets")
     def targets(self, request):
-        """Search active users the original platform actor may proxy."""
+        """Search active users the original actor may proxy.
+
+        Platform (CX) staff search the tiered cross-tenant pool; a school actor
+        searches only their own tenant. Either way the pool is a *predicate*,
+        never a caller-supplied filter, so scope cannot be widened by input.
+        """
         from vs_rbac.evaluator import get_effective_permissions
         from vs_rbac.permissions import is_vision_super_admin
         from vs_tenants.models import Tenant
         from vs_user.models import User
 
+        # Impersonation is always initiated by the original actor, never by the
+        # effective (proxied) user — that would allow proxy chaining.
         actor = getattr(request, "actor_user", request.user)
-        # Impersonation is always initiated by the original platform actor.
-        if getattr(actor.tenant, "kind", None) != Tenant.Kind.PLATFORM:
-            return error_response(
-                message="Only platform staff may search proxy targets.",
-                status=status.HTTP_403_FORBIDDEN,
-            )
         query = request.query_params.get("search", "").strip()
         if len(query) < 2:
             return error_response(
@@ -160,18 +200,27 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        permission_keys = get_effective_permissions(actor, tenant=actor.tenant)
-        # start_all widens both CX and school target pools; narrower keys only add their own kind.
-        can_all = is_vision_super_admin(actor) or "platform.impersonation.start_all" in permission_keys
-        can_cx = can_all or "platform.impersonation.start_cx" in permission_keys
-        can_school = can_all or "platform.impersonation.start_school" in permission_keys
+        if is_platform_actor(actor):
+            permission_keys = get_effective_permissions(actor, tenant=actor.tenant)
+            # start_all widens both CX and school target pools; narrower keys only add their own kind.
+            can_all = is_vision_super_admin(actor) or "platform.impersonation.start_all" in permission_keys
+            can_cx = can_all or "platform.impersonation.start_cx" in permission_keys
+            can_school = can_all or "platform.impersonation.start_school" in permission_keys
 
-        # Start from an empty predicate so users with no start grant see no targets.
-        eligible_kind = Q(pk__in=[])
-        if can_cx:
-            eligible_kind |= Q(tenant__kind=Tenant.Kind.PLATFORM)
-        if can_school:
-            eligible_kind |= ~Q(tenant__kind=Tenant.Kind.PLATFORM)
+            # Start from an empty predicate so users with no start grant see no targets.
+            eligible_kind = Q(pk__in=[])
+            if can_cx:
+                eligible_kind |= Q(tenant__kind=Tenant.Kind.PLATFORM)
+            if can_school:
+                eligible_kind |= ~Q(tenant__kind=Tenant.Kind.PLATFORM)
+        else:
+            # School actor: every active user in their OWN tenant is eligible
+            # (peers and fellow school admins included); self is excluded by the
+            # .exclude(pk=actor.pk) below. Pinned to actor.tenant_id — NOT to
+            # request.tenant and NOT to ~PLATFORM — so no ?tenant= value and no
+            # sibling school can ever widen the pool. Reaching this line already
+            # required school.impersonation.start (see get_permissions).
+            eligible_kind = Q(tenant_id=actor.tenant_id)
 
         terms = query.split()
         if len(terms) == 1:
@@ -251,12 +300,15 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         with transaction.atomic():
             tenant = request.tenant
             actor = getattr(request, "actor_user", request.user)
-            # Impersonation is a platform capability: only CX (PLATFORM-tenant)
-            # staff may impersonate, regardless of which start key a role carries.
-            if getattr(getattr(actor, "tenant", None), "kind", None) != "PLATFORM":
+            # A school actor may only proxy inside their OWN tenant. The auth
+            # layer already 404s a foreign ?tenant= for non-platform actors, but
+            # the rule is re-asserted here so it survives independently of that
+            # view flag — and it stays a non-enumerating 404, never a 403 that
+            # would confirm the tenant exists.
+            if not is_platform_actor(actor) and tenant.pk != actor.tenant_id:
                 return error_response(
-                    message="Only platform staff may impersonate.",
-                    status=status.HTTP_403_FORBIDDEN,
+                    message="Target user was not found in this tenant.",
+                    status=status.HTTP_404_NOT_FOUND,
                 )
             from vs_user.models import User
             # Lock the actor row so two simultaneous start/switch requests
@@ -265,6 +317,12 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             target = User.objects.filter(
                 # Targets are pinned to the asserted tenant to prevent cross-tenant proxy jumps.
                 pk=data["target_user"], tenant=tenant, is_active=True, status="ACTIVE",
+            ).exclude(
+                # Self-proxy is meaningless and would create a session whose
+                # actor and effective user are the same identity, defeating the
+                # dual-identity audit trail. Matches the targets search, which
+                # has always excluded the actor.
+                pk=actor.pk,
             ).first()
             if target is None:
                 return error_response(
@@ -336,15 +394,29 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         session_id = ser.validated_data["session_id"]
 
         actor = getattr(request, "actor_user", request.user)
-        session = ImpersonationSession.objects.select_related(
+        sessions = ImpersonationSession.objects.select_related(
             "staff_user", "target_user", "tenant",
-        ).filter(id=session_id).first()
+        )
+        if not is_platform_actor(actor):
+            # A school actor's kill switch stops at their own tenant edge:
+            # without this, school.impersonation.end would let them terminate
+            # any session in the system by guessing a pk. Platform staff keep
+            # the global kill switch (they can already assert any tenant).
+            sessions = sessions.filter(tenant_id=actor.tenant_id)
+        session = sessions.filter(id=session_id).first()
         if session is not None and session.staff_user_id != actor.pk:
             # start_* holders reached this action for self-exit only; without
             # the dedicated end key another actor's session stays a
             # non-enumerating 404.
+            # The kill-switch key is namespace-matched to the actor's tenant:
+            # a school actor needs school.impersonation.end, and holding the
+            # platform key would grant them nothing here.
+            kill_switch_key = (
+                "platform.impersonation.end" if is_platform_actor(actor)
+                else "school.impersonation.end"
+            )
             can_end_any = is_vision_super_admin(actor) or (
-                "platform.impersonation.end"
+                kill_switch_key
                 in get_effective_permissions(actor, tenant=actor.tenant)
             )
             if not can_end_any:

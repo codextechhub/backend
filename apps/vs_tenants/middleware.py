@@ -119,6 +119,12 @@ class TenantContextCleanupMiddleware:
                 target = getattr(request, "effective_user", None)
                 actor_label = _user_label(actor)
                 target_label = _user_label(target)
+                # Scope the fallback rows to the surface that initiated the
+                # proxy, matching the lifecycle bookends in vs_admin_console.
+                # Without this a school-initiated session would write PLATFORM
+                # rows that only platform.audit.view holders can ever read.
+                from vs_admin_console.views import is_platform_actor
+                proxy_module_key = "PLATFORM" if is_platform_actor(actor) else "SCHOOL"
                 metadata = {
                     "method": request.method,
                     "path": request.path,
@@ -130,7 +136,7 @@ class TenantContextCleanupMiddleware:
                     denied = response.status_code in {401, 403}
                     outcome = "was blocked" if denied else "failed"
                     emit_audit_event(
-                        module_key="PLATFORM",
+                        module_key=proxy_module_key,
                         action_type="PROXY_ACTION_FAILED",
                         entity_type="ImpersonationSession",
                         entity_id=str(session.pk),
@@ -151,7 +157,7 @@ class TenantContextCleanupMiddleware:
                     change_description = _proxy_change_description(request)
                     metadata["change_description"] = change_description
                     emit_audit_event(
-                        module_key="PLATFORM",
+                        module_key=proxy_module_key,
                         action_type="PROXY_CHANGE",
                         entity_type="ImpersonationSession",
                         entity_id=str(session.pk),

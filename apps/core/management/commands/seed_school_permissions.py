@@ -89,6 +89,17 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "roles", "update",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
     ("school", "roles", "delete",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
+    # School-scoped proxy (impersonation). Deliberately a SEPARATE namespace
+    # from platform.impersonation.* — a school role must never carry a key that
+    # the platform tiering would read as cross-tenant reach. Holding
+    # school.impersonation.start lets an actor proxy ANY active user in their
+    # OWN tenant (self excluded); cross-tenant is impossible by construction.
+    # CRITICAL + restricted: this is the most powerful key a school can hold,
+    # so it is school_admin-only by default (never branch_admin/teacher).
+    ("school", "impersonation", "start",       _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
+    ("school", "impersonation", "end",         _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
+    ("school", "impersonation", "view",        _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
+
     # module: academics
     ("academics", "session", "view",           _NORMAL,    (ROLE_SCHOOL_ADMIN, ROLE_BRANCH_ADMIN, ROLE_TEACHER)),
     ("academics", "session", "create",         _NORMAL,    (ROLE_SCHOOL_ADMIN,)),
@@ -122,6 +133,7 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("school", "fees"):           "Fees and billing",
     ("school", "settings"):       "School settings",
     ("school", "roles"):          "School role management",
+    ("school", "impersonation"):  "School-scoped proxy (impersonate a user in your own school)",
     ("academics", "session"):     "Academic sessions",
     ("academics", "calendar"):    "Academic calendar",
     ("academics", "classes"):     "Classes",

@@ -16,10 +16,10 @@ class TenantJWTAuthentication(JWTAuthentication):
     def _load_impersonation(self, actor, session_id):
         """Fetch and validate the actor's ACTIVE impersonation session.
 
-        Runs the full session validation (existence, expiry, platform actor,
-        target still active) but NOT the tenant-match check — the caller does
-        that once the requested tenant is known. Returns the effective (target)
-        user or raises AuthenticationFailed.
+        Runs the full session validation (existence, expiry, actor eligibility,
+        target still active) but NOT the asserted-tenant match check — the
+        caller does that once the requested tenant is known. Returns the
+        effective (target) user or raises AuthenticationFailed.
         """
         from vs_admin_console.models import ImpersonationSession
 
@@ -49,8 +49,16 @@ class TenantJWTAuthentication(JWTAuthentication):
             impersonation.ended_at = now
             impersonation.save(update_fields=["status", "ended_at"])
             raise AuthenticationFailed("Impersonation session has expired.")
-        if getattr(actor.tenant, "kind", None) != Tenant.Kind.PLATFORM:
-            raise AuthenticationFailed("Only platform tenant users may impersonate.")
+        # Platform (CX) staff may ride a session into any tenant. A school actor
+        # may ride only a session pinned to their OWN tenant — the session's
+        # tenant is fixed at start and immutable, so this is the single choke
+        # point that keeps school impersonation intra-tenant no matter which
+        # ?tenant= the caller asserts.
+        if (getattr(actor.tenant, "kind", None) != Tenant.Kind.PLATFORM
+                and impersonation.tenant_id != actor.tenant_id):
+            raise AuthenticationFailed(
+                "Only platform tenant users may impersonate across tenants.",
+            )
         target = impersonation.target_user
         if not target.is_active or target.status != "ACTIVE":
             impersonation.end()
