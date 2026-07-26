@@ -70,7 +70,7 @@ standard paginated `{pagination, data}` envelope (`views/base.py:281-298`).
 | `PATCH /vendor-invoices/<pk>/` | `procurement.vendor_invoice.update` | Edit an unsubmitted/rejected DRAFT; optional `lines` fully replaces lines | `vendor?`, `purchase_order?`, `invoice_date?`, `due_date?`, `vendor_reference?`, `narration?`, `lines?` using POST line fields | Updated full invoice (`views/receiving.py:493-529`) |
 | `POST /vendor-invoices/<pk>/match/` | `procurement.vendor_invoice.match` | Reprice and run three-way match without GL posting | — | Full invoice with match result/comparisons (`views/receiving.py:532-552`) |
 | `POST /vendor-invoices/<pk>/submit/` | `procurement.vendor_invoice.submit` | Reprice/match, then submit current evidence to workflow | — | Workflow id/status, approval state, document (`views/requisitions.py:378-397`) |
-| `POST /vendor-invoices/<pk>/post/` | `procurement.vendor_invoice.post` | Post an approved bill; optionally override a blocking match | `allow_variance?` | Posted full invoice detail (`views/receiving.py:555-577`) |
+| `POST /vendor-invoices/<pk>/post/` | `procurement.vendor_invoice.post`; additionally `procurement.vendor_invoice.override_variance` when overriding | Post an approved bill; optionally override a blocking match | `allow_variance?` (JSON boolean only) | Posted full invoice detail (`views/receiving.py:555-594`) |
 | `GET /vendor-payments/` | `procurement.vendor_payment.view` | List/search payment instructions | Query `status`, `approval_state`, `search` | Paginated payment headers with allocations (`views/vendor_payments.py:165-185`; `serializers.py:1071-1130`) |
 | `POST /vendor-payments/` | `procurement.vendor_payment.create` | Create a gated DRAFT allocation plan; server derives money | `vendor`, `bank_account`, `payment_date`, `method?`, `wht_amount?`, `wht_tax_code?`, `reference?`, `narration?`; `allocations[]`: `vendor_invoice`, `amount` | `201` payment detail + workflow/posting/activity overlays (`views/vendor_payments.py:187-214`) |
 | `GET /vendor-payments/eligible-invoices/` | `procurement.vendor_payment.view` | Return at most 100 posted open bills, oldest due first | Query `vendor?` | Array of invoice settlement snapshots (`views/vendor_payments.py:217-239`) |
@@ -179,10 +179,12 @@ Dr tax_code.paid_account              recoverable input tax
     Cr vendor.payable_account         invoice gross
 ```
 
-For non-PO lines, the net debit goes directly to each line expense account rather than
-GR/IR. Net and tax debits are grouped only by account id; cost center, PO/GRN line, and
-line description do not survive on the journal line. After the balanced journal posts,
-PO `invoiced_qty` advances and the bill becomes POSTED (`payables.py:204-275`).
+For non-PO lines with no receipt evidence, the net debit goes directly to each line
+expense account. A line linked to a posted direct GRN clears GR/IR even without a PO,
+because the receipt already recognized its expense/inventory (`payables.py:204-226`).
+Net and tax debits are grouped only by account id; cost center, PO/GRN line, and line
+description do not survive on the journal line. After the balanced journal posts, PO
+`invoiced_qty` advances and the bill becomes POSTED (`payables.py:238-282`).
 
 ### Vendor payment
 
@@ -250,36 +252,39 @@ POST /v1/procurement/vendor-payments/?entity=LEKKI
 
 The server derives net `1,025,000`. Approval plus posting produces Dr AP `1,075,000`,
 Cr bank `1,025,000`, Cr WHT payable `50,000`, and marks invoice 91 PAID. The arithmetic
-and journal path are exercised end-to-end in `tests.py:1122-1144,1352-1427`.
+and journal path are exercised end-to-end in `tests.py:1400-1422,1655-1708`.
 
 ## 8. Gotchas / known limitations
 
-- **Wrong ledger for a direct receipt followed by its bill.** A non-PO GRN posts Dr
-  expense / Cr GR/IR, but an invoice line linked to that posted GRN and no PO line is
-  still treated as a generic non-PO bill and debits expense again. The result is doubled
-  expense and stranded GR/IR (`views/receiving.py:305-326`; `payables.py:204-220`).
-- **GRN posting is not concurrency-safe.** The atomic worker checks the caller's stale
-  GRN object without locking/re-reading it, and it neither locks nor rechecks PO remaining
-  quantities. Concurrent post requests can duplicate the journal, while two valid draft
-  receipts can together over-receive one PO line (`purchasing.py:250-332`).
-- **Non-finite quantities can reach arithmetic.** GRN and invoice line writers use the
-  permissive decimal parser without a finite/max-digits guard. Infinity can bypass the
-  current comparisons and fail as a 500 during money conversion; invoice NaN/Infinity
-  can likewise escape `quantity <= 0` (`views/receiving.py:53-100,287-327`).
-- **A PO-backed GRN does not require an approved PO.** Create validates entity/vendor but
-  not PO status, and posting does not add the missing gate, so a user with receipt-post
-  authority can recognize cost against a DRAFT/PENDING commitment
-  (`views/receiving.py:132-155`; `purchasing.py:250-265`).
-- **Blocking-match override is parsed and authorized too broadly.** `bool(value)` makes
-  JSON strings such as `"false"` truthy, and the same critical invoice-post permission
-  both posts normal bills and overrides UNDER_RECEIVED/OVER_BILLED. There is no distinct
-  override permission or audit flag (`views/receiving.py:555-572`;
-  `management/commands/seed_procurement_permissions.py:46-47`).
+- ✅ **Direct receipt-backed bills clear GR/IR.** A non-PO GRN still posts Dr expense /
+  Cr GR/IR, but an invoice line linked to that posted GRN now debits GR/IR rather than
+  booking the expense twice. Generic non-PO/non-GRN bills remain direct-expense bills
+  (`views/receiving.py:305-325`; `payables.py:212-226`).
+- ✅ **GRN posting is serialized and quantity-safe.** The worker locks/re-reads the GRN,
+  then locks referenced PO lines in stable id order, aggregates duplicate receipt lines,
+  and rechecks live remaining quantity before any journal or counter update. Concurrent
+  duplicate posts create one journal, and competing receipts cannot over-receive
+  (`purchasing.py:255-316,359-386`).
+- ✅ **Receipt and bill quantities use strict model-bound validation.** GRN counts must be
+  non-negative finite whole units; invoice quantities must be positive and finite; both
+  reject values outside `Decimal(14,4)` before replacement arithmetic, so malformed
+  create/PATCH requests roll back with 400 rather than 500
+  (`views/base.py:113-159`; `views/receiving.py:55-102,289-327`).
+- ✅ **PO-backed receiving requires an approved PO.** API creation rejects a non-approved
+  selected PO for fast feedback, and the locked posting service repeats the authoritative
+  gate so direct service callers cannot bypass it. Direct GRNs remain allowed
+  (`views/receiving.py:132-162`; `purchasing.py:255-281`).
+- ✅ **Blocking-match override is strict, separately authorized, and audited.**
+  `allow_variance` accepts only a real JSON boolean; `true` requires the additional
+  tenant/branch-aware CRITICAL `procurement.vendor_invoice.override_variance` permission.
+  Successful posting audit metadata records both the request and whether a blocking
+  variance was actually overridden (`views/receiving.py:555-594`;
+  `payables.py:274-281`; `management/commands/seed_procurement_permissions.py:46-47`).
 - **Departmental attribution is lost.** PO lines carry cost center, but GRN/invoice API
   writers do not copy it to their line models; posting then groups journal debits only by
   account. Departmental actuals cannot be traced back to the commitment's cost center
   (`models.py:994-997,1111-1114,1259-1262`; `views/receiving.py:92-100,319-326`;
-  `purchasing.py:271-321`; `payables.py:204-246`).
+  `purchasing.py:287-357`; `payables.py:204-252`).
 - **Vendor invoice-number uniqueness is race-prone.** The case-insensitive duplicate
   check exists only in the view, with no database constraint, so concurrent requests can
   create the same vendor reference twice (`views/receiving.py:272-284`;
@@ -287,7 +292,7 @@ and journal path are exercised end-to-end in `tests.py:1122-1144,1352-1427`.
 - **Stock-backed receiving is not writable through this API.** The line model and posting
   service support `stock_item`, but GRN create/PATCH never read or set it. This boundary
   is traced and resolved with the inventory slice (`models.py:1093-1097`;
-  `views/receiving.py:53-101`; `purchasing.py:267-346`).
+  `views/receiving.py:55-102`; `purchasing.py:283-381`).
 - **Price variance is visible but has no variance-account treatment.** A PO price mismatch
   is non-blocking and the invoice clears GR/IR at billed net; any difference from receipt
   value remains in GR/IR rather than posting to a configured purchase-price-variance
@@ -308,9 +313,11 @@ therefore return missing/invalid rather than exposing or mutating another entity
 (`views/base.py:55-90,217-231,281-298`; `views/receiving.py:74-90,235-249,295-318`;
 `views/vendor_payments.py:45-57,82-109`).
 
-The seeded matrix separates view/create/update/submit/post for each money document.
+The seeded matrix separates view/create/update/submit/post for each money document and
+uses a distinct `vendor_invoice.override_variance` authority for blocking-match bypass.
 Goods-receipt post, vendor-invoice post, and every vendor-payment mutation are CRITICAL;
-PO submit, receipt create/update, and invoice create/update/submit/match are SENSITIVE
+the variance override is also CRITICAL. PO submit, receipt create/update, and invoice
+create/update/submit/match are SENSITIVE
 (`management/commands/seed_procurement_permissions.py:29-50`). Payment creation and
 posting also recheck active/KYC/hold state and lock vendor/invoice rows at the accounting
 boundary (`views/vendor_payments.py:60-71`; `payables.py:310-396`).
@@ -333,25 +340,25 @@ activity, but not raw audit metadata (`serializers.py:740-1130`;
 | `approvals.py` / `workflow_handlers.py` | Threshold workflows and terminal document effects |
 | `serializers.py` | Public P2P response shapes and display-state overlays |
 | `constants.py` | Match/payment states and 2150 GR/IR / 2300 WHT control codes |
+| `core/management/commands/seed_actions.py` | Canonical global permission-action vocabulary |
 | `urls.py` | `/v1/procurement/` route map |
 | `management/commands/seed_procurement_permissions.py` | RBAC registry/sensitivity/platform grants |
 
 ## 11. Test coverage & gaps
 
-The current procurement suite is **209 green**. P2P service/API tests cover GRN whole
-quantity/remainder validation, DRAFT edits, update permission, expense→GR/IR posting;
+The current procurement suite is **220 green**. P2P service/API tests cover GRN whole,
+finite, precision, and remainder validation, DRAFT edits, update permission, approved-PO
+gating, expense→GR/IR posting, duplicate-post and competing-receipt PostgreSQL races;
 invoice approval, split-line aggregation, GR/IR clearing, input VAT, blocking overbill
-and under-receipt, invoice view permission and cross-entity detail; payment WHT split,
+and under-receipt, direct-GRN clearing, strict/authorized/audited variance override,
+invoice view permission and cross-entity detail; payment WHT split,
 approval, plan validation, reversal, mutation permissions, cross-entity detail, draft
 plans, partial settlement and held vendors; AP reconciliation; and the full PR-to-payment
-chain (`tests.py:815-1427`). Purchase-order console and workflow tests cover response
+chain (`tests.py:830-1709`). Purchase-order console and workflow tests cover response
 data, filters/KPIs, permission gates, entity isolation, workflow routing, and terminal
-approval effects (`tests.py:4339-4902`).
+approval effects (`tests.py:4623-5190`).
 
-Missing regression coverage mirrors §8: concurrent GRN post/over-receipt, direct-GRN
-invoice clearing, finite/bounded GRN and invoice quantities, approval status required for
-PO-backed receipt, strict variance-override parsing/authorization/audit, cost-center
-carry-through, database-enforced vendor-reference uniqueness, stock-item API receipt,
-and purchase-price-variance accounting. Empty-list envelope assertions exist broadly in
-the procurement console suite but are not explicit for every one of the four P2P list
-routes.
+Remaining gaps mirror the open §8 items: cost-center carry-through, database-enforced
+vendor-reference uniqueness, stock-item API receipt, and purchase-price-variance
+accounting. Empty-list envelope assertions exist broadly in the procurement console
+suite but are not explicit for every one of the four P2P list routes.

@@ -153,6 +153,7 @@ class _P2PFixtureMixin:
         """lines: [(expense_code, qty, unit_price_kobo, tax_code|None)]."""
         po = PurchaseOrder.objects.create(
             entity=entity, vendor=vendor, order_date=datetime.date(2026, 1, 5),
+            status=DocumentStatus.APPROVED,
         )
         for i, (code, qty, price, tax) in enumerate(lines, start=1):
             PurchaseOrderLine.objects.create(
@@ -234,6 +235,8 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
     def test_active_po_count_excludes_drafts_and_fully_received_orders(self, _permission):
         entity, _, vendor, _, _ = self.build_p2p()
         po = self.make_po(entity, vendor, [("5300", 2, 100_000, None)])
+        po.status = DocumentStatus.DRAFT
+        po.save(update_fields=["status", "updated_at"])
         client = self._client(entity)
 
         draft = client.get(f"/v1/procurement/vendors/?entity={entity.code}")
@@ -423,22 +426,34 @@ class SeedProcurementPermissionsTests(TestCase):
         from io import StringIO
 
         from django.core.management import call_command
-        from vs_rbac.models import Permission, TenantRolePermission
+        from vs_rbac.models import Permission, PermissionAction, TenantRolePermission
 
         output = StringIO()
         call_command("seed_actions", verbosity=0, stdout=output)
         call_command("seed_procurement_permissions", verbosity=0, stdout=output)
         call_command("seed_procurement_permissions", verbosity=0, stdout=output)
 
+        action = PermissionAction.objects.get(name="override_variance")
+        self.assertEqual(
+            action.description,
+            "Override a blocking vendor-invoice match variance for an audited post.",
+        )
         permission = Permission.objects.get(key="procurement.vendor.manage")
         self.assertEqual(permission.sensitivity_level, Permission.Sensitivity.SENSITIVE)
         self.assertTrue(permission.is_restricted)
+        override = Permission.objects.get(key="procurement.vendor_invoice.override_variance")
+        self.assertEqual(override.sensitivity_level, Permission.Sensitivity.CRITICAL)
+        self.assertTrue(override.is_restricted)
         for role_key in ("xvs_super_admin", "xvs_platform_admin"):
             links = TenantRolePermission.objects.filter(
                 role__key=role_key, role__tenant__kind="PLATFORM",
                 permission=permission, granted=True,
             )
             self.assertEqual(links.count(), 1, role_key)
+            self.assertEqual(TenantRolePermission.objects.filter(
+                role__key=role_key, role__tenant__kind="PLATFORM",
+                permission=override, granted=True,
+            ).count(), 1, role_key)
 
 
 class VendorCategoryConsoleAPITests(_P2PFixtureMixin, TestCase):
@@ -859,6 +874,51 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(data["total_value"], 300_000)
         self.assertEqual(data["lines"][0]["value_amount"], 300_000)
 
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_rejects_nonfinite_and_oversized_quantities_atomically(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 8, 100_000, None)])
+        line = po.lines.get()
+        client = self._api_client(entity, "grn-invalid-quantity@test.com")
+        payload = {
+            "vendor": vendor.code, "purchase_order": po.id,
+            "received_date": "2026-01-08",
+            "lines": [{"po_line": line.id, "expense_account": "5100",
+                       "accepted_qty": 1, "rejected_qty": 0}],
+        }
+        for value in ("NaN", "Infinity", "10000000"):
+            with self.subTest(value=value):
+                payload["lines"][0]["accepted_qty"] = value
+                response = client.post(
+                    f"/v1/procurement/goods-receipts/?entity={entity.code}", payload, format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+        self.assertEqual(GoodsReceivedNote.objects.filter(entity=entity).count(), 0)
+
+    def _api_client(self, entity, email):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+        user = get_user_model().objects.create_user(
+            email=email, password="pw", tenant=entity.tenant,
+            user_type="CX_STAFF", status="ACTIVE", first_name="Quantity", last_name="Tester",
+        )
+        return TenantAPIClient(user=user)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_rejects_unapproved_purchase_order(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 1, 100_000, None)])
+        po.status = DocumentStatus.DRAFT
+        po.save(update_fields=["status"])
+        response = self._api_client(entity, "grn-unapproved@test.com").post(
+            f"/v1/procurement/goods-receipts/?entity={entity.code}",
+            {"vendor": vendor.code, "purchase_order": po.id, "received_date": "2026-01-08",
+             "lines": [{"po_line": po.lines.get().id, "expense_account": "5100",
+                        "accepted_qty": 1, "rejected_qty": 0}]}, format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(GoodsReceivedNote.objects.filter(entity=entity).exists())
+
     def test_partial_receipt_status_compares_received_with_ordered_quantity(self):
         from vs_procurement.serializers import GoodsReceivedNoteSerializer
 
@@ -963,10 +1023,11 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         entity, _, vendor, _, _ = self.build_p2p()
         po = self.make_po(entity, vendor, [("5100", 10, 100000, None)])
         grn = self.make_grn(entity, vendor, po, [(po.lines.first(), 10)])
-        post_grn(grn)
+        returned = post_grn(grn)
 
-        grn.refresh_from_db()
+        self.assertIs(returned, grn)
         self.assertEqual(grn.status, DocumentStatus.POSTED)
+        self.assertIsNotNone(grn.journal_id)
         self.assertEqual(grn.total_value, 1_000_000)
         self.assertEqual(
             grn.document_number,
@@ -980,6 +1041,126 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(grir_balance(entity), 1_000_000)
         # PO line received quantity advanced.
         self.assertEqual(po.lines.first().received_qty, 10)
+
+
+class GoodsReceiptConcurrencyTests(_P2PFixtureMixin, TransactionTestCase):
+    """Posting locks make the receipt and PO counters authoritative under races."""
+
+    serialized_rollback = True
+
+    def test_service_rejects_unapproved_po_without_accounting_effects(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 2, 100_000, None)])
+        po.status = DocumentStatus.DRAFT
+        po.save(update_fields=["status"])
+        grn = self.make_grn(entity, vendor, po, [(po.lines.get(), 1)])
+
+        with self.assertRaisesMessage(PostingError, "must be approved"):
+            post_grn(grn)
+
+        grn.refresh_from_db()
+        self.assertEqual(grn.status, DocumentStatus.DRAFT)
+        self.assertIsNone(grn.journal_id)
+        self.assertTrue(FinanceAuditLog.objects.filter(
+            entity=entity, action=FinanceAuditAction.GRN_POST_REJECTED,
+            target_id=str(grn.pk), status=FinanceAuditStatus.FAILED,
+        ).exists())
+
+    def test_one_grn_aggregates_duplicate_po_lines_before_overreceipt_check(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        po_line = po.lines.get()
+        grn = self.make_grn(entity, vendor, po, [(po_line, 6), (po_line, 6)])
+
+        with self.assertRaisesMessage(PostingError, "exceed the ordered quantity"):
+            post_grn(grn)
+
+        po_line.refresh_from_db()
+        grn.refresh_from_db()
+        self.assertEqual(po_line.received_qty, 0)
+        self.assertIsNone(grn.journal_id)
+
+    def _race_posts(self, first_grn, second_grn):
+        from vs_procurement import purchasing as purchasing_services
+
+        first_in_audit = threading.Event()
+        release_first = threading.Event()
+        second_attempting = threading.Event()
+        second_done = threading.Event()
+        outcomes = {}
+
+        def blocking_record(**kwargs):
+            first_in_audit.set()
+            if not release_first.wait(5):
+                raise TimeoutError("receipt race did not release the first transaction")
+
+        def worker(name, grn_id, *, attempting=None, done=None):
+            close_old_connections()
+            try:
+                current = GoodsReceivedNote.objects.get(pk=grn_id)
+                if attempting:
+                    attempting.set()
+                outcomes[name] = post_grn(current).status
+            except Exception as exc:
+                outcomes[f"{name}_error"] = exc
+            finally:
+                close_old_connections()
+                if done:
+                    done.set()
+
+        first = threading.Thread(target=worker, args=("first", first_grn.pk), daemon=True)
+        second = threading.Thread(
+            target=worker, args=("second", second_grn.pk),
+            kwargs={"attempting": second_attempting, "done": second_done}, daemon=True,
+        )
+        with patch.object(purchasing_services, "record", side_effect=blocking_record) as audit_record:
+            first.start()
+            try:
+                self.assertTrue(first_in_audit.wait(5))
+                second.start()
+                self.assertTrue(second_attempting.wait(5))
+                self.assertFalse(second_done.wait(0.25))
+            finally:
+                release_first.set()
+            first.join(5)
+            second.join(5)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        return outcomes, audit_record
+
+    def test_same_grn_concurrent_post_has_one_journal_and_one_counter_advance(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        po_line = po.lines.get()
+        grn = self.make_grn(entity, vendor, po, [(po_line, 4)])
+
+        outcomes, audit_record = self._race_posts(grn, grn)
+
+        self.assertEqual(outcomes.get("first"), DocumentStatus.POSTED)
+        self.assertIsInstance(outcomes.get("second_error"), PostingError)
+        self.assertEqual(audit_record.call_count, 1)
+        grn.refresh_from_db()
+        po_line.refresh_from_db()
+        self.assertIsNotNone(grn.journal_id)
+        self.assertEqual(po_line.received_qty, 4)
+
+    def test_competing_grns_cannot_over_receive_one_po_line(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        po_line = po.lines.get()
+        first_grn = self.make_grn(entity, vendor, po, [(po_line, 7)])
+        second_grn = self.make_grn(entity, vendor, po, [(po_line, 5)])
+
+        outcomes, audit_record = self._race_posts(first_grn, second_grn)
+
+        self.assertEqual(outcomes.get("first"), DocumentStatus.POSTED)
+        self.assertIsInstance(outcomes.get("second_error"), PostingError)
+        self.assertEqual(audit_record.call_count, 1)
+        po_line.refresh_from_db()
+        second_grn.refresh_from_db()
+        self.assertEqual(po_line.received_qty, 7)
+        self.assertEqual(second_grn.status, DocumentStatus.DRAFT)
+        self.assertIsNone(second_grn.journal_id)
 
 
 class VendorInvoiceTests(_P2PFixtureMixin, TestCase):
@@ -1046,6 +1227,27 @@ class VendorInvoiceTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(lines["1300"].debit, 75_000)     # recoverable input VAT
         self.assertEqual(lines["2100"].credit, 1_075_000)
 
+    def test_direct_grn_bill_clears_grir_without_booking_expense_twice(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        grn = GoodsReceivedNote.objects.create(
+            entity=entity, vendor=vendor, received_date=datetime.date(2026, 1, 8),
+        )
+        grn_line = GoodsReceivedNoteLine.objects.create(
+            grn=grn, expense_account=self.acc(entity, "5300"), accepted_qty=2,
+            unit_price=100_000, line_no=1,
+        )
+        post_grn(grn)
+        invoice = self.make_bill(entity, vendor, [("5300", 2, 100_000, None, None)])
+        invoice.lines.update(grn_line=grn_line)
+
+        post_vendor_invoice(invoice)
+
+        invoice.refresh_from_db()
+        lines = {line.account.code: line for line in invoice.journal.lines.all()}
+        self.assertEqual(lines["2150"].debit, 200_000)
+        self.assertNotIn("5300", lines)
+        self.assertEqual(grir_balance(entity), 0)
+
     def test_over_billed_is_blocked_and_audited(self):
         entity, _, vendor, _, _ = self.build_p2p()
         po = self.make_po(entity, vendor, [("5100", 10, 100000, None)])
@@ -1110,6 +1312,82 @@ class VendorInvoiceConsoleAPITests(_P2PFixtureMixin, TestCase):
             f"/v1/procurement/vendor-invoices/{invoice.id}/?entity={other.code}",
         )
         self.assertEqual(response.status_code, 404)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_rejects_nonfinite_oversized_and_overprecision_quantity_atomically(
+        self, _permission,
+    ):
+        entity, _, vendor, _, _ = self.build_p2p()
+        client = self._client(entity)
+        payload = {
+            "vendor": vendor.code, "invoice_date": "2026-01-10",
+            "vendor_reference": "INV-BAD-QTY",
+            "lines": [{"expense_account": "5300", "quantity": 1, "unit_price": 100_000}],
+        }
+        for value in ("NaN", "Infinity", "10000000", "1.00001"):
+            with self.subTest(value=value):
+                payload["lines"][0]["quantity"] = value
+                response = client.post(
+                    f"/v1/procurement/vendor-invoices/?entity={entity.code}", payload, format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+        self.assertFalse(VendorInvoice.objects.filter(entity=entity).exists())
+
+    def _blocking_invoice(self, entity, vendor):
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        po_line = po.lines.get()
+        post_grn(self.make_grn(entity, vendor, po, [(po_line, 4)]))
+        return self.make_bill(entity, vendor, [("5100", 10, 100_000, None, po_line)], po=po)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_post_rejects_string_allow_variance(self, _permission):
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self._blocking_invoice(entity, vendor)
+        response = self._client(entity).post(
+            f"/v1/procurement/vendor-invoices/{invoice.id}/post/?entity={entity.code}",
+            {"allow_variance": "false"}, format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, DocumentStatus.DRAFT)
+
+    @patch("vs_procurement.views.receiving.is_vision_super_admin", return_value=False)
+    @patch("vs_procurement.views.receiving.user_has_rbac_permission", return_value=False)
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_post_variance_override_requires_dedicated_permission(
+        self, _base_permission, _override_permission, _super_admin,
+    ):
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self._blocking_invoice(entity, vendor)
+        response = self._client(entity).post(
+            f"/v1/procurement/vendor-invoices/{invoice.id}/post/?entity={entity.code}",
+            {"allow_variance": True}, format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, DocumentStatus.DRAFT)
+
+    @patch("vs_procurement.views.receiving.is_vision_super_admin", return_value=False)
+    @patch("vs_procurement.views.receiving.user_has_rbac_permission", return_value=True)
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_authorized_variance_override_posts_and_audits_evidence(
+        self, _base_permission, _override_permission, _super_admin,
+    ):
+        entity, _, vendor, _, _ = self.build_p2p()
+        invoice = self._blocking_invoice(entity, vendor)
+        response = self._client(entity).post(
+            f"/v1/procurement/vendor-invoices/{invoice.id}/post/?entity={entity.code}",
+            {"allow_variance": True}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, DocumentStatus.POSTED)
+        audit = FinanceAuditLog.objects.filter(
+            entity=entity, action=FinanceAuditAction.VENDOR_INVOICE_POSTED,
+            target_id=str(invoice.id),
+        ).latest("id")
+        self.assertIs(audit.metadata["allow_variance"], True)
+        self.assertIs(audit.metadata["variance_override_used"], True)
 
 
 class VendorPaymentTests(_P2PFixtureMixin, TestCase):
@@ -1402,6 +1680,8 @@ class FullChainTests(_P2PFixtureMixin, TestCase):
             pr, vendor=vendor, order_date=datetime.date(2026, 1, 5),
         )
         self.assertEqual(po.total, 1_000_000)
+        approve_purchase_order(po)
+        po.refresh_from_db()
         po_line = po.lines.first()
 
         # PO → GRN.
@@ -1699,6 +1979,8 @@ class ProcurementAnalyticsTests(_P2PFixtureMixin, TestCase):
         po = create_po_from_requisition(
             pr, vendor=vendor, order_date=order, expected_date=expected,
         )
+        approve_purchase_order(po)
+        po.refresh_from_db()
         po_line = po.lines.first()
         grn = self.make_grn(entity, vendor, po, [(po_line, qty)])
         grn.received_date = received
@@ -4164,6 +4446,8 @@ class ContractConsoleAPITests(_P2PFixtureMixin, TestCase):
         draft = self._contract(entity, vendor, ref="C-D", start=datetime.date(2026, 1, 1),
                                end=datetime.date(2026, 12, 31), status=ContractStatus.DRAFT)
         po = self.make_po(entity, vendor, [("5300", 1, 100_000, None)])
+        po.status = DocumentStatus.DRAFT
+        po.save(update_fields=["status", "updated_at"])
         client = self._client(entity)
         url = f"/v1/procurement/purchase-orders/{po.pk}/?entity={entity.code}"
         # A draft (non-ACTIVE) contract cannot be called off.
@@ -4344,6 +4628,8 @@ class PurchaseOrderConsoleDataTests(_P2PFixtureMixin, TestCase):
 
         entity, _, vendor, _, _ = self.build_p2p()
         po = self.make_po(entity, vendor, [("5300", 4, 250_000, None)])
+        po.status = DocumentStatus.DRAFT
+        po.save(update_fields=["status", "updated_at"])
         original_lines = list(po.lines.values_list("id", flat=True))
         user = get_user_model().objects.create_user(
             email="po-edit@test.com", password="pw", tenant=entity.tenant,
@@ -4398,7 +4684,9 @@ class PurchaseOrderConsoleDataTests(_P2PFixtureMixin, TestCase):
 
         # A draft and an in-approval order are NOT issued commitments: they must not
         # inflate any KPI, even though the draft has zero received quantity.
-        self.make_po(entity, vendor, [("5300", 7, 100_000, None)])  # left DRAFT
+        draft = self.make_po(entity, vendor, [("5300", 7, 100_000, None)])
+        draft.status = DocumentStatus.DRAFT
+        draft.save(update_fields=["status", "updated_at"])
         pending = self.make_po(entity, vendor, [("5300", 9, 100_000, None)])
         pending.status = DocumentStatus.PENDING_APPROVAL
         pending.save(update_fields=["status", "updated_at"])
@@ -5117,6 +5405,7 @@ class StockLedgerTests(_P2PFixtureMixin, TestCase):
         """Build & post a single-line stock GRN, returning the posted GRN."""
         po = PurchaseOrder.objects.create(
             entity=entity, vendor=vendor, order_date=datetime.date(2026, 1, 5),
+            status=DocumentStatus.APPROVED,
         )
         po_line = PurchaseOrderLine.objects.create(
             purchase_order=po, description=item.name,
@@ -5314,6 +5603,7 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
 
         po = PurchaseOrder.objects.create(
             entity=entity, vendor=vendor, order_date=datetime.date(2026, 1, 5),
+            status=DocumentStatus.APPROVED,
         )
         po_line = PurchaseOrderLine.objects.create(
             purchase_order=po, description=item.name,

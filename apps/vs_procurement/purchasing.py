@@ -237,14 +237,19 @@ def post_grn(grn, *, actor_user=None):
     Wrapper that records a durable rejection audit on any :class:`FinanceError`, then
     re-raises — mirroring the journal posting contract.
     """
+    caller_grn = grn
     try:
-        return _post_grn_atomic(grn, actor_user=actor_user)
+        _post_grn_atomic(grn, actor_user=actor_user)
     except FinanceError as exc:
         record_rejection(
             entity=grn.entity, action=FinanceAuditAction.GRN_POST_REJECTED,
             exc=exc, actor_user=actor_user, target=grn,
         )
         raise
+    # The locked worker intentionally re-reads the authoritative row. Preserve the
+    # public contract for callers that keep using the instance they passed in.
+    caller_grn.refresh_from_db()
+    return caller_grn
 
 
 @transaction.atomic
@@ -257,11 +262,22 @@ def _post_grn_atomic(grn, *, actor_user=None):
     stock sub-ledger updates that must commit with that journal.
     """
     from vs_finance.models import JournalEntry, JournalLine
-    from .models import GoodsReceivedNoteLine, PurchaseOrderLine
+    from .models import GoodsReceivedNote, GoodsReceivedNoteLine, PurchaseOrderLine
+
+    # The receipt row is the idempotency lock.  Re-read it under the lock so a
+    # concurrent caller cannot post from the stale DRAFT object it was handed.
+    # Lock only the receipt row. ``purchase_order`` is nullable, and joining it in
+    # this FOR UPDATE query would make PostgreSQL reject the nullable side.
+    grn = GoodsReceivedNote.objects.select_for_update().get(pk=grn.pk)
 
     if grn.status != DocumentStatus.DRAFT:
         raise PostingError(
             f"GRN {grn.document_number or grn.pk} is '{grn.status}', only a draft can be posted.",
+        )
+    if grn.purchase_order_id and grn.purchase_order.status != DocumentStatus.APPROVED:
+        raise PostingError(
+            f"Purchase order {grn.purchase_order.document_number or grn.purchase_order_id} "
+            "must be approved before goods can be received."
         )
 
     # Value each line (accepted_qty × unit_price) and roll up the receipt total. Rejected
@@ -274,10 +290,30 @@ def _post_grn_atomic(grn, *, actor_user=None):
     lines = list(
         grn.lines.select_related(
             "expense_account", "po_line", "stock_item", "stock_item__inventory_account",
-        ).all()
+        ).order_by("pk")
     )
     if not lines:
         raise PostingError("A goods receipt must have at least one line to post.")
+
+    # Lock every referenced counter in a stable order, then validate the aggregate
+    # accepted quantity.  Multiple receipt rows can legitimately point at one PO
+    # line, so checking/updating each GRN line independently is not sufficient.
+    accepted_by_po_line: dict[int, Decimal] = defaultdict(Decimal)
+    for line in lines:
+        if line.po_line_id:
+            accepted_by_po_line[line.po_line_id] += Decimal(line.accepted_qty)
+    locked_po_lines = {
+        line.pk: line for line in PurchaseOrderLine.objects.select_for_update()
+        .filter(pk__in=sorted(accepted_by_po_line)).order_by("pk")
+    }
+    for po_line_id, accepted in accepted_by_po_line.items():
+        po_line = locked_po_lines.get(po_line_id)
+        if po_line is None or po_line.purchase_order_id != grn.purchase_order_id:
+            raise PostingError("Every PO-backed receipt line must belong to the receipt purchase order.")
+        if Decimal(po_line.received_qty) + accepted > Decimal(po_line.quantity):
+            raise PostingError(
+                f"Posting this receipt would exceed the ordered quantity for '{po_line.description}'."
+            )
 
     for line in lines:
         value = compute_line_net(line.accepted_qty, line.unit_price)
@@ -325,11 +361,10 @@ def _post_grn_atomic(grn, *, actor_user=None):
     post_journal(entry, actor_user=actor_user)
 
     # Advance received quantities on the PO lines.
-    for line in lines:
-        if line.po_line_id:
-            PurchaseOrderLine.objects.filter(pk=line.po_line_id).update(
-                received_qty=F("received_qty") + line.accepted_qty,
-            )
+    for po_line_id, accepted in accepted_by_po_line.items():
+        PurchaseOrderLine.objects.filter(pk=po_line_id).update(
+            received_qty=F("received_qty") + accepted,
+        )
 
     # Raise the perpetual stock ledger for any stock-tracked lines. The GL inventory
     # debit belongs to this GRN journal; receive_stock must therefore update only the

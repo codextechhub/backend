@@ -12,10 +12,11 @@ from decimal import Decimal
 from django.db import transaction
 from django.db.models import Count, Q, Sum
 from django.utils import timezone
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from core.response import success_response
 from vs_finance.views import resolve_entity
+from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 
 from .. import payables, purchasing
 from ..models import (
@@ -37,8 +38,9 @@ from ..serializers import (
 from .base import (
     _ProcBase,
     _date,
-    _dec,
     _money,
+    _nonneg_qty,
+    _quantity,
     _require_lines,
     _resolve_account,
     _resolve_currency,
@@ -62,15 +64,13 @@ def _write_grn_lines(entity, grn, po, lines):
     """
     grn.lines.all().delete()
     for i, ln in enumerate(lines, start=1):
-        accepted = _dec(ln.get("accepted_qty", 0), "accepted_qty")
-        rejected = _dec(ln.get("rejected_qty", 0), "rejected_qty")
-        if accepted < 0 or rejected < 0:
-            raise ValidationError({"quantity": "Accepted and rejected quantities cannot be negative."})
+        accepted = _nonneg_qty(ln.get("accepted_qty", 0), "accepted_qty")
+        rejected = _nonneg_qty(ln.get("rejected_qty", 0), "rejected_qty")
         # Physical receipt counts are whole units; reject fractional API input that bypasses the UI steppers.
         if accepted != accepted.to_integral_value() or rejected != rejected.to_integral_value():
             raise ValidationError({"quantity": "Accepted and rejected quantities must be whole numbers."})
         po_line = None
-        expected = accepted + rejected
+        expected = _nonneg_qty(accepted + rejected, "quantity")
         if ln.get("po_line"):
             po_line = PurchaseOrderLine.objects.filter(
                 purchase_order__entity=entity, pk=ln["po_line"]).first()
@@ -144,6 +144,8 @@ class GoodsReceiptListCreateView(_ProcBase):
                 raise ValidationError({"purchase_order": "No such purchase order in this entity."})
             if po.vendor_id != vendor.id:
                 raise ValidationError({"vendor": "The selected vendor must match the purchase order."})
+            if po.status != "APPROVED":
+                raise ValidationError({"purchase_order": "Goods can only be received against an approved purchase order."})
         grn = GoodsReceivedNote.objects.create(
             entity=entity, vendor=vendor, purchase_order=po,
             received_date=_date(body.get("received_date"), "received_date", required=True),
@@ -288,9 +290,7 @@ def _write_invoice_lines(entity, invoice, po, lines):
     """Replace draft lines after validating every PO/GRN join inside the entity."""
     invoice.lines.all().delete()
     for i, ln in enumerate(lines, start=1):
-        quantity = _dec(ln.get("quantity", 1), "quantity")
-        if quantity <= 0:
-            raise ValidationError({"quantity": "Invoice line quantity must be greater than zero."})
+        quantity = _quantity(ln.get("quantity", 1), "quantity")
         po_line = grn_line = None
         if ln.get("po_line"):
             po_line = PurchaseOrderLine.objects.filter(
@@ -560,15 +560,32 @@ class VendorInvoicePostView(_ProcBase):
 
     rbac_permission = "procurement.vendor_invoice.post"
 
+    @staticmethod
+    def _has_variance_override_access(request):
+        """Check the dedicated override key in the request's tenant/branch scope."""
+        if is_vision_super_admin(request.user):
+            return True
+        tenant = getattr(request, "rbac_tenant", None) or getattr(request, "tenant", None)
+        return user_has_rbac_permission(
+            request.user, "procurement.vendor_invoice.override_variance",
+            tenant=tenant or getattr(request.user, "tenant", None),
+            branch=getattr(request, "branch", None),
+        )
+
     def post(self, request, pk):
         """Post an eligible bill; variance override is explicit and permission-gated."""
         entity = resolve_entity(request)
         invoice = _invoice_queryset(entity).filter(pk=pk).first()
         if invoice is None:
             raise NotFound("No such vendor invoice in this entity.")
+        allow_variance = request.data.get("allow_variance", False)
+        if not isinstance(allow_variance, bool):
+            raise ValidationError({"allow_variance": "Expected a JSON boolean."})
+        if allow_variance and not self._has_variance_override_access(request):
+            raise PermissionDenied("You do not have permission to override invoice match variances.")
         payables.post_vendor_invoice(
             invoice, actor_user=request.user,
-            allow_variance=bool(request.data.get("allow_variance", False)),
+            allow_variance=allow_variance,
         )
         invoice.refresh_from_db()
         return success_response(

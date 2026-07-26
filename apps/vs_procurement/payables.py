@@ -209,8 +209,14 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
     tax_by_account: dict[int, int] = defaultdict(int)  # Group input tax by paid account.
     tax_objs: dict[int, object] = {}  # Keep tax account objects for grouped tax lines.
 
-    for line in invoice.lines.select_related("expense_account", "tax_code__paid_account"):
-        if line.po_line_id is not None:  # PO-backed bills clear GR/IR.
+    for line in invoice.lines.select_related(
+        "expense_account", "tax_code__paid_account", "grn_line__grn",
+    ):
+        receipt_backed = (
+            line.grn_line_id is not None
+            and line.grn_line.grn.status == DocumentStatus.POSTED
+        )
+        if line.po_line_id is not None or receipt_backed:  # Ordered or direct-receipt bills clear GR/IR.
             if grir is None:  # Resolve GR/IR once.
                 grir = resolve_account(invoice.entity, GRIR_CLEARING_CODE, label="GR/IR clearing")
             target = grir  # Debit GR/IR for PO-backed net amount.
@@ -270,7 +276,8 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
         actor_user=actor_user, target=invoice,
         message=f"Posted bill from {vendor.code} ({format_naira(invoice.total)}).",
         journal_id=entry.pk, total=invoice.total, tax=invoice.tax_total,
-        match_status=str(match_status),
+        match_status=str(match_status), allow_variance=bool(allow_variance),
+        variance_override_used=bool(allow_variance and match_status in MATCH_BLOCKING),
     )
     return invoice  # Return the posted vendor invoice.
 

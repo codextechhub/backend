@@ -44,7 +44,7 @@ PROCUREMENT_RESOURCES = [
     # Viewing assessments rides procurement.report.view; only recording one needs this key.
     ("vendor_assessment", "vendor assessments",  [("create", "SENSITIVE")]),
     ("vendor_invoice", "vendor invoices",       [("view", "NORMAL"), ("create", "SENSITIVE"), ("update", "SENSITIVE"), ("submit", "SENSITIVE"),
-                                                 ("match", "SENSITIVE"), ("post", "CRITICAL")]),
+                                                 ("match", "SENSITIVE"), ("post", "CRITICAL"), ("override_variance", "CRITICAL")]),
     ("vendor_payment", "vendor payments",       [("view", "NORMAL"), ("create", "CRITICAL"), ("update", "CRITICAL"),
                                                  ("submit", "CRITICAL"), ("post", "CRITICAL"), ("cancel", "CRITICAL"),
                                                  ("reverse", "CRITICAL")]),

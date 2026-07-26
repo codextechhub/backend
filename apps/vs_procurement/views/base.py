@@ -131,6 +131,8 @@ def _quantity(value, field):
         raise ValidationError({field: "Quantity must be greater than zero."})
     if qty > _MAX_QTY:
         raise ValidationError({field: "Quantity is too large."})
+    if qty != qty.quantize(Decimal("0.0001")):
+        raise ValidationError({field: "Quantity cannot have more than four decimal places."})
     return qty
 
 
@@ -152,6 +154,8 @@ def _nonneg_qty(value, field):
         raise ValidationError({field: "Cannot be negative."})
     if qty > _MAX_QTY:
         raise ValidationError({field: "Value is too large."})
+    if qty != qty.quantize(Decimal("0.0001")):
+        raise ValidationError({field: "Value cannot have more than four decimal places."})
     return qty
 
 
@@ -296,4 +300,3 @@ class _ProcBase(APIView):
         paginator.page_size = 25
         page = paginator.paginate_queryset(qs, request, view=self)
         return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)
-
