@@ -373,6 +373,8 @@ class _GLFixtureMixin:
 class ChartOfAccountsTests(_GLFixtureMixin, TestCase):
     # Verify seed creates five roots and links parents behavior.
     def test_seed_creates_five_roots_and_links_parents(self):
+        from vs_finance.constants import IFRSLine
+
         entity, _ = self.build_ledger()
         roots = Account.objects.filter(entity=entity, parent__isnull=True)
         self.assertEqual(
@@ -382,6 +384,13 @@ class ChartOfAccountsTests(_GLFixtureMixin, TestCase):
         )
         cash = Account.objects.get(entity=entity, code="1100")
         self.assertEqual(cash.parent.code, "1000")
+        ppv = Account.objects.get(entity=entity, code="5160")
+        self.assertEqual(ppv.name, "Purchase Price Variance")
+        self.assertEqual(ppv.account_type, AccountType.EXPENSE)
+        self.assertTrue(ppv.is_postable)
+        self.assertFalse(ppv.is_contra)
+        self.assertEqual(ppv.parent.code, "5000")
+        self.assertEqual(ppv.ifrs_line, IFRSLine.COST_OF_SALES)
 
     # Verify normal balance derived and contra flips behavior.
     def test_normal_balance_derived_and_contra_flips(self):

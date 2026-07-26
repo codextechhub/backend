@@ -16,7 +16,7 @@ from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
 from vs_finance.constants import BudgetStatus, DocumentStatus
-from vs_finance.models import Budget, BudgetLine, CostCenter, FiscalPeriod
+from vs_finance.models import Budget, BudgetLine, FiscalPeriod
 from vs_finance.views import resolve_entity
 from vs_workflow.models import WorkflowInstance
 
@@ -43,6 +43,7 @@ from .base import (
     _quantity,
     _require_lines,
     _resolve_account,
+    _resolve_cost_center,
     _resolve_tax,
 )
 from .catalog import _resolve_catalog_item
@@ -50,17 +51,6 @@ from .catalog import _resolve_catalog_item
 # --------------------------------------------------------------------------- #
 # Purchase requisitions                                                       #
 # --------------------------------------------------------------------------- #
-
-def _resolve_cost_center(entity, value):
-    """Resolve an id/code inside the selected ledger entity."""
-    if value in (None, ""):
-        return None
-    qs = CostCenter.objects.filter(entity=entity, is_active=True)
-    cost_center = qs.filter(pk=value).first() if str(value).isdigit() else qs.filter(code=value).first()
-    if cost_center is None:
-        raise ValidationError({"cost_center": "No such active cost centre in this entity."})
-    return cost_center
-
 
 def _write_requisition_lines(req, entity, lines):
     """Replace a draft's estimate lines from validated entity-scoped references."""

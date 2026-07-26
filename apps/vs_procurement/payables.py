@@ -34,7 +34,8 @@ from vs_finance.money import format_naira
 from vs_finance.receivables import compute_line_net, compute_tax
 
 from .constants import (
-    MATCH_BLOCKING, MatchStatus, ProcApprovalState, VendorKycStatus, WHT_PAYABLE_CODE,
+    MATCH_BLOCKING, PURCHASE_PRICE_VARIANCE_CODE, MatchStatus, ProcApprovalState,
+    VendorKycStatus, WHT_PAYABLE_CODE,
 )
 from .exceptions import ThreeWayMatchError
 from .purchasing import resolve_account
@@ -201,29 +202,47 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
         reference=invoice.vendor_reference, created_by=actor_user,
     )
 
-    # Debit side: PO-based net clears GR/IR clearing; non-PO net hits the expense
-    # account directly. Input tax (recoverable) debits the tax code's paid account.
+    # Receipt/PO-backed net clears GR/IR at its historical basis; any difference
+    # between that basis and the supplier's actual invoice price lands in PPV.
+    # Truly direct bills still debit expense. Tax remains based on invoice actual.
     grir = None  # Resolve the GR/IR clearing account lazily only when needed.
-    debit_by_account: dict[int, int] = defaultdict(int)  # Group net debits by account.
+    grir_basis_total = 0
+    debit_by_account: dict[tuple[int, int | None], int] = defaultdict(int)
     debit_objs: dict[int, object] = {}  # Keep account objects for grouped debit lines.
+    ppv = None
+    ppv_by_cost_center: dict[int | None, int] = defaultdict(int)
     tax_by_account: dict[int, int] = defaultdict(int)  # Group input tax by paid account.
     tax_objs: dict[int, object] = {}  # Keep tax account objects for grouped tax lines.
 
     for line in invoice.lines.select_related(
-        "expense_account", "tax_code__paid_account", "grn_line__grn",
+        "expense_account", "cost_center", "po_line",
+        "tax_code__paid_account", "grn_line__grn",
     ):
         receipt_backed = (
             line.grn_line_id is not None
             and line.grn_line.grn.status == DocumentStatus.POSTED
         )
-        if line.po_line_id is not None or receipt_backed:  # Ordered or direct-receipt bills clear GR/IR.
+        if line.po_line_id is not None or receipt_backed:
             if grir is None:  # Resolve GR/IR once.
                 grir = resolve_account(invoice.entity, GRIR_CLEARING_CODE, label="GR/IR clearing")
-            target = grir  # Debit GR/IR for PO-backed net amount.
+            basis_unit_price = (
+                line.grn_line.unit_price if receipt_backed
+                else line.po_line.unit_price
+            )
+            basis = compute_line_net(line.quantity, basis_unit_price)
+            grir_basis_total += basis
+            variance = line.net_amount - basis
+            if variance:
+                if ppv is None:
+                    ppv = resolve_account(
+                        invoice.entity, PURCHASE_PRICE_VARIANCE_CODE,
+                        label="purchase price variance",
+                    )
+                ppv_by_cost_center[line.cost_center_id] += variance
         else:  # Non-PO bills hit the line expense account directly.
             target = line.expense_account
-        debit_by_account[target.id] += line.net_amount  # Accumulate the line net amount by account.
-        debit_objs[target.id] = target  # Store the account object for journal creation.
+            debit_by_account[(target.id, line.cost_center_id)] += line.net_amount
+            debit_objs[target.id] = target
 
         if line.tax_amount:  # Tax-bearing lines require a recoverable tax account.
             tax_acc = line.tax_code.paid_account if line.tax_code_id else None  # Resolve input tax account.
@@ -236,13 +255,30 @@ def _post_vendor_invoice_atomic(invoice, *, actor_user=None, allow_variance=Fals
             tax_objs[tax_acc.id] = tax_acc  # Store the tax account object.
 
     line_no = 0  # Track journal line ordering.
-    for acc_id, amount in debit_by_account.items():  # Emit grouped net debit lines.
+    if grir is not None and grir_basis_total:
+        line_no += 1
+        JournalLine.objects.create(
+            entry=entry, account=grir, debit=grir_basis_total, credit=0,
+            description="GR/IR clearing", line_no=line_no,
+        )
+    for (acc_id, cost_center_id), amount in debit_by_account.items():
         if amount == 0:  # Skip empty debit groups.
             continue
         line_no += 1  # Advance the journal line counter.
         JournalLine.objects.create(
             entry=entry, account=debit_objs[acc_id], debit=amount, credit=0,
-            description="Purchase", line_no=line_no,
+            cost_center_id=cost_center_id, description="Purchase", line_no=line_no,
+        )
+    for cost_center_id, variance in ppv_by_cost_center.items():
+        if variance == 0:
+            continue
+        line_no += 1
+        JournalLine.objects.create(
+            entry=entry, account=ppv,
+            debit=variance if variance > 0 else 0,
+            credit=-variance if variance < 0 else 0,
+            cost_center_id=cost_center_id,
+            description="Purchase price variance", line_no=line_no,
         )
     for acc_id, amount in tax_by_account.items():  # Emit grouped input tax debit lines.
         line_no += 1  # Advance the journal line counter.

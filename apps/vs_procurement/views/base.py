@@ -72,6 +72,22 @@ def _resolve_currency(entity, ref, field="currency"):
     return cur
 
 
+def _resolve_cost_center(entity, ref, field="cost_center"):
+    """Resolve an optional active cost centre by id/code inside ``entity``."""
+    if ref in (None, ""):
+        return None
+    from vs_finance.models import CostCenter
+
+    qs = CostCenter.objects.filter(entity=entity, is_active=True)
+    cost_center = (
+        qs.filter(pk=int(ref)).first() if str(ref).isdigit()
+        else qs.filter(code=str(ref)).first()
+    )
+    if cost_center is None:
+        raise ValidationError({field: "No such active cost centre in this entity."})
+    return cost_center
+
+
 def _resolve_vendor(entity, ref):
     """Resolve a required vendor by id or code, always inside ``entity``.
 

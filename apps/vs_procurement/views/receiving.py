@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Count, Q, Sum
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
@@ -43,6 +43,7 @@ from .base import (
     _quantity,
     _require_lines,
     _resolve_account,
+    _resolve_cost_center,
     _resolve_currency,
     _resolve_tax,
     _resolve_vendor,
@@ -73,7 +74,8 @@ def _write_grn_lines(entity, grn, po, lines):
         expected = _nonneg_qty(accepted + rejected, "quantity")
         if ln.get("po_line"):
             po_line = PurchaseOrderLine.objects.filter(
-                purchase_order__entity=entity, pk=ln["po_line"]).first()
+                purchase_order__entity=entity, pk=ln["po_line"],
+            ).select_related("cost_center").first()
             if po_line is None:
                 raise ValidationError({"po_line": f"No such PO line {ln['po_line']}."})
             if po and po_line.purchase_order_id != po.id:
@@ -84,6 +86,12 @@ def _write_grn_lines(entity, grn, po, lines):
                 raise ValidationError({"quantity": f"Cannot exceed remaining quantity for '{po_line.description}'."})
             # Snapshot the PO remainder so this GRN keeps its own “received of expected” denominator.
             expected = remaining
+        explicit_cost_center = _resolve_cost_center(entity, ln.get("cost_center"))
+        if po_line and explicit_cost_center and explicit_cost_center.pk != po_line.cost_center_id:
+            raise ValidationError({
+                "cost_center": "The receipt cost centre must match its purchase-order line.",
+            })
+        cost_center = po_line.cost_center if po_line else explicit_cost_center
         expense = _resolve_account(entity, ln.get("expense_account"), "expense_account") \
             or (po_line.expense_account if po_line else None)
         if expense is None:
@@ -94,6 +102,7 @@ def _write_grn_lines(entity, grn, po, lines):
             # Keep a display snapshot while falling back to the PO description when older clients omit it.
             description=ln.get("description") or (po_line.description if po_line else ""),
             expense_account=expense,
+            cost_center=cost_center,
             accepted_qty=accepted, rejected_qty=rejected, expected_qty=expected,
             unit_price=unit_price,
             # Draft value must be live: accepted whole units × the PO unit price in minor currency units.
@@ -106,7 +115,9 @@ def _read_grn_for_response(entity, pk):
     """Re-read a receipt in the serialisation shape (fresh line cache after a rewrite)."""
     return GoodsReceivedNote.objects.filter(entity=entity, pk=pk).select_related(
         "vendor", "purchase_order", "received_by",
-    ).prefetch_related("lines__po_line", "purchase_order__lines").first()
+    ).prefetch_related(
+        "lines__po_line", "lines__cost_center", "purchase_order__lines",
+    ).first()
 
 
 class GoodsReceiptListCreateView(_ProcBase):
@@ -124,7 +135,9 @@ class GoodsReceiptListCreateView(_ProcBase):
     def get(self, request):
         """List entity receipts with the relations needed for progress display."""
         entity = resolve_entity(request)
-        qs = GoodsReceivedNote.objects.filter(entity=entity).select_related("vendor", "purchase_order", "received_by").prefetch_related("lines__po_line", "purchase_order__lines")
+        qs = GoodsReceivedNote.objects.filter(entity=entity).select_related(
+            "vendor", "purchase_order", "received_by",
+        ).prefetch_related("lines__po_line", "lines__cost_center", "purchase_order__lines")
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
         return self.paginate(request, qs.order_by("-id"), GoodsReceivedNoteListSerializer)
@@ -174,7 +187,11 @@ class GoodsReceiptDetailView(_ProcBase):
     def get(self, request, pk):
         """Return one entity receipt with its PO and line snapshots."""
         entity = resolve_entity(request)
-        grn = GoodsReceivedNote.objects.filter(entity=entity, pk=pk).select_related("vendor", "purchase_order", "received_by").prefetch_related("lines__po_line", "purchase_order__lines").first()
+        grn = GoodsReceivedNote.objects.filter(
+            entity=entity, pk=pk,
+        ).select_related("vendor", "purchase_order", "received_by").prefetch_related(
+            "lines__po_line", "lines__cost_center", "purchase_order__lines",
+        ).first()
         if grn is None:
             raise NotFound("No such goods receipt in this entity.")
         return success_response("Goods receipt retrieved.", data=GoodsReceivedNoteSerializer(grn).data)
@@ -240,7 +257,7 @@ def _invoice_queryset(entity):
         "vendor", "purchase_order", "journal",
     ).prefetch_related(
         "lines__expense_account", "lines__tax_code__paid_account",
-        "lines__po_line", "lines__grn_line__grn",
+        "lines__po_line", "lines__grn_line__grn", "lines__cost_center",
         "allocations__payment", "journal__lines__account",
     )
 
@@ -286,6 +303,32 @@ def _validate_vendor_reference(entity, vendor, reference, *, exclude_id=None):
     return reference
 
 
+_VENDOR_REFERENCE_CONSTRAINT = "uniq_proc_vinvoice_entity_vendor_ref_ci"
+
+
+def _is_vendor_reference_conflict(exc):
+    """Recognize the named invoice-reference constraint across supported drivers."""
+    cause = exc.__cause__
+    diag = getattr(cause, "diag", None)
+    constraint_name = (
+        getattr(diag, "constraint_name", None)
+        or getattr(cause, "constraint_name", None)
+    )
+    if constraint_name:
+        return constraint_name == _VENDOR_REFERENCE_CONSTRAINT
+    # MySQL and SQLite expose the key/index name only in the error payload.
+    return _VENDOR_REFERENCE_CONSTRAINT in str(cause or exc)
+
+
+def _raise_vendor_reference_conflict(exc):
+    """Map only the known reference constraint; preserve unrelated DB failures."""
+    if not _is_vendor_reference_conflict(exc):
+        raise exc
+    raise ValidationError({
+        "vendor_reference": "This vendor invoice number is already recorded.",
+    }) from exc
+
+
 def _write_invoice_lines(entity, invoice, po, lines):
     """Replace draft lines after validating every PO/GRN join inside the entity."""
     invoice.lines.all().delete()
@@ -295,7 +338,7 @@ def _write_invoice_lines(entity, invoice, po, lines):
         if ln.get("po_line"):
             po_line = PurchaseOrderLine.objects.filter(
                 purchase_order__entity=entity, pk=ln["po_line"],
-            ).select_related("purchase_order", "expense_account").first()
+            ).select_related("purchase_order", "expense_account", "cost_center").first()
             if po_line is None:
                 raise ValidationError({"po_line": f"No such PO line {ln['po_line']}."})
             if po is None or po_line.purchase_order_id != po.id:
@@ -305,13 +348,27 @@ def _write_invoice_lines(entity, invoice, po, lines):
         if ln.get("grn_line"):
             grn_line = GoodsReceivedNoteLine.objects.filter(
                 grn__entity=entity, pk=ln["grn_line"], grn__status="POSTED",
-            ).select_related("grn", "po_line").first()
+            ).select_related("grn", "po_line", "cost_center").first()
             if grn_line is None:
                 raise ValidationError({"grn_line": "The selected goods-receipt line does not exist or is not posted."})
             if grn_line.grn.vendor_id != invoice.vendor_id or grn_line.grn.purchase_order_id != getattr(po, "id", None):
                 raise ValidationError({"grn_line": "The goods-receipt line must belong to this vendor and purchase order."})
             if po_line and grn_line.po_line_id != po_line.id:
                 raise ValidationError({"grn_line": "The goods-receipt line does not match the selected PO line."})
+        explicit_cost_center = _resolve_cost_center(entity, ln.get("cost_center"))
+        authoritative_cost_center = (
+            po_line.cost_center if po_line and po_line.cost_center_id
+            else grn_line.cost_center if grn_line and grn_line.cost_center_id
+            else None
+        )
+        if (
+            authoritative_cost_center and explicit_cost_center
+            and explicit_cost_center.pk != authoritative_cost_center.pk
+        ):
+            raise ValidationError({
+                "cost_center": "The invoice cost centre must match its purchase-order or receipt line.",
+            })
+        cost_center = authoritative_cost_center or explicit_cost_center
         expense = _resolve_account(entity, ln.get("expense_account"), "expense_account") \
             or (po_line.expense_account if po_line else invoice.vendor.default_expense_account)
         if expense is None:
@@ -321,6 +378,7 @@ def _write_invoice_lines(entity, invoice, po, lines):
             line_no=ln.get("line_no", i),
             description=ln.get("description") or (po_line.description if po_line else ""),
             expense_account=expense, quantity=quantity,
+            cost_center=cost_center,
             unit_price=_money(ln.get("unit_price", po_line.unit_price if po_line else 0), "unit_price"),
             tax_code=_resolve_tax(entity, ln.get("tax_code")),
         )
@@ -439,15 +497,21 @@ class VendorInvoiceListCreateView(_ProcBase):
             if po.vendor_id != vendor.id:
                 raise ValidationError({"vendor": "The selected vendor must match the purchase order."})
         reference = _validate_vendor_reference(entity, vendor, body.get("vendor_reference"))
-        invoice = VendorInvoice.objects.create(
-            entity=entity, vendor=vendor, purchase_order=po,
-            invoice_date=_date(body.get("invoice_date"), "invoice_date", required=True),
-            due_date=_date(body.get("due_date"), "due_date"),
-            currency=_resolve_currency(entity, body.get("currency")),
-            vendor_reference=reference,
-            narration=body.get("narration", ""),
-            created_by=request.user if request.user.is_authenticated else None,
-        )
+        try:
+            # Savepoint keeps the surrounding document transaction usable when a
+            # concurrent request wins the case-insensitive reference race.
+            with transaction.atomic():
+                invoice = VendorInvoice.objects.create(
+                    entity=entity, vendor=vendor, purchase_order=po,
+                    invoice_date=_date(body.get("invoice_date"), "invoice_date", required=True),
+                    due_date=_date(body.get("due_date"), "due_date"),
+                    currency=_resolve_currency(entity, body.get("currency")),
+                    vendor_reference=reference,
+                    narration=body.get("narration", ""),
+                    created_by=request.user if request.user.is_authenticated else None,
+                )
+        except IntegrityError as exc:
+            _raise_vendor_reference_conflict(exc)
         _write_invoice_lines(entity, invoice, po, lines)
         return success_response(
             "Vendor invoice created.", data=_serialize_invoice_detail(_invoice_queryset(entity).get(pk=invoice.pk)), status=201,
@@ -494,7 +558,11 @@ class VendorInvoiceDetailView(_ProcBase):
     def patch(self, request, pk):
         """Replace an unsubmitted/rejected draft and invalidate its prior match."""
         entity = resolve_entity(request)
-        invoice = VendorInvoice.objects.select_for_update().select_related("vendor", "purchase_order").filter(entity=entity, pk=pk).first()
+        # Lock only the invoice row: purchase_order is nullable, and PostgreSQL
+        # rejects FOR UPDATE against the nullable side of that outer join.
+        invoice = VendorInvoice.objects.select_for_update().filter(
+            entity=entity, pk=pk,
+        ).first()
         if invoice is None:
             raise NotFound("No such vendor invoice in this entity.")
         if invoice.status != "DRAFT" or invoice.approval_state not in ("NOT_SUBMITTED", "REJECTED"):
@@ -520,7 +588,14 @@ class VendorInvoiceDetailView(_ProcBase):
         if "narration" in body:
             invoice.narration = str(body.get("narration") or "")
         invoice.approval_state = "NOT_SUBMITTED"
-        invoice.save(update_fields=["vendor", "purchase_order", "invoice_date", "due_date", "vendor_reference", "narration", "approval_state", "updated_at"])
+        try:
+            with transaction.atomic():
+                invoice.save(update_fields=[
+                    "vendor", "purchase_order", "invoice_date", "due_date",
+                    "vendor_reference", "narration", "approval_state", "updated_at",
+                ])
+        except IntegrityError as exc:
+            _raise_vendor_reference_conflict(exc)
         if "lines" in body:
             _write_invoice_lines(entity, invoice, po, _require_lines(body))
         return success_response(

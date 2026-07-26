@@ -1042,6 +1042,91 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         # PO line received quantity advanced.
         self.assertEqual(po.lines.first().received_qty, 10)
 
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_receipt_cost_center_source_validation_response_and_journal(self, _permission):
+        from vs_finance.models import CostCenter
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        operations = CostCenter.objects.create(entity=entity, code="OPS", name="Operations")
+        other = CostCenter.objects.create(entity=entity, code="OTHER", name="Other")
+        po = self.make_po(entity, vendor, [("5100", 2, 100_000, None)])
+        po_line = po.lines.get()
+        po_line.cost_center = operations
+        po_line.save(update_fields=["cost_center", "updated_at"])
+        client = self._api_client(entity, "grn-cost-center@test.com")
+        payload = {
+            "vendor": vendor.code, "purchase_order": po.id,
+            "received_date": "2026-01-08",
+            "lines": [{
+                "po_line": po_line.id, "expense_account": "5100",
+                "accepted_qty": 2, "rejected_qty": 0, "cost_center": operations.code,
+            }],
+        }
+
+        mismatch = {**payload, "lines": [{**payload["lines"][0], "cost_center": other.code}]}
+        self.assertEqual(client.post(
+            f"/v1/procurement/goods-receipts/?entity={entity.code}", mismatch, format="json",
+        ).status_code, 400)
+
+        response = client.post(
+            f"/v1/procurement/goods-receipts/?entity={entity.code}", payload, format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        row = response.data["data"]["lines"][0]
+        self.assertEqual(row["cost_center_id"], operations.id)
+        self.assertEqual(row["cost_center_code"], "OPS")
+        grn = GoodsReceivedNote.objects.get(pk=response.data["data"]["id"])
+        post_grn(grn)
+        expense_line = grn.journal.lines.get(account__code="5100")
+        control_line = grn.journal.lines.get(account__code="2150")
+        self.assertEqual(expense_line.cost_center_id, operations.id)
+        self.assertIsNone(control_line.cost_center_id)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_direct_receipt_cost_center_is_active_and_entity_scoped(self, _permission):
+        from vs_finance.models import CostCenter
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        own = CostCenter.objects.create(entity=entity, code="OPS", name="Operations")
+        inactive = CostCenter.objects.create(
+            entity=entity, code="OLD", name="Inactive", is_active=False,
+        )
+        foreign_entity = LedgerEntity.objects.create(
+            name="Foreign Books", code="FOREIGN-CC", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+        foreign = CostCenter.objects.create(
+            entity=foreign_entity, code="FOREIGN", name="Foreign",
+        )
+        client = self._api_client(entity, "grn-direct-cost-center@test.com")
+        payload = {
+            "vendor": vendor.code, "received_date": "2026-01-08",
+            "lines": [{
+                "expense_account": "5300", "accepted_qty": 1,
+                "rejected_qty": 0, "unit_price": 100_000,
+            }],
+        }
+        for invalid in (inactive.id, foreign.id):
+            with self.subTest(cost_center=invalid):
+                invalid_payload = {
+                    **payload,
+                    "lines": [{**payload["lines"][0], "cost_center": invalid}],
+                }
+                self.assertEqual(client.post(
+                    f"/v1/procurement/goods-receipts/?entity={entity.code}",
+                    invalid_payload, format="json",
+                ).status_code, 400)
+
+        payload["lines"][0]["cost_center"] = own.code
+        response = client.post(
+            f"/v1/procurement/goods-receipts/?entity={entity.code}", payload, format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["data"]["lines"][0]["cost_center_code"], "OPS")
+        grn = GoodsReceivedNote.objects.get(pk=response.data["data"]["id"])
+        post_grn(grn)
+        self.assertEqual(grn.journal.lines.get(account__code="5300").cost_center_id, own.id)
+
 
 class GoodsReceiptConcurrencyTests(_P2PFixtureMixin, TransactionTestCase):
     """Posting locks make the receipt and PO counters authoritative under races."""
@@ -1164,6 +1249,39 @@ class GoodsReceiptConcurrencyTests(_P2PFixtureMixin, TransactionTestCase):
 
 
 class VendorInvoiceTests(_P2PFixtureMixin, TestCase):
+    def test_vendor_reference_constraint_is_case_insensitive_scoped_and_allows_blanks(self):
+        from django.db import IntegrityError, transaction
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        other_vendor = Vendor.objects.create(
+            entity=entity, code="OTHER-REF", name="Other Reference Vendor",
+        )
+        date = datetime.date(2026, 1, 10)
+        VendorInvoice.objects.create(
+            entity=entity, vendor=vendor, invoice_date=date, vendor_reference="Inv-001",
+        )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            VendorInvoice.objects.create(
+                entity=entity, vendor=vendor, invoice_date=date, vendor_reference="INV-001",
+            )
+        VendorInvoice.objects.create(
+            entity=entity, vendor=other_vendor, invoice_date=date, vendor_reference="INV-001",
+        )
+        VendorInvoice.objects.create(entity=entity, vendor=vendor, invoice_date=date)
+        VendorInvoice.objects.create(entity=entity, vendor=vendor, invoice_date=date)
+
+        other_entity = LedgerEntity.objects.create(
+            name="Other Reference Books", code="OTHER-REF-BOOKS",
+            kind=LedgerEntity.Kind.TENANT, tenant=entity.tenant,
+        )
+        foreign_vendor = Vendor.objects.create(
+            entity=other_entity, code="FOREIGN-REF", name="Foreign Reference Vendor",
+        )
+        VendorInvoice.objects.create(
+            entity=other_entity, vendor=foreign_vendor,
+            invoice_date=date, vendor_reference="INV-001",
+        )
+
     def test_post_requires_completed_approval(self):
         entity, _, vendor, _, _ = self.build_p2p()
         vi = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
@@ -1226,6 +1344,7 @@ class VendorInvoiceTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(lines["5300"].debit, 1_000_000)  # expense direct (no PO)
         self.assertEqual(lines["1300"].debit, 75_000)     # recoverable input VAT
         self.assertEqual(lines["2100"].credit, 1_075_000)
+        self.assertNotIn("5160", lines)
 
     def test_direct_grn_bill_clears_grir_without_booking_expense_twice(self):
         entity, _, vendor, _, _ = self.build_p2p()
@@ -1247,6 +1366,109 @@ class VendorInvoiceTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(lines["2150"].debit, 200_000)
         self.assertNotIn("5300", lines)
         self.assertEqual(grir_balance(entity), 0)
+
+    def test_unfavorable_ppv_with_tax_balances_and_keeps_controls_unallocated(self):
+        from vs_finance.models import CostCenter
+
+        entity, _, vendor, input_vat, _ = self.build_p2p()
+        center = CostCenter.objects.create(entity=entity, code="OPS", name="Operations")
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        po_line = po.lines.get()
+        po_line.cost_center = center
+        po_line.save(update_fields=["cost_center", "updated_at"])
+        grn = self.make_grn(entity, vendor, po, [(po_line, 10)])
+        grn.lines.update(cost_center=center)
+        post_grn(grn)
+        invoice = self.make_bill(
+            entity, vendor, [("5100", 10, 120_000, input_vat, po_line)], po=po,
+        )
+        invoice.lines.update(cost_center=center, grn_line=grn.lines.get())
+
+        post_vendor_invoice(invoice)
+
+        invoice.refresh_from_db()
+        lines = {line.account.code: line for line in invoice.journal.lines.all()}
+        self.assertEqual(lines["2150"].debit, 1_000_000)
+        self.assertEqual(lines["5160"].debit, 200_000)
+        self.assertEqual(lines["5160"].cost_center_id, center.id)
+        self.assertEqual(lines["1300"].debit, 90_000)
+        self.assertEqual(lines["2100"].credit, 1_290_000)
+        for code in ("2150", "1300", "2100"):
+            self.assertIsNone(lines[code].cost_center_id)
+        self.assertEqual(grir_balance(entity), 0)
+
+    def test_favorable_ppv_uses_linked_grn_price_before_po_price(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        po_line = po.lines.get()
+        grn = self.make_grn(entity, vendor, po, [(po_line, 10)])
+        # Receipt snapshot differs from both the PO and invoice. It is the historical
+        # GR/IR basis and must win when both links are present.
+        grn.lines.update(unit_price=110_000)
+        grn_line = grn.lines.get()
+        post_grn(grn)
+        invoice = self.make_bill(
+            entity, vendor, [("5100", 10, 90_000, None, po_line)], po=po,
+        )
+        invoice.lines.update(grn_line=grn_line)
+
+        post_vendor_invoice(invoice)
+
+        invoice.refresh_from_db()
+        lines = {line.account.code: line for line in invoice.journal.lines.all()}
+        self.assertEqual(lines["2150"].debit, 1_100_000)
+        self.assertEqual(lines["5160"].credit, 200_000)
+        self.assertEqual(lines["2100"].credit, 900_000)
+        self.assertEqual(grir_balance(entity), 0)
+
+    def test_linked_direct_grn_price_variance_posts_ppv(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        grn = GoodsReceivedNote.objects.create(
+            entity=entity, vendor=vendor, received_date=datetime.date(2026, 1, 8),
+        )
+        grn_line = GoodsReceivedNoteLine.objects.create(
+            grn=grn, expense_account=self.acc(entity, "5300"), accepted_qty=2,
+            unit_price=100_000, line_no=1,
+        )
+        post_grn(grn)
+        invoice = self.make_bill(entity, vendor, [("5300", 2, 125_000, None, None)])
+        invoice.lines.update(grn_line=grn_line)
+
+        post_vendor_invoice(invoice)
+
+        invoice.refresh_from_db()
+        lines = {line.account.code: line for line in invoice.journal.lines.all()}
+        self.assertEqual(lines["2150"].debit, 200_000)
+        self.assertEqual(lines["5160"].debit, 50_000)
+        self.assertEqual(lines["2100"].credit, 250_000)
+        self.assertEqual(grir_balance(entity), 0)
+
+    def test_missing_ppv_account_is_not_resolved_without_variance(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        Account.objects.filter(entity=entity, code="5160").delete()
+        po = self.make_po(entity, vendor, [("5100", 2, 100_000, None)])
+        po_line = po.lines.get()
+        post_grn(self.make_grn(entity, vendor, po, [(po_line, 2)]))
+        invoice = self.make_bill(
+            entity, vendor, [("5100", 2, 100_000, None, po_line)], po=po,
+        )
+        post_vendor_invoice(invoice)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.status, DocumentStatus.POSTED)
+
+    def test_inactive_ppv_account_blocks_only_a_nonzero_variance(self):
+        from vs_procurement.exceptions import MissingControlAccountError
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        Account.objects.filter(entity=entity, code="5160").update(is_active=False)
+        po = self.make_po(entity, vendor, [("5100", 2, 100_000, None)])
+        po_line = po.lines.get()
+        post_grn(self.make_grn(entity, vendor, po, [(po_line, 2)]))
+        invoice = self.make_bill(
+            entity, vendor, [("5100", 2, 120_000, None, po_line)], po=po,
+        )
+        with self.assertRaises(MissingControlAccountError):
+            post_vendor_invoice(invoice)
 
     def test_over_billed_is_blocked_and_audited(self):
         entity, _, vendor, _, _ = self.build_p2p()
@@ -1332,6 +1554,150 @@ class VendorInvoiceConsoleAPITests(_P2PFixtureMixin, TestCase):
                 )
                 self.assertEqual(response.status_code, 400)
         self.assertFalse(VendorInvoice.objects.filter(entity=entity).exists())
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_invoice_cost_center_precedence_validation_and_response(self, _permission):
+        from vs_finance.models import CostCenter
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        own = CostCenter.objects.create(entity=entity, code="OPS", name="Operations")
+        other = CostCenter.objects.create(entity=entity, code="OTHER", name="Other")
+        inactive = CostCenter.objects.create(
+            entity=entity, code="OLD", name="Inactive", is_active=False,
+        )
+        foreign_entity = LedgerEntity.objects.create(
+            name="Foreign CC Books", code="FOREIGN-INV-CC",
+            kind=LedgerEntity.Kind.TENANT, tenant=entity.tenant,
+        )
+        foreign = CostCenter.objects.create(
+            entity=foreign_entity, code="FOREIGN", name="Foreign",
+        )
+        client = self._client(entity)
+        direct = {
+            "vendor": vendor.code, "invoice_date": "2026-01-10",
+            "vendor_reference": "CC-DIRECT",
+            "lines": [{
+                "expense_account": "5300", "quantity": 1,
+                "unit_price": 100_000, "cost_center": own.code,
+            }],
+        }
+        response = client.post(
+            f"/v1/procurement/vendor-invoices/?entity={entity.code}", direct, format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["data"]["lines"][0]["cost_center_id"], own.id)
+        self.assertEqual(response.data["data"]["lines"][0]["cost_center_code"], "OPS")
+        direct_invoice = VendorInvoice.objects.get(pk=response.data["data"]["id"])
+        direct_invoice.approval_state = ProcApprovalState.APPROVED
+        direct_invoice.save(update_fields=["approval_state", "updated_at"])
+        post_vendor_invoice(direct_invoice)
+        direct_invoice.refresh_from_db()
+        expense_line = direct_invoice.journal.lines.get(account__code="5300")
+        ap_line = direct_invoice.journal.lines.get(account__code="2100")
+        self.assertEqual(expense_line.cost_center_id, own.id)
+        self.assertIsNone(ap_line.cost_center_id)
+
+        for index, invalid in enumerate((inactive.id, foreign.id), start=1):
+            invalid_payload = {
+                **direct, "vendor_reference": f"CC-INVALID-{index}",
+                "lines": [{**direct["lines"][0], "cost_center": invalid}],
+            }
+            self.assertEqual(client.post(
+                f"/v1/procurement/vendor-invoices/?entity={entity.code}",
+                invalid_payload, format="json",
+            ).status_code, 400)
+
+        po = self.make_po(entity, vendor, [("5100", 1, 100_000, None)])
+        po_line = po.lines.get()
+        po_line.cost_center = own
+        po_line.save(update_fields=["cost_center", "updated_at"])
+        po_payload = {
+            "vendor": vendor.code, "purchase_order": po.id,
+            "invoice_date": "2026-01-10", "vendor_reference": "CC-PO",
+            "lines": [{
+                "po_line": po_line.id, "expense_account": "5100",
+                "quantity": 1, "unit_price": 100_000, "cost_center": own.id,
+            }],
+        }
+        po_response = client.post(
+            f"/v1/procurement/vendor-invoices/?entity={entity.code}", po_payload, format="json",
+        )
+        self.assertEqual(po_response.status_code, 201)
+        self.assertEqual(po_response.data["data"]["lines"][0]["cost_center_code"], "OPS")
+        mismatch = {
+            **po_payload, "vendor_reference": "CC-PO-MISMATCH",
+            "lines": [{**po_payload["lines"][0], "cost_center": other.id}],
+        }
+        self.assertEqual(client.post(
+            f"/v1/procurement/vendor-invoices/?entity={entity.code}", mismatch, format="json",
+        ).status_code, 400)
+
+        direct_grn = GoodsReceivedNote.objects.create(
+            entity=entity, vendor=vendor, received_date=datetime.date(2026, 1, 8),
+        )
+        grn_line = GoodsReceivedNoteLine.objects.create(
+            grn=direct_grn, expense_account=self.acc(entity, "5300"),
+            cost_center=own, accepted_qty=1, unit_price=100_000, line_no=1,
+        )
+        post_grn(direct_grn)
+        grn_response = client.post(
+            f"/v1/procurement/vendor-invoices/?entity={entity.code}",
+            {
+                "vendor": vendor.code, "invoice_date": "2026-01-10",
+                "vendor_reference": "CC-GRN",
+                "lines": [{
+                    "grn_line": grn_line.id, "expense_account": "5300",
+                    "quantity": 1, "unit_price": 100_000,
+                }],
+            }, format="json",
+        )
+        self.assertEqual(grn_response.status_code, 201)
+        self.assertEqual(grn_response.data["data"]["lines"][0]["cost_center_code"], "OPS")
+
+    @patch("vs_procurement.views.receiving._validate_vendor_reference")
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_reference_race_maps_named_constraint_to_field_error(
+        self, _permission, validate_reference,
+    ):
+        entity, _, vendor, _, _ = self.build_p2p()
+        VendorInvoice.objects.create(
+            entity=entity, vendor=vendor, invoice_date=datetime.date(2026, 1, 10),
+            vendor_reference="INV-RACE",
+        )
+        validate_reference.return_value = "inv-race"
+        response = self._client(entity).post(
+            f"/v1/procurement/vendor-invoices/?entity={entity.code}",
+            {
+                "vendor": vendor.code, "invoice_date": "2026-01-10",
+                "vendor_reference": "inv-race",
+                "lines": [{"expense_account": "5300", "quantity": 1, "unit_price": 100_000}],
+            }, format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("vendor_reference", str(response.data))
+
+    @patch("vs_procurement.views.receiving._validate_vendor_reference")
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_patch_reference_race_maps_named_constraint_to_field_error(
+        self, _permission, validate_reference,
+    ):
+        entity, _, vendor, _, _ = self.build_p2p()
+        first = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+        first.vendor_reference = "INV-FIRST"
+        first.save(update_fields=["vendor_reference", "updated_at"])
+        second = self.make_bill(entity, vendor, [("5300", 1, 100_000, None, None)])
+        second.vendor_reference = "INV-SECOND"
+        second.approval_state = ProcApprovalState.NOT_SUBMITTED
+        second.save(update_fields=["vendor_reference", "approval_state", "updated_at"])
+        validate_reference.return_value = "inv-first"
+        response = self._client(entity).patch(
+            f"/v1/procurement/vendor-invoices/{second.id}/?entity={entity.code}",
+            {"vendor_reference": "inv-first"}, format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("vendor_reference", str(response.data))
+        second.refresh_from_db()
+        self.assertEqual(second.vendor_reference, "INV-SECOND")
 
     def _blocking_invoice(self, entity, vendor):
         po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
@@ -2627,6 +2993,66 @@ class GRIRPoLinesTests(_P2PFixtureMixin, TestCase):
 
     def _rows_by_line(self, data):
         return {r["po_line_id"]: r for r in data["rows"]}
+
+    def test_linked_favorable_and_unfavorable_ppv_clear_every_grir_report(self):
+        from vs_procurement.reports import (
+            grir_aging,
+            grir_grn_detail,
+            grir_po_line_detail,
+            grir_po_lines,
+        )
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        documents = []
+        for actual_price in (120_000, 80_000):
+            po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+            po_line = po.lines.get()
+            grn = self.make_grn(entity, vendor, po, [(po_line, 10)])
+            # The linked receipt snapshot is deliberately different from the PO:
+            # every report must use 1.1m, exactly like invoice posting.
+            grn.lines.update(unit_price=110_000)
+            grn_line = grn.lines.get()
+            post_grn(grn)
+            invoice = VendorInvoice.objects.create(
+                entity=entity, vendor=vendor, purchase_order=po,
+                invoice_date=datetime.date(2026, 1, 10),
+                approval_state=ProcApprovalState.APPROVED,
+            )
+            VendorInvoiceLine.objects.create(
+                vendor_invoice=invoice, po_line=po_line, grn_line=grn_line,
+                expense_account=po_line.expense_account, quantity=10,
+                unit_price=actual_price, line_no=1,
+            )
+            post_vendor_invoice(invoice)
+            documents.append((po_line, grn))
+
+        aging = grir_aging(entity, as_of=datetime.date(2026, 1, 12))
+        self.assertEqual(aging.rows, [])
+        self.assertEqual(aging.total_open, 0)
+        self.assertEqual(aging.control_balance, 0)
+        self.assertEqual(aging.difference, 0)
+
+        line_rows = {row.po_line_id: row for row in grir_po_lines(entity).rows}
+        for po_line, grn in documents:
+            with self.subTest(po_line=po_line.id):
+                grn_detail = grir_grn_detail(entity, grn.id)
+                self.assertEqual(grn_detail.received_value, 1_100_000)
+                self.assertEqual(grn_detail.invoiced_value, 1_100_000)
+                self.assertEqual(grn_detail.open_value, 0)
+                self.assertEqual(grn_detail.invoices[0]["net"], 1_100_000)
+
+                row = line_rows[po_line.id]
+                self.assertEqual(row.received_value, 1_100_000)
+                self.assertEqual(row.invoiced_value, 1_100_000)
+                self.assertEqual(row.grir_balance, 0)
+                self.assertEqual(row.status, "Cleared")
+
+                line_detail = grir_po_line_detail(entity, po_line.id)
+                self.assertEqual(line_detail.received_value, 1_100_000)
+                self.assertEqual(line_detail.invoiced_value, 1_100_000)
+                self.assertEqual(line_detail.grir_balance, 0)
+                self.assertEqual(line_detail.status, "Cleared")
+                self.assertEqual(line_detail.invoices[0]["net"], 1_100_000)
 
     @patch("vs_rbac.permissions.is_vision_super_admin", return_value=False)
     @patch("vs_rbac.permissions.has_permission")
@@ -5400,7 +5826,7 @@ class StockLedgerTests(_P2PFixtureMixin, TestCase):
             reorder_level=reorder_level, reorder_qty=reorder_qty,
         )
 
-    def _receive_via_grn(self, entity, vendor, item, *, qty, unit_price,
+    def _receive_via_grn(self, entity, vendor, item, *, qty, unit_price, cost_center=None,
                          received_date=datetime.date(2026, 1, 8)):
         """Build & post a single-line stock GRN, returning the posted GRN."""
         po = PurchaseOrder.objects.create(
@@ -5410,7 +5836,7 @@ class StockLedgerTests(_P2PFixtureMixin, TestCase):
         po_line = PurchaseOrderLine.objects.create(
             purchase_order=po, description=item.name,
             expense_account=self.acc(entity, "5100"), quantity=qty,
-            unit_price=unit_price, line_no=1,
+            unit_price=unit_price, cost_center=cost_center, line_no=1,
         )
         from vs_procurement.purchasing import price_po
         price_po(po)
@@ -5420,6 +5846,7 @@ class StockLedgerTests(_P2PFixtureMixin, TestCase):
         GoodsReceivedNoteLine.objects.create(
             grn=grn, po_line=po_line, stock_item=item,
             expense_account=self.acc(entity, "5100"),
+            cost_center=cost_center,
             accepted_qty=qty, unit_price=unit_price, line_no=1,
         )
         post_grn(grn)
@@ -5446,6 +5873,18 @@ class StockLedgerTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(movement.movement_type, "RECEIPT")
         self.assertEqual(movement.balance_qty, 10)
         self.assertEqual(movement.balance_value, 1_000_000)
+
+    def test_stock_receipt_drops_cost_center_from_inventory_control_debit(self):
+        from vs_finance.models import CostCenter
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        center = CostCenter.objects.create(entity=entity, code="OPS", name="Operations")
+        grn = self._receive_via_grn(
+            entity, vendor, self._stock_item(entity),
+            qty=1, unit_price=100_000, cost_center=center,
+        )
+        self.assertIsNone(grn.journal.lines.get(account__code="1400").cost_center_id)
+        self.assertIsNone(grn.journal.lines.get(account__code="2150").cost_center_id)
 
     def test_weighted_average_cost_blends_two_lots(self):
         entity, _, vendor, _, _ = self.build_p2p()

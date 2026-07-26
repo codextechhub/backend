@@ -14,7 +14,7 @@ goods-received note (GRN) → vendor invoice → vendor payment. Routes are moun
 - A `GoodsReceivedNote` records accepted/rejected delivery quantities. Posting accepted
   value is the chain's first GL event: Dr expense/inventory, Cr GR/IR (`models.py:1030-1072`).
 - A `VendorInvoice` prices the supplier bill, performs the PO/receipt/bill match, and on
-  posting creates the AP liability (`models.py:1129-1225`; `payables.py:62-115,146-275`).
+posting creates the AP liability (`models.py:1129-1225`; `payables.py:62-115,149-323`).
 - A `VendorPayment` moves the approved gross settlement out of AP, splits net cash and
   withholding tax, and allocates gross value to posted bills (`models.py:1285-1401`).
 
@@ -22,7 +22,7 @@ goods-received note (GRN) → vendor invoice → vendor payment. Routes are moun
 and awards are documented in `procurement_sourcing.md`; stock valuation and stock issues
 belong to `procurement_inventory.md`. It is also not a replacement for the finance
 posting engine: procurement builds source journals, while finance validates balance,
-open periods, and posting (`purchasing.py:323-325`; `payables.py:254-266,398-455`).
+open periods, and posting (`purchasing.py:323-325`; `payables.py:296-307,477-489`).
 
 ## 2. Domain model
 
@@ -35,7 +35,7 @@ API currently restricts physical counts to whole units (`views/receiving.py:65-7
 | `PurchaseOrderLine` | source requisition line, expense account, quantity/unit price, net/tax, service-owned received/invoiced quantities, cost center | Cascades with PO; account/source/cost center protected; PO and expense indexes (`models.py:963-1005`) |
 | `GoodsReceivedNote` | vendor, optional PO, received date/by, reference/narration, accepted ex-tax `total_value`, journal, DRAFT/POSTED status | Entity-protected document; vendor/PO/journal protected; entity/status, vendor, entity/date indexes (`models.py:1030-1064`) |
 | `GoodsReceivedNoteLine` | optional PO line/stock item, expense account, accepted/rejected/expected quantities, unit price/value, cost center | Cascades with GRN; source/account/stock/cost-center references protected (`models.py:1075-1119`) |
-| `VendorInvoice` | vendor, optional PO, invoice/due dates, vendor reference, subtotal/tax/total, amount paid, match/payment/approval states, journal | Entity-protected document; vendor/PO/journal protected; entity/status, entity/payment state, vendor, entity/date indexes (`models.py:1129-1191`) |
+| `VendorInvoice` | vendor, optional PO, invoice/due dates, vendor reference, subtotal/tax/total, amount paid, match/payment/approval states, journal | Entity-protected document; vendor/PO/journal protected; non-blank vendor reference is case-insensitively unique per entity/vendor in the database; entity/status, entity/payment state, vendor, entity/date indexes (`models.py:1129-1198`) |
 | `VendorInvoiceLine` | optional PO/GRN line, expense/tax, quantity/unit price, net/tax, cost center | Cascades with invoice; source/account/tax/cost-center references protected (`models.py:1228-1270`) |
 | `VendorPayment` | vendor/date/method, approval state, gross/WHT/net/allocated kobo, payment account, WHT tax code, journal | Entity-protected document; database checks require positive gross and WHT/allocation within gross; entity/status, entity/approval, vendor, entity/date indexes (`models.py:1285-1354`) |
 | `VendorPaymentAllocation` | payment, vendor invoice, gross amount applied | Payment cascades; invoice protected; unique `(payment, vendor_invoice)` and non-negative amount (`models.py:1363-1398`) |
@@ -58,19 +58,19 @@ standard paginated `{pagination, data}` envelope (`views/base.py:281-298`).
 | `GET /purchase-orders/<pk>/` | `procurement.purchase_order.view` | Read source, progress, receipts, invoices, and workflow id | — | Full PO + `workflow_instance_id` (`views/orders.py:260-270`; `serializers.py:776-812`) |
 | `PATCH /purchase-orders/<pk>/` | `procurement.purchase_order.update` | Edit only mutable DRAFT commercial terms; lines stay fixed | `vendor?`, `order_date?`, `expected_date?`, `delivery_address?`, `payment_terms?`, `contract?` | Updated full PO (`views/orders.py:272-314`) |
 | `POST /purchase-orders/<pk>/submit/` | `procurement.purchase_order.submit` | Submit PO to workflow; does not post | — | Workflow id/status, approval state, document (`views/requisitions.py:363-375`) |
-| `GET /goods-receipts/` | `procurement.goods_receipt.view` | List entity GRNs | Query `status` | Paginated receipt headers/progress, no nested lines (`views/receiving.py:112-130`; `serializers.py:947-955`) |
-| `POST /goods-receipts/` | `procurement.goods_receipt.create` | Create an unposted physical-receipt snapshot | `vendor`, `purchase_order?`, `received_date`, `reference?`, `narration?`; `lines[]`: `po_line?`, `line_no?`, `description?`, `expense_account?`, `accepted_qty?`, `rejected_qty?`, `unit_price?` | `201` GRN + lines (`views/receiving.py:53-102,132-160`) |
-| `GET /goods-receipts/<pk>/` | `procurement.goods_receipt.view` | Read one GRN | — | GRN + derived receipt status/counts + lines (`views/receiving.py:172-178`; `serializers.py:856-945`) |
-| `PATCH /goods-receipts/<pk>/` | `procurement.goods_receipt.update` | Edit DRAFT header; `lines` fully replaces receipt lines | `received_date?`, `reference?`, `narration?`, `lines?` using POST line fields | Updated GRN (`views/receiving.py:180-206`) |
-| `POST /goods-receipts/<pk>/post/` | `procurement.goods_receipt.post` | Post accepted value and advance PO receipt quantities | — | Posted GRN + journal id and receipt lines (`views/receiving.py:209-228`) |
-| `GET /vendor-invoices/` | `procurement.vendor_invoice.view` | List/search bills by independent lifecycle fields | Query `status`, `payment_status`, `match_status`, `vendor`, `display_status`, `search` | Paginated invoice headers; no lines (`views/receiving.py:398-425`; `serializers.py:1034-1040`) |
-| `POST /vendor-invoices/` | `procurement.vendor_invoice.create` | Create and price a DRAFT bill | `vendor`, `purchase_order?`, `invoice_date`, `due_date?`, `currency?`, `vendor_reference?`, `narration?`; `lines[]`: `po_line?`, `grn_line?`, `line_no?`, `description?`, `expense_account?`, `quantity?`, `unit_price?`, `tax_code?` | `201` invoice + match/payment/posting/activity overlays (`views/receiving.py:287-330,427-454`) |
-| `GET /vendor-invoices/summary/` | `procurement.vendor_invoice.view` | Bill-review and overdue KPIs | — | `{as_of, under_review, approved, overdue, disputed}` (`views/receiving.py:457-474`) |
-| `GET /vendor-invoices/<pk>/` | `procurement.vendor_invoice.view` | Read match comparisons, allocations, posting lines, activity | — | Full invoice detail overlay (`views/receiving.py:333-396,477-491`) |
-| `PATCH /vendor-invoices/<pk>/` | `procurement.vendor_invoice.update` | Edit an unsubmitted/rejected DRAFT; optional `lines` fully replaces lines | `vendor?`, `purchase_order?`, `invoice_date?`, `due_date?`, `vendor_reference?`, `narration?`, `lines?` using POST line fields | Updated full invoice (`views/receiving.py:493-529`) |
-| `POST /vendor-invoices/<pk>/match/` | `procurement.vendor_invoice.match` | Reprice and run three-way match without GL posting | — | Full invoice with match result/comparisons (`views/receiving.py:532-552`) |
+| `GET /goods-receipts/` | `procurement.goods_receipt.view` | List entity GRNs | Query `status` | Paginated receipt headers/progress, no nested lines (`views/receiving.py:123-144`; `serializers.py:947-955`) |
+| `POST /goods-receipts/` | `procurement.goods_receipt.create` | Create an unposted physical-receipt snapshot | `vendor`, `purchase_order?`, `received_date`, `reference?`, `narration?`; `lines[]`: `po_line?`, `line_no?`, `description?`, `expense_account?`, `cost_center?`, `accepted_qty?`, `rejected_qty?`, `unit_price?` | `201` GRN + lines, including additive `cost_center_id/code` (`views/receiving.py:56-120,146-176`; `serializers.py:856-875`) |
+| `GET /goods-receipts/<pk>/` | `procurement.goods_receipt.view` | Read one GRN | — | GRN + derived receipt status/counts + lines (`views/receiving.py:178-198`; `serializers.py:856-945`) |
+| `PATCH /goods-receipts/<pk>/` | `procurement.goods_receipt.update` | Edit DRAFT header; `lines` fully replaces receipt lines | `received_date?`, `reference?`, `narration?`, `lines?` using POST line fields | Updated GRN (`views/receiving.py:200-225`) |
+| `POST /goods-receipts/<pk>/post/` | `procurement.goods_receipt.post` | Post accepted value and advance PO receipt quantities | — | Posted GRN + journal id and receipt lines (`views/receiving.py:228-252`) |
+| `GET /vendor-invoices/` | `procurement.vendor_invoice.view` | List/search bills by independent lifecycle fields | Query `status`, `payment_status`, `match_status`, `vendor`, `display_status`, `search` | Paginated invoice headers; no lines (`views/receiving.py:456-483`; `serializers.py:1034-1040`) |
+| `POST /vendor-invoices/` | `procurement.vendor_invoice.create` | Create and price a DRAFT bill | `vendor`, `purchase_order?`, `invoice_date`, `due_date?`, `currency?`, `vendor_reference?`, `narration?`; `lines[]`: `po_line?`, `grn_line?`, `line_no?`, `description?`, `expense_account?`, `cost_center?`, `quantity?`, `unit_price?`, `tax_code?` | `201` invoice + match/payment/posting/activity overlays; line response includes additive `cost_center_id/code` (`views/receiving.py:332-388,485-518`; `serializers.py:964-978`) |
+| `GET /vendor-invoices/summary/` | `procurement.vendor_invoice.view` | Bill-review and overdue KPIs | — | `{as_of, under_review, approved, overdue, disputed}` (`views/receiving.py:521-538`) |
+| `GET /vendor-invoices/<pk>/` | `procurement.vendor_invoice.view` | Read match comparisons, allocations, posting lines, activity | — | Full invoice detail overlay (`views/receiving.py:391-453,541-555`) |
+| `PATCH /vendor-invoices/<pk>/` | `procurement.vendor_invoice.update` | Edit an unsubmitted/rejected DRAFT; optional `lines` fully replaces lines | `vendor?`, `purchase_order?`, `invoice_date?`, `due_date?`, `vendor_reference?`, `narration?`, `lines?` using POST line fields | Updated full invoice (`views/receiving.py:557-604`) |
+| `POST /vendor-invoices/<pk>/match/` | `procurement.vendor_invoice.match` | Reprice and run three-way match without GL posting | — | Full invoice with match result/comparisons (`views/receiving.py:607-627`) |
 | `POST /vendor-invoices/<pk>/submit/` | `procurement.vendor_invoice.submit` | Reprice/match, then submit current evidence to workflow | — | Workflow id/status, approval state, document (`views/requisitions.py:378-397`) |
-| `POST /vendor-invoices/<pk>/post/` | `procurement.vendor_invoice.post`; additionally `procurement.vendor_invoice.override_variance` when overriding | Post an approved bill; optionally override a blocking match | `allow_variance?` (JSON boolean only) | Posted full invoice detail (`views/receiving.py:555-594`) |
+| `POST /vendor-invoices/<pk>/post/` | `procurement.vendor_invoice.post`; additionally `procurement.vendor_invoice.override_variance` when overriding | Post an approved bill; optionally override a blocking match | `allow_variance?` (JSON boolean only) | Posted full invoice detail (`views/receiving.py:630-669`) |
 | `GET /vendor-payments/` | `procurement.vendor_payment.view` | List/search payment instructions | Query `status`, `approval_state`, `search` | Paginated payment headers with allocations (`views/vendor_payments.py:165-185`; `serializers.py:1071-1130`) |
 | `POST /vendor-payments/` | `procurement.vendor_payment.create` | Create a gated DRAFT allocation plan; server derives money | `vendor`, `bank_account`, `payment_date`, `method?`, `wht_amount?`, `wht_tax_code?`, `reference?`, `narration?`; `allocations[]`: `vendor_invoice`, `amount` | `201` payment detail + workflow/posting/activity overlays (`views/vendor_payments.py:187-214`) |
 | `GET /vendor-payments/eligible-invoices/` | `procurement.vendor_payment.view` | Return at most 100 posted open bills, oldest due first | Query `vendor?` | Array of invoice settlement snapshots (`views/vendor_payments.py:217-239`) |
@@ -114,8 +114,8 @@ leaves the document DRAFT and changes the approval overlay; their separate post 
 creates the journal (`purchasing.py:140-159`; `approvals.py:179-239`). Invoice submission
 freezes priced/matched evidence, but posting reprices and rematches under invoice and
 PO-line locks before writing anything (`views/requisitions.py:378-397`;
-`payables.py:146-192`). Payment posting similarly locks payment, vendor, persisted plan,
-and invoice targets before checking approval and balances (`payables.py:310-396`).
+`payables.py:149-193`). Payment posting similarly locks payment, vendor, persisted plan,
+and invoice targets before checking approval and balances (`payables.py:355-442`).
 
 ## 5. Calculations
 
@@ -135,6 +135,12 @@ and invoice targets before checking approval and balances (`payables.py:310-396`
 - Three-way match per PO line uses `billed_cumulative = posted invoiced_qty + current
   invoice quantity`; over ordered → OVER_BILLED, over received → UNDER_RECEIVED, different
   unit price → PRICE_VARIANCE, otherwise AUTO_MATCHED (`payables.py:62-115`).
+- Receipt/PO-backed invoice posting separates clearing basis from billed price:
+  `basis = round_half_up(quantity × linked GRN unit price)` when a posted GRN line is
+  linked, otherwise `round_half_up(quantity × PO unit price)`; `PPV = invoice net −
+  basis`. Positive PPV is an unfavorable debit, negative PPV a favorable credit, to
+  seeded expense account `5160 Purchase Price Variance`. Direct bills with neither
+  source have no PPV (`payables.py:205-245`; `seed.py:54-57,98-112`).
 - Invoice balance: `balance_due = total − amount_paid`; payment state is UNPAID at zero,
   PAID at `amount_paid >= total`, otherwise PARTIAL (`models.py:1193-1225`).
 - Payment values: `gross = Σ requested allocation amounts`; `net = gross − WHT`;
@@ -143,7 +149,7 @@ and invoice targets before checking approval and balances (`payables.py:310-396`
   `1,025,000` kobo.
 - Explicit allocation is capped by the selected posted invoice's current balance and the
   payment's remaining gross. Automatic service allocation is oldest due date, invoice
-  date, then id (`payables.py:458-542`).
+  date, then id (`payables.py:503-595`).
 - PO summary MTD change is `(current comparable MTD − prior comparable MTD) ÷ prior ×
   100`, one decimal, or `null` when prior is zero (`views/orders.py:158-200`).
 
@@ -156,7 +162,7 @@ workflow evidence (`purchasing.py:140-159`).
 
 ### Goods receipt
 
-For each accepted non-stock line, grouped by account:
+For each accepted non-stock line, grouped by `(account, cost center)`:
 
 ```text
 Dr line expense account (or stock inventory account)   accepted net value
@@ -165,26 +171,33 @@ Dr line expense account (or stock inventory account)   accepted net value
 
 Rejected units do not post. The same transaction posts the journal, advances PO-line
 `received_qty`, updates stock movements for stock-backed lines, links the journal, marks
-the GRN POSTED, and records audit evidence (`purchasing.py:250-359`). Debits are grouped
-only by account id; line descriptions and cost centers are dropped from journal lines
-(`purchasing.py:271-321`).
+the GRN POSTED, and records audit evidence (`purchasing.py:250-399`). A non-stock expense
+debit carries the line cost center into `JournalLine`; inventory and GR/IR control lines
+remain unallocated (`purchasing.py:284-361`).
 
 ### Vendor invoice
 
-For PO-backed lines:
+For receipt/PO-backed lines:
 
 ```text
-Dr 2150 GR/IR clearing                invoice net
+Dr 2150 GR/IR clearing                receipt/PO basis
+Dr 5160 Purchase Price Variance       unfavorable difference
+    Cr 5160 Purchase Price Variance   favorable difference
 Dr tax_code.paid_account              recoverable input tax
     Cr vendor.payable_account         invoice gross
 ```
 
-For non-PO lines with no receipt evidence, the net debit goes directly to each line
-expense account. A line linked to a posted direct GRN clears GR/IR even without a PO,
-because the receipt already recognized its expense/inventory (`payables.py:204-226`).
-Net and tax debits are grouped only by account id; cost center, PO/GRN line, and line
-description do not survive on the journal line. After the balanced journal posts, PO
-`invoiced_qty` advances and the bill becomes POSTED (`payables.py:238-282`).
+Only one PPV side appears for each cost-center group. For non-PO lines with no receipt
+evidence, net still debits the line expense account and no PPV account is resolved. A
+line linked to a posted direct GRN clears GR/IR at that GRN's historical price even
+without a PO. Direct expense and PPV lines carry cost center; GR/IR, input-tax, AP, and
+inventory controls do not (`payables.py:205-292`). After the balanced journal posts, PO
+`invoiced_qty` advances and the bill becomes POSTED (`payables.py:294-323`).
+
+GR/IR aging and its GRN/PO-line drill-downs use that same receipt-first, PO-fallback
+clearing basis—not billed net—so normal PPV does not appear as an open GR/IR item. Their
+queries eager-load the source evidence rather than introducing per-line lookups
+(`reports.py:284-380,499-550,604-683,708-783`).
 
 ### Vendor payment
 
@@ -196,9 +209,9 @@ Dr vendor.payable_account             gross settled
 
 Posting then recreates the approved draft plan as posted allocations, advances each
 invoice's `amount_paid`/payment state, and stores `allocated_amount`; allocation creates
-no second journal (`payables.py:391-455,458-551`). Reversal uses finance's reversing
+no second journal (`payables.py:355-500,503-595`). Reversal uses finance's reversing
 journal and subtracts historical allocations from invoice settlement totals while
-retaining the allocation rows as history (`payables.py:554-590`).
+retaining the allocation rows as history (`payables.py:598-637`).
 
 ## 7. Worked example
 
@@ -237,6 +250,11 @@ Dr 1300 Input VAT              75,000
     Cr 2100 AP control      1,075,000
 ```
 
+If the same five units are billed at `225000` each, the receipt basis remains
+`1,000,000`, invoice net is `1,125,000`, and unfavorable PPV is `125,000`. At 7.5% VAT
+the journal is Dr GR/IR `1,000,000`, Dr 5160 PPV `125,000`, Dr input VAT `84,375`, Cr AP
+`1,209,375`; GR/IR still clears to zero.
+
 A payment draft selects that bill for `1,075,000` gross and withholds `50,000`:
 
 ```json
@@ -252,57 +270,64 @@ POST /v1/procurement/vendor-payments/?entity=LEKKI
 
 The server derives net `1,025,000`. Approval plus posting produces Dr AP `1,075,000`,
 Cr bank `1,025,000`, Cr WHT payable `50,000`, and marks invoice 91 PAID. The arithmetic
-and journal path are exercised end-to-end in `tests.py:1400-1422,1655-1708`.
+and journal path are exercised end-to-end in
+`tests.py:1022-1042,1315-1333,1766-1788,2020-2072`.
 
 ## 8. Gotchas / known limitations
 
 - ✅ **Direct receipt-backed bills clear GR/IR.** A non-PO GRN still posts Dr expense /
   Cr GR/IR, but an invoice line linked to that posted GRN now debits GR/IR rather than
   booking the expense twice. Generic non-PO/non-GRN bills remain direct-expense bills
-  (`views/receiving.py:305-325`; `payables.py:212-226`).
+  (`views/receiving.py:348-383`; `payables.py:221-245`).
 - ✅ **GRN posting is serialized and quantity-safe.** The worker locks/re-reads the GRN,
   then locks referenced PO lines in stable id order, aggregates duplicate receipt lines,
   and rechecks live remaining quantity before any journal or counter update. Concurrent
   duplicate posts create one journal, and competing receipts cannot over-receive
-  (`purchasing.py:255-316,359-386`).
+  (`purchasing.py:267-318,368-399`).
 - ✅ **Receipt and bill quantities use strict model-bound validation.** GRN counts must be
   non-negative finite whole units; invoice quantities must be positive and finite; both
   reject values outside `Decimal(14,4)` before replacement arithmetic, so malformed
   create/PATCH requests roll back with 400 rather than 500
-  (`views/base.py:113-159`; `views/receiving.py:55-102,289-327`).
+  (`views/base.py:129-175`; `views/receiving.py:56-111,332-385`).
 - ✅ **PO-backed receiving requires an approved PO.** API creation rejects a non-approved
   selected PO for fast feedback, and the locked posting service repeats the authoritative
   gate so direct service callers cannot bypass it. Direct GRNs remain allowed
-  (`views/receiving.py:132-162`; `purchasing.py:255-281`).
+  (`views/receiving.py:146-176`; `purchasing.py:255-281`).
 - ✅ **Blocking-match override is strict, separately authorized, and audited.**
   `allow_variance` accepts only a real JSON boolean; `true` requires the additional
   tenant/branch-aware CRITICAL `procurement.vendor_invoice.override_variance` permission.
   Successful posting audit metadata records both the request and whether a blocking
-  variance was actually overridden (`views/receiving.py:555-594`;
-  `payables.py:274-281`; `management/commands/seed_procurement_permissions.py:46-47`).
-- **Departmental attribution is lost.** PO lines carry cost center, but GRN/invoice API
-  writers do not copy it to their line models; posting then groups journal debits only by
-  account. Departmental actuals cannot be traced back to the commitment's cost center
-  (`models.py:994-997,1111-1114,1259-1262`; `views/receiving.py:92-100,319-326`;
-  `purchasing.py:287-357`; `payables.py:204-252`).
-- **Vendor invoice-number uniqueness is race-prone.** The case-insensitive duplicate
-  check exists only in the view, with no database constraint, so concurrent requests can
-  create the same vendor reference twice (`views/receiving.py:272-284`;
-  `models.py:1185-1191`).
+  variance was actually overridden (`views/receiving.py:630-669`;
+  `payables.py:310-318`; `management/commands/seed_procurement_permissions.py:46-47`).
+- ✅ **Cost-center ownership now reaches departmental actuals.** PO-backed receipts copy
+  the PO-line center; invoices prefer PO-line then GRN-line ownership; direct lines may
+  provide an active entity-scoped center. Explicit source mismatches are rejected.
+  Non-stock expense and PPV journal lines retain the center while inventory, GR/IR, tax,
+  and AP controls deliberately drop it (`views/receiving.py:89-105,358-383`;
+  `purchasing.py:284-361`; `payables.py:210-287`).
+- ✅ **Vendor invoice references are race-safe.** Non-blank references are
+  case-insensitively unique per `(entity, vendor)` in the database. Create/PATCH keep the
+  fast pre-check but translate a named-constraint race into the same field-level 400.
+  Migration `0015` refuses historical collisions with actionable examples rather than
+  silently rewriting supplier evidence (`models.py:1183-1192`;
+  `views/receiving.py:295-329,485-515,557-600`;
+  `migrations/0015_vendorinvoice_reference_ci.py:6-49`).
 - **Stock-backed receiving is not writable through this API.** The line model and posting
   service support `stock_item`, but GRN create/PATCH never read or set it. This boundary
   is traced and resolved with the inventory slice (`models.py:1093-1097`;
-  `views/receiving.py:55-102`; `purchasing.py:283-381`).
-- **Price variance is visible but has no variance-account treatment.** A PO price mismatch
-  is non-blocking and the invoice clears GR/IR at billed net; any difference from receipt
-  value remains in GR/IR rather than posting to a configured purchase-price-variance
-  account (`payables.py:62-115,190-220`).
+  `views/receiving.py:56-111`; `purchasing.py:283-399`).
+- ✅ **Price differences post to PPV instead of remaining in GR/IR.** Receipt evidence is
+  the first clearing basis, PO price is the fallback, and actual-minus-basis posts Dr/Cr
+  to seeded account `5160`. The PPV account is resolved only for a non-zero difference;
+  equal-price and direct-expense bills remain independent of it. GR/IR reports use the
+  identical basis (`payables.py:205-282`; `reports.py:284-380`;
+  `seed.py:54-57,98-112`).
 - **Justified by design:** rejected delivery quantity is evidence only and does not
   advance PO received quantity, value inventory, or post to the GL, allowing a later
-  replacement delivery (`purchasing.py:254-298,327-346`).
+  replacement delivery (`purchasing.py:283-335,368-386`).
 - **Justified by design:** payment allocations are gross AP settlement, not the net bank
   outflow. WHT is part of the invoice settlement even though it is remitted separately
-  (`models.py:1285-1291,1363-1368`; `payables.py:391-455`).
+  (`models.py:1285-1291,1363-1368`; `payables.py:355-500`).
 
 ## 9. Permissions & tenant isolation
 
@@ -310,8 +335,13 @@ Every view inherits authenticated-user RBAC and resolves the selected ledger ent
 Document reads/writes filter by that entity; vendors, accounts, taxes, bank accounts,
 PO/GRN lines, invoices, and allocation targets are re-resolved inside it. Foreign ids
 therefore return missing/invalid rather than exposing or mutating another entity
-(`views/base.py:55-90,217-231,281-298`; `views/receiving.py:74-90,235-249,295-318`;
+(`views/base.py:31-105,237-269,301-318`; `views/receiving.py:56-105,254-388`;
 `views/vendor_payments.py:45-57,82-109`).
+
+Line cost centers use the shared active, entity-scoped id/code resolver; a foreign or
+inactive center is a 400. Invoice-reference isolation is also enforced below the view by
+the database's entity/vendor-scoped conditional unique constraint (`views/base.py:75-90`;
+`models.py:1183-1192`).
 
 The seeded matrix separates view/create/update/submit/post for each money document and
 uses a distinct `vendor_invoice.override_variance` authority for blocking-match bypass.
@@ -320,12 +350,12 @@ the variance override is also CRITICAL. PO submit, receipt create/update, and in
 create/update/submit/match are SENSITIVE
 (`management/commands/seed_procurement_permissions.py:29-50`). Payment creation and
 posting also recheck active/KYC/hold state and lock vendor/invoice rows at the accounting
-boundary (`views/vendor_payments.py:60-71`; `payables.py:310-396`).
+boundary (`views/vendor_payments.py:60-71`; `payables.py:355-442`).
 
 There is currently no field-level masking on these serializers. They expose operational
 references, totals, account ids/codes, allocations, journal lines, and human-readable
 activity, but not raw audit metadata (`serializers.py:740-1130`;
-`views/receiving.py:333-396`; `views/vendor_payments.py:122-162`).
+`views/receiving.py:391-453`; `views/vendor_payments.py:122-162`).
 
 ## 10. Code map
 
@@ -337,28 +367,33 @@ activity, but not raw audit metadata (`serializers.py:740-1130`;
 | `views/vendor_payments.py` | Payment plan CRUD, vendor/bank gates, eligible bills, post/cancel/reverse |
 | `purchasing.py` | PO creation/pricing/approval and GRN accounting/quantity effects |
 | `payables.py` | Invoice pricing/matching/posting and payment posting/allocation/reversal |
+| `reports.py` | AP/GR/IR read models; GR/IR detail uses the invoice-posting clearing basis |
 | `approvals.py` / `workflow_handlers.py` | Threshold workflows and terminal document effects |
 | `serializers.py` | Public P2P response shapes and display-state overlays |
-| `constants.py` | Match/payment states and 2150 GR/IR / 2300 WHT control codes |
+| `constants.py` | Match/payment states and 2150 GR/IR / 2300 WHT / 5160 PPV account codes |
+| `migrations/0015_vendorinvoice_reference_ci.py` | Historical collision guard + database invoice-reference constraint |
+| `vs_finance/seed.py` | Seeds 5160 PPV under Expenses and maps it to IFRS Cost of Sales |
 | `core/management/commands/seed_actions.py` | Canonical global permission-action vocabulary |
 | `urls.py` | `/v1/procurement/` route map |
 | `management/commands/seed_procurement_permissions.py` | RBAC registry/sensitivity/platform grants |
 
 ## 11. Test coverage & gaps
 
-The current procurement suite is **220 green**. P2P service/API tests cover GRN whole,
+The current procurement suite is **233 green**. P2P service/API tests cover GRN whole,
 finite, precision, and remainder validation, DRAFT edits, update permission, approved-PO
 gating, expense→GR/IR posting, duplicate-post and competing-receipt PostgreSQL races;
 invoice approval, split-line aggregation, GR/IR clearing, input VAT, blocking overbill
 and under-receipt, direct-GRN clearing, strict/authorized/audited variance override,
-invoice view permission and cross-entity detail; payment WHT split,
+cost-center source/direct validation and journal carry/drop, database/API
+case-insensitive reference uniqueness, favorable/unfavorable/direct-GRN PPV and lazy
+account resolution, PPV-aware GR/IR aging/detail, invoice view permission and
+cross-entity detail; payment WHT split,
 approval, plan validation, reversal, mutation permissions, cross-entity detail, draft
 plans, partial settlement and held vendors; AP reconciliation; and the full PR-to-payment
-chain (`tests.py:830-1709`). Purchase-order console and workflow tests cover response
+chain (`tests.py:830-2072,2997-3056`). Purchase-order console and workflow tests cover response
 data, filters/KPIs, permission gates, entity isolation, workflow routing, and terminal
-approval effects (`tests.py:4623-5190`).
+approval effects (`tests.py:5049-5616`).
 
-Remaining gaps mirror the open §8 items: cost-center carry-through, database-enforced
-vendor-reference uniqueness, stock-item API receipt, and purchase-price-variance
-accounting. Empty-list envelope assertions exist broadly in the procurement console
-suite but are not explicit for every one of the four P2P list routes.
+The remaining open §8 implementation item is stock-item receipt input, intentionally
+deferred to the inventory slice. Empty-list envelope assertions exist broadly in the
+procurement console suite but are not explicit for every one of the four P2P list routes.

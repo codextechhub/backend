@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from django.utils import timezone
 
 from vs_finance.reports import _account_gl_net
+from vs_finance.receivables import compute_line_net
 
 
 # --------------------------------------------------------------------------- #
@@ -279,6 +280,26 @@ def ap_cash_requirements(entity, *, as_of=None) -> CashRequirementsForecast:
 # GR/IR aging                                                                 #
 # --------------------------------------------------------------------------- #
 
+
+def _grir_invoice_line_basis(line) -> int:
+    """Return the net value this posted invoice line actually debits to GR/IR.
+
+    Keep reporting on the same historical basis as vendor-invoice posting: a linked
+    posted receipt snapshot wins, then the PO price, while a truly direct bill never
+    clears GR/IR. Callers must eager-load ``grn_line__grn`` and ``po_line``.
+    """
+    if (
+        line.grn_line_id is not None
+        and line.grn_line.grn.status == "POSTED"
+    ):
+        unit_price = line.grn_line.unit_price
+    elif line.po_line_id is not None:
+        unit_price = line.po_line.unit_price
+    else:
+        return 0
+    return compute_line_net(line.quantity, unit_price)
+
+
 @dataclass
 class GRIRAgingRow:
     """One goods receipt's still-open GR/IR position, aged by received date (kobo)."""
@@ -303,7 +324,7 @@ class GRIRAgingReport:
     bucket_totals: dict = field(default_factory=lambda: {b: 0 for b in AGING_BUCKETS})
     total_open: int = 0
     control_balance: int = 0   # GL net of the GR/IR clearing account
-    difference: int = 0        # total_open − |control_balance| (price variance / non-PO noise)
+    difference: int = 0        # total_open − |control_balance| (unlinked/manual/legacy noise)
 
 
 def grir_aging(entity, *, as_of=None) -> GRIRAgingReport:
@@ -314,13 +335,12 @@ def grir_aging(entity, *, as_of=None) -> GRIRAgingReport:
     received value (credited to GR/IR) less the value of POSTED vendor-invoice lines that
     reference its lines (which debited GR/IR clearing it). The remaining ``open_value`` is
     aged off the GRN's ``received_date``. The GL ``control_balance`` is carried alongside;
-    a non-zero ``difference`` flags price variances or non-PO postings the GRN walk can't
-    see. ``open_value`` is signed: positive means received-not-invoiced; negative means
-    invoiced value exceeded the receipt. Bucket totals preserve that sign rather than
-    converting every row to an absolute exposure. All amounts are integer kobo.
+    a non-zero ``difference`` flags unlinked, manual, or legacy reconciliation noise the
+    GRN walk cannot attribute. Normal purchase-price variance is posted separately and
+    therefore does not remain in GR/IR. ``open_value`` is signed: positive means
+    received-not-invoiced; negative means the clearing basis exceeded the receipt.
+    Bucket totals preserve that sign. All amounts are integer kobo.
     """
-    from django.db.models import Sum
-
     from .models import GoodsReceivedNote, VendorInvoiceLine
 
     as_of = as_of or timezone.now().date()
@@ -332,15 +352,28 @@ def grir_aging(entity, *, as_of=None) -> GRIRAgingReport:
         .select_related("vendor")
         .order_by("received_date", "id")
     )
+    posted_grns = list(posted_grns)
+    invoiced_by_grn = {}
+    if posted_grns:
+        inv_lines = (
+            VendorInvoiceLine.objects
+            .filter(
+                grn_line__grn_id__in=[grn.id for grn in posted_grns],
+                vendor_invoice__status="POSTED",
+            )
+            .select_related("grn_line__grn", "po_line")
+        )
+        for line in inv_lines:
+            grn_id = line.grn_line.grn_id
+            invoiced_by_grn[grn_id] = (
+                invoiced_by_grn.get(grn_id, 0) + _grir_invoice_line_basis(line)
+            )
+
     rows = []
     for grn in posted_grns:
-        invoiced = (
-            VendorInvoiceLine.objects
-            .filter(grn_line__grn=grn, vendor_invoice__status="POSTED")
-            .aggregate(v=Sum("net_amount"))["v"] or 0
-        )
+        invoiced = invoiced_by_grn.get(grn.id, 0)
         # GRN credit less matched invoice debit: positive is an uncleared receipt;
-        # negative is an over-clear/price-variance position and remains visible.
+        # negative is an over-clear position and remains visible.
         open_value = grn.total_value - invoiced
         if open_value == 0:
             continue
@@ -460,7 +493,7 @@ class GRIRGrnDetail:
     received_value: int
     invoiced_value: int
     open_value: int
-    invoices: list = field(default_factory=list)   # [{id, document_number, invoice_date, net}]
+    invoices: list = field(default_factory=list)   # [{id, document_number, invoice_date, net}] (GR/IR basis)
 
 
 def grir_grn_detail(entity, grn_id, *, as_of=None) -> GRIRGrnDetail | None:
@@ -490,10 +523,11 @@ def grir_grn_detail(entity, grn_id, *, as_of=None) -> GRIRGrnDetail | None:
     inv_lines = (
         VendorInvoiceLine.objects
         .filter(grn_line__grn=grn, vendor_invoice__status="POSTED")
-        .select_related("vendor_invoice")
+        .select_related("vendor_invoice", "grn_line__grn", "po_line")
     )
     for line in inv_lines:
-        invoiced += line.net_amount
+        clearing_basis = _grir_invoice_line_basis(line)
+        invoiced += clearing_basis
         vi = line.vendor_invoice
         # Accumulate the GR/IR-clearing net per distinct matched invoice.
         row = invoices.get(vi.id)
@@ -502,7 +536,7 @@ def grir_grn_detail(entity, grn_id, *, as_of=None) -> GRIRGrnDetail | None:
                 "id": vi.id, "document_number": vi.document_number or str(vi.pk),
                 "invoice_date": str(vi.invoice_date), "net": 0,
             }
-        row["net"] += line.net_amount
+        row["net"] += clearing_basis
 
     days = (as_of - grn.received_date).days
     return GRIRGrnDetail(
@@ -526,8 +560,9 @@ def _grir_line_status(received_qty, invoiced_qty, balance) -> str:
     """Derive a PO line's GR/IR status from its received vs invoiced quantities.
 
     Quantity is the headline the table shows, so it leads the derivation; the monetary
-    ``balance`` (received value − invoiced value) only breaks the tie when the two
-    quantities are equal (a pure price variance still reads as an imbalance, not cleared).
+    ``balance`` (received value − GR/IR clearing basis) only breaks the tie when the two
+    quantities are equal. Normal purchase-price variance posts to PPV and does not affect
+    this balance.
     ``balance`` is signed ``received_value - invoiced_value``: positive selects the
     received-heavy label; negative selects invoiced-heavy.
     """
@@ -554,7 +589,7 @@ class GRIRPoLineRow:
     received_qty: str
     invoiced_qty: str
     received_value: int     # Σ accepted GRN value (kobo)
-    invoiced_value: int     # Σ invoiced net (kobo)
+    invoiced_value: int     # Σ invoice value clearing GR/IR (kobo)
     grir_balance: int       # received_value − invoiced_value (kobo)
     status: str
 
@@ -572,9 +607,9 @@ def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
     Where :func:`grir_aging` ages the balance per *goods receipt*, this drills it to the
     **PO line** the prototype's GR/IR table lists. For each line on a live PO (CANCELLED /
     REVERSED orders excluded), ``received_qty``/``received_value`` sum the POSTED
-    ``GoodsReceivedNoteLine``s pointing at it, and ``invoiced_qty``/``invoiced_value`` sum
-    the POSTED ``VendorInvoiceLine``s pointing at it (the direct ``po_line`` FK — the same
-    link that advances ``PurchaseOrderLine.invoiced_qty`` in the three-way match). Only
+    ``GoodsReceivedNoteLine``s pointing at it, while ``invoiced_qty`` and the GR/IR
+    clearing-basis ``invoiced_value`` sum POSTED ``VendorInvoiceLine``s pointing at it
+    (the direct ``po_line`` FK — the same link that advances invoiced quantity). Only
     lines with any receipt or invoice activity are returned. ``as_of`` labels the report
     snapshot but does not impose an additional receipt/invoice date cutoff. All amounts
     are integer kobo.
@@ -610,16 +645,19 @@ def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
     for r in grn_agg:
         recv[r["po_line"]] = (Decimal(r["qty"] or 0), int(r["value"] or 0))
 
-    # Invoiced side: billed qty + net from POSTED vendor-invoice lines on that PO line.
+    # Invoiced side: billed qty + GR/IR clearing basis, loaded once for all PO lines.
     inv = defaultdict(lambda: (Decimal(0), 0))
-    inv_agg = (
+    inv_lines = (
         VendorInvoiceLine.objects
         .filter(po_line__purchase_order__entity=entity, vendor_invoice__status="POSTED")
-        .values("po_line")
-        .annotate(qty=Sum("quantity"), net=Sum("net_amount"))
+        .select_related("po_line", "grn_line__grn")
     )
-    for r in inv_agg:
-        inv[r["po_line"]] = (Decimal(r["qty"] or 0), int(r["net"] or 0))
+    for invoice_line in inv_lines:
+        quantity, value = inv[invoice_line.po_line_id]
+        inv[invoice_line.po_line_id] = (
+            quantity + Decimal(invoice_line.quantity),
+            value + _grir_invoice_line_basis(invoice_line),
+        )
 
     rows = []
     for line in po_lines:
@@ -664,7 +702,7 @@ class GRIRPoLineDetail:
     status: str
     unit_price: int
     grns: list = field(default_factory=list)      # [{id, reference, received_date, accepted_qty, value}]
-    invoices: list = field(default_factory=list)  # [{id, document_number, invoice_date, quantity, net}]
+    invoices: list = field(default_factory=list)  # [{..., quantity, net}] where net is GR/IR basis
 
 
 def grir_po_line_detail(entity, po_line_id, *, as_of=None) -> GRIRPoLineDetail | None:
@@ -713,19 +751,20 @@ def grir_po_line_detail(entity, po_line_id, *, as_of=None) -> GRIRPoLineDetail |
     inv_lines = (
         VendorInvoiceLine.objects
         .filter(po_line=line, vendor_invoice__status="POSTED")
-        .select_related("vendor_invoice")
+        .select_related("vendor_invoice", "po_line", "grn_line__grn")
         .order_by("vendor_invoice__invoice_date", "vendor_invoice_id", "id")
     )
     for il in inv_lines:
         invoiced_qty += Decimal(il.quantity)
-        invoiced_value += int(il.net_amount)
+        clearing_basis = _grir_invoice_line_basis(il)
+        invoiced_value += clearing_basis
         vi = il.vendor_invoice
         invoices.append({
             "id": vi.id,
             "document_number": vi.document_number or str(vi.id),
             "invoice_date": str(vi.invoice_date),
             "quantity": str(il.quantity),
-            "net": int(il.net_amount),
+            "net": clearing_basis,
         })
 
     balance = received_value - invoiced_value

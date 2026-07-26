@@ -1183,6 +1183,13 @@ class VendorInvoice(FinanceDocument):
     )
 
     class Meta(FinanceDocument.Meta):
+        constraints = FinanceDocument.Meta.constraints + [
+            models.UniqueConstraint(
+                Lower("vendor_reference"), "entity", "vendor",
+                condition=~models.Q(vendor_reference=""),
+                name="uniq_proc_vinvoice_entity_vendor_ref_ci",
+            ),
+        ]
         indexes = [
             models.Index(fields=["entity", "status"]),
             models.Index(fields=["entity", "payment_status"]),

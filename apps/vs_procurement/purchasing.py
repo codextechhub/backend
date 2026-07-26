@@ -284,12 +284,13 @@ def _post_grn_atomic(grn, *, actor_user=None):
     # quantity is operational evidence only: it must not create cost, stock, or GR/IR. A
     # stock-tracked line capitalises to its item's inventory account instead of the
     # line expense account (perpetual inventory: Dr inventory rather than Dr expense).
-    expense_by_account: dict[int, int] = defaultdict(int)
+    expense_by_account_and_cost_center: dict[tuple[int, int | None], int] = defaultdict(int)
     expense_objs: dict[int, object] = {}
     total_value = 0
     lines = list(
         grn.lines.select_related(
-            "expense_account", "po_line", "stock_item", "stock_item__inventory_account",
+            "expense_account", "po_line", "cost_center",
+            "stock_item", "stock_item__inventory_account",
         ).order_by("pk")
     )
     if not lines:
@@ -326,7 +327,10 @@ def _post_grn_atomic(grn, *, actor_user=None):
             line.stock_item.inventory_account if line.stock_item_id
             else line.expense_account
         )
-        expense_by_account[debit_account.id] += value
+        # Inventory is a control account and remains unallocated. Non-stock expense
+        # debits retain the source line's departmental ownership.
+        cost_center_id = None if line.stock_item_id else line.cost_center_id
+        expense_by_account_and_cost_center[(debit_account.id, cost_center_id)] += value
         expense_objs[debit_account.id] = debit_account
         total_value += value
 
@@ -344,10 +348,11 @@ def _post_grn_atomic(grn, *, actor_user=None):
         reference=grn.reference, created_by=actor_user,
     )
     line_no = 0
-    for acc_id, amount in expense_by_account.items():
+    for (acc_id, cost_center_id), amount in expense_by_account_and_cost_center.items():
         line_no += 1
         JournalLine.objects.create(
             entry=entry, account=expense_objs[acc_id], debit=amount, credit=0,
+            cost_center_id=cost_center_id,
             description="Goods received", line_no=line_no,
         )
     line_no += 1

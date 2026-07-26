@@ -203,3 +203,4 @@ GRIR_CLEARING_CODE = "2150"   # Goods-Received / Invoice-Received clearing (liab
 WHT_PAYABLE_CODE = "2300"     # Withholding-tax payable (liability)
 INVENTORY_ASSET_CODE = "1400"        # Inventory / stock on hand (asset)
 INVENTORY_ADJUSTMENT_CODE = "5150"   # Inventory adjustments / shrinkage (expense)
+PURCHASE_PRICE_VARIANCE_CODE = "5160"  # Invoice-vs-receipt price variance (expense)

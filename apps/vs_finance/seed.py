@@ -54,6 +54,7 @@ DEFAULT_CHART = [  # Starter chart tuples: code, name, type, postable, contra.
     ("5000", "Expenses", AccountType.EXPENSE, False, False),  # Expense section header.
     ("5100", "Cost of Sales", AccountType.EXPENSE, True, False),  # Cost of sales account.
     ("5150", "Inventory Adjustments", AccountType.EXPENSE, True, False),  # Inventory adjustment expense.
+    ("5160", "Purchase Price Variance", AccountType.EXPENSE, True, False),  # Invoice-vs-receipt price variance.
     ("5200", "Salaries & Wages", AccountType.EXPENSE, True, False),  # Payroll expense account.
     ("5300", "General & Administrative", AccountType.EXPENSE, True, False),  # General admin expense.
     ("5400", "Depreciation Expense", AccountType.EXPENSE, True, False),  # Depreciation expense.
@@ -95,7 +96,7 @@ DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory present
     # Income  # Default revenue presentation mappings.
     "4100": IFRSLine.REVENUE, "4900": IFRSLine.REVENUE, "4910": IFRSLine.REVENUE,  # Revenue and contra-revenue.
     # Expenses  # Default expense presentation mappings.
-    "5100": IFRSLine.COST_OF_SALES, "5150": IFRSLine.COST_OF_SALES,  # Cost of sales lines.
+    "5100": IFRSLine.COST_OF_SALES, "5150": IFRSLine.COST_OF_SALES, "5160": IFRSLine.COST_OF_SALES,
     "5200": IFRSLine.ADMIN_EXPENSES, "5300": IFRSLine.ADMIN_EXPENSES,  # Admin expenses.
     "5400": IFRSLine.ADMIN_EXPENSES, "5500": IFRSLine.FINANCE_COSTS,  # Depreciation and finance costs.
 }
@@ -108,7 +109,7 @@ _PARENTS = {  # Parent account code by child account code.
     "2310": "2000", "2320": "2000", "2330": "2000", "2400": "2000",  # More liability children.
     "3100": "3000", "3200": "3000",  # Equity children.
     "4100": "4000", "4900": "4000", "4910": "4000",  # Income children.
-    "5100": "5000", "5150": "5000", "5200": "5000", "5300": "5000",  # Expense children.
+    "5100": "5000", "5150": "5000", "5160": "5000", "5200": "5000", "5300": "5000",
     "5400": "5000", "5500": "5000",  # More expense children.
 }
 

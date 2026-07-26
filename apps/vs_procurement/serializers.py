@@ -857,6 +857,7 @@ class GRNLineSerializer(serializers.ModelSerializer):
     """Receipt line with a compatibility description for pre-snapshot rows."""
 
     expense_code = serializers.CharField(source="expense_account.code", read_only=True)
+    cost_center_code = serializers.CharField(source="cost_center.code", read_only=True, default=None)
     description = serializers.SerializerMethodField()
 
     def get_description(self, obj):
@@ -868,6 +869,7 @@ class GRNLineSerializer(serializers.ModelSerializer):
         fields = [
             "id", "line_no", "po_line_id", "description",
             "expense_account_id", "expense_code",
+            "cost_center_id", "cost_center_code",
             "accepted_qty", "rejected_qty", "expected_qty", "unit_price", "value_amount",
         ]
 
@@ -963,12 +965,14 @@ class VendorInvoiceLineSerializer(serializers.ModelSerializer):
     """Billed line with optional PO/GRN provenance used by three-way matching."""
 
     expense_code = serializers.CharField(source="expense_account.code", read_only=True)
+    cost_center_code = serializers.CharField(source="cost_center.code", read_only=True, default=None)
 
     class Meta:
         model = VendorInvoiceLine
         fields = [
             "id", "line_no", "po_line_id", "grn_line_id", "description",
             "expense_account_id", "expense_code",
+            "cost_center_id", "cost_center_code",
             "quantity", "unit_price", "tax_code_id", "net_amount", "tax_amount",
         ]
 
