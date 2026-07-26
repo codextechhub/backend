@@ -47,9 +47,17 @@ class PeriodClosedError(PostingError):
     def __init__(self, period_label, status, **kwargs):
         self.period_label = period_label  # Store the period label for diagnostics.
         self.status = status  # Store the period status for diagnostics.
+        message = (
+            "This date is outside your fiscal periods. "
+            "Choose a date within an open fiscal period."
+            if status == "missing"
+            else (
+                f"Cannot post into period '{period_label}': it is '{status}'. "
+                f"Re-open the period or post into the current open period."
+            )
+        )
         super().__init__(  # Build a detailed closed-period message.
-            f"Cannot post into period '{period_label}': it is '{status}'. "
-            f"Re-open the period or post into the current open period.",
+            message,
             period_label=period_label, status=status, **kwargs,
         )
 
