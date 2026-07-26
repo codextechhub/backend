@@ -78,10 +78,13 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
     reference = _new_reference(entity)  # Generate a unique reference for the provider and our ledger.
     callback_url = callback_url or getattr(settings, "PAYMENTS_CALLBACK_URL", "")  # Use the configured callback URL if none is provided.
     currency = currency or _entity_currency(entity)  # Keep the collection in the entity's currency by default.
+
     if invoice is not None and customer is None:  # Allow invoice-driven collections to infer the customer.
         customer = invoice.customer  # Pull the customer from the invoice when possible.
+
     if customer is None:  # The receipt cannot be posted without a customer AR account.
         raise ValidationError({"customer": "A customer is required to book the collection receipt."})
+    
     if invoice is not None:
         if invoice.customer_id != customer.id:
             raise ValidationError({"invoice": "The invoice must belong to the selected customer."})
@@ -126,12 +129,14 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
         "provider_reference", "checkout_url", "authorization_code", "status",
         "raw_response", "updated_at",
     ])
+
     audit.record(  # Emit a single audit event for the successful initiation.
         action=PaymentAuditAction.COLLECTION_INITIATED, entity=entity,
         provider=provider_name, reference=reference, actor_user=actor_user,
         message=f"Initiated {amount} kobo collection via {provider_name}.",
         metadata={"channel": channel},
     )
+
     return intent  # Return the hydrated intent to the caller.
 
 
@@ -142,18 +147,21 @@ def create_virtual_account(*, entity, customer, provider=None, deposit_account=N
     from django.conf import settings
 
     provider_name = provider or getattr(settings, "PAYMENTS_DEFAULT_PROVIDER", "PAYSTACK")  # Resolve the PSP to use.
+    
     if VirtualAccount.objects.filter(
         entity=entity, provider=provider_name, customer=customer,
         status=VirtualAccountStatus.ACTIVE,
     ).exists():
         raise ValidationError(
             {"customer": "This customer already has an active virtual account with this provider."})
+    
     client = get_provider(provider_name)  # Reuse the configured PSP client.
     reference = _new_reference(entity)  # Give the PSP request its own reference.
     result = client.create_virtual_account(  # Ask the PSP to provision the account.
         reference=reference, customer_name=customer.name,
         customer_email=customer.billing_email, bank_code=bank_code,
     )
+
     va = VirtualAccount.objects.create(
         entity=entity, provider=provider_name, customer=customer,
         deposit_account=deposit_account, account_number=result.account_number,
@@ -161,11 +169,13 @@ def create_virtual_account(*, entity, customer, provider=None, deposit_account=N
         currency=_entity_currency(entity), provider_reference=result.provider_reference,
         status=VirtualAccountStatus.ACTIVE, raw=result.raw,
     )
+
     audit.record(  # Record the new virtual account for traceability.
         action=PaymentAuditAction.VIRTUAL_ACCOUNT_CREATED, entity=entity,
         provider=provider_name, reference=reference, actor_user=actor_user,
         message=f"Virtual account {result.account_number} for {customer.code}.",
     )
+
     return va  # Return the stored model instance.
 
 
@@ -180,15 +190,19 @@ def set_virtual_account_status(va, *, status, actor_user=None):
     """
     if status not in VirtualAccountStatus.values:  # Reject invalid lifecycle states.
         raise ValidationError({"status": f"Must be one of {', '.join(VirtualAccountStatus.values)}."})
+    
     if va.status == status:  # No work to do when the requested state is already applied.
         return va
+    
     va.status = status  # Update the local record only.
     va.save()
+
     audit.record(  # Write an audit event so the status flip is visible later.
         action=PaymentAuditAction.VIRTUAL_ACCOUNT_STATUS_CHANGED, entity=va.entity,
         provider=va.provider, reference=va.provider_reference, actor_user=actor_user,
         message=f"Virtual account {va.account_number} set to {status}.",
     )
+
     return va  # Return the updated virtual account.
 
 
@@ -239,12 +253,14 @@ def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
     intent.save(update_fields=[
         "status", "payment", "amount", "metadata", "confirmed_at", "raw_response", "updated_at",
     ])
+
     audit.record(  # Emit a success audit event with the linked payment id.
         action=PaymentAuditAction.COLLECTION_CONFIRMED, entity=intent.entity,
         provider=intent.provider, reference=intent.reference, actor_user=actor_user,
         message=f"Booked receipt for {intent.amount} kobo.",
         metadata={"payment_id": intent.payment_id},
     )
+
     return intent  # Return the confirmed collection intent.
 
 
@@ -258,13 +274,16 @@ def _book_receipt(intent, *, actor_user=None):
             and intent.virtual_account.status == VirtualAccountStatus.INACTIVE):  # ...and that account is inactive...
         raise PaymentStateError(
             "Virtual account is inactive; deposit held for manual review.")
+    
     if intent.customer_id is None:  # Receipts need a customer so receivables can be posted correctly.
         raise PaymentStateError(
             "Cannot book a receipt: the collection has no customer (AR sub-ledger).",
         )
+    
     deposit = intent.deposit_account or resolve_account(  # Use the configured cash/bank account when none was provided.
         intent.entity, CASH_BANK_CODE, label="Cash & bank",
     )
+
     payment = Payment.objects.create(
         entity=intent.entity, customer=intent.customer,
         payment_date=datetime.date.today(), currency=intent.currency,
@@ -272,12 +291,14 @@ def _book_receipt(intent, *, actor_user=None):
         reference=intent.reference,
         narration=intent.narration or f"Gateway collection {intent.reference}",
     )
+
     if intent.invoice_id:  # Invoice-linked receipts should settle that invoice directly.
         post_payment(payment, actor_user=actor_user,
                      allocations=[(intent.invoice, intent.amount)])  # Allocate the full settled amount to the invoice.
     else:  # Standalone receipts should not guess at invoice allocation.
         # Standalone receipt: leave the funds as customer credit instead of auto-allocating them.
         post_payment(payment, actor_user=actor_user, auto_allocate=False)  # Park the money as credit instead.
+
     intent.payment = payment  # Link the payment back to the gateway record.
 
 
@@ -328,6 +349,7 @@ def _dispatch_transfer(payout, *, client=None, metadata=None, actor_user=None):
     """
     client = client or get_provider(payout.provider)  # Allow callers to reuse or lazily resolve the PSP client.
     currency = payout.currency  # Store the payout currency once for the request.
+
     try:  # Transfer creation can fail independently from local persistence.
         result = client.create_transfer(
             reference=payout.reference, amount=payout.amount,
@@ -354,11 +376,13 @@ def _dispatch_transfer(payout, *, client=None, metadata=None, actor_user=None):
     payout.save(update_fields=[
         "provider_reference", "recipient_code", "status", "raw_response", "updated_at",
     ])
+
     audit.record(  # Capture the successful provider submission.
         action=PaymentAuditAction.PAYOUT_INITIATED, entity=payout.entity,
         provider=payout.provider, reference=payout.reference, actor_user=actor_user,
         message=f"Initiated {payout.amount} kobo payout via {payout.provider}.",
     )
+
     return payout  # Return the now-processing payout instruction.
 
 

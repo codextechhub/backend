@@ -123,12 +123,15 @@ class CollectionListCreateView(APIView):
     def post(self, request):
         entity = resolve_entity(request)  # Resolve the entity before creating the intent.
         body = request.data  # Read the posted payload once.
+
         amount = int(body.get("amount") or 0)
         if amount <= 0:  # Reject empty or negative collections.
             raise ValidationError({"amount": "A positive amount (in kobo) is required."})
+        
         customer = _entity_obj(entity, Customer, body.get("customer"), "customer")
         invoice = _entity_obj(entity, Invoice, body.get("invoice"), "invoice")
         deposit = _entity_obj(entity, Account, body.get("deposit_account"), "deposit_account")
+
         intent = services.initiate_collection(  # Hand off to the business service for PSP initiation.
             entity=entity, amount=amount, customer=customer, invoice=invoice,
             deposit_account=deposit, channel=body.get("channel"),
@@ -136,6 +139,7 @@ class CollectionListCreateView(APIView):
             payer_name=body.get("payer_name", ""), narration=body.get("narration", ""),
             metadata=body.get("metadata") or {}, actor_user=request.user,
         )
+
         return success_response(
             "Collection initiated.", data=CollectionIntentSerializer(intent).data, status=201,
         )
@@ -158,9 +162,11 @@ class CollectionSummaryView(APIView):
         from django.db.models.functions import Coalesce
 
         entity = resolve_entity(request)  # Scope the summary to the current entity.
+
         qs = CollectionIntent.objects.filter(entity=entity)
         if (provider := request.query_params.get("provider")):
             qs = qs.filter(provider=provider)
+
         g = COLLECTION_GROUPS  # Short alias for the status groups.
         agg = qs.aggregate(
             total=Count("id"),
@@ -172,8 +178,10 @@ class CollectionSummaryView(APIView):
             failed_c=Count("id", filter=Q(status__in=g["FAILED"])),
             refunded_c=Count("id", filter=Q(status__in=g["REFUNDED"])),
         )
+
         terminal = agg["paid_c"] + agg["failed_c"]  # Only terminal outcomes belong in the success-rate denominator.
         rate = round(agg["paid_c"] * 100 / terminal) if terminal else None  # Compute a simple success rate when possible.
+
         return success_response("Collections summary retrieved.", data={
             "total": agg["total"],
             "collected": {"kobo": agg["collected"], "naira": format_naira(agg["collected"])},
@@ -200,11 +208,14 @@ class CollectionDetailView(APIView):
     # Handle GET requests for this endpoint.
     def get(self, request, pk):
         entity = resolve_entity(request)  # Resolve the tenant entity.
+
         intent = CollectionIntent.objects.filter(entity=entity, pk=pk).first()
         if intent is None:  # Return 404 when the record does not exist in this tenant.
             raise NotFound("No such collection in this entity.")
+        
         if request.query_params.get("verify") in ("1", "true", "True"):
             intent = services.confirm_collection(intent, actor_user=request.user)  # Confirm against the provider before returning.
+            
         return success_response("Collection retrieved.", data=CollectionIntentSerializer(intent).data)
 
 
