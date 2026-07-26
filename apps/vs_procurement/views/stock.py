@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime
 
 from django.db import IntegrityError, transaction
-from django.db.models import Count, F, Prefetch, Q, Sum
+from django.db.models import Count, F, Q, Sum
 from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
@@ -56,19 +56,25 @@ def _strict_bool(value, field):
 
 
 def _stock_detail(entity, pk):
-    """One stock item ready for the DETAIL serializer: accounts/catalog joined and the
-    movement ledger prefetched (newest first, with its actor) so the drawer's Movements
-    tab and ``created_by_name`` never fan out into per-row queries."""
-    return (
+    """One stock item plus its newest 50 movement rows, bounded in SQL.
+
+    The item is a single detail record, so one explicit limited ledger query is both
+    simpler and stricter than prefetching an unbounded reverse relation then slicing in
+    Python. Joined actor/item data keeps movement serialization query-flat.
+    """
+    item = (
         StockItem.objects
         .filter(entity=entity, pk=pk)
         .select_related("inventory_account", "default_expense_account", "catalog_item")
-        .prefetch_related(Prefetch(
-            "movements",
-            queryset=StockMovement.objects.select_related("created_by").order_by("-id"),
-        ))
         .first()
     )
+    if item is not None:
+        item._recent_movements = list(
+            StockMovement.objects.filter(stock_item=item)
+            .select_related("created_by", "stock_item")
+            .order_by("-id")[:50]
+        )
+    return item
 
 class StockItemListCreateView(_ProcBase):
     """GET (list) / POST (create) stock items — perpetual-inventory masters.
@@ -371,11 +377,14 @@ class StockReorderReportView(_ProcBase):
 
     def get(self, request):
         """Return quantity strings and {kobo, naira} unit-cost objects."""
+        from core.pagination import XVSPagination
+
         entity = resolve_entity(request)
-        rows = stock.reorder_report(entity)
-        return success_response(
-            "Stock reorder report retrieved.",
-            data={
+        paginator = XVSPagination()
+        paginator.page_size = 25
+        page = paginator.paginate_queryset(stock.reorder_items(entity), request, view=self)
+        rows = [stock.reorder_row(item) for item in page]
+        response = paginator.get_paginated_response({
                 "entity": entity.code,
                 "rows": [
                     {
@@ -387,8 +396,9 @@ class StockReorderReportView(_ProcBase):
                     }
                     for r in rows
                 ],
-            },
-        )
+        })
+        response.data["message"] = "Stock reorder report retrieved."
+        return response
 
 
 class StockValuationReportView(_ProcBase):
@@ -397,11 +407,14 @@ class StockValuationReportView(_ProcBase):
 
     def get(self, request):
         """Return entity rows and total as {kobo, naira} report values."""
+        from core.pagination import XVSPagination
+
         entity = resolve_entity(request)
-        report = stock.stock_valuation(entity)
-        return success_response(
-            "Stock valuation retrieved.",
-            data={
+        paginator = XVSPagination()
+        paginator.page_size = 25
+        page = paginator.paginate_queryset(stock.valuation_items(entity), request, view=self)
+        rows = [stock.valuation_row(item) for item in page]
+        response = paginator.get_paginated_response({
                 "entity": entity.code,
                 "rows": [
                     {
@@ -410,8 +423,9 @@ class StockValuationReportView(_ProcBase):
                         "unit_cost": _kobo(r["unit_cost"]),
                         "stock_value": _kobo(r["stock_value"]),
                     }
-                    for r in report["rows"]
+                    for r in rows
                 ],
-                "total_value": _kobo(report["total_value"]),
-            },
-        )
+                "total_value": _kobo(stock.stock_valuation_total(entity)),
+        })
+        response.data["message"] = "Stock valuation retrieved."
+        return response

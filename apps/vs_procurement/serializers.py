@@ -380,9 +380,9 @@ class StockItemListSerializer(serializers.ModelSerializer):
 class StockItemDetailSerializer(StockItemListSerializer):
     """Full stock-item record for the detail drawer: header, recent movements, activity.
 
-    ``movements`` is the last 50 ledger rows for this item, newest first. The detail view
-    prefetches ``movements`` (with ``created_by``) ordered ``-id``, so slicing the cached
-    relation here re-uses that prefetch and never issues a per-row query."""
+    ``movements`` is the last 50 ledger rows for this item, newest first. The detail
+    loader attaches an already SQL-limited list; direct serializer use falls back to an
+    equally bounded joined query instead of materialising the full ledger."""
 
     movements = serializers.SerializerMethodField()
     activity = serializers.SerializerMethodField()
@@ -391,11 +391,16 @@ class StockItemDetailSerializer(StockItemListSerializer):
         fields = StockItemListSerializer.Meta.fields + ["movements", "activity"]
 
     def get_movements(self, obj):
-        # Prefetched newest-first; take the most recent 50 from the cached list (no re-query).
-        return StockMovementSerializer(list(obj.movements.all())[:50], many=True).data
+        movements = getattr(obj, "_recent_movements", None)
+        if movements is None:
+            movements = list(
+                obj.movements.select_related("created_by", "stock_item")
+                .order_by("-id")[:50]
+            )
+        return StockMovementSerializer(movements, many=True).data
 
     def get_activity(self, obj):
-        # Finance-audit feed (issues/adjustments record with target=stock_item).
+        # Finance-audit feed (receipts/issues/adjustments target the stock item).
         return _sourcing_activity(obj.entity_id, "StockItem", obj.pk)
 
 
@@ -858,6 +863,12 @@ class GRNLineSerializer(serializers.ModelSerializer):
 
     expense_code = serializers.CharField(source="expense_account.code", read_only=True)
     cost_center_code = serializers.CharField(source="cost_center.code", read_only=True, default=None)
+    stock_item_code = serializers.CharField(
+        source="stock_item.code", read_only=True, default=None,
+    )
+    stock_item_name = serializers.CharField(
+        source="stock_item.name", read_only=True, default=None,
+    )
     description = serializers.SerializerMethodField()
 
     def get_description(self, obj):
@@ -870,6 +881,7 @@ class GRNLineSerializer(serializers.ModelSerializer):
             "id", "line_no", "po_line_id", "description",
             "expense_account_id", "expense_code",
             "cost_center_id", "cost_center_code",
+            "stock_item_id", "stock_item_code", "stock_item_name",
             "accepted_qty", "rejected_qty", "expected_qty", "unit_price", "value_amount",
         ]
 

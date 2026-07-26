@@ -24,6 +24,7 @@ from ..models import (
     GoodsReceivedNoteLine,
     PurchaseOrder,
     PurchaseOrderLine,
+    StockItem,
     VendorInvoice,
     VendorInvoiceLine,
 )
@@ -52,6 +53,29 @@ from .base import (
 # --------------------------------------------------------------------------- #
 # Goods received notes                                                        #
 # --------------------------------------------------------------------------- #
+
+def _resolve_stock_item(entity, ref):
+    """Resolve an optional active stock master by id or case-insensitive exact code.
+
+    Missing, inactive, and foreign rows deliberately share one field error so the
+    tenant-scoped picker cannot be used to discover another entity's stock identifiers.
+    """
+    if ref in (None, ""):
+        return None
+    qs = StockItem.objects.filter(entity=entity, is_active=True).select_related(
+        "default_expense_account",
+    )
+    item = (
+        qs.filter(pk=int(ref)).first()
+        if str(ref).isdigit()
+        else qs.filter(code__iexact=str(ref)).first()
+    )
+    if item is None:
+        raise ValidationError({
+            "stock_item": "No such active stock item in this entity.",
+        })
+    return item
+
 
 def _write_grn_lines(entity, grn, po, lines):
     """Replace a draft receipt's lines from validated, entity-scoped input.
@@ -92,8 +116,10 @@ def _write_grn_lines(entity, grn, po, lines):
                 "cost_center": "The receipt cost centre must match its purchase-order line.",
             })
         cost_center = po_line.cost_center if po_line else explicit_cost_center
+        stock_item = _resolve_stock_item(entity, ln.get("stock_item"))
         expense = _resolve_account(entity, ln.get("expense_account"), "expense_account") \
-            or (po_line.expense_account if po_line else None)
+            or (po_line.expense_account if po_line else None) \
+            or (stock_item.default_expense_account if stock_item else None)
         if expense is None:
             raise ValidationError({"expense_account": "A line expense account is required."})
         unit_price = _money(ln.get("unit_price", po_line.unit_price if po_line else 0), "unit_price")
@@ -102,6 +128,7 @@ def _write_grn_lines(entity, grn, po, lines):
             # Keep a display snapshot while falling back to the PO description when older clients omit it.
             description=ln.get("description") or (po_line.description if po_line else ""),
             expense_account=expense,
+            stock_item=stock_item,
             cost_center=cost_center,
             accepted_qty=accepted, rejected_qty=rejected, expected_qty=expected,
             unit_price=unit_price,
@@ -116,7 +143,8 @@ def _read_grn_for_response(entity, pk):
     return GoodsReceivedNote.objects.filter(entity=entity, pk=pk).select_related(
         "vendor", "purchase_order", "received_by",
     ).prefetch_related(
-        "lines__po_line", "lines__cost_center", "purchase_order__lines",
+        "lines__po_line", "lines__cost_center", "lines__stock_item",
+        "purchase_order__lines",
     ).first()
 
 
@@ -190,7 +218,8 @@ class GoodsReceiptDetailView(_ProcBase):
         grn = GoodsReceivedNote.objects.filter(
             entity=entity, pk=pk,
         ).select_related("vendor", "purchase_order", "received_by").prefetch_related(
-            "lines__po_line", "lines__cost_center", "purchase_order__lines",
+            "lines__po_line", "lines__cost_center", "lines__stock_item",
+            "purchase_order__lines",
         ).first()
         if grn is None:
             raise NotFound("No such goods receipt in this entity.")
@@ -240,7 +269,7 @@ class GoodsReceiptPostView(_ProcBase):
         if grn is None:
             raise NotFound("No such goods receipt in this entity.")
         purchasing.post_grn(grn, actor_user=request.user)
-        grn.refresh_from_db()
+        grn = _read_grn_for_response(entity, grn.pk)
         return success_response(
             f"Goods receipt {grn.document_number} posted.",
             data=GoodsReceivedNoteSerializer(grn).data,

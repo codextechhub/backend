@@ -145,12 +145,25 @@ def receive_stock(stock_item, *, quantity, value, movement_date, grn=None,
     if quantity <= 0:
         raise StockError("A stock receipt must have a positive quantity.")
     stock_item = _lock_stock_item(stock_item)
-    return _record_movement(
+    movement = _record_movement(
         stock_item, movement_type=StockMovementType.RECEIPT,
         quantity=quantity, value_amount=int(value), movement_date=movement_date,
         grn=grn, journal=journal, actor_user=actor_user,
         reference=reference, narration=narration or "Goods received into stock",
     )
+    record(
+        entity=stock_item.entity, action=FinanceAuditAction.STOCK_RECEIVED,
+        actor_user=actor_user, target=stock_item,
+        message=(
+            f"Received {quantity} of {stock_item.code} "
+            f"({format_naira(int(value))} into inventory)."
+        ),
+        movement_id=movement.pk,
+        journal_id=journal.pk if journal is not None else None,
+        grn_id=grn.pk if grn is not None else None,
+        value=int(value),
+    )
+    return movement
 
 
 # --------------------------------------------------------------------------- #
@@ -353,29 +366,64 @@ def _adjust_stock_atomic(stock_item, *, quantity_delta, movement_date,
 # Read-only views over stock state                                            #
 # --------------------------------------------------------------------------- #
 
+def reorder_items(entity):
+    """SQL-filtered, deterministic source for reorder services and API pagination."""
+    from django.db.models import F
+    from .models import StockItem
+
+    return (
+        StockItem.objects
+        .filter(
+            entity=entity, is_active=True,
+            on_hand_qty__lte=F("reorder_level"),
+        )
+        .order_by("code")
+    )
+
+
+def reorder_row(item) -> dict:
+    """Map one stock master to the stable service-level reorder row contract."""
+    return {
+        "stock_item_id": item.id, "code": item.code, "name": item.name,
+        "on_hand_qty": item.on_hand_qty, "reorder_level": item.reorder_level,
+        "reorder_qty": item.reorder_qty, "unit_cost": item.unit_cost,
+    }
+
+
 def reorder_report(entity) -> list:
     """Active stock items at/below their reorder level, with a suggested order qty.
 
     The entity predicate is the tenant boundary; inactive catalogue rows are excluded
     from replenishment even though they remain available to historical movements.
     """
+    return [reorder_row(item) for item in reorder_items(entity)]
+
+
+def valuation_items(entity):
+    """Deterministic full-entity source for valuation services and API pagination."""
     from .models import StockItem
 
-    rows = []
-    qs = (
-        StockItem.objects
-        .filter(entity=entity, is_active=True)
-        .select_related("inventory_account")
-        .order_by("code")
+    return StockItem.objects.filter(entity=entity).order_by("code")
+
+
+def valuation_row(item) -> dict:
+    """Map one stock master to the stable service-level valuation row contract."""
+    return {
+        "stock_item_id": item.id, "code": item.code, "name": item.name,
+        "on_hand_qty": item.on_hand_qty, "unit_cost": item.unit_cost,
+        "stock_value": int(item.stock_value),
+    }
+
+
+def stock_valuation_total(entity) -> int:
+    """Whole-entity carried stock value, independent of API page boundaries."""
+    from django.db.models import Sum
+    from .models import StockItem
+
+    return int(
+        StockItem.objects.filter(entity=entity).aggregate(total=Sum("stock_value"))["total"]
+        or 0
     )
-    for item in qs:
-        if _dec(item.on_hand_qty) <= _dec(item.reorder_level):
-            rows.append({
-                "stock_item_id": item.id, "code": item.code, "name": item.name,
-                "on_hand_qty": item.on_hand_qty, "reorder_level": item.reorder_level,
-                "reorder_qty": item.reorder_qty, "unit_cost": item.unit_cost,
-            })
-    return rows
 
 
 def stock_valuation(entity) -> dict:
@@ -384,15 +432,7 @@ def stock_valuation(entity) -> dict:
     Unlike :func:`reorder_report`, valuation includes inactive items: deactivation does
     not erase stock already held or its control-account reconciliation obligation.
     """
-    from .models import StockItem
-
-    qs = StockItem.objects.filter(entity=entity).order_by("code")
-    rows, total = [], 0
-    for item in qs:
-        total += int(item.stock_value)
-        rows.append({
-            "stock_item_id": item.id, "code": item.code, "name": item.name,
-            "on_hand_qty": item.on_hand_qty, "unit_cost": item.unit_cost,
-            "stock_value": int(item.stock_value),
-        })
-    return {"rows": rows, "total_value": total}
+    return {
+        "rows": [valuation_row(item) for item in valuation_items(entity)],
+        "total_value": stock_valuation_total(entity),
+    }
