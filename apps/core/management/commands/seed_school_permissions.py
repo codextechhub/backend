@@ -96,6 +96,14 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     # OWN tenant (self excluded); cross-tenant is impossible by construction.
     # CRITICAL + restricted: this is the most powerful key a school can hold,
     # so it is school_admin-only by default (never branch_admin/teacher).
+    # Per-user permission exceptions (overrides) on school user profiles.
+    # CRITICAL + restricted: an ALLOW override hands a single person a key their
+    # role does not carry, so this is school_admin-only by default. `.view` is
+    # equally restricted on purpose — without it a user must never be able to
+    # learn that exceptions exist on their own account.
+    ("school", "user_overrides", "view",       _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
+    ("school", "user_overrides", "manage",     _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
+
     ("school", "impersonation", "start",       _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
     ("school", "impersonation", "end",         _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
     ("school", "impersonation", "view",        _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
@@ -133,6 +141,7 @@ RESOURCE_DESCRIPTIONS: dict[tuple[str, str], str] = {
     ("school", "fees"):           "Fees and billing",
     ("school", "settings"):       "School settings",
     ("school", "roles"):          "School role management",
+    ("school", "user_overrides"): "Per-user permission exceptions on school user profiles",
     ("school", "impersonation"):  "School-scoped proxy (impersonate a user in your own school)",
     ("academics", "session"):     "Academic sessions",
     ("academics", "calendar"):    "Academic calendar",

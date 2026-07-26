@@ -4,3 +4,4 @@ Import through ``vs_rbac.serializers`` exactly as before.
 """
 from .registry import *   # noqa: F401,F403
 from .tenant import *     # noqa: F401,F403
+from .overrides import *  # noqa: F401,F403

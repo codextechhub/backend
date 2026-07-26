@@ -70,7 +70,7 @@ class SeedSchoolPermissionsKeyTests(TestCase):
         _run_school_seed()
         self.assertEqual(
             Permission.objects.filter(module_id__in=["school", "academics"]).count(),
-            44,
+            46,
         )
 
     def test_impersonation_keys_are_critical_and_restricted(self):
@@ -79,6 +79,18 @@ class SeedSchoolPermissionsKeyTests(TestCase):
             "school.impersonation.start",
             "school.impersonation.end",
             "school.impersonation.view",
+        ):
+            perm = Permission.objects.get(key=key)
+            self.assertEqual(perm.sensitivity_level, "CRITICAL", key)
+            self.assertTrue(perm.is_restricted, key)
+
+    def test_override_keys_are_critical_and_restricted(self):
+        # `.view` is as restricted as `.manage`: without it a user must not be
+        # able to learn that permission exceptions exist on their account.
+        _run_school_seed()
+        for key in (
+            "school.user_overrides.view",
+            "school.user_overrides.manage",
         ):
             perm = Permission.objects.get(key=key)
             self.assertEqual(perm.sensitivity_level, "CRITICAL", key)
@@ -117,8 +129,8 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
             .values_list("permission_id", flat=True)
         )
 
-    def test_school_admin_gets_all_44(self):
-        self.assertEqual(len(self._defaults("school_admin")), 44)
+    def test_school_admin_gets_all_46(self):
+        self.assertEqual(len(self._defaults("school_admin")), 46)
 
     def test_only_school_admin_gets_impersonation_by_default(self):
         # The most powerful school keys must never be a branch_admin/teacher
@@ -131,6 +143,15 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
         self.assertTrue(impersonation <= self._defaults("school_admin"))
         self.assertFalse(impersonation & self._defaults("branch_admin"))
         self.assertFalse(impersonation & self._defaults("teacher"))
+
+    def test_only_school_admin_gets_permission_overrides_by_default(self):
+        overrides = {
+            "school.user_overrides.view",
+            "school.user_overrides.manage",
+        }
+        self.assertTrue(overrides <= self._defaults("school_admin"))
+        self.assertFalse(overrides & self._defaults("branch_admin"))
+        self.assertFalse(overrides & self._defaults("teacher"))
 
     def test_branch_admin_default_count(self):
         self.assertEqual(len(self._defaults("branch_admin")), 22)
@@ -179,8 +200,8 @@ class SeedSchoolBackfillTests(TestCase):
             .filter(role=self.role, granted=True)
             .values_list("permission_id", flat=True)
         )
-        # school_admin defaults are all 44 keys.
-        self.assertEqual(len(keys), 44)
+        # school_admin defaults are all 46 keys.
+        self.assertEqual(len(keys), 46)
         self.assertIn("school.students.view", keys)
         self.assertIn("school.roles.create", keys)
         self.assertIn("academics.classes.assign", keys)

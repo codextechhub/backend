@@ -75,6 +75,16 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
         ],
     ),
     (
+        "team_overrides",
+        "Per-user permission exceptions on CX team member profiles",
+        [
+            # Seeing that a user HAS exceptions is itself sensitive: without
+            # this key the affected user cannot learn they have any.
+            ("view",   "View a CX user's permission exceptions",            True, _CRITICAL),
+            ("manage", "Grant or revoke a CX user's permission exceptions", True, _CRITICAL),
+        ],
+    ),
+    (
         "staff_profile",
         "CX staff HR / personal profile records",
         [

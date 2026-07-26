@@ -19,8 +19,10 @@ from .models import (
     TenantRoleChangeRequest,
     TenantRoleTemplate,
     TenantUserRoleAssignment,
+    UserPermissionOverride,
 )
 from .serializers import (
+    UserPermissionOverrideSerializer,
     PermissionActionSerializer,
     PermissionDependencySerializer,
     PermissionDetailSerializer,
@@ -902,6 +904,257 @@ class TenantRoleChangeRequestDecisionView(TenantScopedRBACMixin, APIView):
             message="Invalid action. Must be APPROVE or DENY.",
             error={"action": ["Must be APPROVE or DENY."]},
         )
+
+
+# -----------------------------------------------------------------------------
+# Per-user permission overrides
+# -----------------------------------------------------------------------------
+# Which namespace gates the endpoint is decided by the ACTOR's home tenant, not
+# by the target — exactly like impersonation (vs_admin_console.views). The two
+# sets are never unioned, so a school role that somehow carried a platform key
+# still gets no extra reach: a school actor cannot assert another tenant at all
+# (TenantJWTAuthentication), and a platform actor needs the platform key.
+OVERRIDE_PLATFORM_KEYS = {
+    "view": "platform.team_overrides.view",
+    "manage": "platform.team_overrides.manage",
+}
+OVERRIDE_SCHOOL_KEYS = {
+    "view": "school.user_overrides.view",
+    "manage": "school.user_overrides.manage",
+}
+
+
+def _override_keys(actor) -> dict:
+    from vs_tenants.models import Tenant
+
+    is_platform = getattr(getattr(actor, "tenant", None), "kind", None) == Tenant.Kind.PLATFORM
+    return OVERRIDE_PLATFORM_KEYS if is_platform else OVERRIDE_SCHOOL_KEYS
+
+
+class _UserPermissionOverrideBase(TenantScopedRBACMixin):
+    """Shared target resolution, self-override ban and audit for override views.
+
+    Self-visibility rule (owner requirement): there is deliberately **no**
+    self-service exemption here. Reading your own overrides still requires the
+    viewer's ``.view``/``.manage`` key, so a user without it can never learn
+    that exceptions exist on their account — they only observe permissions
+    working or not working. Nothing about overrides is exposed on ``/me`` or
+    any self-service profile serializer.
+    """
+
+    # Lets a platform (CX) actor manage a school user's overrides by asserting
+    # ?tenant=<school-slug>; RBAC still evaluates against the actor's own
+    # tenant (request.rbac_tenant), so the platform key is what is required.
+    platform_cross_tenant_param = True
+
+    def _actor(self):
+        return getattr(self.request, "actor_user", None) or self.request.user
+
+    def get_target_user(self):
+        from django.contrib.auth import get_user_model
+
+        user = (
+            get_user_model().objects
+            .select_related("tenant")
+            .filter(pk=self.kwargs.get("user_id"), tenant=self.tenant)
+            .first()
+        )
+        if user is None:
+            # Non-enumerating: a user in another tenant is indistinguishable
+            # from a user that does not exist.
+            raise NotFound("No user matches the requested context.")
+        return user
+
+    def _reject_self(self, target):
+        """Nobody may create or lift an override on themselves.
+
+        Prevents self-escalation via ALLOW (and reviewer-dodging via a token
+        self-DENY). Both identities are checked so an impersonator cannot use
+        a proxy session to edit their own — or the proxied user's own — access.
+        """
+        actor = self._actor()
+        effective = getattr(self.request, "user", None)
+        if target.pk in {getattr(actor, "pk", None), getattr(effective, "pk", None)}:
+            return error_response(
+                message="You cannot create or lift permission overrides on yourself.",
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        return None
+
+    def _role_permission_keys(self, target):
+        from .evaluator import get_role_permissions
+
+        return get_role_permissions(target, tenant=self.tenant)
+
+    def _audit(self, *, action_type, override, target, summary, replaced=False):
+        from .audit import record_rbac_audit
+
+        record_rbac_audit(
+            action_type=action_type,
+            entity_type="UserPermissionOverride",
+            entity_id=str(override.pk),
+            entity_label=f"{getattr(target, 'email', target.pk)}:{override.permission_id}",
+            actor_user=self._actor(),
+            severity="WARNING",
+            summary=summary,
+            metadata={
+                "school_id": self.tenant.slug,
+                "tenant_id": str(self.tenant.pk),
+                "target_user_id": str(target.pk),
+                "target_user_email": getattr(target, "email", ""),
+                "permission_key": override.permission_id,
+                "mode": override.mode,
+                "reason": override.reason,
+                "expires_at": override.expires_at.isoformat() if override.expires_at else None,
+                "replaced": replaced,
+            },
+        )
+
+
+# List a user's permission overrides, or create one.
+class UserPermissionOverrideListCreateView(
+    _UserPermissionOverrideBase, generics.ListCreateAPIView,
+):
+    """
+    Tenant-facing:
+    - GET: list the permission exceptions on one user (viewer needs the
+      ``.view`` or ``.manage`` key — including for their own id).
+    - POST: create an exception. Both modes apply immediately; a new override
+      for a key the user already has REPLACES the old row (both audited).
+
+    docstring-name: User permission overrides
+    """
+
+    serializer_class = UserPermissionOverrideSerializer
+    pagination_class = XVSPagination
+
+    def get_permissions(self):
+        keys = _override_keys(self._actor())
+        if self.request.method == "POST":
+            self.rbac_permission = keys["manage"]
+        else:
+            # Managing implies seeing.
+            self.rbac_permission = [keys["view"], keys["manage"]]
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def get_queryset(self):
+        target = getattr(self, "_target", None) or self.get_target_user()
+        self._target = target
+        qs = (
+            UserPermissionOverride.objects
+            .filter(tenant=self.tenant, user=target)
+            .select_related("permission", "created_by")
+            .order_by("-created_at")
+        )
+        if mode := self.request.query_params.get("mode"):
+            qs = qs.filter(mode=mode.upper())
+        return qs
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        target = getattr(self, "_target", None) or self.get_target_user()
+        self._target = target
+        context["role_permission_keys"] = self._role_permission_keys(target)
+        return context
+
+    def create(self, request, *args, **kwargs):
+        target = self.get_target_user()
+        self._target = target
+        if (denied := self._reject_self(target)) is not None:
+            return denied
+
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        permission = serializer.validated_data["permission"]
+
+        actor = self._actor()
+        with transaction.atomic():
+            existing = (
+                UserPermissionOverride.objects
+                .select_for_update()
+                .filter(user=target, permission=permission)
+                .first()
+            )
+            if existing is not None:
+                # Replace rather than stack — the unique constraint guarantees
+                # one row per (user, key). Both halves land in the audit trail.
+                self._audit(
+                    action_type="OVERRIDE_LIFTED",
+                    override=existing,
+                    target=target,
+                    summary=(
+                        f"{existing.mode} override on '{existing.permission_id}' for "
+                        f"{getattr(target, 'email', target.pk)} replaced by a new override"
+                    ),
+                    replaced=True,
+                )
+                existing.delete()
+
+            override = serializer.save(
+                tenant=self.tenant, user=target, created_by=actor,
+            )
+            self._audit(
+                action_type="OVERRIDE_CREATED",
+                override=override,
+                target=target,
+                summary=(
+                    f"{override.mode} override on '{override.permission_id}' created for "
+                    f"{getattr(target, 'email', target.pk)}"
+                ),
+                replaced=existing is not None,
+            )
+
+        return success_response(
+            message="Permission override applied.",
+            data=self.get_serializer(override).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+# Lift (delete) one permission override.
+class UserPermissionOverrideDetailView(_UserPermissionOverrideBase, APIView):
+    """
+    Tenant-facing:
+    - DELETE: lift an override. A lifted DENY restores role access; a lifted
+      ALLOW removes the extra grant. Effective on the target's next request.
+
+    docstring-name: User permission overrides
+    """
+
+    def get_permissions(self):
+        self.rbac_permission = _override_keys(self._actor())["manage"]
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    def delete(self, request, tenant_slug: str, user_id: int, id: int):
+        target = self.get_target_user()
+        if (denied := self._reject_self(target)) is not None:
+            return denied
+
+        override = (
+            UserPermissionOverride.objects
+            .select_related("permission", "created_by")
+            .filter(pk=id, tenant=self.tenant, user=target)
+            .first()
+        )
+        if override is None:
+            return error_response(
+                message="Permission override not found.",
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        with transaction.atomic():
+            self._audit(
+                action_type="OVERRIDE_LIFTED",
+                override=override,
+                target=target,
+                summary=(
+                    f"{override.mode} override on '{override.permission_id}' lifted for "
+                    f"{getattr(target, 'email', target.pk)}"
+                ),
+            )
+            override.delete()
+
+        return success_response(message="Permission override lifted.")
 
 
 # -----------------------------------------------------------------------------

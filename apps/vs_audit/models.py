@@ -107,6 +107,9 @@ class AuditActionType(models.TextChoices):
     ROLE_ASSIGNED = "ROLE_ASSIGNED", "Role Assigned"
     ROLE_CHANGED = "ROLE_CHANGED", "Role Changed"
     PERMISSION_CHANGED = "PERMISSION_CHANGED", "Permission Changed"
+    # Per-user permission overrides (exceptions layered on role grants).
+    OVERRIDE_CREATED = "OVERRIDE_CREATED", "Permission Override Created"
+    OVERRIDE_LIFTED = "OVERRIDE_LIFTED", "Permission Override Lifted"
 
     # Impersonation (dual-identity support sessions)
     IMPERSONATION_STARTED = "IMPERSONATION_STARTED", "Impersonation Started"

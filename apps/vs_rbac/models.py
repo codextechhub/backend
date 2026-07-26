@@ -524,6 +524,111 @@ class TenantUserRoleAssignment(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
+# Per-user permission overrides (exceptions layered on top of role grants)
+# -----------------------------------------------------------------------------
+class UserPermissionOverride(TimeStampedModel):
+    """A single permission exception pinned to one user inside one tenant.
+
+    Roles remain the way access is *designed*; this table is the escape hatch
+    for the two cases a role edit cannot express without collateral damage:
+
+    * ``DENY`` — take one key away from one person while their role keeps it
+      for everyone else.
+    * ``ALLOW`` — hand one extra key to one person without minting a role.
+
+    Evaluation order lives in :func:`vs_rbac.evaluator.get_effective_permissions`
+    and is *later wins*::
+
+        (role_granted - role_denied) | user_allows - user_denies
+
+    so a personal DENY beats everything, including a personal ALLOW. Expiry is
+    lazy: an expired row simply stops matching the evaluator's filter, so no
+    cron is required to make it stop applying.
+
+    There is deliberately **no approval workflow** (owner decision, rev 2):
+    accountability comes from the required ``reason``, the ``RBACAuditLog``
+    trail, and the fact that the ``*.overrides.manage`` key is CRITICAL and
+    restricted.
+
+    Attributes:
+        tenant: Tenant that owns both the override and the user.
+        user: The person the exception applies to.
+        permission: Permission key (``to_field="key"`` — ``permission_id`` IS
+            the dotted key, matching every other RBAC link table).
+        mode: ``ALLOW`` or ``DENY``.
+        reason: Required justification, surfaced in the audit trail and UI.
+        created_by: Actor who wrote the override.
+        expires_at: Optional expiry; ``null`` means permanent.
+    """
+
+    class Mode(models.TextChoices):
+        ALLOW = "ALLOW", "Allow (extra grant)"
+        DENY = "DENY", "Deny (exception)"
+
+    tenant = models.ForeignKey(
+        "vs_tenants.Tenant",
+        on_delete=models.PROTECT,
+        related_name="user_permission_overrides",
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name="permission_overrides",
+    )
+    permission = models.ForeignKey(
+        Permission,
+        to_field="key",
+        db_column="permission_key",
+        on_delete=models.PROTECT,
+        related_name="user_overrides",
+    )
+    mode = models.CharField(max_length=8, choices=Mode.choices)
+    reason = models.TextField()
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_permission_overrides",
+    )
+    expires_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            # One override per key per user: a new override REPLACES the old one
+            # (delete + create, both audited) instead of stacking.
+            models.UniqueConstraint(
+                fields=["user", "permission"],
+                name="uq_user_permission_override",
+            ),
+        ]
+        indexes = [
+            # The evaluator's hot path: rows for one (tenant, user), filtered by
+            # expiry.
+            models.Index(fields=["tenant", "user", "expires_at"]),
+            models.Index(fields=["permission", "mode"]),
+        ]
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.user_id}:{self.mode}:{self.permission_id}"
+
+    @property
+    def is_expired(self) -> bool:
+        return self.expires_at is not None and self.expires_at <= timezone.now()
+
+    def clean(self):
+        super().clean()
+        errors = {}
+        if self.user_id and self.tenant_id and self.user.tenant_id != self.tenant_id:
+            errors["user"] = "User must belong to the override tenant."
+        if not (self.reason or "").strip():
+            errors["reason"] = "A reason is required for a permission override."
+        if errors:
+            raise ValidationError(errors)
+
+
+# -----------------------------------------------------------------------------
 # Unified tenant approval workflow: role permission-change requests
 # -----------------------------------------------------------------------------
 class TenantRoleChangeRequest(TimeStampedModel):

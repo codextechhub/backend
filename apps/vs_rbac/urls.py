@@ -133,6 +133,20 @@ urlpatterns = [
     ),
 
     # -------------------------------------------------------------------------
+    # Per-user permission overrides (exceptions layered on role grants)
+    # -------------------------------------------------------------------------
+    path(
+        "tenants/<slug:tenant_slug>/users/<int:user_id>/permission-overrides/",
+        views.UserPermissionOverrideListCreateView.as_view(),
+        name="rbac-user-permission-override-list-create",
+    ),
+    path(
+        "tenants/<slug:tenant_slug>/users/<int:user_id>/permission-overrides/<int:id>/",
+        views.UserPermissionOverrideDetailView.as_view(),
+        name="rbac-user-permission-override-detail",
+    ),
+
+    # -------------------------------------------------------------------------
     # Super Admin Transfer (codex tenant)
     # -------------------------------------------------------------------------
     path(
