@@ -9,6 +9,7 @@ WHT correctly. Run against MySQL:
 """
 import datetime
 import threading
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.db import close_old_connections
@@ -1246,6 +1247,34 @@ class GoodsReceiptConcurrencyTests(_P2PFixtureMixin, TransactionTestCase):
         self.assertEqual(po_line.received_qty, 7)
         self.assertEqual(second_grn.status, DocumentStatus.DRAFT)
         self.assertIsNone(second_grn.journal_id)
+
+    def test_concurrent_grns_for_one_stock_item_serialize_the_running_balance(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = StockItem.objects.create(
+            entity=entity, code="RACE-STOCK", name="Concurrent stock",
+            inventory_account=self.acc(entity, "1400"),
+            default_expense_account=self.acc(entity, "5100"),
+        )
+        first_po = self.make_po(entity, vendor, [("5100", 2, 100_000, None)])
+        second_po = self.make_po(entity, vendor, [("5100", 1, 200_000, None)])
+        first_grn = self.make_grn(
+            entity, vendor, first_po, [(first_po.lines.get(), 2)],
+        )
+        second_grn = self.make_grn(
+            entity, vendor, second_po, [(second_po.lines.get(), 1)],
+        )
+        first_grn.lines.update(stock_item=item)
+        second_grn.lines.update(stock_item=item)
+
+        outcomes, audit_record = self._race_posts(first_grn, second_grn)
+
+        self.assertEqual(outcomes.get("first"), DocumentStatus.POSTED)
+        self.assertEqual(outcomes.get("second"), DocumentStatus.POSTED)
+        self.assertEqual(audit_record.call_count, 2)
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 3)
+        self.assertEqual(item.stock_value, 400_000)
+        self.assertEqual(item.movements.count(), 2)
 
 
 class VendorInvoiceTests(_P2PFixtureMixin, TestCase):
@@ -5950,6 +5979,65 @@ class StockLedgerTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(item.on_hand_qty, 0)
         self.assertEqual(item.stock_value, 0)               # no residual drift
 
+    def test_stale_issue_and_adjustment_instances_use_locked_current_balances(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._stock_item(entity)
+        stale_issue = StockItem.objects.get(pk=item.pk)     # snapshots the empty balance
+        stale_adjustment = StockItem.objects.get(pk=item.pk)
+        self._receive_via_grn(entity, vendor, item, qty=10, unit_price=100_000)
+
+        issue = issue_stock(
+            stale_issue, quantity=4, movement_date=datetime.date(2026, 1, 12),
+        )
+        adjustment = adjust_stock(
+            stale_adjustment, quantity_delta=-2,
+            movement_date=datetime.date(2026, 1, 13),
+        )
+
+        self.assertEqual(issue.balance_qty, 6)
+        self.assertEqual(issue.balance_value, 600_000)
+        self.assertEqual(adjustment.balance_qty, 4)
+        self.assertEqual(adjustment.balance_value, 400_000)
+        item.refresh_from_db()
+        self.assertEqual(item.on_hand_qty, 4)
+        self.assertEqual(item.stock_value, 400_000)
+
+    def test_stock_rounding_is_half_up_for_unit_cost_issues_and_writeups(self):
+        entity, _, _, _, _ = self.build_p2p()
+
+        derived = self._stock_item(entity, code="ROUND-UNIT")
+        StockItem.objects.filter(pk=derived.pk).update(on_hand_qty=2, stock_value=1)
+        derived.refresh_from_db()
+        self.assertEqual(derived.unit_cost, 1)               # 1 / 2 = 0.5 → 1 kobo
+
+        issued = self._stock_item(entity, code="ROUND-ISSUE")
+        StockItem.objects.filter(pk=issued.pk).update(on_hand_qty=2, stock_value=3)
+        first = issue_stock(
+            issued, quantity=1, movement_date=datetime.date(2026, 1, 12),
+        )
+        second = issue_stock(
+            issued, quantity=1, movement_date=datetime.date(2026, 1, 13),
+        )
+        self.assertEqual(first.value_amount, -2)             # 3 × 1 / 2 = 1.5 → 2
+        self.assertEqual(second.value_amount, -1)            # exact depletion takes residue
+        issued.refresh_from_db()
+        self.assertEqual(issued.on_hand_qty, 0)
+        self.assertEqual(issued.stock_value, 0)
+
+        explicit = self._stock_item(entity, code="ROUND-EXPLICIT")
+        explicit_move = adjust_stock(
+            explicit, quantity_delta=Decimal("0.5"), unit_cost=1,
+            movement_date=datetime.date(2026, 1, 14),
+        )
+        self.assertEqual(explicit_move.value_amount, 1)      # 1 × 0.5 → 1 kobo
+
+        average = self._stock_item(entity, code="ROUND-AVERAGE")
+        StockItem.objects.filter(pk=average.pk).update(on_hand_qty=2, stock_value=1)
+        average_move = adjust_stock(
+            average, quantity_delta=1, movement_date=datetime.date(2026, 1, 15),
+        )
+        self.assertEqual(average_move.value_amount, 1)       # current average 0.5 → 1 kobo
+
     def test_adjustment_writeup_and_shrinkage(self):
         entity, _, vendor, _, _ = self.build_p2p()
         item = self._stock_item(entity)
@@ -6194,6 +6282,81 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
             "reorder_level": -1}, format="json").status_code, 400)
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_create_maps_normalized_duplicate_code_to_stable_field_error(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        self._item(entity, code="WIDGET")
+        response = self._client(entity).post(
+            f"/v1/procurement/stock-items/?entity={entity.code}",
+            {"code": " widget ", "name": "Duplicate", "inventory_account": "1400"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("code", str(response.data).lower())
+        self.assertIn("already exists", str(response.data).lower())
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_unit_of_measure_is_bounded_and_blank_falls_back_to_each(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        client = self._client(entity)
+        base = f"/v1/procurement/stock-items/?entity={entity.code}"
+        blank = client.post(base, {
+            "code": "UOM-BLANK", "name": "Blank UOM",
+            "inventory_account": "1400", "unit_of_measure": "",
+        }, format="json")
+        self.assertEqual(blank.status_code, 201)
+        self.assertEqual(blank.data["data"]["unit_of_measure"], "each")
+        too_long = client.post(base, {
+            "code": "UOM-LONG", "name": "Long UOM",
+            "inventory_account": "1400", "unit_of_measure": "x" * 25,
+        }, format="json")
+        self.assertEqual(too_long.status_code, 400)
+        item = StockItem.objects.get(pk=blank.data["data"]["id"])
+        url = f"/v1/procurement/stock-items/{item.pk}/?entity={entity.code}"
+        self.assertEqual(
+            client.patch(url, {"unit_of_measure": "cartons"}, format="json").status_code,
+            200,
+        )
+        fallback = client.patch(url, {"unit_of_measure": None}, format="json")
+        self.assertEqual(fallback.status_code, 200)
+        self.assertEqual(fallback.data["data"]["unit_of_measure"], "each")
+        self.assertEqual(
+            client.patch(url, {"unit_of_measure": "x" * 25}, format="json").status_code,
+            400,
+        )
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_is_active_requires_strict_json_boolean_on_create_and_patch(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        client = self._client(entity)
+        base = f"/v1/procurement/stock-items/?entity={entity.code}"
+        for index, value in enumerate(("false", 0, 1), start=1):
+            response = client.post(base, {
+                "code": f"BOOL-{index}", "name": "Boolean",
+                "inventory_account": "1400", "is_active": value,
+            }, format="json")
+            self.assertEqual(response.status_code, 400, value)
+        valid = client.post(base, {
+            "code": "BOOL-VALID", "name": "Boolean",
+            "inventory_account": "1400", "is_active": False,
+        }, format="json")
+        self.assertEqual(valid.status_code, 201)
+        self.assertFalse(valid.data["data"]["is_active"])
+        url = (
+            f"/v1/procurement/stock-items/{valid.data['data']['id']}/"
+            f"?entity={entity.code}"
+        )
+        for value in ("true", 1):
+            self.assertEqual(
+                client.patch(url, {"is_active": value}, format="json").status_code,
+                400,
+                value,
+            )
+        self.assertEqual(
+            client.patch(url, {"is_active": True}, format="json").status_code,
+            200,
+        )
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_patch_code_is_immutable_but_same_code_is_accepted(self, _perm):
         entity, _, _, _, _ = self.build_p2p()
         item = self._item(entity, code="WIDGET")
@@ -6209,6 +6372,48 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(same.data["data"]["name"], "Renamed")
         item.refresh_from_db()
         self.assertEqual(item.code, "WIDGET")
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_inventory_account_changes_only_when_quantity_and_value_are_zero(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        alternate = Account.objects.create(
+            entity=entity, code="1410", name="Alternate inventory",
+            account_type="ASSET", is_postable=True,
+        )
+        client = self._client(entity)
+
+        empty = self._item(entity, code="EMPTY")
+        empty_url = f"/v1/procurement/stock-items/{empty.pk}/?entity={entity.code}"
+        changed = client.patch(
+            empty_url, {"inventory_account": alternate.pk}, format="json",
+        )
+        self.assertEqual(changed.status_code, 200)
+        self.assertEqual(changed.data["data"]["inventory_code"], "1410")
+
+        quantity_only = self._item(entity, code="QTY-ONLY")
+        StockItem.objects.filter(pk=quantity_only.pk).update(on_hand_qty=1, stock_value=0)
+        quantity_url = (
+            f"/v1/procurement/stock-items/{quantity_only.pk}/?entity={entity.code}"
+        )
+        blocked_qty = client.patch(
+            quantity_url, {"inventory_account": alternate.pk}, format="json",
+        )
+        self.assertEqual(blocked_qty.status_code, 400)
+        self.assertIn("quantity or value remains", str(blocked_qty.data))
+        # Sending the existing account is a permitted no-op even with a live balance.
+        self.assertEqual(
+            client.patch(quantity_url, {"inventory_account": "1400"}, format="json").status_code,
+            200,
+        )
+
+        value_only = self._item(entity, code="VALUE-ONLY")
+        StockItem.objects.filter(pk=value_only.pk).update(on_hand_qty=0, stock_value=1)
+        value_url = f"/v1/procurement/stock-items/{value_only.pk}/?entity={entity.code}"
+        blocked_value = client.patch(
+            value_url, {"inventory_account": alternate.pk}, format="json",
+        )
+        self.assertEqual(blocked_value.status_code, 400)
+        self.assertIn("quantity or value remains", str(blocked_value.data))
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_patch_never_touches_balances(self, _perm):
@@ -6273,6 +6478,22 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
                      {"quantity": 1, "movement_date": "not-a-date"}):
             self.assertEqual(client.post(url, body, format="json").status_code, 400, body)
 
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_issue_and_adjust_bound_reference_and_narration_text(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        item = self._item(entity)
+        self._receive(entity, vendor, item, qty=5, unit_price=100_000)
+        client = self._client(entity)
+        issue_url = f"/v1/procurement/stock-items/{item.pk}/issue/?entity={entity.code}"
+        adjust_url = f"/v1/procurement/stock-items/{item.pk}/adjust/?entity={entity.code}"
+        for url, payload in (
+            (issue_url, {"quantity": 1, "reference": "r" * 65}),
+            (issue_url, {"quantity": 1, "narration": "n" * 256}),
+            (adjust_url, {"quantity_delta": -1, "reference": "r" * 65}),
+            (adjust_url, {"quantity_delta": -1, "narration": "n" * 256}),
+        ):
+            self.assertEqual(client.post(url, payload, format="json").status_code, 400)
+
     # --- adjust ------------------------------------------------------------ #
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
@@ -6319,6 +6540,18 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
         item.refresh_from_db()
         self.assertEqual(item.on_hand_qty, 3)
         self.assertEqual(item.stock_value, 300_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_adjust_rejects_more_than_four_decimal_places(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        item = self._item(entity)
+        response = self._client(entity).post(
+            f"/v1/procurement/stock-items/{item.pk}/adjust/?entity={entity.code}",
+            {"quantity_delta": "0.00001", "unit_cost": 100_000},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("four decimal places", str(response.data))
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_adjust_write_up_from_empty_requires_unit_cost(self, _perm):

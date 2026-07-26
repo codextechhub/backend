@@ -191,6 +191,8 @@ def _signed_qty(value, field):
         raise ValidationError({field: "The adjustment must change the quantity."})
     if abs(qty) > _MAX_QTY:
         raise ValidationError({field: "Value is too large."})
+    if qty != qty.quantize(Decimal("0.0001")):
+        raise ValidationError({field: "Value cannot have more than four decimal places."})
     return qty
 
 

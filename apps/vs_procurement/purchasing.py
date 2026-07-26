@@ -296,6 +296,16 @@ def _post_grn_atomic(grn, *, actor_user=None):
     if not lines:
         raise PostingError("A goods receipt must have at least one line to post.")
 
+    # Stock rows are the authoritative perpetual-ledger counters. Lock every referenced
+    # item once, in primary-key order, before constructing the journal so concurrent GRNs
+    # cannot overwrite one another and two multi-item receipts cannot invert lock order.
+    from .stock import lock_stock_items, receive_stock
+
+    stock_item_ids = sorted({line.stock_item_id for line in lines if line.stock_item_id})
+    locked_stock_items = lock_stock_items(stock_item_ids)
+    if len(locked_stock_items) != len(stock_item_ids):
+        raise PostingError("Every stock-tracked receipt line must reference an existing stock item.")
+
     # Lock every referenced counter in a stable order, then validate the aggregate
     # accepted quantity.  Multiple receipt rows can legitimately point at one PO
     # line, so checking/updating each GRN line independently is not sufficient.
@@ -324,7 +334,7 @@ def _post_grn_atomic(grn, *, actor_user=None):
         if value <= 0:
             continue
         debit_account = (
-            line.stock_item.inventory_account if line.stock_item_id
+            locked_stock_items[line.stock_item_id].inventory_account if line.stock_item_id
             else line.expense_account
         )
         # Inventory is a control account and remains unallocated. Non-stock expense
@@ -374,12 +384,11 @@ def _post_grn_atomic(grn, *, actor_user=None):
     # Raise the perpetual stock ledger for any stock-tracked lines. The GL inventory
     # debit belongs to this GRN journal; receive_stock must therefore update only the
     # quantity/value sub-ledger, otherwise the same receipt would hit inventory twice.
-    from .stock import receive_stock
-
     for line in lines:
         if line.stock_item_id and line.value_amount > 0:
             receive_stock(
-                line.stock_item, quantity=line.accepted_qty, value=line.value_amount,
+                locked_stock_items[line.stock_item_id],
+                quantity=line.accepted_qty, value=line.value_amount,
                 movement_date=grn.received_date, grn=grn, journal=entry,
                 actor_user=actor_user,
                 narration=f"GRN {grn.document_number or grn.pk}",

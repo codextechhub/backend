@@ -20,7 +20,7 @@ Three movement kinds touch the ledger:
 """
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
 
@@ -42,6 +42,48 @@ from .purchasing import resolve_account
 def _dec(value) -> Decimal:
     """Normalise model/input quantities without a binary-float round trip."""
     return value if isinstance(value, Decimal) else Decimal(str(value))
+
+
+def round_stock_kobo(value) -> int:
+    """Round a stock valuation once to integer kobo using explicit half-up semantics."""
+    return int(_dec(value).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def lock_stock_items(stock_item_ids) -> dict:
+    """Lock and return authoritative stock rows in stable primary-key order.
+
+    The caller must own an outer transaction. Sorting the unique identifiers gives every
+    multi-item receipt the same lock order, while the joined inventory account makes
+    validation, valuation, and journal construction use the locked snapshots.
+    """
+    from .models import StockItem
+
+    ids = sorted(set(stock_item_ids))
+    return {
+        item.pk: item
+        for item in (
+            StockItem.objects.select_for_update()
+            # ``default_expense_account`` is nullable; joining it would put an outer-join
+            # row under FOR UPDATE, which PostgreSQL rejects. The mandatory inventory
+            # account is safe to join, while an issue can lazy-load its optional default
+            # only after the authoritative StockItem row is locked.
+            .select_related("inventory_account")
+            .filter(pk__in=ids)
+            .order_by("pk")
+        )
+    }
+
+
+def _lock_stock_item(stock_item):
+    """Re-read one caller-supplied stock instance under a row lock."""
+    from .models import StockItem
+
+    locked = lock_stock_items([stock_item.pk]).get(stock_item.pk)
+    if locked is None:
+        raise StockItem.DoesNotExist(
+            f"StockItem matching query does not exist (pk={stock_item.pk})."
+        )
+    return locked
 
 
 def _record_movement(stock_item, *, movement_type, quantity, value_amount,
@@ -80,14 +122,17 @@ def _issue_value(stock_item, quantity: Decimal) -> int:
     on_hand = _dec(stock_item.on_hand_qty)
     if on_hand <= 0:
         return 0
+    if quantity == on_hand:
+        return int(stock_item.stock_value)
     value = (Decimal(stock_item.stock_value) * quantity / on_hand)
-    return int(value.to_integral_value())
+    return round_stock_kobo(value)
 
 
 # --------------------------------------------------------------------------- #
 # Receipt (called from the GRN posting — GL side already booked there)        #
 # --------------------------------------------------------------------------- #
 
+@transaction.atomic
 def receive_stock(stock_item, *, quantity, value, movement_date, grn=None,
                   journal=None, actor_user=None, reference="", narration=""):
     """Raise on-hand qty/value for a received stock line (weighted-average in).
@@ -99,6 +144,7 @@ def receive_stock(stock_item, *, quantity, value, movement_date, grn=None,
     quantity = _dec(quantity)
     if quantity <= 0:
         raise StockError("A stock receipt must have a positive quantity.")
+    stock_item = _lock_stock_item(stock_item)
     return _record_movement(
         stock_item, movement_type=StockMovementType.RECEIPT,
         quantity=quantity, value_amount=int(value), movement_date=movement_date,
@@ -142,6 +188,7 @@ def _issue_stock_atomic(stock_item, *, quantity, movement_date, expense_account=
     """
     from vs_finance.models import JournalEntry, JournalLine
 
+    stock_item = _lock_stock_item(stock_item)
     quantity = _dec(quantity)
     if quantity <= 0:
         raise StockError("A stock issue must have a positive quantity.")
@@ -234,6 +281,7 @@ def _adjust_stock_atomic(stock_item, *, quantity_delta, movement_date,
     """
     from vs_finance.models import JournalEntry, JournalLine
 
+    stock_item = _lock_stock_item(stock_item)
     delta = _dec(quantity_delta)
     if delta == 0:
         raise StockError("A stock adjustment must change the quantity.")
@@ -248,9 +296,9 @@ def _adjust_stock_atomic(stock_item, *, quantity_delta, movement_date,
     if delta < 0:
         value = _issue_value(stock_item, -delta)
     elif unit_cost is not None:
-        value = int(_dec(unit_cost) * delta)
+        value = round_stock_kobo(_dec(unit_cost) * delta)
     elif on_hand > 0:
-        value = int((Decimal(stock_item.stock_value) * delta / on_hand).to_integral_value())
+        value = round_stock_kobo(Decimal(stock_item.stock_value) * delta / on_hand)
     else:
         raise StockError(
             "A unit_cost is required to increase stock that has no existing average cost.",

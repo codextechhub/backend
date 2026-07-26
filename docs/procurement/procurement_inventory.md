@@ -119,10 +119,9 @@ item, which allows an obsolete item to be run down or corrected
   active with `0 < on_hand <= reorder_level`, and out of stock as active with
   `on_hand <= 0` (`views/stock.py:281-307`).
 
-The current `unit_cost`, issue, and average-based adjustment calculations call
-Decimal's default integral rounding, while an explicit-cost write-up truncates with
-`int(...)`. That inconsistent half-kobo behavior is an open defect (§8)
-(`models.py:403-409`; `stock.py:72-84,246-253`).
+All stock valuation paths now use the same explicit `ROUND_HALF_UP` integer-kobo
+helper. Full depletion still takes the exact remaining value rather than rounding a
+ratio (`models.py:403-412`; `stock.py:47-50,110-124,292-301`).
 
 ## 6. What posting does to the ledger
 
@@ -226,30 +225,27 @@ are additive and omitted above for brevity (`views/stock.py:201-228`;
 
 ## 8. Gotchas / known limitations
 
-### Open defects — fix immediately
+### Fixed automatically
 
-- **Concurrent movements can detach stock from the GL.** Issue and adjustment wrap
-  work in transactions but do not reload/lock the stock row. GRN posting locks its
-  document and PO counters, but not the referenced stock rows. Two simultaneous
-  operations can both journal against an old balance and then overwrite each other's
-  stock quantity/value, or both pass an over-issue check (`stock.py:135-185,
-  225-289`; `purchasing.py:267-309,374-386`).
-- **The inventory account can change while value is on hand.** PATCH accepts a new
-  asset account even when the item carries quantity/value, so historical receipts
-  remain debited to the old account while later issues credit the new account
-  (`views/stock.py:145-187`). The API should reject an account change until both
-  carried balances are zero, unless a controlled GL/sub-ledger transfer is built.
-- **Money rounding is inconsistent at fractional kobo.** Derived averages and
-  proportional relief use Decimal's context rounding, while explicit-cost write-ups
-  truncate. Inventory movement valuation should use one explicit integer-kobo rule
-  while preserving exact full depletion (`models.py:403-409`; `stock.py:72-84,
-  246-253`).
-- **Several payloads can reach database errors instead of stable 400 responses.**
-  Stock-code duplicates are not translated from the uniqueness race; unit of measure,
-  movement reference, and movement narration are not bounded at the view; signed
-  adjustment quantity omits the four-decimal-place check; `is_active` truth-coerces
-  values such as the string `"false"` to `true` (`views/base.py:178-194`;
-  `views/stock.py:90-116,145-185,201-220,239-262`).
+- ✅ **Concurrent movements now preserve the GL/sub-ledger tie.** Receipt, issue,
+  and adjustment re-read the authoritative stock row under `SELECT ... FOR UPDATE`.
+  GRN posting locks all referenced stock items once in sorted primary-key order before
+  PO counters and journal construction, preventing stale overwrite, over-issue races,
+  and inverted multi-item lock order (`stock.py:52-82,131-149,177-240,268-340`;
+  `purchasing.py:299-327,384-395`).
+- ✅ **A carried balance pins its inventory account.** PATCH locks the master and
+  rejects a different inventory account while either quantity or value is nonzero.
+  Sending the same account remains a valid no-op; an empty item can be remapped
+  (`views/stock.py:167-226`).
+- ✅ **Every fractional-kobo stock calculation rounds half up.** One helper now owns
+  derived unit cost, proportional relief, explicit-cost write-ups, and
+  average-cost write-ups; full depletion takes the exact residue
+  (`models.py:403-412`; `stock.py:47-50,110-124,292-301`).
+- ✅ **Malformed master/movement payloads now return stable 400 errors.** Duplicate
+  normalized codes map the database constraint race to `code`; unit, reference, and
+  narration lengths are bounded; signed adjustments enforce four decimal places; and
+  `is_active` requires a real JSON boolean (`views/base.py:178-196`;
+  `views/stock.py:48-54,98-143,167-226,237-256,275-298`).
 
 ### Recommend-fix
 
@@ -329,25 +325,23 @@ receive the stock-status overlay unless separately granted stock view
 | `apps/vs_procurement/urls.py:101-108,129-130` | Inventory and stock-report routes |
 | `apps/vs_procurement/management/commands/seed_procurement_permissions.py:28-50` | RBAC key registration and sensitivity |
 | `apps/vs_finance/seed.py:23-31,53-57` | Default 1400 Inventory and 5150 Inventory Adjustments accounts |
-| `apps/vs_procurement/tests.py:5818-6425` | Stock service/accounting and REST security/contract coverage |
+| `apps/vs_procurement/tests.py:5818-6628` | Stock service/accounting, concurrency, and REST security/contract coverage |
 
 ## 11. Test coverage & gaps
 
-Current tests cover stock-backed GRN capitalisation, dropped control-line cost center,
-two-lot moving average, issue journal sides and insufficient-stock rejection, exact
-full depletion, positive/negative adjustment journals, opening-stock cost requirement,
-reorder/valuation results, every endpoint's 403 gate, distinct permission verbs,
-cross-entity item/account isolation, immutable codes and ledger-owned balances, request
-validation, summary states, report values, receipt movement visibility, and the
-empty-movement response shape (`tests.py:5818-6425`).
+Current tests cover stock-backed GRN capitalisation, concurrent same-item receipts,
+dropped control-line cost center, two-lot moving average, stale-instance issue and
+adjustment locking, issue journal sides and insufficient-stock rejection, half-up
+rounding and exact full depletion, positive/negative adjustment journals, opening-stock
+cost requirement, reorder/valuation results, every endpoint's 403 gate, distinct
+permission verbs, cross-entity item/account isolation, immutable codes and
+ledger-owned balances, carried-balance account protection, duplicate/UOM/boolean/text/
+precision validation, summary states, report values, receipt movement visibility, and
+the empty-movement response shape (`tests.py:1247-1277,5818-6628`). The complete
+procurement suite is 242 tests green after the fixes.
 
 Still missing before this slice is ship-ready:
 
-- concurrent receipt/issue/adjust regression tests proving row-lock serialization;
-- inventory-account-change protection with nonzero quantity or value;
-- explicit fractional-kobo rounding boundaries and exact depletion;
-- duplicate code, strict boolean, length bounds, and adjustment decimal-precision API
-  tests;
 - GRN API stock-item assignment and cross-entity/inactive-stock-item rejection;
 - a query-count or bounded-prefetch test for the newest-50 detail contract;
 - receipt audit activity on the stock item;

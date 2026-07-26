@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime
 
+from django.db import IntegrityError, transaction
 from django.db.models import Count, F, Prefetch, Q, Sum
 from rest_framework.exceptions import NotFound, ValidationError
 
@@ -45,6 +46,13 @@ from .catalog import _resolve_catalog_item
 # --------------------------------------------------------------------------- #
 # Inventory / stock ledger                                                     #
 # --------------------------------------------------------------------------- #
+
+
+def _strict_bool(value, field):
+    """Require a real JSON boolean instead of accepting truthy strings or numbers."""
+    if not isinstance(value, bool):
+        raise ValidationError({field: "Enter a valid boolean value."})
+    return value
 
 
 def _stock_detail(entity, pk):
@@ -102,18 +110,32 @@ class StockItemListCreateView(_ProcBase):
         if inventory is None:
             raise ValidationError(
                 {"inventory_account": "An inventory asset account is required."})
-        item = StockItem.objects.create(
-            entity=entity, code=code, name=name,
-            description=_text(body.get("description", ""), "description", 255),
-            unit_of_measure=body.get("unit_of_measure") or "each",
-            catalog_item=_resolve_catalog_item(entity, body.get("catalog_item")),
-            inventory_account=inventory,
-            default_expense_account=_resolve_expense_account(
-                entity, body.get("default_expense_account"), "default_expense_account"),
-            reorder_level=_nonneg_qty(body.get("reorder_level", 0), "reorder_level"),
-            reorder_qty=_nonneg_qty(body.get("reorder_qty", 0), "reorder_qty"),
-            is_active=bool(body.get("is_active", True)),
-        )
+        try:
+            # Keep the uniqueness race inside a savepoint so the request can map the
+            # database constraint to a stable field error without a broken transaction.
+            with transaction.atomic():
+                item = StockItem.objects.create(
+                    entity=entity, code=code, name=name,
+                    description=_text(body.get("description", ""), "description", 255),
+                    unit_of_measure=_text(
+                        body.get("unit_of_measure") or "each",
+                        "unit_of_measure", 24, required=True,
+                    ),
+                    catalog_item=_resolve_catalog_item(entity, body.get("catalog_item")),
+                    inventory_account=inventory,
+                    default_expense_account=_resolve_expense_account(
+                        entity, body.get("default_expense_account"), "default_expense_account"),
+                    reorder_level=_nonneg_qty(body.get("reorder_level", 0), "reorder_level"),
+                    reorder_qty=_nonneg_qty(body.get("reorder_qty", 0), "reorder_qty"),
+                    is_active=(
+                        _strict_bool(body["is_active"], "is_active")
+                        if "is_active" in body else True
+                    ),
+                )
+        except IntegrityError:
+            raise ValidationError(
+                {"code": "A stock item with this code already exists in this entity."}
+            )
         return success_response(
             "Stock item created.",
             data=StockItemDetailSerializer(_stock_detail(entity, item.pk)).data,
@@ -142,10 +164,11 @@ class StockItemDetailView(_ProcBase):
         return success_response(
             "Stock item retrieved.", data=StockItemDetailSerializer(item).data)
 
+    @transaction.atomic
     def patch(self, request, pk):
         """Update master defaults without mutating ledger-owned quantity/value."""
         entity = resolve_entity(request)
-        item = StockItem.objects.filter(entity=entity, pk=pk).first()
+        item = StockItem.objects.select_for_update().filter(entity=entity, pk=pk).first()
         if item is None:
             raise NotFound("No such stock item in this entity.")
         body = request.data
@@ -160,7 +183,10 @@ class StockItemDetailView(_ProcBase):
         if "description" in body:
             item.description = _text(body.get("description", ""), "description", 255)
         if "unit_of_measure" in body:
-            item.unit_of_measure = body["unit_of_measure"] or "each"
+            item.unit_of_measure = _text(
+                body.get("unit_of_measure") or "each",
+                "unit_of_measure", 24, required=True,
+            )
         if "catalog_item" in body:
             # Preserve an existing inactive historical link, but do not permit a new one.
             item.catalog_item = _resolve_catalog_item(
@@ -172,6 +198,16 @@ class StockItemDetailView(_ProcBase):
             if inv is None:
                 raise ValidationError(
                     {"inventory_account": "An inventory asset account is required."})
+            if (
+                inv.pk != item.inventory_account_id
+                and (item.on_hand_qty != 0 or item.stock_value != 0)
+            ):
+                raise ValidationError({
+                    "inventory_account": (
+                        "Inventory account cannot be changed while quantity or value "
+                        "remains on hand."
+                    ),
+                })
             item.inventory_account = inv
         if "default_expense_account" in body:
             # Active, postable EXPENSE (or cleared to None).
@@ -182,7 +218,7 @@ class StockItemDetailView(_ProcBase):
         if "reorder_qty" in body:
             item.reorder_qty = _nonneg_qty(body.get("reorder_qty", 0), "reorder_qty")
         if "is_active" in body:
-            item.is_active = bool(body["is_active"])
+            item.is_active = _strict_bool(body["is_active"], "is_active")
         # NB: on_hand_qty / stock_value are ledger-owned and deliberately never patchable here.
         item.save()
         return success_response(
@@ -215,8 +251,8 @@ class StockIssueView(_ProcBase):
             expense_account=_resolve_expense_account(
                 entity, body.get("expense_account"), "expense_account"),
             actor_user=request.user,
-            reference=body.get("reference", ""),
-            narration=body.get("narration", ""),
+            reference=_text(body.get("reference", ""), "reference", 64),
+            narration=_text(body.get("narration", ""), "narration", 255),
         )
         return success_response(
             "Stock issued.",
@@ -257,8 +293,8 @@ class StockAdjustView(_ProcBase):
             # unit_cost only applies to an increase; strict integer kobo when provided.
             unit_cost=_strict_kobo(unit_cost, "unit_cost") if unit_cost not in (None, "") else None,
             actor_user=request.user,
-            reference=body.get("reference", ""),
-            narration=body.get("narration", ""),
+            reference=_text(body.get("reference", ""), "reference", 64),
+            narration=_text(body.get("narration", ""), "narration", 255),
         )
         return success_response(
             "Stock adjusted.",

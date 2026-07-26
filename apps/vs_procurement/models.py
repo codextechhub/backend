@@ -404,8 +404,11 @@ class StockItem(TimeStampedModel):
     def unit_cost(self) -> int:
         """Derived weighted-average unit cost in kobo (0 when nothing on hand)."""
         if self.on_hand_qty and self.on_hand_qty > 0:
-            # Weighted-average unit cost divides the perpetual stock value by the live quantity on hand.
-            return int((Decimal(self.stock_value) / Decimal(self.on_hand_qty)).to_integral_value())
+            # Import locally so the model layer does not create a module-load cycle with
+            # stock services, while keeping every stock valuation on one rounding rule.
+            from .stock import round_stock_kobo
+
+            return round_stock_kobo(Decimal(self.stock_value) / Decimal(self.on_hand_qty))
         return 0
 
     @property
