@@ -323,8 +323,8 @@ class GRIRAgingReport:
     rows: list = field(default_factory=list)
     bucket_totals: dict = field(default_factory=lambda: {b: 0 for b in AGING_BUCKETS})
     total_open: int = 0
-    control_balance: int = 0   # GL net of the GR/IR clearing account
-    difference: int = 0        # total_open − |control_balance| (unlinked/manual/legacy noise)
+    control_balance: int = 0   # signed normal-balance net of the GR/IR clearing account
+    difference: int = 0        # total_open − control_balance (unlinked/manual/legacy noise)
 
 
 def grir_aging(entity, *, as_of=None) -> GRIRAgingReport:
@@ -391,9 +391,9 @@ def grir_aging(entity, *, as_of=None) -> GRIRAgingReport:
     report.rows = rows
     control = grir_balance(entity)
     report.control_balance = control
-    # The detail rows preserve direction, while the dashboard's control headline is
-    # presented as a magnitude; abs normalises that GL headline before comparison.
-    report.difference = report.total_open - abs(control)
+    # Both sides use the GR/IR account's signed normal-balance convention: receipt-heavy
+    # positions are positive and invoice-heavy/over-clear positions are negative.
+    report.difference = report.total_open - control
     return report
 
 

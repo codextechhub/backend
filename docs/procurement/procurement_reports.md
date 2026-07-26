@@ -243,13 +243,14 @@ request (`reports.py:71-181`; `views/reports.py:30-87`).
 
 ## 8. Gotchas / known limitations
 
-### Fix automatically
+### Fixed automatically
 
-- **Signed GR/IR reconciliation is wrong for a net debit.** Receipt rows and the
-  account control both preserve direction, but aging currently compares
-  `total_open` with `abs(control_balance)`. A valid `-500,000` row against a
-  `-500,000` control falsely reports a `-1,000,000` difference. The comparison
-  must remain signed and needs invoice-heavy regression coverage
+- ✅ **Signed GR/IR reconciliation now works for a net debit.** Receipt rows and
+  the account control both preserve direction, and aging now calculates
+  `difference = total_open − control_balance` without discarding either sign.
+  A linked `-500,000` invoice-heavy row against a `-500,000` control therefore
+  reconciles to zero; positive receipt-heavy behavior is unchanged and both
+  directions have regression coverage
   (`reports.py:319-327,372-397,786-805`).
 
 ### Recommend fixing
@@ -358,16 +359,15 @@ Existing tests cover:
 - newest vendor assessment selection and serialized separation from computed
   on-time performance (`tests.py:2880-2950`);
 - AP reconciliation through invoice/payment, cash forecast bucketing, positive
-  GR/IR aging, matched clearing, PPV-neutral GR/IR reports, PO-line status/detail,
-  and foreign-detail isolation (`tests.py:2178-2200,2990-3091,3179-3351,
-  5151-5226`);
+  and negative signed GR/IR aging, matched clearing, PPV-neutral GR/IR reports,
+  PO-line status/detail, and foreign-detail isolation
+  (`tests.py:2178-2200,2990-3091,3179-3351,5151-5260`);
 - dashboard entity isolation, overdue balance, PO status, activity caps,
   actor-scoped approvals, vendor-payment workflows, and permission denial
   (`tests.py:5352-5580`).
 
 Before shipping the remaining recommendations, add:
 
-- signed invoice-heavy GR/IR aging/control reconciliation;
 - 403 and cross-entity tests for every report route, not only representative
   endpoints;
 - API tests for AP reconciliation, cash forecast, GR/IR aging, cycle-time, invalid

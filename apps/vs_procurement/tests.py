@@ -5191,8 +5191,42 @@ class GRIRAgingTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(row.invoiced_value, 0)
         self.assertEqual(row.bucket, "1-30")
         self.assertEqual(report.total_open, 1_000_000)
-        # Aging total matches the GL control magnitude.
-        self.assertEqual(report.total_open, abs(grir_balance(entity)))
+        # Aging and control use the same signed normal-balance convention.
+        self.assertEqual(report.total_open, grir_balance(entity))
+        self.assertEqual(report.difference, 0)
+
+    def test_invoice_heavy_linked_receipt_reconciles_as_a_signed_debit_position(self):
+        from vs_procurement.reports import grir_aging
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        po_line = po.lines.get()
+        grn = self.make_grn(entity, vendor, po, [(po_line, 10)])
+        post_grn(grn)  # Cr GR/IR 1,000,000
+        invoice = VendorInvoice.objects.create(
+            entity=entity, vendor=vendor, purchase_order=po,
+            invoice_date=datetime.date(2026, 1, 10),
+            due_date=datetime.date(2026, 1, 10),
+            approval_state=ProcApprovalState.APPROVED,
+        )
+        VendorInvoiceLine.objects.create(
+            vendor_invoice=invoice, po_line=po_line, grn_line=grn.lines.get(),
+            expense_account=self.acc(entity, "5100"),
+            quantity=15, unit_price=100_000, line_no=1,
+        )
+        # The explicit override posts a legitimate over-bill and clears 1,500,000
+        # against the linked receipt basis, leaving GR/IR net debit by 500,000.
+        post_vendor_invoice(invoice, allow_variance=True)
+
+        report = grir_aging(entity, as_of=datetime.date(2026, 1, 12))
+
+        self.assertEqual(len(report.rows), 1)
+        self.assertEqual(report.rows[0].grn_id, grn.pk)
+        self.assertEqual(report.rows[0].open_value, -500_000)
+        self.assertEqual(report.rows[0].bucket, "1-30")
+        self.assertEqual(report.bucket_totals["1-30"], -500_000)
+        self.assertEqual(report.total_open, -500_000)
+        self.assertEqual(report.control_balance, -500_000)
         self.assertEqual(report.difference, 0)
 
     def test_matched_invoice_clears_the_grir_row(self):
