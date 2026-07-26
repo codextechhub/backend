@@ -4093,18 +4093,44 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertIsNotNone(cash["balance"])
         self.assertIn("subtype", cash)
 
-        # Create a new account with a subtype; normal balance is derived for INCOME.
+        # The code is authoritative: a 4xxx code becomes INCOME even when a
+        # caller submits a conflicting account_type.
         resp = self.client.post(
             f"/v1/finance/accounts/?entity={entity.code}",
-            {"code": "4150", "name": "Boarding Fees", "account_type": "INCOME",
+            {"code": "4150", "name": "Boarding Fees", "account_type": "ASSET",
              "subtype": "Operating revenue"},
             format="json",
         )
         self.assertEqual(resp.status_code, 201)
         data = resp.json()["data"]
         self.assertEqual(data["code"], "4150")
+        self.assertEqual(data["account_type"], "INCOME")
         self.assertEqual(data["subtype"], "Operating revenue")
         self.assertEqual(data["normal_balance"], "CREDIT")
+
+        # Codes outside the five lines, mixed alphanumeric codes, and codes that
+        # are not exactly four digits are rejected.
+        for bad_code in ("6150", "4ABC", "410", "41000"):
+            invalid = self.client.post(
+                f"/v1/finance/accounts/?entity={entity.code}",
+                {"code": bad_code, "name": "Invalid"}, format="json",
+            )
+            self.assertEqual(invalid.status_code, 400)
+
+        # A parent must belong to the line selected by the child's first digit.
+        cash = Account.objects.get(entity=entity, code="1100")
+        wrong_parent = self.client.post(
+            f"/v1/finance/accounts/?entity={entity.code}",
+            {"code": "4198", "name": "Wrong parent", "parent": cash.id}, format="json",
+        )
+        self.assertEqual(wrong_parent.status_code, 400)
+        income_parent = Account.objects.get(entity=entity, code="4100")
+        valid_child = self.client.post(
+            f"/v1/finance/accounts/?entity={entity.code}",
+            {"code": "4199", "name": "Other income", "parent": income_parent.id}, format="json",
+        )
+        self.assertEqual(valid_child.status_code, 201)
+        self.assertEqual(valid_child.json()["data"]["parent_id"], income_parent.id)
 
         # Duplicate code is rejected.
         dup = self.client.post(

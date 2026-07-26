@@ -107,6 +107,22 @@ class AccountType(models.TextChoices):
     EXPENSE = "EXPENSE", "Expense"
 
 
+ACCOUNT_TYPE_BY_CODE_PREFIX = {
+    "1": AccountType.ASSET,
+    "2": AccountType.LIABILITY,
+    "3": AccountType.EQUITY,
+    "4": AccountType.INCOME,
+    "5": AccountType.EXPENSE,
+}
+ACCOUNT_CODE_LENGTH = 4
+
+
+def account_type_from_code(code):
+    """Return the canonical account type encoded by a Chart-of-Accounts code."""
+    value = str(code).strip()
+    return ACCOUNT_TYPE_BY_CODE_PREFIX.get(value[:1])
+
+
 # Group behavior for Normal Balance.
 class NormalBalance(models.TextChoices):
     """The side on which an account normally carries its balance."""

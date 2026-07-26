@@ -194,7 +194,7 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
     # POST added manually (not using CreateAPIView or ListCreateAPIView)
     def post(self, request):
         """Create a new chart-of-accounts node for the entity."""
-        from .constants import AccountType
+        from .constants import ACCOUNT_CODE_LENGTH, account_type_from_code
         from .models import Account
 
         entity = resolve_entity(request)
@@ -202,14 +202,18 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
         code = str(body.get("code", "")).strip()
         if not code:
             raise ValidationError({"code": "An account code is required."})
+        if not code.isdigit():
+            raise ValidationError({"code": "Account codes can contain numbers only."})
+        atype = account_type_from_code(code)
+        if atype is None:
+            raise ValidationError({"code": "Account codes must start with 1, 2, 3, 4, or 5."})
+        if len(code) != ACCOUNT_CODE_LENGTH:
+            raise ValidationError({"code": f"Account codes must contain exactly {ACCOUNT_CODE_LENGTH} digits."})
         if Account.objects.filter(entity=entity, code=code).exists():
             raise ValidationError({"code": f"Account '{code}' already exists in this entity."})
         name = str(body.get("name", "")).strip()
         if not name:
             raise ValidationError({"name": "An account name is required."})
-        atype = body.get("account_type")
-        if atype not in AccountType.values:
-            raise ValidationError({"account_type": "Choose a valid account type."})
         parent = None
         if (parent_ref := body.get("parent")) not in (None, ""):
             # Resolve by code first, then numeric pk (mirrors _resolve_cost_center),
@@ -220,6 +224,10 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
                 parent = pqs.filter(pk=int(parent_ref)).first()
             if parent is None:
                 raise ValidationError({"parent": "No such parent account in this entity."})
+            if parent.account_type != atype or account_type_from_code(parent.code) != atype:
+                raise ValidationError({
+                    "parent": "The parent account must be in the same account line as the new code.",
+                })
         # normal_balance is derived from type/contra by Account.save() when left blank.
         account = Account.objects.create(
             entity=entity, code=code, name=name, account_type=atype, parent=parent,
