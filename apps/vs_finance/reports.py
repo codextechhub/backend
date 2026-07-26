@@ -363,14 +363,22 @@ def ar_aging(entity, *, as_of=None) -> AgingReport:
 # Support the account gl net workflow.
 def _account_gl_net(account) -> int:
     """Net GL movement for an account across all its periods, signed to normal balance."""
-    from .constants import NormalBalance
+    return _accounts_gl_net([account.id], account.normal_balance)
 
-    total = 0
-    for bal in account.balances.all():
-        dr = bal.opening_debit + bal.debit_total
-        cr = bal.opening_credit + bal.credit_total
-        total += (dr - cr) if account.normal_balance == NormalBalance.DEBIT else (cr - dr)
-    return total
+
+def _accounts_gl_net(account_ids, normal_balance) -> int:
+    """Net GL movement for an account set, signed to one roll-up balance."""
+    from django.db.models import F, Sum
+    from django.db.models.functions import Coalesce
+    from .constants import NormalBalance
+    from .models import AccountBalance
+
+    totals = AccountBalance.objects.filter(account_id__in=account_ids).aggregate(
+        debit=Coalesce(Sum(F("opening_debit") + F("debit_total")), 0),
+        credit=Coalesce(Sum(F("opening_credit") + F("credit_total")), 0),
+    )
+    net = int(totals["debit"] or 0) - int(totals["credit"] or 0)
+    return net if normal_balance == NormalBalance.DEBIT else -net
 
 
 @dataclass

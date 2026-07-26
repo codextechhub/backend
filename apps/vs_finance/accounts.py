@@ -11,6 +11,30 @@ from __future__ import annotations
 from .exceptions import MissingAccountError
 
 
+def account_subtree_ids(account) -> set[int]:
+    """Return an account id and every descendant id in the same entity."""
+    from .models import Account
+
+    children_by_parent: dict[int | None, list[int]] = {}
+    for account_id, parent_id in (
+        Account.objects.filter(entity=account.entity)
+        .values_list("id", "parent_id")
+    ):
+        children_by_parent.setdefault(parent_id, []).append(account_id)
+
+    subtree = {account.id}
+    pending = [account.id]
+    while pending:
+        child_ids = [
+            child_id
+            for child_id in children_by_parent.get(pending.pop(), [])
+            if child_id not in subtree
+        ]
+        subtree.update(child_ids)
+        pending.extend(child_ids)
+    return subtree
+
+
 # Resolve a configured chart account by code.
 def resolve_account(entity, code: str, *, label: str = ""):
     """Return the active, postable :class:`Account` with ``code`` for ``entity``.

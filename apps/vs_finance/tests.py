@@ -4138,6 +4138,68 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         cash.refresh_from_db()
         self.assertEqual(cash.name, "Cash & Bank (main)")
 
+    def test_non_postable_account_detail_rolls_up_descendant_summaries(self):
+        entity, _, periods = self.build_books()
+        asset_root = Account.objects.get(entity=entity, code="1000")
+        header = Account.objects.create(
+            entity=entity, code="1600", name="Investments",
+            account_type=AccountType.ASSET, parent=asset_root, is_postable=False,
+        )
+        nested_header = Account.objects.create(
+            entity=entity, code="1610", name="Long-term investments",
+            account_type=AccountType.ASSET, parent=header, is_postable=False,
+        )
+        Account.objects.create(
+            entity=entity, code="1611", name="Managed fund",
+            account_type=AccountType.ASSET, parent=nested_header, is_postable=True,
+        )
+        prior_year = FiscalYear.objects.create(
+            entity=entity, year=2025,
+            start_date=datetime.date(2025, 1, 1), end_date=datetime.date(2025, 12, 31),
+        )
+        prior_period = FiscalPeriod.objects.create(
+            entity=entity, fiscal_year=prior_year, period_no=12, name="2025-12",
+            start_date=datetime.date(2025, 12, 1), end_date=datetime.date(2025, 12, 31),
+        )
+        post_journal(self.make_entry(
+            entity, prior_period, [("1611", 200000, 0), ("3100", 0, 200000)],
+            date=datetime.date(2025, 12, 15),
+        ))
+        post_journal(self.make_entry(
+            entity, periods[0], [("1611", 50000, 0), ("4100", 0, 50000)],
+            date=datetime.date(2026, 1, 15),
+        ))
+
+        resp = self.client.get(f"/v1/finance/accounts/{header.pk}/?entity={entity.code}")
+
+        self.assertEqual(resp.status_code, 200)
+        detail = resp.json()["data"]
+        self.assertEqual(detail["summary"]["current_balance"]["kobo"], 250000)
+        self.assertEqual(detail["summary"]["opening_balance"]["kobo"], 200000)
+        self.assertEqual(detail["summary"]["line_count"], 1)
+        self.assertEqual(detail["summary"]["journal_count"], 1)
+        self.assertEqual(detail["summary"]["fiscal_year_start"], "2026-01-01")
+        self.assertEqual(detail["activity"], [])
+
+        activity = self.client.get(
+            f"/v1/finance/accounts/{header.pk}/activity/?entity={entity.code}"
+            "&date_from=2026-01-01&date_to=2026-12-31",
+        )
+        self.assertEqual(activity.status_code, 200)
+        activity_data = activity.json()
+        self.assertEqual(activity_data["pagination"]["totalItems"], 1)
+        self.assertEqual(activity_data["data"][0]["account_code"], "1611")
+        self.assertEqual(activity_data["totals"]["debit"]["kobo"], 50000)
+        self.assertEqual(activity_data["totals"]["credit"]["kobo"], 0)
+        self.assertEqual(activity_data["totals"]["net_movement"]["kobo"], 50000)
+
+        outside_group = Account.objects.get(entity=entity, code="4100")
+        invalid_filter = self.client.get(
+            f"/v1/finance/accounts/{header.pk}/activity/?entity={entity.code}"
+            f"&account={outside_group.pk}",
+        )
+        self.assertEqual(invalid_filter.status_code, 400)
+
     # Verify direct entry endpoint posts capital journal behavior.
     def test_direct_entry_endpoint_posts_capital_journal(self):
         # The honest way capital/equity enters: a posted journal, not magic.

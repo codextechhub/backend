@@ -8,6 +8,7 @@ endpoint expects ``?entity=<id or code>`` — except the **global** currency/FX 
 from django.urls import path
 
 from .views import (
+    AccountActivityView,
     AccountDetailView,
     AccountListCreateView,
     AnalyticsSliceView,
@@ -165,6 +166,7 @@ urlpatterns = [
     # Master data + documents
     path("entities/", EntityListCreateView.as_view(), name="finance-entity-list"),
     path("accounts/", AccountListCreateView.as_view(), name="finance-account-list"),
+    path("accounts/<int:pk>/activity/", AccountActivityView.as_view(), name="finance-account-activity"),
     path("accounts/<int:pk>/", AccountDetailView.as_view(), name="finance-account-detail"),
     path("periods/", FiscalPeriodListView.as_view(), name="finance-period-list"),
     path("fiscal-years/", FiscalYearListView.as_view(), name="finance-fiscal-year-list"),

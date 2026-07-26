@@ -312,37 +312,58 @@ class AccountDetailView(APIView):
 
     def get(self, request, pk):
         import datetime
+        from django.db.models import Sum
         from .constants import DocumentStatus, NormalBalance, AccountType
         from .models import FiscalYear, JournalLine
-        from .reports import _account_gl_net
+        from .accounts import account_subtree_ids
+        from .reports import _accounts_gl_net
 
         entity = resolve_entity(request)
         acc = self._get(entity, pk)
         sign = 1 if acc.normal_balance == NormalBalance.DEBIT else -1
+        account_ids = {acc.id} if acc.is_postable else account_subtree_ids(acc)
 
-        # Posted lines hitting this account, oldest-first to accumulate a running balance.
-        lines = list(
-            JournalLine.objects.filter(account=acc, entry__status__in=[DocumentStatus.POSTED, DocumentStatus.REVERSED])
-            .select_related("entry", "cost_center").order_by("entry__date", "entry__id", "line_no")
+        # Header summaries roll up the full descendant subtree. Activity remains a
+        # leaf-only view because journals cannot post directly to header accounts.
+        summary_lines = JournalLine.objects.filter(
+            account_id__in=account_ids,
+            entry__status__in=[DocumentStatus.POSTED, DocumentStatus.REVERSED],
         )
         # Fiscal-year opening = net of everything posted before the current FY starts.
         today = datetime.date.today()
         fy = (
-            FiscalYear.objects.filter(entity=entity, start_date__lte=today, end_date__gte=today).first()
+            FiscalYear.objects.filter(
+                entity=entity, start_date__lte=today, end_date__gte=today,
+            ).first()
             or FiscalYear.objects.filter(entity=entity).order_by("-year").first()
         )
         fy_start = fy.start_date if fy else None
 
-        opening = 0
+        opening_lines = (
+            summary_lines.filter(entry__date__lt=fy_start)
+            if fy_start else summary_lines.none()
+        )
+        opening_totals = opening_lines.aggregate(debit=Sum("debit"), credit=Sum("credit"))
+        opening = sign * (
+            int(opening_totals["debit"] or 0) - int(opening_totals["credit"] or 0)
+        )
+        ytd_lines = (
+            summary_lines.filter(entry__date__gte=fy_start, entry__date__lte=today)
+            if fy_start else summary_lines
+        )
+        line_count = ytd_lines.count()
+        journal_count = ytd_lines.values("entry_id").distinct().count()
+
         running = 0
         activity = []
-        journals = set()
+        lines = (
+            summary_lines.select_related("entry", "cost_center")
+            .order_by("entry__date", "entry__id", "line_no")
+            if acc.is_postable else []
+        )
         for ln in lines:
             net = sign * (ln.debit - ln.credit)
-            if fy_start and ln.entry.date < fy_start:
-                opening += net
             running += net
-            journals.add(ln.entry_id)
             activity.append({
                 "date": ln.entry.date.isoformat(),
                 "journal_no": ln.entry.document_number,
@@ -357,20 +378,20 @@ class AccountDetailView(APIView):
             })
         activity.reverse()  # Newer first for the activity list (oldest first was used to accumulate the running balance).
 
-        """The main balance shown at the top comes from the saved GL balance, 
-        which is also used in the chart. Therefore, both numbers will always match. 
-        However, the activity list calculates its running balance from the individual 
-        transactions actually posted."""
+        # The saved GL balance also feeds the chart, while leaf activity derives
+        # its running balance from the individual posted transaction lines.
         return success_response(
             "Account detail retrieved.",
             data={
                 "account": AccountSerializer(acc).data,
                 "type_label": AccountType(acc.account_type).label if acc.account_type else "",
                 "summary": {
-                    "current_balance": _money(_account_gl_net(acc)),
+                    "current_balance": _money(_accounts_gl_net(account_ids, acc.normal_balance)),
                     "opening_balance": _money(opening),
-                    "line_count": len(lines),
-                    "journal_count": len(journals),
+                    "line_count": line_count,
+                    "journal_count": journal_count,
+                    "fiscal_year_start": fy_start.isoformat() if fy_start else None,
+                    "as_of": today.isoformat(),
                 },
                 "activity": activity,
             },
@@ -396,6 +417,94 @@ class AccountDetailView(APIView):
             acc.is_postable = bool(body["is_postable"])
         acc.save()
         return success_response(f"Account {acc.code} updated.", data=AccountSerializer(acc).data)
+
+
+class AccountActivityView(APIView):
+    """Paginated posted activity for an account or non-postable account group."""
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "finance.account.view"
+
+    def get(self, request, pk):
+        import datetime
+        from django.db.models import Sum
+        from core.pagination import XVSPagination
+        from .accounts import account_subtree_ids
+        from .constants import DocumentStatus, NormalBalance
+        from .models import Account, JournalLine
+
+        entity = resolve_entity(request)
+        account = Account.objects.filter(entity=entity, pk=pk).first()
+        if account is None:
+            raise NotFound("No such account in this entity.")
+
+        account_ids = {account.id} if account.is_postable else account_subtree_ids(account)
+        lines = (
+            JournalLine.objects.filter(
+                account_id__in=account_ids,
+                entry__status__in=[DocumentStatus.POSTED, DocumentStatus.REVERSED],
+            )
+            .select_related("account", "entry", "cost_center")
+        )
+
+        def parse_date(name):
+            raw = request.query_params.get(name)
+            if not raw:
+                return None
+            try:
+                return datetime.date.fromisoformat(str(raw))
+            except ValueError as exc:
+                raise ValidationError({name: "Use a valid date in YYYY-MM-DD format."}) from exc
+
+        date_from = parse_date("date_from")
+        date_to = parse_date("date_to")
+        if date_from and date_to and date_from > date_to:
+            raise ValidationError({"date_to": "The end date must be on or after the start date."})
+        if date_from:
+            lines = lines.filter(entry__date__gte=date_from)
+        if date_to:
+            lines = lines.filter(entry__date__lte=date_to)
+
+        if raw_account := request.query_params.get("account"):
+            if not str(raw_account).isdigit() or int(raw_account) not in account_ids:
+                raise ValidationError({"account": "Choose an account within this account group."})
+            lines = lines.filter(account_id=int(raw_account))
+
+        totals = lines.aggregate(debit=Sum("debit"), credit=Sum("credit"))
+        debit = int(totals["debit"] or 0)
+        credit = int(totals["credit"] or 0)
+        sign = 1 if account.normal_balance == NormalBalance.DEBIT else -1
+
+        paginator = XVSPagination()
+        paginator.page_size = 25
+        page = paginator.paginate_queryset(
+            lines.order_by("-entry__date", "-entry__id", "-line_no", "-id"),
+            request,
+            view=self,
+        )
+        data = [
+            {
+                "id": line.id,
+                "date": line.entry.date.isoformat(),
+                "account_id": line.account_id,
+                "account_code": line.account.code,
+                "account_name": line.account.name,
+                "journal_no": line.entry.document_number,
+                "source": getattr(line.entry, "source", "") or "Manual",
+                "description": line.description or line.entry.narration or "",
+                "cost_center": line.cost_center.code if line.cost_center_id else "",
+                "debit": _money(line.debit),
+                "credit": _money(line.credit),
+            }
+            for line in page
+        ]
+        response = paginator.get_paginated_response(data)
+        response.data["totals"] = {
+            "debit": _money(debit),
+            "credit": _money(credit),
+            "net_movement": _money(sign * (debit - credit)),
+        }
+        return response
 
 
 class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
