@@ -4,6 +4,7 @@ import logging
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError
+from django.db.models import ProtectedError, RestrictedError
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import exception_handler
@@ -34,6 +35,35 @@ def _is_unique_violation(exc: IntegrityError) -> bool:
     return 'unique constraint' in text or 'duplicate entry' in text
 
 
+def _blocker_summary(exc) -> tuple[str, dict]:
+    """Human phrase + machine detail for a ProtectedError / RestrictedError.
+
+    Returns e.g. ("2 positions", {"vs_user.position": 2}). Only model names and
+    counts are exposed — never the blocking rows themselves, which may live
+    outside the caller's tenant/entity scope.
+    """
+    objects = (
+        getattr(exc, 'protected_objects', None)
+        or getattr(exc, 'restricted_objects', None)
+        or ()
+    )
+    counts: dict = {}
+    for obj in objects:
+        model = type(obj)
+        counts[model] = counts.get(model, 0) + 1
+
+    phrases, detail = [], {}
+    for model, count in sorted(counts.items(), key=lambda kv: kv[0]._meta.label):
+        meta = model._meta
+        label = meta.verbose_name if count == 1 else meta.verbose_name_plural
+        phrases.append(f'{count} {str(label).lower()}')
+        detail[meta.label_lower] = count
+
+    if not phrases:
+        return 'other records', {}
+    return ' and '.join(phrases), detail
+
+
 def custom_exception_handler(exc, context):
 
     # Let DRF handle it first
@@ -59,6 +89,24 @@ def custom_exception_handler(exc, context):
             "message": '; '.join(messages),
             "error": {"code": "VALIDATION_ERROR", "detail": messages},
         }, status=status.HTTP_400_BAD_REQUEST)
+
+    # A delete blocked by an on_delete=PROTECT / RESTRICT foreign key is the
+    # client asking for something the data model forbids, not a server bug —
+    # so it must carry an actionable message. This branch MUST stay above the
+    # IntegrityError one: ProtectedError/RestrictedError subclass IntegrityError
+    # and would otherwise be logged as an opaque 500 ("An unexpected error
+    # occurred."), which is what the whole platform did before.
+    if isinstance(exc, (ProtectedError, RestrictedError)):
+        phrase, detail = _blocker_summary(exc)
+        logger.info("Delete blocked by protected references: %s", detail or exc)
+        return Response({
+            "success": False,
+            "message": (
+                f"This record cannot be deleted because {phrase} still "
+                "reference it. Remove or reassign them first."
+            ),
+            "error": {"code": "PROTECTED_REFERENCE", "detail": detail},
+        }, status=status.HTTP_409_CONFLICT)
 
     # Intercept DB integrity violations. ONLY unique violations are the
     # client's fault ("already exists"); FK / NOT NULL / CHECK violations are

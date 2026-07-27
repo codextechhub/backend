@@ -522,6 +522,162 @@ class SeedOrganogramCommandTests(TestCase):
         self.assertEqual(Position.objects.count(), before)
 
 
+class OrgNodeDeleteProtectionTests(TestCase):
+    """Deleting an org unit must either succeed or explain itself.
+
+    Two regressions live here: (a) `parent` used to be SET_NULL, so deleting a
+    Division silently orphaned its subtree into a state clean() forbids —
+    un-editable and un-deletable; (b) ProtectedError subclasses IntegrityError,
+    so every blocked delete surfaced as a 500 "An unexpected error occurred."
+    """
+
+    def setUp(self):
+        from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
+        from vs_tenants.models import Tenant
+        from vs_user.models import OrgNode, Position
+
+        tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
+        self.actor = make_cx_user(email="org-deleter@codex.test")
+        role = TenantRoleTemplate.objects.create(
+            tenant=tenant, key="xvs_super_admin", name="Super",
+        )
+        TenantUserRoleAssignment.objects.create(
+            tenant=tenant, user=self.actor, role=role, assignment_status="ACTIVE",
+        )
+
+        self.division = OrgNode.objects.create(
+            name="Technology", code="TECH", kind=OrgNode.Kind.DIVISION,
+        )
+        self.department = OrgNode.objects.create(
+            name="Engineering", code="ENGR", kind=OrgNode.Kind.DEPARTMENT,
+            parent=self.division,
+        )
+        self.team = OrgNode.objects.create(
+            name="Backend", code="BACKEND", kind=OrgNode.Kind.TEAM,
+            parent=self.department,
+        )
+        self.seat = Position.objects.create(
+            title="Backend Engineer", code="BE-ENG", org_node=self.team,
+        )
+
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.actor)
+
+    def test_deleting_parent_with_children_is_409_and_keeps_the_subtree(self):
+        from vs_user.models import OrgNode
+
+        resp = self.client.delete(f"/v1/user/organogram/nodes/{self.division.pk}/")
+        self.assertEqual(resp.status_code, 409, resp.content)
+        body = resp.json()
+        self.assertEqual(body["error"]["code"], "PROTECTED_REFERENCE")
+        self.assertIn("org node", body["message"])
+        # The whole point: no silent orphaning.
+        self.assertTrue(OrgNode.objects.filter(pk=self.division.pk).exists())
+        self.department.refresh_from_db()
+        self.assertEqual(self.department.parent_id, self.division.pk)
+
+    def test_protection_covers_every_tier_not_just_divisions(self):
+        """`parent` is one self-FK, so Department→Team is guarded exactly like
+        Division→Department — deleting a Department with Teams under it must not
+        orphan them either."""
+        from vs_user.models import OrgNode
+
+        resp = self.client.delete(f"/v1/user/organogram/nodes/{self.department.pk}/")
+        self.assertEqual(resp.status_code, 409, resp.content)
+        self.assertEqual(resp.json()["error"]["detail"], {"vs_user.orgnode": 1})
+        self.team.refresh_from_db()
+        self.assertEqual(self.team.parent_id, self.department.pk)
+        self.assertTrue(OrgNode.objects.filter(pk=self.department.pk).exists())
+
+    def test_deleting_a_node_holding_seats_is_409_naming_positions(self):
+        resp = self.client.delete(f"/v1/user/organogram/nodes/{self.team.pk}/")
+        self.assertEqual(resp.status_code, 409, resp.content)
+        body = resp.json()
+        self.assertEqual(body["error"]["code"], "PROTECTED_REFERENCE")
+        self.assertEqual(body["error"]["detail"], {"vs_user.position": 1})
+        self.assertIn("position", body["message"])
+
+    def test_empty_leaf_still_deletes(self):
+        from vs_user.models import OrgNode
+
+        self.seat.delete()
+        resp = self.client.delete(f"/v1/user/organogram/nodes/{self.team.pk}/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertFalse(OrgNode.objects.filter(pk=self.team.pk).exists())
+
+
+class PurgeOrphanOrgNodesCommandTests(TestCase):
+    """One-off cleanup for the nodes the old SET_NULL parent already orphaned."""
+
+    def setUp(self):
+        from vs_user.models import OrgNode, Position, PositionAssignment
+
+        self.division = OrgNode.objects.create(
+            name="Technology", code="TECH", kind=OrgNode.Kind.DIVISION,
+        )
+        self.department = OrgNode.objects.create(
+            name="Engineering", code="ENGR", kind=OrgNode.Kind.DEPARTMENT,
+            parent=self.division,
+        )
+        self.team = OrgNode.objects.create(
+            name="Backend", code="BACKEND", kind=OrgNode.Kind.TEAM,
+            parent=self.department,
+        )
+        self.seat = Position.objects.create(
+            title="Backend Engineer", code="BE-ENG", org_node=self.team,
+        )
+        self.holder = make_cx_user(email="seated@codex.test")
+        PositionAssignment.objects.create(user=self.holder, position=self.seat)
+        # Reproduce the legacy damage the command exists to clean up.
+        OrgNode.objects.filter(pk=self.department.pk).update(parent=None)
+
+    def _run(self, *args):
+        from django.core.management import call_command
+        out = StringIO()
+        call_command("purge_orphan_org_nodes", *args, stdout=out, stderr=out)
+        return out.getvalue()
+
+    def test_dry_run_deletes_nothing(self):
+        from django.utils import timezone
+        from vs_user.models import OrgNode, PositionAssignment
+
+        # Vacate the seat so the orphan is deletable and the run reaches the
+        # dry-run summary rather than the "all seated" early exit.
+        PositionAssignment.objects.filter(position=self.seat).update(
+            end_date=timezone.localdate(),
+        )
+        output = self._run()
+        self.assertIn("DRY RUN", output)
+        self.assertEqual(OrgNode.objects.count(), 3)
+
+    def test_seated_orphans_are_skipped_without_force(self):
+        from vs_user.models import OrgNode
+
+        output = self._run("--apply")
+        self.assertIn("SKIPPED", output)
+        self.assertIn(self.holder.full_name, output)
+        self.assertEqual(OrgNode.objects.count(), 3)
+
+    def test_force_deletes_the_whole_orphan_subtree(self):
+        from vs_user.models import OrgNode, Position, PositionAssignment
+
+        self._run("--apply", "--force")
+        # Deepest-first, so PROTECT on `parent` never blocks the cleanup.
+        self.assertEqual(
+            list(OrgNode.objects.values_list("code", flat=True)), ["DV-TECH"],
+        )
+        self.assertFalse(Position.objects.filter(pk=self.seat.pk).exists())
+        self.assertFalse(PositionAssignment.objects.filter(user=self.holder).exists())
+
+    def test_no_orphans_is_a_noop(self):
+        from vs_user.models import OrgNode
+
+        OrgNode.objects.filter(pk=self.department.pk).update(parent=self.division)
+        output = self._run("--apply", "--force")
+        self.assertIn("No orphaned org nodes", output)
+        self.assertEqual(OrgNode.objects.count(), 3)
+
+
 class LoginLockoutOracleTests(TestCase):
     """B13 — wrong-password attempts must never reveal the locked state."""
 

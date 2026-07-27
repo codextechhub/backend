@@ -25,6 +25,27 @@ python manage.py collectstatic --no-input
 
 python manage.py migrate
 
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  ONE-TIME ORPHAN ORG-NODE PURGE — REMOVE THIS BLOCK AFTER THIS DEPLOY.   ║
+# ║                                                                          ║
+# ║  OrgNode.parent used to be SET_NULL, so deleting a Division/Department    ║
+# ║  silently orphaned its children into a state OrgNode.clean() forbids —    ║
+# ║  parentless Departments/Teams that can be neither edited nor deleted.     ║
+# ║  vs_user.0004 makes `parent` PROTECT (applied by the migrate above), so   ║
+# ║  no NEW orphans can appear; this clears the ones already in the database. ║
+# ║                                                                          ║
+# ║  ⚠️  --force DELETES seats that still hold people, and their assignment   ║
+# ║  (tenure) history. There is no undo. The dry run below prints the full    ║
+# ║  plan to the deploy log FIRST, so the log is your only record of what     ║
+# ║  went — read it after the deploy.                                        ║
+# ║                                                                          ║
+# ║  Harmless if left in (it exits cleanly when there are no orphans), but    ║
+# ║  delete this block down to the END marker once the deploy succeeds.       ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+python manage.py purge_orphan_org_nodes
+python manage.py purge_orphan_org_nodes --apply --force
+# ╚═══════════════════════ END ONE-TIME PURGE BLOCK ═════════════════════════╝
+
 # Run seeding commands AFTER migrate succeeds (all idempotent — safe every deploy)
 python manage.py seed_all_permissions
 # python manage.py seed_import

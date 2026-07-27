@@ -896,9 +896,14 @@ class OrgNode(TimeStampedModel):
     kind        = models.CharField(
         max_length=16, choices=Kind.choices, default=Kind.DEPARTMENT,
     )
+    # PROTECT, not SET_NULL: orphaning a child would produce a parentless
+    # Department/Team, a state clean() below forbids outright — such rows are
+    # then neither editable (the serializer re-runs clean()) nor deletable, and
+    # drop out of every department/division roll-up. Delete or re-parent the
+    # subtree first; the API answers 409 with the blocking counts.
     parent      = models.ForeignKey(
         'self',
-        on_delete=models.SET_NULL, null=True, blank=True,
+        on_delete=models.PROTECT, null=True, blank=True,
         related_name='children',
     )
     # The position whose holder heads this node (e.g. "Head of Engineering").
