@@ -25,26 +25,6 @@ python manage.py collectstatic --no-input
 
 python manage.py migrate
 
-# ╔══════════════════════════════════════════════════════════════════════════╗
-# ║  ONE-TIME JOB RE-ATTRIBUTION — REMOVE THIS BLOCK AFTER THIS DEPLOY.      ║
-# ║                                                                          ║
-# ║  Invitation-email jobs used to be queued with the INVITEE as the job     ║
-# ║  owner instead of the admin who sent the invite. Every invited account   ║
-# ║  therefore carries a queue row it never triggered and a "task completed" ║
-# ║  bell about an email an admin sent TO them — visible on activation.      ║
-# ║  The call sites are fixed; this clears what the old sends left behind.   ║
-# ║                                                                          ║
-# ║  ⚠️  --commit DELETES the mis-delivered notification rows. The dry run    ║
-# ║  below prints the full plan to the deploy log FIRST — that log is the    ║
-# ║  only record of what went, so read it after the deploy.                  ║
-# ║                                                                          ║
-# ║  Harmless if left in (repaired rows stop matching, so it becomes a       ║
-# ║  no-op), but delete this block down to the END marker once it succeeds.  ║
-# ╚══════════════════════════════════════════════════════════════════════════╝
-python manage.py repair_job_attribution
-python manage.py repair_job_attribution --commit
-# ╚═══════════════════════════ END ONE-TIME BLOCK ═══════════════════════════╝
-
 # Run seeding commands AFTER migrate succeeds (all idempotent — safe every deploy)
 python manage.py seed_all_permissions
 # python manage.py seed_import
