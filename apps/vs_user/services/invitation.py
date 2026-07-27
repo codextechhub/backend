@@ -198,10 +198,12 @@ class InvitationService:
         try:
             send_invitation_email_task.delay(
                 str(user.activation_key),
-                _job_owner_id=str(user.id),
-                _job_tenant_id=user.tenant_id,
+                # Owner is the admin doing the resend — not the invitee.
+                _job_owner_id=str(requested_by.id) if requested_by else None,
                 _job_label=f"Invitation email to {user.email}",
                 _job_kind="email",
+                # Fan-out plumbing: one bell notification per invited row is spam.
+                _job_notify=False,
             )
         except Exception:
             # The invitation record is already reset — an email dispatch

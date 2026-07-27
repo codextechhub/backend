@@ -57,7 +57,9 @@ class PasswordService:
         if not user or user.status == User.Status.DEACTIVATED:
             return  # Do not reveal whether the account exists
 
-        PasswordService._create_and_send_reset(user, origin="SELF", sender_name="CodeX System")
+        PasswordService._create_and_send_reset(
+            user, origin="SELF", sender_name="CodeX System", actor=user,
+        )
 
     @staticmethod
     @transaction.atomic
@@ -67,7 +69,9 @@ class PasswordService:
         Creates a 24-hour window and emails it to the user.
         """
         sender_name = requesting_user.full_name if requesting_user else "CodeX System"
-        PasswordService._create_and_send_reset(target_user, origin="ADMIN", sender_name=sender_name)
+        PasswordService._create_and_send_reset(
+            target_user, origin="ADMIN", sender_name=sender_name, actor=requesting_user,
+        )
 
         log_auth_event(
             actor=requesting_user, subject=target_user,
@@ -125,9 +129,13 @@ class PasswordService:
     # ── Private ───────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _create_and_send_reset(user, origin: str, sender_name: str = "CodeX System", request=None):
+    def _create_and_send_reset(user, origin: str, sender_name: str = "CodeX System", request=None, actor=None):
         """
         Creates a PasswordResetRequest record and dispatches the reset email.
+
+        ``actor`` owns the resulting queue row and gets the completion
+        notification — the requesting admin for ADMIN origin, the user
+        themselves for SELF. It is never the target user on an admin reset.
         """
         expiry_hours = RESET_EXPIRY_SELF_HOURS if origin == "SELF" else RESET_EXPIRY_ADMIN_HOURS
 
@@ -148,8 +156,7 @@ class PasswordService:
                     activation_key=str(user.activation_key),
                     origin=origin,
                     sender_name=sender_name,
-                    _job_owner_id=str(user.id),
-                    _job_tenant_id=user.tenant_id,
+                    _job_owner_id=str(actor.id) if actor else None,
                     _job_label="Password reset email",
                     _job_kind="email",
                 )

@@ -197,10 +197,14 @@ class UserCreationService:
         try:
             send_invitation_email_task.delay(
                 str(user.activation_key),
-                _job_owner_id=str(user.id),
-                _job_tenant_id=user.tenant_id,
+                # The job belongs to whoever asked for the invite, not the invitee:
+                # a bulk approval must not drop queue rows and completion
+                # notifications into 200 strangers' inboxes.
+                _job_owner_id=str(requested_by.id) if requested_by else None,
                 _job_label=f"Invitation email to {user.email}",
                 _job_kind="email",
+                # Fan-out plumbing: one bell notification per invited row is spam.
+                _job_notify=False,
             )
         except Exception:
             logger.error(

@@ -47,7 +47,11 @@ class BackgroundJob(models.Model):
     owner = models.ForeignKey(
         "vs_user.User", on_delete=models.SET_NULL, null=True, blank=True,
         related_name="background_jobs",
-        help_text="Who triggered the task. Null for system/scheduled runs.",
+        help_text=(
+            "The ACTOR who triggered the task — never the subject the task acts "
+            "on. An invitation email to Jane queued by admin Ada is owned by Ada. "
+            "Null for system/scheduled runs."
+        ),
     )
     tenant = models.ForeignKey(
         "vs_tenants.Tenant", on_delete=models.PROTECT,
@@ -73,6 +77,15 @@ class BackgroundJob(models.Model):
     error = models.TextField(blank=True, default="")
     traceback = models.TextField(blank=True, default="")
     worker = models.CharField(max_length=255, blank=True, default="")
+    notify_owner = models.BooleanField(
+        default=True,
+        help_text=(
+            "Whether the owner gets an in-app notification when the task ends. "
+            "False for per-recipient fan-out plumbing (one invitation email per "
+            "imported row), where one notification per job would spam the actor "
+            "— the row is still tracked in View Queues."
+        ),
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)

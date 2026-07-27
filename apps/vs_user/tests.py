@@ -221,6 +221,65 @@ class PlatformUserCreationTests(TestCase):
         )
 
 
+class JobAttributionTests(TestCase):
+    """Email jobs belong to the actor who triggered them, never to the subject.
+
+    Regression: invitation/reset jobs were queued with the *target* user as
+    ``_job_owner_id``, so a freshly activated account opened its inbox to a
+    "task completed" notification for an email an admin had sent it, and saw a
+    queue row it never triggered.
+    """
+
+    def setUp(self):
+        self.actor = make_cx_user(email="job.actor@codex.test")
+        self.subject = make_cx_user(email="job.subject@codex.test")
+
+    def _queued_kwargs(self, patched):
+        self.assertTrue(patched.called, "expected an email job to be queued")
+        return patched.call_args.kwargs
+
+    def test_invitation_job_is_owned_by_the_inviting_admin(self):
+        from vs_user.services.user import UserCreationService
+
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay") as delay:
+            UserCreationService.finalize_invitation(
+                user=self.subject, requested_by=self.actor,
+            )
+        kwargs = self._queued_kwargs(delay)
+        self.assertEqual(kwargs["_job_owner_id"], str(self.actor.id))
+        self.assertNotEqual(kwargs["_job_owner_id"], str(self.subject.id))
+        # Per-row fan-out: the actor gets queue rows, not one bell per invitee.
+        self.assertIs(kwargs["_job_notify"], False)
+
+    def test_invitation_resend_job_is_owned_by_the_resending_admin(self):
+        from vs_user.services.invitation import InvitationService
+
+        InvitationService.create(user=self.subject, invited_by=self.actor)
+        with mock.patch("vs_user.tasks.send_invitation_email_task.delay") as delay:
+            InvitationService.resend(user=self.subject, requested_by=self.actor)
+        kwargs = self._queued_kwargs(delay)
+        self.assertEqual(kwargs["_job_owner_id"], str(self.actor.id))
+
+    def test_admin_password_reset_job_is_owned_by_the_admin(self):
+        from vs_user.services.password import PasswordService
+
+        with mock.patch("vs_user.tasks.send_password_reset_email_task.delay") as delay:
+            PasswordService.admin_reset(
+                target_user=self.subject, requesting_user=self.actor,
+            )
+        kwargs = self._queued_kwargs(delay)
+        self.assertEqual(kwargs["_job_owner_id"], str(self.actor.id))
+
+    def test_self_service_reset_job_is_owned_by_the_requesting_user(self):
+        from vs_user.services.password import PasswordService
+
+        with mock.patch("vs_user.tasks.send_password_reset_email_task.delay") as delay:
+            PasswordService.request_reset(email=self.subject.email)
+        kwargs = self._queued_kwargs(delay)
+        # SELF origin: the subject *is* the actor, so the row is theirs.
+        self.assertEqual(kwargs["_job_owner_id"], str(self.subject.id))
+
+
 class UserListScopeTests(TestCase):
     """Platform user lists keep CX and tenant-bound accounts separate."""
 

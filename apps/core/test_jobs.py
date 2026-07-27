@@ -1,5 +1,8 @@
 """Tests for BackgroundJob tracking (TrackedTask) and the me/tasks API."""
+from io import StringIO
+
 from celery import shared_task
+from django.core.management import call_command
 from django.test import TestCase
 from django.urls import reverse
 from rest_framework import status
@@ -86,11 +89,110 @@ class TrackedTaskTests(TestCase):
         self.assertEqual(job.status, BackgroundJob.Status.FAILED)
         self.assertIn("probe failure", job.error)
 
+    def test_notify_opt_out_tracks_the_job_but_stays_silent(self):
+        from vs_notifications.models import Notification
+
+        _job_probe_ok.delay(
+            1,
+            _job_owner_id=str(self.owner.id),
+            _job_label="Fan-out email",
+            _job_kind="email",
+            _job_notify=False,
+        )
+        job = BackgroundJob.objects.get(owner=self.owner)
+        # Still a queue row the owner can track…
+        self.assertEqual(job.status, BackgroundJob.Status.SUCCEEDED)
+        self.assertFalse(job.notify_owner)
+        # …but no bell notification, so 200 imported rows stay 200 rows and 0 bells.
+        self.assertFalse(Notification.objects.filter(recipient=self.owner).exists())
+
     def test_system_task_recorded_without_owner(self):
         _job_probe_ok.delay(1)
         job = BackgroundJob.objects.get(task_name__contains="_job_probe_ok")
         self.assertIsNone(job.owner_id)
         self.assertEqual(job.status, BackgroundJob.Status.SUCCEEDED)
+
+
+class RepairJobAttributionCommandTests(TestCase):
+    """The cleanup for invitation jobs older sends left on the invitee."""
+
+    def setUp(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from vs_notifications.constants import ChannelChoices
+        from vs_notifications.models import Notification, NotificationEventType
+        from vs_user.models import UserInvitation
+
+        self.admin = _cx("inviter@codexng.com")
+        self.invitee = _cx("invitee@codexng.com")
+        UserInvitation.objects.create(
+            user=self.invitee, invited_by=self.admin,
+            expires_at=timezone.now() + timedelta(days=7),
+        )
+        self.label = f"Invitation email to {self.invitee.email}"
+        self.job = BackgroundJob.objects.create(
+            owner=self.invitee, tenant=self.invitee.tenant,
+            celery_task_id="bad-attribution-1", label=self.label,
+            task_name="vs_user.send_invitation_email_task",
+            kind="email", status="SUCCEEDED",
+        )
+        event_type, _ = NotificationEventType.objects.get_or_create(
+            key="task.completed", defaults={"label": "Background task completed"},
+        )
+        self.note = Notification.objects.create(
+            recipient=self.invitee, tenant=self.invitee.tenant,
+            event_type=event_type, channel=ChannelChoices.IN_APP,
+            subject="", body=f"{self.label} finished.",
+        )
+
+    def test_dry_run_reports_without_writing(self):
+        from vs_notifications.models import Notification
+
+        call_command("repair_job_attribution", stdout=StringIO())
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.owner_id, self.invitee.id)
+        self.assertTrue(Notification.objects.filter(pk=self.note.pk).exists())
+
+    def test_commit_moves_the_job_and_drops_the_stray_notification(self):
+        from vs_notifications.models import Notification
+
+        call_command("repair_job_attribution", "--commit", stdout=StringIO())
+        self.job.refresh_from_db()
+        self.assertEqual(self.job.owner_id, self.admin.id)
+        self.assertFalse(self.job.notify_owner)
+        self.assertFalse(Notification.objects.filter(pk=self.note.pk).exists())
+
+    def test_rerun_is_idempotent(self):
+        out = StringIO()
+        call_command("repair_job_attribution", "--commit", stdout=StringIO())
+        call_command("repair_job_attribution", "--commit", stdout=out)
+        # The repaired row no longer matches owner-is-subject, so nothing is left.
+        self.assertIn("Repaired 0 job(s)", out.getvalue())
+
+    def test_self_invited_row_becomes_a_system_row(self):
+        # System provisioning stamped invited_by as the invitee itself — there is
+        # no actor to hand the row to, so it must not stay on the invitee.
+        self.invitee.invitation.invited_by = self.invitee
+        self.invitee.invitation.save(update_fields=["invited_by"])
+
+        call_command("repair_job_attribution", "--commit", stdout=StringIO())
+        self.job.refresh_from_db()
+        self.assertIsNone(self.job.owner_id)
+
+    def test_correctly_owned_jobs_are_left_alone(self):
+        job = BackgroundJob.objects.create(
+            owner=self.admin, tenant=self.admin.tenant,
+            celery_task_id="good-attribution-1",
+            label=f"Invitation email to {self.invitee.email}",
+            task_name="vs_user.send_invitation_email_task",
+            kind="email", status="SUCCEEDED",
+        )
+        call_command("repair_job_attribution", "--commit", stdout=StringIO())
+        job.refresh_from_db()
+        self.assertEqual(job.owner_id, self.admin.id)
+        self.assertTrue(job.notify_owner)
 
 
 class MyTasksAPITests(TestCase):

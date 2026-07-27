@@ -119,10 +119,13 @@ def provision_admin_user(
 
             send_invitation_email_task.delay(
                 str(user.activation_key),
-                _job_owner_id=str(user.id),
-                _job_tenant_id=user.tenant_id,
+                # Owner is whoever provisioned the school admin; a provisioning
+                # run with no actor stays a system row (owner=None).
+                _job_owner_id=str(invited_by.id) if invited_by else None,
                 _job_label=f"Invitation email to {user.email}",
                 _job_kind="email",
+                # Fan-out plumbing: one bell notification per invited row is spam.
+                _job_notify=False,
             )
 
             # Mark the admin link record so it is not re-processed.
