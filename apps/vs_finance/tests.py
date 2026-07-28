@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 from decimal import Decimal
+from unittest import mock
 
 from django.db.models import Sum
 from django.test import TestCase, override_settings
@@ -3548,6 +3549,37 @@ class ChangesInEquityTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(soce.total_closing, balance_sheet(entity).total_equity)
         self.assertTrue(soce.is_reconciled)
 
+    # Verify unscoped excludes future fiscal periods behavior.
+    def test_unscoped_excludes_future_fiscal_periods(self):
+        from django.utils import timezone as django_timezone
+
+        entity, _, periods = self.build_books()
+        post_journal(self.make_entry(
+            entity, periods[0], [("1100", 1000000, 0), ("3100", 0, 1000000)],
+            date=datetime.date(2026, 1, 5),
+        ))
+        future_year = FiscalYear.objects.create(
+            entity=entity, year=2027,
+            start_date=datetime.date(2027, 1, 1), end_date=datetime.date(2027, 12, 31),
+        )
+        future_period = FiscalPeriod.objects.create(
+            entity=entity, fiscal_year=future_year, period_no=1, name="Jan 2027",
+            start_date=datetime.date(2027, 1, 1), end_date=datetime.date(2027, 1, 31),
+        )
+        post_journal(self.make_entry(
+            entity, future_period, [("1100", 500000, 0), ("3100", 0, 500000)],
+            date=datetime.date(2027, 1, 5),
+        ))
+        today = django_timezone.make_aware(datetime.datetime(2026, 2, 15, 12))
+
+        with mock.patch("vs_finance.reports.timezone.now", return_value=today):
+            soce = statement_of_changes_in_equity(entity)
+            bs = balance_sheet(entity)
+
+        self.assertEqual(soce.total_closing, 1000000)
+        self.assertEqual(soce.total_closing, bs.total_equity)
+        self.assertTrue(soce.is_reconciled)
+
 
 # Group tests for Statutory Pack Tests.
 class StatutoryPackTests(_Phase4FixtureMixin, TestCase):
@@ -4718,6 +4750,23 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(pack["income_statement"]["net_income"]["kobo"], 180000)
         self.assertTrue(pack["cash_flow"]["is_reconciled"])
         self.assertTrue(pack["trial_balance"]["is_balanced"])
+
+    # Verify balance sheet accepts and validates its as of date behavior.
+    def test_balance_sheet_accepts_and_validates_as_of_date(self):
+        entity, _ = self._seed()
+        endpoint = f"/v1/finance/reports/balance-sheet/?entity={entity.code}"
+
+        before_activity = self.client.get(f"{endpoint}&as_of=2025-12-31")
+        self.assertEqual(before_activity.status_code, 200, before_activity.content)
+        self.assertEqual(before_activity.json()["data"]["as_of"], "2025-12-31")
+        self.assertEqual(before_activity.json()["data"]["total_assets"]["kobo"], 0)
+
+        after_activity = self.client.get(f"{endpoint}&as_of=2026-01-31")
+        self.assertEqual(after_activity.status_code, 200, after_activity.content)
+        self.assertEqual(after_activity.json()["data"]["total_assets"]["kobo"], 1180000)
+
+        invalid = self.client.get(f"{endpoint}&as_of=not-a-date")
+        self.assertEqual(invalid.status_code, 400, invalid.content)
 
     # Verify journal list detail and post action behavior.
     def test_journal_list_detail_and_post_action(self):

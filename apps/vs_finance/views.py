@@ -9,6 +9,7 @@ rendered by ``core.exceptions.custom_exception_handler`` (the typed-exception pa
 the views stay thin.
 """
 from __future__ import annotations
+import datetime
 from shutil import which
 
 from django.http import HttpResponse
@@ -107,6 +108,20 @@ def _resolve_period(entity, request, *, param="period"):
     if period is None:
         raise NotFound(f"No fiscal period matches '{raw}' for this entity.")
     return period
+
+
+# Support validated ISO date query parameters across finance reports.
+def _resolve_date_param(request, param):
+    """Return ``?param=YYYY-MM-DD`` as a date, or ``None`` when it is omitted."""
+    raw = request.query_params.get(param)
+    if not raw:
+        return None
+    try:
+        return datetime.date.fromisoformat(str(raw))
+    except ValueError as exc:
+        raise ValidationError({
+            param: "Use a valid date in YYYY-MM-DD format.",
+        }) from exc
 
 
 # --------------------------------------------------------------------------- #
@@ -434,7 +449,6 @@ class AccountActivityView(APIView):
     rbac_permission = "finance.account.view"
 
     def get(self, request, pk):
-        import datetime
         from django.db.models import Sum
         from core.pagination import XVSPagination
         from .accounts import account_subtree_ids
@@ -455,17 +469,8 @@ class AccountActivityView(APIView):
             .select_related("account", "entry", "cost_center")
         )
 
-        def parse_date(name):
-            raw = request.query_params.get(name)
-            if not raw:
-                return None
-            try:
-                return datetime.date.fromisoformat(str(raw))
-            except ValueError as exc:
-                raise ValidationError({name: "Use a valid date in YYYY-MM-DD format."}) from exc
-
-        date_from = parse_date("date_from")
-        date_to = parse_date("date_to")
+        date_from = _resolve_date_param(request, "date_from")
+        date_to = _resolve_date_param(request, "date_to")
         if date_from and date_to and date_from > date_to:
             raise ValidationError({"date_to": "The end date must be on or after the start date."})
         if date_from:
@@ -1673,7 +1678,7 @@ class BalanceSheetView(APIView):
         from .exports import ReportTable
 
         entity = resolve_entity(request)
-        as_of = request.query_params.get("as_of") or None
+        as_of = _resolve_date_param(request, "as_of")
         bs = balance_sheet_sections(entity, as_of=as_of)
 
         # Support the group workflow.
@@ -1928,7 +1933,7 @@ class StatutoryPackView(APIView):
         from .exports import ReportTable
 
         entity = resolve_entity(request)
-        as_of = request.query_params.get("as_of") or None
+        as_of = _resolve_date_param(request, "as_of")
         period = _resolve_period(entity, request)
         pack = statutory_pack(entity, as_of=as_of, period=period)
 
@@ -2060,7 +2065,7 @@ class ARAgingView(APIView):
         from .exports import ReportTable
 
         entity = resolve_entity(request)
-        as_of = request.query_params.get("as_of") or None
+        as_of = _resolve_date_param(request, "as_of")
         report = ar_aging(entity, as_of=as_of)
 
         columns = ["Code", "Customer"] + list(AGING_BUCKETS) + ["Net"]
@@ -2113,7 +2118,7 @@ class ARReconciliationView(APIView):
         from .reports import reconcile_ar
 
         entity = resolve_entity(request)
-        as_of = request.query_params.get("as_of") or None
+        as_of = _resolve_date_param(request, "as_of")
         rec = reconcile_ar(entity, as_of=as_of)
         return success_response(
             message="AR reconciliation retrieved.",

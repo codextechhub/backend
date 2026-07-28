@@ -1531,9 +1531,14 @@ def statement_of_changes_in_equity(entity, *, period=None) -> StatementOfChanges
         window_qs = base.filter(period=period)
         as_of = period.end_date
     else:
-        prior_qs = base.none()
-        window_qs = base
         as_of = timezone.now().date()
+        prior_qs = base.none()
+        # Keep the movement window on the same point-in-time basis as the
+        # reconciliation target below.  Entities may have open future periods
+        # (for example a Sep-Aug school year provisioned in July); including those
+        # balances here while balance_sheet() correctly excludes them produces a
+        # false closing-equity mismatch.
+        window_qs = base.filter(period__start_date__lte=as_of)
 
     opening_map = _net_by_account(prior_qs, account_types={AccountType.EQUITY})
     window_map = _net_by_account(window_qs, account_types={AccountType.EQUITY})
