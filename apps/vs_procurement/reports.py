@@ -68,6 +68,90 @@ class APAgingReport:
     total_net: int = 0
 
 
+def _ap_snapshot(entity, *, as_of=None, vendor=None):
+    """Return effective invoices, historical allocations, and unapplied vendor credits.
+
+    With no explicit cutoff this preserves the current-state contract. With ``as_of``,
+    journal dates define accounting effectiveness and a later payment reversal does not
+    rewrite the earlier snapshot; its posted reversal only removes the payment on/after
+    the reversal date.
+    """
+    from django.db.models import Q, Sum
+    from .models import VendorInvoice, VendorPayment, VendorPaymentAllocation
+
+    invoices = VendorInvoice.objects.filter(entity=entity)
+    payments = VendorPayment.objects.filter(entity=entity)
+    if vendor is not None:
+        invoices = invoices.filter(vendor=vendor)
+        payments = payments.filter(vendor=vendor)
+    if as_of is None:
+        invoices = invoices.filter(status="POSTED")
+        payments = payments.filter(status="POSTED")
+    else:
+        invoices = invoices.filter(
+            journal__status__in=("POSTED", "REVERSED"), journal__date__lte=as_of,
+        ).filter(
+            Q(journal__reversed_by__isnull=True)
+            | Q(journal__reversed_by__date__gt=as_of)
+        )
+        payments = payments.filter(
+            journal__status__in=("POSTED", "REVERSED"), journal__date__lte=as_of,
+        ).filter(
+            Q(journal__reversed_by__isnull=True)
+            | Q(journal__reversed_by__date__gt=as_of)
+        )
+
+    invoices = list(invoices.select_related("vendor").order_by("invoice_date", "id"))
+    invoice_ids = [invoice.id for invoice in invoices]
+    payment_ids = list(payments.values_list("id", flat=True))
+    paid_by_invoice = {
+        row["vendor_invoice_id"]: int(row["amount"] or 0)
+        for row in (
+            VendorPaymentAllocation.objects
+            .filter(vendor_invoice_id__in=invoice_ids, payment_id__in=payment_ids)
+            .values("vendor_invoice_id")
+            .annotate(amount=Sum("amount"))
+        )
+    }
+    allocated_by_payment = {
+        row["payment_id"]: int(row["amount"] or 0)
+        for row in (
+            VendorPaymentAllocation.objects
+            .filter(payment_id__in=payment_ids, vendor_invoice_id__in=invoice_ids)
+            .values("payment_id")
+            .annotate(amount=Sum("amount"))
+        )
+    }
+    credits_by_vendor = {}
+    for payment in payments.select_related("vendor").order_by("payment_date", "id"):
+        credit = int(payment.gross_amount) - allocated_by_payment.get(payment.id, 0)
+        if credit > 0:
+            credits_by_vendor[payment.vendor_id] = (
+                credits_by_vendor.get(payment.vendor_id, 0) + credit
+            )
+    return invoices, paid_by_invoice, credits_by_vendor
+
+
+def _snapshot_payment_status(total: int, paid: int) -> str:
+    if paid <= 0:
+        return "UNPAID"
+    return "PAID" if paid >= total else "PARTIAL"
+
+
+def _account_gl_net_as_of(account, as_of) -> int:
+    """Posted journal-line movement through ``as_of``, signed to normal balance."""
+    from django.db.models import Sum
+    from vs_finance.constants import NormalBalance
+    from vs_finance.models import JournalLine
+
+    totals = JournalLine.objects.filter(
+        account=account, entry__status__in=("POSTED", "REVERSED"),
+        entry__date__lte=as_of,
+    ).aggregate(debit=Sum("debit"), credit=Sum("credit"))
+    net = int(totals["debit"] or 0) - int(totals["credit"] or 0)
+    return net if account.normal_balance == NormalBalance.DEBIT else -net
+
+
 def ap_aging(entity, *, as_of=None) -> APAgingReport:
     """Age each vendor's open bills into current/1-30/31-60/61-90/90+ buckets.
 
@@ -75,11 +159,10 @@ def ap_aging(entity, *, as_of=None) -> APAgingReport:
     not-fully-paid bills contribute, by their ``balance_due``. Each vendor's unallocated
     payment (a prepayment/debit) is reported and netted, so ``total_net`` equals the AP
     control account's GL balance (see :func:`reconcile_ap`). Bucket totals remain gross
-    open invoices; unapplied payments reduce only the vendor/report net. ``as_of`` is the
-    aging reference date, not an implicit transaction-date cutoff.
+    open invoices; unapplied payments reduce only the vendor/report net. When supplied,
+    ``as_of`` is both the aging clock and accounting-effectiveness cutoff.
     """
-    from .models import VendorInvoice, VendorPayment
-
+    cutoff = as_of
     as_of = as_of or timezone.now().date()
     report = APAgingReport(entity_id=entity.id, as_of=as_of)
     rows: dict[int, AgingRow] = {}
@@ -97,14 +180,11 @@ def ap_aging(entity, *, as_of=None) -> APAgingReport:
 
     # Entity scoping is applied before any vendor grouping; callers cannot mix tenant
     # balances merely by passing a vendor id from another ledger entity.
-    posted_invoices = (
-        VendorInvoice.objects
-        .filter(entity=entity, status="POSTED")
-        .exclude(payment_status="PAID")
-        .select_related("vendor")
+    invoices, paid_by_invoice, credits_by_vendor = _ap_snapshot(
+        entity, as_of=cutoff,
     )
-    for inv in posted_invoices:
-        due = inv.balance_due
+    for inv in invoices:
+        due = int(inv.total) - paid_by_invoice.get(inv.id, 0)
         if due <= 0:
             continue
         ref_date = inv.due_date or inv.invoice_date
@@ -116,15 +196,13 @@ def ap_aging(entity, *, as_of=None) -> APAgingReport:
 
     # A posted but unallocated payment is an AP debit/prepayment. It is not aged into an
     # invoice bucket because no bill/due date owns that credit yet.
-    posted_payments = (
-        VendorPayment.objects.filter(entity=entity, status="POSTED").select_related("vendor")
-    )
-    for pay in posted_payments:
-        credit = pay.unallocated_amount
-        if credit <= 0:
-            continue
-        r = row_for(pay.vendor)
-        r.unallocated_credit += credit
+    if credits_by_vendor:
+        from .models import Vendor
+
+        for vendor in Vendor.objects.filter(
+            entity=entity, id__in=credits_by_vendor,
+        ).order_by("code", "id"):
+            row_for(vendor).unallocated_credit += credits_by_vendor[vendor.id]
 
     for r in rows.values():
         r.net = r.outstanding - r.unallocated_credit
@@ -134,7 +212,7 @@ def ap_aging(entity, *, as_of=None) -> APAgingReport:
         report.total_unallocated_credit += r.unallocated_credit
         report.total_net += r.net
 
-    report.rows = sorted(rows.values(), key=lambda x: x.code)
+    report.rows = sorted(rows.values(), key=lambda x: (x.code, x.vendor_id))
     return report
 
 
@@ -171,7 +249,10 @@ def reconcile_ap(entity, *, as_of=None) -> APReconciliation:
         for v in Vendor.objects.filter(entity=entity).select_related("payable_account")
         if v.payable_account_id is not None
     }
-    control_total = sum(_account_gl_net(acc) for acc in control_accounts)
+    control_total = sum(
+        _account_gl_net_as_of(acc, as_of) if as_of is not None else _account_gl_net(acc)
+        for acc in control_accounts
+    )
 
     return APReconciliation(
         entity_id=entity.id,
@@ -217,6 +298,8 @@ class CashRequirementRow:
     name: str
     buckets: dict = field(default_factory=lambda: {b: 0 for b in FORECAST_BUCKETS})
     total: int = 0
+    unallocated_credit: int = 0
+    net_total: int = 0
 
 
 @dataclass
@@ -226,6 +309,8 @@ class CashRequirementsForecast:
     rows: list = field(default_factory=list)
     bucket_totals: dict = field(default_factory=lambda: {b: 0 for b in FORECAST_BUCKETS})
     total_due: int = 0
+    total_unallocated_credit: int = 0
+    net_cash_requirement: int = 0
 
 
 def ap_cash_requirements(entity, *, as_of=None) -> CashRequirementsForecast:
@@ -235,23 +320,20 @@ def ap_cash_requirements(entity, *, as_of=None) -> CashRequirementsForecast:
     ``balance_due`` is bucketed by ``due_date - as_of`` into overdue / 0-7 / 8-30 / 31-60
     / 61-90 / 90+ days, per vendor, so treasury can see how much cash each window needs.
     A bill with no ``due_date`` falls back to ``invoice_date`` (typically landing in
-    ``overdue``). All amounts are integer kobo. ``as_of`` supplies the forecast clock;
-    it does not itself exclude bills dated after that day.
+    ``overdue``). Unallocated vendor payments are shown separately and reduce the net
+    requirement. All amounts are integer kobo; ``as_of`` is both forecast clock and
+    accounting-effectiveness cutoff.
     """
-    from .models import VendorInvoice
-
+    cutoff = as_of
     as_of = as_of or timezone.now().date()
     report = CashRequirementsForecast(entity_id=entity.id, as_of=as_of)
     rows: dict[int, CashRequirementRow] = {}
 
-    posted_invoices = (
-        VendorInvoice.objects
-        .filter(entity=entity, status="POSTED")
-        .exclude(payment_status="PAID")
-        .select_related("vendor")
+    invoices, paid_by_invoice, credits_by_vendor = _ap_snapshot(
+        entity, as_of=cutoff,
     )
-    for inv in posted_invoices:
-        due = inv.balance_due
+    for inv in invoices:
+        due = int(inv.total) - paid_by_invoice.get(inv.id, 0)
         if due <= 0:
             continue
         ref_date = inv.due_date or inv.invoice_date
@@ -267,12 +349,29 @@ def ap_cash_requirements(entity, *, as_of=None) -> CashRequirementsForecast:
         r.buckets[bucket] += due
         r.total += due
 
+    if credits_by_vendor:
+        from .models import Vendor
+
+        for vendor in Vendor.objects.filter(
+            entity=entity, id__in=credits_by_vendor,
+        ).order_by("code", "id"):
+            row = rows.get(vendor.id)
+            if row is None:
+                row = rows[vendor.id] = CashRequirementRow(
+                    vendor_id=vendor.id, code=vendor.code, name=vendor.name,
+                    buckets={b: 0 for b in FORECAST_BUCKETS},
+                )
+            row.unallocated_credit += credits_by_vendor[vendor.id]
+
     for r in rows.values():
         for b in FORECAST_BUCKETS:
             report.bucket_totals[b] += r.buckets[b]
         report.total_due += r.total
+        report.total_unallocated_credit += r.unallocated_credit
+        r.net_total = r.total - r.unallocated_credit
 
-    report.rows = sorted(rows.values(), key=lambda x: x.code)
+    report.net_cash_requirement = report.total_due - report.total_unallocated_credit
+    report.rows = sorted(rows.values(), key=lambda x: (x.code, x.vendor_id))
     return report
 
 
@@ -298,6 +397,111 @@ def _grir_invoice_line_basis(line) -> int:
     else:
         return 0
     return compute_line_net(line.quantity, unit_price)
+
+
+def _grir_attribution(entity, *, as_of=None):
+    """Attribute posted invoice clearing to receipt lines, including PO-only FIFO.
+
+    Explicit ``grn_line`` links win and consume that receipt's capacity first. Remaining
+    PO-only clearing is split by receipt date/GRN/line order without inventing receipt
+    rows for excess invoice-first value.
+    """
+    from collections import defaultdict
+    from django.db.models import Q
+    from .models import GoodsReceivedNoteLine, VendorInvoiceLine
+
+    receipt_qs = GoodsReceivedNoteLine.objects.filter(
+        grn__entity=entity,
+    ).select_related("grn", "grn__vendor", "po_line").order_by(
+        "grn__received_date", "grn_id", "id",
+    )
+    invoice_qs = VendorInvoiceLine.objects.filter(
+        vendor_invoice__entity=entity,
+    ).select_related(
+        "vendor_invoice", "grn_line__grn", "po_line",
+    ).order_by("vendor_invoice__invoice_date", "vendor_invoice_id", "id")
+    if as_of is None:
+        receipt_qs = receipt_qs.filter(grn__status="POSTED")
+        invoice_qs = invoice_qs.filter(vendor_invoice__status="POSTED")
+    else:
+        receipt_qs = receipt_qs.filter(
+            grn__journal__status__in=("POSTED", "REVERSED"),
+            grn__journal__date__lte=as_of,
+        ).filter(
+            Q(grn__journal__reversed_by__isnull=True)
+            | Q(grn__journal__reversed_by__date__gt=as_of)
+        )
+        invoice_qs = invoice_qs.filter(
+            vendor_invoice__journal__status__in=("POSTED", "REVERSED"),
+            vendor_invoice__journal__date__lte=as_of,
+        ).filter(
+            Q(vendor_invoice__journal__reversed_by__isnull=True)
+            | Q(vendor_invoice__journal__reversed_by__date__gt=as_of)
+        )
+
+    receipts = list(receipt_qs)
+    invoice_lines = list(invoice_qs)
+    receipt_by_id = {line.id: line for line in receipts}
+    remaining = {line.id: int(line.value_amount) for line in receipts}
+    receipts_by_po = defaultdict(list)
+    for line in receipts:
+        if line.po_line_id is not None:
+            receipts_by_po[line.po_line_id].append(line)
+
+    by_grn = defaultdict(int)
+    evidence_by_grn = defaultdict(dict)
+    unattributed_by_po = defaultdict(int)
+
+    def add_evidence(grn_id, invoice, amount):
+        by_grn[grn_id] += amount
+        row = evidence_by_grn[grn_id].get(invoice.id)
+        if row is None:
+            row = evidence_by_grn[grn_id][invoice.id] = {
+                "id": invoice.id,
+                "document_number": invoice.document_number or str(invoice.pk),
+                "invoice_date": str(invoice.invoice_date),
+                "net": 0,
+            }
+        row["net"] += amount
+
+    # Explicit receipt links are authoritative and reserve capacity before FIFO.
+    for line in invoice_lines:
+        if line.grn_line_id is None:
+            continue
+        receipt = receipt_by_id.get(line.grn_line_id)
+        if receipt is None:
+            continue
+        basis = _grir_invoice_line_basis(line)
+        add_evidence(receipt.grn_id, line.vendor_invoice, basis)
+        remaining[receipt.id] = max(0, remaining[receipt.id] - basis)
+
+    # PO-only lines consume the still-open receipt capacity in deterministic FIFO order.
+    for line in invoice_lines:
+        if line.grn_line_id is not None or line.po_line_id is None:
+            continue
+        left = _grir_invoice_line_basis(line)
+        for receipt in receipts_by_po.get(line.po_line_id, ()):
+            if left <= 0:
+                break
+            amount = min(left, remaining[receipt.id])
+            if amount <= 0:
+                continue
+            add_evidence(receipt.grn_id, line.vendor_invoice, amount)
+            remaining[receipt.id] -= amount
+            left -= amount
+        if left > 0:
+            unattributed_by_po[line.po_line_id] += left
+
+    return {
+        "by_grn": dict(by_grn),
+        "evidence_by_grn": {
+            grn_id: sorted(rows.values(), key=lambda row: (row["invoice_date"], row["id"]))
+            for grn_id, rows in evidence_by_grn.items()
+        },
+        "unattributed_by_po": dict(unattributed_by_po),
+        "receipt_lines": receipts,
+        "invoice_lines": invoice_lines,
+    }
 
 
 @dataclass
@@ -341,36 +545,19 @@ def grir_aging(entity, *, as_of=None) -> GRIRAgingReport:
     received-not-invoiced; negative means the clearing basis exceeded the receipt.
     Bucket totals preserve that sign. All amounts are integer kobo.
     """
-    from .models import GoodsReceivedNote, VendorInvoiceLine
-
+    cutoff = as_of
     as_of = as_of or timezone.now().date()
     report = GRIRAgingReport(entity_id=entity.id, as_of=as_of)
-
-    posted_grns = (
-        GoodsReceivedNote.objects
-        .filter(entity=entity, status="POSTED")
-        .select_related("vendor")
-        .order_by("received_date", "id")
-    )
-    posted_grns = list(posted_grns)
-    invoiced_by_grn = {}
-    if posted_grns:
-        inv_lines = (
-            VendorInvoiceLine.objects
-            .filter(
-                grn_line__grn_id__in=[grn.id for grn in posted_grns],
-                vendor_invoice__status="POSTED",
-            )
-            .select_related("grn_line__grn", "po_line")
-        )
-        for line in inv_lines:
-            grn_id = line.grn_line.grn_id
-            invoiced_by_grn[grn_id] = (
-                invoiced_by_grn.get(grn_id, 0) + _grir_invoice_line_basis(line)
-            )
+    attribution = _grir_attribution(entity, as_of=cutoff)
+    posted_grns = {}
+    for line in attribution["receipt_lines"]:
+        posted_grns[line.grn_id] = line.grn
+    invoiced_by_grn = attribution["by_grn"]
 
     rows = []
-    for grn in posted_grns:
+    for grn in sorted(
+        posted_grns.values(), key=lambda row: (row.received_date, row.id),
+    ):
         invoiced = invoiced_by_grn.get(grn.id, 0)
         # GRN credit less matched invoice debit: positive is an uncleared receipt;
         # negative is an over-clear position and remains visible.
@@ -389,7 +576,7 @@ def grir_aging(entity, *, as_of=None) -> GRIRAgingReport:
         report.total_open += open_value
 
     report.rows = rows
-    control = grir_balance(entity)
+    control = grir_balance(entity, as_of=cutoff)
     report.control_balance = control
     # Both sides use the GR/IR account's signed normal-balance convention: receipt-heavy
     # positions are positive and invoice-heavy/over-clear positions are negative.
@@ -439,22 +626,21 @@ def ap_vendor_open_bills(entity, vendor, *, as_of=None) -> APVendorDetail:
     each POSTED, not-fully-paid bill's ``balance_due`` aged off its ``due_date`` (falling
     back to ``invoice_date``). All amounts are integer kobo.
     """
-    from .models import VendorInvoice, VendorPayment
-
+    cutoff = as_of
     as_of = as_of or timezone.now().date()
     detail = APVendorDetail(
         vendor_id=vendor.id, code=vendor.code, name=vendor.name, as_of=as_of,
         buckets={b: 0 for b in AGING_BUCKETS},
     )
 
-    open_invoices = (
-        VendorInvoice.objects
-        .filter(entity=entity, vendor=vendor, status="POSTED")
-        .exclude(payment_status="PAID")
-        .order_by("due_date", "invoice_date", "id")
+    invoices, paid_by_invoice, credits_by_vendor = _ap_snapshot(
+        entity, as_of=cutoff, vendor=vendor,
     )
-    for inv in open_invoices:
-        due = inv.balance_due
+    for inv in sorted(
+        invoices, key=lambda row: (row.due_date or row.invoice_date, row.invoice_date, row.id),
+    ):
+        paid = paid_by_invoice.get(inv.id, 0)
+        due = int(inv.total) - paid
         if due <= 0:
             continue
         ref_date = inv.due_date or inv.invoice_date
@@ -466,14 +652,10 @@ def ap_vendor_open_bills(entity, vendor, *, as_of=None) -> APVendorDetail:
             invoice_id=inv.id, document_number=inv.document_number or str(inv.pk),
             invoice_date=inv.invoice_date, due_date=inv.due_date,
             days_overdue=days_overdue, bucket=bucket,
-            balance_due=due, payment_status=inv.payment_status,
+            balance_due=due, payment_status=_snapshot_payment_status(inv.total, paid),
         ))
 
-    # Net the vendor's unallocated (prepayment) credit, exactly as ap_aging does.
-    for pay in VendorPayment.objects.filter(entity=entity, vendor=vendor, status="POSTED"):
-        credit = pay.unallocated_amount
-        if credit > 0:
-            detail.unallocated_credit += credit
+    detail.unallocated_credit = credits_by_vendor.get(vendor.id, 0)
     detail.net = detail.outstanding - detail.unallocated_credit
     return detail
 
@@ -506,8 +688,10 @@ def grir_grn_detail(entity, grn_id, *, as_of=None) -> GRIRGrnDetail | None:
     tenant boundary even when a caller guesses a valid foreign ``grn_id``. All amounts
     are integer kobo.
     """
-    from .models import GoodsReceivedNote, VendorInvoiceLine
+    from django.db.models import Q
+    from .models import GoodsReceivedNote
 
+    cutoff = as_of
     as_of = as_of or timezone.now().date()
     grn = (
         GoodsReceivedNote.objects
@@ -517,26 +701,28 @@ def grir_grn_detail(entity, grn_id, *, as_of=None) -> GRIRGrnDetail | None:
     )
     if grn is None:
         return None
+    if cutoff is None:
+        if grn.status != "POSTED":
+            return None
+    else:
+        effective = (
+            GoodsReceivedNote.objects
+            .filter(
+                pk=grn.pk, journal__status__in=("POSTED", "REVERSED"),
+                journal__date__lte=cutoff,
+            )
+            .filter(
+                Q(journal__reversed_by__isnull=True)
+                | Q(journal__reversed_by__date__gt=cutoff)
+            )
+            .exists()
+        )
+        if not effective:
+            return None
 
-    invoiced = 0
-    invoices: dict[int, dict] = {}
-    inv_lines = (
-        VendorInvoiceLine.objects
-        .filter(grn_line__grn=grn, vendor_invoice__status="POSTED")
-        .select_related("vendor_invoice", "grn_line__grn", "po_line")
-    )
-    for line in inv_lines:
-        clearing_basis = _grir_invoice_line_basis(line)
-        invoiced += clearing_basis
-        vi = line.vendor_invoice
-        # Accumulate the GR/IR-clearing net per distinct matched invoice.
-        row = invoices.get(vi.id)
-        if row is None:
-            row = invoices[vi.id] = {
-                "id": vi.id, "document_number": vi.document_number or str(vi.pk),
-                "invoice_date": str(vi.invoice_date), "net": 0,
-            }
-        row["net"] += clearing_basis
+    attribution = _grir_attribution(entity, as_of=cutoff)
+    invoiced = attribution["by_grn"].get(grn.id, 0)
+    invoices = attribution["evidence_by_grn"].get(grn.id, [])
 
     days = (as_of - grn.received_date).days
     return GRIRGrnDetail(
@@ -546,7 +732,7 @@ def grir_grn_detail(entity, grn_id, *, as_of=None) -> GRIRGrnDetail | None:
         po_number=(grn.purchase_order.document_number if grn.purchase_order else ""),
         received_value=grn.total_value, invoiced_value=invoiced,
         open_value=grn.total_value - invoiced,
-        invoices=list(invoices.values()),
+        invoices=invoices,
     )
 
 
@@ -610,17 +796,17 @@ def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
     ``GoodsReceivedNoteLine``s pointing at it, while ``invoiced_qty`` and the GR/IR
     clearing-basis ``invoiced_value`` sum POSTED ``VendorInvoiceLine``s pointing at it
     (the direct ``po_line`` FK — the same link that advances invoiced quantity). Only
-    lines with any receipt or invoice activity are returned. ``as_of`` labels the report
-    snapshot but does not impose an additional receipt/invoice date cutoff. All amounts
-    are integer kobo.
+    lines with any receipt or invoice activity are returned. ``as_of`` cuts both sides
+    off by their posted journal dates. All amounts are integer kobo.
     """
     from collections import defaultdict
     from decimal import Decimal
 
-    from django.db.models import Sum
+    from django.db.models import Q, Sum
 
     from .models import GoodsReceivedNoteLine, PurchaseOrderLine, VendorInvoiceLine
 
+    cutoff = as_of
     as_of = as_of or timezone.now().date()
     report = GRIRPoLinesReport(entity_id=entity.id, as_of=as_of)
 
@@ -638,9 +824,20 @@ def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
     recv = defaultdict(lambda: (Decimal(0), 0))
     grn_agg = (
         GoodsReceivedNoteLine.objects
-        .filter(po_line__purchase_order__entity=entity, grn__status="POSTED")
-        .values("po_line")
-        .annotate(qty=Sum("accepted_qty"), value=Sum("value_amount"))
+        .filter(po_line__purchase_order__entity=entity)
+    )
+    if cutoff is None:
+        grn_agg = grn_agg.filter(grn__status="POSTED")
+    else:
+        grn_agg = grn_agg.filter(
+            grn__journal__status__in=("POSTED", "REVERSED"),
+            grn__journal__date__lte=cutoff,
+        ).filter(
+            Q(grn__journal__reversed_by__isnull=True)
+            | Q(grn__journal__reversed_by__date__gt=cutoff)
+        )
+    grn_agg = grn_agg.values("po_line").annotate(
+        qty=Sum("accepted_qty"), value=Sum("value_amount"),
     )
     for r in grn_agg:
         recv[r["po_line"]] = (Decimal(r["qty"] or 0), int(r["value"] or 0))
@@ -649,9 +846,19 @@ def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
     inv = defaultdict(lambda: (Decimal(0), 0))
     inv_lines = (
         VendorInvoiceLine.objects
-        .filter(po_line__purchase_order__entity=entity, vendor_invoice__status="POSTED")
+        .filter(po_line__purchase_order__entity=entity)
         .select_related("po_line", "grn_line__grn")
     )
+    if cutoff is None:
+        inv_lines = inv_lines.filter(vendor_invoice__status="POSTED")
+    else:
+        inv_lines = inv_lines.filter(
+            vendor_invoice__journal__status__in=("POSTED", "REVERSED"),
+            vendor_invoice__journal__date__lte=cutoff,
+        ).filter(
+            Q(vendor_invoice__journal__reversed_by__isnull=True)
+            | Q(vendor_invoice__journal__reversed_by__date__gt=cutoff)
+        )
     for invoice_line in inv_lines:
         quantity, value = inv[invoice_line.po_line_id]
         inv[invoice_line.po_line_id] = (
@@ -714,6 +921,7 @@ def grir_po_line_detail(entity, po_line_id, *, as_of=None) -> GRIRPoLineDetail |
     amounts are integer kobo.
     """
     from decimal import Decimal
+    from django.db.models import Q
 
     from .models import GoodsReceivedNoteLine, PurchaseOrderLine, VendorInvoiceLine
 
@@ -731,10 +939,20 @@ def grir_po_line_detail(entity, po_line_id, *, as_of=None) -> GRIRPoLineDetail |
     grns = []
     grn_lines = (
         GoodsReceivedNoteLine.objects
-        .filter(po_line=line, grn__status="POSTED")
+        .filter(po_line=line)
         .select_related("grn")
         .order_by("grn__received_date", "grn_id", "id")
     )
+    if as_of is None:
+        grn_lines = grn_lines.filter(grn__status="POSTED")
+    else:
+        grn_lines = grn_lines.filter(
+            grn__journal__status__in=("POSTED", "REVERSED"),
+            grn__journal__date__lte=as_of,
+        ).filter(
+            Q(grn__journal__reversed_by__isnull=True)
+            | Q(grn__journal__reversed_by__date__gt=as_of)
+        )
     for gl in grn_lines:
         received_qty += Decimal(gl.accepted_qty)
         received_value += int(gl.value_amount)
@@ -750,10 +968,20 @@ def grir_po_line_detail(entity, po_line_id, *, as_of=None) -> GRIRPoLineDetail |
     invoices = []
     inv_lines = (
         VendorInvoiceLine.objects
-        .filter(po_line=line, vendor_invoice__status="POSTED")
+        .filter(po_line=line)
         .select_related("vendor_invoice", "po_line", "grn_line__grn")
         .order_by("vendor_invoice__invoice_date", "vendor_invoice_id", "id")
     )
+    if as_of is None:
+        inv_lines = inv_lines.filter(vendor_invoice__status="POSTED")
+    else:
+        inv_lines = inv_lines.filter(
+            vendor_invoice__journal__status__in=("POSTED", "REVERSED"),
+            vendor_invoice__journal__date__lte=as_of,
+        ).filter(
+            Q(vendor_invoice__journal__reversed_by__isnull=True)
+            | Q(vendor_invoice__journal__reversed_by__date__gt=as_of)
+        )
     for il in inv_lines:
         invoiced_qty += Decimal(il.quantity)
         clearing_basis = _grir_invoice_line_basis(il)
@@ -783,7 +1011,7 @@ def grir_po_line_detail(entity, po_line_id, *, as_of=None) -> GRIRPoLineDetail |
     )
 
 
-def grir_balance(entity) -> int:
+def grir_balance(entity, *, as_of=None) -> int:
     """Net balance of the GR/IR clearing account for ``entity`` (kobo, normal-balance signed).
 
     The GR/IR control nets to **zero** when every received good has been invoiced (and
@@ -802,7 +1030,10 @@ def grir_balance(entity) -> int:
     )
     if account is None:
         return 0
-    return _account_gl_net(account)
+    return (
+        _account_gl_net_as_of(account, as_of)
+        if as_of is not None else _account_gl_net(account)
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -946,8 +1177,8 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, categ
         crow.gross += inv.total
         crow.invoice_count += 1
 
-    report.by_vendor = sorted(vendors.values(), key=lambda r: r.gross, reverse=True)
-    report.by_category = sorted(categories.values(), key=lambda r: r.gross, reverse=True)
+    report.by_vendor = sorted(vendors.values(), key=lambda r: (-r.gross, r.key))
+    report.by_category = sorted(categories.values(), key=lambda r: (-r.gross, r.key))
     # Ascending by month key = chronological (a plain "YYYY-MM" string sort).
     report.by_period = [periods[k] for k in sorted(periods)]
     return report
@@ -1131,7 +1362,9 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None) -
             if row.latest_assessment is None:
                 row.latest_assessment = assessment
 
-    ordered_rows = sorted(rows.values(), key=lambda r: r.total_billed, reverse=True)
+    ordered_rows = sorted(
+        rows.values(), key=lambda r: (-r.total_billed, r.code, r.vendor_id),
+    )
     return VendorPerformanceReport(
         entity_id=entity.id, start_date=start_date, end_date=end_date, rows=ordered_rows,
     )
@@ -1145,6 +1378,7 @@ class CycleStage:
     label: str
     sample_count: int = 0
     avg_days: float | None = None
+    excluded_count: int = 0
 
 
 @dataclass
@@ -1157,6 +1391,7 @@ class ProcurementCycleTime:
     stages: list = field(default_factory=list)
     end_to_end_avg_days: float | None = None
     end_to_end_count: int = 0
+    end_to_end_excluded_count: int = 0
 
 
 def procurement_cycle_time(entity, *, start_date=None, end_date=None) -> ProcurementCycleTime:
@@ -1170,12 +1405,12 @@ def procurement_cycle_time(entity, *, start_date=None, end_date=None) -> Procure
     * **receipt → invoice** receipt ``received_date`` → bill ``invoice_date``
     * **invoice → payment** bill ``invoice_date`` → payment ``payment_date``
 
-    The chain is anchored on the **payment** (``payment_date`` in the inclusive window); each hop
-    is only counted when both of its endpoints exist, so a stage's sample size may be
-    smaller than the others. ``end_to_end`` is requisition → payment for chains where
-    every link is present. PO timing uses the earliest POSTED receipt; when an invoice
-    has multiple allocation rows, it is measured once using the first allocation yielded
-    by the allocation query.
+    The chain is anchored on the date cumulative posted allocations fully settle the
+    invoice (that settlement date must fall in the inclusive window). Partially settled
+    invoices are omitted. Each hop is counted only when both endpoints exist; impossible
+    negative hops are excluded and counted separately without suppressing other valid
+    stages. ``end_to_end`` is requisition → full settlement for complete chains. PO
+    timing uses the earliest POSTED receipt.
     """
     from vs_finance.constants import DocumentStatus
 
@@ -1186,6 +1421,20 @@ def procurement_cycle_time(entity, *, start_date=None, end_date=None) -> Procure
     receipt_to_invoice: list = []
     invoice_to_payment: list = []
     end_to_end: list = []
+    excluded = {
+        "req_to_po": 0,
+        "po_to_receipt": 0,
+        "receipt_to_invoice": 0,
+        "invoice_to_payment": 0,
+        "end_to_end": 0,
+    }
+
+    def add_duration(stage, values, value):
+        """Keep valid evidence while making impossible negative hops observable."""
+        if value < 0:
+            excluded[stage] += 1
+        else:
+            values.append(value)
 
     # Cache the earliest POSTED receipt per PO so we don't re-query in the loop.
     # Chronological ordering plus setdefault deliberately keeps the first receipt only.
@@ -1193,59 +1442,103 @@ def procurement_cycle_time(entity, *, start_date=None, end_date=None) -> Procure
     for grn in (
         GoodsReceivedNote.objects
         .filter(entity=entity, status=DocumentStatus.POSTED, purchase_order__isnull=False)
-        .order_by("received_date")
+        .order_by("received_date", "id")
     ):
         first_receipt.setdefault(grn.purchase_order_id, grn.received_date)
 
     alloc_qs = (
         VendorPaymentAllocation.objects
-        .filter(payment__entity=entity, payment__status=DocumentStatus.POSTED)
+        .filter(
+            payment__entity=entity,
+            payment__status=DocumentStatus.POSTED,
+            vendor_invoice__status=DocumentStatus.POSTED,
+        )
         .select_related(
             "payment", "vendor_invoice", "vendor_invoice__purchase_order",
             "vendor_invoice__purchase_order__requisition",
         )
+        .order_by("vendor_invoice_id", "payment__payment_date", "payment_id", "id")
     )
-    seen_invoices: set = set()
+    settled: dict = {}
     for alloc in alloc_qs:
+        inv = alloc.vendor_invoice
+        state = settled.setdefault(inv.id, {"amount": 0, "allocation": None})
+        if state["allocation"] is not None:
+            continue
+        state["amount"] += int(alloc.amount)
+        if state["amount"] >= int(inv.total):
+            state["allocation"] = alloc
+
+    for state in settled.values():
+        alloc = state["allocation"]
+        if alloc is None:
+            # Partially paid invoices have no completed procurement-to-payment cycle.
+            continue
         pay = alloc.payment
         if start_date is not None and pay.payment_date < start_date:
             continue
         if end_date is not None and pay.payment_date > end_date:
             continue
         inv = alloc.vendor_invoice
-        if inv.id in seen_invoices:
-            # Multiple allocations must not overweight one invoice's operational chain.
-            continue
-        seen_invoices.add(inv.id)
 
-        invoice_to_payment.append((pay.payment_date - inv.invoice_date).days)
+        add_duration(
+            "invoice_to_payment", invoice_to_payment,
+            (pay.payment_date - inv.invoice_date).days,
+        )
 
         po = inv.purchase_order
         receipt_date = first_receipt.get(po.id) if po else None
         if receipt_date is not None:
-            receipt_to_invoice.append((inv.invoice_date - receipt_date).days)
+            add_duration(
+                "receipt_to_invoice", receipt_to_invoice,
+                (inv.invoice_date - receipt_date).days,
+            )
         if po is not None:
             if receipt_date is not None:
-                po_to_receipt.append((receipt_date - po.order_date).days)
+                add_duration(
+                    "po_to_receipt", po_to_receipt,
+                    (receipt_date - po.order_date).days,
+                )
             req = po.requisition
             if req is not None:
-                req_to_po.append((po.order_date - req.request_date).days)
+                add_duration(
+                    "req_to_po", req_to_po,
+                    (po.order_date - req.request_date).days,
+                )
                 if receipt_date is not None:
-                    end_to_end.append((pay.payment_date - req.request_date).days)
+                    # End-to-end is stricter than the independent stage samples: it
+                    # represents one valid chronological chain, not merely a positive
+                    # subtraction between the first and last dates.
+                    chain_dates = (
+                        req.request_date, po.order_date, receipt_date,
+                        inv.invoice_date, pay.payment_date,
+                    )
+                    if all(
+                        earlier <= later
+                        for earlier, later in zip(chain_dates, chain_dates[1:])
+                    ):
+                        end_to_end.append(
+                            (pay.payment_date - req.request_date).days,
+                        )
+                    else:
+                        excluded["end_to_end"] += 1
 
     stages = [
         CycleStage("req_to_po", "Requisition → PO",
-                   len(req_to_po), _avg_days(req_to_po)),
+                   len(req_to_po), _avg_days(req_to_po), excluded["req_to_po"]),
         CycleStage("po_to_receipt", "PO → Goods receipt",
-                   len(po_to_receipt), _avg_days(po_to_receipt)),
+                   len(po_to_receipt), _avg_days(po_to_receipt), excluded["po_to_receipt"]),
         CycleStage("receipt_to_invoice", "Goods receipt → Invoice",
-                   len(receipt_to_invoice), _avg_days(receipt_to_invoice)),
+                   len(receipt_to_invoice), _avg_days(receipt_to_invoice),
+                   excluded["receipt_to_invoice"]),
         CycleStage("invoice_to_payment", "Invoice → Payment",
-                   len(invoice_to_payment), _avg_days(invoice_to_payment)),
+                   len(invoice_to_payment), _avg_days(invoice_to_payment),
+                   excluded["invoice_to_payment"]),
     ]
     return ProcurementCycleTime(
         entity_id=entity.id, start_date=start_date, end_date=end_date,
         stages=stages,
         end_to_end_avg_days=_avg_days(end_to_end),
         end_to_end_count=len(end_to_end),
+        end_to_end_excluded_count=excluded["end_to_end"],
     )

@@ -18,11 +18,10 @@ can trace endpoints → calculations → output shapes without reading the code 
   `payment_webhooks_providers` (async webhook pipeline + OPay/Paystack/Fake
   adapters). Gotchas swept; suite 70 green. One OPEN operational item (`todo.md`):
   seed a `payments.payout_batch` approval template per live entity before go-live.
-- 🟡 `vs_procurement` documentation — all 5 slices written:
+- ✅ `vs_procurement` — complete: all 5 slices written:
   `procurement_master_data`, `procurement_sourcing`, `procurement_p2p_chain`,
-  `procurement_inventory`, and `procurement_reports`. Reports' automatic signed
-  GR/IR fix is complete (251 green); its recommended/judgment-call §8 decisions
-  remain for the user before the module is marked fully swept.
+  `procurement_inventory`, and `procurement_reports`. Every reports §8 decision
+  is implemented or justified; full procurement QA is 263 green.
 
 ## The loop (per slice)
 

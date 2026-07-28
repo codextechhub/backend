@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from rest_framework.exceptions import NotFound, ValidationError
 
+from core.pagination import XVSPagination
 from core.response import success_response
 from vs_finance.views import resolve_entity
 
@@ -22,6 +23,25 @@ from .base import (
     _date,
     _resolve_vendor,
 )
+
+
+def _validate_date_window(start, end):
+    """Reject an inverted inclusive report window instead of returning a false empty."""
+    if start is not None and end is not None and start > end:
+        raise ValidationError({
+            "end_date": "end_date must be on or after start_date.",
+        })
+
+
+def _paginated_report(request, rows, data, *, key, render, message):
+    """Page one primary list while retaining entity-wide report totals in ``data``."""
+    paginator = XVSPagination()
+    paginator.page_size = 25
+    page = paginator.paginate_queryset(rows, request)
+    data[key] = [render(row) for row in page]
+    response = paginator.get_paginated_response(data)
+    response.data["message"] = message
+    return response
 
 # --------------------------------------------------------------------------- #
 # AP reports                                                                  #
@@ -40,25 +60,23 @@ class APAgingView(_ProcBase):
         # query-string would raise TypeError (str − date) and 500 the request.
         as_of = _date(request.query_params.get("as_of"), "as_of")
         report = ap_aging(entity, as_of=as_of)
-        return success_response(
-            "AP aging retrieved.",
-            data={
+        data = {
                 "entity": entity.code, "as_of": str(report.as_of),
                 "buckets": list(AGING_BUCKETS),
-                "rows": [
-                    {
-                        "vendor_id": r.vendor_id, "code": r.code, "name": r.name,
-                        "payment_terms": r.payment_terms,
-                        "buckets": {b: _kobo(v) for b, v in r.buckets.items()},
-                        "outstanding": _kobo(r.outstanding),
-                        "unallocated_credit": _kobo(r.unallocated_credit),
-                        "net": _kobo(r.net),
-                    }
-                    for r in report.rows
-                ],
                 "bucket_totals": {b: _kobo(v) for b, v in report.bucket_totals.items()},
                 "total_net": _kobo(report.total_net),
+        }
+        return _paginated_report(
+            request, report.rows, data, key="rows",
+            render=lambda r: {
+                "vendor_id": r.vendor_id, "code": r.code, "name": r.name,
+                "payment_terms": r.payment_terms,
+                "buckets": {b: _kobo(v) for b, v in r.buckets.items()},
+                "outstanding": _kobo(r.outstanding),
+                "unallocated_credit": _kobo(r.unallocated_credit),
+                "net": _kobo(r.net),
             },
+            message="AP aging retrieved.",
         )
 
 
@@ -96,11 +114,13 @@ class GRIRBalanceView(_ProcBase):
         from ..reports import grir_balance
 
         entity = resolve_entity(request)
-        balance = grir_balance(entity)
+        as_of = _date(request.query_params.get("as_of"), "as_of")
+        balance = grir_balance(entity, as_of=as_of)
         return success_response(
             "GR/IR clearing balance retrieved.",
             data={
                 "entity": entity.code,
+                "as_of": str(as_of) if as_of else None,
                 "grir_balance": _kobo(balance),
                 "is_clear": balance == 0,
             },
@@ -118,22 +138,24 @@ class APCashRequirementsView(_ProcBase):
         entity = resolve_entity(request)
         as_of = _date(request.query_params.get("as_of"), "as_of")
         report = ap_cash_requirements(entity, as_of=as_of)
-        return success_response(
-            "AP cash-requirements forecast retrieved.",
-            data={
+        data = {
                 "entity": entity.code, "as_of": str(report.as_of),
                 "buckets": list(FORECAST_BUCKETS),
-                "rows": [
-                    {
-                        "vendor_id": r.vendor_id, "code": r.code, "name": r.name,
-                        "buckets": {b: _kobo(v) for b, v in r.buckets.items()},
-                        "total": _kobo(r.total),
-                    }
-                    for r in report.rows
-                ],
                 "bucket_totals": {b: _kobo(v) for b, v in report.bucket_totals.items()},
                 "total_due": _kobo(report.total_due),
+                "total_unallocated_credit": _kobo(report.total_unallocated_credit),
+                "net_cash_requirement": _kobo(report.net_cash_requirement),
+        }
+        return _paginated_report(
+            request, report.rows, data, key="rows",
+            render=lambda r: {
+                "vendor_id": r.vendor_id, "code": r.code, "name": r.name,
+                "buckets": {b: _kobo(v) for b, v in r.buckets.items()},
+                "total": _kobo(r.total),
+                "unallocated_credit": _kobo(r.unallocated_credit),
+                "net_total": _kobo(r.net_total),
             },
+            message="AP cash-requirements forecast retrieved.",
         )
 
 
@@ -148,28 +170,26 @@ class GRIRAgingView(_ProcBase):
         entity = resolve_entity(request)
         as_of = _date(request.query_params.get("as_of"), "as_of")
         report = grir_aging(entity, as_of=as_of)
-        return success_response(
-            "GR/IR aging retrieved.",
-            data={
+        data = {
                 "entity": entity.code, "as_of": str(report.as_of),
                 "buckets": list(AGING_BUCKETS),
-                "rows": [
-                    {
-                        "grn_id": r.grn_id, "reference": r.reference,
-                        "vendor_code": r.vendor_code, "vendor_name": r.vendor_name,
-                        "received_date": str(r.received_date), "days": r.days,
-                        "bucket": r.bucket,
-                        "received_value": _kobo(r.received_value),
-                        "invoiced_value": _kobo(r.invoiced_value),
-                        "open_value": _kobo(r.open_value),
-                    }
-                    for r in report.rows
-                ],
                 "bucket_totals": {b: _kobo(v) for b, v in report.bucket_totals.items()},
                 "total_open": _kobo(report.total_open),
                 "control_balance": _kobo(report.control_balance),
                 "difference": _kobo(report.difference),
+        }
+        return _paginated_report(
+            request, report.rows, data, key="rows",
+            render=lambda r: {
+                "grn_id": r.grn_id, "reference": r.reference,
+                "vendor_code": r.vendor_code, "vendor_name": r.vendor_name,
+                "received_date": str(r.received_date), "days": r.days,
+                "bucket": r.bucket,
+                "received_value": _kobo(r.received_value),
+                "invoiced_value": _kobo(r.invoiced_value),
+                "open_value": _kobo(r.open_value),
             },
+            message="GR/IR aging retrieved.",
         )
 
 
@@ -190,9 +210,7 @@ class APAgingVendorDetailView(_ProcBase):
         vendor = _resolve_vendor(entity, request.query_params.get("vendor"))
         as_of = _date(request.query_params.get("as_of"), "as_of")
         detail = ap_vendor_open_bills(entity, vendor, as_of=as_of)
-        return success_response(
-            "Vendor AP detail retrieved.",
-            data={
+        data = {
                 "entity": entity.code, "as_of": str(detail.as_of),
                 "buckets": list(AGING_BUCKETS),
                 "vendor": {"id": detail.vendor_id, "code": detail.code, "name": detail.name},
@@ -200,18 +218,18 @@ class APAgingVendorDetailView(_ProcBase):
                 "outstanding": _kobo(detail.outstanding),
                 "unallocated_credit": _kobo(detail.unallocated_credit),
                 "net": _kobo(detail.net),
-                "invoices": [
-                    {
-                        "invoice_id": inv.invoice_id, "document_number": inv.document_number,
-                        "invoice_date": str(inv.invoice_date),
-                        "due_date": str(inv.due_date) if inv.due_date else None,
-                        "days_overdue": inv.days_overdue, "bucket": inv.bucket,
-                        "balance_due": _kobo(inv.balance_due),
-                        "payment_status": inv.payment_status,
-                    }
-                    for inv in detail.invoices
-                ],
+        }
+        return _paginated_report(
+            request, detail.invoices, data, key="invoices",
+            render=lambda inv: {
+                "invoice_id": inv.invoice_id, "document_number": inv.document_number,
+                "invoice_date": str(inv.invoice_date),
+                "due_date": str(inv.due_date) if inv.due_date else None,
+                "days_overdue": inv.days_overdue, "bucket": inv.bucket,
+                "balance_due": _kobo(inv.balance_due),
+                "payment_status": inv.payment_status,
             },
+            message="Vendor AP detail retrieved.",
         )
 
 
@@ -235,9 +253,7 @@ class GRIRGrnDetailView(_ProcBase):
         detail = grir_grn_detail(entity, int(grn_ref), as_of=as_of)
         if detail is None:
             raise NotFound("No such goods-received note in this entity.")
-        return success_response(
-            "GR/IR GRN detail retrieved.",
-            data={
+        data = {
                 "entity": entity.code,
                 "grn_id": detail.grn_id, "reference": detail.reference,
                 "vendor_code": detail.vendor_code, "vendor_name": detail.vendor_name,
@@ -247,14 +263,14 @@ class GRIRGrnDetailView(_ProcBase):
                 "received_value": _kobo(detail.received_value),
                 "invoiced_value": _kobo(detail.invoiced_value),
                 "open_value": _kobo(detail.open_value),
-                "invoices": [
-                    {
-                        "id": vi["id"], "document_number": vi["document_number"],
-                        "invoice_date": vi["invoice_date"], "net": _kobo(vi["net"]),
-                    }
-                    for vi in detail.invoices
-                ],
+        }
+        return _paginated_report(
+            request, detail.invoices, data, key="invoices",
+            render=lambda vi: {
+                "id": vi["id"], "document_number": vi["document_number"],
+                "invoice_date": vi["invoice_date"], "net": _kobo(vi["net"]),
             },
+            message="GR/IR GRN detail retrieved.",
         )
 
 
@@ -274,25 +290,23 @@ class GRIRPoLinesView(_ProcBase):
         entity = resolve_entity(request)
         as_of = _date(request.query_params.get("as_of"), "as_of")
         report = grir_po_lines(entity, as_of=as_of)
-        return success_response(
-            "GR/IR PO-line report retrieved.",
-            data={
+        data = {
                 "entity": entity.code, "as_of": str(report.as_of),
-                "rows": [
-                    {
-                        "po_line_id": r.po_line_id, "po_line_ref": r.po_line_ref,
-                        "item": r.item,
-                        "vendor_code": r.vendor_code, "vendor_name": r.vendor_name,
-                        "ordered_qty": r.ordered_qty, "received_qty": r.received_qty,
-                        "invoiced_qty": r.invoiced_qty,
-                        "received_value": _kobo(r.received_value),
-                        "invoiced_value": _kobo(r.invoiced_value),
-                        "grir_balance": _kobo(r.grir_balance),
-                        "status": r.status,
-                    }
-                    for r in report.rows
-                ],
+        }
+        return _paginated_report(
+            request, report.rows, data, key="rows",
+            render=lambda r: {
+                "po_line_id": r.po_line_id, "po_line_ref": r.po_line_ref,
+                "item": r.item,
+                "vendor_code": r.vendor_code, "vendor_name": r.vendor_name,
+                "ordered_qty": r.ordered_qty, "received_qty": r.received_qty,
+                "invoiced_qty": r.invoiced_qty,
+                "received_value": _kobo(r.received_value),
+                "invoiced_value": _kobo(r.invoiced_value),
+                "grir_balance": _kobo(r.grir_balance),
+                "status": r.status,
             },
+            message="GR/IR PO-line report retrieved.",
         )
 
 
@@ -317,9 +331,7 @@ class GRIRPoLineDetailView(_ProcBase):
         detail = grir_po_line_detail(entity, int(line_ref), as_of=as_of)
         if detail is None:
             raise NotFound("No such purchase-order line in this entity.")
-        return success_response(
-            "GR/IR PO-line detail retrieved.",
-            data={
+        data = {
                 "entity": entity.code,
                 "po_line_id": detail.po_line_id, "po_line_ref": detail.po_line_ref,
                 "item": detail.item,
@@ -339,15 +351,15 @@ class GRIRPoLineDetailView(_ProcBase):
                     }
                     for g in detail.grns
                 ],
-                "invoices": [
-                    {
-                        "id": vi["id"], "document_number": vi["document_number"],
-                        "invoice_date": vi["invoice_date"],
-                        "quantity": vi["quantity"], "net": _kobo(vi["net"]),
-                    }
-                    for vi in detail.invoices
-                ],
+        }
+        return _paginated_report(
+            request, detail.invoices, data, key="invoices",
+            render=lambda vi: {
+                "id": vi["id"], "document_number": vi["document_number"],
+                "invoice_date": vi["invoice_date"],
+                "quantity": vi["quantity"], "net": _kobo(vi["net"]),
             },
+            message="GR/IR PO-line detail retrieved.",
         )
 
 
@@ -381,8 +393,24 @@ class SpendAnalysisView(_ProcBase):
         entity = resolve_entity(request)
         start = _date(request.query_params.get("start_date"), "start_date")
         end = _date(request.query_params.get("end_date"), "end_date")
+        _validate_date_window(start, end)
         # Optional ?category=<code|UNCATEGORISED> scopes the whole report to one category.
-        category = request.query_params.get("category") or None
+        category_ref = str(request.query_params.get("category") or "").strip()
+        category = None
+        if category_ref:
+            if category_ref.casefold() == "uncategorised":
+                category = "UNCATEGORISED"
+            else:
+                from ..models import VendorCategory
+
+                category_row = VendorCategory.objects.filter(
+                    entity=entity, code__iexact=category_ref,
+                ).only("code").first()
+                if category_row is None:
+                    raise ValidationError({
+                        "category": "Unknown vendor category for this entity.",
+                    })
+                category = category_row.code
         report = spend_analysis(entity, start_date=start, end_date=end, category=category)
 
         def _rows(rows):
@@ -396,14 +424,11 @@ class SpendAnalysisView(_ProcBase):
                 for r in rows
             ]
 
-        return success_response(
-            "Spend analysis retrieved.",
-            data={
+        data = {
                 "entity": entity.code,
                 "start_date": str(start) if start else None,
                 "end_date": str(end) if end else None,
                 "category": category,
-                "by_vendor": _rows(report.by_vendor),
                 "by_category": _rows(report.by_category),
                 "by_period": [
                     {
@@ -416,7 +441,15 @@ class SpendAnalysisView(_ProcBase):
                 "total_tax": _kobo(report.total_tax),
                 "total_gross": _kobo(report.total_gross),
                 "invoice_count": report.invoice_count,
+        }
+        return _paginated_report(
+            request, report.by_vendor, data, key="by_vendor",
+            render=lambda r: {
+                "key": r.key, "label": r.label,
+                "net": _kobo(r.net), "tax": _kobo(r.tax), "gross": _kobo(r.gross),
+                "invoice_count": r.invoice_count,
             },
+            message="Spend analysis retrieved.",
         )
 
 
@@ -431,43 +464,44 @@ class VendorPerformanceView(_ProcBase):
         entity = resolve_entity(request)
         start = _date(request.query_params.get("start_date"), "start_date")
         end = _date(request.query_params.get("end_date"), "end_date")
+        _validate_date_window(start, end)
         report = vendor_performance(entity, start_date=start, end_date=end)
-        return success_response(
-            "Vendor performance retrieved.",
-            data={
+        data = {
                 "entity": entity.code,
                 "start_date": str(start) if start else None,
                 "end_date": str(end) if end else None,
-                "rows": [
+        }
+
+        def render_vendor(r):
+            a = r.latest_assessment
+            return {
+                "vendor_id": r.vendor_id, "code": r.code, "name": r.name,
+                "category": r.category,
+                "po_count": r.po_count, "total_ordered": _kobo(r.total_ordered),
+                "receipt_count": r.receipt_count,
+                "on_time_receipts": r.on_time_receipts,
+                "late_receipts": r.late_receipts,
+                "on_time_rate": r.on_time_rate,
+                "invoice_count": r.invoice_count,
+                "total_billed": _kobo(r.total_billed),
+                "payment_count": r.payment_count,
+                "total_paid": _kobo(r.total_paid),
+                "avg_payment_days": r.avg_payment_days,
+                "latest_assessment": (
                     {
-                        "vendor_id": r.vendor_id, "code": r.code, "name": r.name,
-                        "category": r.category,
-                        "po_count": r.po_count, "total_ordered": _kobo(r.total_ordered),
-                        "receipt_count": r.receipt_count,
-                        "on_time_receipts": r.on_time_receipts,
-                        "late_receipts": r.late_receipts,
-                        "on_time_rate": r.on_time_rate,
-                        "invoice_count": r.invoice_count,
-                        "total_billed": _kobo(r.total_billed),
-                        "payment_count": r.payment_count,
-                        "total_paid": _kobo(r.total_paid),
-                        "avg_payment_days": r.avg_payment_days,
-                        # Recorded scorecard (or null). On-time stays the COMPUTED
-                        # on_time_rate above — the assessment never overwrites it.
-                        "latest_assessment": (
-                            {
-                                "quality_acceptance": a.quality_acceptance,
-                                "invoice_accuracy": a.invoice_accuracy,
-                                "responsiveness": a.responsiveness,
-                                "overall_score": a.overall_score,
-                                "grade": a.grade,
-                                "assessment_date": str(a.assessment_date),
-                            } if (a := r.latest_assessment) else None
-                        ),
-                    }
-                    for r in report.rows
-                ],
-            },
+                        "quality_acceptance": a.quality_acceptance,
+                        "invoice_accuracy": a.invoice_accuracy,
+                        "responsiveness": a.responsiveness,
+                        "overall_score": a.overall_score,
+                        "grade": a.grade,
+                        "assessment_date": str(a.assessment_date),
+                    } if a else None
+                ),
+            }
+
+        return _paginated_report(
+            request, report.rows, data, key="rows", render=render_vendor,
+            message="Vendor performance retrieved.",
         )
 
 
@@ -482,6 +516,7 @@ class ProcurementCycleTimeView(_ProcBase):
         entity = resolve_entity(request)
         start = _date(request.query_params.get("start_date"), "start_date")
         end = _date(request.query_params.get("end_date"), "end_date")
+        _validate_date_window(start, end)
         report = procurement_cycle_time(entity, start_date=start, end_date=end)
         return success_response(
             "Procurement cycle time retrieved.",
@@ -493,10 +528,12 @@ class ProcurementCycleTimeView(_ProcBase):
                     {
                         "name": s.name, "label": s.label,
                         "sample_count": s.sample_count, "avg_days": s.avg_days,
+                        "excluded_count": s.excluded_count,
                     }
                     for s in report.stages
                 ],
                 "end_to_end_avg_days": report.end_to_end_avg_days,
                 "end_to_end_count": report.end_to_end_count,
+                "end_to_end_excluded_count": report.end_to_end_excluded_count,
             },
         )

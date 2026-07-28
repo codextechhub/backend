@@ -18,12 +18,12 @@ analytics aggregate posted documents into spend, supplier, and elapsed-time
 measures; the dashboard composes a live operational snapshot
 (`reports.py:1-18,71-181,231-397,872-1251`; `dashboard.py:376-456`).
 
-**This is not a historical reporting warehouse, a posting engine, or an editable
-report builder.** The report APIs create no journals and accept no stored report
-definition. In particular, `as_of` is usually an aging/reference clock rather
-than a transaction-date cutoff; only the spend, vendor-performance, and cycle-time
-endpoints apply explicit inclusive date windows (`reports.py:71-80,231-240,
-604-615,872-905,991-1007,1162-1178`).
+**This is not a stored reporting warehouse, a posting engine, or an editable
+report builder.** The APIs create no journals and persist no report snapshot.
+When `as_of` is supplied, AP and GR/IR reconstruct an effective-date view from
+posted journal dates and allocations; analytics use their documented inclusive
+date windows (`reports.py:71-152,155-262,316-375,402-584,790-1036,
+1103-1184,1222-1370,1397-1532`).
 
 The stock reorder and valuation reports share this route family but are documented
 with the perpetual inventory ledger in
@@ -53,24 +53,26 @@ first, then the PO-line price; a direct invoice line clears no GR/IR
 
 All endpoints are `GET`, require `procurement.report.view`, and require
 `?entity=<id|code>`. Query fields below are only those actually read by the view.
-Except for the two stock reports documented separately, these responses are not
-paginated (`urls.py:113-130`; `views/reports.py:30-502`).
+Large primary lists and invoice-evidence drawers use the standard top-level
+`{pagination,data}` envelope: default page 25, `page_size` maximum 100. Report
+totals and chart summaries remain whole-entity/window totals, not page subtotals
+(`urls.py:113-130`; `views/reports.py:28-43,49-538`).
 
 | Method + path | query fields actually read | what it does | response shape |
 |---|---|---|---|
 | `GET /reports/dashboard/` | — | Live requester-aware dashboard | Entity/currency/as-of/month start; KPIs; category spend; PO statuses; eight-month trend; five activities; up to four assigned approvals (`views/reports.py:358-370`; `dashboard.py:376-456`) |
-| `GET /reports/ap-aging/` | `as_of?` | Age open AP by vendor | Buckets, vendor rows with payment terms/gross buckets/outstanding/unallocated credit/net, bucket totals, total net (`views/reports.py:30-62`) |
-| `GET /reports/ap-aging/vendor/` | `vendor` id or exact code, `as_of?` | Open-bill evidence for one vendor | Vendor, bucket amounts, outstanding, unallocated credit, net, and invoice rows (`views/reports.py:176-215`) |
+| `GET /reports/ap-aging/` | `as_of?`, `page?`, `page_size?` | Age open AP by vendor | Paginated vendor rows with payment terms/gross buckets/outstanding/unallocated credit/net; whole-report bucket totals and total net (`views/reports.py:49-79`) |
+| `GET /reports/ap-aging/vendor/` | `vendor` id or exact code, `as_of?`, `page?`, `page_size?` | Open-bill evidence for one vendor | Paginated invoices; whole-vendor bucket amounts, outstanding, unallocated credit, and net (`views/reports.py:195-232`) |
 | `GET /reports/ap-reconciliation/` | `as_of?` | Compare AP subledger with vendor-linked GL controls | Subledger total, control total, signed difference, reconciled flag (`views/reports.py:65-87`) |
-| `GET /reports/ap-cash-requirements/` | `as_of?` | Forecast gross open bills by due window | Forecast buckets, vendor rows, bucket totals, total due (`views/reports.py:110-137`) |
-| `GET /reports/grir/` | — | Read account 2150 normal-balance signed net | GR/IR balance and `is_clear` (`views/reports.py:90-107`) |
-| `GET /reports/grir-aging/` | `as_of?` | Age signed receipt-grain GR/IR positions | GRN rows, signed bucket totals/open total, GL control, reconciliation difference (`views/reports.py:140-173`) |
-| `GET /reports/grir-aging/grn/` | numeric `grn`, `as_of?` | Explain one GRN with PO and matched invoices | Vendor/PO/date/bucket, received/invoiced/open values, distinct linked invoice evidence (`views/reports.py:218-258`) |
-| `GET /reports/grir-lines/` | `as_of?` | Compare ordered, received, and invoiced quantities/value by PO line | Entity/as-of and activity-bearing PO-line rows with derived status (`views/reports.py:261-296`) |
-| `GET /reports/grir-lines/detail/` | numeric `po_line`, `as_of?` | Explain one PO line | Quantities, values, status/unit price, and posted GRN/invoice evidence (`views/reports.py:299-351`) |
-| `GET /reports/spend-analysis/` | `start_date?`, `end_date?`, `category?` code or `UNCATEGORISED` | Aggregate posted-invoice spend | Vendor/category/month rows plus net/tax/gross totals and invoice count (`views/reports.py:373-421`) |
-| `GET /reports/vendor-performance/` | `start_date?`, `end_date?` | Blend ordering, receipt, invoice, payment, and scorecard evidence | One row per activity-bearing vendor in the evidence set, sorted by billed total (`views/reports.py:423-471`) |
-| `GET /reports/cycle-time/` | `start_date?`, `end_date?` | Average the four P2P hops on settled invoice chains | Four named stages with samples/averages plus end-to-end average/count (`views/reports.py:474-502`) |
+| `GET /reports/ap-cash-requirements/` | `as_of?`, `page?`, `page_size?` | Forecast gross open bills and available vendor credits | Paginated vendor rows; whole-report gross buckets/total, unallocated credits, and net cash requirement (`views/reports.py:129-158`) |
+| `GET /reports/grir/` | `as_of?` | Read account 2150 normal-balance signed net | Effective-date GR/IR balance, echoed as-of, and `is_clear` (`views/reports.py:107-126`) |
+| `GET /reports/grir-aging/` | `as_of?`, `page?`, `page_size?` | Age signed receipt-grain GR/IR positions | Paginated GRN rows; whole-report signed buckets/open total, GL control, and difference (`views/reports.py:161-192`) |
+| `GET /reports/grir-aging/grn/` | numeric `grn`, `as_of?`, `page?`, `page_size?` | Explain one GRN with PO and attributed invoices | Paginated invoice evidence; whole-GRN vendor/PO/date/bucket and received/invoiced/open values (`views/reports.py:235-273`) |
+| `GET /reports/grir-lines/` | `as_of?`, `page?`, `page_size?` | Compare ordered, received, and invoiced quantities/value by PO line | Paginated activity-bearing PO-line rows with derived status (`views/reports.py:276-309`) |
+| `GET /reports/grir-lines/detail/` | numeric `po_line`, `as_of?`, `page?`, `page_size?` | Explain one PO line | Paginated invoice evidence; complete posted GRN evidence and whole-line quantities/values/status (`views/reports.py:312-362`) |
+| `GET /reports/spend-analysis/` | `start_date?`, `end_date?`, `category?` code or `UNCATEGORISED`, `page?`, `page_size?` | Aggregate posted-invoice spend | Paginated vendor ranking; complete category/month summaries and whole-report net/tax/gross/count (`views/reports.py:384-452`) |
+| `GET /reports/vendor-performance/` | `start_date?`, `end_date?`, `page?`, `page_size?` | Blend ordering, receipt, invoice, payment, and scorecard evidence | Paginated activity-bearing vendors sorted by billed total (`views/reports.py:455-504`) |
+| `GET /reports/cycle-time/` | `start_date?`, `end_date?` | Average the four P2P hops on fully settled invoice chains | Four stages with valid/excluded samples and averages; end-to-end valid/excluded counts (`views/reports.py:507-538`) |
 
 The report API does not currently expose the services' optional `vendor` filter
 for spend or vendor performance. Vendor detail uses a separate entity-scoped
@@ -88,7 +90,7 @@ posted unallocated payment ──────────────▶ AP net 
 GRN POSTED ──────────────────────────────▶ GR/IR received side
 invoice POSTED and linked to PO/GRN line ▶ GR/IR invoiced side
 PO not CANCELLED/REVERSED ───────────────▶ performance / GR/IR PO-line report
-payment POSTED with allocation ──────────▶ performance / cycle-time sample
+invoice cumulatively fully settled ─────▶ cycle-time sample at final payment date
 assessment recorded ────────────────────▶ newest scorecard on vendor performance
 successful allow-listed audit event ────▶ dashboard recent activity
 ```
@@ -107,18 +109,23 @@ the resulting state (`reports.py:100-137,247-276,349-397,1028-1137,
   for `≤0`, `1-30`, `31-60`, `61-90`, and `90+` beginning on day 91. Example:
   a 10 January bill aged on 15 February is 36 days overdue and lands in `31-60`
   (`reports.py:29-43,100-115`).
-- `balance_due = invoice.total − amount_paid`; only positive balances contribute.
-  `vendor_net = Σ balance_due − Σ posted payment.unallocated_amount`.
+- For an explicit `as_of`, historical paid amount is the sum of allocations from
+  payments whose posted journal was effective by that date; a later reversal does
+  not rewrite the earlier snapshot. `balance_due_as_of = invoice.total −
+  effective allocations`; only positive balances contribute
+  (`reports.py:71-152,155-216`).
+- `vendor_net = Σ historical balance_due − Σ historical unallocated payment`.
   Example: `1,000,000` open and `250,000` prepaid gives `750,000` kobo net;
-  credits do not reduce a particular aging bucket (`models.py:1203-1206`;
-  `reports.py:100-137`).
+  credits do not reduce a particular aging bucket (`reports.py:183-215`).
 - `AP difference = total vendor net − Σ normal-balance GL net of each distinct
-  vendor payable account`; reconciled means exactly zero. Shared controls are
-  de-duplicated. Example: `750,000 − 750,000 = 0` (`reports.py:153-181`).
+  vendor payable account through as-of`; reconciled means exactly zero. Shared
+  controls are de-duplicated. Example: `750,000 − 750,000 = 0`
+  (`reports.py:231-262`).
 - Cash forecast uses `days_until_due = (due_date or invoice_date) − as_of` and
-  buckets `<0 overdue`, `0-7`, `8-30`, `31-60`, `61-90`, `90+`. It is gross:
-  unallocated vendor payments are not netted. A bill due in five days contributes
-  its full open kobo balance to `0-7` (`reports.py:192-208,231-276`).
+  buckets `<0 overdue`, `0-7`, `8-30`, `31-60`, `61-90`, `90+`. Invoice buckets
+  remain gross, while `net_cash_requirement = total_due − total historical
+  unallocated credit`. A credit-only vendor remains visible
+  (`reports.py:273-375`).
 
 ### GR/IR
 
@@ -128,9 +135,14 @@ the resulting state (`reports.py:100-137,247-276,349-397,1028-1137,
   billed at `120,000` against a receipt snapshot of `100,000` clear `1,000,000`
   kobo from GR/IR; the `200,000` price difference is PPV, not residual GR/IR
   (`reports.py:284-300`; `purchasing.py:747-801`).
-- Per receipt, `open_value = GRN.total_value − Σ linked invoice clearing basis`.
+- Explicit GRN-line invoice links clear that receipt first. PO-only invoice
+  clearing then consumes remaining receipt-line value FIFO by received date,
+  GRN id, and line id; one invoice may split exactly across receipts. Excess with
+  no receipt capacity remains in the GL control difference rather than creating
+  fictitious receipt evidence (`reports.py:402-504`).
+- Per receipt, `open_value = GRN.total_value − Σ explicit/FIFO-attributed clearing`.
   Values are signed: positive is received-not-invoiced; negative is invoice-heavy.
-  Zero rows are omitted (`reports.py:330-397`).
+  Zero rows are omitted (`reports.py:534-584`).
 - Per PO line, received quantity/value sum posted GRN lines; invoiced
   quantity/value sum posted invoice lines on the PO line. `grir_balance =
   received_value − invoiced_value`. Quantity chooses the status first; equal
@@ -155,11 +167,12 @@ the resulting state (`reports.py:100-137,247-276,349-397,1028-1137,
   payment documents, but an invoice paid in instalments contributes multiple
   duration samples. Example: 10 and 20 days average `15.0`
   (`reports.py:819-821,1080-1108`).
-- Cycle time averages, to one decimal, requisition→PO, PO→earliest posted receipt,
-  earliest receipt→invoice, and invoice→payment. The inclusive filter is on
-  payment date. Each invoice is sampled once, and end-to-end requires a
-  requisition, PO, posted receipt, invoice, and allocating posted payment
-  (`reports.py:1162-1251`).
+- Cycle time accumulates posted allocations by payment date/id and samples an
+  invoice once, on the payment that fully settles its gross. Partial invoices are
+  omitted; the inclusive window is anchored on full-settlement date. Negative
+  hops are excluded from averages and counted; end-to-end additionally requires
+  the complete monotonic sequence request≤PO≤receipt≤invoice≤settlement
+  (`reports.py:1397-1532`).
 - Dashboard MTD delta is `(current − prior) ÷ prior × 100`, rounded to one decimal;
   it is `null` when prior is zero. The comparison uses the same elapsed days in
   the previous month. Monthly trend is eight calendar months, including zero
@@ -203,14 +216,26 @@ GET /v1/procurement/reports/ap-aging/?entity=LEKKI&as_of=2026-02-15
 ```
 
 The bill is 36 days overdue, so the gross invoice stays in `31-60`; the prepayment
-reduces only the vendor/report net:
+reduces only the vendor/report net. The real response now wraps that nested report
+in standard pagination:
 
 ```json
 {
-  "entity": "LEKKI",
-  "as_of": "2026-02-15",
-  "buckets": ["current", "1-30", "31-60", "61-90", "90+"],
-  "rows": [{
+  "success": true,
+  "message": "AP aging retrieved.",
+  "pagination": {
+    "currentPage": 1,
+    "pageSize": 25,
+    "totalItems": 1,
+    "totalPages": 1,
+    "next": null,
+    "previous": null
+  },
+  "data": {
+    "entity": "LEKKI",
+    "as_of": "2026-02-15",
+    "buckets": ["current", "1-30", "31-60", "61-90", "90+"],
+    "rows": [{
     "vendor_id": 12,
     "code": "ACME",
     "name": "ACME Supplies",
@@ -226,14 +251,15 @@ reduces only the vendor/report net:
     "unallocated_credit": {"kobo": 250000, "naira": "2,500.00"},
     "net": {"kobo": 750000, "naira": "7,500.00"}
   }],
-  "bucket_totals": {
-    "current": {"kobo": 0, "naira": "0.00"},
-    "1-30": {"kobo": 0, "naira": "0.00"},
-    "31-60": {"kobo": 1000000, "naira": "10,000.00"},
-    "61-90": {"kobo": 0, "naira": "0.00"},
-    "90+": {"kobo": 0, "naira": "0.00"}
-  },
-  "total_net": {"kobo": 750000, "naira": "7,500.00"}
+    "bucket_totals": {
+      "current": {"kobo": 0, "naira": "0.00"},
+      "1-30": {"kobo": 0, "naira": "0.00"},
+      "31-60": {"kobo": 1000000, "naira": "10,000.00"},
+      "61-90": {"kobo": 0, "naira": "0.00"},
+      "90+": {"kobo": 0, "naira": "0.00"}
+    },
+    "total_net": {"kobo": 750000, "naira": "7,500.00"}
+  }
 }
 ```
 
@@ -253,42 +279,38 @@ request (`reports.py:71-181`; `views/reports.py:30-87`).
   directions have regression coverage
   (`reports.py:319-327,372-397,786-805`).
 
-### Recommend fixing
+### Selected follow-ups — fixed
 
-- **The main analytical lists are unbounded.** AP aging, cash requirements,
-  GR/IR aging/lines, spend dimensions, vendor performance, and drill-down invoice
-  arrays serialize every matching row. This will increase response size and Python
-  memory with transaction history. Add the standard pagination envelope without
-  changing whole-report totals (`views/reports.py:30-351,373-502`).
-- **`as_of` sounds historical but does not cut off later documents or GL entries.**
-  AP, cash, and GR/IR queries include every currently posted source row and use
-  `as_of` only to choose a bucket; AP reconciliation also reads the current GL.
-  Either implement true effective-date snapshots consistently or rename/document
-  the input as an aging reference date in the public contract
-  (`reports.py:71-80,153-181,231-240,330-397,604-615`).
-- **Invalid analytical filters can look like valid empty reports.** The views parse
-  dates but do not reject `start_date > end_date`; an unknown category code simply
-  returns zero spend. Validate ranges and category membership so input mistakes
-  return 400 instead of plausible-looking zeros (`views/reports.py:373-485`;
-  `reports.py:895-905`).
-
-### Judgment calls
-
-- **GRN aging attributes only invoices linked to a GRN line.** A posted invoice
-  linked only to a PO line debits GR/IR but cannot be assigned to a particular
-  receipt, so it appears as a control difference even though the PO-line report
-  can explain it. Keeping this strict evidence rule is defensible; automatic
-  allocation across receipts would need an explicit FIFO or matching policy
-  (`reports.py:330-397,604-683`).
-- **Cash requirements is gross and AP aging is net.** Unallocated prepayments
-  reduce AP net but not invoice cash buckets. This avoids pretending that an
-  unallocated payment belongs to a particular due bill, but treasury may prefer
-  a separate “available vendor credits” figure (`reports.py:117-137,231-276`).
-- **Cycle-time samples can be negative and instalments use one payment.** Backdated
-  documents remain visible as negative durations; an invoice allocated by several
-  payments is sampled once using whichever in-window allocation is encountered
-  first. That exposes source-data anomalies but is not a weighted time-to-full-
-  settlement measure (`reports.py:1162-1251`).
+- ✅ **Large report rows and invoice drawers are paginated.** Six primary
+  analytical rankings and three invoice-evidence drawers use the standard
+  25/default, 100/maximum envelope. Stable ordering is applied before slicing;
+  whole-report totals/category/month summaries remain unchanged across pages
+  (`views/reports.py:28-43,49-79,129-192,195-362,384-504`).
+- ✅ **`as_of` is now a real accounting cutoff.** AP reconstructs invoice balance
+  and vendor credit from effective posted allocations, AP/GRIR controls sum posted
+  journal lines through the date, and later receipts/invoices/payments do not
+  rewrite an earlier snapshot. Payment reversal dates are respected. Legacy
+  posted documents without a linked journal cannot enter a historical snapshot,
+  and current vendor→control assignments are used because assignment history is
+  not modelled (`reports.py:71-152,155-262,316-375,402-584,790-1036`).
+- ✅ **Analytical filter mistakes fail loudly.** Spend, performance, and cycle time
+  reject inverted ranges; spend resolves an entity category case-insensitively,
+  echoes its canonical code, accepts `UNCATEGORISED`, and rejects unknown/foreign
+  codes (`views/reports.py:28-33,384-518`).
+- ✅ **PO-only GR/IR clearing uses deterministic FIFO evidence.** Explicit
+  GRN-line links reserve their receipt first; remaining PO-only clearing splits
+  across posted receipt lines by date/id without double counting. Unattributable
+  invoice-first excess remains a visible control difference
+  (`reports.py:402-504,534-736`).
+- ✅ **Cash requirements shows gross obligations and available credits.** Buckets
+  stay gross because a prepayment has no invoice due date, while each vendor and
+  the report expose unallocated credit and the resulting signed net requirement
+  (`reports.py:292-375`; `views/reports.py:129-158`).
+- ✅ **Cycle time now measures full settlement and quarantines bad dates.**
+  Instalments accumulate chronologically until the invoice is fully settled;
+  partial invoices do not enter. Negative hops are counted but excluded, and
+  end-to-end requires a fully monotonic source chain
+  (`reports.py:1373-1532`; `views/reports.py:507-538`).
 
 ### Justified by design
 
@@ -338,9 +360,9 @@ assessment notes and assessor identity (`views/reports.py:423-471`).
 | File | Responsibility |
 |---|---|
 | `apps/vs_procurement/urls.py:113-130` | Public report route map |
-| `apps/vs_procurement/views/reports.py:30-502` | Entity resolution, permission keys, query parsing, and API shapes |
-| `apps/vs_procurement/reports.py:25-805` | AP, cash, GR/IR, and drill-down calculations |
-| `apps/vs_procurement/reports.py:819-1251` | Spend, vendor performance, and cycle-time calculations |
+| `apps/vs_procurement/views/reports.py:28-538` | Entity resolution, permissions, validation, pagination, and API shapes |
+| `apps/vs_procurement/reports.py:25-1036` | Historical AP/cash/GRIR calculations, FIFO attribution, and drill-downs |
+| `apps/vs_procurement/reports.py:1050-1532` | Spend, vendor performance, and full-settlement cycle-time calculations |
 | `apps/vs_procurement/dashboard.py:46-456` | Dashboard KPIs, workflow cards, activity, trend, and presentation caps |
 | `apps/vs_procurement/models.py:1427-1484` | Immutable vendor assessment and computed score/grade |
 | `apps/vs_procurement/views/assessments.py:22-111` | Scorecard validation, list/create permissions, and serialized assessment evidence |
@@ -365,16 +387,14 @@ Existing tests cover:
 - dashboard entity isolation, overdue balance, PO status, activity caps,
   actor-scoped approvals, vendor-payment workflows, and permission denial
   (`tests.py:5352-5580`).
+- report pagination/empty-list/whole-total behavior, historical AP with payment
+  reversal and GL reconciliation, historical GR/IR, date/category validation,
+  FIFO split/precedence/excess, credit-only cash forecasts, full-settlement
+  instalments, and negative/monotonic cycle anomalies
+  (`tests.py:6993-7355`).
 
-Before shipping the remaining recommendations, add:
-
-- 403 and cross-entity tests for every report route, not only representative
-  endpoints;
-- API tests for AP reconciliation, cash forecast, GR/IR aging, cycle-time, invalid
-  dates/categories, and each empty response shape;
-- pagination boundary, stable ordering, whole-report total, and maximum-page-size
-  tests if report pagination is selected;
-- query-count or scale tests for the largest analytical endpoints;
-- explicit coverage for future-dated rows under a past `as_of`, PO-only invoice
-  attribution, gross cash versus vendor credits, negative cycle durations, and
-  multi-instalment cycle-time policy.
+Remaining lower-priority gaps are exhaustive 403/cross-entity checks for every
+route (representative routes and all id-based drawers are covered), formal
+query-count ceilings for every aggregate, legacy journal-less historical data,
+and temporal vendor→control-account assignment. Independent full-module QA after
+this hardening is **263/263 green**.

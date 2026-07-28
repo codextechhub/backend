@@ -5170,8 +5170,10 @@ class CashForecastTests(_P2PFixtureMixin, TestCase):
         entity, _, vendor, _, _ = self.build_p2p()
         vi = self.make_bill(
             entity, vendor, [("5300", 1, 1_000_000, None, None)],
-            date=datetime.date(2026, 1, 10),
+            date=datetime.date(2026, 1, 1),
         )
+        vi.due_date = datetime.date(2026, 1, 10)
+        vi.save(update_fields=["due_date", "updated_at"])
         post_vendor_invoice(vi)  # POSTED, due 2026-01-10
 
         # Five days before due → "0-7" window.
@@ -6986,3 +6988,397 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(rows[0]["movement_type"], "RECEIPT")
         self.assertEqual(rows[0]["balance_qty"], "10.0000")
         self.assertEqual(rows[0]["balance_value"], 1_000_000)
+
+
+class ProcurementReportHardeningTests(_P2PFixtureMixin, TestCase):
+    """Regression coverage for paged, historical, and evidence-backed reports."""
+
+    def _client(self, entity):
+        from django.contrib.auth import get_user_model
+        from core.test_utils import TenantAPIClient
+
+        user = get_user_model().objects.create_user(
+            email=f"report-hardening-{entity.pk}@test.com", password="pw",
+            tenant=entity.tenant, user_type="CX_STAFF", status="ACTIVE",
+            first_name="Report", last_name="Tester",
+        )
+        return TenantAPIClient(user=user)
+
+    def _payment(self, entity, vendor, amount, date, *, allocations=None, auto_allocate=True):
+        payment = VendorPayment.objects.create(
+            entity=entity, vendor=vendor, payment_date=date,
+            gross_amount=amount, payment_account=self.acc(entity, "1100"),
+            approval_state=ProcApprovalState.APPROVED,
+        )
+        post_vendor_payment(
+            payment, allocations=allocations, auto_allocate=auto_allocate,
+        )
+        return payment
+
+    def _cycle_chain(self, entity, vendor):
+        pr = PurchaseRequisition.objects.create(
+            entity=entity, request_date=datetime.date(2026, 1, 2),
+        )
+        PurchaseRequisitionLine.objects.create(
+            requisition=pr, description="cycle item", quantity=10,
+            estimated_unit_price=100_000,
+            expense_account=self.acc(entity, "5100"), line_no=1,
+        )
+        submit_requisition(pr)
+        approve_requisition(pr)
+        po = create_po_from_requisition(
+            pr, vendor=vendor, order_date=datetime.date(2026, 1, 5),
+            expected_date=datetime.date(2026, 1, 9),
+        )
+        approve_purchase_order(po)
+        po.refresh_from_db()
+        grn = self.make_grn(entity, vendor, po, [(po.lines.get(), 10)])
+        post_grn(grn)
+        invoice = self.make_bill(
+            entity, vendor, [("5100", 10, 100_000, None, po.lines.get())],
+            po=po, date=datetime.date(2026, 1, 10),
+        )
+        post_vendor_invoice(invoice)
+        return pr, po, grn, invoice
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_ap_pagination_is_stable_and_keeps_whole_report_totals(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        vendors = [vendor]
+        for code in ("BETA", "CHARLIE"):
+            vendors.append(Vendor.objects.create(
+                entity=entity, code=code, name=code.title(),
+                payable_account=self.acc(entity, "2100"),
+                default_expense_account=self.acc(entity, "5300"),
+            ))
+        for index, row_vendor in enumerate(vendors, start=1):
+            VendorInvoice.objects.create(
+                entity=entity, vendor=row_vendor, status=DocumentStatus.POSTED,
+                invoice_date=datetime.date(2026, 1, 10),
+                due_date=datetime.date(2026, 1, 10),
+                subtotal=index * 100, total=index * 100,
+            )
+
+        url = f"/v1/procurement/reports/ap-aging/?entity={entity.code}&page_size=1"
+        client = self._client(entity)
+        page1 = client.get(url)
+        page2 = client.get(f"{url}&page=2")
+        self.assertEqual(page1.status_code, 200)
+        self.assertEqual(page1.data["pagination"]["totalItems"], 3)
+        self.assertEqual(page1.data["pagination"]["pageSize"], 1)
+        self.assertEqual(page1.data["data"]["rows"][0]["code"], "ACME")
+        self.assertEqual(page2.data["data"]["rows"][0]["code"], "BETA")
+        self.assertEqual(page1.data["data"]["total_net"]["kobo"], 600)
+        self.assertEqual(page2.data["data"]["total_net"]["kobo"], 600)
+        capped = client.get(f"{url}&page_size=999")
+        self.assertEqual(capped.data["pagination"]["pageSize"], 100)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_empty_paginated_report_keeps_an_explicit_empty_list(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        response = self._client(entity).get(
+            f"/v1/procurement/reports/ap-aging/?entity={entity.code}",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["pagination"]["pageSize"], 25)
+        self.assertEqual(response.data["pagination"]["totalItems"], 0)
+        self.assertEqual(response.data["data"]["rows"], [])
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_ap_vendor_invoice_evidence_pages_without_changing_vendor_totals(self, _perm):
+        entity, _, vendor, _, _ = self.build_p2p()
+        for amount, date in (
+            (100_000, datetime.date(2026, 1, 10)),
+            (200_000, datetime.date(2026, 1, 11)),
+        ):
+            invoice = self.make_bill(
+                entity, vendor, [("5300", 1, amount, None, None)], date=date,
+            )
+            post_vendor_invoice(invoice)
+
+        url = (
+            f"/v1/procurement/reports/ap-aging/vendor/?entity={entity.code}"
+            f"&vendor={vendor.code}&page_size=1"
+        )
+        client = self._client(entity)
+        page1 = client.get(url)
+        page2 = client.get(f"{url}&page=2")
+        self.assertEqual(page1.status_code, 200)
+        self.assertEqual(page1.data["pagination"]["totalItems"], 2)
+        self.assertEqual(page2.data["pagination"]["totalItems"], 2)
+        self.assertEqual(len(page1.data["data"]["invoices"]), 1)
+        self.assertEqual(len(page2.data["data"]["invoices"]), 1)
+        self.assertNotEqual(
+            page1.data["data"]["invoices"][0]["invoice_id"],
+            page2.data["data"]["invoices"][0]["invoice_id"],
+        )
+        self.assertEqual(page1.data["data"]["outstanding"]["kobo"], 300_000)
+        self.assertEqual(page2.data["data"]["outstanding"]["kobo"], 300_000)
+        self.assertEqual(page1.data["data"]["net"]["kobo"], 300_000)
+        self.assertEqual(page2.data["data"]["net"]["kobo"], 300_000)
+
+    def test_historical_ap_excludes_future_documents_and_reconciles_control(self):
+        entity, period, vendor, _, _ = self.build_p2p()
+        invoice = self.make_bill(
+            entity, vendor, [("5300", 1, 1_000_000, None, None)],
+            date=datetime.date(2026, 1, 10),
+        )
+        post_vendor_invoice(invoice)
+        payment = self._payment(
+            entity, vendor, 1_000_000, datetime.date(2026, 1, 20),
+            allocations=[(invoice, 1_000_000)],
+        )
+        reverse_vendor_payment(payment, date=datetime.date(2026, 1, 30))
+        FiscalPeriod.objects.create(
+            entity=entity, fiscal_year=period.fiscal_year,
+            period_no=2, name="Feb 2026",
+            start_date=datetime.date(2026, 2, 1),
+            end_date=datetime.date(2026, 2, 28),
+        )
+        future = self.make_bill(
+            entity, vendor, [("5300", 1, 500_000, None, None)],
+            date=datetime.date(2026, 2, 5),
+        )
+        post_vendor_invoice(future)
+
+        before = ap_aging(entity, as_of=datetime.date(2026, 1, 15))
+        self.assertEqual(before.total_net, 1_000_000)
+        rec = reconcile_ap(entity, as_of=datetime.date(2026, 1, 15))
+        self.assertEqual(rec.subledger_total, 1_000_000)
+        self.assertEqual(rec.control_total, 1_000_000)
+        self.assertTrue(rec.is_reconciled)
+        after = ap_aging(entity, as_of=datetime.date(2026, 1, 25))
+        self.assertEqual(after.total_net, 0)
+        reversed_snapshot = reconcile_ap(
+            entity, as_of=datetime.date(2026, 1, 31),
+        )
+        self.assertEqual(reversed_snapshot.subledger_total, 1_000_000)
+        self.assertEqual(reversed_snapshot.control_total, 1_000_000)
+        self.assertTrue(reversed_snapshot.is_reconciled)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_grir_historical_snapshot_and_balance_api(self, _perm):
+        from vs_procurement.reports import grir_aging
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        grn = self.make_grn(entity, vendor, po, [(po.lines.get(), 10)])
+        post_grn(grn)
+        invoice = self.make_bill(
+            entity, vendor, [("5100", 10, 100_000, None, po.lines.get())],
+            po=po, date=datetime.date(2026, 1, 10),
+        )
+        post_vendor_invoice(invoice)
+
+        before = grir_aging(entity, as_of=datetime.date(2026, 1, 9))
+        after = grir_aging(entity, as_of=datetime.date(2026, 1, 10))
+        self.assertEqual(before.total_open, 1_000_000)
+        self.assertEqual(before.control_balance, 1_000_000)
+        self.assertEqual(after.total_open, 0)
+        self.assertEqual(after.control_balance, 0)
+        response = self._client(entity).get(
+            f"/v1/procurement/reports/grir/?entity={entity.code}&as_of=2026-01-09",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["data"]["as_of"], "2026-01-09")
+        self.assertEqual(response.data["data"]["grir_balance"]["kobo"], 1_000_000)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_analytics_validate_ranges_and_canonical_entity_category(self, _perm):
+        entity, _, _, _, _ = self.build_p2p()
+        category = VendorCategory.objects.create(
+            entity=entity, code="OFFICE", name="Office",
+        )
+        other = LedgerEntity.objects.create(
+            name="Foreign report books", code="FOREIGN-REPORT",
+            kind=LedgerEntity.Kind.TENANT,
+        )
+        VendorCategory.objects.create(entity=other, code="FOREIGN", name="Foreign")
+        client = self._client(entity)
+        for endpoint in ("spend-analysis", "vendor-performance", "cycle-time"):
+            invalid = client.get(
+                f"/v1/procurement/reports/{endpoint}/?entity={entity.code}"
+                "&start_date=2026-01-11&end_date=2026-01-10",
+            )
+            self.assertEqual(invalid.status_code, 400, endpoint)
+            same_day = client.get(
+                f"/v1/procurement/reports/{endpoint}/?entity={entity.code}"
+                "&start_date=2026-01-10&end_date=2026-01-10",
+            )
+            self.assertEqual(same_day.status_code, 200, endpoint)
+        canonical = client.get(
+            f"/v1/procurement/reports/spend-analysis/?entity={entity.code}"
+            f"&category={category.code.lower()}",
+        )
+        self.assertEqual(canonical.data["data"]["category"], "OFFICE")
+        for bad in ("MISSING", "FOREIGN"):
+            response = client.get(
+                f"/v1/procurement/reports/spend-analysis/"
+                f"?entity={entity.code}&category={bad}",
+            )
+            self.assertEqual(response.status_code, 400)
+
+    def test_fifo_splits_po_only_invoice_and_explicit_links_take_precedence(self):
+        from vs_procurement.reports import grir_aging, grir_grn_detail
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 10, 100_000, None)])
+        line = po.lines.get()
+        first = self.make_grn(entity, vendor, po, [(line, 4)])
+        post_grn(first)
+        second = self.make_grn(entity, vendor, po, [(line, 6)])
+        second.received_date = datetime.date(2026, 1, 9)
+        second.save(update_fields=["received_date"])
+        post_grn(second)
+        invoice = self.make_bill(
+            entity, vendor, [("5100", 7, 100_000, None, line)],
+            po=po, date=datetime.date(2026, 1, 10),
+        )
+        post_vendor_invoice(invoice)
+
+        report = grir_aging(entity)
+        self.assertEqual(
+            {row.grn_id: row.invoiced_value for row in report.rows},
+            {second.id: 300_000},
+        )
+        self.assertEqual(grir_grn_detail(entity, first.id).invoiced_value, 400_000)
+        self.assertEqual(grir_grn_detail(entity, second.id).invoiced_value, 300_000)
+
+        # A new explicit line reserves the second receipt before a PO-only line
+        # consumes FIFO capacity; the same clearing is never counted twice.
+        explicit = VendorInvoice.objects.create(
+            entity=entity, vendor=vendor, purchase_order=po,
+            invoice_date=datetime.date(2026, 1, 11),
+            approval_state=ProcApprovalState.APPROVED,
+        )
+        VendorInvoiceLine.objects.create(
+            vendor_invoice=explicit, po_line=line, grn_line=second.lines.get(),
+            expense_account=line.expense_account, quantity=3, unit_price=100_000,
+            line_no=1,
+        )
+        post_vendor_invoice(explicit)
+        final = grir_aging(entity)
+        self.assertEqual(final.total_open, 0)
+        self.assertEqual(final.control_balance, 0)
+        self.assertEqual(final.difference, 0)
+        self.assertEqual(grir_grn_detail(entity, second.id).invoiced_value, 600_000)
+
+    def test_fifo_excess_remains_visible_as_control_difference(self):
+        from vs_procurement.reports import grir_aging
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 8, 100_000, None)])
+        line = po.lines.get()
+        grn = self.make_grn(entity, vendor, po, [(line, 5)])
+        post_grn(grn)
+        invoice = self.make_bill(
+            entity, vendor, [("5100", 8, 100_000, None, line)],
+            po=po, date=datetime.date(2026, 1, 10),
+        )
+        post_vendor_invoice(invoice, allow_variance=True)
+
+        report = grir_aging(entity)
+        self.assertEqual(report.total_open, 0)
+        self.assertEqual(report.control_balance, -300_000)
+        self.assertEqual(report.difference, 300_000)
+
+    def test_cash_forecast_nets_credit_only_vendor_and_respects_cutoff(self):
+        from vs_procurement.reports import ap_cash_requirements
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        credit_vendor = Vendor.objects.create(
+            entity=entity, code="CREDIT", name="Credit Vendor",
+            payable_account=self.acc(entity, "2100"),
+            default_expense_account=self.acc(entity, "5300"),
+            kyc_status="VERIFIED",
+        )
+        invoice = self.make_bill(
+            entity, vendor, [("5300", 1, 1_000_000, None, None)],
+            date=datetime.date(2026, 1, 10),
+        )
+        post_vendor_invoice(invoice)
+        self._payment(
+            entity, credit_vendor, 250_000, datetime.date(2026, 1, 20),
+            auto_allocate=False,
+        )
+        before = ap_cash_requirements(entity, as_of=datetime.date(2026, 1, 15))
+        self.assertEqual(before.total_unallocated_credit, 0)
+        after = ap_cash_requirements(entity, as_of=datetime.date(2026, 1, 20))
+        credit_row = next(row for row in after.rows if row.code == "CREDIT")
+        self.assertEqual(credit_row.total, 0)
+        self.assertEqual(credit_row.unallocated_credit, 250_000)
+        self.assertEqual(credit_row.net_total, -250_000)
+        self.assertEqual(after.total_due, 1_000_000)
+        self.assertEqual(after.total_unallocated_credit, 250_000)
+        self.assertEqual(after.net_cash_requirement, 750_000)
+
+    def test_cycle_uses_full_settlement_once_and_omits_partial_invoices(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        _, _, _, invoice = self._cycle_chain(entity, vendor)
+        self._payment(
+            entity, vendor, 400_000, datetime.date(2026, 1, 20),
+            allocations=[(invoice, 400_000)],
+        )
+        partial = procurement_cycle_time(
+            entity, start_date=datetime.date(2026, 1, 1),
+            end_date=datetime.date(2026, 1, 24),
+        )
+        self.assertEqual(
+            next(s for s in partial.stages if s.name == "invoice_to_payment").sample_count,
+            0,
+        )
+        self._payment(
+            entity, vendor, 600_000, datetime.date(2026, 1, 25),
+            allocations=[(invoice, 600_000)],
+        )
+        report = procurement_cycle_time(
+            entity, start_date=datetime.date(2026, 1, 25),
+            end_date=datetime.date(2026, 1, 25),
+        )
+        payment_stage = next(
+            s for s in report.stages if s.name == "invoice_to_payment"
+        )
+        self.assertEqual(payment_stage.sample_count, 1)
+        self.assertEqual(payment_stage.avg_days, 15.0)
+        self.assertEqual(report.end_to_end_count, 1)
+
+    def test_cycle_excludes_negative_hops_without_discarding_valid_stages(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        pr, _, _, invoice = self._cycle_chain(entity, vendor)
+        self._payment(
+            entity, vendor, 1_000_000, datetime.date(2026, 1, 25),
+            allocations=[(invoice, 1_000_000)],
+        )
+        pr.request_date = datetime.date(2026, 2, 1)
+        pr.save(update_fields=["request_date", "updated_at"])
+        report = procurement_cycle_time(entity)
+        stages = {stage.name: stage for stage in report.stages}
+        self.assertEqual(stages["req_to_po"].sample_count, 0)
+        self.assertEqual(stages["req_to_po"].excluded_count, 1)
+        self.assertEqual(stages["po_to_receipt"].sample_count, 1)
+        self.assertEqual(stages["receipt_to_invoice"].sample_count, 1)
+        self.assertEqual(stages["invoice_to_payment"].sample_count, 1)
+        self.assertEqual(report.end_to_end_count, 0)
+        self.assertEqual(report.end_to_end_excluded_count, 1)
+
+    def test_cycle_end_to_end_rejects_non_monotonic_middle_with_positive_outer_span(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        _, _, _, invoice = self._cycle_chain(entity, vendor)
+        self._payment(
+            entity, vendor, 1_000_000, datetime.date(2026, 1, 25),
+            allocations=[(invoice, 1_000_000)],
+        )
+        # Outer requisition→payment remains +23 days, but invoice now predates
+        # receipt. The valid independent hops remain samples; the complete chain does not.
+        invoice.invoice_date = datetime.date(2026, 1, 4)
+        invoice.save(update_fields=["invoice_date", "updated_at"])
+
+        report = procurement_cycle_time(entity)
+        stages = {stage.name: stage for stage in report.stages}
+        self.assertEqual(stages["req_to_po"].sample_count, 1)
+        self.assertEqual(stages["po_to_receipt"].sample_count, 1)
+        self.assertEqual(stages["receipt_to_invoice"].sample_count, 0)
+        self.assertEqual(stages["receipt_to_invoice"].excluded_count, 1)
+        self.assertEqual(stages["invoice_to_payment"].sample_count, 1)
+        self.assertEqual(report.end_to_end_count, 0)
+        self.assertEqual(report.end_to_end_excluded_count, 1)
