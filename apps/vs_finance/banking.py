@@ -157,6 +157,68 @@ def import_statement_lines(bank_account, rows, *, statement_date=None, period_la
     return statement, list(BankStatementLine.objects.filter(statement=statement)), suspected
 
 
+def statement_edit_block_reason(statement) -> str | None:
+    """Explain why a statement cannot be corrected in place, or return ``None``."""
+    from .models import BankStatementImportContext
+
+    if hasattr(statement, "_edit_block_reason_cache"):
+        return statement._edit_block_reason_cache
+
+    if statement.status != BankStatementStatus.UPLOADED:
+        reason = "Reconciled statements cannot be edited."
+        statement._edit_block_reason_cache = reason
+        return reason
+
+    is_bulk_import = getattr(statement, "is_bulk_import", None)
+    if is_bulk_import is None:
+        is_bulk_import = BankStatementImportContext.objects.filter(
+            published_statement=statement,
+        ).exists()
+    if is_bulk_import:
+        reason = (
+            "Bulk-imported statements must be rolled back and re-imported so their "
+            "validation history remains accurate."
+        )
+        statement._edit_block_reason_cache = reason
+        return reason
+
+    has_acted_lines = getattr(statement, "has_acted_lines", None)
+    if has_acted_lines is None:
+        has_acted_lines = statement.lines.exclude(
+            status=BankLineStatus.UNMATCHED,
+        ).exists()
+    if has_acted_lines:
+        reason = (
+            "Unmatch or restore every statement line before editing this statement."
+        )
+        statement._edit_block_reason_cache = reason
+        return reason
+    statement._edit_block_reason_cache = None
+    return None
+
+
+def statement_line_delete_block_reason(statement_line) -> str | None:
+    """Explain why an imported statement line cannot be safely deleted."""
+    if hasattr(statement_line, "_delete_block_reason_cache"):
+        return statement_line._delete_block_reason_cache
+    if statement_line.status != BankLineStatus.UNMATCHED:
+        reason = "Only unmatched statement lines can be deleted."
+        statement_line._delete_block_reason_cache = reason
+        return reason
+    if statement_line.statement_id is None:
+        statement_line._delete_block_reason_cache = None
+        return None
+
+    statement = statement_line.statement
+    if hasattr(statement_line, "statement_is_bulk_import"):
+        statement.is_bulk_import = statement_line.statement_is_bulk_import
+    if hasattr(statement_line, "statement_has_acted_lines"):
+        statement.has_acted_lines = statement_line.statement_has_acted_lines
+    reason = statement_edit_block_reason(statement)
+    statement_line._delete_block_reason_cache = reason
+    return reason
+
+
 # --------------------------------------------------------------------------- #
 # Matching                                                                    #
 # --------------------------------------------------------------------------- #

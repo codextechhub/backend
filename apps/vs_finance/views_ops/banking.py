@@ -5,22 +5,28 @@ from __future__ import annotations
 import hashlib
 
 from django.db import transaction
+from django.db.models import Exists, OuterRef
 from django.http import HttpResponse
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
 
-from ..constants import BankLineStatus, DocumentStatus
+from ..audit import record
+from ..constants import BankLineStatus, DocumentStatus, FinanceAuditAction
 from ..views import resolve_entity
 from ..models import (
     BankAccount,
+    BankStatement,
+    BankStatementImportContext,
     BankStatementLine,
     JournalLine,
 )
 from ..serializers import (
     BankAccountSerializer,
     BankReconciliationSerializer,
+    BankStatementDetailSerializer,
     BankStatementLineSerializer,
     BankStatementSerializer,
 )
@@ -164,8 +170,19 @@ class BankAccountDetailView(_FinanceBase):
             "unreconciled_diff": book - stmt_val, "unreconciled_count": unreconciled,
         }
         data["transactions"] = self._transactions(bank, book_balance=book)
+        acted_lines = BankStatementLine.objects.filter(
+            statement=OuterRef("pk"),
+        ).exclude(status=BankLineStatus.UNMATCHED)
+        bulk_context = BankStatementImportContext.objects.filter(
+            published_statement=OuterRef("pk"),
+        )
         data["statements"] = BankStatementSerializer(
-            bank.statements.all()[:50], many=True).data
+            bank.statements.annotate(
+                has_acted_lines=Exists(acted_lines),
+                is_bulk_import=Exists(bulk_context),
+            )[:50],
+            many=True,
+        ).data
         data["reconciliations"] = BankReconciliationSerializer(
             bank.reconciliations.all()[:50], many=True).data
         return success_response("Bank account retrieved.", data=data)
@@ -232,8 +249,24 @@ class BankStatementLineView(_FinanceBase):
     # Handle GET requests for this endpoint.
     def get(self, request, pk):
         bank = self._bank(request, pk)
-        qs = (BankStatementLine.objects.filter(bank_account=bank)
-              .select_related("matched_line__entry", "adjusting_journal"))
+        acted_lines = BankStatementLine.objects.filter(
+            statement_id=OuterRef("statement_id"),
+        ).exclude(status=BankLineStatus.UNMATCHED)
+        bulk_context = BankStatementImportContext.objects.filter(
+            published_statement_id=OuterRef("statement_id"),
+        )
+        qs = (
+            BankStatementLine.objects.filter(bank_account=bank)
+            .select_related(
+                "statement",
+                "matched_line__entry",
+                "adjusting_journal",
+            )
+            .annotate(
+                statement_has_acted_lines=Exists(acted_lines),
+                statement_is_bulk_import=Exists(bulk_context),
+            )
+        )
         if (status_val := request.query_params.get("status")):
             qs = qs.filter(status=status_val)
         return self.paginate(request, qs, BankStatementLineSerializer)
@@ -274,6 +307,370 @@ class BankStatementLineView(_FinanceBase):
                 "suspected_duplicates": suspected,
             },
             status=201,
+        )
+
+
+class BankStatementLineDetailView(_FinanceBase):
+    """Delete one incorrect, unmatched line from a manual statement."""
+
+    rbac_permission = "finance.bankaccount.import"
+
+    def delete(self, request, pk):
+        entity = resolve_entity(request)
+        with transaction.atomic():
+            line = (
+                BankStatementLine.objects.select_for_update()
+                .select_related("bank_account__entity")
+                .filter(pk=pk, bank_account__entity=entity)
+                .first()
+            )
+            if line is None:
+                raise NotFound("Statement line not found for this entity.")
+
+            from ..banking import statement_line_delete_block_reason
+
+            if line.statement_id is None:
+                if reason := statement_line_delete_block_reason(line):
+                    raise ValidationError({"line": reason})
+                line_id = line.pk
+                before = {
+                    "txn_date": line.txn_date.isoformat(),
+                    "description": line.description,
+                    "reference": line.reference,
+                    "amount": int(line.amount),
+                    "external_id": line.external_id,
+                }
+                bank_account = line.bank_account
+                line.delete()
+                record(
+                    entity=bank_account.entity,
+                    action=FinanceAuditAction.BANK_STATEMENT_CORRECTED,
+                    actor_user=request.user,
+                    target_type="BankStatementLine",
+                    target_id=str(line_id),
+                    message=f"Deleted orphan bank statement line {line_id}.",
+                    before=before,
+                    after={"deleted": True},
+                    bank_account_id=bank_account.pk,
+                )
+                deleted_statement_id = None
+            else:
+                statement = (
+                    BankStatement.objects.select_for_update()
+                    .select_related("bank_account__entity")
+                    .get(pk=line.statement_id)
+                )
+                line.statement = statement
+                if reason := statement_line_delete_block_reason(line):
+                    raise ValidationError({"line": reason})
+
+                current_lines = list(
+                    BankStatementLine.objects.select_for_update()
+                    .filter(statement=statement)
+                    .order_by("txn_date", "id")
+                )
+                before = _statement_snapshot(statement, current_lines)
+                line_id = line.pk
+                statement_id = statement.pk
+                bank_account = statement.bank_account
+                line.delete()
+
+                remaining = list(statement.lines.order_by("txn_date", "id"))
+                if remaining:
+                    statement.closing_balance = (
+                        statement.opening_balance
+                        + sum(int(item.amount) for item in remaining)
+                    )
+                    statement.save(
+                        update_fields=["closing_balance", "updated_at"],
+                    )
+                    after = _statement_snapshot(statement, remaining)
+                    record(
+                        entity=bank_account.entity,
+                        action=FinanceAuditAction.BANK_STATEMENT_CORRECTED,
+                        actor_user=request.user,
+                        target=statement,
+                        message=(
+                            f"Deleted line {line_id} from bank statement "
+                            f"{statement_id}."
+                        ),
+                        before=before,
+                        after=after,
+                        bank_account_id=bank_account.pk,
+                        deleted_line_id=line_id,
+                    )
+                    deleted_statement_id = None
+                else:
+                    statement.delete()
+                    record(
+                        entity=bank_account.entity,
+                        action=FinanceAuditAction.BANK_STATEMENT_CORRECTED,
+                        actor_user=request.user,
+                        target_type="BankStatement",
+                        target_id=str(statement_id),
+                        message=(
+                            f"Deleted bank statement {statement_id} after its "
+                            "final line was removed."
+                        ),
+                        before=before,
+                        after={"deleted": True, "lines": []},
+                        bank_account_id=bank_account.pk,
+                        deleted_line_id=line_id,
+                    )
+                    deleted_statement_id = statement_id
+
+        return success_response(
+            (
+                "Statement line and empty statement deleted."
+                if deleted_statement_id
+                else "Statement line deleted."
+            ),
+            data={
+                "deleted_line_id": line_id,
+                "deleted_statement_id": deleted_statement_id,
+            },
+        )
+
+
+class _BankStatementCorrectionLineSerializer(serializers.Serializer):
+    id = serializers.IntegerField(required=False, min_value=1)
+    txn_date = serializers.DateField()
+    description = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=255,
+    )
+    reference = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=64,
+    )
+    amount = serializers.IntegerField()
+    external_id = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=128,
+    )
+
+
+class _BankStatementCorrectionSerializer(serializers.Serializer):
+    statement_date = serializers.DateField()
+    period_label = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=120,
+    )
+    opening_balance = serializers.IntegerField()
+    lines = _BankStatementCorrectionLineSerializer(many=True, allow_empty=False)
+
+    def validate_lines(self, lines):
+        ids = [line["id"] for line in lines if line.get("id") is not None]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError("A statement line can appear only once.")
+
+        external_ids = [
+            str(line.get("external_id") or "").strip()
+            for line in lines
+            if str(line.get("external_id") or "").strip()
+        ]
+        if len(external_ids) != len(set(external_ids)):
+            raise serializers.ValidationError(
+                "Transaction IDs must be unique within the statement."
+            )
+        return lines
+
+
+def _statement_snapshot(statement, lines) -> dict:
+    return {
+        "statement_date": statement.statement_date.isoformat(),
+        "period_label": statement.period_label,
+        "opening_balance": int(statement.opening_balance),
+        "closing_balance": int(statement.closing_balance),
+        "lines": [
+            {
+                "id": line.id,
+                "txn_date": line.txn_date.isoformat(),
+                "description": line.description,
+                "reference": line.reference,
+                "amount": int(line.amount),
+                "external_id": line.external_id,
+            }
+            for line in lines
+        ],
+    }
+
+
+class BankStatementDetailView(_FinanceBase):
+    """Read or safely correct one manually imported, unreconciled statement."""
+
+    @property
+    def rbac_permission(self):
+        return (
+            "finance.bankaccount.import"
+            if self.request.method == "PATCH"
+            else "finance.bankaccount.view"
+        )
+
+    def _statement(self, request, pk, statement_id, *, lock=False):
+        entity = resolve_entity(request)
+        acted_lines = BankStatementLine.objects.filter(
+            statement=OuterRef("pk"),
+        ).exclude(status=BankLineStatus.UNMATCHED)
+        bulk_context = BankStatementImportContext.objects.filter(
+            published_statement=OuterRef("pk"),
+        )
+        queryset = (
+            BankStatement.objects.filter(
+                pk=statement_id,
+                bank_account_id=pk,
+                bank_account__entity=entity,
+            )
+            .select_related("bank_account__entity")
+            .annotate(
+                has_acted_lines=Exists(acted_lines),
+                is_bulk_import=Exists(bulk_context),
+            )
+        )
+        if lock:
+            queryset = queryset.select_for_update()
+        statement = queryset.first()
+        if statement is None:
+            raise NotFound("Bank statement not found for this entity and account.")
+        return statement
+
+    def get(self, request, pk, statement_id):
+        statement = self._statement(request, pk, statement_id)
+        return success_response(
+            "Bank statement retrieved.",
+            data=BankStatementDetailSerializer(statement).data,
+        )
+
+    def patch(self, request, pk, statement_id):
+        correction = _BankStatementCorrectionSerializer(data=request.data)
+        correction.is_valid(raise_exception=True)
+        values = correction.validated_data
+
+        with transaction.atomic():
+            statement = self._statement(
+                request,
+                pk,
+                statement_id,
+                lock=True,
+            )
+            from ..banking import statement_edit_block_reason
+
+            if reason := statement_edit_block_reason(statement):
+                raise ValidationError({"statement": reason})
+
+            current_lines = list(
+                BankStatementLine.objects.select_for_update()
+                .filter(statement=statement)
+                .order_by("txn_date", "id")
+            )
+            current_by_id = {line.id: line for line in current_lines}
+            submitted_ids = {
+                line["id"]
+                for line in values["lines"]
+                if line.get("id") is not None
+            }
+            unknown_ids = submitted_ids - set(current_by_id)
+            if unknown_ids:
+                raise ValidationError({
+                    "lines": "One or more lines do not belong to this statement.",
+                })
+
+            external_ids = {
+                str(line.get("external_id") or "").strip()
+                for line in values["lines"]
+                if str(line.get("external_id") or "").strip()
+            }
+            if external_ids and BankStatementLine.objects.filter(
+                bank_account=statement.bank_account,
+                external_id__in=external_ids,
+            ).exclude(statement=statement).exists():
+                raise ValidationError({
+                    "lines": (
+                        "A transaction ID is already used by another statement "
+                        "on this bank account."
+                    ),
+                })
+
+            before = _statement_snapshot(statement, current_lines)
+            BankStatementLine.objects.filter(
+                statement=statement,
+            ).exclude(id__in=submitted_ids).delete()
+
+            updated = []
+            created = []
+            movement = 0
+            for line_data in values["lines"]:
+                normalized = {
+                    "txn_date": line_data["txn_date"],
+                    "description": str(line_data.get("description") or "").strip(),
+                    "reference": str(line_data.get("reference") or "").strip(),
+                    "amount": int(line_data["amount"]),
+                    "external_id": str(line_data.get("external_id") or "").strip(),
+                }
+                movement += normalized["amount"]
+                if line_data.get("id") is None:
+                    created.append(
+                        BankStatementLine(
+                            statement=statement,
+                            bank_account=statement.bank_account,
+                            **normalized,
+                        )
+                    )
+                else:
+                    line = current_by_id[line_data["id"]]
+                    for field, value in normalized.items():
+                        setattr(line, field, value)
+                    line.updated_at = timezone.now()
+                    updated.append(line)
+
+            if updated:
+                BankStatementLine.objects.bulk_update(
+                    updated,
+                    [
+                        "txn_date",
+                        "description",
+                        "reference",
+                        "amount",
+                        "external_id",
+                        "updated_at",
+                    ],
+                )
+            if created:
+                BankStatementLine.objects.bulk_create(created)
+
+            statement.statement_date = values["statement_date"]
+            statement.period_label = str(values.get("period_label") or "").strip()
+            statement.opening_balance = int(values["opening_balance"])
+            statement.closing_balance = statement.opening_balance + movement
+            statement.save(
+                update_fields=[
+                    "statement_date",
+                    "period_label",
+                    "opening_balance",
+                    "closing_balance",
+                    "updated_at",
+                ]
+            )
+            final_lines = list(statement.lines.order_by("txn_date", "id"))
+            after = _statement_snapshot(statement, final_lines)
+            record(
+                entity=statement.bank_account.entity,
+                action=FinanceAuditAction.BANK_STATEMENT_CORRECTED,
+                actor_user=request.user,
+                target=statement,
+                message=f"Corrected bank statement {statement.pk}.",
+                before=before,
+                after=after,
+                bank_account_id=statement.bank_account_id,
+            )
+
+        return success_response(
+            "Bank statement corrected.",
+            data=BankStatementDetailSerializer(statement).data,
         )
 
 

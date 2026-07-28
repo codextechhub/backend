@@ -480,6 +480,7 @@ class FinanceAuditAction(models.TextChoices):
     STOCK_ADJUSTED = "STOCK_ADJUSTED", "Stock adjusted"
     STOCK_ADJUST_REJECTED = "STOCK_ADJUST_REJECTED", "Stock adjustment rejected"
     # Phase 4 — banking, expenses, payroll, budget, fixed assets, period close.
+    BANK_STATEMENT_CORRECTED = "BANK_STATEMENT_CORRECTED", "Bank statement corrected"
     BANK_RECONCILED = "BANK_RECONCILED", "Bank statement reconciled"
     BANK_CHARGE_POSTED = "BANK_CHARGE_POSTED", "Bank charge posted"
     EXPENSE_CLAIM_POSTED = "EXPENSE_CLAIM_POSTED", "Expense claim posted"

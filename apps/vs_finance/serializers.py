@@ -744,6 +744,8 @@ class BankStatementLineSerializer(serializers.ModelSerializer):
     # Journal lines paired to this statement line via a group (many-to-one) match;
     # empty for a plain 1:1 match (which uses matched_line_id).
     group_line_ids = serializers.SerializerMethodField()
+    can_delete = serializers.SerializerMethodField()
+    delete_block_reason = serializers.SerializerMethodField()
 
     class Meta:
         model = BankStatementLine
@@ -752,6 +754,7 @@ class BankStatementLineSerializer(serializers.ModelSerializer):
             "reference", "amount", "amount_naira", "status", "matched_line_id",
             "group_line_ids", "adjusting_journal_id", "match_source",
             "match_source_display", "matched_reference", "external_id", "reconciled_at",
+            "can_delete", "delete_block_reason",
         ]
 
     def get_amount_naira(self, obj) -> str:
@@ -768,19 +771,31 @@ class BankStatementLineSerializer(serializers.ModelSerializer):
             return obj.matched_line.entry.document_number
         return None
 
+    def get_can_delete(self, obj) -> bool:
+        from .banking import statement_line_delete_block_reason
+
+        return statement_line_delete_block_reason(obj) is None
+
+    def get_delete_block_reason(self, obj) -> str | None:
+        from .banking import statement_line_delete_block_reason
+
+        return statement_line_delete_block_reason(obj)
+
 
 class BankStatementSerializer(serializers.ModelSerializer):
     line_count = serializers.IntegerField(read_only=True)
     opening_balance_naira = serializers.SerializerMethodField()
     closing_balance_naira = serializers.SerializerMethodField()
     status_display = serializers.CharField(source="get_status_display", read_only=True)
+    can_edit = serializers.SerializerMethodField()
+    edit_block_reason = serializers.SerializerMethodField()
 
     class Meta:
         model = BankStatement
         fields = [
             "id", "statement_date", "period_label", "opening_balance",
             "opening_balance_naira", "closing_balance", "closing_balance_naira",
-            "line_count", "status", "status_display",
+            "line_count", "status", "status_display", "can_edit", "edit_block_reason",
         ]
 
     def get_opening_balance_naira(self, obj) -> str:
@@ -788,6 +803,23 @@ class BankStatementSerializer(serializers.ModelSerializer):
 
     def get_closing_balance_naira(self, obj) -> str:
         return format_naira(obj.closing_balance)
+
+    def get_can_edit(self, obj) -> bool:
+        from .banking import statement_edit_block_reason
+
+        return statement_edit_block_reason(obj) is None
+
+    def get_edit_block_reason(self, obj) -> str | None:
+        from .banking import statement_edit_block_reason
+
+        return statement_edit_block_reason(obj)
+
+
+class BankStatementDetailSerializer(BankStatementSerializer):
+    lines = BankStatementLineSerializer(many=True, read_only=True)
+
+    class Meta(BankStatementSerializer.Meta):
+        fields = [*BankStatementSerializer.Meta.fields, "lines"]
 
 
 class BankReconciliationSerializer(serializers.ModelSerializer):

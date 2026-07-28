@@ -28,7 +28,13 @@ from vs_rbac.tests.helpers import (
     make_vision_user,
 )
 
-from .models import BankStatement, BankStatementImportContext, BankStatementLine
+from .constants import BankLineStatus, FinanceAuditAction
+from .models import (
+    BankStatement,
+    BankStatementImportContext,
+    BankStatementLine,
+    FinanceAuditLog,
+)
 from .tests import _Phase4FixtureMixin
 
 
@@ -90,6 +96,38 @@ class BankStatementImportWizardTests(_Phase4FixtureMixin, TestCase):
         return (
             "2026-01-02,Customer receipt,RCPT-1,500.00,,TX-1,1500.00\n"
             "2026-01-03,Bank fee,FEE-1,,50.00,TX-2,1450.00\n"
+        )
+
+    def _manual_statement(self):
+        response = self.client.post(
+            (
+                f"/v1/finance/bank-accounts/{self.bank.pk}/statement-lines/"
+                f"?entity={self.entity.code}"
+            ),
+            {
+                "statement_date": "2026-01-31",
+                "period_label": "January 2026",
+                "opening_balance": 100000,
+                "lines": [
+                    {
+                        "txn_date": "2026-01-02",
+                        "description": "Customer receipt",
+                        "reference": "RCPT-1",
+                        "amount": 50000,
+                    },
+                    {
+                        "txn_date": "2026-01-03",
+                        "description": "Bank fee",
+                        "reference": "FEE-1",
+                        "amount": -5000,
+                    },
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        return BankStatement.objects.get(
+            pk=response.json()["data"]["imported"][0]["statement_id"],
         )
 
     def test_upload_validates_then_publish_creates_one_statement_atomically(self):
@@ -357,6 +395,212 @@ class BankStatementImportWizardTests(_Phase4FixtureMixin, TestCase):
         self.assertTrue(BankStatement.objects.exists())
         self.assertEqual(BankStatementLine.objects.count(), 2)
 
+    def test_manual_statement_can_be_corrected_before_reconciliation(self):
+        statement = self._manual_statement()
+        detail_url = (
+            f"/v1/finance/bank-accounts/{self.bank.pk}/statements/{statement.pk}/"
+            f"?entity={self.entity.code}"
+        )
+        detail = self.client.get(detail_url)
+        self.assertEqual(detail.status_code, 200, detail.content)
+        data = detail.json()["data"]
+        self.assertTrue(data["can_edit"])
+        first_line, second_line = data["lines"]
+
+        corrected = self.client.patch(
+            detail_url,
+            {
+                "statement_date": "2026-02-01",
+                "period_label": "Corrected January 2026",
+                "opening_balance": 110000,
+                "lines": [
+                    {
+                        "id": first_line["id"],
+                        "txn_date": "2026-01-02",
+                        "description": "Corrected customer receipt",
+                        "reference": "RCPT-1",
+                        "amount": 60000,
+                        "external_id": "",
+                    },
+                    {
+                        "txn_date": "2026-01-04",
+                        "description": "Replacement bank fee",
+                        "reference": "FEE-2",
+                        "amount": -10000,
+                        "external_id": "",
+                    },
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(corrected.status_code, 200, corrected.content)
+        corrected_data = corrected.json()["data"]
+        self.assertEqual(corrected_data["closing_balance"], 160000)
+        self.assertEqual(corrected_data["line_count"], 2)
+        self.assertFalse(BankStatementLine.objects.filter(pk=second_line["id"]).exists())
+        self.assertEqual(
+            list(
+                statement.lines.order_by("txn_date").values_list(
+                    "description",
+                    "amount",
+                )
+            ),
+            [
+                ("Corrected customer receipt", 60000),
+                ("Replacement bank fee", -10000),
+            ],
+        )
+        audit = FinanceAuditLog.objects.get(
+            action=FinanceAuditAction.BANK_STATEMENT_CORRECTED,
+            target_id=str(statement.pk),
+        )
+        self.assertEqual(audit.actor_id, self.user.pk)
+        self.assertEqual(audit.before["closing_balance"], 145000)
+        self.assertEqual(audit.after["closing_balance"], 160000)
+
+    def test_manual_statement_correction_is_blocked_after_a_line_is_acted_on(self):
+        statement = self._manual_statement()
+        line = statement.lines.first()
+        line.status = BankLineStatus.IGNORED
+        line.save(update_fields=["status", "updated_at"])
+
+        response = self.client.patch(
+            (
+                f"/v1/finance/bank-accounts/{self.bank.pk}/statements/{statement.pk}/"
+                f"?entity={self.entity.code}"
+            ),
+            {
+                "statement_date": "2026-01-31",
+                "opening_balance": 100000,
+                "lines": [
+                    {
+                        "id": existing.pk,
+                        "txn_date": existing.txn_date,
+                        "description": existing.description,
+                        "reference": existing.reference,
+                        "amount": existing.amount,
+                    }
+                    for existing in statement.lines.all()
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("restore every statement line", str(response.json()).lower())
+
+    def test_unmatched_manual_lines_can_be_deleted_and_empty_statement_is_removed(self):
+        statement = self._manual_statement()
+        receipt, fee = list(statement.lines.order_by("txn_date", "id"))
+
+        deleted = self.client.delete(
+            (
+                f"/v1/finance/statement-lines/{receipt.pk}/"
+                f"?entity={self.entity.code}"
+            ),
+        )
+        self.assertEqual(deleted.status_code, 200, deleted.content)
+        self.assertIsNone(deleted.json()["data"]["deleted_statement_id"])
+        statement.refresh_from_db()
+        self.assertEqual(statement.closing_balance, 95000)
+        self.assertEqual(list(statement.lines.values_list("pk", flat=True)), [fee.pk])
+
+        deleted_final = self.client.delete(
+            (
+                f"/v1/finance/statement-lines/{fee.pk}/"
+                f"?entity={self.entity.code}"
+            ),
+        )
+        self.assertEqual(deleted_final.status_code, 200, deleted_final.content)
+        self.assertEqual(
+            deleted_final.json()["data"]["deleted_statement_id"],
+            statement.pk,
+        )
+        self.assertFalse(BankStatement.objects.filter(pk=statement.pk).exists())
+        self.assertFalse(BankStatementLine.objects.filter(pk=fee.pk).exists())
+        self.assertEqual(
+            FinanceAuditLog.objects.filter(
+                action=FinanceAuditAction.BANK_STATEMENT_CORRECTED,
+                metadata__deleted_line_id__in=[receipt.pk, fee.pk],
+            ).count(),
+            2,
+        )
+
+    def test_acted_on_statement_line_cannot_be_deleted(self):
+        statement = self._manual_statement()
+        line = statement.lines.first()
+        line.status = BankLineStatus.IGNORED
+        line.save(update_fields=["status", "updated_at"])
+
+        response = self.client.delete(
+            (
+                f"/v1/finance/statement-lines/{line.pk}/"
+                f"?entity={self.entity.code}"
+            ),
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertTrue(BankStatementLine.objects.filter(pk=line.pk).exists())
+
+    def test_bulk_statement_correction_requires_rollback_and_reimport(self):
+        upload = self._upload(self._balanced_rows())
+        batch_id = upload.json()["data"]["id"]
+        publish = self.client.post(
+            f"/v1/import/batches/{batch_id}/start-import/",
+            {"run_async": False},
+            format="json",
+        )
+        self.assertEqual(publish.status_code, 200, publish.content)
+        statement = BankStatement.objects.get(
+            pk=BankStatementImportContext.objects.get(
+                import_batch_id=batch_id,
+            ).published_statement_id,
+        )
+        detail_url = (
+            f"/v1/finance/bank-accounts/{self.bank.pk}/statements/{statement.pk}/"
+            f"?entity={self.entity.code}"
+        )
+        detail = self.client.get(detail_url)
+        self.assertFalse(detail.json()["data"]["can_edit"])
+        self.assertIn(
+            "rolled back and re-imported",
+            detail.json()["data"]["edit_block_reason"],
+        )
+
+        response = self.client.patch(
+            detail_url,
+            {
+                "statement_date": "2026-01-31",
+                "opening_balance": 100000,
+                "lines": [
+                    {
+                        "id": line.pk,
+                        "txn_date": line.txn_date,
+                        "description": line.description,
+                        "reference": line.reference,
+                        "amount": line.amount,
+                        "external_id": line.external_id,
+                    }
+                    for line in statement.lines.all()
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("rolled back and re-imported", str(response.json()))
+
+    def test_user_without_import_permission_cannot_correct_manual_statement(self):
+        statement = self._manual_statement()
+        user = make_vision_user(email="no-statement-correction@test.com")
+        client = TenantAPIClient(user=user)
+        response = client.patch(
+            (
+                f"/v1/finance/bank-accounts/{self.bank.pk}/statements/{statement.pk}/"
+                f"?entity={self.entity.code}"
+            ),
+            {},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 403, response.content)
+
     def test_finance_import_permission_opens_only_its_bank_statement_wizard(self):
         tenant = codex_tenant()
         finance_user = make_vision_user(
@@ -449,6 +693,38 @@ class BankStatementImportWizardTests(_Phase4FixtureMixin, TestCase):
             format="multipart",
         )
         self.assertEqual(response.status_code, 404, response.content)
+
+        foreign_statement = BankStatement.objects.create(
+            bank_account=foreign_bank,
+            statement_date="2026-01-31",
+            opening_balance=0,
+            closing_balance=10000,
+        )
+        foreign_line = BankStatementLine.objects.create(
+            bank_account=foreign_bank,
+            statement=foreign_statement,
+            txn_date="2026-01-02",
+            amount=10000,
+        )
+        correction = self.client.patch(
+            (
+                f"/v1/finance/bank-accounts/{foreign_bank.pk}/statements/"
+                f"{foreign_statement.pk}/?entity={foreign_entity.code}"
+            ),
+            {
+                "statement_date": "2026-01-31",
+                "opening_balance": 0,
+                "lines": [
+                    {
+                        "id": foreign_line.pk,
+                        "txn_date": "2026-01-02",
+                        "amount": 20000,
+                    },
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(correction.status_code, 404, correction.content)
 
 
 class ImportFileParserSafetyTests(SimpleTestCase):
