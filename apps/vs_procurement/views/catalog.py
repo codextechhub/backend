@@ -233,8 +233,8 @@ class CatalogItemListCreateView(_ProcBase):
         body = request.data
         code = _clean_text(body, "code", 40, upper=True)
         name = _clean_text(body, "name", 200)
-        if not code or not name:
-            raise ValidationError({"code": "Code and name are required."})
+        if not name:
+            raise ValidationError({"name": "An item name is required."})
         description = _clean_text(body, "description", 255)
         unit = _clean_text({"unit_of_measure": body.get("unit_of_measure", "each")}, "unit_of_measure", 24)
         if not unit:

@@ -209,6 +209,16 @@ class School(TimeStampedModel):
                     status=status,
                     activated_at=self.activated_at,
                 )
+            self.code = str(self.code or "").strip().upper()
+            if not self.code:
+                from vs_tenants.numbering import next_tenant_document_number
+
+                self.code = next_tenant_document_number(
+                    tenant=self.tenant,
+                    document_code="SC",
+                )
+                if kwargs.get("update_fields") is not None:
+                    kwargs["update_fields"] = set(kwargs["update_fields"]) | {"code"}
             result = super().save(*args, **kwargs)
             from vs_tenants.models import Tenant
             tenant_status = {

@@ -283,6 +283,13 @@ class VendorConsoleAPITests(_P2PFixtureMixin, TestCase):
     def test_create_normalizes_identifiers_defaults_governance_and_rejects_duplicates(self, _sensitive, _permission):
         entity, _, _, _, _ = self.build_p2p()
         client = self._client(entity)
+        generated = client.post(
+            f"/v1/procurement/vendors/?entity={entity.code}",
+            {"name": "Generated Vendor"},
+            format="json",
+        )
+        self.assertEqual(generated.status_code, 201)
+        self.assertTrue(generated.data["data"]["code"].startswith(f"VN-{entity.tenant_id}"))
         payload = {
             "code": " new-vendor ", "name": " New Vendor ", "tax_id": " tin-22 33 ",
             "email": " Accounts@Example.COM ", "payable_account": "2100",
@@ -4451,6 +4458,9 @@ class CatalogItemConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(client.post(url, {
             "code": "C", "name": "C", "default_expense_account": "2100"}, format="json").status_code, 400)
         self.assertEqual(client.post(url, {"code": "D", "name": "D"}, format="json").status_code, 201)
+        generated = client.post(url, {"name": "Generated item"}, format="json")
+        self.assertEqual(generated.status_code, 201)
+        self.assertTrue(generated.data["data"]["code"].startswith(f"IT-{entity.tenant_id}"))
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_code_is_immutable_after_creation(self, _perm):
@@ -6492,6 +6502,14 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(data["expense_code"], "5100")
         self.assertEqual(data["movements"], [])            # detail shape, empty ledger
         self.assertEqual(data["activity"], [])
+
+        generated = client.post(
+            f"/v1/procurement/stock-items/?entity={entity.code}",
+            {"name": "Generated stock", "inventory_account": "1400"},
+            format="json",
+        )
+        self.assertEqual(generated.status_code, 201)
+        self.assertTrue(generated.data["data"]["code"].startswith(f"ST-{entity.tenant_id}"))
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_detail_loads_only_newest_fifty_movements_with_sql_limit(self, _perm):

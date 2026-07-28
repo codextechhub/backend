@@ -475,8 +475,8 @@ class VendorListCreateView(_ProcBase):
         body = request.data
         code = _clean_text(body, "code", 32, upper=True)
         name = _clean_text(body, "name", 200)
-        if not code or not name:
-            raise ValidationError({"code": "code and name are required."})
+        if not name:
+            raise ValidationError({"name": "A vendor name is required."})
         _require_sensitive_access(request, body)
         tax_id = _clean_text(body, "tax_id", 32, upper=True)
         payable = _validate_account_type(

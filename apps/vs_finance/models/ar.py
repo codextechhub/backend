@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from django.conf import settings
-from django.db import models
+from django.db import models, transaction
 
 from ..constants import (
     DocType,
@@ -39,6 +39,9 @@ class Customer(TimeStampedModel):
 
     ``receivable_account`` is the AR control account this customer's balance rolls up
     into; the customer itself is the sub-ledger detail behind that control.
+
+    ``code`` is allocated from the tenant's concurrency-safe customer sequence when
+    a caller omits it. Explicit values remain supported for trusted imports.
     """
 
     entity = models.ForeignKey(
@@ -77,6 +80,29 @@ class Customer(TimeStampedModel):
             models.Index(fields=["source_type", "source_id"]),
         ]
         ordering = ["entity", "code"]
+
+    def assign_code(self) -> str:
+        """Allocate the stable customer reference when callers do not supply one."""
+        if self.code:
+            return self.code
+        if self.entity_id is None:
+            raise ValueError("A customer needs an entity before its code can be allocated.")
+
+        from ..numbering import next_document_number
+
+        self.code = next_document_number(entity=self.entity, doc_type="CU")
+        return self.code
+
+    def save(self, *args, **kwargs):
+        # Keep allocation and insertion in one transaction so a failed create does
+        # not consume a customer reference.
+        if not self.code and self.entity_id:
+            with transaction.atomic():
+                self.assign_code()
+                if kwargs.get("update_fields") is not None:
+                    kwargs["update_fields"] = set(kwargs["update_fields"]) | {"code"}
+                return super().save(*args, **kwargs)
+        return super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.code} · {self.name}"

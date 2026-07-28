@@ -30,7 +30,7 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.conf import settings
 from django.core.validators import MaxValueValidator, MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from django.db.models.functions import Lower
 
 from vs_finance.constants import DocType, InvoicePaymentStatus, PaymentMethod
@@ -66,6 +66,39 @@ def _pct(part, whole) -> Decimal:
     if whole == 0:
         return Decimal("0.00")
     return (Decimal(part or 0) / whole * 100).quantize(Decimal("0.01"))
+
+
+class _AutoMasterCodeMixin:
+    """Allocate stable tenant-scoped codes for non-semantic master records."""
+
+    AUTO_CODE_PREFIX: str | None = None
+
+    def assign_code(self) -> str:
+        self.code = str(self.code or "").strip().upper()
+        if self.code:
+            return self.code
+        if self.entity_id is None:
+            raise ValueError(f"{type(self).__name__} needs an entity before code allocation.")
+        if not self.AUTO_CODE_PREFIX:
+            raise ValueError(f"{type(self).__name__} must define AUTO_CODE_PREFIX.")
+
+        from vs_tenants.numbering import next_tenant_document_number
+
+        self.code = next_tenant_document_number(
+            tenant=self.entity.tenant,
+            document_code=self.AUTO_CODE_PREFIX,
+        )
+        return self.code
+
+    def save(self, *args, **kwargs):
+        self.code = str(self.code or "").strip().upper()
+        if not self.code and self.entity_id:
+            with transaction.atomic():
+                self.assign_code()
+                if kwargs.get("update_fields") is not None:
+                    kwargs["update_fields"] = set(kwargs["update_fields"]) | {"code"}
+                return super().save(*args, **kwargs)
+        return super().save(*args, **kwargs)
 
 
 # --------------------------------------------------------------------------- #
@@ -120,7 +153,7 @@ class VendorCategory(TimeStampedModel):
         return f"{self.code} · {self.name}"
 
 
-class Vendor(TimeStampedModel):
+class Vendor(_AutoMasterCodeMixin, TimeStampedModel):
     """A payable party — the AP sub-ledger account — for one entity.
 
     The mirror image of :class:`vs_finance.models.Customer`: ``payable_account`` is the
@@ -130,7 +163,10 @@ class Vendor(TimeStampedModel):
 
     ``kyc_status``/``on_hold`` are payment gates the payables service checks before
     cutting a cheque; ``default_wht_tax_code`` drives withholding-tax on payment.
+    ``code`` is generated when omitted; trusted imports may preserve an explicit code.
     """
+
+    AUTO_CODE_PREFIX = "VN"
 
     entity = models.ForeignKey(
         "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="vendors",
@@ -228,7 +264,7 @@ class Vendor(TimeStampedModel):
 # Master data — item catalog                                                  #
 # --------------------------------------------------------------------------- #
 
-class CatalogItem(TimeStampedModel):
+class CatalogItem(_AutoMasterCodeMixin, TimeStampedModel):
     """A reusable purchasable item — pre-set buying defaults so lines aren't retyped.
 
     Pure master data with **no GL effect**: a catalog item names a good/service and
@@ -239,6 +275,8 @@ class CatalogItem(TimeStampedModel):
     line-building views can splat in. None of it is binding — every value is overridable
     per line.
     """
+
+    AUTO_CODE_PREFIX = "IT"
 
     entity = models.ForeignKey(
         "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="catalog_items",
@@ -329,7 +367,7 @@ class CatalogItem(TimeStampedModel):
 # Inventory / stock ledger (perpetual, weighted-average cost)                 #
 # --------------------------------------------------------------------------- #
 
-class StockItem(TimeStampedModel):
+class StockItem(_AutoMasterCodeMixin, TimeStampedModel):
     """A physically stocked good — carries live on-hand quantity and its GL value.
 
     Distinct from :class:`CatalogItem`: a catalog item is *buying* master data (defaults
@@ -344,6 +382,8 @@ class StockItem(TimeStampedModel):
     Each :class:`StockMovement` adjusts both atomically, so ``stock_value`` always equals
     the perpetual-inventory balance for this item in :attr:`inventory_account`.
     """
+
+    AUTO_CODE_PREFIX = "ST"
 
     entity = models.ForeignKey(
         "vs_finance.LedgerEntity", on_delete=models.PROTECT, related_name="stock_items",

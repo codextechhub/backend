@@ -107,7 +107,7 @@ class StockItemListCreateView(_ProcBase):
         body = request.data
         # Codes are entity-unique identifiers — normalise to trimmed upper-case so the
         # uniqueness constraint and later immutability check compare like-for-like.
-        code = _text(body.get("code"), "code", 40, required=True).upper()
+        code = _text(body.get("code"), "code", 40).upper()
         name = _text(body.get("name"), "name", 200, required=True)
         # Inventory account must be an active, postable ASSET account (required); the
         # default expense account (debited on issue) an active, postable EXPENSE (optional).

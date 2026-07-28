@@ -255,6 +255,8 @@ class CustomerListCreateView(_FinanceBase):
     """Customers / payers for an entity.
 
     List filters: ``?search=`` (code or name), ``?is_active=true|false``.
+    Customer codes are allocated by the model when a create request omits one;
+    explicit codes remain accepted for trusted imports and existing API clients.
 
     docstring-name: Customers
     """
@@ -316,10 +318,7 @@ class CustomerListCreateView(_FinanceBase):
         entity = resolve_entity(request)
         body = request.data or {}
         code = str(body.get("code", "")).strip().upper()
-        # TODO: code should be created automatically if it wasn't provided.
-        if not code:
-            raise ValidationError({"code": "A customer code is required."})
-        if Customer.objects.filter(entity=entity, code=code).exists():
+        if code and Customer.objects.filter(entity=entity, code=code).exists():
             raise ValidationError({"code": f"A customer with code '{code}' already exists."})
         name = str(body.get("name", "")).strip()
         if not name:

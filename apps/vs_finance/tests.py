@@ -332,6 +332,18 @@ class NumberingTests(TestCase):
         )
         self.assertEqual(invoice.assign_number(), "LEGACY-IV-0001")
 
+    def test_customer_codes_are_allocated_when_omitted(self):
+        first = Customer.objects.create(
+            entity=self.entity, name="First Customer", opening_balance=0,
+        )
+        second = Customer.objects.create(
+            entity=self.entity, name="Second Customer", opening_balance=0,
+        )
+
+        self.assertTrue(first.code.startswith(f"CU-{self.entity.tenant_id}"))
+        self.assertTrue(second.code.startswith(f"CU-{self.entity.tenant_id}"))
+        self.assertNotEqual(first.code, second.code)
+
 
 # Group tests for G L Fixture Mixin.
 class _GLFixtureMixin:
@@ -5694,6 +5706,29 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, vat)])  # total 107500
         post_invoice(inv)
         return entity, customer, inv
+
+    def test_create_allocates_code_when_request_omits_it(self):
+        import json
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views_ar import CustomerListCreateView
+
+        entity, _period, _customer, _vat = self.build_ar()
+        user = self._super_admin("cust-create@test.com")
+        req = APIRequestFactory().post(
+            f"/v1/finance/customers/?entity={entity.code}",
+            {"name": "Generated Reference Ltd"},
+            format="json",
+        )
+        force_authenticate(req, user=user)
+        req.tenant = user.tenant
+
+        resp = CustomerListCreateView.as_view()(req)
+        resp.render()
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        code = json.loads(resp.content)["data"]["code"]
+        self.assertTrue(code.startswith(f"CU-{entity.tenant_id}"))
+        self.assertTrue(Customer.objects.filter(entity=entity, code=code).exists())
 
     # Verify list includes balance and status behavior.
     def test_list_includes_balance_and_status(self):
