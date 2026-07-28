@@ -29,6 +29,9 @@ Seed order
 7. seed_finance_permissions  — vs_finance permissions → both platform roles
 8. seed_procurement_permissions — vs_procurement permissions → both platform roles
 9. seed_payments_permissions — vs_payments permissions → both platform roles
+9b. seed_exports_permissions — vs_exports (Export Centre) permissions → both platform
+                               roles, except the sensitive-field and admin-activity
+                               keys, which go to super-admin only
 10. seed_todo_permissions    — vs_todo permissions → both platform roles
 11. seed_ticket_permissions  — vs_tickets permissions → platform and school roles
 12. seed_notification_permissions — communication keys enforced by vs_notifications
@@ -56,6 +59,7 @@ SEED_STEPS: list[tuple[str, list]] = [
     ("seed_finance_permissions",     []),
     ("seed_procurement_permissions", []),
     ("seed_payments_permissions",    []),
+    ("seed_exports_permissions",     []),
     ("seed_todo_permissions",        []),
     ("seed_ticket_permissions",      []),
     ("seed_notification_permissions", []),

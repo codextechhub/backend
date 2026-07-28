@@ -426,6 +426,46 @@ EVENT_TYPE_REGISTRY = [
         "default_enabled": True,
     },
 
+    # ── Export Centre (vs_exports) ─────────────────────────────────────────
+    # All three support in-app and email. The design handoff argued for in-app
+    # only on a manual success (the user is already watching the screen), but a
+    # run can take minutes and people leave the page, so completion emails were
+    # kept. Per-tenant settings can still switch the email channel off.
+
+    {
+        "key": "export.file_shared",
+        "label": "Export file shared with you",
+        "description": (
+            "Fires when a produced export file is shared with a recipient. Carries a "
+            "link to the authenticated download endpoint, never the file itself."
+        ),
+        "source_module": "vs_exports",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
+        "key": "export.run_failed",
+        "label": "Export failed",
+        "description": (
+            "Fires when an export run produces no file. Carries the user-safe reason "
+            "and the run reference to quote to support."
+        ),
+        "source_module": "vs_exports",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
+        "key": "export.run_completed",
+        "label": "Export ready",
+        "description": (
+            "Fires when an export run produces a file, including one completed with "
+            "omissions."
+        ),
+        "source_module": "vs_exports",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+
     # ── Todo / task review (vs_todo) ───────────────────────────────────────
     # Also created at runtime by vs_todo; registered here so seeding is
     # authoritative. Both in-app and email are used by the review-request flow.

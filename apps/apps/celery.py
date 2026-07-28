@@ -46,6 +46,22 @@ app.conf.beat_schedule = {
         "schedule": crontab(hour=6, minute=0),
     },
 
+    # --- vs_exports (Export Centre) --------------------------------------
+    # Nightly: hard-delete storage for produced files past their 30-day
+    # availability and mark them purged. Availability itself is derived at read
+    # time, so a missed night only delays reclaiming bytes — it never changes
+    # what a user sees. Idempotent.
+    "exports-expire-files": {
+        "task": "vs_exports.expire_files",
+        "schedule": crontab(hour=3, minute=30),
+    },
+    # Nightly: prune product analytics past its retention window. Deliberately not
+    # applied to the audit trail, which is kept indefinitely.
+    "exports-prune-analytics": {
+        "task": "vs_exports.prune_analytics",
+        "schedule": crontab(hour=3, minute=45),
+    },
+
     # --- vs_health (platform health) -------------------------------------
     # Synthetic probes, queue snapshots, and alert evaluation. All idempotent
     # and safe to miss in eager environments.
