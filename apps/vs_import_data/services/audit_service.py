@@ -11,6 +11,7 @@ _ACTION_MAP: dict[str, str] = {
     # Batch lifecycle
     "batch_uploaded": AuditActionType.DATA_FILE_UPLOADED,
     "batch_updated": AuditActionType.UPDATE,
+    "batch_cancelled": AuditActionType.UPDATE,
     "batch_deleted": AuditActionType.DELETE,
     # Validation
     "batch_validated": AuditActionType.CUSTOM,

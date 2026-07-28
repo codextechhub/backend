@@ -660,6 +660,24 @@ class BankStatementImportWizardTests(_Phase4FixtureMixin, TestCase):
         response = self._upload(self._balanced_rows(), client=client)
         self.assertEqual(response.status_code, 403, response.content)
 
+    def test_finance_importer_can_cancel_own_statement_batch(self):
+        tenant = codex_tenant()
+        user = make_vision_user(email="statement-cancel@test.com", tenant=tenant)
+        role = make_role(tenant, name="Statement cancellation importer")
+        make_role_permission(role, make_permission("finance.bankaccount.import"))
+        make_assignment(tenant, user, role)
+        client = TenantAPIClient(user=user)
+        upload = self._upload(self._balanced_rows(), client=client)
+        batch_id = upload.json()["data"]["id"]
+
+        cancelled = client.post(f"/v1/import/batches/{batch_id}/cancel/")
+
+        self.assertEqual(cancelled.status_code, 200, cancelled.content)
+        self.assertEqual(
+            ImportBatch.objects.get(pk=batch_id).status,
+            ImportBatchStatusChoices.CANCELLED,
+        )
+
     def test_cross_tenant_bank_account_is_not_uploadable(self):
         from vs_tenants.models import Tenant
         from vs_finance.models import Account, BankAccount, LedgerEntity

@@ -7,7 +7,7 @@ from django.http import FileResponse, HttpResponse, Http404
 from django.shortcuts import get_object_or_404
 
 from rest_framework import generics, status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -21,6 +21,7 @@ from .permissions import HasImportBatchRBACPermission
 
 from .models import (
     ImportBatch,
+    ImportBatchStatusChoices,
     ImportJob,
     ImportJobStatusChoices,
     ImportNotification,
@@ -472,6 +473,84 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
             message=f"Import batch '{instance.original_filename}' deleted.",
         )
         instance.delete()
+
+
+# =========================================================
+# Batch Cancellation
+# =========================================================
+class CancelImportBatchView(ImportBatchContextMixin, APIView):
+    """Explicitly abandon an import before any database-writing job starts."""
+
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
+    rbac_permission = [
+        ImportPermission.BATCH_CREATE,
+        ImportPermission.BATCH_UPDATE,
+        ImportPermission.BATCH_DELETE,
+    ]
+
+    cancellable_statuses = {
+        ImportBatchStatusChoices.DRAFT,
+        ImportBatchStatusChoices.UPLOADED,
+        ImportBatchStatusChoices.DETECTING,
+        ImportBatchStatusChoices.MAPPING_REQUIRED,
+        ImportBatchStatusChoices.VALIDATING,
+        ImportBatchStatusChoices.VALIDATION_FAILED,
+        ImportBatchStatusChoices.READY_TO_IMPORT,
+    }
+
+    def post(self, request, **_kwargs):
+        import_batch = self.get_import_batch()
+
+        # A creator may abandon their own work. Managing somebody else's batch
+        # remains a sensitive operation covered by update/delete permissions.
+        if import_batch.uploaded_by_id != request.user.id:
+            from vs_rbac.evaluator import has_permission
+
+            tenant = getattr(request, "tenant", None)
+            can_manage = any(
+                has_permission(
+                    request.user,
+                    key,
+                    tenant=tenant,
+                    branch=getattr(request, "branch", None),
+                )
+                for key in (
+                    ImportPermission.BATCH_UPDATE,
+                    ImportPermission.BATCH_DELETE,
+                )
+            )
+            if not can_manage:
+                raise PermissionDenied("You can only cancel import batches you uploaded.")
+
+        if import_batch.status not in self.cancellable_statuses:
+            raise ValidationError({
+                "batch": (
+                    "This import can no longer be cancelled because execution "
+                    "has already started or finished."
+                ),
+            })
+
+        previous_status = import_batch.status
+        import_batch.status = ImportBatchStatusChoices.CANCELLED
+        import_batch.is_ready_for_import = False
+        import_batch.save(update_fields=["status", "is_ready_for_import", "updated_at"])
+
+        create_import_audit_log(
+            school=import_batch.school,
+            branch=import_batch.branch,
+            action="batch_cancelled",
+            actor=request.user,
+            import_batch=import_batch,
+            entity_type="ImportBatch",
+            entity_id=str(import_batch.id),
+            before_data={"status": previous_status},
+            after_data={"status": import_batch.status},
+            message=f"Import batch '{import_batch.original_filename}' cancelled.",
+        )
+        return success_response(
+            message="Import cancelled.",
+            data={"batch_id": str(import_batch.id), "status": import_batch.status},
+        )
 
 
 # =========================================================
