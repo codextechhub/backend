@@ -217,6 +217,12 @@ def _validate_dataset_specific_rules(import_batch) -> list[dict]:
         return _validate_schools_rules(import_batch)
     if dataset_type == "branches":
         return _validate_branches_rules(import_batch)
+    if dataset_type == "bank_statements":
+        from vs_finance.statement_imports import validate_bank_statement_import_batch
+
+        result = validate_bank_statement_import_batch(import_batch)
+        import_batch._dataset_validation_summary = result["summary"]
+        return result["issues"]
     return []
 
 
@@ -664,18 +670,19 @@ def _update_batch_validation_state(import_batch, summary: dict) -> None:
     Update validation result fields on the batch.
     """
     error_count = summary["error_count"]
-    error_rows = summary.get("error_rows", error_count)
-    valid_rows = import_batch.total_rows - error_rows
-
     import_batch.validation_summary = summary
     import_batch.validation_completed_at = timezone.now()
     import_batch.has_critical_errors = error_count > 0
-    import_batch.is_ready_for_import = valid_rows > 0
+    # Validation errors are a publish gate, not a request to import the other rows.
+    # Dataset-wide errors (for example an unbalanced statement) have no row number,
+    # so deriving readiness from "some rows are valid" could incorrectly publish a
+    # structurally invalid batch.
+    import_batch.is_ready_for_import = error_count == 0 and import_batch.total_rows > 0
     import_batch.structure_matches_template = error_count == 0
 
     import_batch.status = (
         ImportBatchStatusChoices.READY_TO_IMPORT
-        if valid_rows > 0
+        if import_batch.is_ready_for_import
         else ImportBatchStatusChoices.VALIDATION_FAILED
     )
 
@@ -735,6 +742,9 @@ def validate_import_batch(import_batch) -> dict:
     issues.extend(_validate_dataset_specific_rules(import_batch))
 
     summary = summarize_issues(issues)
+    dataset_summary = getattr(import_batch, "_dataset_validation_summary", None)
+    if dataset_summary is not None:
+        summary["dataset"] = dataset_summary
 
     _save_validation_issues(import_batch, issues)
     _update_batch_validation_state(import_batch, summary)

@@ -75,22 +75,54 @@ def import_statement_lines(bank_account, rows, *, statement_date=None, period_la
     from .models import BankStatement, BankStatementLine
 
     rows = list(rows)  # Materialize the iterable so we can scan it once.
+    external_ids = {
+        str(row.get("external_id") or "").strip()
+        for row in rows
+        if str(row.get("external_id") or "").strip()
+    }
+    existing_external_ids = set()
+    # Keep IN clauses below conservative database parameter limits (notably SQLite's
+    # test default) while still replacing the previous one-query-per-row path.
+    external_id_list = list(external_ids)
+    for offset in range(0, len(external_id_list), 500):
+        existing_external_ids.update(
+            BankStatementLine.objects.filter(
+                bank_account=bank_account,
+                external_id__in=external_id_list[offset:offset + 500],
+            ).values_list("external_id", flat=True)
+        )
+
+    existing_fingerprints = set()
+    no_id_rows = [row for row in rows if not str(row.get("external_id") or "").strip()]
+    if no_id_rows and not force:
+        dates = sorted({row["txn_date"] for row in no_id_rows})
+        # Statement files normally cover a small number of distinct dates. Chunking
+        # preserves that property without building an unbounded amount IN clause.
+        for offset in range(0, len(dates), 500):
+            existing_fingerprints.update(
+                BankStatementLine.objects.filter(
+                    bank_account=bank_account,
+                    txn_date__in=dates[offset:offset + 500],
+                ).values_list("txn_date", "amount", "description", "reference")
+            )
+
     created = []  # New statement lines to insert.
     suspected = []  # Duplicate-looking rows held back unless force is set.
     movement = 0  # Running signed movement across the imported batch.
+    seen_external_ids = set()
     for row in rows:  # Normalize each raw row into a statement line.
         external_id = (row.get("external_id") or "").strip()
-        if external_id and BankStatementLine.objects.filter(
-            bank_account=bank_account, external_id=external_id,
-        ).exists():
-            continue  # Ignore already-imported rows with the same external id.
+        if external_id and (
+            external_id in existing_external_ids or external_id in seen_external_ids
+        ):
+            continue  # Ignore stored or repeated-in-file external ids.
+        if external_id:
+            seen_external_ids.add(external_id)
         amount = int(row["amount"])  # Normalize the signed amount to integer kobo.
-        description = row.get("description", "")
-        reference = row.get("reference", "")
-        if (not force and not external_id and BankStatementLine.objects.filter(
-            bank_account=bank_account, txn_date=row["txn_date"], amount=amount,
-            description=description, reference=reference,
-        ).exists()):
+        description = str(row.get("description") or "").strip()
+        reference = str(row.get("reference") or "").strip()
+        fingerprint = (row["txn_date"], amount, description, reference)
+        if not force and not external_id and fingerprint in existing_fingerprints:
             suspected.append({
                 "txn_date": row["txn_date"], "amount": amount,
                 "description": description, "reference": reference,

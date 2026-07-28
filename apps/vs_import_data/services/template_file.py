@@ -5,7 +5,20 @@ from io import BytesIO, StringIO
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 
-from ..models import FileFormatChoices, ImportBatch, ImportTemplate
+from ..models import ImportBatch, ImportTemplate
+
+
+def _sample_row(template: ImportTemplate, columns: list) -> list:
+    """Build a sample row while preserving intentional blank and zero values."""
+    sample_data = template.sample_row_data or {}
+    return [
+        (
+            sample_data[col.column_name]
+            if col.column_name in sample_data
+            else col.sample_value or col.default_value or ""
+        )
+        for col in columns
+    ]
 
 
 def generate_template_xlsx(template: ImportTemplate) -> bytes:
@@ -31,16 +44,7 @@ def generate_template_xlsx(template: ImportTemplate) -> bytes:
         cell.fill = header_fill
 
     if template.allow_sample_row:
-        sample_row = []
-        for col in columns:
-            value = (
-                template.sample_row_data.get(col.column_name)
-                or col.sample_value
-                or col.default_value
-                or ""
-            )
-            sample_row.append(value)
-        ws.append(sample_row)
+        ws.append(_sample_row(template, columns))
 
     # Instructions sheet
     info = wb.create_sheet(title="Instructions")
@@ -88,16 +92,7 @@ def generate_template_csv(template: ImportTemplate) -> str:
     writer.writerow(headers)
 
     if template.allow_sample_row:
-        sample_row = []
-        for col in columns:
-            value = (
-                template.sample_row_data.get(col.column_name)
-                or col.sample_value
-                or col.default_value
-                or ""
-            )
-            sample_row.append(value)
-        writer.writerow(sample_row)
+        writer.writerow(_sample_row(template, columns))
 
     return output.getvalue()
 

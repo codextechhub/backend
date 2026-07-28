@@ -6,16 +6,18 @@ import os
 from django.http import FileResponse, HttpResponse, Http404
 from django.shortcuts import get_object_or_404
 
-from rest_framework import generics, permissions, status
+from rest_framework import generics, status
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.mixins import RetrieveModelMixin, CreateModelMixin, UpdateModelMixin, DestroyModelMixin
 from core.response import success_response, error_response
 
-from vs_rbac.permissions import IsAuthenticatedAndActive, IsBranchAdmin, IsSchoolAdmin, IsVisionStaff, HasRBACPermission
+from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
 
 from .constants import ImportPermission
+from .permissions import HasImportBatchRBACPermission
 
 from .models import (
     ImportBatch,
@@ -125,6 +127,8 @@ class ImportBatchContextMixin(SchoolContextMixin):
                 "tenant",
                 "uploaded_by",
                 "template",
+                "bank_statement_context__bank_account__entity",
+                "bank_statement_context__published_statement",
             ).prefetch_related(
                 "template__columns",
             ),
@@ -389,7 +393,7 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
 
     docstring-name: Import batches
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     lookup_url_kwarg = "batch_id"
 
     def get_permissions(self):
@@ -403,7 +407,13 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
 
     def get_queryset(self):
         tenant = self.scope_tenant()
-        qs = ImportBatch.objects.select_related("tenant", "uploaded_by", "template").prefetch_related(
+        qs = ImportBatch.objects.select_related(
+            "tenant",
+            "uploaded_by",
+            "template",
+            "bank_statement_context__bank_account__entity",
+            "bank_statement_context__published_statement",
+        ).prefetch_related(
             "template__columns",
             "validation_issues",
             "notifications",
@@ -439,6 +449,17 @@ class ImportBatchDetailView(RetrieveModelMixin, UpdateModelMixin, DestroyModelMi
         )
 
     def perform_destroy(self, instance):
+        if (
+            instance.dataset_type == "bank_statements"
+            and getattr(instance, "bank_statement_context", None)
+            and instance.bank_statement_context.published_statement_id
+        ):
+            raise ValidationError({
+                "batch": (
+                    "A published bank-statement batch cannot be deleted. "
+                    "Use rollback before any statement line is acted upon."
+                ),
+            })
         create_import_audit_log(
             school=instance.school,
             branch=instance.branch,
@@ -466,7 +487,7 @@ class ImportBatchFileDownloadView(ImportBatchContextMixin, APIView):
 
     docstring-name: Download an import file
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.BATCH_VIEW
 
     def get(self, request, **_kwargs):
@@ -504,7 +525,7 @@ class ValidateImportBatchView(ImportBatchContextMixin, APIView):
 
     docstring-name: Validate an import batch
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.BATCH_VALIDATE
 
     def post(self, request, **_kwargs):
@@ -545,7 +566,7 @@ class ImportValidationIssueListView(ImportBatchContextMixin, generics.ListAPIVie
 
     docstring-name: Validation issues
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_VIEW
     serializer_class = ImportValidationIssueListSerializer
 
@@ -575,7 +596,7 @@ class ImportValidationIssueDetailView(RetrieveModelMixin, ImportBatchContextMixi
 
     docstring-name: Validation issues
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_VIEW
     serializer_class = ImportValidationIssueDetailSerializer
     lookup_url_kwarg = "issue_id"
@@ -590,7 +611,7 @@ class ResolveImportValidationIssueView(UpdateModelMixin, ImportBatchContextMixin
 
     docstring-name: Resolve a validation issue
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_RESOLVE
     serializer_class = ImportValidationIssueResolveSerializer
     lookup_url_kwarg = "issue_id"
@@ -622,7 +643,7 @@ class ImportValidationIssueExportView(ImportBatchContextMixin, APIView):
 
     docstring-name: Export validation issues
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.VALIDATION_VIEW
 
     def get(self, request, **_kwargs):
@@ -643,7 +664,7 @@ class StartImportBatchView(ImportBatchContextMixin, APIView):
 
     docstring-name: Start an import run
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.BATCH_IMPORT
 
     def post(self, request, **_kwargs):
@@ -722,7 +743,7 @@ class ImportJobListView(ImportBatchContextMixin, generics.ListAPIView):
 
     docstring-name: Import jobs
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.JOB_VIEW
     serializer_class = ImportJobListSerializer
 
@@ -740,7 +761,7 @@ class ImportJobDetailView(RetrieveModelMixin, ImportJobContextMixin, generics.Re
 
     docstring-name: Import jobs
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.JOB_VIEW
     serializer_class = ImportJobDetailSerializer
     lookup_url_kwarg = "job_id"
@@ -759,7 +780,7 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
 
     docstring-name: Roll back an import job
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.ROLLBACK_RUN
 
     def post(self, request, **_kwargs):
@@ -771,11 +792,14 @@ class RollbackImportJobView(ImportJobContextMixin, APIView):
         )
         serializer.is_valid(raise_exception=True)
 
-        rollback_record = rollback_import_job(
-            job=job,
-            initiated_by=request.user,
-            reason=serializer.validated_data.get("reason", ""),
-        )
+        try:
+            rollback_record = rollback_import_job(
+                job=job,
+                initiated_by=request.user,
+                reason=serializer.validated_data.get("reason", ""),
+            )
+        except ValueError as exc:
+            raise ValidationError({"rollback": str(exc)})
 
         return success_response(
             message="Rollback completed successfully.",
@@ -792,7 +816,7 @@ class ImportRollbackRecordListView(ImportJobContextMixin, generics.ListAPIView):
 
     docstring-name: Import rollback records
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.ROLLBACK_VIEW
     serializer_class = ImportRollbackRecordSerializer
 
@@ -811,7 +835,7 @@ class ImportAuditLogListView(ImportBatchContextMixin, generics.ListAPIView):
 
     docstring-name: Import audit log
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.AUDIT_VIEW
 
     def get_serializer_class(self):
@@ -837,7 +861,7 @@ class ImportNotificationListView(ImportBatchContextMixin, generics.ListAPIView):
 
     docstring-name: Import notifications
     """
-    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    permission_classes = [IsAuthenticatedAndActive & HasImportBatchRBACPermission]
     rbac_permission = ImportPermission.NOTIFICATION_VIEW
     serializer_class = ImportNotificationSerializer
 

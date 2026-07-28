@@ -535,6 +535,11 @@ def execute_import(import_batch, queued_by):
     if not import_batch.is_ready_for_import:
         raise ValueError("This import batch is not ready for import.")
 
+    if import_batch.template.dataset_type == "bank_statements":
+        from vs_finance.statement_imports import execute_bank_statement_import
+
+        return execute_bank_statement_import(import_batch, queued_by)
+
     rows = import_batch.preview_rows or []
     total_rows = len(rows)
 

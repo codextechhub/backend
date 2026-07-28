@@ -223,6 +223,56 @@ class BankStatement(TimeStampedModel):
         return self.lines.count()
 
 
+class BankStatementImportContext(TimeStampedModel):
+    """Finance-owned context attached to a generic import-wizard batch.
+
+    The import app owns file upload, validation state, issue reporting and job
+    progress. Finance owns the selected ledger entity/bank account and the
+    opening-to-closing statement invariant. Keeping that typed context here avoids
+    storing trusted account ids or money values in an unvalidated JSON blob.
+    """
+
+    import_batch = models.OneToOneField(
+        "vs_import_data.ImportBatch",
+        on_delete=models.CASCADE,
+        related_name="bank_statement_context",
+    )
+    bank_account = models.ForeignKey(
+        BankAccount,
+        on_delete=models.PROTECT,
+        related_name="statement_import_contexts",
+    )
+    statement_date = models.DateField(
+        help_text="Closing date reported by the bank statement.",
+    )
+    period_label = models.CharField(max_length=120, blank=True, default="")
+    opening_balance = MoneyField(
+        help_text="Bank-reported opening balance in minor units.",
+    )
+    closing_balance = MoneyField(
+        help_text="Bank-reported closing balance in minor units.",
+    )
+    source_file_hash = models.CharField(
+        max_length=64,
+        help_text="SHA-256 of the uploaded file, used to block accidental re-publish.",
+    )
+    published_statement = models.OneToOneField(
+        BankStatement,
+        on_delete=models.SET_NULL,
+        related_name="import_context",
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        indexes = [
+            models.Index(fields=["bank_account", "source_file_hash"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.bank_account} import batch {self.import_batch_id}"
+
+
 class BankReconciliation(TimeStampedModel):
     """A reconciliation run snapshot — the book vs statement balances at a point in time.
 
@@ -1090,4 +1140,3 @@ class DepreciationSchedule(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.asset_id} #{self.seq} {self.amount} {'✓' if self.is_posted else ''}".strip()
-

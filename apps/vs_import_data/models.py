@@ -7,7 +7,7 @@ from django.core.exceptions import ValidationError
 from django.db import models
 from django.utils import timezone
 
-from vs_schools.models import Branch, School
+from vs_schools.models import Branch
 from vs_rbac.managers import TenantAwareManager
 
 
@@ -49,6 +49,7 @@ class DatasetTypeChoices(models.TextChoices):
     SCHOOLS = "schools", "Schools"
     BRANCHES = "branches", "Branches"
     CX_USERS = "cx_users", "CX Users"
+    BANK_STATEMENTS = "bank_statements", "Bank Statements"
 
 
 class ImportBatchStatusChoices(models.TextChoices):

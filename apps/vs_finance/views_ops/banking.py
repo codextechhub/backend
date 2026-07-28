@@ -2,8 +2,11 @@
 """
 from __future__ import annotations
 
+import hashlib
 
 from django.db import transaction
+from django.http import HttpResponse
+from rest_framework import serializers
 from rest_framework.exceptions import NotFound, ValidationError
 
 from core.response import success_response
@@ -270,6 +273,172 @@ class BankStatementLineView(_FinanceBase):
                 "imported": BankStatementLineSerializer(created, many=True).data,
                 "suspected_duplicates": suspected,
             },
+            status=201,
+        )
+
+
+class _BankStatementWizardUploadSerializer(serializers.Serializer):
+    file = serializers.FileField()
+    statement_date = serializers.DateField()
+    opening_balance = serializers.DecimalField(max_digits=20, decimal_places=2)
+    closing_balance = serializers.DecimalField(max_digits=20, decimal_places=2)
+    period_label = serializers.CharField(required=False, allow_blank=True, max_length=120)
+    sheet_name = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    header_row_index = serializers.IntegerField(required=False, default=1, min_value=1)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class BankStatementImportTemplateView(_FinanceBase):
+    """Download the canonical statement file used by the shared import wizard."""
+
+    rbac_permission = "finance.bankaccount.import"
+
+    def get(self, request, pk):
+        from vs_import_data.models import (
+            FileFormatChoices,
+            ImportTemplate,
+            TemplateStatusChoices,
+        )
+        from vs_import_data.services.template_file import (
+            generate_template_csv,
+            generate_template_xlsx,
+        )
+
+        bank = BankAccount.objects.filter(
+            entity=resolve_entity(request),
+            pk=pk,
+            is_active=True,
+        ).first()
+        if bank is None:
+            raise NotFound("Active bank account not found for this entity.")
+        template = ImportTemplate.objects.filter(
+            code="bank_statements_v1",
+            status=TemplateStatusChoices.ACTIVE,
+            is_download_enabled=True,
+        ).prefetch_related("columns").first()
+        if template is None:
+            raise ValidationError({
+                "template": "Bank statement import template is not installed.",
+            })
+
+        requested_format = str(
+            request.query_params.get("file_format", FileFormatChoices.XLSX)
+        ).lower()
+        if requested_format == FileFormatChoices.CSV:
+            response = HttpResponse(generate_template_csv(template), content_type="text/csv")
+            extension = "csv"
+        elif requested_format == FileFormatChoices.XLSX:
+            response = HttpResponse(
+                generate_template_xlsx(template),
+                content_type=(
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                ),
+            )
+            extension = "xlsx"
+        else:
+            raise ValidationError({"file_format": "Choose csv or xlsx."})
+        response["Content-Disposition"] = (
+            f'attachment; filename="bank_statement_{bank.id}_template.{extension}"'
+        )
+        return response
+
+
+class BankStatementImportWizardView(_FinanceBase):
+    """Upload a statement file, attach finance context and enter the import wizard."""
+
+    rbac_permission = "finance.bankaccount.import"
+
+    def post(self, request, pk):
+        from vs_import_data.models import ImportTemplate, TemplateStatusChoices
+        from vs_import_data.serializers import (
+            ImportBatchDetailSerializer,
+            ImportBatchUploadSerializer,
+        )
+        from vs_import_data.services.validation_service import validate_import_batch
+        from ..models import BankStatementImportContext
+        from ..money import to_kobo
+
+        entity = resolve_entity(request)
+        bank = BankAccount.objects.filter(entity=entity, pk=pk, is_active=True).first()
+        if bank is None:
+            raise NotFound("Active bank account not found for this entity.")
+
+        metadata = _BankStatementWizardUploadSerializer(data=request.data)
+        metadata.is_valid(raise_exception=True)
+        values = metadata.validated_data
+        uploaded_file = values["file"]
+
+        template = ImportTemplate.objects.filter(
+            code="bank_statements_v1",
+            status=TemplateStatusChoices.ACTIVE,
+            is_download_enabled=True,
+        ).prefetch_related("columns").first()
+        if template is None:
+            raise ValidationError({
+                "template": "Bank statement import template is not installed.",
+            })
+
+        digest = hashlib.sha256()
+        for chunk in uploaded_file.chunks():
+            digest.update(chunk)
+        uploaded_file.seek(0)
+
+        upload = ImportBatchUploadSerializer(
+            data={
+                "template_id": template.pk,
+                "file": uploaded_file,
+                "sheet_name": values.get("sheet_name", ""),
+                "header_row_index": values.get("header_row_index", 1),
+                "notes": values.get("notes", ""),
+            },
+            context={"request": request},
+        )
+        upload.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            import_batch = upload.save()
+            BankStatementImportContext.objects.create(
+                import_batch=import_batch,
+                bank_account=bank,
+                statement_date=values["statement_date"],
+                period_label=values.get("period_label", "").strip(),
+                opening_balance=to_kobo(values["opening_balance"]),
+                closing_balance=to_kobo(values["closing_balance"]),
+                source_file_hash=digest.hexdigest(),
+            )
+            # Validation is the wizard's pre-publish gate. Run it immediately so
+            # the next screen already has the balance and duplicate report.
+            validate_import_batch(import_batch)
+
+        import_batch = (
+            import_batch.__class__.objects
+            .select_related(
+                "tenant",
+                "uploaded_by",
+                "template",
+                "bank_statement_context__bank_account__entity",
+                "bank_statement_context__published_statement",
+            )
+            .prefetch_related(
+                "template__columns",
+                "validation_issues",
+                "notifications",
+            )
+            .get(pk=import_batch.pk)
+        )
+        data = dict(ImportBatchDetailSerializer(
+            import_batch,
+            context={"request": request},
+        ).data)
+        data["wizard"] = {
+            "detail": f"/v1/import/batches/{import_batch.pk}/",
+            "validate": f"/v1/import/batches/{import_batch.pk}/validate/",
+            "publish": f"/v1/import/batches/{import_batch.pk}/start-import/",
+            "jobs": f"/v1/import/batches/{import_batch.pk}/jobs/",
+        }
+        return success_response(
+            "Bank statement uploaded to the import wizard.",
+            data=data,
             status=201,
         )
 

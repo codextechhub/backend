@@ -34,6 +34,18 @@ def rollback_import_job(job, initiated_by=None, reason: str = ""):
     """
     Roll back imported rows for a job.
     """
+    if (
+        job.import_batch.template
+        and job.import_batch.template.dataset_type == "bank_statements"
+    ):
+        from vs_finance.statement_imports import rollback_bank_statement_import_job
+
+        return rollback_bank_statement_import_job(
+            job,
+            initiated_by=initiated_by,
+            reason=reason,
+        )
+
     job.rollback_started_at = timezone.now()
     job.save(update_fields=["rollback_started_at", "updated_at"])
 

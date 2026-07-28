@@ -333,6 +333,14 @@ def normalize_date_value(value: str) -> str | None:
         except ValueError:
             continue
 
+    # Excel date cells are commonly surfaced by openpyxl as an ISO-like
+    # datetime string (for example ``2026-01-02 00:00:00``). A template
+    # column declared as a date should keep only the calendar-date component.
+    try:
+        return datetime.fromisoformat(value).date().isoformat()
+    except ValueError:
+        pass
+
     return None
 
 
