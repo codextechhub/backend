@@ -5,6 +5,7 @@ from django.db.models import Prefetch, Q
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.views import APIView
 
 from core.mixins import XVSModelViewSetMixin
 from core.response import success_response, error_response
@@ -13,6 +14,7 @@ from core.pagination import XVSPagination
 from .models import (
     ImpersonationSession,
 )
+from .overview import console_overview
 from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
 from vs_rbac.models import TenantUserRoleAssignment
 from .serializers import (
@@ -481,4 +483,33 @@ class DashboardViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         return success_response(
             message="Dashboard data retrieved.",
             data=self.serializer_class(items, many=True).data,
+        )
+
+
+class ConsoleOverviewView(APIView):
+    """
+    GET /admin/dashboard/overview/
+
+    Everything the console landing screen renders, in one response: school and
+    team counts, the caller's task headline and next few tasks, their approval
+    queue, returned submissions, unread notifications, open tickets and system
+    posture.
+
+    Replaces eight separate dashboard calls. Assembly and — importantly — the
+    per-section permission gating live in ``overview.py``; a section the caller
+    may not see is omitted rather than zeroed, so this is not a way to read a
+    number they could not fetch directly.
+
+    Permission: IsAuthenticatedAndActive. This is the landing screen every
+    signed-in user gets; the sections inside carry their own keys.
+
+    docstring-name: Console overview
+    """
+
+    permission_classes = [IsAuthenticatedAndActive]
+
+    def get(self, request):
+        return success_response(
+            message="Overview retrieved successfully.",
+            data=console_overview(request),
         )

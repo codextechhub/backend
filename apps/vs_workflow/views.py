@@ -33,6 +33,7 @@ from vs_workflow.serializers import (
     WorkflowTemplatePublishSerializer, WorkflowTemplateReadSerializer,
 )
 from vs_workflow.services import actions as actions_svc
+from vs_workflow.services import my_queue as my_queue_svc
 from vs_workflow.services import submission as submission_svc
 from vs_workflow.services import templates as templates_svc
 from vs_workflow.services.approvers import resolve_approvers
@@ -275,31 +276,11 @@ class PendingApprovalsView(SchoolScopedMixin, APIView):
     permission_classes = [IsAuthenticatedAndActive]
 
     def get(self, request):
-        school = self.get_school()
-        user = request.user
-        # Start from approver snapshots so delegated approvals are included.
-        snaps_qs = WorkflowStageApprover.objects.filter(
-            user=user,
-            stage_instance__status="ACTIVE",
-            stage_instance__instance__status="IN_PROGRESS",
-        )
-        if school is not None:
-            snaps_qs = snaps_qs.filter(stage_instance__instance__tenant=school.tenant)
-        snaps = snaps_qs.select_related(
-            "stage_instance__instance__template", "stage_instance__stage",
-        ).order_by("-stage_instance__activated_at")
-        already_acted = set(
-            WorkflowStageAction.objects.filter(
-                actor=user, reversed_at__isnull=True, is_reversal_of__isnull=True,
-            ).values_list("stage_instance_id", "attempt"))
+        # Which snapshots are actionable lives in services/my_queue so the console
+        # landing screen counts this queue by exactly the rules it lists it by.
+        snaps = my_queue_svc.pending_approval_snapshots(request.user, self.get_school())
         results = []
         for snap in snaps:
-            # Hide stages where the actor already voted in the current attempt.
-            if (snap.stage_instance_id, snap.stage_instance.attempt) in already_acted:
-                continue
-            # Ignore stale approver snapshots from previous attempts.
-            if snap.attempt != snap.stage_instance.attempt:
-                continue
             inst = snap.stage_instance.instance
             results.append(WorkflowInstanceListSerializer(inst).data | {
                 "awaiting_on_stage": snap.stage_instance.stage.label,
