@@ -75,7 +75,7 @@ def post_credit_note(note, *, actor_user=None, auto_allocate=False, allocations=
     increase the receivable and are never allocated.
     """
     try:  # Atomic worker performs posting and optional allocation.
-        return _post_credit_note_atomic(  # Post the note.
+        result = _post_credit_note_atomic(  # Post the note.
             note, actor_user=actor_user,  # Acting user.
             auto_allocate=auto_allocate, allocations=allocations,  # Allocation mode.
         )
@@ -89,6 +89,11 @@ def post_credit_note(note, *, actor_user=None, auto_allocate=False, allocations=
             exc=exc, actor_user=actor_user, target=note,  # Error, actor, and target context.
         )
         raise
+    # Best-effort customer notice after the money posting succeeds. Delivery failure
+    # is recorded by vs_notifications and must never roll back the ledger.
+    from .notifications import notify_credit_note_issued
+    notify_credit_note_issued(result, actor_user=actor_user)
+    return result
 
 
 @transaction.atomic

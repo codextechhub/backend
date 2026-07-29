@@ -361,6 +361,96 @@ _PASSWORD_RESET_HTML = """<!doctype html>
 """
 
 
+_ACCOUNT_ADJUSTMENT_HTML = """<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ title|escape }}</title>
+  </head>
+  <body style="margin:0; padding:0; background-color:#f4f6f8; font-family:-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; color:#182230;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%; border-collapse:collapse; background-color:#f4f6f8;">
+      <tr>
+        <td align="center" style="padding:32px 12px;">
+          <table role="presentation" width="600" cellspacing="0" cellpadding="0" style="width:100%; max-width:600px; border-collapse:separate; background-color:#ffffff; border:1px solid #e4e7ec; border-radius:12px; overflow:hidden;">
+            <tr>
+              <td style="height:6px; background-color:{{ accent_color }}; font-size:0; line-height:0;">&nbsp;</td>
+            </tr>
+            <tr>
+              <td style="padding:28px 32px 22px; border-bottom:1px solid #eaecf0;">
+                <p style="margin:0 0 12px; color:#667085; font-size:13px; font-weight:600;">{{ issuer_name|escape }}</p>
+                <span style="display:inline-block; padding:5px 9px; border-radius:999px; background-color:{{ accent_soft }}; border:1px solid {{ accent_border }}; color:{{ accent_color }}; font-size:11px; font-weight:700; letter-spacing:.6px;">{{ badge|escape }}</span>
+                <h1 style="margin:14px 0 8px; color:#101828; font-size:24px; line-height:1.3; font-weight:700;">{{ title|escape }}</h1>
+                <p style="margin:0; color:#475467; font-size:15px; line-height:1.6;">Hello {{ customer_name|escape }}, {{ summary|escape }}</p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:24px 32px;">
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%; border-collapse:separate; background-color:{{ accent_soft }}; border:1px solid {{ accent_border }}; border-radius:10px;">
+                  <tr>
+                    <td style="padding:22px; text-align:center;">
+                      <p style="margin:0 0 6px; color:{{ accent_color }}; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px;">{{ amount_label|escape }}</p>
+                      <p style="margin:0; color:#101828; font-size:30px; line-height:1.2; font-weight:750;">₦{{ note_amount|escape }}</p>
+                    </td>
+                  </tr>
+                </table>
+
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%; margin-top:18px; border-collapse:separate; border:1px solid #eaecf0; border-radius:10px;">
+                  <tr>
+                    <td width="50%" valign="top" style="padding:16px; border-right:1px solid #eaecf0;">
+                      <p style="margin:0 0 5px; color:#667085; font-size:12px;">Before this note</p>
+                      <p style="margin:0 0 4px; color:#344054; font-size:12px; font-weight:600;">{{ previous_balance_label|escape }}</p>
+                      <p style="margin:0; color:#101828; font-size:18px; font-weight:700;">₦{{ previous_balance_amount|escape }}</p>
+                    </td>
+                    <td width="50%" valign="top" style="padding:16px;">
+                      <p style="margin:0 0 5px; color:#667085; font-size:12px;">Current position</p>
+                      <p style="margin:0 0 4px; color:#344054; font-size:12px; font-weight:600;">{{ current_balance_label|escape }}</p>
+                      <p style="margin:0; color:{{ accent_color }}; font-size:18px; font-weight:700;">₦{{ current_balance_amount|escape }}</p>
+                    </td>
+                  </tr>
+                </table>
+
+                <h2 style="margin:26px 0 10px; color:#101828; font-size:15px; font-weight:700;">Note details</h2>
+                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="width:100%; border-collapse:collapse; font-size:14px;">
+                  <tr>
+                    <td style="padding:10px 0; color:#667085; border-bottom:1px solid #eaecf0;">Document</td>
+                    <td align="right" style="padding:10px 0; color:#101828; font-weight:600; border-bottom:1px solid #eaecf0;">{{ note_number|escape }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 0; color:#667085; border-bottom:1px solid #eaecf0;">Date issued</td>
+                    <td align="right" style="padding:10px 0; color:#101828; font-weight:600; border-bottom:1px solid #eaecf0;">{{ note_date|escape }}</td>
+                  </tr>
+                  <tr>
+                    <td style="padding:10px 0; color:#667085; border-bottom:1px solid #eaecf0;">Related invoice</td>
+                    <td align="right" style="padding:10px 0; color:#101828; font-weight:600; border-bottom:1px solid #eaecf0;">{{ related_invoice|escape }}</td>
+                  </tr>
+                  <tr>
+                    <td valign="top" style="padding:10px 0; color:#667085;">Reason</td>
+                    <td align="right" style="padding:10px 0 10px 24px; color:#101828; font-weight:600; line-height:1.45;">{{ reason|escape }}</td>
+                  </tr>
+                </table>
+
+                <div style="margin-top:22px; padding:16px 18px; background-color:#f9fafb; border-left:4px solid {{ accent_color }}; border-radius:6px;">
+                  <p style="margin:0 0 5px; color:#101828; font-size:14px; font-weight:700;">{{ action_title|escape }}</p>
+                  <p style="margin:0; color:#475467; font-size:14px; line-height:1.55;">{{ action_message|escape }}</p>
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 32px; background-color:#f9fafb; border-top:1px solid #eaecf0;">
+                <p style="margin:0 0 5px; color:#475467; font-size:13px; line-height:1.5;">If anything in this adjustment is unclear, please contact the finance team before making payment.</p>
+                <p style="margin:0; color:#98a2b3; font-size:12px;">This notice was issued by {{ issuer_name|escape }} via CodeX Vision.</p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>
+"""
+
+
 # ---------------------------------------------------------------------------
 # Default template content
 # ---------------------------------------------------------------------------
@@ -715,6 +805,72 @@ def _build_default_templates() -> dict:
                 "Pay online: {{ payment_link }}\n\n"
                 "{{ school_name }} via CodeX Vision"
             ),
+        },
+
+        # ── billing.debit_note_issued ──────────────────────────────────────
+        ("billing.debit_note_issued", C.IN_APP): {
+            "subject": "",
+            "body": (
+                "Debit note {{ note_number }} added ₦{{ note_amount }} to "
+                "{{ customer_name }}'s account. {{ current_balance_label }}: "
+                "₦{{ current_balance_amount }}."
+            ),
+        },
+        ("billing.debit_note_issued", C.EMAIL): {
+            "subject": "Debit note {{ note_number }} — additional charge of ₦{{ note_amount }}",
+            "body": (
+                "DEBIT NOTE — ADDITIONAL CHARGE\n\n"
+                "Hello {{ customer_name }},\n\n"
+                "{{ summary }}\n\n"
+                "Additional amount charged: ₦{{ note_amount }}\n"
+                "Debit note: {{ note_number }}\n"
+                "Date issued: {{ note_date }}\n"
+                "Related invoice: {{ related_invoice }}\n"
+                "Reason: {{ reason }}\n\n"
+                "BEFORE THIS NOTE\n"
+                "{{ previous_balance_label }}: ₦{{ previous_balance_amount }}\n\n"
+                "CURRENT POSITION\n"
+                "{{ current_balance_label }}: ₦{{ current_balance_amount }}\n\n"
+                "{{ action_title }}\n"
+                "{{ action_message }}\n\n"
+                "If anything in this adjustment is unclear, please contact the finance "
+                "team before making payment.\n\n"
+                "{{ issuer_name }} via CodeX Vision"
+            ),
+            "html_body": _ACCOUNT_ADJUSTMENT_HTML,
+        },
+
+        # ── billing.credit_note_issued ─────────────────────────────────────
+        ("billing.credit_note_issued", C.IN_APP): {
+            "subject": "",
+            "body": (
+                "Credit note {{ note_number }} reduced {{ customer_name }}'s account "
+                "by ₦{{ note_amount }}. {{ current_balance_label }}: "
+                "₦{{ current_balance_amount }}."
+            ),
+        },
+        ("billing.credit_note_issued", C.EMAIL): {
+            "subject": "Credit note {{ note_number }} — ₦{{ note_amount }} credited",
+            "body": (
+                "CREDIT NOTE — ACCOUNT CREDIT\n\n"
+                "Hello {{ customer_name }},\n\n"
+                "{{ summary }}\n\n"
+                "Amount credited: ₦{{ note_amount }}\n"
+                "Credit note: {{ note_number }}\n"
+                "Date issued: {{ note_date }}\n"
+                "Related invoice: {{ related_invoice }}\n"
+                "Reason: {{ reason }}\n\n"
+                "BEFORE THIS NOTE\n"
+                "{{ previous_balance_label }}: ₦{{ previous_balance_amount }}\n\n"
+                "CURRENT POSITION\n"
+                "{{ current_balance_label }}: ₦{{ current_balance_amount }}\n\n"
+                "{{ action_title }}\n"
+                "{{ action_message }}\n\n"
+                "If anything in this adjustment is unclear, please contact the finance "
+                "team before making payment.\n\n"
+                "{{ issuer_name }} via CodeX Vision"
+            ),
+            "html_body": _ACCOUNT_ADJUSTMENT_HTML,
         },
 
         # ── billing.payment_received ────────────────────────────────────────

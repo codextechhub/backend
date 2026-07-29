@@ -307,6 +307,22 @@ EVENT_TYPE_REGISTRY = [
         "default_enabled": True,
     },
     {
+        "key": "billing.debit_note_issued",
+        "label": "Debit note issued",
+        "description": "Fires when a posted debit note adds a charge to a customer's account.",
+        "source_module": "vs_finance",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
+        "key": "billing.credit_note_issued",
+        "label": "Credit note issued",
+        "description": "Fires when a posted credit note reduces a customer's account balance.",
+        "source_module": "vs_finance",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+    },
+    {
         "key": "billing.payment_received",
         "label": "Payment received",
         "description": "Fires when a payment is confirmed against a student invoice.",

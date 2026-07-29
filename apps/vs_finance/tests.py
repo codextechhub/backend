@@ -7960,6 +7960,18 @@ class InvoiceNotificationTests(_GLFixtureMixin, TestCase):
         )
         return inv
 
+    # Build a draft customer account-adjustment note.
+    def _make_note(self, *, kind, unit_price=25000, invoice=None, reason="Billing correction"):
+        note = CreditNote.objects.create(
+            entity=self.entity, customer=self.customer, kind=kind,
+            invoice=invoice, note_date=datetime.date(2026, 1, 8), reason=reason,
+        )
+        CreditNoteLine.objects.create(
+            note=note, revenue_account=Account.objects.get(entity=self.entity, code="4100"),
+            quantity=1, unit_price=unit_price, tax_code=None, line_no=1,
+        )
+        return note
+
     # Support the issued workflow.
     def _issued(self):
         from vs_notifications.models import Notification
@@ -7970,6 +7982,13 @@ class InvoiceNotificationTests(_GLFixtureMixin, TestCase):
         from vs_notifications.models import Notification
         return Notification.objects.filter(event_type__key="billing.payment_received")
 
+    # Retrieve credit/debit note issuance notifications by direction.
+    def _note_issued(self, kind):
+        from vs_notifications.models import Notification
+        key = "billing.debit_note_issued" if kind == CreditNoteKind.DEBIT \
+            else "billing.credit_note_issued"
+        return Notification.objects.filter(event_type__key=key)
+
     # Verify posting manual invoice notifies customer behavior.
     def test_posting_manual_invoice_notifies_customer(self):
         from vs_notifications.constants import ChannelChoices
@@ -7978,6 +7997,55 @@ class InvoiceNotificationTests(_GLFixtureMixin, TestCase):
         post_invoice(inv)
         self.assertTrue(self._issued().filter(
             channel=ChannelChoices.EMAIL, unregistered_email="payer@example.com").exists())
+
+    # Verify a standalone debit note clearly tells the customer they owe more.
+    def test_posting_standalone_debit_note_sends_structured_customer_email(self):
+        from vs_notifications.constants import ChannelChoices
+
+        note = self._make_note(
+            kind=CreditNoteKind.DEBIT,
+            reason="Late transport charge <script>alert('x')</script>",
+        )
+        post_credit_note(note)
+
+        email = self._note_issued(CreditNoteKind.DEBIT).get(
+            channel=ChannelChoices.EMAIL, unregistered_email="payer@example.com",
+        )
+        self.assertIn(note.document_number, email.subject)
+        self.assertIn("additional charge", email.subject.lower())
+        self.assertIn("Standalone account adjustment", email.body)
+        self.assertIn("Amount outstanding: ₦0.00", email.body)
+        self.assertIn("Amount outstanding: ₦250.00", email.body)
+        self.assertIn("What you need to do", email.body)
+        self.assertIn("<html", email.html_body.lower())
+        self.assertIn("&lt;script&gt;", email.html_body)
+        self.assertNotIn("<script>alert", email.html_body)
+        self.assertEqual(email.metadata["finance_document_type"], "DEBIT_NOTE")
+        self.assertEqual(email.metadata["finance_document_id"], note.id)
+
+    # Verify a linked credit note explains the reduction and new account position.
+    def test_posting_linked_credit_note_sends_structured_customer_email(self):
+        from vs_notifications.constants import ChannelChoices
+
+        invoice = self._make_invoice(unit_price=100000)
+        post_invoice(invoice)
+        note = self._make_note(
+            kind=CreditNoteKind.CREDIT, unit_price=25000, invoice=invoice,
+            reason="Approved fee adjustment",
+        )
+        post_credit_note(note, auto_allocate=True)
+
+        email = self._note_issued(CreditNoteKind.CREDIT).get(
+            channel=ChannelChoices.EMAIL, unregistered_email="payer@example.com",
+        )
+        self.assertIn(note.document_number, email.subject)
+        self.assertIn("credited", email.subject.lower())
+        self.assertIn(invoice.document_number, email.body)
+        self.assertIn("Amount outstanding: ₦1,000.00", email.body)
+        self.assertIn("Amount outstanding: ₦750.00", email.body)
+        self.assertIn("No payment is required", email.body)
+        self.assertIn("ACCOUNT CREDIT", email.html_body)
+        self.assertEqual(email.metadata["finance_document_type"], "CREDIT_NOTE")
 
     # Verify opening balance invoice stays silent behavior.
     def test_opening_balance_invoice_stays_silent(self):
@@ -8019,6 +8087,19 @@ class InvoiceNotificationTests(_GLFixtureMixin, TestCase):
         self.assertTrue(AccountBalance.objects.filter(
             account__entity=self.entity, period=self.period).exists())
         self.assertFalse(self._issued().exists())
+
+    # Verify a notification outage never blocks a debit note's ledger posting.
+    def test_debit_note_notification_failure_does_not_break_posting(self):
+        from vs_notifications.models import NotificationEventType
+
+        NotificationEventType.objects.filter(key="billing.debit_note_issued").update(is_active=False)
+        note = self._make_note(kind=CreditNoteKind.DEBIT)
+        post_credit_note(note)  # must not raise
+        note.refresh_from_db()
+        self.assertEqual(note.status, DocumentStatus.POSTED)
+        self.assertTrue(AccountBalance.objects.filter(
+            account__entity=self.entity, period=self.period).exists())
+        self.assertFalse(self._note_issued(CreditNoteKind.DEBIT).exists())
 
     # Verify gateway style receipt notifies behavior.
     def test_gateway_style_receipt_notifies(self):
