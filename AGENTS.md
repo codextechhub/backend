@@ -9,6 +9,22 @@ one-off patch that only hides the reported symptom. Keep the work within the
 requested scope, preserve established behaviour, and add regression coverage
 at the lowest shared boundary so future instances are prevented.
 
+## Verification follows the current change
+
+Verification is triggered by work performed in the **current request**, not by
+pre-existing changes in the worktree or work completed in an earlier request.
+
+- Git-only and read-only requests — for example inspect, explain, diagnose,
+  stage, commit, branch, push, or report status — do not authorize rerunning
+  tests or other verification unless the user explicitly asks for it.
+- If the current request changes no code, do not run tests merely for
+  reassurance. Use only the read-only checks needed to complete the request.
+- When the current request changes code, run checks proportionate to that
+  change. Do not expand a narrow task into a broad test-suite run without a
+  concrete risk or an explicit user request.
+- Documentation-only changes do not require application tests; validate only
+  the documentation or formatting affected, when such validation exists.
+
 ## Pre-ship review (`ship-check`)
 
 When I say **`ship-check`** (or "run the ship-check") on a change, answer these
