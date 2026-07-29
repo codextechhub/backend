@@ -777,7 +777,10 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
                         f"lines[{i}].revenue_account", required=True),
                     quantity=_dec(ln.get("quantity", 1), f"lines[{i}].quantity"),
                     unit_price=_money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),
-                    tax_code=_resolve_tax(entity, ln.get("tax_code"), f"lines[{i}].tax_code"),
+                    tax_code=_resolve_tax(
+                        entity, ln.get("tax_code"), f"lines[{i}].tax_code",
+                        usage="sales",
+                    ),
                     cost_center=_resolve_cost_center(
                         entity, ln.get("cost_center"), f"lines[{i}].cost_center"),
                 )

@@ -5982,6 +5982,56 @@ class InvoiceCreateEndpointTests(_ARFixtureMixin, TestCase):
         inv = Invoice.objects.get(pk=d["id"])
         self.assertIsNotNone(inv.journal_id)   # AR journal raised
 
+    # Verify a mixed two-line invoice posts and taxes only the selected line.
+    def test_create_posts_multiple_lines_when_one_has_tax(self):
+        import json
+        entity, _period, _customer, _vat = self.build_ar()
+        u = self._super_admin("inv-multi-tax@test.com")
+        resp = self._post(entity, u, {
+            "customer": "CUST1", "invoice_date": "2026-01-10",
+            "lines": [
+                {"revenue_account": "4100", "description": "Exempt service",
+                 "quantity": 1, "unit_price": 50000},
+                {"revenue_account": "4100", "description": "Taxable service",
+                 "quantity": 2, "unit_price": 50000, "tax_code": "VAT"},
+            ],
+        })
+        self.assertEqual(resp.status_code, 201)
+        data = json.loads(resp.content)["data"]
+        self.assertEqual(data["subtotal"], 150000)
+        self.assertEqual(data["tax_total"], 7500)
+        self.assertEqual(data["total"], 157500)
+        invoice = Invoice.objects.get(pk=data["id"])
+        self.assertEqual(invoice.lines.count(), 2)
+        debit, credit = invoice.journal.totals()
+        self.assertEqual((debit, credit), (157500, 157500))
+
+    # Verify an unusable output-tax mapping is reported on the affected line.
+    def test_create_rejects_tax_without_output_account_at_line(self):
+        import json
+        entity, _period, _customer, vat = self.build_ar()
+        vat.collected_account = None
+        vat.save(update_fields=["collected_account", "updated_at"])
+        u = self._super_admin("inv-missing-output-tax@test.com")
+        resp = self._post(entity, u, {
+            "customer": "CUST1", "invoice_date": "2026-01-10",
+            "lines": [
+                {"revenue_account": "4100", "quantity": 1, "unit_price": 50000},
+                {"revenue_account": "4100", "quantity": 1, "unit_price": 50000,
+                 "tax_code": "VAT"},
+            ],
+        })
+        self.assertEqual(resp.status_code, 400)
+        detail = json.loads(resp.content)["error"]["detail"]
+        self.assertEqual(
+            detail["lines[2].tax_code"],
+            (
+                "Tax code 'VAT' cannot be used on a sales line until a "
+                "collected (output) account is configured."
+            ),
+        )
+        self.assertFalse(Invoice.objects.filter(entity=entity).exists())
+
     # Verify create draft when post false behavior.
     def test_create_draft_when_post_false(self):
         import json

@@ -861,7 +861,10 @@ def _build_fee_items(structure, entity, raw_items):
             revenue_account=_resolve_account(
                 entity, item.get("revenue_account"), f"items[{i}].revenue_account", required=True),
             amount=amount,
-            tax_code=_resolve_tax(entity, item.get("tax_code"), f"items[{i}].tax_code"),
+            tax_code=_resolve_tax(
+                entity, item.get("tax_code"), f"items[{i}].tax_code",
+                usage="sales",
+            ),
             is_optional=bool(item.get("is_optional", False)),
         )
 
@@ -1161,7 +1164,10 @@ class CreditNoteListCreateView(_FinanceBase):
                     f"lines[{i}].revenue_account", required=True),
                 quantity=_dec(ln.get("quantity", 1), f"lines[{i}].quantity"),
                 unit_price=_money(ln.get("unit_price", 0), f"lines[{i}].unit_price"),
-                tax_code=_resolve_tax(entity, ln.get("tax_code"), f"lines[{i}].tax_code"),
+                tax_code=_resolve_tax(
+                    entity, ln.get("tax_code"), f"lines[{i}].tax_code",
+                    usage="sales",
+                ),
                 cost_center=_resolve_cost_center(
                     entity, ln.get("cost_center"), f"lines[{i}].cost_center"),
             )

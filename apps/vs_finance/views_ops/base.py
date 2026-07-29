@@ -47,15 +47,55 @@ def _resolve_account(entity, ref, field, *, required=False):
 
 
 # Resolve tax code reference from request data.
-def _resolve_tax(entity, ref, field="tax_code"):
+def _resolve_tax(entity, ref, field="tax_code", *, usage=None):
+    """Resolve an entity tax code and, when requested, validate its posting side.
+
+    ``usage="sales"`` requires a usable collected/output account for a positive
+    rate; ``usage="purchase"`` requires a recoverable code with a usable
+    paid/input account.  Validating at the request boundary keeps an unusable tax
+    selection attached to the affected line instead of failing later as a generic
+    journal-posting error.
+    """
     if ref in (None, ""):  # Tax is optional in most finance line payloads.
         return None
-    qs = TaxCode.objects.filter(entity=entity)
+    qs = TaxCode.objects.filter(entity=entity).select_related(
+        "collected_account", "paid_account",
+    )
     tc = qs.filter(code=str(ref)).first()
     if tc is None and str(ref).isdigit():  # Numeric refs may be ids.
         tc = qs.filter(pk=int(ref)).first()
     if tc is None:  # Reject missing/cross-entity tax refs.
         raise ValidationError({field: f"No tax code '{ref}' in this entity."})
+    if usage is not None and usage not in ("sales", "purchase"):
+        raise ValueError(f"Unsupported tax usage '{usage}'.")
+    if usage is not None and not tc.is_active:
+        raise ValidationError({field: f"Tax code '{tc.code}' is inactive."})
+    if usage == "purchase" and tc.rate_bps and not tc.is_recoverable:
+        raise ValidationError({
+            field: (
+                f"Tax code '{tc.code}' is not configured as recoverable input tax "
+                "and cannot be used on a purchase line."
+            ),
+        })
+    if usage is not None and tc.rate_bps:
+        account = tc.collected_account if usage == "sales" else tc.paid_account
+        if account is None:
+            direction = (
+                "collected (output)" if usage == "sales" else "paid (input)"
+            )
+            raise ValidationError({
+                field: (
+                    f"Tax code '{tc.code}' cannot be used on a {usage} line until "
+                    f"a {direction} account is configured."
+                ),
+            })
+        if not account.is_active or not account.is_postable:
+            raise ValidationError({
+                field: (
+                    f"Tax code '{tc.code}' uses account '{account.code}', which is "
+                    "inactive or not postable."
+                ),
+            })
     return tc  # Return resolved tax code.
 
 
@@ -262,4 +302,3 @@ class _FinanceBase(APIView):
         paginator.page_size = 25  # Default finance page size.
         page = paginator.paginate_queryset(qs, request, view=self)  # Slice queryset for current request.
         return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)  # Serialize and wrap page.
-
