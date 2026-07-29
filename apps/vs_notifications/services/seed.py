@@ -963,6 +963,34 @@ def _build_default_templates() -> dict:
             "body": "Your background task '{{ label }}' FAILED. {{ error }}",
         },
 
+        # ── export.run_completed / export.run_failed (Export Centre) ─────────
+        # Separate from task.completed above because a background job that
+        # succeeded can still have produced a file with columns left out —
+        # {{ error }} carries that, and the in-app body must be able to say so.
+        # Manual successes are in-app only by design: the person is already
+        # looking at the screen, so only failures and deliveries earn an email.
+        ("export.run_completed", C.IN_APP): {
+            "subject": "",
+            "body": (
+                "{{ export_name }} is ready — {{ rows }} rows. {{ error }}"
+            ),
+        },
+        ("export.run_failed", C.IN_APP): {
+            "subject": "",
+            "body": "{{ export_name }} failed to run. {{ error }}",
+        },
+        ("export.run_failed", C.EMAIL): {
+            "subject": "Export failed — {{ export_name }}",
+            "body": (
+                "Your export did not run.\n\n"
+                "  Export    : {{ export_name }}\n"
+                "  Reference : {{ reference }}\n\n"
+                "{{ error }}\n\n"
+                "Open the run in Vision to see the full record.\n\n"
+                "CodeX Vision"
+            ),
+        },
+
         # ── todo.task_completed (review request) ────────────────────────────
         ("todo.task_completed", C.IN_APP): {
             "subject": "",

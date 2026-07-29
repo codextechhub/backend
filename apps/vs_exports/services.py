@@ -593,6 +593,9 @@ def _notify(run, *, failed=False, omissions=False):
             },
             recipients=[recipient],
             tenant=run.tenant,
+            # Lets the bell deep-link to THIS run rather than the Files list —
+            # a failure notice is only useful next to the thing that failed.
+            metadata={"export_run_id": run.pk},
         )
     except Exception:                              # pragma: no cover - best effort
         # A notification failure must never turn a produced file into a failed run.

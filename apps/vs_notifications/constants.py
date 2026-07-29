@@ -404,6 +404,38 @@ EVENT_TYPE_REGISTRY = [
         "is_active": False,  # imports report via task.failed instead
     },
 
+    # ── Export Centre (vs_exports) ─────────────────────────────────────────
+    # Emitted by vs_exports.services._notify on every terminal run. Active,
+    # unlike the import pair above, because the Export Centre does NOT report
+    # through task.completed/task.failed: a background job that succeeded can
+    # still have produced a file with columns left out, and only the export
+    # event carries that distinction.
+    {
+        "key": "export.run_completed",
+        "label": "Export ready",
+        "description": (
+            "Fires when an export run finishes and its file is available. Also "
+            "covers a run that completed with omissions, where `error` explains "
+            "what was left out."
+        ),
+        "source_module": "vs_exports",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "is_active": True,
+    },
+    {
+        "key": "export.run_failed",
+        "label": "Export failed",
+        "description": (
+            "Fires when an export run fails and no file was produced. `error` "
+            "carries the user-safe reason and the recommended action."
+        ),
+        "source_module": "vs_exports",
+        "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],
+        "default_enabled": True,
+        "is_active": True,
+    },
+
     # ── Background tasks (core) ────────────────────────────────────────────
     # These were previously created at runtime by core.tasks_base via
     # get_or_create; registering them here makes seeding authoritative and

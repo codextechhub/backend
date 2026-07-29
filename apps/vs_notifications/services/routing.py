@@ -12,6 +12,7 @@ _WORKFLOW_APPROVAL_EVENTS = ("workflow.stage_activated", "workflow.escalated")
 
 _PREFIX_ROUTES = {
     "/data-imports/batches": ("import.",),
+    "/export/files": ("export.",),
     "/team-management": ("user.", "team."),
     "/me/security": ("security.",),
     "/finance": ("finance.", "payments."),
@@ -30,6 +31,11 @@ def notification_action_url(notification):
         if event_key in _WORKFLOW_APPROVAL_EVENTS:
             return f"/workflow/approvals/{instance_id}"
         return f"/workflow/my-submissions/{instance_id}"
+    # A failure notification has to land on the run that explains itself, not on
+    # a list the reader then has to search. Falls back to the Files list below
+    # when the run id is absent.
+    if event_key.startswith("export.") and metadata.get("export_run_id"):
+        return f"/export/runs/{metadata['export_run_id']}"
     for route, prefixes in _PREFIX_ROUTES.items():
         if event_key.startswith(prefixes):
             return route
