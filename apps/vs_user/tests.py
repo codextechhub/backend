@@ -1375,3 +1375,80 @@ class CXUsersImportHandlerTests(TestCase):
             template.columns.filter(target_field="position", is_required=True).exists()
         )
         self.assertFalse(template.columns.filter(target_field="job_title").exists())
+
+
+class QueueSummaryTests(TestCase):
+    """The summary cards must agree with the rows the list returns.
+
+    Regression: the summary aggregated off the LIST queryset, which carries
+    ``.order_by("-created_at")``. Django adds ORDER BY columns to the GROUP BY,
+    so the counts were grouped by (status, created_at) — one bucket per row —
+    and ``dict()`` kept only the last of each duplicated status key. Every card
+    read 1 no matter how many rows the table showed.
+    """
+
+    def setUp(self):
+        from vs_tenants.models import Tenant
+
+        self.tenant = Tenant.objects.get(slug="codex", kind="PLATFORM")
+        self.actor = make_cx_user(email="queue-owner@codex.test")
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.actor)
+
+    def _job(self, status, kind="email", label="Receipt email"):
+        from core.models import BackgroundJob
+        import uuid
+
+        return BackgroundJob.objects.create(
+            owner=self.actor, tenant=self.tenant, kind=kind, label=label,
+            task_name="vs_finance.send_receipt", status=status,
+            celery_task_id=str(uuid.uuid4()),
+        )
+
+    def test_counts_every_row_not_one_per_timestamp(self):
+        for _ in range(6):
+            self._job("SUCCEEDED")
+        for _ in range(2):
+            self._job("FAILED")
+        self._job("QUEUED")
+
+        res = self.client.get("/v1/user/me/tasks/summary/")
+        self.assertEqual(res.status_code, 200)
+        by_status = res.json()["data"]["by_status"]
+        self.assertEqual(by_status.get("SUCCEEDED"), 6)
+        self.assertEqual(by_status.get("FAILED"), 2)
+        self.assertEqual(by_status.get("QUEUED"), 1)
+        self.assertEqual(res.json()["data"]["total"], 9)
+
+    def test_summary_agrees_with_the_list_it_describes(self):
+        for _ in range(4):
+            self._job("SUCCEEDED")
+
+        listed = self.client.get("/v1/user/me/tasks/").json()
+        summary = self.client.get("/v1/user/me/tasks/summary/").json()
+        self.assertEqual(
+            summary["data"]["by_status"].get("SUCCEEDED"),
+            len([j for j in listed["data"] if j["status"] == "SUCCEEDED"]),
+        )
+
+    def test_summary_honours_the_same_filters_as_the_list(self):
+        for _ in range(3):
+            self._job("SUCCEEDED", kind="export")
+        self._job("SUCCEEDED", kind="email")
+
+        res = self.client.get("/v1/user/me/tasks/summary/?kind=export")
+        self.assertEqual(res.json()["data"]["by_status"].get("SUCCEEDED"), 3)
+
+    def test_summary_is_scoped_to_the_caller(self):
+        from core.models import BackgroundJob
+        import uuid
+
+        other = make_cx_user(email="someone-else@codex.test")
+        BackgroundJob.objects.create(
+            owner=other, tenant=self.tenant, kind="email", label="Theirs",
+            task_name="t", status="SUCCEEDED", celery_task_id=str(uuid.uuid4()),
+        )
+        self._job("SUCCEEDED")
+
+        res = self.client.get("/v1/user/me/tasks/summary/")
+        self.assertEqual(res.json()["data"]["by_status"].get("SUCCEEDED"), 1)

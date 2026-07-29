@@ -103,7 +103,13 @@ class MyTasksSummaryView(APIView):
 
     def get(self, request):
         qs = _scoped_queryset(request)
-        by_status = dict(qs.values_list("status").annotate(n=Count("id")))
+        # `.order_by()` clears the "-created_at" ordering _scoped_queryset applies
+        # for the LIST. Without it Django adds every ORDER BY column to the GROUP
+        # BY — "GROUP BY status, created_at" — which buckets one row per
+        # timestamp instead of one per status, and dict() then keeps only the
+        # last of each duplicated key. The cards read 1 where the table showed 56.
+        # An aggregate must never inherit a presentation ordering.
+        by_status = dict(qs.order_by().values_list("status").annotate(n=Count("id")))
         return success_response(
             message="Queue summary retrieved.",
             data={
