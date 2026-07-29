@@ -374,7 +374,8 @@ class CustomerDetailView(_FinanceBase):
         import datetime
 
         from .constants import CreditNoteKind, DocumentStatus, InvoicePaymentStatus
-        from .models import CreditNote, Invoice, Payment
+        from .models import Concession, CreditNote, Invoice, Payment, Refund
+        from .reports import customer_account_movements
 
         entity = resolve_entity(request)
         customer = _resolve_customer(entity, pk)
@@ -388,12 +389,19 @@ class CustomerDetailView(_FinanceBase):
         payments = list(Payment.objects.filter(
             entity=entity, customer=customer, status=DocumentStatus.POSTED,
         ).order_by("payment_date", "id")[:500])
-        # DEBIT notes are supplementary AR charges — they belong in the statement (debit
-        # side) and their unsettled balance is an open item, just like an invoice.
-        debit_notes = list(CreditNote.objects.filter(
+        credit_notes = list(CreditNote.objects.filter(
             entity=entity, customer=customer, status=DocumentStatus.POSTED,
-            kind=CreditNoteKind.DEBIT,
         ).order_by("note_date", "id")[:500])
+        # DEBIT notes are supplementary AR charges — their unsettled balance is an
+        # open item, just like an invoice. CREDIT notes remain account movements but
+        # are value returned to the customer, not amounts the customer still owes.
+        debit_notes = [n for n in credit_notes if n.kind == CreditNoteKind.DEBIT]
+        refunds = list(Refund.objects.filter(
+            entity=entity, customer=customer, status=DocumentStatus.POSTED,
+        ).order_by("refund_date", "id")[:500])
+        concessions = list(Concession.objects.filter(
+            entity=entity, customer=customer, status=DocumentStatus.POSTED,
+        ).order_by("concession_date", "id")[:500])
 
         # Handle the inv status workflow.
         def inv_status(i):
@@ -433,39 +441,58 @@ class CustomerDetailView(_FinanceBase):
             for n in debit_notes if n.balance_due > 0
         ]
 
-        # Transactions: invoices + debit notes (debit) and receipts (credit),
-        # reverse-chronological (newest first).
-        transactions = (
-            [{"date": i.invoice_date.isoformat(), "type": "INVOICE",
-              "reference": i.document_number, "amount": _money_obj(i.total),
-              "status": inv_status(i)} for i in invoices]
-            + [{"date": n.note_date.isoformat(), "type": "DEBIT_NOTE",
-                "reference": n.document_number, "amount": _money_obj(n.total),
-                "status": dn_status(n)} for n in debit_notes]
-            + [{"date": p.payment_date.isoformat(), "type": "PAYMENT",
-                "reference": p.document_number, "amount": _money_obj(p.amount),
-                "status": "POSTED"} for p in payments]
+        # Transactions and statement share the exportable statement's authoritative
+        # movement source. This includes CREDIT notes (credit), refunds (debit) and
+        # concessions (credit), not only invoices, DEBIT notes and receipts.
+        movements = customer_account_movements(
+            customer,
+            invoices=invoices,
+            credit_notes=credit_notes,
+            refunds=refunds,
+            payments=payments,
+            concessions=concessions,
         )
-        transactions.sort(key=lambda t: t["date"], reverse=True)
+        transaction_types = {
+            "Invoice": "INVOICE",
+            "Debit note": "DEBIT_NOTE",
+            "Credit note": "CREDIT_NOTE",
+            "Receipt": "PAYMENT",
+            "Refund": "REFUND",
+        }
+        transaction_statuses = {
+            **{("Invoice", invoice.document_number): inv_status(invoice)
+               for invoice in invoices},
+            **{("Debit note", note.document_number): dn_status(note)
+               for note in debit_notes},
+        }
+        transactions = [
+            {
+                "date": date.isoformat(),
+                "type": transaction_types.get(doc_type, "ADJUSTMENT"),
+                "reference": number,
+                "amount": _money_obj(debit or credit),
+                "status": transaction_statuses.get((doc_type, number), "POSTED"),
+            }
+            for date, _order, doc_type, number, _description, debit, credit
+            in sorted(movements, key=lambda movement: movement[0], reverse=True)
+        ]
 
-        # Statement: invoices + debit notes (debit) and receipts (credit),
-        # chronological (oldest first), with a running balance. An opening balance is
-        # already materialised as a posted OPENING invoice (see post_opening_balance)
-        # and rides in `invoices` below — we must NOT also add a synthetic opening row
-        # or the balance double-counts. This mirrors reports.customer_statement, which
-        # is likewise document-driven.
-        events = []
-        events += [(i.invoice_date, f"Invoice {i.document_number}", i.total, 0) for i in invoices]
-        events += [(n.note_date, f"Debit note {n.document_number}", n.total, 0) for n in debit_notes]
-        events += [(p.payment_date, f"Receipt {p.document_number}", 0, p.amount) for p in payments]
-        events.sort(key=lambda e: e[0])
+        # An opening balance is already materialised as a posted OPENING invoice (see
+        # post_opening_balance), so it rides in the shared movements and must not be
+        # added again.
         running = 0
         statement = []
-        for d, desc, debit, credit in events:
+        for date, _order, doc_type, number, description, debit, credit in movements:
             running += debit - credit
+            detail = (
+                f" · {description}"
+                if description and description.casefold() != doc_type.casefold()
+                else ""
+            )
             statement.append({
-                "date": None if d == datetime.date.min else d.isoformat(),
-                "description": desc, "debit": _money_obj(debit),
+                "date": None if date == datetime.date.min else date.isoformat(),
+                "description": f"{doc_type} {number}{detail}",
+                "debit": _money_obj(debit),
                 "credit": _money_obj(credit), "balance": _money_obj(running),
             })
 

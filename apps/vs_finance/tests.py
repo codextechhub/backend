@@ -6260,6 +6260,62 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         self.assertTrue(d["statement"])
         self.assertEqual(d["statement"][-1]["balance"]["kobo"], inv.total)
 
+    # Posted credit notes must be visible everywhere their balance effect is visible.
+    def test_detail_includes_credit_note_in_transactions_and_statement(self):
+        import json
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views_ar import CustomerDetailView
+
+        entity, _period, customer, _vat = self.build_ar()
+        invoice = self.make_invoice(
+            entity, customer, lines=[("4100", 1, 100000, None)])
+        post_invoice(invoice)
+        note = CreditNote.objects.create(
+            entity=entity,
+            customer=customer,
+            kind=CreditNoteKind.CREDIT,
+            note_date=datetime.date(2026, 1, 15),
+            reason="Returned goods",
+        )
+        CreditNoteLine.objects.create(
+            note=note,
+            revenue_account=Account.objects.get(entity=entity, code="4900"),
+            quantity=1,
+            unit_price=40000,
+            line_no=1,
+        )
+        post_credit_note(note, auto_allocate=False)
+        note.refresh_from_db()
+
+        user = self._super_admin("cust-credit-history@test.com")
+        request = APIRequestFactory().get(
+            f"/v1/finance/customers/{customer.pk}/", {"entity": entity.code})
+        force_authenticate(request, user=user)
+        request.tenant = user.tenant
+        response = CustomerDetailView.as_view()(request, pk=str(customer.pk))
+        response.render()
+
+        self.assertEqual(response.status_code, 200, response.content)
+        detail = json.loads(response.content)["data"]
+        self.assertEqual(detail["summary"]["current_balance"]["kobo"], 60000)
+        self.assertEqual(detail["summary"]["lifetime_paid"]["kobo"], 0)
+        credit_transaction = next(
+            row for row in detail["transactions"]
+            if row["reference"] == note.document_number
+        )
+        self.assertEqual(credit_transaction["type"], "CREDIT_NOTE")
+        self.assertEqual(credit_transaction["amount"]["kobo"], 40000)
+        credit_statement_row = next(
+            row for row in detail["statement"]
+            if note.document_number in row["description"]
+        )
+        self.assertEqual(credit_statement_row["debit"]["kobo"], 0)
+        self.assertEqual(credit_statement_row["credit"]["kobo"], 40000)
+        self.assertEqual(
+            detail["statement"][-1]["balance"]["kobo"],
+            detail["summary"]["current_balance"]["kobo"],
+        )
+
     # Verify receipt settles and allocates behavior.
     def test_receipt_settles_and_allocates(self):
         import json

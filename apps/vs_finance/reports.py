@@ -476,30 +476,42 @@ class CustomerStatement:
     aging: dict = field(default_factory=lambda: {b: 0 for b in AGING_BUCKETS})
 
 
-# Handle the customer statement workflow.
-def customer_statement(customer, *, start_date=None, end_date=None) -> CustomerStatement:
-    """Build a :class:`CustomerStatement` for ``customer`` over ``[start_date, end_date]``.
+def customer_account_movements(
+    customer, *, invoices=None, credit_notes=None, refunds=None, payments=None,
+    concessions=None,
+):
+    """Return every posted movement that changes a customer's account balance.
 
-    ``end_date`` defaults to today; ``start_date`` of ``None`` runs from the account's
-    inception (a zero opening balance). Movements are ordered by date, then by a stable
-    document-type ordering so same-day documents read sensibly (invoice before its
-    receipt).
+    The customer detail drawer and the exportable statement both consume this source
+    so account history cannot silently omit an adjustment that the balance includes.
+    Callers that already loaded documents may pass them to avoid duplicate queries.
+    Each row is ``(date, type_order, type, number, description, debit, credit)``.
     """
     from .constants import CreditNoteKind, DocumentStatus
     from .models import Concession, CreditNote, Invoice, Payment, Refund
 
-    entity = customer.entity
-    end_date = end_date or timezone.now().date()
+    if invoices is None:
+        invoices = Invoice.objects.filter(customer=customer, status=DocumentStatus.POSTED)
+    if credit_notes is None:
+        credit_notes = CreditNote.objects.filter(
+            customer=customer, status=DocumentStatus.POSTED)
+    if refunds is None:
+        refunds = Refund.objects.filter(customer=customer, status=DocumentStatus.POSTED)
+    if payments is None:
+        payments = Payment.objects.filter(customer=customer, status=DocumentStatus.POSTED)
+    if concessions is None:
+        concessions = Concession.objects.filter(
+            customer=customer, status=DocumentStatus.POSTED)
 
     # Each movement: (date, type_order, doc_type, number, description, debit, credit).
     movements: list = []
 
-    for inv in Invoice.objects.filter(customer=customer, status=DocumentStatus.POSTED):
+    for inv in invoices:
         movements.append((
             inv.invoice_date, 0, "Invoice", inv.document_number,
             inv.narration or "Invoice", inv.total, 0,
         ))
-    for note in CreditNote.objects.filter(customer=customer, status=DocumentStatus.POSTED):
+    for note in credit_notes:
         if note.kind == CreditNoteKind.DEBIT:
             movements.append((
                 note.note_date, 1, "Debit note", note.document_number,
@@ -510,23 +522,41 @@ def customer_statement(customer, *, start_date=None, end_date=None) -> CustomerS
                 note.note_date, 3, "Credit note", note.document_number,
                 note.reason or "Credit note", 0, note.total,
             ))
-    for refund in Refund.objects.filter(customer=customer, status=DocumentStatus.POSTED):
+    for refund in refunds:
         movements.append((
             refund.refund_date, 2, "Refund", refund.document_number,
             refund.narration or "Refund", refund.amount, 0,
         ))
-    for pay in Payment.objects.filter(customer=customer, status=DocumentStatus.POSTED):
+    for pay in payments:
         movements.append((
             pay.payment_date, 4, "Receipt", pay.document_number,
             pay.narration or "Receipt", 0, pay.amount,
         ))
-    for con in Concession.objects.filter(customer=customer, status=DocumentStatus.POSTED):
+    for con in concessions:
         movements.append((
             con.concession_date, 5, con.get_kind_display(), con.document_number,
             con.reason or con.get_kind_display(), 0, con.amount,
         ))
 
     movements.sort(key=lambda m: (m[0], m[1], m[3]))
+    return movements
+
+
+# Handle the customer statement workflow.
+def customer_statement(customer, *, start_date=None, end_date=None) -> CustomerStatement:
+    """Build a :class:`CustomerStatement` for ``customer`` over ``[start_date, end_date]``.
+
+    ``end_date`` defaults to today; ``start_date`` of ``None`` runs from the account's
+    inception (a zero opening balance). Movements are ordered by date, then by a stable
+    document-type ordering so same-day documents read sensibly (invoice before its
+    receipt).
+    """
+    from .constants import DocumentStatus
+    from .models import Invoice
+
+    entity = customer.entity
+    end_date = end_date or timezone.now().date()
+    movements = customer_account_movements(customer)
 
     statement = CustomerStatement(
         entity_id=entity.id, customer_id=customer.id,
