@@ -22,6 +22,7 @@ from .constants import (
     DatasetScope,
     ExportFormat,
     FAILURE_GUIDANCE,
+    RETRYABLE_FAILURE_CODES,
     ValuesMode,
 )
 from .models import (
@@ -227,15 +228,19 @@ class ExportRunListSerializer(serializers.ModelSerializer):
 
     export_name = serializers.SerializerMethodField()
     requested_by_name = serializers.SerializerMethodField()
+    # Null for a quick export. The UI needs it to offer "Edit export" on the
+    # failures whose only real fix is changing the recipe; the definition is
+    # already visible to this caller under the same visibility rule.
+    definition_id = serializers.IntegerField(read_only=True)
     file = ExportFileSerializer(read_only=True)
     progress = serializers.SerializerMethodField()
 
     class Meta:
         model = ExportRun
         fields = [
-            "id", "reference", "export_name", "status", "trigger", "requested_by_name",
-            "queued_at", "started_at", "ended_at", "row_count", "attempt", "progress",
-            "file",
+            "id", "reference", "export_name", "definition_id", "status", "trigger",
+            "requested_by_name", "queued_at", "started_at", "ended_at", "row_count",
+            "attempt", "progress", "file",
         ]
 
     def get_export_name(self, obj):
@@ -279,6 +284,15 @@ class ExportRunDetailSerializer(ExportRunListSerializer):
         ]
 
     def get_failure(self, obj):
+        """The outcome as a person can act on it: what happened, and what to do.
+
+        ``retryable`` is deliberately narrow. Only a transient infrastructure
+        fault gets a Retry button — a filter, permission, row-cap or date-span
+        failure fails again in exactly the same way, so offering a retry there
+        wastes the user's time and teaches them the button does not work. For
+        those, ``recommended_action`` is the real next step and the UI leads
+        with it instead.
+        """
         if not obj.failure_code:
             return None
         return {
@@ -286,7 +300,10 @@ class ExportRunDetailSerializer(ExportRunListSerializer):
             "message": obj.failure_message,
             "recommended_action": FAILURE_GUIDANCE.get(obj.failure_code, ""),
             "reference": obj.reference,
-            "retryable": obj.definition_id is not None,
+            "retryable": (
+                obj.definition_id is not None
+                and obj.failure_code in RETRYABLE_FAILURE_CODES
+            ),
         }
 
     def get_configuration(self, obj):
@@ -311,13 +328,85 @@ class ExportRunDetailSerializer(ExportRunListSerializer):
         }
 
     def get_drift(self, obj):
+        """How the definition has moved on since this run — as READABLE changes.
+
+        `config_drift` returns the raw before/after, which is the stored blob:
+        column ids, filter specs, format-option dicts. Publishing that would put
+        a raw JSONField on the wire, which this module does not do. So each
+        change is rendered through the same helpers the configuration block uses
+        — labels, filter sentences, format names — and the UI can show "what
+        changed" without ever seeing an internal id.
+        """
         from .services import config_drift
 
-        changes = config_drift(obj)
-        return {"count": len(changes), "fields": [c["field"] for c in changes]}
+        dataset = get_dataset((obj.frozen_config or {}).get("dataset_key"))
+        changes = [
+            {
+                "field": c["field"],
+                "label": _DRIFT_LABELS.get(c["field"], c["field"].replace("_", " ").capitalize()),
+                "then": _readable_config_value(c["field"], c["then"], dataset),
+                "now": _readable_config_value(c["field"], c["now"], dataset),
+            }
+            for c in config_drift(obj)
+        ]
+        return {
+            "count": len(changes),
+            "fields": [c["field"] for c in changes],
+            "changes": changes,
+        }
 
     def get_deliveries(self, obj):
         return ExportDeliverySerializer(obj.deliveries.all(), many=True).data
+
+
+# What each drifted key is called on screen.
+_DRIFT_LABELS = {
+    "dataset_key": "Dataset",
+    "columns": "Columns",
+    "filters": "Filters",
+    "sort": "Sorting",
+    "format": "Format",
+    "format_options": "Format options",
+    "values_mode": "Values",
+    "file_name_pattern": "File name",
+    "name": "Name",
+}
+
+
+# Render one side of a drift entry as a sentence, never as the stored blob.
+def _readable_config_value(field, value, dataset) -> str:
+    """A person-readable rendering of one configuration value.
+
+    Deliberately lossy: the point is "what changed", not a reconstructable dump.
+    Column ids become labels, filter specs become the sentences the review step
+    already shows, and an options object becomes a count rather than its keys.
+    """
+    if value in (None, "", [], {}):
+        return "—"
+    if field == "columns":
+        labels = [
+            (dataset.field(c).label if dataset and dataset.field(c) else str(c))
+            for c in value
+        ]
+        return ", ".join(labels) or "—"
+    if field == "filters":
+        if not dataset:
+            return f"{len(value)} filters"
+        return "; ".join(describe_filter(dataset, spec) for spec in value) or "—"
+    if field == "sort":
+        return ", ".join(
+            f"{s.get('field')} {s.get('direction', 'asc')}" for s in value
+        ) or "—"
+    if field == "format_options":
+        return f"{len(value)} option{'' if len(value) == 1 else 's'} set"
+    if field == "dataset_key":
+        other = get_dataset(str(value))
+        return other.name if other else str(value)
+    if field == "values_mode":
+        return "For people to read" if value == ValuesMode.PEOPLE else "For another system"
+    if field == "format":
+        return str(value).upper()
+    return str(value)
 
 
 class ExportDownloadSerializer(serializers.ModelSerializer):

@@ -38,10 +38,12 @@ from .constants import (
     DownloadRefusal,
     ExportFormat,
     ExportPermission,
+    FAILURE_GUIDANCE,
     FailureCode,
     FILE_RETENTION_DAYS,
     FORMAT_MEDIA,
     IDEMPOTENCY_WINDOW_SECONDS,
+    RETRYABLE_FAILURE_CODES,
     RunPhase,
     RunStatus,
     RunTrigger,
@@ -323,6 +325,15 @@ def retry_run(run, actor):
         raise ExportServiceError(
             "This was a quick export, so there is no saved recipe to retry. Build it "
             "again from the module screen."
+        )
+    # The rule this function's docstring has always claimed, now enforced. A
+    # filter, permission or row-cap failure fails again identically, so retrying
+    # it costs the user a second wait and a second notification and changes
+    # nothing — the guidance for the code is the actual next step.
+    if run.failure_code and run.failure_code not in RETRYABLE_FAILURE_CODES:
+        raise ExportServiceError(
+            f"{run.failure_message or 'This run failed.'} "
+            f"{FAILURE_GUIDANCE.get(run.failure_code, '')}".strip()
         )
     new_run = ExportRun.objects.create(
         tenant=run.tenant,

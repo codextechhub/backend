@@ -12,6 +12,7 @@ Run against the local database::
 from __future__ import annotations
 
 import datetime
+from unittest import mock
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -38,8 +39,10 @@ from vs_exports.constants import (
     FailureCode,
     OmissionCode,
     RunStatus,
+    RunTrigger,
     ValuesMode,
 )
+from vs_exports.serializers import ExportRunDetailSerializer
 from vs_exports.models import (
     ExportAnalyticsEvent,
     ExportDefinition,
@@ -1300,3 +1303,99 @@ class AnalyticsEndpointTests(_ExportFixture, TestCase):
             run, _ = services.trigger_run(definition=definition, actor=self.admin)
         run.refresh_from_db()
         self.assertEqual(run.status, RunStatus.COMPLETED)
+
+
+class RetryRuleTests(_ExportFixture, TestCase):
+    """Only a transient fault is worth retrying.
+
+    The rule was documented on ``retry_run`` from the start but never enforced:
+    ``RETRYABLE_FAILURE_CODES`` was declared and used nowhere, and the run
+    serializer reported ``retryable`` purely from "has a definition". A filter or
+    permission failure therefore offered a Retry button that queued a run which
+    failed identically — a second wait and a second notification for nothing.
+    """
+
+    def setUp(self):
+        self.build()
+
+    def _failed_run(self, code):
+        definition = self.make_definition()
+        run = ExportRun.objects.create(
+            tenant=self.tenant,
+            entity=definition.entity,
+            definition=definition,
+            frozen_config=services.freeze(definition),
+            requested_by=self.admin,
+            status=RunStatus.FAILED,
+            failure_code=code,
+            failure_message="It went wrong.",
+        )
+        return run
+
+    def test_a_configuration_failure_is_not_retryable(self):
+        for code in (
+            FailureCode.FILTER_INVALID,
+            FailureCode.REQUIRED_FILTER_MISSING,
+            FailureCode.ROW_CAP_EXCEEDED,
+            FailureCode.DATE_SPAN_EXCEEDED,
+            FailureCode.DATASET_FORBIDDEN,
+        ):
+            run = self._failed_run(code)
+            with self.subTest(code=code):
+                data = ExportRunDetailSerializer(run).data
+                self.assertFalse(data["failure"]["retryable"])
+                with self.assertRaises(services.ExportServiceError):
+                    services.retry_run(run, self.admin)
+
+    def test_a_transient_failure_is_retryable(self):
+        run = self._failed_run(FailureCode.INFRASTRUCTURE)
+        data = ExportRunDetailSerializer(run).data
+        self.assertTrue(data["failure"]["retryable"])
+
+        with mock.patch("vs_exports.services.enqueue"):
+            new_run = services.retry_run(run, self.admin)
+        self.assertEqual(new_run.attempt, run.attempt + 1)
+        self.assertEqual(new_run.trigger, RunTrigger.RETRY)
+
+    def test_the_refusal_names_the_actual_next_step(self):
+        run = self._failed_run(FailureCode.FILTER_INVALID)
+        with self.assertRaises(services.ExportServiceError) as ctx:
+            services.retry_run(run, self.admin)
+        # The guidance for the code, not a generic "cannot retry".
+        self.assertIn("replace the filter", str(ctx.exception))
+
+    def test_a_quick_export_has_nothing_to_retry(self):
+        run = ExportRun.objects.create(
+            tenant=self.tenant,
+            frozen_config={"name": "Quick export"},
+            requested_by=self.admin,
+            status=RunStatus.FAILED,
+            failure_code=FailureCode.INFRASTRUCTURE,
+        )
+        self.assertFalse(ExportRunDetailSerializer(run).data["failure"]["retryable"])
+
+
+class DriftReadabilityTests(_ExportFixture, TestCase):
+    """The run detail says WHAT changed, without publishing the stored blob."""
+
+    def setUp(self):
+        self.build()
+
+    def test_changes_are_sentences_not_ids(self):
+        definition = self.make_definition()
+        with mock.patch("vs_exports.services.enqueue"):
+            run, _ = services.trigger_run(definition=definition, actor=self.admin)
+
+        definition.name = "Renamed since the run"
+        definition.columns = list(definition.columns)[:1]
+        definition.save()
+
+        drift = ExportRunDetailSerializer(run).data["drift"]
+        self.assertGreaterEqual(drift["count"], 2)
+        by_field = {c["field"]: c for c in drift["changes"]}
+
+        self.assertEqual(by_field["name"]["now"], "Renamed since the run")
+        # Columns render as labels a person recognises, never as field ids.
+        columns = by_field["columns"]
+        self.assertNotIn("_", columns["now"])
+        self.assertTrue(all(isinstance(c["then"], str) for c in drift["changes"]))
