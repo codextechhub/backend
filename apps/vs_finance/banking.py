@@ -28,8 +28,14 @@ from .constants import (
     JournalSource,
     NormalBalance,
 )
-from .exceptions import BankReconciliationError
-from .posting import post_journal, resolve_period, reverse_journal
+from .exceptions import BankReconciliationError, PeriodClosedError
+from .posting import (
+    _period_accepts_posting,
+    post_journal,
+    posting_window,
+    resolve_period,
+    reverse_journal,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -638,10 +644,59 @@ def set_line_ignored(statement_line, *, ignored=True, reason="", actor_user=None
 # Adjusting journals (book what the statement reveals)                        #
 # --------------------------------------------------------------------------- #
 
+# Choose the date an adjustment should post on.
+def resolve_adjustment_date(entity, txn_date, *, requested=None):
+    """Return the date a bank adjustment should post on, for ``txn_date``'s line.
+
+    A bank statement legitimately covers a month that is already closed — importing
+    and matching it post nothing, so neither is blocked. Booking an adjustment does
+    post, and pinning it to the line's ``txn_date`` made a late-discovered charge
+    impossible to record: the date was not user-selectable, so the 409 had no remedy.
+
+    Resolution order:
+
+    * ``requested`` — an explicit caller/operator choice, used as given so the
+      posting guard can reject it with a message the operator can act on.
+    * ``txn_date`` when that date is still postable — the common case, unchanged.
+    * otherwise the **earliest open day on or after** ``txn_date``. A closed month
+      cannot be rewritten, so the charge books as close to its real date as the
+      calendar allows — a January charge lands in February, not in whatever month
+      happens to be current. ``txn_date`` stays on the journal as the value date.
+    * only when every later period is closed does it fall back to the latest open
+      day *before* the line, since pre-dating is better than not booking at all.
+
+    Deliberately not the same rule as :func:`~vs_finance.posting.posting_window`'s
+    ``default_date``: that answers "what should a new document default to" and
+    snaps around *today*, which would drop a January charge into the current month
+    and distort it. This answers "where does an already-dated item land".
+
+    Raises :class:`PeriodClosedError` when the entity has no open period at all —
+    nothing can post then, and failing closed is the only honest answer.
+    """
+    if requested is not None:
+        return requested
+
+    period = resolve_period(entity, txn_date)
+    if _period_accepts_posting(period):
+        return txn_date
+
+    open_periods = posting_window(entity)["open"]
+    after = [p["start_date"] for p in open_periods if p["start_date"] > txn_date]
+    before = [p["end_date"] for p in open_periods if p["end_date"] < txn_date]
+    if after:
+        return min(after)
+    if before:
+        return max(before)
+    raise PeriodClosedError(
+        period_label=str(period) if period else "<none>",
+        status=getattr(period, "status", "missing"),
+    )
+
+
 @transaction.atomic
 # Handle the post bank adjustment workflow.
 def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=None,
-                         narration="", actor_user=None):
+                         narration="", posting_date=None, actor_user=None):
     """Book an unrecorded statement line (charge/interest) and match it.
 
     For a line the books don't yet know about — a bank charge (outflow) or interest
@@ -652,6 +707,12 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
 
     * outflow (amount < 0): ``Dr counter (expense), Cr cash``
     * inflow  (amount > 0): ``Dr cash, Cr counter (income/contra)``
+
+    ``posting_date`` overrides where the journal lands; omitted, it follows
+    :func:`resolve_adjustment_date`. The statement line's ``txn_date`` is always kept
+    as the bank's value date — when the two differ the journal says so in its
+    narration and the audit row carries both, so a charge booked into a later period
+    is never mistaken for one the bank raised then.
     """
     from .constants import BANK_CHARGES_CODE
     from .models import JournalEntry, JournalLine
@@ -670,16 +731,24 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
             entity, counter_code or BANK_CHARGES_CODE, label="bank charge counter",
         )
 
-    period = resolve_period(entity, statement_line.txn_date)  # Find the open accounting period for the line date.
+    book_date = resolve_adjustment_date(  # The date this adjustment can actually post on.
+        entity, statement_line.txn_date, requested=posting_date,
+    )
+    deferred = book_date != statement_line.txn_date  # Booked outside the bank's own value date.
+    period = resolve_period(entity, book_date)  # Find the accounting period for the posting date.
     cash = bank_account.gl_account  # The bank account's GL cash account.
     magnitude = abs(statement_line.amount)  # Use the absolute amount for the adjustment journal.
     inflow = statement_line.amount > 0  # Positive means bank credit/inflow.
 
+    text = narration or statement_line.description or "Bank adjustment"  # Base narration.
+    if deferred:  # Keep the bank's value date visible on a journal booked in another period.
+        text = f"{text} (bank value date {statement_line.txn_date})"
+
     entry = JournalEntry.objects.create(
         entity=entity, branch=bank_account.branch,
-        date=statement_line.txn_date, period=period,
+        date=book_date, period=period,
         source=JournalSource.BANK,
-        narration=narration or statement_line.description or "Bank adjustment",
+        narration=text,
         reference=statement_line.reference, created_by=actor_user,
     )
     if inflow:  # Bank credited us, so cash is debited and the counter account is credited.
@@ -716,7 +785,14 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
     record(  # Log the bank adjustment in the audit trail.
         entity=entity, action=FinanceAuditAction.BANK_CHARGE_POSTED,
         actor_user=actor_user, target=bank_account,
-        message=f"Booked bank adjustment {magnitude} kobo on {bank_account.name}.",
+        message=(
+            f"Booked bank adjustment {magnitude} kobo on {bank_account.name}"
+            + (
+                f" on {book_date} (bank value date {statement_line.txn_date} "
+                f"falls outside an open period)." if deferred else "."
+            )
+        ),
         journal_id=entry.pk, amount=statement_line.amount,
+        posting_date=str(book_date), value_date=str(statement_line.txn_date),
     )
     return entry  # Return the posted adjusting journal entry.

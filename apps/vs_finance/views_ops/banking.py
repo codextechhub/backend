@@ -1056,7 +1056,12 @@ class BankSplitMatchView(_FinanceBase):
 
 # Group endpoint behavior for Bank Statement Line Adjust View.
 class BankStatementLineAdjustView(_StatementLineActionBase):
-    """POST {counter_account?, counter_code?, narration?} — book + match an unrecorded line.
+    """POST {counter_account?, counter_code?, narration?, posting_date?} — book + match.
+
+    ``posting_date`` is optional: omitted, the adjustment books on the statement
+    line's own date, or on the nearest open day when that date's period is closed
+    (a statement legitimately covers a closed month). The line's date is kept on
+    the journal as the bank's value date either way.
 
     docstring-name: Post an adjustment from a statement line
     """
@@ -1073,7 +1078,9 @@ class BankStatementLineAdjustView(_StatementLineActionBase):
         post_bank_adjustment(
             line, counter_account=counter,
             counter_code=body.get("counter_code"),
-            narration=body.get("narration", ""), actor_user=request.user,
+            narration=body.get("narration", ""),
+            posting_date=_date(body.get("posting_date"), "posting_date"),
+            actor_user=request.user,
         )
         line.refresh_from_db()
         return success_response(

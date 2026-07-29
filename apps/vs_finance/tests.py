@@ -2126,6 +2126,135 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(charge.debit, 1500)
         self.assertEqual(cash.credit, 1500)
 
+    # Verify adjustment in a closed month books on the nearest open day behavior.
+    def test_adjustment_in_closed_month_books_on_the_nearest_open_day(self):
+        # The bug this fixes: a statement legitimately covers a month that has since
+        # closed. Import and match post nothing so neither is blocked, but the
+        # adjustment was pinned to the line's date and 409'd with no way out — the
+        # date was not selectable anywhere in the UI.
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        line = import_statement_lines(bank, [
+            {"txn_date": datetime.date(2026, 1, 20), "amount": -1500,
+             "description": "Monthly fee"},
+        ])[1][0]
+        periods[0].status = PeriodStatus.CLOSED  # Close January after the import.
+        periods[0].save(update_fields=["status"])
+
+        entry = post_bank_adjustment(line)
+        line.refresh_from_db()
+
+        # Books in February (the nearest open day), never into closed January.
+        self.assertEqual(entry.date, datetime.date(2026, 2, 1))
+        self.assertEqual(entry.period_id, periods[1].id)
+        self.assertEqual(line.status, BankLineStatus.MATCHED)
+        # The bank's own date survives on the journal, so a charge booked into a
+        # later period is not mistaken for one the bank raised then.
+        self.assertIn("bank value date 2026-01-20", entry.narration)
+
+    # Verify an open line still books on its own date behavior.
+    def test_adjustment_in_an_open_month_still_books_on_the_line_date(self):
+        # The fallback must not change the ordinary case.
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        line = import_statement_lines(bank, [
+            {"txn_date": datetime.date(2026, 1, 20), "amount": -1500},
+        ])[1][0]
+
+        entry = post_bank_adjustment(line)
+
+        self.assertEqual(entry.date, datetime.date(2026, 1, 20))
+        self.assertEqual(entry.period_id, periods[0].id)
+        self.assertNotIn("bank value date", entry.narration)
+
+    # Verify an explicit posting date is honoured behavior.
+    def test_explicit_posting_date_is_honoured(self):
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        line = import_statement_lines(bank, [
+            {"txn_date": datetime.date(2026, 1, 20), "amount": -1500},
+        ])[1][0]
+
+        entry = post_bank_adjustment(line, posting_date=datetime.date(2026, 3, 5))
+
+        self.assertEqual(entry.date, datetime.date(2026, 3, 5))
+        self.assertEqual(entry.period_id, periods[2].id)
+        self.assertIn("bank value date 2026-01-20", entry.narration)
+
+    # Verify an explicit closed posting date is still refused behavior.
+    def test_explicit_posting_date_in_a_closed_period_is_refused(self):
+        # An operator's explicit choice is used as given: the guard rejects it with
+        # a message they can act on, rather than being silently moved elsewhere.
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        line = import_statement_lines(bank, [
+            {"txn_date": datetime.date(2026, 1, 20), "amount": -1500},
+        ])[1][0]
+        periods[2].status = PeriodStatus.CLOSED  # Close March.
+        periods[2].save(update_fields=["status"])
+
+        with self.assertRaises(PeriodClosedError):
+            post_bank_adjustment(line, posting_date=datetime.date(2026, 3, 5))
+
+    # Verify it pre-dates only when every later period is shut behavior.
+    def test_adjustment_pre_dates_only_when_every_later_period_is_shut(self):
+        # Booking earlier than the bank's own date is the last resort, taken only
+        # because pre-dating beats leaving the line permanently unbookable.
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        line = import_statement_lines(bank, [
+            {"txn_date": datetime.date(2026, 6, 15), "amount": -1500},
+        ])[1][0]
+        # Shut June and everything after it; only Jan–May remain open.
+        for period in periods[5:]:
+            period.status = PeriodStatus.CLOSED
+            period.save(update_fields=["status"])
+
+        entry = post_bank_adjustment(line)
+
+        self.assertEqual(entry.date, datetime.date(2026, 5, 31))
+        self.assertEqual(entry.period_id, periods[4].id)
+        self.assertIn("bank value date 2026-06-15", entry.narration)
+
+    # Verify adjustment fails closed when nothing is open behavior.
+    def test_adjustment_fails_closed_when_no_period_is_open(self):
+        # No open period anywhere means nothing can post; there is no date to fall
+        # back to and inventing one would be worse than refusing.
+        entity, _, _ = self.build_books()
+        bank = self.make_bank(entity)
+        line = import_statement_lines(bank, [
+            {"txn_date": datetime.date(2026, 1, 20), "amount": -1500},
+        ])[1][0]
+        FiscalPeriod.objects.filter(entity=entity).update(status=PeriodStatus.CLOSED)
+
+        with self.assertRaises(PeriodClosedError):
+            post_bank_adjustment(line)
+        line.refresh_from_db()
+        self.assertEqual(line.status, BankLineStatus.UNMATCHED)
+
+    # Verify unmatching a deferred adjustment reverses it behavior.
+    def test_unmatching_a_deferred_adjustment_reverses_it(self):
+        # The reversal path must survive the adjustment sitting in a different
+        # period from the statement line.
+        from vs_finance.banking import unmatch_line
+
+        entity, _, periods = self.build_books()
+        bank = self.make_bank(entity)
+        line = import_statement_lines(bank, [
+            {"txn_date": datetime.date(2026, 1, 20), "amount": -1500},
+        ])[1][0]
+        periods[0].status = PeriodStatus.CLOSED
+        periods[0].save(update_fields=["status"])
+        entry = post_bank_adjustment(line)
+
+        unmatch_line(line)
+        line.refresh_from_db()
+        entry.refresh_from_db()
+
+        self.assertEqual(line.status, BankLineStatus.UNMATCHED)
+        self.assertIsNone(line.adjusting_journal_id)
+        self.assertEqual(entry.status, DocumentStatus.REVERSED)
+
     # Verify adjustment rejects already matched line behavior.
     def test_adjustment_rejects_already_matched_line(self):
         entity, _, _ = self.build_books()
