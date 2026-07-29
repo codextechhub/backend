@@ -29,6 +29,10 @@ caller could not otherwise fetch:
     approvals      own queue, any active user
     submissions    own submissions, any active user
     notifications  own unread count, any active user
+    setup.roles_assigned
+                   platform.roles.view OR school.roles.view  (RoleViewSet)
+    setup.organogram_built
+                   platform.organogram.view   (OrgNodeViewSet)
 
 A section the caller may not see is **omitted from the response**, never returned
 as zero: `0` and "you have no access" must not look the same to the reader, and
@@ -45,6 +49,9 @@ PERM_SCHOOLS_VIEW = "platform.schools.view"
 PERM_TEAM_VIEW = "platform.team.view"
 PERM_TICKETS_VIEW = "tickets.ticket.view"
 PERM_HEALTH_VIEW = "platform.health.view"
+PERM_ORGANOGRAM_VIEW = "platform.organogram.view"
+# Both vocabularies, matching RoleViewSet's own ROLE_VIEW_KEYS.
+PERM_ROLE_VIEW_KEYS = ("platform.roles.view", "school.roles.view")
 
 # The landing screen lists only the next few commitments; the rest live on the
 # Tasks screen behind "View all".
@@ -164,6 +171,38 @@ def _health() -> dict:
     }
 
 
+def _setup(user, tenant) -> dict:
+    """Whether the structural setup steps behind the checklist are done.
+
+    Booleans, not counts, and deliberately so: the checklist renders a tick, and
+    a count would hand the caller a number from a screen they may not be allowed
+    to open. Each flag carries the same key as the screen it describes and is
+    omitted — not returned False — when the caller lacks it, so "not set up" and
+    "not your business" stay distinguishable, exactly like the sections above.
+
+    `.exists()` is a LIMIT 1 on an indexed column; neither flag walks the table.
+    """
+    from vs_rbac.models import TenantUserRoleAssignment
+    from vs_user.models import OrgNode
+
+    setup: dict = {}
+
+    if any(has_permission(user, key, tenant=tenant) for key in PERM_ROLE_VIEW_KEYS):
+        # Scoped to the caller's own tenant: whether *another* tenant has
+        # assigned roles is not an answer this screen is entitled to.
+        setup["roles_assigned"] = TenantUserRoleAssignment.objects.filter(
+            tenant=tenant or user.tenant,
+            assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+        ).exists()
+
+    if has_permission(user, PERM_ORGANOGRAM_VIEW, tenant=tenant):
+        # The CX org tree is platform-wide (OrgNode carries no tenant), so this
+        # is unscoped by design, like the organogram screen itself.
+        setup["organogram_built"] = OrgNode.objects.filter(is_active=True).exists()
+
+    return setup
+
+
 def console_overview(request) -> dict:
     """Assemble every section the caller is allowed to see."""
     user = request.user
@@ -196,5 +235,11 @@ def console_overview(request) -> dict:
 
     if has_permission(user, PERM_HEALTH_VIEW, tenant=tenant):
         data["health"] = _health()
+
+    # Only sent when at least one flag is visible, so the screen can treat an
+    # absent `setup` the same way it treats every other absent section.
+    setup = _setup(user, tenant)
+    if setup:
+        data["setup"] = setup
 
     return data
