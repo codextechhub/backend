@@ -4188,7 +4188,8 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         resp = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
             {"code": "OPENC", "name": "Backdated Co", "opening_balance": 5000000,
-             "opening_date": "2026-03-15"}, format="json")
+             "opening_date": "2026-03-15", "billing_email": "billing@backdated.test",
+             "billing_phone": "+2348000000001"}, format="json")
         self.assertEqual(resp.status_code, 201, resp.content)
         cust = Customer.objects.get(entity=entity, code="OPENC")
         inv = Invoice.objects.get(entity=entity, customer=cust, source=InvoiceSource.OPENING)
@@ -4206,7 +4207,9 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         entity, _, _ = self.build_books()
         resp = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
-            {"code": "OPENEQ", "name": "Opening Equity Co", "opening_balance": 5000000},
+            {"code": "OPENEQ", "name": "Opening Equity Co", "opening_balance": 5000000,
+             "billing_email": "billing@opening-equity.test",
+             "billing_phone": "+2348000000002"},
             format="json")
         self.assertEqual(resp.status_code, 201, resp.content)
         cust = Customer.objects.get(entity=entity, code="OPENEQ")
@@ -4751,7 +4754,8 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         entity, _, _ = self.build_books()
         created = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
-            {"code": "OPN1", "name": "Opening Co", "opening_balance": 500000},
+            {"code": "OPN1", "name": "Opening Co", "opening_balance": 500000,
+             "billing_email": "billing@opening.test", "billing_phone": "+2348000000003"},
             format="json",
         )
         self.assertEqual(created.status_code, 201, created.content)
@@ -4778,10 +4782,14 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         # An opening balance makes this customer OVERDUE-or-ACTIVE with a receivable.
         self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
-            {"code": "SUMA", "name": "Owes Money", "opening_balance": 300000}, format="json")
+            {"code": "SUMA", "name": "Owes Money", "opening_balance": 300000,
+             "billing_email": "billing@suma.test", "billing_phone": "+2348000000004"},
+            format="json")
         self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
-            {"code": "SUMB", "name": "Flat Co", "is_active": False}, format="json")  # INACTIVE
+            {"code": "SUMB", "name": "Flat Co", "is_active": False,
+             "billing_email": "billing@sumb.test", "billing_phone": "+2348000000005"},
+            format="json")  # INACTIVE
 
         summ = self.client.get(f"/v1/finance/customers/summary/?entity={entity.code}").json()["data"]
         self.assertEqual(summ["total"], 2)
@@ -4863,7 +4871,8 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         entity, _, _ = self.build_books()
         c = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
-            {"code": "PSUM", "name": "Payer"}, format="json").json()["data"]
+            {"code": "PSUM", "name": "Payer", "billing_email": "billing@payer.test",
+             "billing_phone": "+2348000000006"}, format="json").json()["data"]
         # A receipt with no invoices → fully unallocated.
         self.client.post(
             f"/v1/finance/customers/{c['code']}/receipt/?entity={entity.code}",
@@ -4881,7 +4890,8 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         entity, _, _ = self.build_books()
         c = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
-            {"code": "ALC", "name": "Alloc Co"}, format="json").json()["data"]
+            {"code": "ALC", "name": "Alloc Co", "billing_email": "billing@alloc.test",
+             "billing_phone": "+2348000000007"}, format="json").json()["data"]
 
         # Prepare or verify the mk invoice test path.
         def mk_invoice(price, date):
@@ -4906,7 +4916,8 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         entity, _, _ = self.build_books()
         c = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
-            {"code": "BAD", "name": "Bad Co"}, format="json").json()["data"]
+            {"code": "BAD", "name": "Bad Co", "billing_email": "billing@bad.test",
+             "billing_phone": "+2348000000008"}, format="json").json()["data"]
         resp = self.client.post(
             f"/v1/finance/customers/{c['id']}/receipt/?entity={entity.code}",
             {"amount": 100000, "payment_date": "2026-03-01", "deposit_account": "1100",
@@ -4948,7 +4959,8 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         # Create — receivable account defaults to 1200.
         resp = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
-            {"code": "cust1", "name": "Acme Ltd", "billing_email": "a@acme.test"},
+            {"code": "cust1", "name": "Acme Ltd", "billing_email": "a@acme.test",
+             "billing_phone": "+2348000000009"},
             format="json",
         )
         self.assertEqual(resp.status_code, 201, resp.content)
@@ -4980,7 +4992,8 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         entity, _, _ = self.build_books()
         self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
-            {"code": "stu1", "name": "Student One"}, format="json")
+            {"code": "stu1", "name": "Student One", "billing_email": "student1@payer.test",
+             "billing_phone": "+2348000000010"}, format="json")
 
         # A fee structure with one ₦100,000 tuition line.
         created = self.client.post(
@@ -5121,7 +5134,8 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         entity, _, _ = self.build_books()
         self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
-            {"code": "stu1", "name": "Student One"}, format="json")
+            {"code": "stu1", "name": "Student One", "billing_email": "student1@payer.test",
+             "billing_phone": "+2348000000011"}, format="json")
         self.client.post(
             f"/v1/finance/fee-structures/?entity={entity.code}",
             {"code": "fs-src", "name": "Source", "items": [
@@ -5160,7 +5174,8 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         entity, _, _ = self.build_books()
         self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
-            {"code": "stu1", "name": "Student One"}, format="json")
+            {"code": "stu1", "name": "Student One", "billing_email": "student1@payer.test",
+             "billing_phone": "+2348000000012"}, format="json")
         self.client.post(
             f"/v1/finance/fee-structures/?entity={entity.code}",
             {"code": "fs-staff", "name": "Staff deductions", "applies_to": "STAFF",
@@ -6431,7 +6446,8 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         user = self._super_admin("cust-create@test.com")
         req = APIRequestFactory().post(
             f"/v1/finance/customers/?entity={entity.code}",
-            {"name": "Generated Reference Ltd"},
+            {"name": "Generated Reference Ltd", "billing_email": " billing@generated.test ",
+             "billing_phone": " +2348000000013 "},
             format="json",
         )
         force_authenticate(req, user=user)
@@ -6442,8 +6458,34 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
 
         self.assertEqual(resp.status_code, 201, resp.content)
         code = json.loads(resp.content)["data"]["code"]
+        data = json.loads(resp.content)["data"]
         self.assertTrue(code.startswith(f"CU-{entity.tenant_id}"))
+        self.assertEqual(data["billing_email"], "billing@generated.test")
+        self.assertEqual(data["billing_phone"], "+2348000000013")
         self.assertTrue(Customer.objects.filter(entity=entity, code=code).exists())
+
+    def test_create_requires_valid_billing_email_and_phone(self):
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views_ar import CustomerListCreateView
+
+        entity, _period, _customer, _vat = self.build_ar()
+        user = self._super_admin("cust-contact-validation@test.com")
+        invalid_payloads = (
+            {"name": "Missing Contacts"},
+            {"name": "Missing Phone", "billing_email": "billing@payer.test"},
+            {"name": "Invalid Email", "billing_email": "not-an-email",
+             "billing_phone": "+2348000000014"},
+        )
+
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                req = APIRequestFactory().post(
+                    f"/v1/finance/customers/?entity={entity.code}", payload, format="json")
+                force_authenticate(req, user=user)
+                req.tenant = user.tenant
+                resp = CustomerListCreateView.as_view()(req)
+                resp.render()
+                self.assertEqual(resp.status_code, 400, resp.content)
 
     # Verify list includes balance and status behavior.
     def test_list_includes_balance_and_status(self):

@@ -11,6 +11,8 @@ which own every posting. Money is integer kobo.
 """
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import validate_email
 from django.db import transaction
 from django.db.models import F, Q
 from django.http import HttpResponse
@@ -323,14 +325,26 @@ class CustomerListCreateView(_FinanceBase):
         name = str(body.get("name", "")).strip()
         if not name:
             raise ValidationError({"name": "A customer name is required."})
+        billing_email = str(body.get("billing_email", "")).strip().lower()
+        if not billing_email:
+            raise ValidationError({"billing_email": "A billing email is required."})
+        try:
+            validate_email(billing_email)
+        except DjangoValidationError:
+            raise ValidationError({"billing_email": "Enter a valid billing email."})
+        billing_phone = str(body.get("billing_phone", "")).strip()
+        if not billing_phone:
+            raise ValidationError({"billing_phone": "A billing phone number is required."})
+        if len(billing_phone) > Customer._meta.get_field("billing_phone").max_length:
+            raise ValidationError({"billing_phone": "Billing phone number cannot exceed 32 characters."})
         # Default the AR control to the entity's 1200 Accounts Receivable if not given.
         receivable = _resolve_account(
             entity, body.get("receivable_account") or "1200",
             "receivable_account", required=True)
         customer = Customer.objects.create(
             entity=entity, code=code, name=name,
-            billing_email=body.get("billing_email", ""),
-            billing_phone=body.get("billing_phone", ""),
+            billing_email=billing_email,
+            billing_phone=billing_phone,
             billing_address=body.get("billing_address", ""),
             receivable_account=receivable,
             opening_balance=_money(body.get("opening_balance", 0), "opening_balance"),
