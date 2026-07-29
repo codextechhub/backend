@@ -181,36 +181,78 @@ def _check_required_filters(dataset, filters):
         )
 
 
-# Validate the primary date filter against the dataset's maximum span.
-def _check_date_span(dataset, filters):
-    if not dataset.max_date_span_days:
-        return
+# The dataset's primary date filter, and the span it asks for.
+def _primary_date_span(dataset, filters):
+    """``(primary, start, end, span_days)`` for the primary date filter.
+
+    ``span_days`` is ``None`` when there is nothing to measure. Raises only for a
+    date this app cannot parse, which is a genuine configuration fault rather
+    than a judgement about size.
+    """
     primary = next((f for f in dataset.filters if f.is_primary_date), None)
     if primary is None:
-        return
+        return None, None, None, None
     spec = next((f for f in filters or [] if str(f.get("id")) == primary.id), None)
     if not spec:
-        return
+        return primary, None, None, None
     start, end = spec.get("start"), spec.get("end")
     if not start or not end:
-        raise ExportError(
-            FailureCode.DATE_SPAN_EXCEEDED,
-            f"{dataset.name} needs both a start and an end date, no more than "
-            f"{dataset.max_date_span_days} days apart.",
-        )
+        return primary, start, end, None
     try:
-        span = (datetime.date.fromisoformat(str(end)) - datetime.date.fromisoformat(str(start))).days
+        span = (
+            datetime.date.fromisoformat(str(end)) - datetime.date.fromisoformat(str(start))
+        ).days
     except ValueError:
         raise ExportError(
             FailureCode.FILTER_INVALID,
             f"“{primary.label}” needs dates written as YYYY-MM-DD.",
         )
-    if span > dataset.max_date_span_days:
+    return primary, start, end, span
+
+
+# A required date filter has to be BOUNDED to count as set.
+def _check_date_bounds(dataset, filters):
+    """Both ends of a required date range must be given.
+
+    This is about the filter being genuinely set, not about how wide it is —
+    a dataset that declares its date filter required means a bounded read, and
+    "from the beginning of time" is not a range. How wide the range may be is
+    :func:`date_span_warning`'s business, and it only warns.
+    """
+    primary, start, end, _ = _primary_date_span(dataset, filters)
+    if primary is None or not primary.required:
+        return
+    spec = next((f for f in filters or [] if str(f.get("id")) == primary.id), None)
+    if spec and (not start or not end):
         raise ExportError(
-            FailureCode.DATE_SPAN_EXCEEDED,
-            f"{dataset.name} allows a range of at most {dataset.max_date_span_days} "
-            f"days; this export asks for {span}. Shorten the range and run it again.",
+            FailureCode.REQUIRED_FILTER_MISSING,
+            f"“{primary.label}” needs both a start and an end date.",
         )
+
+
+# Advise on an unusually wide date range — never block on it.
+def date_span_warning(dataset, filters):
+    """``{code, message}`` when the range is wider than the dataset suggests.
+
+    A warning, not a failure. The dataset's ``max_date_span_days`` is guidance
+    about cost, and a finance user asking for a quarter or a year of postings is
+    making a perfectly ordinary request. The hard ceiling on what one export may
+    produce is the ROW CAP, which is measured on the actual result rather than
+    guessed at from the calendar.
+    """
+    if not dataset.max_date_span_days:
+        return None
+    _, _, _, span = _primary_date_span(dataset, filters)
+    if span is None or span <= dataset.max_date_span_days:
+        return None
+    return {
+        "code": "WIDE_DATE_RANGE",
+        "message": (
+            f"This asks for {span:,} days of {dataset.name.lower()}; the dataset is "
+            f"tuned for {dataset.max_date_span_days}. It will run, but expect it to "
+            f"take longer and produce a larger file."
+        ),
+    }
 
 
 def build_queryset(dataset, scope, filters, sort=None):
@@ -222,7 +264,7 @@ def build_queryset(dataset, scope, filters, sort=None):
     tenant-scoped one.
     """
     _check_required_filters(dataset, filters)
-    _check_date_span(dataset, filters)
+    _check_date_bounds(dataset, filters)
 
     qs = dataset.base(scope)
     combined = Q()
@@ -298,6 +340,8 @@ def estimate(user, dataset, scope, config, tenant):
                 f"filters — a shorter date range is usually enough."
             ),
         })
+    if (wide := date_span_warning(dataset, config.get("filters"))) is not None:
+        warnings.append(wide)
     for omission in omissions:
         warnings.append({"code": omission.code, "message": omission.detail})
 

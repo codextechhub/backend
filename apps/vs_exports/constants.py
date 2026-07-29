@@ -81,6 +81,10 @@ class FailureCode(models.TextChoices):
     REQUIRED_FILTER_MISSING = "REQUIRED_FILTER_MISSING", "A required filter is not set"
     NO_COLUMNS = "NO_COLUMNS", "Every selected column has become unavailable"
     ROW_CAP_EXCEEDED = "ROW_CAP_EXCEEDED", "The result is larger than the row cap"
+    #: Historical only. A wide date range no longer fails a run — it is advised
+    #: on in the estimate (``WIDE_DATE_RANGE``) and the row cap is the real
+    #: ceiling. Kept because runs recorded before that change still carry it and
+    #: their detail screens must keep rendering.
     DATE_SPAN_EXCEEDED = "DATE_SPAN_EXCEEDED", "The date range is wider than the dataset allows"
     OWNER_INACTIVE = "OWNER_INACTIVE", "The owner of this export is no longer active"
     INFRASTRUCTURE = "INFRASTRUCTURE", "A temporary system problem"

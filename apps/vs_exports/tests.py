@@ -26,7 +26,7 @@ from vs_finance.models import Account, Customer, Invoice, InvoiceLine, LedgerEnt
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies
 from vs_tenants.models import Tenant
 
-from vs_exports import analytics, services
+from vs_exports import analytics, engine, services
 from vs_exports.catalogue import get_dataset
 from vs_exports.constants import (
     AuditAction,
@@ -553,17 +553,52 @@ class ExportOmissionAndFailureTests(_ExportFixture, TestCase):
         self.assertEqual(failure["reference"], run.reference)
         self.assertNotIn("Traceback", str(response.json()))
 
-    def test_date_span_over_the_dataset_maximum_fails(self):
-        definition = ExportDefinition.objects.create(
+    def _wide_gl_definition(self):
+        return ExportDefinition.objects.create(
             tenant=self.tenant, entity=self.entity, dataset_key="finance.gl_postings",
             name="GL", columns=["entry_number", "debit"],
             filters=[{"id": "entry_date", "start": "2026-01-01", "end": "2026-06-30"}],
             format=ExportFormat.CSV, owner=self.admin,
         )
+
+    def test_a_wide_date_range_runs_and_only_warns(self):
+        """The dataset's span is guidance about cost, not a ceiling.
+
+        It used to fail the run outright, which refused an ordinary request — a
+        finance user asking for a quarter of postings. The hard limit on what one
+        export may produce is the ROW CAP, measured on the actual result rather
+        than guessed at from the calendar.
+        """
+        run, _ = services.trigger_run(definition=self._wide_gl_definition(), actor=self.admin)
+        run.refresh_from_db()
+        self.assertEqual(run.status, RunStatus.COMPLETED)
+        self.assertFalse(run.failure_code)
+
+    def test_the_estimate_warns_before_the_wide_range_is_run(self):
+        definition = self._wide_gl_definition()
+        dataset = get_dataset("finance.gl_postings")
+        from vs_exports.catalogue import ScopeContext
+
+        figures = engine.estimate(
+            self.admin, dataset, ScopeContext(tenant=self.tenant, entity=self.entity),
+            {"columns": definition.columns, "filters": definition.filters, "format": "csv"},
+            self.tenant,
+        )
+        codes = {w["code"] for w in figures["warnings"]}
+        self.assertIn("WIDE_DATE_RANGE", codes)
+
+    def test_a_required_date_filter_still_needs_both_ends(self):
+        """Advisory width is not the same as an unbounded read."""
+        definition = ExportDefinition.objects.create(
+            tenant=self.tenant, entity=self.entity, dataset_key="finance.gl_postings",
+            name="GL open ended", columns=["entry_number", "debit"],
+            filters=[{"id": "entry_date", "start": "2026-01-01"}],
+            format=ExportFormat.CSV, owner=self.admin,
+        )
         run, _ = services.trigger_run(definition=definition, actor=self.admin)
         run.refresh_from_db()
         self.assertEqual(run.status, RunStatus.FAILED)
-        self.assertEqual(run.failure_code, FailureCode.DATE_SPAN_EXCEEDED)
+        self.assertEqual(run.failure_code, FailureCode.REQUIRED_FILTER_MISSING)
 
     def test_row_cap_produces_a_partial_file_naming_what_was_left_out(self):
         definition = self.make_definition()

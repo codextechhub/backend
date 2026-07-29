@@ -485,8 +485,8 @@ GL_POSTINGS = register(Dataset(
     module="Finance",
     name="General ledger postings",
     description=(
-        "Posted journal entries for the period, one row per line. Requires a date "
-        "range of one month or less."
+        "Posted journal entries for the period, one row per line. Tuned for a "
+        "month at a time; wider ranges run but take longer."
     ),
     base=_gl_postings,
     permission="finance.journal.view",
