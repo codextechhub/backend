@@ -16,10 +16,11 @@ from django.core.validators import validate_email
 from django.db import transaction
 from django.db.models import F, Q
 from django.http import HttpResponse
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from core.pagination import XVSPagination
 from core.response import success_response
+from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 
 
 # Support the paginate workflow.
@@ -1369,40 +1370,50 @@ class RefundListCreateView(_FinanceBase):
     @transaction.atomic
     # Handle POST requests for this endpoint.
     def post(self, request):
-        from .receivables import customer_refund_available_balance
-
         entity = resolve_entity(request)
-        body = request.data or {}
-        customer = _resolve_customer(entity, body.get("customer"))
-        customer = Customer.objects.select_for_update().get(pk=customer.pk)
-        amount = _money(body.get("amount", 0), "amount")
-        available = customer_refund_available_balance(customer)
-        if amount <= 0:
-            raise ValidationError({"amount": "A refund amount must be greater than zero."})
-        if amount > available:
-            raise ValidationError({
-                "amount": (
-                    f"Refund amount cannot exceed {customer.code}'s available credit "
-                    f"({format_naira(available)})."
-                ),
-            })
-        refund = Refund.objects.create(
-            entity=entity,
-            customer=customer,
-            refund_date=_date(body.get("refund_date"), "refund_date", required=True),
-            currency=_resolve_currency(body.get("currency")),
-            method=body.get("method", "BANK_TRANSFER"),
-            amount=amount,
-            bank_account=_resolve_bank_account(
-                entity, body.get("bank_account"), required=False),
-            reference=body.get("reference", ""),
-            narration=body.get("narration", ""),
-            created_by=request.user,
-        )
+        refund = _build_refund(entity, request.data or {}, actor_user=request.user)
         return success_response(
             f"Refund {refund.document_number} created.",
             data=RefundSerializer(refund).data, status=201,
         )
+
+
+def _build_refund(entity, body, *, actor_user):
+    """Build a valid draft refund for both single and batch creation paths."""
+    from .receivables import customer_refund_available_balance
+
+    customer = _resolve_customer(entity, body.get("customer"))
+    customer = Customer.objects.select_for_update().get(pk=customer.pk)
+    available = customer_refund_available_balance(customer)
+    amount = _validated_refund_amount(customer, body.get("amount", 0), available)
+    return Refund.objects.create(
+        entity=entity,
+        customer=customer,
+        refund_date=_date(body.get("refund_date"), "refund_date", required=True),
+        currency=_resolve_currency(body.get("currency")),
+        method=body.get("method", "BANK_TRANSFER"),
+        amount=amount,
+        bank_account=_resolve_bank_account(
+            entity, body.get("bank_account"), required=False),
+        reference=body.get("reference", ""),
+        narration=body.get("narration", ""),
+        created_by=actor_user,
+    )
+
+
+def _validated_refund_amount(customer, raw_amount, available):
+    """Apply the shared positive/available-credit boundary to a refund amount."""
+    amount = _money(raw_amount, "amount")
+    if amount <= 0:
+        raise ValidationError({"amount": "A refund amount must be greater than zero."})
+    if amount > available:
+        raise ValidationError({
+            "amount": (
+                f"Refund amount cannot exceed {customer.code}'s available credit "
+                f"({format_naira(available)})."
+            ),
+        })
+    return amount
 
 
 # Define Refund Action Base values.
@@ -1691,6 +1702,298 @@ class InvoiceWriteOffView(_FinanceBase):
         return success_response(
             f"Invoice {invoice.document_number} written off.",
             data=InvoiceSerializer(invoice).data,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Batch refunds and write-offs                                                #
+# --------------------------------------------------------------------------- #
+
+_BATCH_KIND_PERMISSIONS = {
+    "REFUND": {
+        "create": "finance.refund.create",
+        "POST": "finance.refund.post",
+        "SUBMIT": "finance.refund.submit",
+    },
+    "WRITEOFF": {
+        "create": "finance.writeoff.create",
+        "POST": "finance.writeoff.post",
+        "SUBMIT": "finance.writeoff.submit",
+    },
+}
+_BATCH_ACTIONS = {"DRAFT", "POST", "SUBMIT"}
+_MAX_AR_BATCH_ITEMS = 100
+
+
+def _normalise_batch_kind(value):
+    kind = str(value or "").strip().upper().replace("-", "").replace("_", "")
+    if kind not in _BATCH_KIND_PERMISSIONS:
+        raise ValidationError({"kind": "Choose REFUND or WRITEOFF."})
+    return kind
+
+
+def _normalise_batch_action(value):
+    action = str(value or "DRAFT").strip().upper()
+    if action not in _BATCH_ACTIONS:
+        raise ValidationError({"action": "Choose DRAFT, POST, or SUBMIT."})
+    return action
+
+
+def _require_batch_permissions(request, entity, kind, action):
+    """Require create plus the exact lifecycle permission for this batch."""
+    if is_vision_super_admin(request.user):
+        return
+    required = [_BATCH_KIND_PERMISSIONS[kind]["create"]]
+    if action != "DRAFT":
+        required.append(_BATCH_KIND_PERMISSIONS[kind][action])
+    missing = [
+        key for key in required
+        if not user_has_rbac_permission(
+            request.user,
+            key,
+            tenant=entity.tenant,
+            branch=getattr(request, "branch", None),
+        )
+    ]
+    if missing:
+        raise PermissionDenied(
+            "You do not have permission to create and advance this adjustment batch."
+        )
+
+
+def _batch_items(body):
+    items = body.get("items")
+    if not isinstance(items, list) or not items:
+        raise ValidationError({"items": "Add at least one batch line."})
+    if len(items) > _MAX_AR_BATCH_ITEMS:
+        raise ValidationError({
+            "items": f"A batch can contain at most {_MAX_AR_BATCH_ITEMS} lines.",
+        })
+    if any(not isinstance(item, dict) for item in items):
+        raise ValidationError({"items": "Every batch line must be an object."})
+    return items
+
+
+def _batch_customers(entity, items):
+    """Resolve and lock a batch's customer refs with one scoped query."""
+    refs = [str(item.get("customer") or "").strip() for item in items]
+    if any(not ref for ref in refs):
+        index = next(index for index, ref in enumerate(refs) if not ref)
+        raise ValidationError({
+            "items": {index: {"customer": "A customer is required."}},
+        })
+    codes = [ref.upper() for ref in refs]
+    ids = [int(ref) for ref in refs if ref.isdigit()]
+    customers = list(
+        Customer.objects.select_for_update().filter(entity=entity).filter(
+            Q(code__in=codes) | Q(pk__in=ids)
+        )
+    )
+    by_code = {customer.code.upper(): customer for customer in customers}
+    by_id = {customer.pk: customer for customer in customers}
+    resolved = []
+    for index, ref in enumerate(refs):
+        customer = by_code.get(ref.upper())
+        if customer is None and ref.isdigit():
+            customer = by_id.get(int(ref))
+        if customer is None:
+            raise NotFound(
+                f"No customer matches line {index + 1} for this entity."
+            )
+        resolved.append(customer)
+    return resolved
+
+
+def _batch_invoices(entity, items):
+    """Resolve and lock a batch's invoice refs with one scoped related read."""
+    refs = [str(item.get("invoice") or "").strip() for item in items]
+    if any(not ref for ref in refs):
+        index = next(index for index, ref in enumerate(refs) if not ref)
+        raise ValidationError({
+            "items": {index: {"invoice": "An invoice is required."}},
+        })
+    ids = [int(ref) for ref in refs if ref.isdigit()]
+    numbers = [ref for ref in refs if not ref.isdigit()]
+    invoices = list(
+        Invoice.objects.select_for_update().select_related("customer")
+        .filter(entity=entity)
+        .filter(Q(pk__in=ids) | Q(document_number__in=numbers))
+    )
+    by_id = {invoice.pk: invoice for invoice in invoices}
+    by_number = {invoice.document_number: invoice for invoice in invoices}
+    resolved = []
+    for index, ref in enumerate(refs):
+        invoice = by_id.get(int(ref)) if ref.isdigit() else by_number.get(ref)
+        if invoice is None:
+            raise NotFound(
+                f"No invoice matches line {index + 1} for this entity."
+            )
+        resolved.append(invoice)
+    return resolved
+
+
+class ARAdjustmentBatchView(_FinanceBase):
+    """Create and optionally advance up to 100 refunds or write-offs atomically.
+
+    Every line becomes the existing first-class Refund or WriteOffRequest document
+    and goes through the same posting/workflow service as its single-item endpoint.
+    If any line fails, the enclosing transaction rolls the whole batch back.
+    """
+
+    # The exact create + lifecycle pair is enforced below after the entity has been
+    # resolved. This outer any-of gate prevents unrelated users from reaching the
+    # endpoint while still allowing a useful 400 for malformed batch bodies.
+    rbac_permission = [
+        "finance.refund.create",
+        "finance.refund.post",
+        "finance.refund.submit",
+        "finance.writeoff.create",
+        "finance.writeoff.post",
+        "finance.writeoff.submit",
+    ]
+
+    @transaction.atomic
+    def post(self, request):
+        from .approvals import approval_required
+        from .credit_notes import post_refund, post_write_off_request
+        from vs_workflow.services.submission import submit_for_approval
+
+        entity = resolve_entity(request)
+        body = request.data or {}
+        kind = _normalise_batch_kind(body.get("kind"))
+        action = _normalise_batch_action(body.get("action"))
+        items = _batch_items(body)
+        _require_batch_permissions(request, entity, kind, action)
+
+        common_date = _date(body.get("date"), "date", required=True)
+        narration = str(body.get("narration") or body.get("reason") or "").strip()
+        seen_targets = set()
+        documents = []
+
+        if kind == "REFUND":
+            from .receivables import customer_refund_available_balances
+
+            bank_account = _resolve_bank_account(
+                entity, body.get("bank_account"), required=True)
+            customers = _batch_customers(entity, items)
+            available = customer_refund_available_balances(
+                entity, [customer.pk for customer in customers])
+            for index, (item, customer) in enumerate(zip(items, customers)):
+                if customer.pk in seen_targets:
+                    raise ValidationError({
+                        "items": {
+                            index: {
+                                "customer": "A customer may appear only once per batch.",
+                            },
+                        },
+                    })
+                seen_targets.add(customer.pk)
+                amount = _validated_refund_amount(
+                    customer,
+                    item.get("amount", 0),
+                    available.get(customer.pk, 0),
+                )
+                documents.append(Refund.objects.create(
+                    entity=entity,
+                    customer=customer,
+                    refund_date=common_date,
+                    method="BANK_TRANSFER",
+                    amount=amount,
+                    bank_account=bank_account,
+                    reference=item.get("reference", ""),
+                    narration=item.get("narration") or narration,
+                    created_by=request.user,
+                ))
+
+            if action == "POST":
+                if any(approval_required(document) for document in documents):
+                    raise ValidationError({
+                        "action": "One or more refunds are approval-gated; submit this "
+                                  "batch for approval instead of posting it.",
+                    })
+                for refund in documents:
+                    post_refund(refund, actor_user=request.user)
+            elif action == "SUBMIT":
+                for refund in documents:
+                    submit_for_approval(refund, requested_by=request.user)
+        else:
+            write_off_account = _resolve_account(
+                entity, body.get("write_off_account"), "write_off_account")
+            invoices = _batch_invoices(entity, items)
+            for index, (item, invoice) in enumerate(zip(items, invoices)):
+                if invoice.pk in seen_targets:
+                    raise ValidationError({
+                        "items": {
+                            index: {
+                                "invoice": "An invoice may appear only once per batch.",
+                            },
+                        },
+                    })
+                seen_targets.add(invoice.pk)
+                amount = (
+                    _money(item["amount"], "amount")
+                    if item.get("amount") not in (None, "")
+                    else invoice.balance_due
+                )
+                if invoice.status != DocumentStatus.POSTED:
+                    raise ValidationError({
+                        "items": {
+                            index: {
+                                "invoice": "Only posted invoices can be written off.",
+                            },
+                        },
+                    })
+                if amount <= 0 or amount > invoice.balance_due:
+                    raise ValidationError({
+                        "items": {
+                            index: {
+                                "amount": "Amount must be greater than zero and no more "
+                                          "than the invoice balance.",
+                            },
+                        },
+                    })
+                documents.append(WriteOffRequest.objects.create(
+                    entity=entity,
+                    invoice=invoice,
+                    amount=amount,
+                    write_off_account=write_off_account,
+                    write_off_date=common_date,
+                    narration=item.get("narration") or narration,
+                    reason=item.get("reason") or narration,
+                    created_by=request.user,
+                ))
+
+            if action == "POST":
+                if any(approval_required(document) for document in documents):
+                    raise ValidationError({
+                        "action": "One or more write-offs are approval-gated; submit "
+                                  "this batch for approval instead of posting it.",
+                    })
+                for write_off in documents:
+                    post_write_off_request(write_off, actor_user=request.user)
+            elif action == "SUBMIT":
+                for write_off in documents:
+                    submit_for_approval(write_off, requested_by=request.user)
+
+        for document in documents:
+            document.refresh_from_db()
+        payload = (
+            RefundSerializer(documents, many=True).data
+            if kind == "REFUND"
+            else WriteOffRequestSerializer(documents, many=True).data
+        )
+        total_amount = sum(document.amount for document in documents)
+        verb = {"DRAFT": "created", "POST": "posted", "SUBMIT": "submitted"}[action]
+        return success_response(
+            f"{len(documents)} {kind.lower()} adjustment(s) {verb}.",
+            data={
+                "kind": kind,
+                "action": action,
+                "count": len(documents),
+                "total_amount": total_amount,
+                "items": payload,
+            },
+            status=201,
         )
 
 

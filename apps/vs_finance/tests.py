@@ -83,6 +83,7 @@ from vs_finance.models import (
     TaxCode,
     TaxFiling,
     TaxObligation,
+    WriteOffRequest,
 )
 from vs_finance.money import format_naira, to_kobo, to_naira
 from vs_finance.numbering import next_document_number
@@ -4865,6 +4866,132 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         accepted = self.client.post(url, body, format="json")
         self.assertEqual(accepted.status_code, 201, accepted.content)
         self.assertEqual(accepted.json()["data"]["amount"], 50000)
+
+    def test_batch_refunds_post_atomically_and_reject_partial_success(self):
+        entity, _, _ = self.build_books()
+        receivable = Account.objects.get(entity=entity, code="1200")
+        bank_gl = Account.objects.get(entity=entity, code="1100")
+        bank_account = self.make_bank(entity)
+        customers = [
+            Customer.objects.create(
+                entity=entity, code=f"BREF{index}", name=f"Batch Refund {index}",
+                receivable_account=receivable,
+            )
+            for index in (1, 2)
+        ]
+        for customer, amount in zip(customers, (60000, 80000)):
+            post_payment(Payment.objects.create(
+                entity=entity, customer=customer,
+                payment_date=datetime.date(2026, 1, 10),
+                amount=amount, deposit_account=bank_gl,
+            ))
+        url = f"/v1/finance/ar-adjustments/batch/?entity={entity.code}"
+        body = {
+            "kind": "REFUND",
+            "action": "POST",
+            "date": "2026-01-18",
+            "bank_account": bank_account.pk,
+            "reason": "Duplicate receipt cleanup",
+            "items": [
+                {"customer": customers[0].code, "amount": 30000},
+                {"customer": customers[1].code, "amount": 50000},
+            ],
+        }
+
+        posted = self.client.post(url, body, format="json")
+
+        self.assertEqual(posted.status_code, 201, posted.content)
+        self.assertEqual(posted.json()["data"]["count"], 2)
+        self.assertEqual(posted.json()["data"]["total_amount"], 80000)
+        self.assertEqual(
+            set(Refund.objects.filter(entity=entity).values_list("status", flat=True)),
+            {DocumentStatus.POSTED},
+        )
+        self.assertEqual(
+            Refund.objects.filter(entity=entity, journal__isnull=False).count(), 2)
+
+        # One invalid line rolls back the valid line too.
+        body["items"] = [
+            {"customer": customers[0].code, "amount": 30001},
+            {"customer": customers[1].code, "amount": 80001},
+        ]
+        rejected = self.client.post(url, body, format="json")
+        self.assertEqual(rejected.status_code, 400, rejected.content)
+        self.assertEqual(Refund.objects.filter(entity=entity).count(), 2)
+
+    def test_batch_write_offs_post_each_invoice(self):
+        entity, _, _ = self.build_books()
+        receivable = Account.objects.get(entity=entity, code="1200")
+        customer = Customer.objects.create(
+            entity=entity, code="BWRO", name="Batch Write-off",
+            receivable_account=receivable,
+        )
+        invoices = []
+        for amount in (70000, 90000):
+            invoice = Invoice.objects.create(
+                entity=entity, customer=customer,
+                invoice_date=datetime.date(2026, 1, 10),
+                due_date=datetime.date(2026, 1, 20),
+            )
+            InvoiceLine.objects.create(
+                invoice=invoice,
+                revenue_account=Account.objects.get(entity=entity, code="4100"),
+                quantity=1, unit_price=amount, line_no=1,
+            )
+            post_invoice(invoice)
+            invoices.append(invoice)
+
+        response = self.client.post(
+            f"/v1/finance/ar-adjustments/batch/?entity={entity.code}",
+            {
+                "kind": "WRITEOFF",
+                "action": "POST",
+                "date": "2026-01-25",
+                "reason": "Balances confirmed uncollectable",
+                "items": [
+                    {"invoice": invoices[0].pk, "amount": 70000},
+                    {"invoice": invoices[1].pk, "amount": 40000},
+                ],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()["data"]["count"], 2)
+        self.assertEqual(response.json()["data"]["total_amount"], 110000)
+        self.assertEqual(
+            WriteOffRequest.objects.filter(
+                entity=entity, status=DocumentStatus.POSTED).count(),
+            2,
+        )
+        invoices[0].refresh_from_db()
+        invoices[1].refresh_from_db()
+        self.assertEqual(invoices[0].balance_due, 0)
+        self.assertEqual(invoices[1].balance_due, 50000)
+
+    @mock.patch("vs_finance.views_ar.is_vision_super_admin", return_value=False)
+    @mock.patch("vs_finance.views_ar.user_has_rbac_permission")
+    def test_batch_post_requires_create_and_post_permissions(
+        self, has_permission, _is_super_admin,
+    ):
+        entity, _, _ = self.build_books()
+        has_permission.side_effect = (
+            lambda _user, key, **_kwargs: key == "finance.refund.create"
+        )
+
+        response = self.client.post(
+            f"/v1/finance/ar-adjustments/batch/?entity={entity.code}",
+            {
+                "kind": "REFUND",
+                "action": "POST",
+                "date": "2026-01-18",
+                "bank_account": 999,
+                "items": [{"customer": "NOPE", "amount": 1000}],
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403, response.content)
 
     # Verify payment summary totals and counts behavior.
     def test_payment_summary_totals_and_counts(self):

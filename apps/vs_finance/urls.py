@@ -42,6 +42,7 @@ from .views import (
     TrialBalanceView,
 )
 from .views_ar import (
+    ARAdjustmentBatchView,
     ConcessionDetailView,
     ConcessionListCreateView,
     ConcessionPostView,
@@ -218,6 +219,7 @@ urlpatterns = [
     path("write-offs/<int:pk>/submit/", WriteOffRequestSubmitView.as_view(), name="finance-writeoff-submit"),
     path("write-offs/<int:pk>/post/", WriteOffRequestPostView.as_view(), name="finance-writeoff-post"),
     path("invoices/<int:pk>/write-off/", InvoiceWriteOffView.as_view(), name="finance-invoice-writeoff"),
+    path("ar-adjustments/batch/", ARAdjustmentBatchView.as_view(), name="finance-ar-adjustment-batch"),
     path("ar-adjustments/", ARAdjustmentListView.as_view(), name="finance-ar-adjustments"),
 
     # Concessions — discounts / waivers / scholarships
