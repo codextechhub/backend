@@ -1,19 +1,32 @@
 # CLAUDE.md — backend
 
-## Build for every school, not for the first one
+## What this codebase is — and what XVS is
 
-XVS is a **multi-tenant product**, not a bespoke build for whoever is onboarding
-first. Corona Secondary School (at `xvs.codexng.com`) is simply the first tenant.
+**This repo is a multi-domain platform, not a schools application.** The engine
+apps — `vs_finance`, `vs_procurement`, `vs_payments`, `vs_rbac`, `vs_workflow`,
+`vs_notifications`, `vs_audit`, `core` — are deliberately **domain-neutral**. They
+know about entities, customers, invoices, vendors, roles and approvals; they know
+nothing about schools. `vs_health` (VIGIL) is already a second domain standing on
+the same foundation, and there will be more.
 
-- Nothing may be special-cased to one tenant's arrangement. If a feature only
-  works because of how the first school happens to be set up, it isn't finished —
-  the next school breaks it.
-- **Branch-optional and multi-branch schools must both work.** A school with one
-  site and a school with six are equally normal. Where a school has no branches,
-  the dimension should *recede* (no empty column, no pointless filter), not show
-  blank space.
-- Test with more than one shape of school. A single-tenant test proves nothing
-  about tenancy.
+**XVS is the first product built on that platform** — the schools product.
+
+Two rules follow, and they are separate:
+
+1. **Keep the engines domain-neutral.** School concepts — students, guardians,
+   classes, terms, sessions — live in the school apps (`apps/schools/`) and reach
+   the engines through the FAL (`core/fal/`). Never leak school vocabulary into
+   `vs_finance` and friends. That leak is precisely what the FAL exists to
+   prevent; if you find yourself adding a `student` or `term` field to a generic
+   app, stop.
+2. **Within XVS, build for every school, not the first one.** XVS is multi-tenant;
+   Corona Secondary School (at `xvs.codexng.com`) is simply the first tenant.
+   Nothing may be special-cased to one tenant's arrangement — if a feature only
+   works because of how the first school happens to be set up, it isn't finished.
+   **Branch-optional and multi-branch schools must both work**; where a school has
+   no branches the dimension should *recede* (no empty column, no pointless
+   filter), not show blank space. Test more than one shape of school — a
+   single-tenant test proves nothing about tenancy.
 
 ## Pre-ship review (`ship-check`)
 
