@@ -66,8 +66,9 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 | `GET /credit-notes/<pk>/` | `finance.creditnote.view` | One note | — | detail |
 | `POST /credit-notes/<pk>/post/` | `finance.creditnote.post` | Post it; CREDIT notes may auto/explicitly allocate | `allocations:[{invoice, amount}]?`, `auto_allocate?` | `CreditNoteSerializer` |
 | `POST /credit-notes/<pk>/allocate/` | `finance.creditnote.allocate` | Apply a posted CREDIT note's stored credit | `allocations:[{invoice, amount}]?` | `CreditNoteSerializer` |
-| `GET /refunds/` | `finance.refund.view` | List (un-paginated, `[:200]`). Query: `status`, `customer` | — | list of `RefundSerializer` |
-| `POST /refunds/` | `finance.refund.create` | Create a **draft** refund | `customer`, `refund_date`, `amount`, `method?`, `bank_account?` | `201` `RefundSerializer` |
+| `GET /refunds/` | `finance.refund.view` | Paginated list. Query: `status`, `customer` | — | paginated `RefundSerializer` |
+| `GET /refunds/availability/` | `finance.refund.create` | Active customers with unreserved refundable credit. Query: `search`, `page`, `page_size` | — | paginated `{customer_id, customer_code, customer_name, refundable_credit}` |
+| `POST /refunds/` | `finance.refund.create` | Create a **draft** refund, capped at currently unreserved credit | `customer`, `refund_date`, `amount`, `method?`, `bank_account?` | `201` `RefundSerializer` |
 | `GET /refunds/<pk>/` | `finance.refund.view` | One refund | — | detail |
 | `POST /refunds/<pk>/post/` | `finance.refund.post` | Pay it out (capped at customer credit) | — | `RefundSerializer` |
 | `POST /invoices/<pk>/write-off/` | `finance.invoice.writeoff` | Write off bad debt | `amount?` (default full balance), `write_off_account?`, `write_off_date?`, `narration?` | `InvoiceSerializer` |
@@ -105,7 +106,9 @@ credit-note allocation: apply = min(requested, invoice.balance_due, remaining)
 `customer_credit_balance` = unapplied receipts + unapplied CREDIT notes − refunds
 already paid − **unsettled DEBIT-note balances**, floored at 0 (`receivables.py`).
 An open DEBIT note is a supplementary charge still to collect, so it offsets what a
-refund may pay out.
+refund may pay out. `customer_refund_available_balance` additionally subtracts
+`PENDING_APPROVAL` refunds (excluding the current document during revalidation), so
+two requests cannot promise the same credit. Drafts do not reserve value.
 
 ## 6. What posting does to the ledger
 

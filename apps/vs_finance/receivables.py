@@ -276,31 +276,107 @@ def post_payment(payment, *, actor_user=None, auto_allocate=True, allocations=No
     return result  # Return the posted payment.
 
 
-# Handle the customer credit balance workflow.
-def customer_credit_balance(customer) -> int:
-    """A customer's available credit in kobo (their position in the 2140 liability).
+# Handle customer credit balances in bulk so list screens and posting guards share
+# one definition without introducing a query per customer.
+def customer_credit_balances(entity, customer_ids=None) -> dict[int, int]:
+    """Return refundable 2140 balances keyed by customer id.
 
-    Credit comes from unapplied receipts + unapplied CREDIT notes, less what has
-    already been refunded back to them. This is what a refund may pay out.
+    Credit comes from unapplied receipts + unapplied CREDIT notes, less posted
+    refunds and unsettled DEBIT notes. Open invoices do not consume stored credit
+    automatically; only an explicit allocation moves that value out of 2140.
     """
-    from django.db.models import Sum
+    from django.db.models import F, Sum
+    from django.db.models.functions import Coalesce
 
     from .constants import CreditNoteKind
     from .models import CreditNote, Payment, Refund
 
-    pay = sum(p.unallocated_amount for p in Payment.objects.filter(
-        customer=customer, status=DocumentStatus.POSTED))
-    notes = sum(n.unallocated_amount for n in CreditNote.objects.filter(
-        customer=customer, status=DocumentStatus.POSTED, kind=CreditNoteKind.CREDIT))
-    refunded = Refund.objects.filter(
-        customer=customer, status=DocumentStatus.POSTED).aggregate(s=Sum("amount"))["s"] or 0
-    # A still-unsettled DEBIT note is an outstanding charge; it offsets refundable credit
-    # so we never hand back cash that a supplementary charge still needs to collect.
-    # Floored at zero: a net-negative position means the customer owes, not that they
-    # have credit to refund.
-    debit_due = sum(n.balance_due for n in CreditNote.objects.filter(
-        customer=customer, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT))
-    return max(0, pay + notes - refunded - debit_due)  # Never return a negative refundable balance.
+    payments = Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED)
+    credit_notes = CreditNote.objects.filter(
+        entity=entity, status=DocumentStatus.POSTED, kind=CreditNoteKind.CREDIT)
+    debit_notes = CreditNote.objects.filter(
+        entity=entity, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT)
+    refunds = Refund.objects.filter(entity=entity, status=DocumentStatus.POSTED)
+    if customer_ids is not None:
+        customer_ids = list(customer_ids)
+        payments = payments.filter(customer_id__in=customer_ids)
+        credit_notes = credit_notes.filter(customer_id__in=customer_ids)
+        debit_notes = debit_notes.filter(customer_id__in=customer_ids)
+        refunds = refunds.filter(customer_id__in=customer_ids)
+
+    positions: dict[int, dict[str, int]] = {}
+
+    def slot(customer_id):
+        return positions.setdefault(
+            customer_id, {"payments": 0, "credit_notes": 0, "refunds": 0, "debit_notes": 0})
+
+    for row in payments.values("customer_id").annotate(
+        amount=Coalesce(Sum(F("amount") - F("allocated_amount")), 0)):
+        slot(row["customer_id"])["payments"] = int(row["amount"] or 0)
+    for row in credit_notes.values("customer_id").annotate(
+        amount=Coalesce(Sum(F("total") - F("allocated_amount")), 0)):
+        slot(row["customer_id"])["credit_notes"] = int(row["amount"] or 0)
+    for row in refunds.values("customer_id").annotate(amount=Coalesce(Sum("amount"), 0)):
+        slot(row["customer_id"])["refunds"] = int(row["amount"] or 0)
+    for row in debit_notes.values("customer_id").annotate(
+        amount=Coalesce(Sum(F("total") - F("amount_paid")), 0)):
+        slot(row["customer_id"])["debit_notes"] = int(row["amount"] or 0)
+
+    return {
+        customer_id: max(
+            0,
+            position["payments"]
+            + position["credit_notes"]
+            - position["refunds"]
+            - position["debit_notes"],
+        )
+        for customer_id, position in positions.items()
+    }
+
+
+# Handle the customer credit balance workflow.
+def customer_credit_balance(customer) -> int:
+    """A customer's current refundable credit in kobo."""
+    return customer_credit_balances(customer.entity, [customer.pk]).get(customer.pk, 0)
+
+
+def customer_refund_available_balances(
+    entity, customer_ids=None, *, exclude_refund_id=None,
+) -> dict[int, int]:
+    """Return credit still available for a new refund request.
+
+    Pending approvals reserve their amount so two requests cannot promise the same
+    customer credit. Drafts deliberately do not reserve value; they are revalidated
+    when submitted or posted.
+    """
+    from django.db.models import Sum
+    from django.db.models.functions import Coalesce
+
+    from .models import Refund
+
+    balances = customer_credit_balances(entity, customer_ids)
+    pending = Refund.objects.filter(
+        entity=entity, status=DocumentStatus.PENDING_APPROVAL)
+    if customer_ids is not None:
+        pending = pending.filter(customer_id__in=list(customer_ids))
+    if exclude_refund_id is not None:
+        pending = pending.exclude(pk=exclude_refund_id)
+    reserved = {
+        row["customer_id"]: int(row["amount"] or 0)
+        for row in pending.values("customer_id").annotate(amount=Coalesce(Sum("amount"), 0))
+    }
+    customer_keys = set(balances) | set(reserved)
+    return {
+        customer_id: max(0, balances.get(customer_id, 0) - reserved.get(customer_id, 0))
+        for customer_id in customer_keys
+    }
+
+
+def customer_refund_available_balance(customer, *, exclude_refund_id=None) -> int:
+    """Credit available to one refund after pending reservations."""
+    return customer_refund_available_balances(
+        customer.entity, [customer.pk], exclude_refund_id=exclude_refund_id,
+    ).get(customer.pk, 0)
 
 
 #: Supported auto-allocation strategies for settling a receipt's cash.  # Keep strategy names explicit and small.
@@ -508,7 +584,10 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
     ``[(invoice, amount)]`` plan; without it, open invoices are settled in ``strategy``
     order (``"oldest"`` by due date, or ``"largest"`` balance first).
     """
-    from .models import JournalEntry, JournalLine
+    from .models import Customer, JournalEntry, JournalLine
+
+    payment = type(payment).objects.select_for_update().get(pk=payment.pk)
+    customer = Customer.objects.select_for_update().get(pk=payment.customer_id)
 
     if payment.status != DocumentStatus.POSTED:  # Only posted receipts can be allocated later.
         raise PostingError("Only a posted payment can be allocated.")
@@ -523,7 +602,6 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
     if applied <= 0:  # No documents were eligible for allocation.
         return []
 
-    customer = payment.customer  # Reuse the payment's customer context.
     period = resolve_period(payment.entity, payment.payment_date)  # Find the open accounting period.
     entry = JournalEntry.objects.create(
         entity=payment.entity, branch=payment.branch,

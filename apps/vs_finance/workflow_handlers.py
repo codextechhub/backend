@@ -251,12 +251,13 @@ class RefundHandler(_FinancePostOnApprove):
         check is handled by the base ``validate_document``.
         """
         from .exceptions import PostingError
-        from .receivables import customer_credit_balance
+        from .receivables import customer_refund_available_balance
 
         if document.amount <= 0:  # Refunds must pay out a positive amount.
             raise PostingError("A refund must have a positive amount to post.")
 
-        available = customer_credit_balance(document.customer)  # Current customer credit balance.
+        available = customer_refund_available_balance(
+            document.customer, exclude_refund_id=document.pk)  # Credit not reserved elsewhere.
         if document.amount > available:  # Cannot refund more than available credit.
             raise PostingError(
                 f"Refund of {document.amount} kobo exceeds {document.customer.code}'s "

@@ -1295,6 +1295,39 @@ class CreditNoteAllocateView(_CreditNoteActionBase):
 # Customer refunds                                                             #
 # --------------------------------------------------------------------------- #
 
+class RefundAvailabilityView(_FinanceBase):
+    """GET customers with credit available for a new refund request."""
+
+    rbac_permission = "finance.refund.create"
+
+    def get(self, request):
+        from .receivables import customer_refund_available_balances
+
+        entity = resolve_entity(request)
+        qs = Customer.objects.filter(entity=entity, is_active=True)
+        if (search := (request.query_params.get("search") or "").strip()):
+            qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
+
+        customer_ids = list(qs.values_list("id", flat=True))
+        available = customer_refund_available_balances(entity, customer_ids)
+        qs = qs.filter(id__in=[
+            customer_id for customer_id in customer_ids
+            if available.get(customer_id, 0) > 0
+        ]).order_by("code")
+
+        paginator = XVSPagination()
+        paginator.page_size = 25
+        page = paginator.paginate_queryset(qs, request, view=self)
+        rows = [{
+            "customer_id": customer.pk,
+            "customer_code": customer.code,
+            "customer_name": customer.name,
+            "refundable_credit": available[customer.pk],
+            "refundable_credit_naira": format_naira(available[customer.pk]),
+        } for customer in page]
+        return paginator.get_paginated_response(rows)
+
+
 # Group endpoint behavior for Refund List Create View.
 class RefundListCreateView(_FinanceBase):
     """GET (list) / POST (create draft) customer refunds for an entity.
@@ -1319,17 +1352,33 @@ class RefundListCreateView(_FinanceBase):
         return _paginate(
             request, qs.order_by("-refund_date", "-id"), RefundSerializer, self)
 
+    @transaction.atomic
     # Handle POST requests for this endpoint.
     def post(self, request):
+        from .receivables import customer_refund_available_balance
+
         entity = resolve_entity(request)
         body = request.data or {}
+        customer = _resolve_customer(entity, body.get("customer"))
+        customer = Customer.objects.select_for_update().get(pk=customer.pk)
+        amount = _money(body.get("amount", 0), "amount")
+        available = customer_refund_available_balance(customer)
+        if amount <= 0:
+            raise ValidationError({"amount": "A refund amount must be greater than zero."})
+        if amount > available:
+            raise ValidationError({
+                "amount": (
+                    f"Refund amount cannot exceed {customer.code}'s available credit "
+                    f"({format_naira(available)})."
+                ),
+            })
         refund = Refund.objects.create(
             entity=entity,
-            customer=_resolve_customer(entity, body.get("customer")),
+            customer=customer,
             refund_date=_date(body.get("refund_date"), "refund_date", required=True),
             currency=_resolve_currency(body.get("currency")),
             method=body.get("method", "BANK_TRANSFER"),
-            amount=_money(body.get("amount", 0), "amount"),
+            amount=amount,
             bank_account=_resolve_bank_account(
                 entity, body.get("bank_account"), required=False),
             reference=body.get("reference", ""),
@@ -1384,11 +1433,13 @@ class RefundSubmitView(_RefundActionBase):
     """
     rbac_permission = "finance.refund.submit"
 
+    @transaction.atomic
     # Handle POST requests for this endpoint.
     def post(self, request, pk):
         from vs_workflow.services.submission import submit_for_approval
 
         _, refund = self._refund(request, pk)
+        Customer.objects.select_for_update().get(pk=refund.customer_id)
         submit_for_approval(refund, requested_by=request.user)
         refund.refresh_from_db()
         return success_response(
@@ -1733,6 +1784,11 @@ class ARAdjustmentListView(_FinanceBase):
             Refund.objects.filter(entity=entity).exclude(status=DocumentStatus.POSTED).count()
             + WriteOffRequest.objects.filter(entity=entity).exclude(status=DocumentStatus.POSTED).count()
         )
+        from .receivables import customer_refund_available_balances
+        active_customer_ids = Customer.objects.filter(
+            entity=entity, is_active=True).values_list("id", flat=True)
+        refundable_credit = sum(
+            customer_refund_available_balances(entity, active_customer_ids).values())
 
         rows = []
         if type_f in ("", "refund"):
@@ -1757,7 +1813,11 @@ class ARAdjustmentListView(_FinanceBase):
                 "currentPage": page, "pageSize": page_size, "totalItems": total,
                 "totalPages": total_pages, "next": None, "previous": None,
             },
-            "kpis": {"written_off_ytd": written_off_ytd, "pending": pending},
+            "kpis": {
+                "written_off_ytd": written_off_ytd,
+                "pending": pending,
+                "refundable_credit": refundable_credit,
+            },
             "data": rows[start:start + page_size],
         })
 

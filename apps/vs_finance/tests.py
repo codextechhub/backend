@@ -4756,6 +4756,69 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertIn("pagination", active)
         self.assertEqual([r["code"] for r in active["data"]], ["SUMA"])
 
+    def test_refund_availability_only_lists_customers_with_unreserved_credit(self):
+        entity, _, _ = self.build_books()
+        receivable = Account.objects.get(entity=entity, code="1200")
+        bank = Account.objects.get(entity=entity, code="1100")
+        eligible = Customer.objects.create(
+            entity=entity, code="REFUND", name="Refund Me", receivable_account=receivable)
+        Customer.objects.create(
+            entity=entity, code="NOCREDIT", name="No Credit", receivable_account=receivable)
+        inactive = Customer.objects.create(
+            entity=entity, code="INACTIVE", name="Inactive Credit",
+            receivable_account=receivable, is_active=False)
+
+        for customer, amount in ((eligible, 90000), (inactive, 60000)):
+            post_payment(Payment.objects.create(
+                entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 15),
+                amount=amount, deposit_account=bank,
+            ))
+        Refund.objects.create(
+            entity=entity, customer=eligible, refund_date=datetime.date(2026, 1, 18),
+            amount=20000, deposit_account=bank, status=DocumentStatus.PENDING_APPROVAL,
+        )
+
+        response = self.client.get(
+            f"/v1/finance/refunds/availability/?entity={entity.code}")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual([row["customer_code"] for row in response.json()["data"]], ["REFUND"])
+        self.assertEqual(response.json()["data"][0]["refundable_credit"], 70000)
+
+        adjustments = self.client.get(
+            f"/v1/finance/ar-adjustments/?entity={entity.code}").json()
+        self.assertEqual(adjustments["kpis"]["refundable_credit"], 70000)
+
+    def test_refund_create_rejects_amount_above_available_credit(self):
+        entity, _, _ = self.build_books()
+        receivable = Account.objects.get(entity=entity, code="1200")
+        bank = Account.objects.get(entity=entity, code="1100")
+        bank_account = self.make_bank(entity)
+        customer = Customer.objects.create(
+            entity=entity, code="CAP", name="Capped Refund", receivable_account=receivable)
+        post_payment(Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 15),
+            amount=50000, deposit_account=bank,
+        ))
+        url = f"/v1/finance/refunds/?entity={entity.code}"
+        body = {
+            "customer": customer.code,
+            "refund_date": "2026-01-18",
+            "amount": 50001,
+            "bank_account": bank_account.pk,
+        }
+
+        rejected = self.client.post(url, body, format="json")
+
+        self.assertEqual(rejected.status_code, 400, rejected.content)
+        self.assertIn("available credit", str(rejected.json()).lower())
+        self.assertFalse(Refund.objects.filter(entity=entity, customer=customer).exists())
+
+        body["amount"] = 50000
+        accepted = self.client.post(url, body, format="json")
+        self.assertEqual(accepted.status_code, 201, accepted.content)
+        self.assertEqual(accepted.json()["data"]["amount"], 50000)
+
     # Verify payment summary totals and counts behavior.
     def test_payment_summary_totals_and_counts(self):
         entity, _, _ = self.build_books()
@@ -7357,16 +7420,15 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         self._submit(refund)
         instance = self._instance_for(refund)
 
-        # Drain the customer's available credit while the refund sits in the queue by
-        # paying it out through a second, directly-posted refund (no template gate on
-        # that path yet — it's the same entity, but we bypass via the service). After
-        # this, post_refund on the queued refund must exceed available credit.
-        drain = Refund.objects.create(
-            entity=self.entity, customer=self.customer, refund_date=datetime.date(2026, 1, 6),
-            amount=30000, deposit_account=self.bank, created_by=self.requester,
-        )
-        from vs_finance.credit_notes import post_refund
-        post_refund(drain, actor_user=self.requester)
+        # A second refund can no longer consume credit reserved by this pending
+        # request. Drain it through the separate allocation workflow instead to
+        # preserve the approval-time revalidation scenario.
+        invoice = self.make_invoice(
+            self.entity, self.customer, lines=[("4100", 1, 30000, None)])
+        post_invoice(invoice)
+        payment = Payment.objects.get(
+            entity=self.entity, customer=self.customer, amount=30000)
+        allocate_payment(payment, actor_user=self.requester)
         self.assertEqual(customer_credit_balance(self.customer), 0)
 
         with self.assertRaises(PostingError):

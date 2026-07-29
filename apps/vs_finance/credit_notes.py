@@ -313,7 +313,10 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
     settles the invoices. ``allocations`` is an optional ``[(invoice, amount)]`` plan;
     without it, open invoices are settled oldest-first.
     """
-    from .models import JournalEntry, JournalLine
+    from .models import Customer, JournalEntry, JournalLine
+
+    note = type(note).objects.select_for_update().get(pk=note.pk)
+    customer = Customer.objects.select_for_update().get(pk=note.customer_id)
 
     if note.kind == CreditNoteKind.DEBIT:  # Debit notes cannot reduce invoices.
         raise PostingError("A debit note increases the receivable; it cannot be allocated.")
@@ -329,7 +332,6 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
     if applied <= 0:  # No invoice received value.
         return []
 
-    customer = note.customer  # Customer whose credit is applied.
     period = resolve_period(note.entity, note.note_date)  # Resolve allocation period.
     entry = JournalEntry.objects.create(
         entity=note.entity, branch=note.branch,  # Scope entity and optional branch.
@@ -393,7 +395,13 @@ def _post_refund_atomic(refund, *, actor_user=None):
         Returns the updated ``refund``. Raises ``PostingError`` on any guard failure;
         ``post_refund`` wraps this to record a rejection on ``FinanceError``.
     """
-    from .models import JournalEntry, JournalLine
+    from .models import Customer, JournalEntry, JournalLine
+
+    # Serialize every payout for this customer before reading the derived credit
+    # position. Without this lock, two different refund rows could both observe the
+    # same balance and pay it out concurrently.
+    refund = type(refund).objects.select_for_update().get(pk=refund.pk)
+    customer = Customer.objects.select_for_update().get(pk=refund.customer_id)
 
     if refund.status != DocumentStatus.DRAFT:  # Only draft refunds can post.
         raise PostingError(
@@ -403,10 +411,9 @@ def _post_refund_atomic(refund, *, actor_user=None):
     if refund.amount <= 0:  # Refund must pay a positive amount.
         raise PostingError("A refund must have a positive amount to post.")
 
-    customer = refund.customer  # Customer receiving cash refund.
-
-    from .receivables import customer_credit_balance
-    available = customer_credit_balance(customer)  # Current refundable credit balance.
+    from .receivables import customer_refund_available_balance
+    available = customer_refund_available_balance(
+        customer, exclude_refund_id=refund.pk)  # Current unreserved refundable credit.
     if refund.amount > available:  # Refund cannot exceed stored customer credit.
         raise PostingError(
             f"Refund of {refund.amount} kobo exceeds {customer.code}'s available "
