@@ -330,6 +330,10 @@ class TenantUserRoleAssignmentViewTests(TestCase):
         slug = slug or self.slug
         return _q(reverse("rbac-assignment-revoke", kwargs={"tenant_slug": slug, "id": aid}), slug)
 
+    def _replace_url(self, aid, slug=None):
+        slug = slug or self.slug
+        return _q(reverse("rbac-assignment-replace", kwargs={"tenant_slug": slug, "id": aid}), slug)
+
     def test_create_assignment(self):
         data = {"user": self.staff.id, "role": self.role.id, "reason_note": "Assign teacher"}
         resp = _token_client(self.admin).post(self._list_url(), data, format="json")
@@ -337,6 +341,9 @@ class TenantUserRoleAssignmentViewTests(TestCase):
         a = TenantUserRoleAssignment.objects.get(user=self.staff, role=self.role)
         self.assertEqual(a.assigned_by, self.admin)
         self.assertEqual(a.tenant, self.school.tenant)
+        self.assertEqual(resp.data["data"]["role_key"], self.role.key)
+        self.assertEqual(resp.data["data"]["assigned_by_id"], str(self.admin.id))
+        self.assertEqual(resp.data["data"]["assigned_by_name"], self.admin.full_name)
 
     def test_list_and_filter(self):
         make_assignment(self.school, self.staff, self.role)
@@ -391,6 +398,142 @@ class TenantUserRoleAssignmentViewTests(TestCase):
             self._revoke_url(a.id), {"reason_note": "again"}, format="json"
         )
         self.assertEqual(resp.status_code, status.HTTP_409_CONFLICT)
+
+    def test_super_admin_assignment_cannot_be_revoked(self):
+        super_admin = make_vision_user(
+            email="protected-super-admin@test.com",
+            super_admin=True,
+        )
+        assignment = TenantUserRoleAssignment.objects.get(
+            tenant=super_admin.tenant,
+            user=super_admin,
+            role__key="xvs_super_admin",
+            assignment_status="ACTIVE",
+        )
+
+        resp = _token_client(super_admin).post(
+            self._revoke_url(assignment.id, slug=super_admin.tenant.slug),
+            {"reason_note": "Direct revoke attempt"},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(resp.data["code"], "SUPER_ADMIN_TRANSFER_REQUIRED")
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.assignment_status, "ACTIVE")
+
+    def test_super_admin_assignment_cannot_be_revoked_via_patch(self):
+        super_admin = make_vision_user(
+            email="protected-super-admin-patch@test.com",
+            super_admin=True,
+        )
+        assignment = TenantUserRoleAssignment.objects.get(
+            tenant=super_admin.tenant,
+            user=super_admin,
+            role__key="xvs_super_admin",
+            assignment_status="ACTIVE",
+        )
+
+        resp = _token_client(super_admin).patch(
+            self._detail_url(assignment.id, slug=super_admin.tenant.slug),
+            {"assignment_status": "REVOKED", "reason_note": "Direct patch attempt"},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.assignment_status, "ACTIVE")
+
+    def test_super_admin_assignment_cannot_be_replaced(self):
+        super_admin = make_vision_user(
+            email="protected-super-admin-replace@test.com",
+            super_admin=True,
+        )
+        assignment = TenantUserRoleAssignment.objects.get(
+            tenant=super_admin.tenant,
+            user=super_admin,
+            role__key="xvs_super_admin",
+            assignment_status="ACTIVE",
+        )
+        replacement_role = make_role(super_admin.tenant, name="Platform Admin")
+
+        resp = _token_client(super_admin).post(
+            self._replace_url(assignment.id, slug=super_admin.tenant.slug),
+            {"role": replacement_role.id},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_409_CONFLICT)
+        self.assertEqual(resp.data["code"], "SUPER_ADMIN_TRANSFER_REQUIRED")
+        assignment.refresh_from_db()
+        self.assertEqual(assignment.assignment_status, "ACTIVE")
+
+    def test_replace_assignment_revokes_old_and_creates_new_atomically(self):
+        old = make_assignment(self.school, self.staff, self.role)
+        new_role = make_role(self.school, name="Head Teacher")
+
+        resp = _token_client(self.admin).post(
+            self._replace_url(old.id),
+            {"role": new_role.id, "reason_note": "Promotion"},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        old.refresh_from_db()
+        self.assertEqual(old.assignment_status, "REVOKED")
+        self.assertEqual(old.revoked_by, self.admin)
+        self.assertIn("Head Teacher", old.reason_note)
+        replacement = TenantUserRoleAssignment.objects.get(
+            user=self.staff,
+            role=new_role,
+            assignment_status="ACTIVE",
+        )
+        self.assertEqual(replacement.assigned_by, self.admin)
+        self.assertEqual(replacement.reason_note, "Promotion")
+        self.assertEqual(resp.data["data"]["assigned_by_name"], self.admin.full_name)
+
+    def test_replace_assignment_preserves_other_active_roles(self):
+        old = make_assignment(self.school, self.staff, self.role)
+        retained_role = make_role(self.school, name="Exam Officer")
+        retained = make_assignment(self.school, self.staff, retained_role)
+        new_role = make_role(self.school, name="Head Teacher")
+
+        resp = _token_client(self.admin).post(
+            self._replace_url(old.id),
+            {"role": new_role.id},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        retained.refresh_from_db()
+        self.assertEqual(retained.assignment_status, "ACTIVE")
+
+    def test_replace_assignment_rejects_cross_tenant_role(self):
+        old = make_assignment(self.school, self.staff, self.role)
+        other = make_school(slug="asg-replace-other", name="Asg Replace Other")
+        foreign_role = make_role(other, name="Foreign")
+
+        resp = _token_client(self.admin).post(
+            self._replace_url(old.id),
+            {"role": foreign_role.id},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        old.refresh_from_db()
+        self.assertEqual(old.assignment_status, "ACTIVE")
+
+    def test_replace_assignment_permission_denied_without_grant(self):
+        old = make_assignment(self.school, self.staff, self.role)
+        new_role = make_role(self.school, name="Head Teacher")
+
+        resp = _token_client(self.plain).post(
+            self._replace_url(old.id),
+            {"role": new_role.id},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_cross_tenant_role_rejected(self):
         other = make_school(slug="asg-other", name="Asg Other")

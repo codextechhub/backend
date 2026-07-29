@@ -42,6 +42,7 @@ from .permissions import (
     HasRBACPermission,
     is_vision_super_admin,
 )
+from .services import SUPER_ADMIN_ROLE_KEY
 
 
 # -----------------------------------------------------------------------------
@@ -690,13 +691,6 @@ class TenantUserRoleAssignmentRevokeView(TenantScopedRBACMixin, APIView):
 
     def post(self, request, tenant_slug: str, id: int):
         tenant = self.tenant
-        reason = (request.data.get("reason_note") or "").strip()
-        if not reason:
-            return error_response(
-                message="A reason is required to revoke an assignment.",
-                error={"reason_note": ["This field is required."]},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
 
         try:
             assignment = (
@@ -716,6 +710,21 @@ class TenantUserRoleAssignmentRevokeView(TenantScopedRBACMixin, APIView):
                 status=status.HTTP_409_CONFLICT,
             )
 
+        if assignment.role.key == SUPER_ADMIN_ROLE_KEY:
+            return error_response(
+                message="Transfer Super Admin before revoking this assignment.",
+                code="SUPER_ADMIN_TRANSFER_REQUIRED",
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        reason = (request.data.get("reason_note") or "").strip()
+        if not reason:
+            return error_response(
+                message="A reason is required to revoke an assignment.",
+                error={"reason_note": ["This field is required."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         assignment.revoke(by_user=request.user, reason=reason)
         assignment.save(update_fields=[
             "assignment_status", "revoked_at", "revoked_by", "reason_note", "updated_at",
@@ -726,6 +735,128 @@ class TenantUserRoleAssignmentRevokeView(TenantScopedRBACMixin, APIView):
             data=TenantUserRoleAssignmentSerializer(
                 assignment, context={"request": request, "tenant": tenant}
             ).data,
+        )
+
+
+class TenantUserRoleAssignmentReplaceView(TenantScopedRBACMixin, APIView):
+    """Atomically replace one active role assignment with another.
+
+    This is intentionally assignment-scoped instead of user-scoped: tenants may
+    grant more than one role to a user, and changing one role must not silently
+    revoke their other legitimate assignments.
+    """
+
+    def get_permissions(self):
+        self.rbac_permission = ROLE_ASSIGN_KEYS
+        return [IsAuthenticatedAndActive(), HasRBACPermission()]
+
+    @transaction.atomic
+    def post(self, request, tenant_slug: str, id: int):
+        tenant = self.tenant
+        target_role_id = request.data.get("role")
+
+        if not target_role_id:
+            return error_response(
+                message="Select the new role for this assignment.",
+                error={"role": ["This field is required."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            assignment = (
+                TenantUserRoleAssignment.objects
+                .select_for_update()
+                .select_related("user", "role", "assigned_by", "revoked_by", "tenant", "branch")
+                .get(id=id, tenant=tenant)
+            )
+        except TenantUserRoleAssignment.DoesNotExist:
+            return error_response(
+                message="Assignment not found.",
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if assignment.assignment_status != TenantUserRoleAssignment.AssignmentStatus.ACTIVE:
+            return error_response(
+                message="Only an active assignment can be changed.",
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        if assignment.role.key == SUPER_ADMIN_ROLE_KEY:
+            return error_response(
+                message="Transfer Super Admin before changing this assignment.",
+                code="SUPER_ADMIN_TRANSFER_REQUIRED",
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            target_role = TenantRoleTemplate.objects.get(
+                id=target_role_id,
+                tenant=tenant,
+                status=TenantRoleTemplate.Status.ACTIVE,
+            )
+        except (TenantRoleTemplate.DoesNotExist, ValueError, TypeError):
+            return error_response(
+                message="The selected role is not active in this tenant.",
+                error={"role": ["Select a valid active role."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if target_role.key == SUPER_ADMIN_ROLE_KEY:
+            return error_response(
+                message="Use Transfer Super Admin to assign the Super Admin role.",
+                code="SUPER_ADMIN_TRANSFER_REQUIRED",
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        if assignment.role_id == target_role.id:
+            return error_response(
+                message="The user already has this role through the selected assignment.",
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        duplicate = (
+            TenantUserRoleAssignment.objects
+            .select_for_update()
+            .filter(
+                tenant=tenant,
+                user=assignment.user,
+                role=target_role,
+                assignment_status=TenantUserRoleAssignment.AssignmentStatus.ACTIVE,
+            )
+            .exists()
+        )
+        if duplicate:
+            return error_response(
+                message="This user already has an active assignment for the selected role.",
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        supplied_reason = (request.data.get("reason_note") or "").strip()
+        reason = supplied_reason or f"Role changed from {assignment.role.name} to {target_role.name}."
+
+        assignment.revoke(
+            by_user=request.user,
+            reason=f"Changed to {target_role.name}. {reason}",
+        )
+        assignment.save(update_fields=[
+            "assignment_status", "revoked_at", "revoked_by", "reason_note", "updated_at",
+        ])
+
+        replacement = TenantUserRoleAssignment.objects.create(
+            tenant=tenant,
+            branch=assignment.branch,
+            user=assignment.user,
+            role=target_role,
+            assigned_by=request.user,
+            reason_note=reason,
+        )
+
+        return success_response(
+            message="Role changed successfully.",
+            data=TenantUserRoleAssignmentSerializer(
+                replacement, context={"request": request, "tenant": tenant}
+            ).data,
+            status=status.HTTP_201_CREATED,
         )
 
 

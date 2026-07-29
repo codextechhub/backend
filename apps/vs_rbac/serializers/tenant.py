@@ -27,6 +27,7 @@ from ..models import (
     TenantRoleTemplate,
     TenantUserRoleAssignment,
 )
+from ..services import SUPER_ADMIN_ROLE_KEY
 from .registry import (
     PermissionGroupListSerializer,
     PermissionKeyListValidationMixin,
@@ -375,7 +376,12 @@ class TenantUserRoleAssignmentSerializer(serializers.ModelSerializer):
     user_name = serializers.SerializerMethodField()
     user_email = serializers.SerializerMethodField()
     role_id = serializers.SerializerMethodField()
+    role_key = serializers.SerializerMethodField()
     role_name = serializers.SerializerMethodField()
+    assigned_by_id = serializers.SerializerMethodField()
+    assigned_by_name = serializers.SerializerMethodField()
+    revoked_by_id = serializers.SerializerMethodField()
+    revoked_by_name = serializers.SerializerMethodField()
     tenant = serializers.SlugRelatedField(slug_field="slug", read_only=True)
 
     def get_user_id(self, obj):
@@ -390,8 +396,33 @@ class TenantUserRoleAssignmentSerializer(serializers.ModelSerializer):
     def get_role_id(self, obj):
         return str(obj.role_id) if obj.role_id else None
 
+    def get_role_key(self, obj):
+        return getattr(obj.role, "key", None)
+
     def get_role_name(self, obj):
         return getattr(obj.role, "name", None)
+
+    def get_assigned_by_id(self, obj):
+        return str(obj.assigned_by_id) if obj.assigned_by_id else None
+
+    def get_assigned_by_name(self, obj):
+        if not obj.assigned_by_id:
+            return None
+        return (
+            getattr(obj.assigned_by, "full_name", None)
+            or getattr(obj.assigned_by, "email", None)
+        )
+
+    def get_revoked_by_id(self, obj):
+        return str(obj.revoked_by_id) if obj.revoked_by_id else None
+
+    def get_revoked_by_name(self, obj):
+        if not obj.revoked_by_id:
+            return None
+        return (
+            getattr(obj.revoked_by, "full_name", None)
+            or getattr(obj.revoked_by, "email", None)
+        )
 
     class Meta:
         model = TenantUserRoleAssignment
@@ -405,12 +436,17 @@ class TenantUserRoleAssignmentSerializer(serializers.ModelSerializer):
             "user_name",
             "user_email",
             "role_id",
+            "role_key",
             "role_name",
             "assignment_status",
             "assigned_by",
+            "assigned_by_id",
+            "assigned_by_name",
             "assigned_at",
             "revoked_at",
             "revoked_by",
+            "revoked_by_id",
+            "revoked_by_name",
             "reason_note",
             "created_at",
             "updated_at",
@@ -421,11 +457,16 @@ class TenantUserRoleAssignmentSerializer(serializers.ModelSerializer):
             "user_name",
             "user_email",
             "role_id",
+            "role_key",
             "role_name",
             "assigned_by",
+            "assigned_by_id",
+            "assigned_by_name",
             "assigned_at",
             "revoked_at",
             "revoked_by",
+            "revoked_by_id",
+            "revoked_by_name",
             "created_at",
             "updated_at",
         ]
@@ -482,6 +523,32 @@ class TenantUserRoleAssignmentSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"role": "This user already has an active assignment for this role."}
                 )
+
+        is_assigning_super_admin = (
+            role
+            and role.key == SUPER_ADMIN_ROLE_KEY
+            and (self.instance is None or self.instance.role_id != role.id)
+        )
+        if is_assigning_super_admin:
+            raise serializers.ValidationError(
+                {"role": "Use Transfer Super Admin to assign the Super Admin role."}
+            )
+
+        is_removing_super_admin = (
+            self.instance
+            and self.instance.role.key == SUPER_ADMIN_ROLE_KEY
+            and self.instance.assignment_status
+            == TenantUserRoleAssignment.AssignmentStatus.ACTIVE
+            and new_status == TenantUserRoleAssignment.AssignmentStatus.REVOKED
+        )
+        if is_removing_super_admin:
+            raise serializers.ValidationError(
+                {
+                    "assignment_status": (
+                        "Transfer Super Admin before revoking this assignment."
+                    )
+                }
+            )
 
         if (
             self.instance

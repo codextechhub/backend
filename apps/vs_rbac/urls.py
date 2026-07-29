@@ -107,6 +107,11 @@ urlpatterns = [
         views.TenantUserRoleAssignmentRevokeView.as_view(),
         name="rbac-assignment-revoke",
     ),
+    path(
+        "tenants/<slug:tenant_slug>/role-assignments/<int:id>/replace/",
+        views.TenantUserRoleAssignmentReplaceView.as_view(),
+        name="rbac-assignment-replace",
+    ),
 
     # -------------------------------------------------------------------------
     # Tenant Role Change Requests (tenant-internal approval)
