@@ -3138,6 +3138,45 @@ class BudgetTests(_Phase4FixtureMixin, TestCase):
         with self.assertRaises(BudgetError):
             add_budget_line(budget, account=salaries, period_no=13, amount=10000)
 
+    def test_quarterly_budget_accepts_configured_periods_and_rejects_missing_periods(self):
+        from vs_finance.budgets import set_budget_lines
+        from vs_finance.seed import seed_fiscal_year
+
+        entity, year, _ = self.build_books()
+        FiscalPeriod.objects.filter(fiscal_year=year).delete()
+        _, quarters = seed_fiscal_year(
+            entity,
+            year=year.year,
+            fiscal_period_frequency="QUARTERLY",
+        )
+        self.assertEqual([period.period_no for period in quarters], [1, 2, 3, 4])
+
+        budget = Budget.objects.create(entity=entity, fiscal_year=year, name="FY26 Quarterly Plan")
+        salaries = Account.objects.get(entity=entity, code="5200")
+        accepted = add_budget_line(
+            budget,
+            account=salaries,
+            period_no=4,
+            amount=60000,
+        )
+        self.assertEqual(accepted.period_no, 4)
+
+        with self.assertRaisesRegex(BudgetError, "does not exist"):
+            add_budget_line(
+                budget,
+                account=salaries,
+                period_no=5,
+                amount=10000,
+            )
+        with self.assertRaisesRegex(BudgetError, r"lines\[0\]\.period_no 5 does not exist"):
+            set_budget_lines(
+                budget,
+                [{"account": salaries, "period_no": 5, "amount": 10000}],
+            )
+        self.assertEqual(list(budget.lines.values_list("period_no", flat=True)), [4])
+        with self.assertRaisesRegex(BudgetError, "period_no 5 does not exist"):
+            budget_vs_actual(budget, period_no=5)
+
     # Verify delete draft budget removes lines and writes audit behavior.
     def test_delete_draft_budget_removes_lines_and_writes_audit(self):
         from vs_finance.budgets import delete_budget
@@ -5165,6 +5204,123 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(periods[0]["start_date"], "2026-09-01")
         self.assertEqual(periods[-1]["end_date"], "2027-08-31")
         self.assertTrue(all(p["status"] == "OPEN" for p in periods))
+
+    def test_entity_create_supports_quarterly_periods_from_day_15(self):
+        from vs_finance.seed import seed_fiscal_year
+
+        self._seed()
+        resp = self.client.post(
+            "/v1/finance/entities/",
+            {
+                "code": "QTR15",
+                "name": "Quarterly Books",
+                "fiscal_year": 2026,
+                "fiscal_period_frequency": "QUARTERLY",
+                "fiscal_start_day": 15,
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        entity = LedgerEntity.objects.get(code="QTR15")
+        fiscal_year = FiscalYear.objects.get(entity=entity, year=2026)
+        periods = list(FiscalPeriod.objects.filter(fiscal_year=fiscal_year).order_by("period_no"))
+
+        self.assertEqual(fiscal_year.start_date, datetime.date(2026, 1, 15))
+        self.assertEqual(fiscal_year.end_date, datetime.date(2027, 1, 14))
+        self.assertEqual([period.name for period in periods], [
+            "Q1 FY2026", "Q2 FY2026", "Q3 FY2026", "Q4 FY2026",
+        ])
+        self.assertEqual(
+            [(period.start_date, period.end_date) for period in periods],
+            [
+                (datetime.date(2026, 1, 15), datetime.date(2026, 4, 14)),
+                (datetime.date(2026, 4, 15), datetime.date(2026, 7, 14)),
+                (datetime.date(2026, 7, 15), datetime.date(2026, 10, 14)),
+                (datetime.date(2026, 10, 15), datetime.date(2027, 1, 14)),
+            ],
+        )
+        _, repeated = seed_fiscal_year(
+            entity,
+            year=2026,
+            fiscal_period_frequency="QUARTERLY",
+            fiscal_start_day=15,
+        )
+        self.assertEqual([period.id for period in repeated], [period.id for period in periods])
+        self.assertEqual(FiscalPeriod.objects.filter(fiscal_year=fiscal_year).count(), 4)
+
+    def test_entity_create_quarterly_day_31_clamps_boundaries_without_gaps(self):
+        self._seed()
+        resp = self.client.post(
+            "/v1/finance/entities/",
+            {
+                "code": "QTR31",
+                "name": "Month End Quarterly Books",
+                "fiscal_year": 2026,
+                "fiscal_period_frequency": "QUARTERLY",
+                "fiscal_start_day": 31,
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        entity = LedgerEntity.objects.get(code="QTR31")
+        fiscal_year = FiscalYear.objects.get(entity=entity, year=2026)
+        periods = list(FiscalPeriod.objects.filter(fiscal_year=fiscal_year).order_by("period_no"))
+
+        self.assertEqual(
+            [(period.start_date, period.end_date) for period in periods],
+            [
+                (datetime.date(2026, 1, 31), datetime.date(2026, 4, 29)),
+                (datetime.date(2026, 4, 30), datetime.date(2026, 7, 30)),
+                (datetime.date(2026, 7, 31), datetime.date(2026, 10, 30)),
+                (datetime.date(2026, 10, 31), datetime.date(2027, 1, 30)),
+            ],
+        )
+        self.assertEqual(fiscal_year.start_date, periods[0].start_date)
+        self.assertEqual(fiscal_year.end_date, periods[-1].end_date)
+        for current, following in zip(periods, periods[1:]):
+            self.assertEqual(
+                current.end_date + datetime.timedelta(days=1),
+                following.start_date,
+            )
+
+    def test_entity_create_defaults_to_twelve_calendar_months(self):
+        self._seed()
+        resp = self.client.post(
+            "/v1/finance/entities/",
+            {"code": "MDEFAULT", "name": "Default Monthly Books", "fiscal_year": 2026},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        entity = LedgerEntity.objects.get(code="MDEFAULT")
+        fiscal_year = FiscalYear.objects.get(entity=entity, year=2026)
+        periods = list(FiscalPeriod.objects.filter(fiscal_year=fiscal_year).order_by("period_no"))
+
+        self.assertEqual(len(periods), 12)
+        self.assertEqual(periods[0].name, "2026-01")
+        self.assertEqual(periods[-1].name, "2026-12")
+        self.assertEqual(periods[0].start_date, datetime.date(2026, 1, 1))
+        self.assertEqual(periods[-1].end_date, datetime.date(2026, 12, 31))
+        self.assertEqual(fiscal_year.start_date, datetime.date(2026, 1, 1))
+        self.assertEqual(fiscal_year.end_date, datetime.date(2026, 12, 31))
+
+    def test_entity_create_rejects_invalid_fiscal_calendar_without_creating_entity(self):
+        self._seed()
+        entity_count = LedgerEntity.objects.count()
+        invalid_payloads = (
+            {"code": "BADFREQ", "fiscal_period_frequency": "ANNUAL"},
+            {"code": "BADDAY0", "fiscal_start_day": 0},
+            {"code": "BADDAY32", "fiscal_start_day": 32},
+        )
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                resp = self.client.post(
+                    "/v1/finance/entities/",
+                    {"name": "Invalid Fiscal Calendar", **payload},
+                    format="json",
+                )
+                self.assertEqual(resp.status_code, 400, resp.content)
+                self.assertFalse(LedgerEntity.objects.filter(code=payload["code"]).exists())
+        self.assertEqual(LedgerEntity.objects.count(), entity_count)
 
     # Verify entity create rejects duplicate code behavior.
     def test_entity_create_rejects_duplicate_code(self):
