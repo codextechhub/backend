@@ -1,5 +1,20 @@
 # CLAUDE.md — backend
 
+## Build for every school, not for the first one
+
+XVS is a **multi-tenant product**, not a bespoke build for whoever is onboarding
+first. Corona Secondary School (at `xvs.codexng.com`) is simply the first tenant.
+
+- Nothing may be special-cased to one tenant's arrangement. If a feature only
+  works because of how the first school happens to be set up, it isn't finished —
+  the next school breaks it.
+- **Branch-optional and multi-branch schools must both work.** A school with one
+  site and a school with six are equally normal. Where a school has no branches,
+  the dimension should *recede* (no empty column, no pointless filter), not show
+  blank space.
+- Test with more than one shape of school. A single-tenant test proves nothing
+  about tenancy.
+
 ## Pre-ship review (`ship-check`)
 
 When I say **`ship-check`** (or "run the ship-check") on a change, answer these
