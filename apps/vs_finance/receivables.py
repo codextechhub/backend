@@ -115,7 +115,9 @@ def _post_invoice_atomic(invoice, *, actor_user=None):
     ar_account = customer.receivable_account  # Resolve the customer's AR control account.
     if ar_account is None:  # Posting cannot continue without AR control.
         raise PostingError(
-            f"Customer {customer.code} has no receivable (AR control) account set.",
+            f"Customer {customer.code} has no receivable account configured. "
+            "Open Receivables > Customers, edit this customer, and select an active, "
+            "postable Accounts Receivable account before posting an invoice.",
         )
 
     price_invoice(invoice)  # Ensure all lines and totals are up to date before posting.

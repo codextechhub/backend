@@ -4915,6 +4915,35 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
             {"customers": ["STU1"]}, format="json")
         self.assertEqual(again.json()["data"]["generated"], 0)
 
+    # Verify fee generation explains a customer's missing AR setup.
+    def test_fee_generation_explains_missing_customer_receivable_account(self):
+        entity, _, _ = self.build_books()
+        Customer.objects.create(
+            entity=entity, code="STU-014", name="Student Fourteen",
+            receivable_account=None,
+        )
+        created = self.client.post(
+            f"/v1/finance/fee-structures/?entity={entity.code}",
+            {"code": "tuition", "name": "Tuition",
+             "items": [{"description": "Tuition", "revenue_account": "4100",
+                        "amount": 10000000}]},
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.content)
+
+        generated = self.client.post(
+            f"/v1/finance/fee-structures/TUITION/generate/?entity={entity.code}",
+            {"customers": ["STU-014"], "invoice_date": "2026-01-10"},
+            format="json",
+        )
+
+        self.assertEqual(generated.status_code, 422, generated.content)
+        payload = generated.json()
+        self.assertEqual(payload["error"]["code"], "POSTING_ERROR")
+        self.assertIn("Customer STU-014 has no receivable account configured", payload["message"])
+        self.assertIn("Receivables > Customers", payload["message"])
+        self.assertEqual(Invoice.objects.filter(entity=entity).count(), 0)
+
     # Verify fee structure applies to defaults filters and edits behavior.
     def test_fee_structure_applies_to_defaults_filters_and_edits(self):
         """`applies_to` defaults to CUSTOMER, is filterable, and PATCHable."""
