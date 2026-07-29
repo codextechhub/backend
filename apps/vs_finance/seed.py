@@ -168,19 +168,28 @@ def seed_chart_of_accounts(entity):
     return list(Account.objects.filter(entity=entity).order_by("code"))
 
 
-# Create a fiscal year and 12 monthly periods.
-def seed_fiscal_year(entity, year=None, start_month=1):
-    """Open a fiscal year for ``entity`` with twelve monthly OPEN periods (idempotent).
+# Create a fiscal year and its monthly or quarterly posting periods.
+def seed_fiscal_year(
+    entity,
+    year=None,
+    start_month=1,
+    fiscal_period_frequency="MONTHLY",
+    fiscal_start_day=1,
+):
+    """Open a fiscal year with monthly or quarterly OPEN periods (idempotent).
 
     ``year`` is the label used in document numbers (defaults to the current calendar
     year). ``start_month`` (1–12) is the opening month: ``1`` gives a calendar-year
     Jan–Dec book, while e.g. ``9`` gives a school year that runs Sept of ``year``
-    through Aug of ``year + 1`` — the twelve periods roll across the calendar boundary.
+    through Aug of ``year + 1``. ``fiscal_start_day`` is preserved as the boundary
+    anchor and clamped to the last valid day in shorter months.
 
     Returns ``(fiscal_year, [periods])``. Safe to re-run: the year is keyed by
     ``(entity, year)`` and each period by ``(fiscal_year, period_no)``, so an existing
-    set of books is left untouched.
+    matching set of books is left untouched. A different calendar cannot be overlaid
+    on an existing fiscal year.
     """
+    import calendar
     import datetime
 
     from django.utils import timezone
@@ -191,37 +200,82 @@ def seed_fiscal_year(entity, year=None, start_month=1):
         year = timezone.now().year
     if not 1 <= start_month <= 12:  # Month must be valid.
         raise ValueError("start_month must be between 1 and 12.")
+    if not 1 <= fiscal_start_day <= 31:  # Anchor day must be valid.
+        raise ValueError("fiscal_start_day must be between 1 and 31.")
+    if fiscal_period_frequency not in {"MONTHLY", "QUARTERLY"}:
+        raise ValueError("fiscal_period_frequency must be MONTHLY or QUARTERLY.")
 
-    # Calculate period month at offset from fiscal start.
-    def _month(offset):
-        """Calendar (year, month) for the period ``offset`` months after the start."""
+    # Calculate an anchored boundary at an offset from the fiscal start.
+    def _boundary(offset):
+        """Date ``offset`` months after the start, clamped in shorter months."""
         index = (start_month - 1) + offset           # 0-based month index from the epoch  # Allows rollover across years.
-        return year + index // 12, index % 12 + 1  # Return calendar year and month.
+        boundary_year, boundary_month = year + index // 12, index % 12 + 1
+        boundary_day = min(
+            fiscal_start_day,
+            calendar.monthrange(boundary_year, boundary_month)[1],
+        )
+        return datetime.date(boundary_year, boundary_month, boundary_day)
 
-    first_y, first_m = _month(0)  # Fiscal year start month.
-    last_y, last_m = _month(11)  # Last fiscal period month.
-    # End of the last period = day before the first of the month after it.  # Handles month length automatically.
-    after_y, after_m = _month(12)  # First month after fiscal year.
+    months_per_period = 1 if fiscal_period_frequency == "MONTHLY" else 3
+    period_count = 12 // months_per_period
+    boundaries = [_boundary(i * months_per_period) for i in range(period_count + 1)]
+    expected_periods = []
+    for i in range(period_count):
+        start = boundaries[i]
+        end = boundaries[i + 1] - datetime.timedelta(days=1)
+        if fiscal_period_frequency == "QUARTERLY":
+            name = f"Q{i + 1} FY{year}"
+        elif fiscal_start_day == 1:
+            name = f"{start.year}-{start.month:02d}"
+        else:
+            name = f"{start.year}-{start.month:02d} (day {fiscal_start_day})"
+        expected_periods.append((i + 1, name, start, end))
 
-    fiscal_year, _ = FiscalYear.objects.get_or_create(
+    fiscal_year, fiscal_year_created = FiscalYear.objects.get_or_create(
         entity=entity, year=year,  # Unique fiscal year identity.
         defaults={  # Dates used only on first creation.
-            "start_date": datetime.date(first_y, first_m, 1),
-            "end_date": datetime.date(after_y, after_m, 1) - datetime.timedelta(days=1),
+            "start_date": boundaries[0],
+            "end_date": boundaries[-1] - datetime.timedelta(days=1),
         },
     )
+    expected_year_dates = (boundaries[0], boundaries[-1] - datetime.timedelta(days=1))
+    if not fiscal_year_created and (
+        fiscal_year.start_date,
+        fiscal_year.end_date,
+    ) != expected_year_dates:
+        raise ValueError(
+            f"FY{year} already exists with different fiscal-year boundaries.",
+        )
+
+    existing_periods = {
+        period.period_no: period
+        for period in FiscalPeriod.objects.filter(
+            fiscal_year=fiscal_year,
+            period_no__lte=12,
+        )
+    }
+    expected_period_nos = {period_no for period_no, _name, _start, _end in expected_periods}
+    if set(existing_periods) - expected_period_nos:
+        raise ValueError(
+            f"FY{year} already exists with a different fiscal-period frequency.",
+        )
+    for period_no, _name, start, end in expected_periods:
+        existing = existing_periods.get(period_no)
+        if existing is not None and (
+            existing.start_date,
+            existing.end_date,
+        ) != (start, end):
+            raise ValueError(
+                f"FY{year} period {period_no} already exists with different boundaries.",
+            )
 
     periods = []  # Periods returned to caller.
-    for i in range(12):  # Create twelve monthly periods.
-        py, pm = _month(i)  # Current period year/month.
-        ny, nm = _month(i + 1)  # Next period year/month.
-        start = datetime.date(py, pm, 1)
-        end = datetime.date(ny, nm, 1) - datetime.timedelta(days=1)
+    for period_no, name, start, end in expected_periods:
         period, _ = FiscalPeriod.objects.get_or_create(
-            fiscal_year=fiscal_year, period_no=i + 1,  # Unique period within fiscal year.
+            fiscal_year=fiscal_year, period_no=period_no,  # Unique period within fiscal year.
             defaults={  # Fields used only on first creation.
                 "entity": entity,  # Duplicate entity for faster scoped queries.
-                "name": f"{py}-{pm:02d}",  # Period display name.
+                "name": name,  # Period display name.
                 "start_date": start,  # Period start date.
                 "end_date": end,  # Period end date.
             },

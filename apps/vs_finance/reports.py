@@ -661,8 +661,8 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
     cells; actuals come from the denormalised :class:`AccountBalance` *movement* in
     the matching fiscal periods (period movement only — opening balances are
     excluded), signed to each account's normal balance so an expense budget of
-    ``100`` lines up with ``100`` of actual expense. Pass ``period_no`` (1–12) to
-    scope both sides to a single period; otherwise the whole fiscal year is summed.
+    ``100`` lines up with ``100`` of actual expense. Pass a configured ``period_no``
+    to scope both sides to a single period; otherwise the whole fiscal year is summed.
     """
     from .constants import AccountType, NormalBalance
     from .models import AccountBalance, BudgetLine
@@ -673,6 +673,9 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
     _PL_TYPES = {AccountType.INCOME, AccountType.EXPENSE}
 
     fiscal_year = budget.fiscal_year
+    if period_no is not None:
+        from .budgets import ensure_budget_period
+        period_no = ensure_budget_period(budget, period_no)
 
     # Budgeted amounts per account (summed across cost centres / periods).
     budget_lines = BudgetLine.objects.filter(budget=budget).select_related("account")
@@ -748,17 +751,17 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
 @dataclass
 # Group behavior for Budget Matrix Row.
 class BudgetMatrixRow:
-    """One account's budget-vs-actual across the 12 periods (the heatmap row).
+    """One account's budget-vs-actual across the configured periods.
 
-    ``cells`` is always 12 entries keyed ``budget_<n>`` / ``actual_<n>`` for period
-    ``n`` (1–12), signed to the account's normal balance like :func:`budget_vs_actual`.
+    ``cells`` has one entry per regular fiscal period, signed to the account's normal
+    balance like :func:`budget_vs_actual`.
     """
 
     account_id: int
     code: str
     name: str
     account_type: str
-    cells: list  # [{period_no, budget, actual}] × 12
+    cells: list  # [{period_no, budget, actual}] per configured regular period
     budget_total: int = 0
     actual_total: int = 0
 
@@ -774,13 +777,13 @@ class BudgetMatrix:
     total_actual: int = 0
 
 
-# Handle the budget monthly matrix workflow.
+# Handle the budget period matrix workflow.
 def budget_monthly_matrix(budget) -> BudgetMatrix:
     """Per-account, per-period budget vs actual for a budget — the variance heatmap.
 
-    One row per account (budgeted accounts + unbudgeted P&L activity), each with 12
-    period cells. Built in two passes (budget lines, then period balances) — no
-    per-cell query — so the whole grid is one cheap read.
+    One row per account (budgeted accounts + unbudgeted P&L activity), with one cell
+    per configured regular period. Built in two passes (budget lines, then period
+    balances) — no per-cell query — so the whole grid is one cheap read.
     """
     from .constants import AccountType, NormalBalance
     from .models import AccountBalance, BudgetLine, FiscalPeriod

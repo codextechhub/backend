@@ -96,16 +96,25 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
     )
     # Optional: which fiscal year to open. Defaults to the current calendar year.
     fiscal_year = serializers.IntegerField(required=False, write_only=True, min_value=2000)
-    # Optional opening month (1–12). 1 = calendar Jan–Dec; 9 = a Sept–Aug school year
-    # whose twelve periods roll into the next calendar year.
+    # Optional opening month (1–12). 1 = calendar Jan–Dec; 9 = a Sept–Aug school year.
     fiscal_start_month = serializers.IntegerField(
         required=False, write_only=True, min_value=1, max_value=12,
+    )
+    fiscal_period_frequency = serializers.ChoiceField(
+        choices=(("MONTHLY", "Monthly"), ("QUARTERLY", "Quarterly")),
+        required=False,
+        write_only=True,
+        default="MONTHLY",
+    )
+    fiscal_start_day = serializers.IntegerField(
+        required=False, write_only=True, min_value=1, max_value=31, default=1,
     )
 
     class Meta:
         model = LedgerEntity
         fields = ["id", "code", "number_code", "name", "kind", "base_currency",
-                  "fiscal_year", "fiscal_start_month"]
+                  "fiscal_year", "fiscal_start_month", "fiscal_period_frequency",
+                  "fiscal_start_day"]
         extra_kwargs = {
             "kind": {"required": False},
             # Optional: leave blank and the model auto-derives a unique short code.
@@ -138,6 +147,8 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
 
         fiscal_year = validated_data.pop("fiscal_year", None)
         start_month = validated_data.pop("fiscal_start_month", 1)
+        period_frequency = validated_data.pop("fiscal_period_frequency", "MONTHLY")
+        start_day = validated_data.pop("fiscal_start_day", 1)
         validated_data.setdefault("kind", LedgerEntity.Kind.TENANT)
 
         # The owning tenant comes from the asserted request context; the entity
@@ -148,16 +159,22 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
             validated_data["tenant"] = request_tenant
 
         # Provision a fully usable set of books in one call: the entity, the default
-        # currencies, a starter chart of accounts, and twelve open monthly periods.
+        # currencies, a starter chart of accounts, and open fiscal periods.
         # This keeps the bootstrap API-driven (no CLI seed_finance step required).
-        # fiscal_start_month lets a school open e.g. a Sept–Aug year.
+        # The fiscal anchors let a school open e.g. a Sept–Aug year on a chosen day.
         with transaction.atomic():
             entity = LedgerEntity.objects.create(
                 is_active=True, activated_at=timezone.now(), **validated_data,
             )
             seed_currencies()
             seed_chart_of_accounts(entity)
-            seed_fiscal_year(entity, year=fiscal_year, start_month=start_month)
+            seed_fiscal_year(
+                entity,
+                year=fiscal_year,
+                start_month=start_month,
+                fiscal_period_frequency=period_frequency,
+                fiscal_start_day=start_day,
+            )
         return entity
 
     def to_representation(self, instance):

@@ -34,6 +34,35 @@ def _ensure_pl_account(account):
         )
 
 
+def _regular_period_nos(budget):
+    """Return the configured, postable period numbers for a budget's fiscal year."""
+    return tuple(
+        budget.fiscal_year.periods.filter(period_no__lte=12)
+        .order_by("period_no")
+        .values_list("period_no", flat=True)
+    )
+
+
+def _ensure_fiscal_period(period_no, valid_period_nos, *, field_name="period_no"):
+    """Normalize ``period_no`` and require a configured regular fiscal period."""
+    period_no = int(period_no)
+    if period_no not in valid_period_nos:
+        if valid_period_nos:
+            valid = ", ".join(str(number) for number in valid_period_nos)
+            detail = f"valid periods are {valid}"
+        else:
+            detail = "no regular fiscal periods are configured"
+        raise BudgetError(
+            f"{field_name} {period_no} does not exist in this fiscal year; {detail}.",
+        )
+    return period_no
+
+
+def ensure_budget_period(budget, period_no):
+    """Require and return a configured regular period number for ``budget``."""
+    return _ensure_fiscal_period(period_no, _regular_period_nos(budget))
+
+
 @transaction.atomic
 # Create a draft budget document.
 def create_budget(entity, *, name, fiscal_year, lines=None, actor_user=None):
@@ -77,11 +106,10 @@ def add_budget_line(budget, *, account, period_no, amount, cost_center=None):
 
     _ensure_editable(budget)  # Refuse edits to locked budgets.
     _ensure_pl_account(account)  # Ensure account is income or expense.
-    if not (1 <= int(period_no) <= 12):  # Periods map to the twelve fiscal months.
-        raise BudgetError("period_no must be between 1 and 12.")
+    period_no = ensure_budget_period(budget, period_no)
 
     line, _ = BudgetLine.objects.update_or_create(
-        budget=budget, account=account, cost_center=cost_center, period_no=int(period_no),  # Unique budget cell coordinates.
+        budget=budget, account=account, cost_center=cost_center, period_no=period_no,  # Unique budget cell coordinates.
         defaults={"amount": int(amount)},  # Store amount in integer kobo.
     )
     return line  # Return the created or updated budget line.
@@ -93,20 +121,23 @@ def set_budget_lines(budget, lines):
     """Replace a draft budget's lines wholesale with ``lines``.
 
     ``lines`` is a list of dicts with resolved ``account`` (+ optional ``cost_center``),
-    ``period_no`` (1–12) and ``amount`` (kobo). Each (account, cost-centre, period) cell
-    must be unique. Draft-only.
+    ``period_no`` and ``amount`` (kobo). The period must exist in the budget's fiscal
+    year. Each (account, cost-centre, period) cell must be unique. Draft-only.
     """
     from .models import BudgetLine
 
     _ensure_editable(budget)  # Refuse edits to locked budgets.
     rows, seen = [], set()  # Collect replacement rows and duplicate keys.
+    valid_period_nos = _regular_period_nos(budget)  # Read the configured calendar once.
     for i, ln in enumerate(lines):  # Validate each requested line before deleting existing rows.
         account = ln["account"]  # Caller supplies an already resolved account.
-        period_no = int(ln["period_no"])  # Normalize period number to integer.
+        period_no = _ensure_fiscal_period(
+            ln["period_no"],
+            valid_period_nos,
+            field_name=f"lines[{i}].period_no",
+        )
         cost_center = ln.get("cost_center")
         _ensure_pl_account(account)  # Ensure account is budgetable.
-        if not (1 <= period_no <= 12):  # Periods map to the twelve fiscal months.
-            raise BudgetError(f"lines[{i}].period_no must be between 1 and 12.")
         key = (account.id, cost_center.id if cost_center else None, period_no)  # Unique cell identity.
         if key in seen:  # Duplicate cells would overwrite each other.
             raise BudgetError(
