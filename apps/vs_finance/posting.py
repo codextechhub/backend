@@ -91,6 +91,90 @@ def _period_accepts_posting(period, *, allow_restricted: bool = False) -> bool:
     return status == PeriodStatus.OPEN  # Only open periods accept ordinary postings.
 
 
+# Describe which dates an ordinary posting may use.
+def posting_window(entity, *, today=None) -> dict:
+    """Return the dates ``entity`` will currently accept an ordinary posting on.
+
+    The read-side mirror of :func:`ensure_period_open`: that guard answers "may this
+    date post?" one date at a time after the fact, and this answers "which dates may
+    post?" up front, so a screen can stop offering a date the guard would reject with
+    a 409. Both read the same ``PeriodStatus``, so they cannot drift.
+
+    ``open`` lists the OPEN periods (oldest first) as selectable ranges. ``blocked``
+    lists the rest, so a picker can say *why* a date is unavailable rather than just
+    greying it out. SOFT_CLOSED counts as blocked here: only privileged close-process
+    postings may use it (``allow_restricted``), and this window describes what an
+    ordinary user may pick.
+
+    ``default_date`` is the date a new document should open on: today when today is
+    postable, else the nearest open day in either direction — backward to the most
+    recent open day, or forward to the earliest upcoming one, whichever is closer,
+    preferring the past on a tie (backdating into a still-open period is the ordinary
+    case during a close; post-dating is not). ``None`` when the entity has no open
+    period at all, which is a real state the caller must handle rather than paper over.
+    """
+    from .models import FiscalPeriod
+
+    today = today or timezone.localdate()
+    periods = list(
+        FiscalPeriod.objects
+        .filter(entity=entity)
+        .order_by("start_date", "period_no")
+    )
+
+    open_periods = [p for p in periods if _period_accepts_posting(p)]
+    covering = next(  # The open period containing today, if any.
+        (p for p in open_periods if p.start_date <= today <= p.end_date), None,
+    )
+
+    if covering is not None:
+        default_date = today
+    else:
+        # Nearest open boundary on each side; the closer one wins, past on a tie.
+        previous = max(
+            (p.end_date for p in open_periods if p.end_date < today), default=None,
+        )
+        upcoming = min(
+            (p.start_date for p in open_periods if p.start_date > today), default=None,
+        )
+        if previous and upcoming:
+            default_date = (
+                previous if (today - previous) <= (upcoming - today) else upcoming
+            )
+        else:
+            default_date = previous or upcoming  # Whichever side exists (or None).
+
+    return {
+        "today": today,
+        "today_is_open": covering is not None,
+        "default_date": default_date,
+        "default_period": _period_brief(
+            next(
+                (p for p in open_periods
+                 if default_date and p.start_date <= default_date <= p.end_date),
+                None,
+            ),
+        ),
+        "open": [_period_brief(p) for p in open_periods],
+        "blocked": [_period_brief(p) for p in periods if p not in open_periods],
+    }
+
+
+# Shrink a period to the fields a date picker needs.
+def _period_brief(period) -> dict | None:
+    """Serialise a period to the minimum a picker needs: when it is and why."""
+    if period is None:
+        return None
+    return {
+        "id": period.id,
+        "name": period.name,
+        "period_no": period.period_no,
+        "status": period.status,
+        "start_date": period.start_date,
+        "end_date": period.end_date,
+    }
+
+
 # Guard exact double-entry equality.
 def ensure_balanced(debit_kobo: int, credit_kobo: int) -> None:
     """Raise :class:`UnbalancedJournalError` unless debits exactly equal credits.

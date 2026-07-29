@@ -3,7 +3,12 @@ from __future__ import annotations
 from django.core.exceptions import ImproperlyConfigured
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import BasePermission, SAFE_METHODS
-from .evaluator import _group_permission_keys, has_permission, has_all_permissions
+from .evaluator import (
+    _group_permission_keys,
+    get_effective_permissions,
+    has_permission,
+    has_all_permissions,
+)
 
 
 # Read the DRF request user through one helper so permission classes stay consistent.
@@ -204,6 +209,54 @@ class HasRBACPermission(BasePermission):
 
         return passed
 
+
+# Grant access on module membership rather than one specific privilege key.
+class HasAnyModuleAccess(BasePermission):
+    """
+    DRF permission that passes if the user holds ANY permission in a named module.
+
+    For endpoints that carry no privilege of their own but are only meaningful to
+    someone already working inside a module — shared reference data that every
+    screen in that module needs. Listing every equivalent key on
+    ``rbac_permission`` would work but goes stale the moment a new resource is
+    added, so the check is on the module namespace instead::
+
+        class PostingWindowView(APIView):
+            permission_classes = [IsAuthenticatedAndActive & HasAnyModuleAccess]
+            rbac_modules = ["finance", "procurement"]
+
+    This is deliberately weaker than :class:`HasRBACPermission` — use it only for
+    reads whose payload is not sensitive on its own. Entity/tenant scoping is a
+    separate concern and still has to be enforced in the view.
+    """
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u or not u.is_authenticated:
+            return False
+
+        # Vision super admin bypasses all RBAC permission checks.
+        if is_vision_super_admin(u):
+            return True
+
+        modules = getattr(view, "rbac_modules", None)
+        if not modules:
+            raise ImproperlyConfigured(
+                f"{view.__class__.__name__} uses HasAnyModuleAccess but sets no rbac_modules."
+            )
+        if isinstance(modules, str):
+            modules = [modules]
+
+        tenant = (
+            getattr(request, "rbac_tenant", None)
+            or getattr(request, "tenant", None)
+            or getattr(u, "tenant", None)
+        )
+        branch = getattr(request, "branch", None)
+
+        keys = get_effective_permissions(u, tenant=tenant, branch=branch)
+        prefixes = tuple(f"{m}." for m in modules)  # "finance." must not match "financex.".
+        return any(key.startswith(prefixes) for key in keys)
 
 
 # Allow branch admins into branch-scoped management surfaces.

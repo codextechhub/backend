@@ -37,6 +37,7 @@ from .views import (
     PeriodCloseView,
     PeriodLockView,
     PeriodReopenView,
+    PostingWindowView,
     StatutoryPackView,
     TrialBalanceView,
 )
@@ -173,6 +174,7 @@ urlpatterns = [
     path("accounts/<int:pk>/activity/", AccountActivityView.as_view(), name="finance-account-activity"),
     path("accounts/<int:pk>/", AccountDetailView.as_view(), name="finance-account-detail"),
     path("periods/", FiscalPeriodListView.as_view(), name="finance-period-list"),
+    path("posting-window/", PostingWindowView.as_view(), name="finance-posting-window"),
     path("fiscal-years/", FiscalYearListView.as_view(), name="finance-fiscal-year-list"),
     path("fiscal-years/<int:id>/close/", FiscalYearCloseView.as_view(), name="finance-fiscal-year-close"),
     path("journals/", JournalEntryListView.as_view(), name="finance-journal-list"),

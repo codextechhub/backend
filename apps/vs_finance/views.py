@@ -19,7 +19,11 @@ from rest_framework.views import APIView
 
 from core.mixins import RetrieveModelMixin
 from core.response import success_response
-from vs_rbac.permissions import HasRBACPermission, IsAuthenticatedAndActive
+from vs_rbac.permissions import (
+    HasAnyModuleAccess,
+    HasRBACPermission,
+    IsAuthenticatedAndActive,
+)
 
 from .models import (
     Account,
@@ -29,6 +33,7 @@ from .models import (
     LedgerEntity,
 )
 from .money import format_naira
+from .posting import posting_window
 from .serializers import (
     AccountSerializer,
     FiscalPeriodSerializer,
@@ -537,6 +542,43 @@ class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
         if (year := self.request.query_params.get("year")):
             qs = qs.filter(fiscal_year__year=year)
         return qs.order_by("fiscal_year__year", "period_no")
+
+
+# Expose the dates an ordinary posting may currently use.
+class PostingWindowView(APIView):
+    """GET /finance/posting-window/?entity= — which dates accept a posting today.
+
+    Feeds every date picker that carries a document date, in this console and in
+    procurement (GRNs, vendor invoices and payments post through the same guard).
+    It reads :func:`~vs_finance.posting.posting_window`, the same status rules the
+    posting guard applies, so a date the picker offers is a date the guard accepts.
+
+    Gated on module membership rather than ``finance.period.view``: a procurement
+    officer raising a GRN needs this window but has no business on the period-close
+    screens. The payload is period names, dates and statuses for an entity the
+    caller is already entitled to — no amounts, no balances.
+
+    Unpaginated by design. ``/finance/periods/`` paginates at 25 ordered oldest
+    first, so the current periods fall off page one once an entity has three years
+    of history — a paginated window would silently be the wrong window.
+
+    docstring-name: Posting window
+    """
+
+    permission_classes = [IsAuthenticatedAndActive & HasAnyModuleAccess]
+    rbac_modules = ["finance", "procurement"]
+
+    # Handle the get workflow.
+    def get(self, request):
+        """Return open ranges, blocked periods and the default date for new documents."""
+        entity = resolve_entity(request)  # Tenant-scoped; unknown/forbidden both 404.
+        window = posting_window(entity)
+        message = (
+            "Posting window retrieved."
+            if window["default_date"]
+            else "This entity has no open fiscal period."
+        )
+        return success_response(message, data=window)
 
 
 # Group endpoint behavior for Fiscal Year List View.

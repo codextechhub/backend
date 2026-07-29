@@ -86,7 +86,13 @@ from vs_finance.models import (
 )
 from vs_finance.money import format_naira, to_kobo, to_naira
 from vs_finance.numbering import next_document_number
-from vs_finance.posting import ensure_balanced, ensure_period_open, post_journal, reverse_journal
+from vs_finance.posting import (
+    ensure_balanced,
+    ensure_period_open,
+    post_journal,
+    posting_window,
+    reverse_journal,
+)
 from vs_finance.receivables import allocate_payment, customer_credit_balance, post_invoice, post_payment
 from vs_finance.credit_notes import (
     allocate_credit_note,
@@ -380,6 +386,239 @@ class _GLFixtureMixin:
                 entry=entry, account=acc, debit=dr, credit=cr, line_no=i,
             )
         return entry
+
+
+# Group tests for Posting Window Tests.
+class PostingWindowTests(TestCase):
+    """The read-side window must agree with the guard, and snap to the nearest open day.
+
+    These cover the cases a date picker actually meets: today postable, today in a
+    closed month, no open period at all, and a closed gap between two open periods —
+    the shape ``min``/``max`` bounds cannot express.
+    """
+
+    # Prepare or verify the build periods test path.
+    def build_periods(self, statuses):
+        """Build one 2026 entity with a monthly period per entry in ``statuses``.
+
+        ``statuses`` maps period_no (1-based month) to a :class:`PeriodStatus`.
+        """
+        entity = LedgerEntity.objects.create(
+            name="Window Books", code="WBOOK", kind=LedgerEntity.Kind.TENANT,
+        )
+        year = FiscalYear.objects.create(
+            entity=entity, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        for period_no, status in sorted(statuses.items()):
+            start = datetime.date(2026, period_no, 1)
+            end = (
+                datetime.date(2026, period_no + 1, 1) - datetime.timedelta(days=1)
+                if period_no < 12 else datetime.date(2026, 12, 31)
+            )
+            FiscalPeriod.objects.create(
+                entity=entity, fiscal_year=year, period_no=period_no,
+                name=f"P{period_no} 2026", start_date=start, end_date=end, status=status,
+            )
+        return entity
+
+    # Verify today is used when today is postable behavior.
+    def test_today_is_used_when_today_is_postable(self):
+        entity = self.build_periods({2: PeriodStatus.OPEN})
+        window = posting_window(entity, today=datetime.date(2026, 2, 14))
+
+        self.assertTrue(window["today_is_open"])
+        self.assertEqual(window["default_date"], datetime.date(2026, 2, 14))
+        self.assertEqual(window["default_period"]["name"], "P2 2026")
+
+    # Verify today in a closed month snaps back to the last open day behavior.
+    def test_today_in_closed_month_snaps_back_to_last_open_day(self):
+        entity = self.build_periods({
+            1: PeriodStatus.OPEN, 2: PeriodStatus.CLOSED,
+        })
+        window = posting_window(entity, today=datetime.date(2026, 2, 14))
+
+        self.assertFalse(window["today_is_open"])
+        self.assertEqual(window["default_date"], datetime.date(2026, 1, 31))
+        self.assertEqual([p["name"] for p in window["open"]], ["P1 2026"])
+        self.assertEqual([p["name"] for p in window["blocked"]], ["P2 2026"])
+
+    # Verify today before every open period snaps forward behavior.
+    def test_today_before_every_open_period_snaps_forward(self):
+        entity = self.build_periods({6: PeriodStatus.OPEN})
+        window = posting_window(entity, today=datetime.date(2026, 2, 14))
+
+        self.assertEqual(window["default_date"], datetime.date(2026, 6, 1))
+
+    # Verify closed gap picks the nearer side behavior.
+    def test_closed_gap_picks_the_nearer_side(self):
+        # Jan open, Feb–Apr closed, May open. Today sits in the gap: 3 Feb is 3 days
+        # after Jan's last open day and ~87 before May's first, so it snaps back.
+        entity = self.build_periods({
+            1: PeriodStatus.OPEN, 2: PeriodStatus.CLOSED, 3: PeriodStatus.CLOSED,
+            4: PeriodStatus.CLOSED, 5: PeriodStatus.OPEN,
+        })
+        near_past = posting_window(entity, today=datetime.date(2026, 2, 3))
+        self.assertEqual(near_past["default_date"], datetime.date(2026, 1, 31))
+
+        # Late April is closer to May's opening than to January's close, so it snaps
+        # forward — the direction has to follow distance, not a fixed preference.
+        near_future = posting_window(entity, today=datetime.date(2026, 4, 28))
+        self.assertEqual(near_future["default_date"], datetime.date(2026, 5, 1))
+
+    # Verify soft closed is not selectable behavior.
+    def test_soft_closed_is_not_selectable(self):
+        # SOFT_CLOSED only accepts privileged close-process postings, so an ordinary
+        # picker must treat it as blocked — same rule ensure_period_open applies.
+        entity = self.build_periods({
+            1: PeriodStatus.OPEN, 2: PeriodStatus.SOFT_CLOSED,
+        })
+        window = posting_window(entity, today=datetime.date(2026, 2, 14))
+
+        self.assertEqual([p["name"] for p in window["open"]], ["P1 2026"])
+        self.assertEqual(window["default_date"], datetime.date(2026, 1, 31))
+
+    # Verify no open period yields no default date behavior.
+    def test_no_open_period_yields_no_default_date(self):
+        entity = self.build_periods({
+            1: PeriodStatus.CLOSED, 2: PeriodStatus.LOCKED,
+        })
+        window = posting_window(entity, today=datetime.date(2026, 2, 14))
+
+        self.assertEqual(window["open"], [])
+        self.assertIsNone(window["default_date"])
+        self.assertIsNone(window["default_period"])
+
+    # Verify every offered date is accepted by the posting guard behavior.
+    def test_every_offered_date_is_accepted_by_the_posting_guard(self):
+        # The window is only worth having if it cannot drift from the guard, so
+        # assert the agreement directly rather than trusting the shared constant.
+        entity = self.build_periods({
+            1: PeriodStatus.OPEN, 2: PeriodStatus.SOFT_CLOSED,
+            3: PeriodStatus.CLOSED, 4: PeriodStatus.OPEN,
+        })
+        window = posting_window(entity, today=datetime.date(2026, 3, 10))
+
+        for brief in window["open"]:
+            period = FiscalPeriod.objects.get(pk=brief["id"])
+            ensure_period_open(period)  # must not raise
+        for brief in window["blocked"]:
+            period = FiscalPeriod.objects.get(pk=brief["id"])
+            with self.assertRaises(PeriodClosedError):
+                ensure_period_open(period)
+
+
+# Group tests for Posting Window Endpoint Tests.
+class PostingWindowEndpointTests(TestCase):
+    """The window is gated on module membership, not on finance.period.view.
+
+    The whole point of the endpoint is that a procurement officer can read it — their
+    GRNs and vendor payments post through the same guard — while a user with no stake
+    in either module still cannot, and no one reads another tenant's books.
+    """
+
+    # Prepare the shared test fixture.
+    def setUp(self):
+        from vs_tenants.models import Tenant
+
+        self.tenant = Tenant.objects.get(slug="codex")
+        self.entity = LedgerEntity.objects.create(
+            name="Gate Books", code="GBOOK", kind=LedgerEntity.Kind.TENANT,
+            tenant=self.tenant,
+        )
+        year = FiscalYear.objects.create(
+            entity=self.entity, year=2026,
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 12, 31),
+        )
+        FiscalPeriod.objects.create(
+            entity=self.entity, fiscal_year=year, period_no=1, name="Jan 2026",
+            start_date=datetime.date(2026, 1, 1), end_date=datetime.date(2026, 1, 31),
+            status=PeriodStatus.OPEN,
+        )
+
+    # Prepare or verify the call as test path.
+    def call_as(self, user, *, entity_code=None):
+        """Hit the endpoint as ``user``, returning the rendered response."""
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views import PostingWindowView
+
+        req = APIRequestFactory().get(
+            "/v1/finance/posting-window/", {"entity": entity_code or self.entity.code},
+        )
+        force_authenticate(req, user=user)
+        req.tenant = user.tenant  # factory requests bypass the auth layer
+        resp = PostingWindowView.as_view()(req)
+        resp.render()
+        return resp
+
+    # Prepare or verify the user holding test path.
+    def user_holding(self, *keys, email):
+        """Build an ACTIVE user whose only permissions are ``keys``."""
+        from django.contrib.auth import get_user_model
+        from vs_rbac.tests.helpers import (
+            make_assignment, make_permission, make_role, make_role_permission,
+        )
+
+        user = get_user_model().objects.create_user(
+            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Gate", last_name="Test", tenant=self.tenant,
+        )
+        role = make_role(self.tenant, name=f"Role {email}")
+        for key in keys:
+            make_role_permission(role, make_permission(key))
+        make_assignment(self.tenant, user, role)
+        return user
+
+    # Verify procurement only user can read the window behavior.
+    def test_procurement_only_user_can_read_the_window(self):
+        # The case that motivated the endpoint: no finance.period.view anywhere.
+        user = self.user_holding(
+            "procurement.goods_receipt.post", email="proc-only@test.com",
+        )
+        resp = self.call_as(user)
+
+        self.assertEqual(resp.status_code, 200)
+
+    # Verify finance user can read the window behavior.
+    def test_finance_user_can_read_the_window(self):
+        import json
+
+        user = self.user_holding("finance.invoice.view", email="fin-only@test.com")
+        resp = self.call_as(user)
+
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.content)["data"]
+        self.assertEqual([p["name"] for p in data["open"]], ["Jan 2026"])
+
+    # Verify user outside both modules is denied behavior.
+    def test_user_outside_both_modules_is_denied(self):
+        user = self.user_holding("school.student.view", email="outsider@test.com")
+        resp = self.call_as(user)
+
+        self.assertEqual(resp.status_code, 403)
+
+    # Verify user with no permissions at all is denied behavior.
+    def test_user_with_no_permissions_at_all_is_denied(self):
+        user = self.user_holding(email="bare@test.com")
+        resp = self.call_as(user)
+
+        self.assertEqual(resp.status_code, 403)
+
+    # Verify another tenants entity is not readable behavior.
+    def test_another_tenants_entity_is_not_readable(self):
+        from vs_tenants.models import Tenant
+
+        other_tenant = Tenant.objects.create(name="Other Co", slug="other-co")
+        foreign = LedgerEntity.objects.create(
+            name="Foreign Books", code="FBOOK", kind=LedgerEntity.Kind.TENANT,
+            tenant=other_tenant,
+        )
+        user = self.user_holding("finance.invoice.view", email="cross@test.com")
+
+        # Module access is not entity access — resolve_entity 404s rather than
+        # confirming the code exists to someone outside the tenant.
+        resp = self.call_as(user, entity_code=foreign.code)
+        self.assertEqual(resp.status_code, 404)
 
 
 # Group tests for Chart Of Accounts Tests.
