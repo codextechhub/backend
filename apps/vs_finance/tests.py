@@ -18,6 +18,7 @@ from vs_finance.constants import (
     PLATFORM_ENTITY_CODE,
 )
 from vs_finance.exceptions import (
+    BackdatedPostingError,
     InactiveAccountError,
     PeriodClosedError,
     PostingError,
@@ -94,7 +95,13 @@ from vs_finance.posting import (
     posting_window,
     reverse_journal,
 )
-from vs_finance.receivables import allocate_payment, customer_credit_balance, post_invoice, post_payment
+from vs_finance.receivables import (
+    allocate_payment,
+    customer_credit_balance,
+    customer_refund_available_balance,
+    post_invoice,
+    post_payment,
+)
 from vs_finance.credit_notes import (
     allocate_credit_note,
     post_credit_note,
@@ -1215,8 +1222,11 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
 
         note = self._post_debit_note(
             entity, customer, amount=20000, date=datetime.date(2026, 1, 10))
-        # A fresh debit note offsets the refundable credit until settled.
-        self.assertEqual(customer_credit_balance(customer), 0)
+        # A debit note is an AR charge; it never touches 2140, so the stored credit is
+        # untouched and still agrees with the GL (asserted below). What it does offset
+        # is *refundability* — you do not hand back cash a customer still owes you.
+        self.assertEqual(customer_credit_balance(customer), 20000)
+        self.assertEqual(customer_refund_available_balance(customer), 0)
 
         allocate_payment(pay)  # drain stored credit onto the debit note
         note.refresh_from_db()
@@ -8709,3 +8719,244 @@ class SeedFinancePermissionsTests(TestCase):
                     ).exists(),
                     f"{role_key}:{key}",
                 )
+
+
+class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
+    """A movement may not be dated before the value it draws on exists.
+
+    The reported instance: a batch refund dated 1 Sep paid out credit that only
+    arrived on a 9 Sep receipt, and the receipt went on showing that cash as
+    unallocated afterwards. The root cause was general — every AR guard validated
+    against *current, undated* state and then posted on a user-chosen accounting date
+    — so these cases cover the whole class, not just the refund that surfaced it.
+    """
+
+    # --- fixtures ---------------------------------------------------------- #
+
+    def _ledger(self):
+        """An AR ledger with two open periods, so backdating stays period-legal."""
+        entity, period = self.build_ledger()
+        FiscalPeriod.objects.create(
+            entity=entity, fiscal_year=period.fiscal_year, period_no=2, name="Feb 2026",
+            start_date=datetime.date(2026, 2, 1), end_date=datetime.date(2026, 2, 28),
+            status=PeriodStatus.OPEN,
+        )
+        customer = Customer.objects.create(
+            entity=entity, code="CUST1", name="Acme Ltd",
+            receivable_account=Account.objects.get(entity=entity, code="1200"),
+        )
+        return entity, period, customer
+
+    def _receipt(self, entity, customer, *, amount, date, auto_allocate=False):
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=date, amount=amount,
+            deposit_account=Account.objects.get(entity=entity, code="1100"),
+        )
+        post_payment(pay, auto_allocate=auto_allocate)
+        pay.refresh_from_db()
+        return pay
+
+    def _draft_refund(self, entity, customer, *, amount, date):
+        return Refund.objects.create(
+            entity=entity, customer=customer, refund_date=date, amount=amount,
+            deposit_account=Account.objects.get(entity=entity, code="1100"),
+        )
+
+    # --- refunds ----------------------------------------------------------- #
+
+    def test_refund_cannot_be_dated_before_the_credit_arrives(self):
+        """The reported bug, reduced: credit on 9 Feb, refund dated 1 Feb."""
+        entity, _period, customer = self._ledger()
+        self._receipt(entity, customer, amount=45000, date=datetime.date(2026, 2, 9))
+
+        refund = self._draft_refund(
+            entity, customer, amount=45000, date=datetime.date(2026, 2, 1))
+        with self.assertRaises(PostingError) as ctx:
+            post_refund(refund)
+
+        # The message must name the date, not just the shortfall — that is the
+        # difference between a fixable error and a baffling one.
+        self.assertIn("2026-02-01", str(ctx.exception))
+        refund.refresh_from_db()
+        self.assertEqual(refund.status, DocumentStatus.DRAFT)
+        self.assertEqual(customer_credit_balance(customer), 45000)
+
+    def test_refund_on_or_after_the_credit_date_still_posts(self):
+        """The guard must not break the ordinary payout it is protecting."""
+        entity, _period, customer = self._ledger()
+        receipt = self._receipt(entity, customer, amount=45000, date=datetime.date(2026, 2, 9))
+
+        refund = self._draft_refund(
+            entity, customer, amount=45000, date=datetime.date(2026, 2, 9))
+        post_refund(refund)
+        refund.refresh_from_db()
+        receipt.refresh_from_db()
+
+        self.assertEqual(refund.status, DocumentStatus.POSTED)
+        # The receipt's cash is gone even though it never settled an invoice.
+        self.assertEqual(receipt.unallocated_amount, 45000)
+        self.assertEqual(receipt.refunded_amount, 45000)
+        self.assertEqual(receipt.credit_remaining, 0)
+        self.assertEqual(customer_credit_balance(customer), 0)
+
+    def test_refund_records_which_credit_it_drained(self):
+        """FIFO attribution: the older receipt is emptied before the newer is touched."""
+        entity, _period, customer = self._ledger()
+        first = self._receipt(entity, customer, amount=30000, date=datetime.date(2026, 1, 5))
+        second = self._receipt(entity, customer, amount=30000, date=datetime.date(2026, 1, 20))
+
+        refund = self._draft_refund(
+            entity, customer, amount=40000, date=datetime.date(2026, 1, 25))
+        post_refund(refund)
+        first.refresh_from_db()
+        second.refresh_from_db()
+
+        self.assertEqual(first.refunded_amount, 30000)   # oldest lot drained first
+        self.assertEqual(second.refunded_amount, 10000)  # remainder off the newer one
+        self.assertEqual(first.credit_remaining, 0)
+        self.assertEqual(second.credit_remaining, 20000)
+        self.assertEqual(customer_credit_balance(customer), 20000)
+        self.assertEqual(
+            sorted(refund.allocations.values_list("amount", flat=True)), [10000, 30000])
+
+    def test_refunded_credit_cannot_be_allocated_again(self):
+        """Refunded cash has left 2140 and must not be reclassified back onto AR."""
+        entity, _period, customer = self._ledger()
+        receipt = self._receipt(entity, customer, amount=45000, date=datetime.date(2026, 1, 5))
+        post_refund(self._draft_refund(
+            entity, customer, amount=45000, date=datetime.date(2026, 1, 6)))
+
+        invoice = self.make_invoice(entity, customer, lines=[("4100", 1, 45000, None)])
+        post_invoice(invoice)
+
+        self.assertEqual(allocate_payment(receipt), [])  # nothing left to apply
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.amount_paid, 0)
+        self.assertEqual(invoice.balance_due, 45000)
+
+    def test_credit_availability_is_measured_as_at_a_date(self):
+        entity, _period, customer = self._ledger()
+        self._receipt(entity, customer, amount=45000, date=datetime.date(2026, 2, 9))
+
+        self.assertEqual(
+            customer_credit_balance(customer, as_of=datetime.date(2026, 2, 1)), 0)
+        self.assertEqual(
+            customer_credit_balance(customer, as_of=datetime.date(2026, 2, 9)), 45000)
+        self.assertEqual(customer_credit_balance(customer), 45000)  # no cutoff → today
+
+    # --- write-offs and concessions ---------------------------------------- #
+
+    def test_write_off_cannot_predate_its_invoice(self):
+        entity, _period, customer = self._ledger()
+        invoice = self.make_invoice(
+            entity, customer, lines=[("4100", 1, 50000, None)],
+            date=datetime.date(2026, 2, 10), due=datetime.date(2026, 2, 20))
+        post_invoice(invoice)
+
+        with self.assertRaises(BackdatedPostingError):
+            write_off_invoice(invoice, write_off_date=datetime.date(2026, 2, 1))
+
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.amount_credited, 0)
+        self.assertEqual(invoice.balance_due, 50000)
+
+    def test_write_off_on_the_invoice_date_is_allowed(self):
+        entity, _period, customer = self._ledger()
+        invoice = self.make_invoice(
+            entity, customer, lines=[("4100", 1, 50000, None)],
+            date=datetime.date(2026, 2, 10), due=datetime.date(2026, 2, 20))
+        post_invoice(invoice)
+
+        write_off_invoice(invoice, write_off_date=datetime.date(2026, 2, 10))
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.balance_due, 0)
+
+    def test_concession_cannot_predate_its_invoice(self):
+        entity, _period, customer = self._ledger()
+        invoice = self.make_invoice(
+            entity, customer, lines=[("4100", 1, 50000, None)],
+            date=datetime.date(2026, 2, 10), due=datetime.date(2026, 2, 20))
+        post_invoice(invoice)
+        concession = Concession.objects.create(
+            entity=entity, customer=customer, invoice=invoice, amount=10000,
+            concession_date=datetime.date(2026, 2, 1), reason="Scholarship",
+        )
+
+        with self.assertRaises(BackdatedPostingError):
+            post_concession(concession)
+
+        concession.refresh_from_db()
+        invoice.refresh_from_db()
+        self.assertEqual(concession.status, DocumentStatus.DRAFT)
+        self.assertEqual(invoice.amount_credited, 0)
+
+    # --- settlement and allocation dating ---------------------------------- #
+
+    def test_receipt_does_not_settle_an_invoice_raised_later(self):
+        """A prepayment: the cash stays in 2140 instead of crediting AR early."""
+        entity, _jan, customer = self._ledger()
+        feb = FiscalPeriod.objects.get(entity=entity, period_no=2)
+        invoice = self.make_invoice(
+            entity, customer, lines=[("4100", 1, 50000, None)],
+            date=datetime.date(2026, 2, 10), due=datetime.date(2026, 2, 20))
+        post_invoice(invoice)
+
+        receipt = self._receipt(
+            entity, customer, amount=50000, date=datetime.date(2026, 2, 1),
+            auto_allocate=True)
+        invoice.refresh_from_db()
+
+        self.assertEqual(receipt.allocated_amount, 0)
+        self.assertEqual(invoice.amount_paid, 0)
+        self.assertEqual(customer_credit_balance(customer), 50000)
+        # AR was only ever debited by the invoice; the 1 Feb receipt did not credit it,
+        # so the control never dips negative between the two dates. The cash sits in
+        # 2140 instead, which is what a prepayment is.
+        ar_balance = AccountBalance.objects.get(account__code="1200", period=feb)
+        self.assertEqual(ar_balance.debit_total, 50000)
+        self.assertEqual(ar_balance.credit_total, 0)
+        credit_balance = AccountBalance.objects.get(account__code="2140", period=feb)
+        self.assertEqual(credit_balance.credit_total, 50000)
+
+    def test_explicit_allocation_to_a_later_invoice_is_refused(self):
+        """Auto-allocation may skip silently; a target the user named may not be."""
+        entity, _period, customer = self._ledger()
+        invoice = self.make_invoice(
+            entity, customer, lines=[("4100", 1, 50000, None)],
+            date=datetime.date(2026, 2, 10), due=datetime.date(2026, 2, 20))
+        post_invoice(invoice)
+
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 2, 1),
+            amount=50000, deposit_account=Account.objects.get(entity=entity, code="1100"),
+        )
+        with self.assertRaises(BackdatedPostingError):
+            post_payment(pay, allocations=[(invoice, 50000)])
+
+        pay.refresh_from_db()
+        self.assertEqual(pay.status, DocumentStatus.DRAFT)
+
+    def test_applying_older_credit_to_a_newer_invoice_books_on_the_later_date(self):
+        """Legitimate prepayment: allowed, but the reclass lands in the invoice's period."""
+        entity, jan, customer = self._ledger()
+        feb = FiscalPeriod.objects.get(entity=entity, period_no=2)
+        receipt = self._receipt(entity, customer, amount=50000, date=datetime.date(2026, 1, 5))
+
+        invoice = self.make_invoice(
+            entity, customer, lines=[("4100", 1, 50000, None)],
+            date=datetime.date(2026, 2, 10), due=datetime.date(2026, 2, 20))
+        post_invoice(invoice)
+
+        allocate_payment(receipt)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.balance_due, 0)
+
+        # The reclassification is dated 10 Feb (the invoice), not 5 Jan (the receipt):
+        # crediting AR in January would have driven the control negative for a month.
+        reclass = (JournalEntry.objects
+                   .filter(entity=entity, narration__startswith="Apply customer credit")
+                   .latest("id"))
+        self.assertEqual(reclass.date, datetime.date(2026, 2, 10))
+        self.assertEqual(reclass.period_id, feb.pk)
+        jan_ar = AccountBalance.objects.filter(account__code="1200", period=jan).first()
+        self.assertIsNone(jan_ar)  # nothing ever hit AR in January

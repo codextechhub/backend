@@ -482,6 +482,7 @@ class CreditNoteSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source="customer.name", read_only=True)
     invoice_number = serializers.CharField(source="invoice.document_number", read_only=True, default=None)
     unallocated_amount = serializers.IntegerField(read_only=True)
+    credit_remaining = serializers.IntegerField(read_only=True)
     total_naira = serializers.SerializerMethodField()
     lines = CreditNoteLineSerializer(many=True, read_only=True)
 
@@ -491,7 +492,8 @@ class CreditNoteSerializer(serializers.ModelSerializer):
             "id", "document_number", "kind", "customer_id", "customer_code",
             "customer_name", "invoice_id", "invoice_number", "note_date", "status",
             "subtotal", "tax_total", "total", "total_naira",
-            "allocated_amount", "unallocated_amount", "reason", "reference", "lines",
+            "allocated_amount", "unallocated_amount", "refunded_amount",
+            "credit_remaining", "reason", "reference", "lines",
         ]
 
     def get_total_naira(self, obj) -> str:
@@ -543,6 +545,7 @@ class PaymentSerializer(serializers.ModelSerializer):
     deposit_account_name = serializers.CharField(source="deposit_account.name", read_only=True, default=None)
     amount_naira = serializers.SerializerMethodField()
     unallocated_amount = serializers.IntegerField(read_only=True)
+    credit_remaining = serializers.IntegerField(read_only=True)
     allocation_status = serializers.SerializerMethodField()
 
     class Meta:
@@ -550,7 +553,8 @@ class PaymentSerializer(serializers.ModelSerializer):
         fields = [
             "id", "document_number", "customer_id", "customer_code", "customer_name",
             "payment_date", "method", "amount", "amount_naira", "allocated_amount",
-            "unallocated_amount", "allocation_status", "deposit_account_code",
+            "unallocated_amount", "refunded_amount", "credit_remaining",
+            "allocation_status", "deposit_account_code",
             "deposit_account_name", "reference", "narration", "journal_id", "status",
         ]
 
@@ -558,8 +562,17 @@ class PaymentSerializer(serializers.ModelSerializer):
         return format_naira(obj.amount)
 
     def get_allocation_status(self, obj) -> str:
+        """Where this receipt's cash ended up — settled, refunded, or still sitting.
+
+        REFUNDED is its own state rather than a flavour of UNALLOCATED: the cash never
+        settled a bill, but it is also gone, and calling that "unallocated" is precisely
+        what made a refunded receipt keep advertising money that had already been paid
+        back out.
+        """
         if obj.unallocated_amount <= 0:
             return "ALLOCATED"
+        if obj.credit_remaining <= 0:
+            return "REFUNDED"
         if obj.allocated_amount <= 0:
             return "UNALLOCATED"
         return "PARTIAL"

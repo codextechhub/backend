@@ -68,6 +68,10 @@ class CreditNote(FinanceDocument):
     allocated_amount = MoneyField(
         help_text="Portion of a CREDIT note applied to invoices, in kobo.",
     )
+    refunded_amount = MoneyField(
+        help_text="Portion of a CREDIT note's unapplied value already paid back out as "
+                  "a customer refund, in kobo. Maintained by RefundAllocation.",
+    )
     # A DEBIT note is a supplementary charge that debits AR, so — like an invoice — it
     # is *settled* by receipts. ``amount_paid`` tracks cash allocated against it and
     # ``settlement_status`` mirrors Invoice.payment_status. Both are inert on CREDIT
@@ -98,8 +102,21 @@ class CreditNote(FinanceDocument):
 
     @property
     def unallocated_amount(self) -> int:
-        """Credit not yet applied to an invoice (CREDIT notes only)."""
+        """Credit not yet applied to an invoice (CREDIT notes only).
+
+        A sub-ledger fact, blind to refunds — see :attr:`credit_remaining` for the
+        amount actually still available to spend.
+        """
         return self.total - self.allocated_amount
+
+    @property
+    def credit_remaining(self) -> int:
+        """CREDIT-note value still sitting in the customer-credit liability (2140).
+
+        Unapplied value less whatever has since been refunded out of it. This is the
+        spendable figure; ``unallocated_amount`` is not.
+        """
+        return self.total - self.allocated_amount - self.refunded_amount
 
     @property
     def balance_due(self) -> int:
@@ -307,6 +324,75 @@ class Refund(FinanceDocument):
             models.Index(fields=["customer"]),
             models.Index(fields=["entity", "refund_date"]),
         ]
+
+
+class RefundAllocation(TimeStampedModel):
+    """Links a slice of a :class:`Refund` to the credit lot it was paid out of.
+
+    A refund debits the customer-credit liability (2140) as one lump, but that
+    liability is made of dated parcels — individual receipts and CREDIT notes, each
+    with its own accounting date. Without this row the sub-ledger could not say
+    *which* credit was handed back, so a receipt went on reporting its cash as
+    unapplied and available long after it had been refunded, and two different parts
+    of the system disagreed about whether the money was still there.
+
+    Exactly one of ``payment`` / ``note`` is set — the lot the money came from.
+    :func:`vs_finance.chronology.plan_credit_draw` chooses the lots oldest-first, and
+    posting keeps the lot's ``refunded_amount`` in step inside the same transaction.
+    """
+
+    refund = models.ForeignKey(
+        Refund, on_delete=models.CASCADE, related_name="allocations",
+    )
+    payment = models.ForeignKey(
+        "Payment", on_delete=models.PROTECT, related_name="refund_allocations",
+        null=True, blank=True,
+        help_text="The receipt whose unapplied cash funded this slice of the refund.",
+    )
+    note = models.ForeignKey(
+        CreditNote, on_delete=models.PROTECT, related_name="refund_allocations",
+        null=True, blank=True,
+        help_text="The CREDIT note whose unapplied value funded this slice of the refund.",
+    )
+    amount = MoneyField(help_text="Amount of the refund drawn from this lot, in kobo.")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["refund", "payment"], name="uniq_finance_refalloc_refund_payment",
+                condition=models.Q(payment__isnull=False),
+            ),
+            models.UniqueConstraint(
+                fields=["refund", "note"], name="uniq_finance_refalloc_refund_note",
+                condition=models.Q(note__isnull=False),
+            ),
+            models.CheckConstraint(
+                check=models.Q(amount__gte=0), name="ck_finance_refalloc_non_negative",
+            ),
+            # Exactly one source lot — a slice funded by both or neither is meaningless
+            # and would silently break the 2140 attribution.
+            models.CheckConstraint(
+                check=(
+                    models.Q(payment__isnull=False, note__isnull=True)
+                    | models.Q(payment__isnull=True, note__isnull=False)
+                ),
+                name="ck_finance_refalloc_one_source",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["refund"]),
+            models.Index(fields=["payment"]),
+            models.Index(fields=["note"]),
+        ]
+        ordering = ["refund", "id"]
+
+    @property
+    def source(self):
+        """The credit lot this slice was drawn from (a Payment or a CreditNote)."""
+        return self.payment or self.note
+
+    def __str__(self) -> str:
+        return f"{self.refund_id}←{self.source}: {self.amount}"
 
 
 class WriteOffRequest(FinanceDocument):

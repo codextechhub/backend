@@ -37,6 +37,7 @@ from .constants import (
     JournalSource,
 )
 from .exceptions import FinanceError, PostingError
+from .money import format_naira
 from .posting import post_journal, resolve_period
 from .receivables import _build_invoice_plan, compute_line_net, compute_tax
 
@@ -233,8 +234,11 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
                 entry=entry, account=tax_objs[acc_id], debit=amount, credit=0,  # Dr output tax.
                 description="Output tax reversal", line_no=line_no,  # Label and order.
             )
-        plan = _build_invoice_plan(customer, allocations) if (allocations is not None or auto_allocate) else []  # Build allocation plan.
-        applied, _created = _apply_creditnote_subledger(note, plan, remaining=note.total)  # Apply credit to invoices.
+        plan = (_build_invoice_plan(  # Build allocation plan, bounded by the note's own date.
+            customer, allocations, as_of=note.note_date,
+            settlement=f"Credit note {note.document_number or note.pk}",
+        ) if (allocations is not None or auto_allocate) else [])
+        applied, _created, _latest = _apply_creditnote_subledger(note, plan, remaining=note.total)  # Apply credit to invoices.
         excess = note.total - applied  # Unapplied credit becomes customer-credit liability.
         if applied > 0:  # Applied credit reduces AR.
             line_no += 1  # Advance line number.
@@ -274,10 +278,14 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
 def _apply_creditnote_subledger(note, plan, *, remaining):
     """Create/extend CreditNoteAllocation rows + bump invoice ``amount_credited`` for
     the plan, capped at each invoice balance and ``remaining``. GL-agnostic — the
-    caller posts the journal. Returns ``(applied_total, created_rows)``."""
+    caller posts the journal.
+
+    Returns ``(applied_total, created_rows, latest_invoice_date)``; the caller needs
+    that last date to book its reclassification on or after the invoice it clears."""
     from .models import CreditNoteAllocation
 
     applied, created = 0, []  # Track total applied and touched allocation rows.
+    latest = None  # Newest invoice date this run actually settled.
     for invoice, requested in plan:  # Walk requested allocation plan.
         if remaining <= 0:  # Stop when note value is exhausted.
             break  # Exit the current loop.
@@ -300,7 +308,9 @@ def _apply_creditnote_subledger(note, plan, *, remaining):
         remaining -= apply_amount  # Reduce available note value.
         applied += apply_amount  # Increase applied total.
         created.append(alloc)  # Track allocation row.
-    return applied, created  # Return applied total and allocation rows.
+        if latest is None or invoice.invoice_date > latest:  # Track newest settled invoice.
+            latest = invoice.invoice_date
+    return applied, created, latest  # Applied total, allocation rows, newest settled date.
 
 
 @transaction.atomic
@@ -312,7 +322,12 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
     applying it reclassifies it back to AR (``Dr customer-credit · Cr AR``) and
     settles the invoices. ``allocations`` is an optional ``[(invoice, amount)]`` plan;
     without it, open invoices are settled oldest-first.
+
+    An older note may be applied to a newer invoice — that is legitimate — but the
+    reclassification is dated at the later of the two, never before the receivable it
+    clears exists.
     """
+    from .chronology import effective_allocation_date
     from .models import Customer, JournalEntry, JournalLine
 
     note = type(note).objects.select_for_update().get(pk=note.pk)
@@ -323,19 +338,22 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
     if note.status != DocumentStatus.POSTED:  # Only posted credit notes have stored credit to apply.
         raise PostingError("Only a posted credit note can be allocated.")
 
-    remaining = note.unallocated_amount  # Customer-credit liability still available.
+    # Credit *remaining*: value already refunded out has left 2140 and cannot be
+    # reclassified to AR as well.
+    remaining = note.credit_remaining  # Customer-credit liability still available.
     if remaining <= 0:  # Nothing left to allocate.
         return []
 
     plan = _build_invoice_plan(note.customer, allocations)  # Build explicit or oldest-first invoice plan.
-    applied, created = _apply_creditnote_subledger(note, plan, remaining=remaining)  # Apply credit to invoices.
+    applied, created, latest = _apply_creditnote_subledger(note, plan, remaining=remaining)  # Apply credit to invoices.
     if applied <= 0:  # No invoice received value.
         return []
 
-    period = resolve_period(note.entity, note.note_date)  # Resolve allocation period.
+    effective = effective_allocation_date(note.note_date, [latest])  # Later of note and settled invoices.
+    period = resolve_period(note.entity, effective)  # Resolve allocation period.
     entry = JournalEntry.objects.create(
         entity=note.entity, branch=note.branch,  # Scope entity and optional branch.
-        date=note.note_date, period=period,  # Use note date and period.
+        date=effective, period=period,  # Effective allocation date and its period.
         source=JournalSource.SALES, currency=note.currency,  # Sales-side reclassification.
         narration=f"Apply customer credit: {customer.code}",  # Journal narration.
         reference=note.reference, created_by=actor_user,  # Reference and actor.
@@ -357,7 +375,8 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
         entity=note.entity, action=FinanceAuditAction.CREDIT_NOTE_ALLOCATED,  # Audit action.
         actor_user=actor_user, target=note,  # Actor and target context.
         message=f"Applied {applied} kobo customer credit across {len(created)} invoice(s).",  # Summary.
-        journal_id=entry.pk, allocated=note.allocated_amount, unallocated=note.unallocated_amount,  # Structured metadata.
+        journal_id=entry.pk, allocated=note.allocated_amount,  # Structured metadata.
+        unallocated=note.credit_remaining, effective_date=str(effective),  # Credit left and effective date.
     )
     return created  # Return allocation rows touched.
 
@@ -365,6 +384,68 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
 # --------------------------------------------------------------------------- #
 # Customer refund                                                              #
 # --------------------------------------------------------------------------- #
+
+
+# Find the earliest date a customer's credit could cover an amount.
+def _earliest_credit_date(customer, amount, *, exclude_refund_id=None):
+    """The first accounting date on which ``amount`` of credit exists, or ``None``.
+
+    Purely for the error message on a backdated refund: telling the user *which* date
+    would work turns a flat rejection into a one-click correction. Walks the customer's
+    credit lots oldest-first and returns the date of the lot that tips the running
+    total over the requested amount.
+    """
+    from .chronology import credit_lots
+
+    lots = credit_lots(customer.entity, [customer.pk]).get(customer.pk, [])
+    running = 0  # Credit accumulated as the timeline advances.
+    for lot in lots:  # Lots already arrive oldest-first.
+        running += lot.remaining  # Add this parcel to the running credit.
+        if running >= amount:  # This lot's date is the first that could fund the payout.
+            return lot.date
+    return None  # Even the full history cannot cover it; the shortfall is not about dating.
+
+
+# Attribute a refund to the credit lots it drains.
+def _attribute_refund_to_lots(refund, customer, *, as_of):
+    """Draw ``refund.amount`` from the customer's credit lots FIFO and record it.
+
+    Writes one :class:`~vs_finance.models.RefundAllocation` per lot touched and bumps
+    that lot's ``refunded_amount``, so a receipt stops advertising cash that has been
+    handed back. Without this the GL and the sub-ledger disagree: 2140 drains, but the
+    originating receipt still reports its cash as unapplied and available — which is
+    exactly how the same money could be allocated or refunded twice.
+
+    Returns the created allocation rows. Raises :class:`PostingError` if the lots
+    cannot cover the amount, which means an availability guard upstream was wrong.
+    """
+    from .chronology import credit_lots, plan_credit_draw
+    from .models import CreditNote, Payment, RefundAllocation
+
+    lots = credit_lots(refund.entity, [customer.pk], as_of=as_of).get(customer.pk, [])
+    plan = plan_credit_draw(lots, refund.amount)  # Choose the parcels to drain, oldest first.
+    drawn = sum(taken for _lot, taken in plan)  # Total the plan actually covers.
+    if drawn < refund.amount:  # Availability guard and lot arithmetic must agree.
+        raise PostingError(
+            f"Only {format_naira(drawn)} of identifiable customer credit could be "
+            f"matched to this {format_naira(refund.amount)} refund as at "
+            f"{as_of}. Refresh the customer's credit and try again.",
+        )
+
+    rows = []  # Allocation rows written for this refund.
+    for lot, taken in plan:  # Record each draw and drain its source document.
+        if lot.kind == "RECEIPT":  # Cash receipt lot.
+            source = Payment.objects.select_for_update().get(pk=lot.document_id)
+            rows.append(RefundAllocation.objects.create(
+                refund=refund, payment=source, amount=taken))
+        else:  # CREDIT-note lot.
+            source = CreditNote.objects.select_for_update().get(pk=lot.document_id)
+            rows.append(RefundAllocation.objects.create(
+                refund=refund, note=source, amount=taken))
+        source.refunded_amount += taken  # Keep the lot's own read model in step.
+        source.save(update_fields=["refunded_amount", "updated_at"])
+    return rows
+
 
 # Public wrapper for customer refund posting.
 def post_refund(refund, *, actor_user=None):
@@ -411,13 +492,27 @@ def _post_refund_atomic(refund, *, actor_user=None):
     if refund.amount <= 0:  # Refund must pay a positive amount.
         raise PostingError("A refund must have a positive amount to post.")
 
+    # Availability is measured **on the refund's own accounting date**, not today.
+    # Credit that only arrives later has not happened yet as far as this payout is
+    # concerned, and paying it out would drive the 2140 liability negative for the gap.
     from .receivables import customer_refund_available_balance
     available = customer_refund_available_balance(
-        customer, exclude_refund_id=refund.pk)  # Current unreserved refundable credit.
+        customer, exclude_refund_id=refund.pk,
+        as_of=refund.refund_date)  # Unreserved refundable credit as at the refund date.
     if refund.amount > available:  # Refund cannot exceed stored customer credit.
+        later = customer_refund_available_balance(
+            customer, exclude_refund_id=refund.pk)  # Same figure with no date cutoff.
+        hint = ""
+        if later > available:  # The shortfall is purely a dating problem — say so.
+            first = _earliest_credit_date(customer, refund.amount, exclude_refund_id=refund.pk)
+            hint = (
+                f" {format_naira(later)} is available today, but not as at "
+                f"{refund.refund_date}"
+                + (f" — the credit exists from {first}." if first else ".")
+            )
         raise PostingError(
-            f"Refund of {refund.amount} kobo exceeds {customer.code}'s available "
-            f"credit ({available} kobo).",
+            f"Refund of {format_naira(refund.amount)} exceeds {customer.code}'s credit "
+            f"available on {refund.refund_date} ({format_naira(available)}).{hint}",
         )
 
     deposit = refund.deposit_account or (  # Resolve bank/deposit account to credit.
@@ -444,6 +539,10 @@ def _post_refund_atomic(refund, *, actor_user=None):
     )
     post_journal(entry, actor_user=actor_user)  # Validate and post refund journal.
 
+    # Say which credit was handed back, not just that some was. Same transaction as
+    # the journal, so the sub-ledger can never drift from the 2140 movement.
+    rows = _attribute_refund_to_lots(refund, customer, as_of=refund.refund_date)
+
     refund.journal = entry  # Link refund to journal.
     refund.deposit_account = deposit  # Persist account used.
     refund.status = DocumentStatus.POSTED  # Mark refund posted.
@@ -454,6 +553,13 @@ def _post_refund_atomic(refund, *, actor_user=None):
         actor_user=actor_user, target=refund,  # Actor and target context.
         message=f"Refunded {refund.amount} kobo to {customer.code}.",  # Summary.
         journal_id=entry.pk, amount=refund.amount,  # Structured metadata.
+        drawn_from=[  # Which credit parcels funded the payout.
+            {
+                "source": (row.payment or row.note).document_number,
+                "amount": row.amount,
+            }
+            for row in rows
+        ],
     )
     return refund  # Return posted refund.
 
@@ -518,6 +624,15 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
         invoice.entity, BAD_DEBT_EXPENSE_CODE, label="bad-debt expense",  # Resolve bad-debt expense account.
     )
     when = write_off_date or invoice.invoice_date  # Default write-off date to invoice date.
+    # A debt cannot be conceded before it is owed: writing off on a date earlier than
+    # the invoice credits AR before the invoice ever debited it.
+    from .chronology import ensure_on_or_after
+    ensure_on_or_after(
+        subject=f"Write-off of {invoice.document_number or invoice.pk}", subject_date=when,
+        source=f"invoice {invoice.document_number or invoice.pk}",
+        source_date=invoice.invoice_date,
+        remedy=f"Date the write-off {invoice.invoice_date} or later.",
+    )
     period = resolve_period(invoice.entity, when)  # Resolve write-off period.
     entry = JournalEntry.objects.create(
         entity=invoice.entity, branch=invoice.branch,  # Scope entity and optional branch.

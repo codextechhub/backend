@@ -278,104 +278,101 @@ def post_payment(payment, *, actor_user=None, auto_allocate=True, allocations=No
 
 # Handle customer credit balances in bulk so list screens and posting guards share
 # one definition without introducing a query per customer.
-def customer_credit_balances(entity, customer_ids=None) -> dict[int, int]:
-    """Return refundable 2140 balances keyed by customer id.
+def customer_credit_balances(entity, customer_ids=None, *, as_of=None) -> dict[int, int]:
+    """Return customer-credit (2140) balances keyed by customer id.
 
-    Credit comes from unapplied receipts + unapplied CREDIT notes, less posted
-    refunds and unsettled DEBIT notes. Open invoices do not consume stored credit
-    automatically; only an explicit allocation moves that value out of 2140.
+    Credit is the sum of the customer's :class:`~vs_finance.chronology.CreditLot`
+    parcels — unapplied receipts and unapplied CREDIT notes, each already net of what
+    has been refunded back out of it. Open invoices do not consume stored credit
+    automatically; only an explicit allocation moves value out of 2140.
+
+    ``as_of`` restricts the sum to credit that **existed on that accounting date**:
+    a receipt dated later has not happened yet as far as that date is concerned and
+    cannot fund anything. Without it, the answer is "right now", which is exactly the
+    assumption that let backdated refunds spend credit from the future.
+
+    Note the deliberate asymmetry: lots are filtered by date, but the deductions
+    inside a lot (allocations, prior refunds) are not. That is the safe direction —
+    value that has since been spent stays spent, so an as-of figure can only ever be
+    conservative and never authorises paying the same kobo out twice.
+    """
+    from .chronology import credit_lots
+
+    lots = credit_lots(entity, customer_ids, as_of=as_of)
+    return {
+        customer_id: sum(lot.remaining for lot in customer_lots)
+        for customer_id, customer_lots in lots.items()
+    }
+
+
+# Handle the customer credit balance workflow.
+def customer_credit_balance(customer, *, as_of=None) -> int:
+    """A customer's stored credit in kobo, optionally as at an accounting date."""
+    return customer_credit_balances(
+        customer.entity, [customer.pk], as_of=as_of).get(customer.pk, 0)
+
+
+def customer_refund_available_balances(
+    entity, customer_ids=None, *, exclude_refund_id=None, as_of=None,
+) -> dict[int, int]:
+    """Return credit still available for a new refund request.
+
+    Three deductions sit between stored credit and refundable credit:
+
+    * **Unsettled DEBIT notes** — the customer still owes these, so their value is
+      not handed back as cash. (Open *invoices* deliberately do not reduce it; only
+      an explicit allocation settles those.)
+    * **Pending approvals** reserve their amount, so two requests cannot promise the
+      same credit. Drafts deliberately do not reserve; they are revalidated on submit
+      and again on post.
+    * **``as_of``** — credit that does not yet exist on the refund's own accounting
+      date cannot fund it. Callers must pass the refund date, not today.
     """
     from django.db.models import F, Sum
     from django.db.models.functions import Coalesce
 
     from .constants import CreditNoteKind
-    from .models import CreditNote, Payment, Refund
+    from .models import CreditNote, Refund
 
-    payments = Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED)
-    credit_notes = CreditNote.objects.filter(
-        entity=entity, status=DocumentStatus.POSTED, kind=CreditNoteKind.CREDIT)
+    balances = customer_credit_balances(entity, customer_ids, as_of=as_of)
+
     debit_notes = CreditNote.objects.filter(
         entity=entity, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT)
-    refunds = Refund.objects.filter(entity=entity, status=DocumentStatus.POSTED)
-    if customer_ids is not None:
-        customer_ids = list(customer_ids)
-        payments = payments.filter(customer_id__in=customer_ids)
-        credit_notes = credit_notes.filter(customer_id__in=customer_ids)
-        debit_notes = debit_notes.filter(customer_id__in=customer_ids)
-        refunds = refunds.filter(customer_id__in=customer_ids)
-
-    positions: dict[int, dict[str, int]] = {}
-
-    def slot(customer_id):
-        return positions.setdefault(
-            customer_id, {"payments": 0, "credit_notes": 0, "refunds": 0, "debit_notes": 0})
-
-    for row in payments.values("customer_id").annotate(
-        amount=Coalesce(Sum(F("amount") - F("allocated_amount")), 0)):
-        slot(row["customer_id"])["payments"] = int(row["amount"] or 0)
-    for row in credit_notes.values("customer_id").annotate(
-        amount=Coalesce(Sum(F("total") - F("allocated_amount")), 0)):
-        slot(row["customer_id"])["credit_notes"] = int(row["amount"] or 0)
-    for row in refunds.values("customer_id").annotate(amount=Coalesce(Sum("amount"), 0)):
-        slot(row["customer_id"])["refunds"] = int(row["amount"] or 0)
-    for row in debit_notes.values("customer_id").annotate(
-        amount=Coalesce(Sum(F("total") - F("amount_paid")), 0)):
-        slot(row["customer_id"])["debit_notes"] = int(row["amount"] or 0)
-
-    return {
-        customer_id: max(
-            0,
-            position["payments"]
-            + position["credit_notes"]
-            - position["refunds"]
-            - position["debit_notes"],
-        )
-        for customer_id, position in positions.items()
-    }
-
-
-# Handle the customer credit balance workflow.
-def customer_credit_balance(customer) -> int:
-    """A customer's current refundable credit in kobo."""
-    return customer_credit_balances(customer.entity, [customer.pk]).get(customer.pk, 0)
-
-
-def customer_refund_available_balances(
-    entity, customer_ids=None, *, exclude_refund_id=None,
-) -> dict[int, int]:
-    """Return credit still available for a new refund request.
-
-    Pending approvals reserve their amount so two requests cannot promise the same
-    customer credit. Drafts deliberately do not reserve value; they are revalidated
-    when submitted or posted.
-    """
-    from django.db.models import Sum
-    from django.db.models.functions import Coalesce
-
-    from .models import Refund
-
-    balances = customer_credit_balances(entity, customer_ids)
     pending = Refund.objects.filter(
         entity=entity, status=DocumentStatus.PENDING_APPROVAL)
     if customer_ids is not None:
-        pending = pending.filter(customer_id__in=list(customer_ids))
+        customer_ids = list(customer_ids)
+        debit_notes = debit_notes.filter(customer_id__in=customer_ids)
+        pending = pending.filter(customer_id__in=customer_ids)
     if exclude_refund_id is not None:
         pending = pending.exclude(pk=exclude_refund_id)
+
+    owed = {
+        row["customer_id"]: int(row["amount"] or 0)
+        for row in debit_notes.values("customer_id").annotate(
+            amount=Coalesce(Sum(F("total") - F("amount_paid")), 0))
+    }
     reserved = {
         row["customer_id"]: int(row["amount"] or 0)
         for row in pending.values("customer_id").annotate(amount=Coalesce(Sum("amount"), 0))
     }
-    customer_keys = set(balances) | set(reserved)
+    customer_keys = set(balances) | set(owed) | set(reserved)
     return {
-        customer_id: max(0, balances.get(customer_id, 0) - reserved.get(customer_id, 0))
+        customer_id: max(
+            0,
+            balances.get(customer_id, 0)
+            - owed.get(customer_id, 0)
+            - reserved.get(customer_id, 0),
+        )
         for customer_id in customer_keys
     }
 
 
-def customer_refund_available_balance(customer, *, exclude_refund_id=None) -> int:
-    """Credit available to one refund after pending reservations."""
+def customer_refund_available_balance(customer, *, exclude_refund_id=None, as_of=None) -> int:
+    """Credit available to one refund on its own date, after pending reservations."""
     return customer_refund_available_balances(
-        customer.entity, [customer.pk], exclude_refund_id=exclude_refund_id,
+        customer.entity, [customer.pk],
+        exclude_refund_id=exclude_refund_id, as_of=as_of,
     ).get(customer.pk, 0)
 
 
@@ -383,7 +380,8 @@ def customer_refund_available_balance(customer, *, exclude_refund_id=None) -> in
 ALLOCATION_STRATEGIES = ("oldest", "largest")
 
 
-def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_debit_notes=False):
+def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_debit_notes=False,
+                        as_of=None, settlement="This settlement"):
     """An explicit ``[(target, amount)]`` plan, or open AR items in ``strategy`` order.
 
     A *target* is an :class:`Invoice` or — when ``include_debit_notes`` is set — a posted
@@ -392,20 +390,51 @@ def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_deb
     is not given): ``"oldest"`` settles by document date first (the default), ``"largest"``
     settles the biggest outstanding balance first. Debit-note settlement is opt-in because
     the credit-note sub-ledger can only point at invoices; payment paths pass it True.
+
+    ``as_of`` is the settling document's own accounting date, and it is the choke point
+    for causal ordering on the settlement side: a receipt dated 1 Sep cannot clear a bill
+    raised on 9 Sep, because on 1 Sep the receivable does not exist and crediting AR would
+    drive the control account negative for the gap.
+
+    The two modes handle that differently, on purpose:
+
+    * **Auto-allocation** silently *skips* not-yet-raised targets. This is not a
+      failure — it is a prepayment, and the cash correctly falls through to the
+      customer-credit liability to be applied when the bill arrives.
+    * **An explicit plan** names a target the user chose, so silently dropping it
+      would post something other than what was asked for. It raises instead, and
+      says which date to use.
     """
     from django.db.models import F
 
+    from .chronology import accounting_date, describe, ensure_on_or_after
     from .constants import CreditNoteKind
     from .models import CreditNote, Invoice
 
     if allocations is not None:  # Explicit allocations always win over auto-allocation.
-        return list(allocations)  # Normalize to a list so the caller can iterate safely.
+        plan = list(allocations)  # Normalize to a list so the caller can iterate safely.
+        if as_of is not None:  # An explicitly named target must already exist on that date.
+            for target, _amount in plan:
+                target_date = accounting_date(target)
+                ensure_on_or_after(
+                    subject=settlement, subject_date=as_of,
+                    source=describe(target, "the document being settled"),
+                    source_date=target_date,
+                    remedy=(
+                        f"Either date it {target_date} or later, or leave the money "
+                        f"unallocated as customer credit and apply it once that "
+                        f"document exists."
+                    ),
+                )
+        return plan  # Explicit plan passed its date checks.
 
     open_invoices = list(  # Load all open posted invoices for the customer.
         Invoice.objects
         .filter(customer=customer, status=DocumentStatus.POSTED)
         .exclude(payment_status=InvoicePaymentStatus.PAID)
     )
+    if as_of is not None:  # Auto-allocation only settles what already exists.
+        open_invoices = [inv for inv in open_invoices if inv.invoice_date <= as_of]
     # (target, balance_due, sort_date) — sort_date drives oldest-first across both types.
     items = [(inv, inv.balance_due, inv.due_date or inv.invoice_date) for inv in open_invoices]  # Invoice settlement candidates.
     if include_debit_notes:  # Optionally include posted debit notes in the settlement plan.
@@ -414,6 +443,8 @@ def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_deb
             .filter(customer=customer, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT)
             .exclude(settlement_status=InvoicePaymentStatus.PAID)
         )
+        if as_of is not None:  # Same rule: a charge not yet raised cannot be settled.
+            open_notes = [dn for dn in open_notes if dn.note_date <= as_of]
         items += [(dn, dn.balance_due, dn.note_date) for dn in open_notes]  # Add debit notes to the same plan.
 
     if strategy == "largest":  # Largest-balance-first strategy.
@@ -429,10 +460,16 @@ def _apply_payment_subledger(payment, plan, *, remaining):
     ``remaining``. A target is an :class:`Invoice` (→ PaymentAllocation, bump
     ``amount_paid``) or a DEBIT :class:`CreditNote` (→ DebitNoteAllocation, bump its
     ``amount_paid``). GL-agnostic — the caller posts the journal (the applied total
-    credits AR either way). Returns ``(applied_total, created_rows)``."""
+    credits AR either way).
+
+    Returns ``(applied_total, created_rows, latest_target_date)``. The last value is the
+    newest accounting date actually settled, which is what the caller needs to date its
+    reclassification journal so AR is never credited before the receivable exists."""
+    from .chronology import accounting_date
     from .models import CreditNote, DebitNoteAllocation, PaymentAllocation
 
     applied, created = 0, []  # Track total applied cash and created allocation rows.
+    latest = None  # Newest accounting date this run actually settled.
     for target, requested in plan:  # Walk the settlement plan in order.
         if remaining <= 0:  # Stop once all cash has been consumed.
             break  # Exit the current loop.
@@ -467,7 +504,10 @@ def _apply_payment_subledger(payment, plan, *, remaining):
         remaining -= apply_amount  # Reduce the remaining unapplied cash.
         applied += apply_amount  # Track the total applied amount.
         created.append(alloc)  # Collect the allocation rows created or extended.
-    return applied, created  # Return the settled amount and created allocation rows.
+        target_date = accounting_date(target)  # Date of the document just settled.
+        if target_date is not None and (latest is None or target_date > latest):
+            latest = target_date  # Track the newest settled document date.
+    return applied, created, latest  # Settled amount, allocation rows, newest settled date.
 
 
 @transaction.atomic
@@ -524,10 +564,14 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
     # Split at source: settle open AR items (invoices + debit notes) against AR, and
     # book any unapplied cash as a customer-credit liability (so AR never carries a
     # credit balance).
+    # ``as_of`` the receipt's own date: cash received today cannot clear a bill raised
+    # next week. Auto-allocation skips those, and the money falls through to 2140 as a
+    # prepayment — which is what it is.
     plan = (_build_invoice_plan(customer, allocations, strategy=strategy,  # Build the settlement plan from invoices.
-                                include_debit_notes=True)
+                                include_debit_notes=True, as_of=payment.payment_date,
+                                settlement=f"Receipt {payment.document_number or payment.pk}")
             if (allocations is not None or auto_allocate) else [])  # Skip the plan when no allocation is requested.
-    applied, _created = _apply_payment_subledger(payment, plan, remaining=payment.amount)  # Apply the plan to AR.
+    applied, _created, _latest = _apply_payment_subledger(payment, plan, remaining=payment.amount)  # Apply the plan to AR.
     excess = payment.amount - applied  # Any leftover cash becomes customer credit.
 
     period = resolve_period(payment.entity, payment.payment_date)  # Find the open accounting period.
@@ -583,7 +627,13 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
     and settles the invoices — no cash moves. ``allocations`` is an optional explicit
     ``[(invoice, amount)]`` plan; without it, open invoices are settled in ``strategy``
     order (``"oldest"`` by due date, or ``"largest"`` balance first).
+
+    Applying an older receipt to a newer invoice is ordinary and allowed — that is a
+    prepayment finding its bill. What is *not* allowed is dating the reclassification
+    on the receipt's date when the invoice is newer, which would credit AR before the
+    receivable existed; the journal is dated at the later of the two instead.
     """
+    from .chronology import effective_allocation_date
     from .models import Customer, JournalEntry, JournalLine
 
     payment = type(payment).objects.select_for_update().get(pk=payment.pk)
@@ -592,20 +642,23 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
     if payment.status != DocumentStatus.POSTED:  # Only posted receipts can be allocated later.
         raise PostingError("Only a posted payment can be allocated.")
 
-    remaining = payment.unallocated_amount  # Compute the unapplied customer credit available.
+    # Credit *remaining*, not merely unallocated: cash already refunded back out has
+    # left 2140 and cannot be reclassified to AR a second time.
+    remaining = payment.credit_remaining  # Stored customer credit still available on this receipt.
     if remaining <= 0:  # Nothing left to allocate.
         return []
 
     plan = _build_invoice_plan(payment.customer, allocations, strategy=strategy,  # Reuse the same allocation planner.
                                include_debit_notes=True)
-    applied, created = _apply_payment_subledger(payment, plan, remaining=remaining)  # Apply stored credit to documents.
+    applied, created, latest = _apply_payment_subledger(payment, plan, remaining=remaining)  # Apply stored credit to documents.
     if applied <= 0:  # No documents were eligible for allocation.
         return []
 
-    period = resolve_period(payment.entity, payment.payment_date)  # Find the open accounting period.
+    effective = effective_allocation_date(payment.payment_date, [latest])  # Later of receipt and settled docs.
+    period = resolve_period(payment.entity, effective)  # Find the open accounting period.
     entry = JournalEntry.objects.create(
         entity=payment.entity, branch=payment.branch,
-        date=payment.payment_date, period=period,
+        date=effective, period=period,
         source=JournalSource.SALES, currency=payment.currency,
         narration=f"Apply customer credit: {customer.code}",
         reference=payment.reference, created_by=actor_user,
@@ -627,6 +680,7 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
         entity=payment.entity, action=FinanceAuditAction.PAYMENT_ALLOCATED,
         actor_user=actor_user, target=payment,
         message=f"Applied {applied} kobo customer credit across {len(created)} invoice(s).",
-        journal_id=entry.pk, allocated=payment.allocated_amount, unallocated=payment.unallocated_amount,
+        journal_id=entry.pk, allocated=payment.allocated_amount,
+        unallocated=payment.credit_remaining, effective_date=str(effective),
     )
     return created  # Return the allocation rows that were created or extended.

@@ -266,6 +266,10 @@ class Payment(FinanceDocument):
     )
     amount = MoneyField(help_text="Total received, in kobo.")
     allocated_amount = MoneyField(help_text="Portion allocated to invoices, in kobo.")
+    refunded_amount = MoneyField(
+        help_text="Portion of this receipt's unapplied cash already paid back out as a "
+                  "customer refund, in kobo. Maintained by RefundAllocation.",
+    )
     deposit_account = models.ForeignKey(
         Account, on_delete=models.PROTECT, related_name="customer_payments",
         null=True, blank=True,
@@ -287,8 +291,25 @@ class Payment(FinanceDocument):
 
     @property
     def unallocated_amount(self) -> int:
-        """Cash not yet applied to any invoice — an open credit on the customer."""
+        """Cash not yet applied to any invoice — a pure sub-ledger fact.
+
+        Deliberately blind to refunds: it answers "how much of this receipt never
+        settled a bill?", which is what the allocation sub-ledger is for. It is *not*
+        the money still available — a refund can have paid that cash back out without
+        touching a single allocation row. Use :attr:`credit_remaining` whenever the
+        question is "is there still credit here to spend?".
+        """
         return self.amount - self.allocated_amount
+
+    @property
+    def credit_remaining(self) -> int:
+        """Cash from this receipt still sitting in the customer-credit liability (2140).
+
+        The spendable figure: unapplied cash less whatever has since been refunded
+        out of it. This is what may be allocated to an invoice or refunded again, and
+        what screens must show as available credit.
+        """
+        return self.amount - self.allocated_amount - self.refunded_amount
 
 
 class PaymentAllocation(TimeStampedModel):

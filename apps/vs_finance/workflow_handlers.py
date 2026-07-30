@@ -245,10 +245,14 @@ class RefundHandler(_FinancePostOnApprove):
         """Run the refund-posting guards without writing anything.
 
         Mirrors the guards in :func:`vs_finance.credit_notes._post_refund_atomic`
-        (positive amount, amount within the customer's available credit, a
-        resolvable deposit/bank account) with the same ``PostingError`` messages —
-        so the preflight and the eventual post agree — but never mutates. The DRAFT
-        check is handled by the base ``validate_document``.
+        (positive amount, amount within the customer's available credit **as at the
+        refund's own date**, a resolvable deposit/bank account) with the same
+        ``PostingError`` messages — so the preflight and the eventual post agree — but
+        never mutates. The DRAFT check is handled by the base ``validate_document``.
+
+        Measuring availability at the refund date matters most here: an approval queue
+        is exactly where a backdated payout would otherwise sit for days looking valid
+        and then fail at the final step.
         """
         from .exceptions import PostingError
         from .receivables import customer_refund_available_balance
@@ -257,11 +261,13 @@ class RefundHandler(_FinancePostOnApprove):
             raise PostingError("A refund must have a positive amount to post.")
 
         available = customer_refund_available_balance(
-            document.customer, exclude_refund_id=document.pk)  # Credit not reserved elsewhere.
+            document.customer, exclude_refund_id=document.pk,
+            as_of=document.refund_date)  # Credit not reserved elsewhere, as at the refund date.
         if document.amount > available:  # Cannot refund more than available credit.
             raise PostingError(
-                f"Refund of {document.amount} kobo exceeds {document.customer.code}'s "
-                f"available credit ({available} kobo).",
+                f"Refund of {format_naira(document.amount)} exceeds "
+                f"{document.customer.code}'s credit available on "
+                f"{document.refund_date} ({format_naira(available)}).",
             )
 
         deposit = document.deposit_account or (  # Resolve source account for cash out.
@@ -312,10 +318,12 @@ class WriteOffHandler(_FinancePostOnApprove):
         """Run the write-off guards without writing anything.
 
         Mirrors :func:`vs_finance.credit_notes._write_off_invoice_atomic` (invoice
-        POSTED, outstanding balance > 0, effective amount positive and within the
-        balance, customer has an AR control account) with the same ``PostingError``
-        messages — so the preflight and the eventual post agree — but never mutates.
+        POSTED, not written off before the invoice was raised, outstanding balance > 0,
+        effective amount positive and within the balance, customer has an AR control
+        account) with the same ``PostingError`` messages — so the preflight and the
+        eventual post agree — but never mutates.
         """
+        from .chronology import ensure_on_or_after
         from .exceptions import PostingError
 
         invoice = document.invoice  # Invoice targeted by the write-off request.
@@ -324,6 +332,14 @@ class WriteOffHandler(_FinancePostOnApprove):
                 f"Invoice {invoice.document_number or invoice.pk} is '{invoice.status}'; "
                 f"only a posted invoice can be written off.",
             )
+
+        when = document.write_off_date or invoice.invoice_date  # Effective write-off date.
+        ensure_on_or_after(  # A debt cannot be conceded before it is owed.
+            subject=f"Write-off {document.document_number or document.pk}", subject_date=when,
+            source=f"invoice {invoice.document_number or invoice.pk}",
+            source_date=invoice.invoice_date,
+            remedy=f"Date the write-off {invoice.invoice_date} or later.",
+        )
 
         balance = invoice.balance_due  # Current outstanding invoice balance.
         if balance <= 0:  # Fully settled invoices cannot be written off.

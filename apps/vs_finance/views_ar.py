@@ -174,39 +174,40 @@ def _customer_ledger(entity, customer_ids=None):
 
     Returns ``{customer_id: {"outstanding", "credit", "overdue", "lifetime_paid"}}``
     where ``outstanding`` is the sum of open invoice balances and ``credit`` the
-    customer's available credit (their 2140 liability position: unapplied receipts +
-    unapplied CREDIT notes − refunds already paid). Net = outstanding − credit
-    (positive owes, negative in credit). Computed in a few aggregate queries (no N+1).
+    customer's stored 2140 position. Net = outstanding − credit (positive owes,
+    negative in credit). Computed in a few aggregate queries (no N+1).
+
+    ``credit`` comes from :func:`~vs_finance.receivables.customer_credit_balances`
+    rather than being re-derived here. This screen used to keep its own copy of that
+    arithmetic, which is how the console ended up with two definitions of "available
+    credit" that could disagree — one of them refund-blind.
     """
     import datetime
     from django.db.models import F, Q, Sum
     from django.db.models.functions import Coalesce
 
     from .constants import CreditNoteKind, DocumentStatus
-    from .models import CreditNote, Invoice, Payment, Refund
+    from .models import CreditNote, Invoice, Payment
+    from .receivables import customer_credit_balances
 
     today = datetime.date.today()
     bal = F("total") - F("amount_paid") - F("amount_credited")
     inv = Invoice.objects.filter(entity=entity, status=DocumentStatus.POSTED)
     pay = Payment.objects.filter(entity=entity, status=DocumentStatus.POSTED)
-    note = CreditNote.objects.filter(entity=entity, status=DocumentStatus.POSTED, kind=CreditNoteKind.CREDIT)
     # Open DEBIT notes are supplementary AR charges: their unsettled balance is
     # outstanding, exactly like an open invoice.
     dn = CreditNote.objects.filter(entity=entity, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT)
-    ref = Refund.objects.filter(entity=entity, status=DocumentStatus.POSTED)
     if customer_ids is not None:
         inv = inv.filter(customer_id__in=customer_ids)
         pay = pay.filter(customer_id__in=customer_ids)
-        note = note.filter(customer_id__in=customer_ids)
         dn = dn.filter(customer_id__in=customer_ids)
-        ref = ref.filter(customer_id__in=customer_ids)
 
     out: dict[int, dict] = {}
 
     # Handle the slot workflow.
     def slot(cid):
-        return out.setdefault(cid, {"outstanding": 0, "overdue": False, "lifetime_paid": 0,
-                                    "_receipts": 0, "_notes": 0, "_refunded": 0})
+        return out.setdefault(cid, {"outstanding": 0, "credit": 0, "overdue": False,
+                                    "lifetime_paid": 0})
 
     for r in inv.values("customer_id").annotate(
         outstanding=Coalesce(Sum(bal), 0),
@@ -215,25 +216,13 @@ def _customer_ledger(entity, customer_ids=None):
         d = slot(r["customer_id"])
         d["outstanding"] = int(r["outstanding"] or 0)
         d["overdue"] = int(r["overdue_bal"] or 0) > 0
-    for r in pay.values("customer_id").annotate(
-        credit=Coalesce(Sum(F("amount") - F("allocated_amount")), 0),
-        lifetime=Coalesce(Sum("amount"), 0),
-    ):
-        d = slot(r["customer_id"])
-        d["_receipts"] = int(r["credit"] or 0)
-        d["lifetime_paid"] = int(r["lifetime"] or 0)
-    for r in note.values("customer_id").annotate(
-        c=Coalesce(Sum(F("total") - F("allocated_amount")), 0)):
-        slot(r["customer_id"])["_notes"] = int(r["c"] or 0)
+    for r in pay.values("customer_id").annotate(lifetime=Coalesce(Sum("amount"), 0)):
+        slot(r["customer_id"])["lifetime_paid"] = int(r["lifetime"] or 0)
     for r in dn.values("customer_id").annotate(
         c=Coalesce(Sum(F("total") - F("amount_paid")), 0)):
-        d = slot(r["customer_id"])
-        d["outstanding"] += int(r["c"] or 0)
-    for r in ref.values("customer_id").annotate(c=Coalesce(Sum("amount"), 0)):
-        slot(r["customer_id"])["_refunded"] = int(r["c"] or 0)
-
-    for d in out.values():
-        d["credit"] = max(0, d["_receipts"] + d["_notes"] - d["_refunded"])
+        slot(r["customer_id"])["outstanding"] += int(r["c"] or 0)
+    for cid, credit in customer_credit_balances(entity, customer_ids).items():
+        slot(cid)["credit"] = credit
     return out
 
 
@@ -591,7 +580,7 @@ class CustomerReceiptView(_FinanceBase):
                 "id": payment.id,
                 "payment": payment.document_number,
                 "allocated": payment.allocated_amount,
-                "unallocated": payment.unallocated_amount,
+                "unallocated": payment.credit_remaining,
             },
             status=201,
         )
@@ -650,8 +639,11 @@ class CustomerSummaryView(_FinanceBase):
 class PaymentListView(_FinanceBase):
     """GET /finance/payments/ — customer receipts and their allocation state.
 
-    Filters: ``?status=`` (ALLOCATED|PARTIAL|UNALLOCATED), ``?method=``,
+    Filters: ``?status=`` (ALLOCATED|PARTIAL|UNALLOCATED|REFUNDED), ``?method=``,
     ``?customer=`` (code/id), ``?search=`` (doc no / customer / reference).
+
+    REFUNDED is a receipt whose cash never settled a bill but has since been paid
+    back out; it is excluded from UNALLOCATED because that money is gone.
 
     docstring-name: Customer receipts
     """
@@ -677,15 +669,23 @@ class PaymentListView(_FinanceBase):
                 Q(document_number__icontains=search) | Q(customer__name__icontains=search)
                 | Q(customer__code__icontains=search) | Q(reference__icontains=search))
 
-        # allocation_status is derived from allocated_amount vs amount; express it as a
-        # DB filter so paging counts are correct (it used to filter post-slice in Python).
+        # allocation_status is derived from allocated_amount/refunded_amount vs amount;
+        # express it as a DB filter so paging counts are correct (it used to filter
+        # post-slice in Python). Mirror PaymentSerializer.get_allocation_status exactly
+        # — refunded is checked before unallocated, or refunded cash would be counted
+        # as still available.
         status_f = request.query_params.get("status")
         if status_f == "ALLOCATED":
             qs = qs.filter(allocated_amount__gte=F("amount"))
+        elif status_f == "REFUNDED":
+            qs = qs.filter(allocated_amount__lt=F("amount"),
+                           refunded_amount__gte=F("amount") - F("allocated_amount"))
         elif status_f == "UNALLOCATED":
-            qs = qs.filter(allocated_amount__lte=0)
+            qs = qs.filter(allocated_amount__lte=0,
+                           refunded_amount__lt=F("amount") - F("allocated_amount"))
         elif status_f == "PARTIAL":
-            qs = qs.filter(allocated_amount__gt=0, allocated_amount__lt=F("amount"))
+            qs = qs.filter(allocated_amount__gt=0, allocated_amount__lt=F("amount"),
+                           refunded_amount__lt=F("amount") - F("allocated_amount"))
         return _paginate(request, qs.order_by("-payment_date", "-id"), PaymentSerializer, self)
 
 
@@ -723,24 +723,37 @@ class PaymentSummaryView(_FinanceBase):
 
         today = datetime.date.today()
         week_start = today - datetime.timedelta(days=6)
+        # "Sitting unapplied" must mean money that is still there. Summing
+        # ``amount - allocated_amount`` counted cash that had already been refunded
+        # back out, so the KPI kept advertising credit the customer no longer had.
+        # ``credit_remaining`` nets the refunds off; ``refunded`` is surfaced beside it
+        # so the difference is visible rather than mysterious.
+        unspent = F("amount") - F("allocated_amount") - F("refunded_amount")
+        fully_refunded = Q(allocated_amount__lt=F("amount"),
+                           refunded_amount__gte=F("amount") - F("allocated_amount"))
         agg = qs.aggregate(
             count=Count("id"),
             today=Coalesce(Sum("amount", filter=Q(payment_date=today)), 0),
             week=Coalesce(Sum("amount", filter=Q(payment_date__gte=week_start)), 0),
-            unallocated=Coalesce(Sum(F("amount") - F("allocated_amount")), 0),
+            unallocated=Coalesce(Sum(unspent), 0),
+            refunded=Coalesce(Sum("refunded_amount"), 0),
             allocated_c=Count("id", filter=Q(allocated_amount__gte=F("amount"))),
-            unallocated_c=Count("id", filter=Q(allocated_amount__lte=0)),
-            partial_c=Count("id", filter=Q(allocated_amount__gt=0, allocated_amount__lt=F("amount"))),
+            refunded_c=Count("id", filter=fully_refunded),
+            unallocated_c=Count("id", filter=Q(allocated_amount__lte=0) & ~fully_refunded),
+            partial_c=Count("id", filter=Q(
+                allocated_amount__gt=0, allocated_amount__lt=F("amount")) & ~fully_refunded),
         )
         return success_response("Receipts summary retrieved.", data={
             "count": agg["count"],
             "today": _money_obj(agg["today"]),
             "week": _money_obj(agg["week"]),
             "unallocated": _money_obj(agg["unallocated"]),
+            "refunded": _money_obj(agg["refunded"]),
             "status_counts": {
                 "ALLOCATED": agg["allocated_c"],
                 "PARTIAL": agg["partial_c"],
                 "UNALLOCATED": agg["unallocated_c"],
+                "REFUNDED": agg["refunded_c"],
             },
         })
 
@@ -1311,7 +1324,15 @@ class CreditNoteAllocateView(_CreditNoteActionBase):
 # --------------------------------------------------------------------------- #
 
 class RefundAvailabilityView(_FinanceBase):
-    """GET customers with credit available for a new refund request."""
+    """GET customers with credit available for a new refund request.
+
+    ``?as_of=YYYY-MM-DD`` measures availability on that accounting date rather than
+    today — the refund date the user has picked. Credit that only arrives afterwards
+    cannot fund a refund dated before it, so the picker must not offer it: without
+    this the screen advertises credit the posting guard will refuse.
+
+    docstring-name: Refund availability
+    """
 
     rbac_permission = "finance.refund.create"
 
@@ -1319,12 +1340,13 @@ class RefundAvailabilityView(_FinanceBase):
         from .receivables import customer_refund_available_balances
 
         entity = resolve_entity(request)
+        as_of = _date(request.query_params.get("as_of"), "as_of", required=False)
         qs = Customer.objects.filter(entity=entity, is_active=True)
         if (search := (request.query_params.get("search") or "").strip()):
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search))
 
         customer_ids = list(qs.values_list("id", flat=True))
-        available = customer_refund_available_balances(entity, customer_ids)
+        available = customer_refund_available_balances(entity, customer_ids, as_of=as_of)
         qs = qs.filter(id__in=[
             customer_id for customer_id in customer_ids
             if available.get(customer_id, 0) > 0
@@ -1340,7 +1362,9 @@ class RefundAvailabilityView(_FinanceBase):
             "refundable_credit": available[customer.pk],
             "refundable_credit_naira": format_naira(available[customer.pk]),
         } for customer in page]
-        return paginator.get_paginated_response(rows)
+        response = paginator.get_paginated_response(rows)
+        response.data["as_of"] = as_of.isoformat() if as_of else None  # Echo the basis of the figures.
+        return response
 
 
 # Group endpoint behavior for Refund List Create View.
@@ -1384,12 +1408,16 @@ def _build_refund(entity, body, *, actor_user):
 
     customer = _resolve_customer(entity, body.get("customer"))
     customer = Customer.objects.select_for_update().get(pk=customer.pk)
-    available = customer_refund_available_balance(customer)
-    amount = _validated_refund_amount(customer, body.get("amount", 0), available)
+    refund_date = _date(body.get("refund_date"), "refund_date", required=True)
+    # Measure the credit on the refund's own date, so a doomed backdated draft is
+    # refused at creation rather than surviving all the way to the posting guard.
+    available = customer_refund_available_balance(customer, as_of=refund_date)
+    amount = _validated_refund_amount(
+        customer, body.get("amount", 0), available, as_of=refund_date)
     return Refund.objects.create(
         entity=entity,
         customer=customer,
-        refund_date=_date(body.get("refund_date"), "refund_date", required=True),
+        refund_date=refund_date,
         currency=_resolve_currency(body.get("currency")),
         method=body.get("method", "BANK_TRANSFER"),
         amount=amount,
@@ -1401,16 +1429,32 @@ def _build_refund(entity, body, *, actor_user):
     )
 
 
-def _validated_refund_amount(customer, raw_amount, available):
-    """Apply the shared positive/available-credit boundary to a refund amount."""
+def _validated_refund_amount(customer, raw_amount, available, *, as_of=None):
+    """Apply the shared positive/available-credit boundary to a refund amount.
+
+    ``as_of`` is the refund's accounting date and only shapes the message: when the
+    credit exists but not yet on that date, saying so ("you have it today, just not
+    on 1 Sep") is the difference between a fixable error and a baffling one.
+    """
     amount = _money(raw_amount, "amount")
     if amount <= 0:
         raise ValidationError({"amount": "A refund amount must be greater than zero."})
     if amount > available:
+        basis = f" as at {as_of}" if as_of else ""
+        detail = ""
+        if as_of is not None:  # Distinguish "no credit" from "not yet".
+            from .receivables import customer_refund_available_balance
+
+            today_available = customer_refund_available_balance(customer)
+            if today_available > available:
+                detail = (
+                    f" {format_naira(today_available)} is available today — pick a "
+                    f"later refund date to use it."
+                )
         raise ValidationError({
             "amount": (
-                f"Refund amount cannot exceed {customer.code}'s available credit "
-                f"({format_naira(available)})."
+                f"Refund amount cannot exceed {customer.code}'s available credit"
+                f"{basis} ({format_naira(available)}).{detail}"
             ),
         })
     return amount
@@ -1876,8 +1920,12 @@ class ARAdjustmentBatchView(_FinanceBase):
             bank_account = _resolve_bank_account(
                 entity, body.get("bank_account"), required=True)
             customers = _batch_customers(entity, items)
+            # The whole batch shares one accounting date, so availability is measured
+            # on that date — not today. A batch dated before the credit arrived is
+            # refused per line here rather than blowing up mid-loop in the posting
+            # service and rolling the whole batch back with a cryptic 409.
             available = customer_refund_available_balances(
-                entity, [customer.pk for customer in customers])
+                entity, [customer.pk for customer in customers], as_of=common_date)
             for index, (item, customer) in enumerate(zip(items, customers)):
                 if customer.pk in seen_targets:
                     raise ValidationError({
@@ -1888,11 +1936,15 @@ class ARAdjustmentBatchView(_FinanceBase):
                         },
                     })
                 seen_targets.add(customer.pk)
-                amount = _validated_refund_amount(
-                    customer,
-                    item.get("amount", 0),
-                    available.get(customer.pk, 0),
-                )
+                try:
+                    amount = _validated_refund_amount(
+                        customer,
+                        item.get("amount", 0),
+                        available.get(customer.pk, 0),
+                        as_of=common_date,
+                    )
+                except ValidationError as exc:  # Re-key onto the offending batch line.
+                    raise ValidationError({"items": {index: exc.detail}}) from exc
                 documents.append(Refund.objects.create(
                     entity=entity,
                     customer=customer,
@@ -1940,6 +1992,19 @@ class ARAdjustmentBatchView(_FinanceBase):
                         "items": {
                             index: {
                                 "invoice": "Only posted invoices can be written off.",
+                            },
+                        },
+                    })
+                if common_date < invoice.invoice_date:  # A debt cannot be conceded before it is owed.
+                    raise ValidationError({
+                        "items": {
+                            index: {
+                                "invoice": (
+                                    f"{invoice.document_number} is dated "
+                                    f"{invoice.invoice_date}; it cannot be written off "
+                                    f"on {common_date}. Date the batch "
+                                    f"{invoice.invoice_date} or later."
+                                ),
                             },
                         },
                     })

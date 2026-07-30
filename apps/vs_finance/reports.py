@@ -337,12 +337,14 @@ def ar_aging(entity, *, as_of=None) -> AgingReport:
         r.buckets[bucket] += due
         r.outstanding += due
 
-    # Unallocated payment credit reduces a customer's net balance.
+    # Unallocated payment credit reduces a customer's net balance — but only the part
+    # still there. ``unallocated_amount`` is refund-blind, so a refunded receipt used to
+    # go on netting down the customer's AR long after the cash had been handed back.
     posted_payments = (
         Payment.objects.filter(entity=entity, status="POSTED").select_related("customer")
     )
     for pay in posted_payments:
-        credit = pay.unallocated_amount
+        credit = pay.credit_remaining
         if credit <= 0:
             continue
         r = row_for(pay.customer)

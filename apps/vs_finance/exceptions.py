@@ -62,6 +62,38 @@ class PeriodClosedError(PostingError):
         )
 
 
+class BackdatedPostingError(PostingError):
+    """A posting is dated before the thing it depends on existed.
+
+    The period guards answer "may we book on this date at all?"; this one answers
+    "could this transaction have happened on this date?". A refund cannot pay out
+    credit that arrives a week later, a write-off cannot clear an invoice that has
+    not been raised, a receipt cannot settle a future bill. See
+    :mod:`vs_finance.chronology` for the single guard every service calls.
+    """
+
+    error_code = "POSTING_BACKDATED"  # Accounting date precedes the value it consumes.
+    default_message = "This date is before the transaction it depends on."  # Default causality message.
+    http_status = 409  # An impossible ordering is a conflict, not a field validation error.
+
+    # Initialize this object with its required state.
+    def __init__(self, *, subject, subject_date, source, source_date, remedy="", **kwargs):
+        self.subject_date = subject_date  # Store the dependent document's date.
+        self.source_date = source_date  # Store the date the depended-on value exists from.
+        message = (
+            f"{subject} is dated {subject_date}, but {source} only exists from "
+            f"{source_date}. Nothing can be settled, refunded or written off before "
+            f"the value it draws on exists."
+        )
+        if remedy:  # Append the caller's concrete way out when supplied.
+            message = f"{message} {remedy}"
+        super().__init__(  # Build the causality error with structured context.
+            message,
+            subject=subject, subject_date=str(subject_date),
+            source=source, source_date=str(source_date), **kwargs,
+        )
+
+
 class InactiveAccountError(PostingError):
     error_code = "ACCOUNT_INACTIVE"  # Account cannot accept postings.
     default_message = "The account is inactive or not postable."  # Default inactive-account message.

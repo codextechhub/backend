@@ -335,6 +335,17 @@ def _post_concession_atomic(concession, *, actor_user=None):
             f"a concession can only reduce a posted invoice.",
         )
 
+    # A discount cannot predate the charge it discounts: conceding before the invoice
+    # date credits AR before the invoice debited it, leaving the control negative.
+    from .chronology import ensure_on_or_after
+    ensure_on_or_after(
+        subject=f"Concession {concession.document_number or concession.pk}",
+        subject_date=concession.concession_date,
+        source=f"invoice {invoice.document_number or invoice.pk}",
+        source_date=invoice.invoice_date,
+        remedy=f"Date the concession {invoice.invoice_date} or later.",
+    )
+
     balance = invoice.balance_due  # Current outstanding invoice balance.
     if balance <= 0:  # Nothing remains to concede.
         raise PostingError("Invoice has no outstanding balance to concede.")

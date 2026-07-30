@@ -509,7 +509,15 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, stric
     remaining gross. Allocations change invoice settlement state only: the posted payment
     already produced the AP/bank/WHT journal, so this service must not create another GL
     entry. Returns the list of created allocation rows.
+
+    A payment may not settle a bill dated after it — on the payment's own date that
+    liability does not exist, and an AP aging as at that date would show a bill paid
+    before it was raised. As on the AR side, auto-allocation skips such bills (the
+    money stays unallocated until they are raised) while an explicitly named bill is
+    refused, since dropping a target the user chose would post something else.
     """
+    from vs_finance.chronology import accounting_date, describe, ensure_on_or_after
+
     from .models import VendorInvoice, VendorPaymentAllocation
 
     if payment.status != DocumentStatus.POSTED:  # Only posted payments can be allocated.
@@ -521,13 +529,26 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, stric
     if allocations is None:  # Build an oldest-first plan when no explicit plan is supplied.
         open_invoices = (  # Posted vendor bills that still have a balance.
             VendorInvoice.objects
-            .filter(vendor=payment.vendor, status=DocumentStatus.POSTED)
+            .filter(vendor=payment.vendor, status=DocumentStatus.POSTED,
+                    invoice_date__lte=payment.payment_date)  # Only bills that already exist.
             .exclude(payment_status=InvoicePaymentStatus.PAID)
             .order_by("due_date", "invoice_date", "id")
         )
         plan = [(inv, inv.balance_due) for inv in open_invoices]  # Allocate up to each bill's current balance.
     else:  # Caller supplied an explicit allocation split.
         plan = list(allocations)  # Normalize the iterable to a list.
+        for invoice, _requested in plan:  # A named bill must already exist on the payment date.
+            bill_date = accounting_date(invoice)
+            ensure_on_or_after(
+                subject=f"Vendor payment {payment.document_number or payment.pk}",
+                subject_date=payment.payment_date,
+                source=f"bill {describe(invoice, 'the vendor invoice')}",
+                source_date=bill_date,
+                remedy=(
+                    f"Either date the payment {bill_date} or later, or leave it "
+                    f"unallocated and apply it once the bill is raised."
+                ),
+            )
 
     seen_invoice_ids = set()
     if strict:
