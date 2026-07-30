@@ -284,19 +284,28 @@ def _book_receipt(intent, *, actor_user=None):
         intent.entity, CASH_BANK_CODE, label="Cash & bank",
     )
 
+    received = datetime.date.today()
     payment = Payment.objects.create(
         entity=intent.entity, customer=intent.customer,
-        payment_date=datetime.date.today(), currency=intent.currency,
+        payment_date=received, currency=intent.currency,
         method=PaymentMethod.ONLINE, amount=intent.amount, deposit_account=deposit,
         reference=intent.reference,
         narration=intent.narration or f"Gateway collection {intent.reference}",
     )
 
-    if intent.invoice_id:  # Invoice-linked receipts should settle that invoice directly.
+    # A receipt cannot settle an invoice that is not raised yet — crediting AR before
+    # the invoice debits it drives the control negative for the gap, and the posting
+    # service now refuses an explicit allocation that does so. Here that refusal must
+    # not be allowed to surface: the payer's money has already moved, and failing the
+    # booking would leave real cash unrecorded while the PSP retries a call that can
+    # never succeed. A payment against a future-dated invoice is simply a prepayment,
+    # so it parks as customer credit and is applied once the invoice exists.
+    settles_now = bool(intent.invoice_id) and intent.invoice.invoice_date <= received
+    if settles_now:  # Invoice-linked receipts should settle that invoice directly.
         post_payment(payment, actor_user=actor_user,
                      allocations=[(intent.invoice, intent.amount)])  # Allocate the full settled amount to the invoice.
-    else:  # Standalone receipts should not guess at invoice allocation.
-        # Standalone receipt: leave the funds as customer credit instead of auto-allocating them.
+    else:  # Standalone or not-yet-raised invoice: never guess at invoice allocation.
+        # Leave the funds as customer credit instead of auto-allocating them.
         post_payment(payment, actor_user=actor_user, auto_allocate=False)  # Park the money as credit instead.
 
     intent.payment = payment  # Link the payment back to the gateway record.

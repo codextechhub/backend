@@ -176,6 +176,37 @@ class CollectionTests(_PaymentsFixtureMixin, TestCase):
         inv.refresh_from_db()
         self.assertEqual(inv.amount_paid, 50000)
 
+    # Verify a gateway receipt for a not-yet-raised invoice still books, as credit.
+    def test_collection_for_a_future_dated_invoice_parks_as_credit(self):
+        """The payer's money has already moved, so the booking must never fail.
+
+        A receipt cannot settle an invoice that is not raised yet — the posting
+        service refuses an explicit allocation that would credit AR first. Here that
+        refusal must not surface: raising would leave real cash unrecorded while the
+        PSP retries a call that can never succeed. It is a prepayment, so it parks as
+        customer credit and applies once the invoice exists.
+        """
+        from vs_finance.receivables import customer_credit_balance
+
+        entity, customer, _ = self.build()
+        inv = self.make_posted_invoice(entity, customer, amount=50000)
+        future = datetime.date.today() + datetime.timedelta(days=14)
+        Invoice.objects.filter(pk=inv.pk).update(invoice_date=future, due_date=future)
+        inv.refresh_from_db()
+
+        intent = services.initiate_collection(
+            entity=entity, amount=50000, customer=customer, invoice=inv,
+        )
+        intent = services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
+
+        self.assertEqual(intent.status, CollectionStatus.SUCCEEDED)
+        payment = Payment.objects.get(pk=intent.payment_id)
+        self.assertEqual(payment.status, "POSTED")
+        self.assertEqual(payment.allocated_amount, 0)  # nothing settled early
+        inv.refresh_from_db()
+        self.assertEqual(inv.amount_paid, 0)
+        self.assertEqual(customer_credit_balance(customer), 50000)  # held as credit
+
     # Verify failed collection books nothing behavior.
     def test_failed_collection_books_nothing(self):
         entity, customer, _ = self.build()
