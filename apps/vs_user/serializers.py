@@ -989,6 +989,14 @@ class PositionAssignmentSerializer(serializers.ModelSerializer):
         read_only_fields = ('id', 'created_at', 'updated_at')
 
 
+class OrganogramCurrentAssignmentSerializer(serializers.Serializer):
+    """Minimal current-seat data needed by the public organogram cards."""
+
+    user = UserInlineSerializer(read_only=True)
+    position = PositionInlineSerializer(read_only=True)
+    is_acting = serializers.BooleanField(read_only=True)
+
+
 class MatrixReportSerializer(serializers.ModelSerializer):
     """Dotted-line reporting between two positions."""
 

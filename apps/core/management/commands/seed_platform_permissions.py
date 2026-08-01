@@ -105,7 +105,7 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
         "organogram",
         "CX organogram — departments, positions, assignments, matrix lines",
         [
-            ("view",   "View the org chart and its records",        False, _NORMAL),
+            ("view",   "View organogram summary metrics",             False, _NORMAL),
             ("manage", "Edit departments, positions and assignments", True, _SENSITIVE),
         ],
     ),

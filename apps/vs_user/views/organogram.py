@@ -15,7 +15,11 @@ from django.db.models import Count, Prefetch, Q
 from rest_framework import status, viewsets, mixins
 from rest_framework.exceptions import ValidationError
 from rest_framework.decorators import action
-from vs_rbac.permissions import IsAuthenticatedAndActive, HasRBACPermission
+from vs_rbac.permissions import (
+    IsAuthenticatedAndActive,
+    IsVisionStaff,
+    HasRBACPermission,
+)
 from vs_tenants.models import Tenant
 from core.mixins import (
     XVSModelViewSetMixin,
@@ -30,7 +34,7 @@ from ..models import (
 from ..serializers import (
     PlatformStaffProfileSerializer, PlatformStaffProfileListSerializer, OrgNodeSerializer, PositionSerializer,
     PositionAssignmentSerializer, MatrixReportSerializer,
-    OrgTreeNodeSerializer,
+    OrgTreeNodeSerializer, OrganogramCurrentAssignmentSerializer,
 )
 from ..services.organogram import OrganogramService
 
@@ -60,7 +64,8 @@ class PlatformStaffProfileViewSet(
     can read/write them, regardless of endpoint.
 
     Permission matrix:
-      list / retrieve:        platform.staff_profile.view
+      list:                   active platform staff (chart-safe fields only)
+      retrieve:               platform.staff_profile.view
       create:                 platform.staff_profile.create
       update / partial_update: platform.staff_profile.update
       me:                     IsAuthenticatedAndActive (self-service)
@@ -78,8 +83,12 @@ class PlatformStaffProfileViewSet(
     def get_permissions(self):
         if self.action in ('me', 'photos'):
             return [IsAuthenticatedAndActive()]
+        if self.action == 'list':
+            # The organogram enriches its cards from this deliberately slim
+            # serializer.  Every active platform employee may read those
+            # chart-safe fields; full HR profiles remain RBAC-gated below.
+            return [IsAuthenticatedAndActive(), IsVisionStaff()]
         action_permissions = {
-            'list':           'platform.staff_profile.view',
             'retrieve':       'platform.staff_profile.view',
             'create':         'platform.staff_profile.create',
             'update':         'platform.staff_profile.update',
@@ -188,8 +197,8 @@ class OrgNodeViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     """
     CX org nodes (hierarchical): Division → Department → Team.
 
-    Read endpoints require platform.organogram.view; writes require
-    platform.organogram.manage.
+    Active platform employees may read the organisational structure. Writes
+    require platform.organogram.manage.
 
     docstring-name: Org nodes
     """
@@ -199,10 +208,9 @@ class OrgNodeViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     def get_permissions(self):
         read_actions = {'list', 'retrieve'}
-        self.rbac_permission = (
-            'platform.organogram.view' if self.action in read_actions
-            else 'platform.organogram.manage'
-        )
+        if self.action in read_actions:
+            return [IsAuthenticatedAndActive(), IsVisionStaff()]
+        self.rbac_permission = 'platform.organogram.manage'
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
@@ -244,7 +252,8 @@ class PositionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     """
     Seats in the org chart. People are attached via position assignments.
 
-    Read endpoints require platform.organogram.view; writes require
+    Active platform employees may read seats and the reporting tree. Summary
+    data such as vacancies requires platform.organogram.view; writes require
     platform.organogram.manage.
 
     docstring-name: Positions
@@ -254,9 +263,11 @@ class PositionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     pagination_class = XVSPagination
 
     def get_permissions(self):
-        read_actions = {'list', 'retrieve', 'tree', 'vacancies'}
+        chart_actions = {'list', 'retrieve', 'tree'}
+        if self.action in chart_actions:
+            return [IsAuthenticatedAndActive(), IsVisionStaff()]
         self.rbac_permission = (
-            'platform.organogram.view' if self.action in read_actions
+            'platform.organogram.view' if self.action == 'vacancies'
             else 'platform.organogram.manage'
         )
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
@@ -338,11 +349,14 @@ class PositionAssignmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     pagination_class = XVSPagination
 
     def get_permissions(self):
-        if self.action == 'mine':
-            return [IsAuthenticatedAndActive()]
+        if self.action in {'mine', 'current'}:
+            permissions = [IsAuthenticatedAndActive()]
+            if self.action == 'current':
+                permissions.append(IsVisionStaff())
+            return permissions
         read_actions = {'list', 'retrieve'}
         self.rbac_permission = (
-            'platform.organogram.view' if self.action in read_actions
+            'platform.staff_profile.view' if self.action in read_actions
             else 'platform.organogram.manage'
         )
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
@@ -381,6 +395,34 @@ class PositionAssignmentViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         serializer = self.get_serializer(queryset, many=True)
         return success_response(
             message="Position history retrieved successfully.",
+            data=serializer.data,
+        )
+
+    @action(detail=False, methods=['get'], url_path='current')
+    def current(self, request):
+        """Chart-safe current assignments for acting-seat badges.
+
+        Full assignment history remains behind platform.organogram.view.  The
+        public organogram needs only the holder, seat and acting flag, so avoid
+        exposing tenure dates or historical rows here.
+        """
+        queryset = (
+            PositionAssignment.objects
+            .filter(end_date__isnull=True, user__is_active=True)
+            .select_related('user', 'position', 'position__org_node')
+            .order_by('position__title', '-is_primary', 'id')
+        )
+        data = [
+            {
+                'user': assignment.user,
+                'position': assignment.position,
+                'is_acting': assignment.is_acting,
+            }
+            for assignment in queryset
+        ]
+        serializer = OrganogramCurrentAssignmentSerializer(data, many=True)
+        return success_response(
+            message="Current organogram assignments retrieved successfully.",
             data=serializer.data,
         )
 
@@ -430,10 +472,9 @@ class MatrixReportViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     def get_permissions(self):
         read_actions = {'list', 'retrieve'}
-        self.rbac_permission = (
-            'platform.organogram.view' if self.action in read_actions
-            else 'platform.organogram.manage'
-        )
+        if self.action in read_actions:
+            return [IsAuthenticatedAndActive(), IsVisionStaff()]
+        self.rbac_permission = 'platform.organogram.manage'
         return [IsAuthenticatedAndActive(), HasRBACPermission()]
 
     def get_queryset(self):
