@@ -327,6 +327,27 @@ class ARDocumentVoidTests(_ARFixtureMixin, TestCase):
         reversal = reverse_journal(manual)
         self.assertEqual(reversal.status, DocumentStatus.POSTED)
 
+    def test_journal_detail_contract_routes_document_void_without_guessing(self):
+        from .posting import post_journal
+        from .serializers import JournalEntryDetailSerializer
+
+        entity, period, customer, _ = self.build_ar()
+        invoice = self.make_invoice(entity, customer, lines=[("4100", 1, 50000, None)])
+        post_invoice(invoice)
+
+        action = JournalEntryDetailSerializer(invoice.journal).data["reversal_action"]
+        self.assertEqual(action, {
+            "kind": "VOID_DOCUMENT",
+            "document_type": "INVOICE",
+            "document_id": invoice.pk,
+            "document_number": invoice.document_number,
+        })
+
+        manual = self.make_entry(entity, period, [("1100", 1000, 0), ("4100", 0, 1000)])
+        post_journal(manual)
+        manual_action = JournalEntryDetailSerializer(manual).data["reversal_action"]
+        self.assertEqual(manual_action, {"kind": "REVERSE_JOURNAL"})
+
     def test_void_date_cannot_precede_document_or_later_allocation(self):
         entity, _, customer, _ = self.build_ar()
         payment = Payment.objects.create(

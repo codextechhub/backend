@@ -287,10 +287,11 @@ class JournalEntryListSerializer(serializers.ModelSerializer):
 class JournalEntryDetailSerializer(JournalEntryListSerializer):
     lines = JournalLineSerializer(many=True, read_only=True)
     total_credit = serializers.SerializerMethodField()
+    reversal_action = serializers.SerializerMethodField()
 
     class Meta(JournalEntryListSerializer.Meta):
         fields = JournalEntryListSerializer.Meta.fields + [
-            "lines", "total_credit", "reverses_id",
+            "lines", "total_credit", "reverses_id", "reversal_action",
         ]
 
     def _totals(self, obj):
@@ -302,6 +303,11 @@ class JournalEntryDetailSerializer(JournalEntryListSerializer):
 
     def get_total_credit(self, obj) -> int:
         return self._totals(obj)[1]
+
+    def get_reversal_action(self, obj) -> dict:
+        from .posting import journal_reversal_action
+
+        return journal_reversal_action(obj)
 
 
 class DirectEntryLineSerializer(serializers.Serializer):

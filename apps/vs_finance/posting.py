@@ -430,18 +430,50 @@ def _journal_document_owner(entry):
     return None
 
 
-def _document_void_instruction(owner):
-    routes = {
-        "Invoice": "invoices/{pk}/void/",
-        "Payment": "payments/{pk}/void/",
-        "CreditNote": "credit-notes/{pk}/void/",
-        "Refund": "refunds/{pk}/void/",
-        "Concession": "concessions/{pk}/void/",
+_DOCUMENT_VOID_ROUTES = {
+    "Invoice": ("INVOICE", "invoices/{pk}/void/"),
+    "Payment": ("PAYMENT", "payments/{pk}/void/"),
+    "CreditNote": ("CREDIT_NOTE", "credit-notes/{pk}/void/"),
+    "Refund": ("REFUND", "refunds/{pk}/void/"),
+    "Concession": ("CONCESSION", "concessions/{pk}/void/"),
+}
+
+
+def journal_reversal_action(entry):
+    """Describe the safe action the journal screen may offer.
+
+    The frontend must never infer document ownership from narration/source text.
+    This contract is derived from the same relationship lookup that enforces the
+    raw-reversal guard, so the button and the service cannot disagree.
+    """
+    owner = _journal_document_owner(entry)
+    if owner is None:
+        return {"kind": "REVERSE_JOURNAL"}
+
+    model_name = type(owner).__name__
+    config = _DOCUMENT_VOID_ROUTES.get(model_name)
+    if config is None:
+        return {
+            "kind": "SOURCE_DOCUMENT_ACTION",
+            "document_type": model_name,
+            "document_number": getattr(owner, "document_number", "") or str(owner.pk),
+        }
+
+    document_type, _ = config
+    return {
+        "kind": "VOID_DOCUMENT",
+        "document_type": document_type,
+        "document_id": owner.pk,
+        "document_number": getattr(owner, "document_number", "") or str(owner.pk),
     }
+
+
+def _document_void_instruction(owner):
     model_name = type(owner).__name__
     label = getattr(owner, "document_number", "") or str(owner.pk)
-    route = routes.get(model_name)
-    if route:
+    config = _DOCUMENT_VOID_ROUTES.get(model_name)
+    if config:
+        _, route = config
         remedy = f"Use POST /finance/{route.format(pk=owner.pk)} from the document screen instead."
     else:
         remedy = f"Use the {model_name} document-level void/reversal service instead."
