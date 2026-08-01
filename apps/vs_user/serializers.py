@@ -734,6 +734,37 @@ class PlatformStaffProfileListSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class PlatformStaffProfileBriefSerializer(serializers.ModelSerializer):
+    """Work-only profile shown to colleagues without HR-profile access.
+
+    This is deliberately a separate allowlist, not a full serializer whose
+    private fields are removed in the frontend. Personal, next-of-kin, payroll,
+    employment-date and account-management data never leave the backend.
+    """
+
+    profile_view = serializers.SerializerMethodField()
+    user = UserInlineSerializer(read_only=True)
+    position = PositionInlineSerializer(read_only=True)
+    org_node = OrgNodeInlineSerializer(read_only=True)
+    department = OrgNodeInlineSerializer(read_only=True)
+    division = OrgNodeInlineSerializer(read_only=True)
+    current_line_manager = UserInlineSerializer(read_only=True)
+    is_active_employee = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = PlatformStaffProfile
+        fields = (
+            'profile_view', 'id', 'user', 'profile_photo', 'employee_id',
+            'job_title', 'position', 'org_node', 'department', 'division',
+            'current_line_manager', 'employment_type', 'employment_status',
+            'is_active_employee',
+        )
+        read_only_fields = fields
+
+    def get_profile_view(self, _obj) -> str:
+        return 'brief'
+
+
 class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     """
     Full CX-staff profile. Bank/payroll fields are stripped on read and
@@ -792,11 +823,12 @@ class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerial
     division             = OrgNodeInlineSerializer(read_only=True)
     current_line_manager = UserInlineSerializer(read_only=True)
     is_active_employee   = serializers.BooleanField(read_only=True)
+    profile_view         = serializers.SerializerMethodField()
 
     class Meta:
         model = PlatformStaffProfile
         fields = (
-            'id', 'user', 'user_id',
+            'profile_view', 'id', 'user', 'user_id',
             'date_of_birth', 'marital_status', 'nationality', 'state_of_origin',
             'profile_photo', 'bio',
             'personal_email', 'alternate_phone', 'residential_address',
@@ -809,6 +841,9 @@ class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerial
             'is_active_employee', 'created_at', 'updated_at',
         )
         read_only_fields = ('id', 'created_at', 'updated_at')
+
+    def get_profile_view(self, _obj) -> str:
+        return 'full'
 
     def validate(self, attrs):
         # On create the target user must be supplied; on update it is fixed.

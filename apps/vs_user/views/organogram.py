@@ -19,7 +19,9 @@ from vs_rbac.permissions import (
     IsAuthenticatedAndActive,
     IsVisionStaff,
     HasRBACPermission,
+    is_vision_super_admin,
 )
+from vs_rbac.evaluator import has_permission
 from vs_tenants.models import Tenant
 from core.mixins import (
     XVSModelViewSetMixin,
@@ -32,7 +34,8 @@ from ..models import (
     PositionAssignment, MatrixReport,
 )
 from ..serializers import (
-    PlatformStaffProfileSerializer, PlatformStaffProfileListSerializer, OrgNodeSerializer, PositionSerializer,
+    PlatformStaffProfileSerializer, PlatformStaffProfileBriefSerializer,
+    PlatformStaffProfileListSerializer, OrgNodeSerializer, PositionSerializer,
     PositionAssignmentSerializer, MatrixReportSerializer,
     OrgTreeNodeSerializer, OrganogramCurrentAssignmentSerializer,
 )
@@ -54,7 +57,7 @@ class PlatformStaffProfileViewSet(
 
     GET    /platform-staff-profiles/         — list (slim, no payroll)
     POST   /platform-staff-profiles/         — create a profile for a CX staff user
-    GET    /platform-staff-profiles/{id}/    — retrieve full profile
+    GET    /platform-staff-profiles/{id}/    — retrieve brief or authorised full profile
     PATCH  /platform-staff-profiles/{id}/    — update profile
     GET    /platform-staff-profiles/me/      — own profile (self-service)
     PATCH  /platform-staff-profiles/me/      — edit own profile (self-service)
@@ -64,8 +67,8 @@ class PlatformStaffProfileViewSet(
     can read/write them, regardless of endpoint.
 
     Permission matrix:
-      list:                   active platform staff (chart-safe fields only)
-      retrieve:               platform.staff_profile.view
+      list:                   any active user, current-tenant staff only
+      retrieve:               any active user; brief unless owner or authorised
       create:                 platform.staff_profile.create
       update / partial_update: platform.staff_profile.update
       me:                     IsAuthenticatedAndActive (self-service)
@@ -83,13 +86,9 @@ class PlatformStaffProfileViewSet(
     def get_permissions(self):
         if self.action in ('me', 'photos'):
             return [IsAuthenticatedAndActive()]
-        if self.action == 'list':
-            # The organogram enriches its cards from this deliberately slim
-            # serializer.  Every active platform employee may read those
-            # chart-safe fields; full HR profiles remain RBAC-gated below.
-            return [IsAuthenticatedAndActive(), IsVisionStaff()]
+        if self.action in ('list', 'retrieve'):
+            return [IsAuthenticatedAndActive()]
         action_permissions = {
-            'retrieve':       'platform.staff_profile.view',
             'create':         'platform.staff_profile.create',
             'update':         'platform.staff_profile.update',
             'partial_update': 'platform.staff_profile.update',
@@ -99,10 +98,22 @@ class PlatformStaffProfileViewSet(
 
     def get_queryset(self):
         params = self.request.query_params
+        tenant = (
+            getattr(self.request, 'tenant', None)
+            or getattr(self.request.user, 'tenant', None)
+        )
         qs = (
             PlatformStaffProfile.objects
-            .select_related('user', 'position', 'position__org_node')
-            .filter(user__user_type=User.UserType.CX_STAFF)
+            .select_related(
+                'user', 'position', 'position__org_node',
+                'position__org_node__parent',
+                'position__org_node__parent__parent',
+                'position__reports_to',
+            )
+            .filter(
+                user__user_type=User.UserType.CX_STAFF,
+                user__tenant=tenant,
+            )
             .order_by('-created_at')
         )
 
@@ -144,6 +155,30 @@ class PlatformStaffProfileViewSet(
 
         return qs
 
+    def retrieve(self, request, *args, **kwargs):
+        profile = self.get_object()
+        tenant = getattr(request, 'tenant', None) or request.user.tenant
+        can_view_full = (
+            profile.user_id == request.user.id
+            or is_vision_super_admin(request.user)
+            or has_permission(
+                request.user,
+                'platform.staff_profile.view',
+                tenant=tenant,
+                branch=getattr(request, 'branch', None),
+            )
+        )
+        serializer_class = (
+            PlatformStaffProfileSerializer
+            if can_view_full
+            else PlatformStaffProfileBriefSerializer
+        )
+        serializer = serializer_class(profile, context=self.get_serializer_context())
+        return success_response(
+            message="Staff profile retrieved successfully.",
+            data=serializer.data,
+        )
+
     @action(detail=False, methods=['get', 'patch'], url_path='me')
     def me(self, request):
         # Tenant-kind gate: only platform-tenant users have a staff profile.
@@ -180,9 +215,10 @@ class PlatformStaffProfileViewSet(
         image bytes themselves stay auth-gated by MediaView). Absolute URLs are
         required because /media/ sits outside the API's /v1 prefix.
         """
+        tenant = getattr(request, 'tenant', None) or request.user.tenant
         rows = (
             PlatformStaffProfile.objects
-            .filter(profile_photo__isnull=False)
+            .filter(user__tenant=tenant, profile_photo__isnull=False)
             .exclude(profile_photo='')
             .only('user_id', 'profile_photo')
         )

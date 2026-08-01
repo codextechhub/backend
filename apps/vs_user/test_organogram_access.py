@@ -61,6 +61,15 @@ class OrganogramAccessTests(TestCase):
             nok_name="Private Relative",
             bank_name="Private Bank",
         )
+        self.viewer_profile = PlatformStaffProfile.objects.create(
+            user=self.viewer,
+            employee_id="CX-ORG-2",
+            job_title="Access Analyst",
+            position=self.viewer_position,
+            personal_email="owner-private@example.test",
+            nok_name="Owner Relative",
+            bank_name="Owner Bank",
+        )
         self.client = APIClient()
         self.client.force_authenticate(user=self.viewer)
 
@@ -98,6 +107,17 @@ class OrganogramAccessTests(TestCase):
         self.assertNotIn("nok_name", profile)
         self.assertNotIn("bank_name", profile)
 
+    def test_staff_search_and_profile_still_require_authentication(self):
+        self.client.force_authenticate(user=None)
+
+        search = self.client.get("/v1/user/platform-staff-profiles/?search=Ada")
+        detail = self.client.get(
+            f"/v1/user/platform-staff-profiles/{self.profile.id}/",
+        )
+
+        self.assertEqual(search.status_code, 401, search.content)
+        self.assertEqual(detail.status_code, 401, detail.content)
+
     def test_profile_search_matches_a_full_name_across_name_fields(self):
         response = self.client.get(
             "/v1/user/platform-staff-profiles/?search=Ada%20Lovelace&page_size=10",
@@ -120,23 +140,52 @@ class OrganogramAccessTests(TestCase):
         self.assertEqual(set(acting), {"user", "position", "is_acting"})
         self.assertTrue(acting["is_acting"])
 
-    def test_full_hr_profile_and_assignment_history_remain_permissioned(self):
-        urls = (
+    def test_colleague_profile_is_brief_without_hr_permission(self):
+        response = self.client.get(
             f"/v1/user/platform-staff-profiles/{self.profile.id}/",
-            "/v1/user/organogram/assignments/?page_size=100",
         )
 
-        for url in urls:
-            with self.subTest(url=url):
-                response = self.client.get(url)
-                self.assertEqual(response.status_code, 403, response.content)
+        self.assertEqual(response.status_code, 200, response.content)
+        data = response.json()["data"]
+        self.assertEqual(data["profile_view"], "brief")
+        self.assertEqual(data["user"]["full_name"], "Ada Lovelace")
+        for private_field in (
+            "date_of_birth", "personal_email", "residential_address",
+            "nok_name", "bank_name", "account_name", "account_number",
+            "date_joined", "date_exited", "_stripped_fields",
+        ):
+            self.assertNotIn(private_field, data)
+
+    def test_owner_can_retrieve_their_full_profile_without_hr_permission(self):
+        response = self.client.get(
+            f"/v1/user/platform-staff-profiles/{self.viewer_profile.id}/",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        data = response.json()["data"]
+        self.assertEqual(data["profile_view"], "full")
+        self.assertEqual(data["personal_email"], "owner-private@example.test")
+        self.assertEqual(data["nok_name"], "Owner Relative")
+        self.assertEqual(data["bank_name"], "Owner Bank")
+
+    def test_hr_permission_unlocks_full_profile_but_not_payroll(self):
+        profile_url = f"/v1/user/platform-staff-profiles/{self.profile.id}/"
+        assignments_url = "/v1/user/organogram/assignments/?page_size=100"
+
+        self.assertEqual(self.client.get(assignments_url).status_code, 403)
 
         self._grant("platform.staff_profile.view")
 
-        for url in urls:
-            with self.subTest(granted_url=url):
-                response = self.client.get(url)
-                self.assertEqual(response.status_code, 200, response.content)
+        response = self.client.get(profile_url)
+        self.assertEqual(response.status_code, 200, response.content)
+        data = response.json()["data"]
+        self.assertEqual(data["profile_view"], "full")
+        self.assertEqual(data["personal_email"], "private@example.test")
+        self.assertEqual(data["nok_name"], "Private Relative")
+        self.assertNotIn("bank_name", data)
+        self.assertIn("bank_name", data["_stripped_fields"])
+
+        self.assertEqual(self.client.get(assignments_url).status_code, 200)
 
     def test_summary_vacancies_remain_permissioned(self):
         url = "/v1/user/organogram/positions/vacancies/"
@@ -168,3 +217,25 @@ class OrganogramAccessTests(TestCase):
         response = self.client.get("/v1/user/organogram/positions/tree/")
 
         self.assertEqual(response.status_code, 403, response.content)
+
+    def test_staff_search_and_profile_are_scoped_to_current_tenant(self):
+        self.profile.profile_photo = "platform_staff/photos/ada.png"
+        self.profile.save(update_fields=["profile_photo"])
+        school = make_school(slug="profile-scope-school", name="Profile Scope School")
+        branch = make_branch(school)
+        school_user = make_school_admin(branch, email="profile.scope@example.test")
+        self.client.force_authenticate(user=school_user)
+
+        search = self.client.get(
+            "/v1/user/platform-staff-profiles/?search=Ada&page_size=10",
+        )
+        detail = self.client.get(
+            f"/v1/user/platform-staff-profiles/{self.profile.id}/",
+        )
+        photos = self.client.get("/v1/user/platform-staff-profiles/photos/")
+
+        self.assertEqual(search.status_code, 200, search.content)
+        self.assertEqual(search.json()["data"], [])
+        self.assertEqual(detail.status_code, 404, detail.content)
+        self.assertEqual(photos.status_code, 200, photos.content)
+        self.assertEqual(photos.json()["data"], {})
