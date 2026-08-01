@@ -25,7 +25,11 @@ from vs_user.models import (
 class OrganogramAccessTests(TestCase):
     def setUp(self):
         self.viewer = make_vision_user(email="ordinary.organogram@codex.test")
-        self.manager = make_vision_user(email="manager.organogram@codex.test")
+        self.manager = make_vision_user(
+            email="manager.organogram@codex.test",
+            first_name="Ada",
+            last_name="Lovelace",
+        )
         self.node = OrgNode.objects.create(
             name="Organogram Access", code="ORG-ACCESS", kind=OrgNode.Kind.DIVISION,
         )
@@ -93,6 +97,17 @@ class OrganogramAccessTests(TestCase):
         self.assertNotIn("personal_email", profile)
         self.assertNotIn("nok_name", profile)
         self.assertNotIn("bank_name", profile)
+
+    def test_profile_search_matches_a_full_name_across_name_fields(self):
+        response = self.client.get(
+            "/v1/user/platform-staff-profiles/?search=Ada%20Lovelace&page_size=10",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            [item["id"] for item in response.json()["data"]],
+            [self.profile.id],
+        )
 
     def test_current_assignments_exclude_history_fields(self):
         response = self.client.get("/v1/user/organogram/assignments/current/")

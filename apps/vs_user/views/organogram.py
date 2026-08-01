@@ -130,13 +130,17 @@ class PlatformStaffProfileViewSet(
         if search := params.get('search'):
             if len(search) > 64:
                 raise ValidationError({'search': 'Search query must be 64 characters or fewer.'})
-            qs = qs.filter(
-                Q(user__first_name__icontains=search)
-                | Q(user__last_name__icontains=search)
-                | Q(user__email__icontains=search)
-                | Q(employee_id__icontains=search)
-                | Q(job_title__icontains=search)
-            )
+            # Apply each word independently so a natural full-name query such
+            # as "Ada Lovelace" can match across first_name + last_name. Every
+            # word must match at least one chart-safe searchable field.
+            for term in search.split():
+                qs = qs.filter(
+                    Q(user__first_name__icontains=term)
+                    | Q(user__last_name__icontains=term)
+                    | Q(user__email__icontains=term)
+                    | Q(employee_id__icontains=term)
+                    | Q(job_title__icontains=term)
+                )
 
         return qs
 
