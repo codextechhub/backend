@@ -238,6 +238,13 @@ class PostingGuardTests(TestCase):
             ensure_period_open(self._Period(PeriodStatus.SOFT_CLOSED))
         ensure_period_open(self._Period(PeriodStatus.SOFT_CLOSED), allow_restricted=True)
 
+    def test_closed_bypass_is_explicit_and_never_applies_to_locked(self):
+        with self.assertRaises(PeriodClosedError):
+            ensure_period_open(self._Period(PeriodStatus.CLOSED), allow_restricted=True)
+        ensure_period_open(self._Period(PeriodStatus.CLOSED), allow_closed=True)
+        with self.assertRaises(PeriodClosedError):
+            ensure_period_open(self._Period(PeriodStatus.LOCKED), allow_closed=True)
+
     # Verify missing period fails closed behavior.
     def test_missing_period_fails_closed(self):
         with self.assertRaises(PeriodClosedError):
@@ -627,6 +634,81 @@ class PostingWindowEndpointTests(TestCase):
         # confirming the code exists to someone outside the tenant.
         resp = self.call_as(user, entity_code=foreign.code)
         self.assertEqual(resp.status_code, 404)
+
+
+# Group tests for fiscal-calendar creation permissions and tenant isolation.
+class FiscalCalendarPermissionTests(TestCase):
+    """Creating a calendar needs its own grant and never crosses tenant books."""
+
+    def setUp(self):
+        from vs_tenants.models import Tenant
+
+        self.tenant = Tenant.objects.get(slug="codex")
+
+    def user_holding(self, *keys, email):
+        from django.contrib.auth import get_user_model
+        from vs_rbac.tests.helpers import (
+            make_assignment, make_permission, make_role, make_role_permission,
+        )
+
+        user = get_user_model().objects.create_user(
+            email=email, password="x", user_type="CX_STAFF", status="ACTIVE",
+            first_name="Calendar", last_name="Test", tenant=self.tenant,
+        )
+        role = make_role(self.tenant, name=f"Role {email}")
+        for key in keys:
+            make_role_permission(role, make_permission(key))
+        make_assignment(self.tenant, user, role)
+        return user
+
+    def call_as(self, user, *, entity_code):
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views import FiscalYearListView
+
+        request = APIRequestFactory().post(
+            f"/v1/finance/fiscal-years/?entity={entity_code}",
+            {"year": 2027, "start_month": 1, "fiscal_start_day": 1,
+             "frequency": "MONTHLY"},
+            format="json",
+        )
+        force_authenticate(request, user=user)
+        request.tenant = user.tenant
+        request.rbac_tenant = user.tenant
+        response = FiscalYearListView.as_view()(request)
+        response.render()
+        return response
+
+    def test_create_denied_without_period_create_grant(self):
+        entity = LedgerEntity.objects.create(
+            name="Calendar Books", code="CALBOOK", kind=LedgerEntity.Kind.TENANT,
+            tenant=self.tenant,
+        )
+        user = self.user_holding("finance.period.view", email="period-view@test.com")
+
+        response = self.call_as(user, entity_code=entity.code)
+
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(FiscalYear.objects.filter(entity=entity).exists())
+
+    def test_create_cannot_target_another_tenants_entity(self):
+        from vs_tenants.models import Tenant
+
+        foreign_tenant = Tenant.objects.create(
+            name="Foreign Tenant", slug="foreign-calendar",
+            kind=Tenant.Kind.ORGANIZATION, status=Tenant.Status.ACTIVE,
+        )
+        foreign = LedgerEntity.objects.create(
+            name="Foreign Books", code="FCAL", kind=LedgerEntity.Kind.TENANT,
+            tenant=foreign_tenant,
+        )
+        user = self.user_holding(
+            "finance.period.create", email="period-create@test.com",
+        )
+
+        response = self.call_as(user, entity_code=foreign.code)
+
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(FiscalYear.objects.filter(entity=foreign).exists())
 
 
 # Group tests for Chart Of Accounts Tests.
@@ -3562,6 +3644,15 @@ class PeriodCloseTests(_Phase4FixtureMixin, TestCase):
         jan.refresh_from_db()
         self.assertEqual(jan.status, PeriodStatus.LOCKED)
 
+    def test_final_period_cannot_lock_before_fiscal_year_close(self):
+        entity, _, periods = self.build_books()
+        december = periods[-1]
+        close_period(entity, december)
+        with self.assertRaises(PeriodCloseError):
+            lock_period(entity, december)
+        december.refresh_from_db()
+        self.assertEqual(december.status, PeriodStatus.CLOSED)
+
     # Verify lock refuses non closed period behavior.
     def test_lock_refuses_non_closed_period(self):
         entity, _, periods = self.build_books()
@@ -4124,6 +4215,63 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
             {"claimant_name": "Jane Staff", "claim_date": "2026-01-10", "title": "Trip",
              "lines": [{"description": "Diesel", "expense_account": "5300",
                         "quantity": 1, "unit_price": 100000}]}, format="json")
+
+    def test_start_fiscal_year_provisions_periods_and_rejects_duplicates(self):
+        entity, _, _ = self.build_books()
+        response = self.client.post(
+            f"/v1/finance/fiscal-years/?entity={entity.code}",
+            {"year": 2027, "start_month": 1, "fiscal_start_day": 1,
+             "frequency": "MONTHLY"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        payload = response.json()["data"]
+        self.assertEqual(payload["fiscal_year"]["year"], 2027)
+        self.assertEqual(len(payload["periods"]), 12)
+        self.assertEqual(payload["periods"][0]["start_date"], "2027-01-01")
+        self.assertEqual(payload["periods"][-1]["end_date"], "2027-12-31")
+        self.assertEqual(
+            FiscalPeriod.objects.filter(entity=entity, fiscal_year__year=2027).count(), 12,
+        )
+
+        # The shared picker mode is deliberately unpaginated: with three years,
+        # the current year would otherwise fall off the oldest-first 25-row page.
+        from vs_finance.seed import seed_fiscal_year
+        seed_fiscal_year(entity, year=2028)
+        calendar = self.client.get(
+            f"/v1/finance/periods/?entity={entity.code}&all=true&year=2028",
+        )
+        self.assertEqual(calendar.status_code, 200, calendar.content)
+        self.assertEqual(len(calendar.json()["data"]), 12)
+        self.assertEqual({row["fiscal_year"] for row in calendar.json()["data"]}, {2028})
+
+        # Shared report pickers are bounded but newest-first, so current periods
+        # cannot disappear behind an oldest-first first page.
+        recent = self.client.get(
+            f"/v1/finance/periods/?entity={entity.code}&recent=true&page_size=25",
+        )
+        self.assertEqual(recent.status_code, 200, recent.content)
+        self.assertEqual(recent.json()["data"][0]["fiscal_year"], 2028)
+
+        missing_year = self.client.get(
+            f"/v1/finance/periods/?entity={entity.code}&all=true",
+        )
+        self.assertEqual(missing_year.status_code, 400, missing_year.content)
+
+        empty_year = self.client.get(
+            f"/v1/finance/periods/?entity={entity.code}&all=true&year=2099",
+        )
+        self.assertEqual(empty_year.status_code, 200, empty_year.content)
+        self.assertEqual(empty_year.json()["data"], [])
+
+        duplicate = self.client.post(
+            f"/v1/finance/fiscal-years/?entity={entity.code}",
+            {"year": 2027}, format="json",
+        )
+        self.assertEqual(duplicate.status_code, 400, duplicate.content)
+        self.assertEqual(
+            FiscalPeriod.objects.filter(entity=entity, fiscal_year__year=2027).count(), 12,
+        )
 
     # Verify expense claim reject only from draft behavior.
     def test_expense_claim_reject_only_from_draft(self):
@@ -8638,6 +8786,23 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         self.assertEqual(re.credit_total, 60000)
         self.assertEqual(re.debit_total, 0)
 
+    def test_close_year_can_post_after_final_period_is_hard_closed(self):
+        from vs_finance.close import close_fiscal_year
+
+        entity, jan = self.build_ledger()
+        post_journal(self.make_entry(entity, jan, [("1100", 100000, 0), ("4100", 0, 100000)]))
+        jan.status = PeriodStatus.CLOSED
+        jan.save(update_fields=["status"])
+
+        entry, net_income = close_fiscal_year(
+            entity, jan.fiscal_year, closing_date=datetime.date(2026, 1, 31),
+        )
+
+        self.assertIsNotNone(entry)
+        self.assertEqual(net_income, 100000)
+        jan.refresh_from_db()
+        self.assertEqual(jan.status, PeriodStatus.CLOSED)
+
     def test_close_year_rolls_loss_to_retained_earnings(self):
         from vs_finance.close import close_fiscal_year
 
@@ -8709,7 +8874,10 @@ class SeedFinancePermissionsTests(TestCase):
     def test_platform_roles_granted_in_tenant_table(self):
         from vs_rbac.models import Permission, TenantRolePermission
 
-        for key in ("finance.account.view", "finance.journal.post", "finance.period.close"):
+        for key in (
+            "finance.account.view", "finance.journal.post", "finance.period.create",
+            "finance.period.close",
+        ):
             self.assertTrue(Permission.objects.filter(key=key).exists(), key)
             for role_key in ("xvs_super_admin", "xvs_platform_admin"):
                 self.assertTrue(

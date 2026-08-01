@@ -21,7 +21,6 @@ from .constants import (
     DocumentStatus,
     FinanceAuditAction,
     JournalSource,
-    PERIOD_POSTING_BLOCKED,
     PERIOD_POSTING_RESTRICTED,
     PeriodStatus,
 )
@@ -44,7 +43,12 @@ class _PeriodLike(Protocol):
 
 
 # Guard posting period availability.
-def ensure_period_open(period: _PeriodLike, *, allow_restricted: bool = False) -> None:
+def ensure_period_open(
+    period: _PeriodLike,
+    *,
+    allow_restricted: bool = False,
+    allow_closed: bool = False,
+) -> None:
     """Raise :class:`PeriodClosedError` if ``period`` cannot accept a posting.
 
     Args:
@@ -53,6 +57,9 @@ def ensure_period_open(period: _PeriodLike, *, allow_restricted: bool = False) -
         allow_restricted: When ``True``, soft-closed periods are permitted — used by
             privileged close-process auto-postings (depreciation, accruals). Ordinary
             postings pass ``False`` and are blocked from soft-closed periods too.
+        allow_closed: A narrower year-end-close escape hatch. When ``True`` a CLOSED
+            period may accept the formal closing journal; LOCKED periods remain
+            immutable. No ordinary or month-end posting should set this flag.
 
     A missing period (``None``) is treated as a hard error: nothing posts without a
     period.
@@ -63,7 +70,12 @@ def ensure_period_open(period: _PeriodLike, *, allow_restricted: bool = False) -
     status = getattr(period, "status", None)  # Read status defensively from period-like object.
     label = str(period)  # Human-readable period label for errors.
 
-    if status in PERIOD_POSTING_BLOCKED:  # Closed/locked periods reject all postings.
+    if status == PeriodStatus.LOCKED:  # A statutory lock is irreversible, even at year end.
+        raise PeriodClosedError(period_label=label, status=str(status))
+
+    if status == PeriodStatus.CLOSED:  # Only the formal year close may bypass CLOSED.
+        if allow_closed:
+            return
         raise PeriodClosedError(period_label=label, status=str(status))
 
     if status in PERIOD_POSTING_RESTRICTED and not allow_restricted:  # Soft-closed periods require privileged posting.
@@ -75,7 +87,12 @@ def ensure_period_open(period: _PeriodLike, *, allow_restricted: bool = False) -
 
 
 # Non-raising period posting test.
-def _period_accepts_posting(period, *, allow_restricted: bool = False) -> bool:
+def _period_accepts_posting(
+    period,
+    *,
+    allow_restricted: bool = False,
+    allow_closed: bool = False,
+) -> bool:
     """Non-raising sibling of :func:`ensure_period_open`: can a posting land here?
 
     Mirrors the guard's logic without raising, so callers (e.g. reversal-date
@@ -84,8 +101,10 @@ def _period_accepts_posting(period, *, allow_restricted: bool = False) -> bool:
     if period is None:  # Missing period cannot accept postings.
         return False
     status = getattr(period, "status", None)  # Read status defensively.
-    if status in PERIOD_POSTING_BLOCKED:  # Closed/locked periods reject postings.
+    if status == PeriodStatus.LOCKED:  # A locked period never accepts another entry.
         return False
+    if status == PeriodStatus.CLOSED:  # CLOSED is bypassed only for a formal year-end journal.
+        return allow_closed
     if status in PERIOD_POSTING_RESTRICTED:  # Restricted periods depend on caller privilege.
         return allow_restricted
     return status == PeriodStatus.OPEN  # Only open periods accept ordinary postings.
@@ -254,7 +273,13 @@ def _apply_to_balances(entry, *, sign: int) -> None:
 
 
 # Public journal posting wrapper.
-def post_journal(entry, *, actor_user=None, allow_restricted: bool = False):
+def post_journal(
+    entry,
+    *,
+    actor_user=None,
+    allow_restricted: bool = False,
+    allow_closed: bool = False,
+):
     """Post a draft :class:`~vs_finance.models.JournalEntry`, making it affect balances.
 
     Thin wrapper around the atomic core (:func:`_post_journal_atomic`) that turns any
@@ -269,7 +294,8 @@ def post_journal(entry, *, actor_user=None, allow_restricted: bool = False):
 
     try:  # Atomic core may roll back; wrapper logs rejection after rollback.
         return _post_journal_atomic(  # Perform the actual posting.
-            entry, actor_user=actor_user, allow_restricted=allow_restricted,  # Actor and period privilege.
+            entry, actor_user=actor_user, allow_restricted=allow_restricted,
+            allow_closed=allow_closed,  # Actor and tightly scoped period privileges.
         )
     except FinanceError as exc:  # Finance-domain errors get durable rejection audit.
         record_rejection(  # Record failed posting attempt.
@@ -282,7 +308,13 @@ def post_journal(entry, *, actor_user=None, allow_restricted: bool = False):
 
 @transaction.atomic
 # Transactional journal posting implementation.
-def _post_journal_atomic(entry, *, actor_user=None, allow_restricted: bool = False):
+def _post_journal_atomic(
+    entry,
+    *,
+    actor_user=None,
+    allow_restricted: bool = False,
+    allow_closed: bool = False,
+):
     """The posting work proper, all in one transaction.
 
     Steps:
@@ -314,7 +346,11 @@ def _post_journal_atomic(entry, *, actor_user=None, allow_restricted: bool = Fal
             f"Journal {entry.document_number or entry.pk} is '{locked_status}' and cannot be posted.",
         )
 
-    ensure_period_open(entry.period, allow_restricted=allow_restricted)  # Guard period status.
+    ensure_period_open(  # Guard period status; CLOSED bypass is reserved for formal year close.
+        entry.period,
+        allow_restricted=allow_restricted,
+        allow_closed=allow_closed,
+    )
 
     lines = list(entry.lines.select_related("account").all())
     if not lines:  # A journal with no lines has no accounting substance.

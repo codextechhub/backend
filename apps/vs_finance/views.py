@@ -15,6 +15,7 @@ from shutil import which
 from django.http import HttpResponse
 from rest_framework import generics
 from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from core.mixins import RetrieveModelMixin
@@ -534,6 +535,24 @@ class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
     serializer_class = FiscalPeriodSerializer
     rbac_permission = "finance.period.view"
 
+    def list(self, request, *args, **kwargs):
+        """Return one complete year when ``?all=true&year=``; paginate otherwise."""
+        if request.query_params.get("all", "").lower() != "true":
+            return super().list(request, *args, **kwargs)
+        if not request.query_params.get("year"):
+            raise ValidationError({
+                "year": "The year filter is required when requesting a complete calendar.",
+            })
+        entity = resolve_entity(request)
+        rows = self.entity_qs(entity)
+        # Do not use success_response here: its historical ``data or {}`` fallback
+        # turns an empty list into {}, which breaks every period picker.
+        return Response({
+            "success": True,
+            "message": "Fiscal periods retrieved.",
+            "data": FiscalPeriodSerializer(rows, many=True).data,
+        })
+
     # Handle the entity qs workflow.
     def entity_qs(self, entity):
         qs = FiscalPeriod.objects.filter(entity=entity).select_related("fiscal_year")
@@ -541,6 +560,8 @@ class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
             qs = qs.filter(status=status_val)
         if (year := self.request.query_params.get("year")):
             qs = qs.filter(fiscal_year__year=year)
+        if self.request.query_params.get("recent", "").lower() == "true":
+            return qs.order_by("-fiscal_year__year", "-period_no")
         return qs.order_by("fiscal_year__year", "period_no")
 
 
@@ -583,15 +604,20 @@ class PostingWindowView(APIView):
 
 # Group endpoint behavior for Fiscal Year List View.
 class FiscalYearListView(EntityScopedListMixin, generics.ListAPIView):
-    """GET /finance/fiscal-years/?entity= — the entity's fiscal years.
+    """List fiscal years or open the next fiscal calendar for an entity.
 
     ``?status=OPEN`` narrows to open years (the ones a new budget can target).
+    ``POST`` accepts ``year``, ``start_month``, ``fiscal_start_day`` and
+    ``frequency`` (MONTHLY/QUARTERLY), then provisions the complete set of periods.
 
     docstring-name: Fiscal years
     """
 
     serializer_class = FiscalYearSerializer
-    rbac_permission = "finance.period.view"
+
+    @property
+    def rbac_permission(self):
+        return "finance.period.create" if self.request.method == "POST" else "finance.period.view"
 
     # Handle the entity qs workflow.
     def entity_qs(self, entity):
@@ -601,6 +627,87 @@ class FiscalYearListView(EntityScopedListMixin, generics.ListAPIView):
         if (status_val := self.request.query_params.get("status")):
             qs = qs.filter(status=status_val)
         return qs.order_by("-year")
+
+    def post(self, request):
+        """Start a fiscal year and provision all of its posting periods."""
+        from django.db import transaction
+        from django.utils import timezone
+
+        from .models import FiscalYear
+        from .seed import seed_fiscal_year
+
+        entity = resolve_entity(request)  # Tenant-scoped; unknown/forbidden both return 404.
+        body = request.data or {}
+        latest = FiscalYear.objects.filter(entity=entity).order_by("-year").first()
+
+        def integer(name, default, minimum, maximum):
+            raw = body.get(name, default)
+            try:
+                value = int(raw)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError({name: "Enter a whole number."}) from exc
+            if not minimum <= value <= maximum:
+                raise ValidationError({name: f"Enter a value from {minimum} to {maximum}."})
+            return value
+
+        year = integer("year", (latest.year + 1) if latest else timezone.localdate().year, 1900, 2200)
+        start_month = integer(
+            "start_month", latest.start_date.month if latest else 1, 1, 12,
+        )
+        start_day = integer(
+            "fiscal_start_day", latest.start_date.day if latest else 1, 1, 31,
+        )
+        inferred_frequency = (
+            "QUARTERLY" if latest and latest.periods.filter(period_no__lte=12).count() == 4
+            else "MONTHLY"
+        )
+        frequency = str(body.get("frequency", inferred_frequency)).strip().upper()
+        if frequency not in {"MONTHLY", "QUARTERLY"}:
+            raise ValidationError({"frequency": "Choose MONTHLY or QUARTERLY."})
+        try:
+            with transaction.atomic():
+                # Serialize calendar creation per entity so two clicks cannot both
+                # pass the duplicate check and report that they opened the same year.
+                LedgerEntity.objects.select_for_update().get(pk=entity.pk)
+                if FiscalYear.objects.filter(entity=entity, year=year).exists():
+                    raise ValidationError({
+                        "year": f"Fiscal year {year} already exists for this entity.",
+                    })
+                fiscal_year, periods = seed_fiscal_year(
+                    entity,
+                    year=year,
+                    start_month=start_month,
+                    fiscal_period_frequency=frequency,
+                    fiscal_start_day=start_day,
+                )
+                overlap = (
+                    FiscalYear.objects.filter(
+                        entity=entity,
+                        start_date__lte=fiscal_year.end_date,
+                        end_date__gte=fiscal_year.start_date,
+                    )
+                    .exclude(pk=fiscal_year.pk)
+                    .order_by("start_date")
+                    .first()
+                )
+                if overlap is not None:
+                    raise ValidationError({
+                        "fiscal_calendar": (
+                            f"FY{year} overlaps FY{overlap.year} "
+                            f"({overlap.start_date} to {overlap.end_date})."
+                        ),
+                    })
+        except ValueError as exc:
+            raise ValidationError({"fiscal_calendar": str(exc)}) from exc
+
+        return success_response(
+            f"Fiscal year {year} opened with {len(periods)} {frequency.lower()} periods.",
+            data={
+                "fiscal_year": FiscalYearSerializer(fiscal_year).data,
+                "periods": FiscalPeriodSerializer(periods, many=True).data,
+            },
+            status=201,
+        )
 
 
 # Group endpoint behavior for Journal Entry List View.
@@ -1468,8 +1575,8 @@ class FiscalYearCloseView(APIView):
     Zeroes every income/expense account for the year and rolls the net profit or loss
     into Retained Earnings (3200), then marks the fiscal year CLOSED. Body (optional):
     ``{"closing_date": ISO, "force": bool}`` — ``force`` closes the year even while some
-    periods are still OPEN. The final period must still accept a posting (open or
-    soft-closed) so the closing entry can be booked.
+    periods are still OPEN. The formal entry may use an OPEN, SOFT_CLOSED or CLOSED
+    final period, but never a permanently LOCKED one.
 
     docstring-name: Close a fiscal year
     """

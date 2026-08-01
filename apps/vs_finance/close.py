@@ -229,6 +229,13 @@ def lock_period(entity, period, *, actor_user=None):
         raise PeriodCloseError(
             f"Only a CLOSED period can be locked; '{period}' is '{period.status}'.",
         )
+    if (
+        period.end_date == period.fiscal_year.end_date
+        and period.fiscal_year.status == PeriodStatus.OPEN
+    ):
+        raise PeriodCloseError(
+            f"Close fiscal year {period.fiscal_year.year} before locking its final period.",
+        )
     _transition(  # Apply irreversible lock transition and audit it.
         period, PeriodStatus.LOCKED, actor_user=actor_user,  # Target locked status and actor.
         action=FinanceAuditAction.PERIOD_LOCKED,  # Audit action for lock.
@@ -249,9 +256,10 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     anticipates. After it posts, the P&L accounts read zero and the year's result is
     permanently in equity.
 
-    * ``closing_date`` defaults to the year's ``end_date``; its period must still accept
-      a posting (OPEN, or SOFT_CLOSED via the privileged close path), so run the year
-      close while the final period is still open/soft-closed, before hard-locking it.
+    * ``closing_date`` defaults to the year's ``end_date``. The formal close journal
+      may post into OPEN, SOFT_CLOSED or CLOSED because closing the final month before
+      closing the year is the normal operator sequence. A LOCKED period remains
+      immutable, so the year must be closed before the final period is locked.
     * ``require_periods_closed`` (default) refuses while any period in the year is still
       OPEN — draft/late entries should be posted and the months soft-/closed first.
 
@@ -326,10 +334,12 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
 
     closing_date = closing_date or fiscal_year.end_date  # Default to the last day of the year.
     period = resolve_period(entity, closing_date)  # The period the closing entry posts into.
-    if not _period_accepts_posting(period, allow_restricted=True):  # Must be OPEN or SOFT_CLOSED.
+    if not _period_accepts_posting(  # Formal close may use CLOSED, but never LOCKED.
+        period, allow_restricted=True, allow_closed=True,
+    ):
         raise PeriodCloseError(
-            f"The closing date {closing_date} has no open/soft-closed period to post "
-            f"into; keep the final period open until the year is closed.")
+            f"The closing date {closing_date} falls in a LOCKED period; "
+            f"close the fiscal year before locking its final period.")
 
     entry = JournalEntry.objects.create(  # The year-end closing journal.
         entity=entity, date=closing_date, period=period, source=JournalSource.CLOSING,
@@ -340,7 +350,9 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
             entry=entry, account=acc, debit=debit, credit=credit,
             description=f"Year-end close FY{fiscal_year.year}", line_no=i,
         )
-    post_journal(entry, actor_user=actor_user, allow_restricted=True)  # Privileged close posting.
+    post_journal(  # Privileged formal-close posting; this is the only CLOSED bypass.
+        entry, actor_user=actor_user, allow_restricted=True, allow_closed=True,
+    )
 
     fiscal_year.status = PeriodStatus.CLOSED  # Seal the year.
     fiscal_year.save(update_fields=["status", "updated_at"])
