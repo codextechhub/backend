@@ -291,10 +291,21 @@ def _pay_payroll_atomic(run, *, bank_account=None, pay_date=None, actor_user=Non
     if run.net_total <= 0:  # Nothing leaves bank when net total is zero.
         raise PayrollError("Nothing to disburse: net total is zero.")
 
+    pay_date = pay_date or run.pay_date  # Default disbursement date to payroll date.
+    # Net wages cannot be disbursed before the payroll accrual that raised the
+    # payable, or the liability carries a debit balance until the run date.
+    from .chronology import ensure_on_or_after
+    ensure_on_or_after(
+        subject=f"Payroll payment for {run.document_number or run.pk}",
+        subject_date=pay_date,
+        source=f"payroll run {run.document_number or run.pk}",
+        source_date=run.pay_date,
+        remedy=f"Date the payroll payment {run.pay_date} or later.",
+    )
+
     net = run.net_payable_account or resolve_account(  # Resolve net wages liability account.
         run.entity, NET_WAGES_PAYABLE_CODE, label="net wages payable",  # Default account code.
     )
-    pay_date = pay_date or run.pay_date  # Default disbursement date to payroll date.
     period = resolve_period(run.entity, pay_date)  # Find payment period.
 
     entry = JournalEntry.objects.create(

@@ -407,6 +407,18 @@ def _pay_filing_atomic(filing, *, bank_account, pay_date, amount, actor_user):
         raise TaxFilingError("Only a filed return can be remitted.")
     if bank_account.entity_id != filing.entity_id:  # Bank account must belong to filing entity.
         raise TaxFilingError("The bank account belongs to a different entity.")
+
+    # A remittance cannot predate the filed return it settles: otherwise the tax
+    # payable is debited before the filed obligation exists on the books.
+    from .chronology import ensure_on_or_after
+    ensure_on_or_after(
+        subject=f"Tax remittance for {filing.document_number or filing.pk}",
+        subject_date=pay_date,
+        source=f"tax filing {filing.document_number or filing.pk}",
+        source_date=filing.filed_at,
+        remedy=f"Date the remittance {filing.filed_at} or later.",
+    )
+
     outstanding = filing.balance_due  # Amount still unpaid.
     if outstanding <= 0:  # Nothing left to remit.
         raise TaxFilingError("This filing has no outstanding balance to remit.")

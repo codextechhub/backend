@@ -8930,6 +8930,12 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
             deposit_account=Account.objects.get(entity=entity, code="1100"),
         )
 
+    def _bank(self, entity):
+        return BankAccount.objects.create(
+            entity=entity, name="Settlement bank",
+            gl_account=Account.objects.get(entity=entity, code="1100"),
+        )
+
     # --- refunds ----------------------------------------------------------- #
 
     def test_refund_cannot_be_dated_before_the_credit_arrives(self):
@@ -9057,6 +9063,149 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
         invoice.refresh_from_db()
         self.assertEqual(concession.status, DocumentStatus.DRAFT)
         self.assertEqual(invoice.amount_credited, 0)
+
+    # --- liability settlements -------------------------------------------- #
+
+    def test_expense_reimbursement_cannot_predate_the_claim(self):
+        entity, _period, _customer = self._ledger()
+        bank = self._bank(entity)
+        claim = ExpenseClaim.objects.create(
+            entity=entity, claimant_name="Jane Staff",
+            claim_date=datetime.date(2026, 2, 10), title="Trip",
+        )
+        ExpenseClaimLine.objects.create(
+            claim=claim, expense_account=Account.objects.get(entity=entity, code="5500"),
+            quantity=1, unit_price=50000, line_no=1,
+        )
+        post_expense_claim(claim)
+        claim.refresh_from_db()
+        accrual_journal_id = claim.journal_id
+
+        with self.assertRaises(BackdatedPostingError):
+            settle_expense_claim(
+                claim, bank_account=bank, pay_date=datetime.date(2026, 2, 1))
+
+        claim.refresh_from_db()
+        self.assertEqual(claim.status, DocumentStatus.POSTED)
+        self.assertEqual(claim.amount_paid, 0)
+        self.assertEqual(claim.payment_status, InvoicePaymentStatus.UNPAID)
+        self.assertEqual(claim.journal_id, accrual_journal_id)
+
+    def test_expense_reimbursement_on_the_claim_date_is_allowed(self):
+        entity, _period, _customer = self._ledger()
+        bank = self._bank(entity)
+        claim = ExpenseClaim.objects.create(
+            entity=entity, claimant_name="Jane Staff",
+            claim_date=datetime.date(2026, 2, 10), title="Trip",
+        )
+        ExpenseClaimLine.objects.create(
+            claim=claim, expense_account=Account.objects.get(entity=entity, code="5500"),
+            quantity=1, unit_price=50000, line_no=1,
+        )
+        post_expense_claim(claim)
+
+        settle_expense_claim(
+            claim, bank_account=bank, pay_date=datetime.date(2026, 2, 10))
+
+        claim.refresh_from_db()
+        self.assertEqual(claim.amount_paid, 50000)
+        self.assertEqual(claim.payment_status, InvoicePaymentStatus.PAID)
+
+    def test_payroll_disbursement_cannot_predate_the_run(self):
+        entity, _period, _customer = self._ledger()
+        bank = self._bank(entity)
+        run = PayrollRun.objects.create(
+            entity=entity, pay_date=datetime.date(2026, 2, 10), period_label="Feb 2026",
+        )
+        PayrollLine.objects.create(
+            run=run, employee_name="Ada", gross_amount=300000,
+            paye_amount=30000, pension_amount=15000, line_no=1,
+        )
+        post_payroll(run)
+
+        with self.assertRaises(BackdatedPostingError):
+            pay_payroll(
+                run, bank_account=bank, pay_date=datetime.date(2026, 2, 1))
+
+        run.refresh_from_db()
+        self.assertEqual(run.run_status, PayrollRunStatus.POSTED)
+        self.assertIsNone(run.disbursement_journal_id)
+        self.assertIsNone(run.bank_account_id)
+
+    def test_payroll_disbursement_on_the_run_date_is_allowed(self):
+        entity, _period, _customer = self._ledger()
+        bank = self._bank(entity)
+        run = PayrollRun.objects.create(
+            entity=entity, pay_date=datetime.date(2026, 2, 10), period_label="Feb 2026",
+        )
+        PayrollLine.objects.create(
+            run=run, employee_name="Ada", gross_amount=300000,
+            paye_amount=30000, pension_amount=15000, line_no=1,
+        )
+        post_payroll(run)
+
+        pay_payroll(
+            run, bank_account=bank, pay_date=datetime.date(2026, 2, 10))
+
+        run.refresh_from_db()
+        self.assertEqual(run.run_status, PayrollRunStatus.PAID)
+        self.assertIsNotNone(run.disbursement_journal_id)
+
+    def test_tax_remittance_cannot_predate_the_filing(self):
+        entity, jan, _customer = self._ledger()
+        bank = self._bank(entity)
+        obligation = TaxObligation.objects.create(
+            entity=entity, code="WHT-DATE", name="Withholding Tax",
+            obligation_type=TaxObligationType.WHT,
+            liability_account=Account.objects.get(entity=entity, code="2300"),
+            authority_name="FIRS",
+        )
+        post_journal(self.make_entry(
+            entity, jan, [("5300", 50000, 0), ("2300", 0, 50000)],
+            date=datetime.date(2026, 1, 10),
+        ))
+        filing = prepare_filing(
+            obligation, period_start=datetime.date(2026, 1, 1),
+            period_end=datetime.date(2026, 1, 31),
+        )
+        file_filing(filing, filed_date=datetime.date(2026, 2, 10))
+
+        with self.assertRaises(BackdatedPostingError):
+            pay_filing(
+                filing, bank_account=bank, pay_date=datetime.date(2026, 2, 1))
+
+        filing.refresh_from_db()
+        self.assertEqual(filing.filing_status, TaxFilingStatus.FILED)
+        self.assertEqual(filing.amount_paid, 0)
+        self.assertEqual(filing.payment_status, InvoicePaymentStatus.UNPAID)
+        self.assertEqual(filing.filed_at, datetime.date(2026, 2, 10))
+
+    def test_tax_remittance_on_the_filing_date_is_allowed(self):
+        entity, jan, _customer = self._ledger()
+        bank = self._bank(entity)
+        obligation = TaxObligation.objects.create(
+            entity=entity, code="WHT-DATE", name="Withholding Tax",
+            obligation_type=TaxObligationType.WHT,
+            liability_account=Account.objects.get(entity=entity, code="2300"),
+            authority_name="FIRS",
+        )
+        post_journal(self.make_entry(
+            entity, jan, [("5300", 50000, 0), ("2300", 0, 50000)],
+            date=datetime.date(2026, 1, 10),
+        ))
+        filing = prepare_filing(
+            obligation, period_start=datetime.date(2026, 1, 1),
+            period_end=datetime.date(2026, 1, 31),
+        )
+        file_filing(filing, filed_date=datetime.date(2026, 2, 10))
+
+        pay_filing(
+            filing, bank_account=bank, pay_date=datetime.date(2026, 2, 10))
+
+        filing.refresh_from_db()
+        self.assertEqual(filing.filing_status, TaxFilingStatus.PAID)
+        self.assertEqual(filing.amount_paid, 50000)
+        self.assertEqual(filing.payment_status, InvoicePaymentStatus.PAID)
 
     # --- settlement and allocation dating ---------------------------------- #
 

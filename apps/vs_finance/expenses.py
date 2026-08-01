@@ -181,6 +181,18 @@ def _settle_expense_claim_atomic(claim, *, bank_account, pay_date, amount=None, 
 
     if claim.status != DocumentStatus.POSTED:  # Only posted liabilities can be settled.
         raise ExpenseClaimError("Only a posted expense claim can be settled.")
+
+    # A reimbursement cannot predate the claim accrual: debiting the liability
+    # earlier would leave accrued reimbursement negative until the claim date.
+    from .chronology import ensure_on_or_after
+    ensure_on_or_after(
+        subject=f"Reimbursement of {claim.document_number or claim.pk}",
+        subject_date=pay_date,
+        source=f"expense claim {claim.document_number or claim.pk}",
+        source_date=claim.claim_date,
+        remedy=f"Date the reimbursement {claim.claim_date} or later.",
+    )
+
     outstanding = claim.balance_due  # Amount still owed to the claimant.
     if outstanding <= 0:  # Fully reimbursed claims cannot be settled again.
         raise ExpenseClaimError("This claim has no outstanding balance to settle.")
