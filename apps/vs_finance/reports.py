@@ -300,8 +300,10 @@ def ar_aging(entity, *, as_of=None) -> AgingReport:
 
     An invoice ages off its ``due_date`` (falling back to ``invoice_date``). Only
     POSTED, not-fully-paid invoices contribute, by their ``balance_due``. Each
-    customer's unallocated payment credit is reported and netted, so ``total_net``
-    equals the AR control account's GL balance (see :func:`reconcile_ar`).
+    customer's unallocated payment credit is reported and netted for the customer's
+    overall position.  That credit lives in the separate 2140 liability, so
+    :func:`reconcile_ar` compares ``total_outstanding`` (plus open debit notes), not
+    ``total_net``, with the AR control account.
     """
     from .models import Invoice, Payment
 
@@ -405,10 +407,26 @@ def reconcile_ar(entity, *, as_of=None) -> ARReconciliation:
     balance of the receivable control account(s) in the ledger. Any drift means a
     posting bypassed the sub-ledger (or vice-versa) and must be investigated.
     """
-    from .models import Customer
+    from django.db.models import F, Sum
+    from django.db.models.functions import Coalesce
+
+    from .constants import CreditNoteKind, DocumentStatus
+    from .models import CreditNote, Customer
 
     aging = ar_aging(entity, as_of=as_of)
-    subledger_total = aging.total_net
+    # Customer credit is booked to the dedicated 2140 liability, not the AR control
+    # account.  It belongs on the aging screen's customer *net* position, but not in
+    # this control-account reconciliation.  Debit notes, conversely, debit AR exactly
+    # like invoices and must be included in the sub-ledger total.
+    debit_notes = CreditNote.objects.filter(
+        entity=entity, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT,
+    )
+    if as_of is not None:
+        debit_notes = debit_notes.filter(note_date__lte=as_of)
+    debit_total = debit_notes.aggregate(
+        amount=Coalesce(Sum(F("total") - F("amount_paid")), 0),
+    )["amount"]
+    subledger_total = aging.total_outstanding + int(debit_total or 0)
 
     control_accounts = {
         c.receivable_account

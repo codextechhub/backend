@@ -164,6 +164,13 @@ def _allocation_strategy(raw):
     return val
 
 
+def _reversal_date(body):
+    """Parse the shared optional date/reversal_date void request field."""
+    body = body or {}
+    raw = body.get("date") or body.get("reversal_date")
+    return _date(raw, "date")
+
+
 # --------------------------------------------------------------------------- #
 # Customers / payers                                                          #
 # --------------------------------------------------------------------------- #
@@ -896,6 +903,54 @@ class PaymentAllocateView(_FinanceBase):
         )
 
 
+class PaymentVoidView(_FinanceBase):
+    """POST /finance/payments/<id>/void/ — void a posted receipt atomically."""
+
+    rbac_permission = "finance.payment.reverse"
+
+    def post(self, request, pk):
+        from .models import Payment
+        from .voids import void_payment
+
+        entity = resolve_entity(request)
+        payment = Payment.objects.filter(entity=entity, pk=pk).first()
+        if payment is None:
+            raise NotFound("Receipt not found for this entity.")
+        void_payment(
+            payment, actor_user=request.user,
+            date=_reversal_date(request.data),
+        )
+        payment.refresh_from_db()
+        return success_response(
+            f"Receipt {payment.document_number} voided.",
+            data=PaymentSerializer(payment).data,
+        )
+
+
+class InvoiceVoidView(_FinanceBase):
+    """POST /finance/invoices/<id>/void/ — void an unencumbered posted invoice."""
+
+    rbac_permission = "finance.invoice.reverse"
+
+    def post(self, request, pk):
+        from .models import Invoice
+        from .voids import void_invoice
+
+        entity = resolve_entity(request)
+        invoice = Invoice.objects.filter(entity=entity, pk=pk).first()
+        if invoice is None:
+            raise NotFound("Invoice not found for this entity.")
+        void_invoice(
+            invoice, actor_user=request.user,
+            date=_reversal_date(request.data),
+        )
+        invoice.refresh_from_db()
+        return success_response(
+            f"Invoice {invoice.document_number} voided.",
+            data=InvoiceSerializer(invoice).data,
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Fee structures (billing catalogue → invoices)                               #
 # --------------------------------------------------------------------------- #
@@ -1319,6 +1374,26 @@ class CreditNoteAllocateView(_CreditNoteActionBase):
         )
 
 
+class CreditNoteVoidView(_CreditNoteActionBase):
+    """POST /finance/credit-notes/<id>/void/ — void a posted credit/debit note."""
+
+    rbac_permission = "finance.creditnote.reverse"
+
+    def post(self, request, pk):
+        from .voids import void_credit_note
+
+        _, note = self._note(request, pk)
+        void_credit_note(
+            note, actor_user=request.user,
+            date=_reversal_date(request.data),
+        )
+        note.refresh_from_db()
+        return success_response(
+            f"{note.get_kind_display()} {note.document_number} voided.",
+            data=CreditNoteSerializer(note).data,
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Customer refunds                                                             #
 # --------------------------------------------------------------------------- #
@@ -1546,6 +1621,26 @@ class RefundPostView(_RefundActionBase):
         refund.refresh_from_db()
         return success_response(
             f"Refund {refund.document_number} posted.",
+            data=RefundSerializer(refund).data,
+        )
+
+
+class RefundVoidView(_RefundActionBase):
+    """POST /finance/refunds/<id>/void/ — void a posted customer refund."""
+
+    rbac_permission = "finance.refund.reverse"
+
+    def post(self, request, pk):
+        from .voids import void_refund
+
+        _, refund = self._refund(request, pk)
+        void_refund(
+            refund, actor_user=request.user,
+            date=_reversal_date(request.data),
+        )
+        refund.refresh_from_db()
+        return success_response(
+            f"Refund {refund.document_number} voided.",
             data=RefundSerializer(refund).data,
         )
 
@@ -2389,6 +2484,26 @@ class ConcessionPostView(_ConcessionActionBase):
         concession.refresh_from_db()
         return success_response(
             f"{concession.get_kind_display()} {concession.document_number} posted.",
+            data=ConcessionSerializer(concession).data,
+        )
+
+
+class ConcessionVoidView(_ConcessionActionBase):
+    """POST /finance/concessions/<id>/void/ — void a posted concession."""
+
+    rbac_permission = "finance.concession.reverse"
+
+    def post(self, request, pk):
+        from .voids import void_concession
+
+        _, concession = self._concession(request, pk)
+        void_concession(
+            concession, actor_user=request.user,
+            date=_reversal_date(request.data),
+        )
+        concession.refresh_from_db()
+        return success_response(
+            f"{concession.get_kind_display()} {concession.document_number} voided.",
             data=ConcessionSerializer(concession).data,
         )
 

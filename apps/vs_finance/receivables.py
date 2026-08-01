@@ -634,7 +634,7 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
     receivable existed; the journal is dated at the later of the two instead.
     """
     from .chronology import effective_allocation_date
-    from .models import Customer, JournalEntry, JournalLine
+    from .models import Customer, CustomerCreditAllocationJournal, JournalEntry, JournalLine
 
     payment = type(payment).objects.select_for_update().get(pk=payment.pk)
     customer = Customer.objects.select_for_update().get(pk=payment.customer_id)
@@ -672,6 +672,10 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
         description=f"AR: {customer.code}", line_no=2,
     )
     post_journal(entry, actor_user=actor_user)  # Validate and post the reclassification journal.
+
+    CustomerCreditAllocationJournal.objects.create(
+        payment=payment, journal=entry, amount=applied,
+    )
 
     payment.allocated_amount += applied  # Increase the receipt's applied total.
     payment.save(update_fields=["allocated_amount", "updated_at"])

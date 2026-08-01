@@ -328,7 +328,7 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
     clears exists.
     """
     from .chronology import effective_allocation_date
-    from .models import Customer, JournalEntry, JournalLine
+    from .models import Customer, CustomerCreditAllocationJournal, JournalEntry, JournalLine
 
     note = type(note).objects.select_for_update().get(pk=note.pk)
     customer = Customer.objects.select_for_update().get(pk=note.customer_id)
@@ -367,6 +367,10 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
         description=f"AR: {customer.code}", line_no=2,  # Label and order.
     )
     post_journal(entry, actor_user=actor_user)  # Validate and post allocation journal.
+
+    CustomerCreditAllocationJournal.objects.create(
+        note=note, journal=entry, amount=applied,
+    )
 
     note.allocated_amount += applied  # Increase allocated credit-note amount.
     note.save(update_fields=["allocated_amount", "updated_at"])

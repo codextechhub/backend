@@ -351,7 +351,7 @@ def _unfile_filing_atomic(filing, *, actor_user=None):
 
     reversed_journal_id = None  # Track journal reversed for audit.
     if filing.filing_journal_id is not None:  # Filing may have netting/penalty journal.
-        reverse_journal(filing.filing_journal, actor_user=actor_user)  # Reverse filing adjustment journal.
+        reverse_journal(filing.filing_journal, actor_user=actor_user, document_owner=filing)  # Reverse filing adjustment journal.
         reversed_journal_id = filing.filing_journal_id  # Preserve id before unlinking.
         filing.filing_journal = None  # Clear filing journal link.
 

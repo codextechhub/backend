@@ -366,7 +366,7 @@ def cancel_payroll_run(run, *, actor_user=None):
         )
 
     if run.run_status == PayrollRunStatus.POSTED and run.journal_id is not None:  # Accrued unpaid payroll needs reversal.
-        reverse_journal(run.journal, actor_user=actor_user)  # Reverse accrual journal.
+        reverse_journal(run.journal, actor_user=actor_user, document_owner=run)  # Reverse accrual journal.
 
     was = run.run_status  # Capture previous status for audit message.
     run.run_status = PayrollRunStatus.CANCELLED  # Mark payroll run cancelled.

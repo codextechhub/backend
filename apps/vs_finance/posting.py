@@ -382,9 +382,76 @@ def _post_journal_atomic(
     return entry  # Return posted journal.
 
 
+def _journal_document_owner(entry):
+    """Return the first sub-ledger object whose journal field points at ``entry``.
+
+    This deliberately uses model metadata rather than a short hard-coded list: new
+    finance/procurement documents that add a ``journal``/``*_journal`` FK are guarded
+    automatically instead of quietly reopening the same bypass.
+    """
+    from django.core.exceptions import ObjectDoesNotExist
+
+    for relation in entry._meta.related_objects:
+        if "journal" not in relation.field.name:
+            continue
+        accessor = relation.get_accessor_name()
+        try:
+            related = getattr(entry, accessor)
+            owner = related.order_by("pk").first() if relation.one_to_many else related
+        except ObjectDoesNotExist:
+            continue
+        if owner is None:
+            continue
+        # A later customer-credit reclassification belongs to its receipt/note, not
+        # to the small linkage row that makes the relationship durable.
+        if type(owner).__name__ == "CustomerCreditAllocationJournal":
+            owner = owner.payment or owner.note
+        return owner
+
+    # Pre-migration later-allocation journals were linked only through the
+    # append-only audit metadata.  Keep the raw-reversal guard fail-closed even if a
+    # historical row could not be backfilled into CustomerCreditAllocationJournal.
+    from .constants import FinanceAuditAction, FinanceAuditStatus
+    from .models import CreditNote, FinanceAuditLog, Payment
+
+    legacy_sources = (
+        (FinanceAuditAction.PAYMENT_ALLOCATED, Payment),
+        (FinanceAuditAction.CREDIT_NOTE_ALLOCATED, CreditNote),
+    )
+    for action, model in legacy_sources:
+        audit = FinanceAuditLog.objects.filter(
+            entity=entry.entity, action=action, status=FinanceAuditStatus.SUCCESS,
+            metadata__journal_id=entry.pk,
+        ).order_by("pk").first()
+        if audit and str(audit.target_id).isdigit():
+            owner = model.objects.filter(pk=int(audit.target_id), entity=entry.entity).first()
+            if owner is not None:
+                return owner
+    return None
+
+
+def _document_void_instruction(owner):
+    routes = {
+        "Invoice": "invoices/{pk}/void/",
+        "Payment": "payments/{pk}/void/",
+        "CreditNote": "credit-notes/{pk}/void/",
+        "Refund": "refunds/{pk}/void/",
+        "Concession": "concessions/{pk}/void/",
+    }
+    model_name = type(owner).__name__
+    label = getattr(owner, "document_number", "") or str(owner.pk)
+    route = routes.get(model_name)
+    if route:
+        remedy = f"Use POST /finance/{route.format(pk=owner.pk)} from the document screen instead."
+    else:
+        remedy = f"Use the {model_name} document-level void/reversal service instead."
+    return model_name, label, remedy
+
+
 @transaction.atomic
 # Reverse a posted journal.
-def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool = False):
+def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool = False,
+                    document_owner=None):
     """Reverse a posted journal by raising a mirror-image entry that nets it to zero.
 
     The original is left untouched on the record (marked REVERSED) and a new journal —
@@ -395,6 +462,24 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
     period). Returns the new reversing entry.
     """
     from .models import JournalEntry, JournalLine
+
+    entry = JournalEntry.objects.select_for_update().get(pk=entry.pk)
+
+    owner = _journal_document_owner(entry)
+    if owner is not None:
+        owner_matches = (
+            document_owner is not None
+            and type(owner) is type(document_owner)
+            and owner.pk == document_owner.pk
+        )
+        if not owner_matches:
+            model_name, label, remedy = _document_void_instruction(owner)
+            raise PostingError(
+                f"Journal {entry.document_number or entry.pk} belongs to "
+                f"{model_name} {label} and cannot be reversed on its own. {remedy}",
+                owner_type=model_name, owner_id=str(owner.pk),
+                owner_document_number=label,
+            )
 
     if entry.status != DocumentStatus.POSTED:  # Only posted journals can be reversed.
         raise PostingError(
@@ -413,9 +498,27 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
     # correction can still be booked into the current open period — the standard way
     # to reverse after a period closes.
     reversal_date = date or entry.date  # Prefer explicit reversal date, otherwise original date.
+    from .chronology import ensure_on_or_after
+    ensure_on_or_after(
+        subject=f"Reversal of journal {entry.document_number or entry.pk}",
+        subject_date=reversal_date,
+        source=f"journal {entry.document_number or entry.pk}",
+        source_date=entry.date,
+        remedy=f"Date the reversal {entry.date} or later.",
+    )
     period = resolve_period(entry.entity, reversal_date)  # Resolve period for selected reversal date.
     if date is None and not _period_accepts_posting(period, allow_restricted=allow_restricted):  # Original period may now be closed.
         reversal_date = timezone.now().date()
+        # Falling forward to today must not turn a future-dated source into a
+        # backdated reversal.  Re-run chronology after changing the date; the
+        # surrounding transaction leaves the source untouched if today is earlier.
+        ensure_on_or_after(
+            subject=f"Reversal of journal {entry.document_number or entry.pk}",
+            subject_date=reversal_date,
+            source=f"journal {entry.document_number or entry.pk}",
+            source_date=entry.date,
+            remedy=f"Date the reversal {entry.date} or later.",
+        )
         period = resolve_period(entry.entity, reversal_date)  # Resolve today's period.
 
     reversal = JournalEntry.objects.create(

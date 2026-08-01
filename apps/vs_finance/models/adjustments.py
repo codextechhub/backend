@@ -261,6 +261,42 @@ class DebitNoteAllocation(TimeStampedModel):
         return f"{self.payment_id}→DN{self.note_id}: {self.amount}"
 
 
+class CustomerCreditAllocationJournal(TimeStampedModel):
+    """Durable link from a later customer-credit allocation to its GL journal.
+
+    Receipts and CREDIT notes may initially leave value in the customer-credit
+    liability, then apply it to AR later.  Each later application raises its own
+    reclassification journal.  Keeping that journal explicitly attached to the
+    source document lets a document-level void reverse *all* of its GL effects.
+    """
+
+    payment = models.ForeignKey(
+        "Payment", on_delete=models.PROTECT, related_name="allocation_journals",
+        null=True, blank=True,
+    )
+    note = models.ForeignKey(
+        CreditNote, on_delete=models.PROTECT, related_name="allocation_journals",
+        null=True, blank=True,
+    )
+    journal = models.OneToOneField(
+        "JournalEntry", on_delete=models.PROTECT,
+        related_name="customer_credit_allocation",
+    )
+    amount = MoneyField(help_text="Customer credit reclassified to AR, in kobo.")
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=(
+                    models.Q(payment__isnull=False, note__isnull=True)
+                    | models.Q(payment__isnull=True, note__isnull=False)
+                ),
+                name="ck_finance_ccallocjournal_one_source",
+            ),
+        ]
+        ordering = ["journal_id", "id"]
+
+
 class Refund(FinanceDocument):
     """A cash refund paid back to a :class:`Customer` for an over-paid credit balance.
 
@@ -614,5 +650,3 @@ class PaymentPlanInstallment(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"#{self.seq_no} due {self.due_date}: {self.amount} ({self.status})"
-
-

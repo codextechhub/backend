@@ -263,7 +263,7 @@ def void_expense_claim(claim, *, actor_user=None):
     if claim.journal_id is None:  # A posted claim should always have a journal.
         raise ExpenseClaimError("Claim has no posting journal to reverse.")
 
-    reverse_journal(claim.journal, actor_user=actor_user)  # Post the mirror reversal journal.
+    reverse_journal(claim.journal, actor_user=actor_user, document_owner=claim)  # Post the mirror reversal journal.
     claim.status = DocumentStatus.CANCELLED  # Mark the claim voided/cancelled.
     claim.save(update_fields=["status", "updated_at"])
     record(  # Audit the successful void.

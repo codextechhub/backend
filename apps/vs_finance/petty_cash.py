@@ -276,7 +276,7 @@ def void_voucher(voucher, *, actor_user=None):
     fund = PettyCashFund.objects.select_for_update().get(pk=voucher.fund_id)
 
     from .posting import reverse_journal
-    reverse_journal(voucher.journal, actor_user=actor_user)  # Post mirror reversal journal.
+    reverse_journal(voucher.journal, actor_user=actor_user, document_owner=voucher)  # Post mirror reversal journal.
 
     fund.current_balance = gl_cash_on_hand(fund)  # cash restored to the tin
     fund.save(update_fields=["current_balance", "updated_at"])

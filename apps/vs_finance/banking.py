@@ -588,7 +588,7 @@ def unmatch_line(statement_line, *, actor_user=None):
     bank_account = statement_line.bank_account  # Resolve the owning bank account.
     adj = statement_line.adjusting_journal  # Capture any adjusting journal before clearing it.
     if adj is not None:  # Reverse the adjusting journal when one exists.
-        reverse_journal(adj, actor_user=actor_user)  # Post a reversing journal to neutralize the adjustment.
+        reverse_journal(adj, actor_user=actor_user, document_owner=statement_line)  # Post a reversing journal to neutralize the adjustment.
     # Drop any group-match links (many-to-one); these carry no ledger effect.  # Remove many-to-one links.
     statement_line.line_matches.all().delete()
     statement_line.matched_line = None  # Remove the direct match link.

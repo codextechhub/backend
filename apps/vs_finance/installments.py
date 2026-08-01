@@ -235,7 +235,7 @@ def refresh_plan_progress(plan, *, settled_amount=None, actor_user=None):
             settled_amount = plan.settled_total  # standalone plan: leave as-is
     remaining = max(int(settled_amount), 0)  # Clamp negative settlement to zero.
 
-    for inst in plan.installments.order_by("seq_no", "id"):
+    for inst in plan.installments.select_for_update().order_by("seq_no", "id"):
         applied = min(inst.amount, remaining)  # Amount applied to this installment.
         if applied >= inst.amount:  # Full installment settled.
             status = InstallmentStatus.PAID  # Mark paid.
@@ -257,10 +257,17 @@ def refresh_plan_progress(plan, *, settled_amount=None, actor_user=None):
             actor_user=actor_user, target=plan,  # Actor and target context.
             message=f"Payment plan {plan.document_number} fully settled.",  # Human-readable message.
         )
+    elif plan.settled_total < plan.total_amount and plan.plan_status == PaymentPlanStatus.COMPLETED:
+        # A document-level void can legitimately roll settlement back. COMPLETED is
+        # derived progress, not an immutable accounting event, so reopen the schedule
+        # when its invoice is no longer fully settled.
+        plan.plan_status = PaymentPlanStatus.ACTIVE
+        plan.save(update_fields=["plan_status", "updated_at"])
     return plan  # Return refreshed plan.
 
 
 # Sync active/completed plans for a changed invoice.
+@transaction.atomic
 def refresh_plans_for_invoice(invoice, *, actor_user=None):
     """Re-sync every live payment plan attached to ``invoice`` after its settled amount
     moved (a receipt, credit-note allocation or write-off).
@@ -274,10 +281,10 @@ def refresh_plans_for_invoice(invoice, *, actor_user=None):
     from .constants import PaymentPlanStatus
     from .models import PaymentPlan
 
-    plans = PaymentPlan.objects.filter(
+    plans = PaymentPlan.objects.select_for_update().filter(
         invoice=invoice,  # Scope to changed invoice.
         plan_status__in=(PaymentPlanStatus.ACTIVE, PaymentPlanStatus.COMPLETED),  # Only live/completed plans need sync.
-    )
+    ).order_by("pk")
     for plan in plans:  # Refresh each matching plan.
         refresh_plan_progress(plan, actor_user=actor_user)  # Recompute installment statuses.
 

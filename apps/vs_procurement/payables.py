@@ -640,7 +640,10 @@ def reverse_vendor_payment(payment, *, actor_user=None, date=None):
         .filter(pk__in=invoice_ids).order_by("pk")
     }
 
-    reversal = reverse_journal(payment.journal, actor_user=actor_user, date=date)
+    reversal = reverse_journal(
+        payment.journal, actor_user=actor_user, date=date,
+        document_owner=payment,
+    )
     for allocation in allocations:
         invoice = locked_invoices[allocation.vendor_invoice_id]
         # Allocation history remains attached to the reversed payment; only the
