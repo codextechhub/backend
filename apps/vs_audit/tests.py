@@ -1,3 +1,4 @@
+from django.http import QueryDict
 from django.test import TestCase
 
 from vs_admin_console.models import ImpersonationSession
@@ -9,8 +10,128 @@ from vs_tenants.context import (
 from vs_tenants.models import Tenant
 from vs_user.models import User
 
-from .models import AuditActorType
+from .models import (
+    AuditActionType,
+    AuditActorType,
+    AuditEvent,
+    AuditModuleKey,
+    AuditSeverity,
+    AuditStatus,
+)
+from .serializers import AuditEventFilterSerializer
 from .services import emit_audit_event
+from .views import apply_audit_event_filters
+
+
+class AuditEventFilterContractTests(TestCase):
+    def setUp(self):
+        self.actor = User.objects.create_user(
+            email="procurement.auditor@example.test",
+            password="Str0ng!pass123",
+            first_name="Priya",
+            last_name="Buyer",
+            user_type="CX_STAFF",
+            status="ACTIVE",
+        )
+
+        self.procurement_failed = AuditEvent.objects.create(
+            module_key=AuditModuleKey.PROCUREMENT,
+            action_type=AuditActionType.PROCUREMENT_ACTION,
+            severity=AuditSeverity.WARNING,
+            status=AuditStatus.FAILED,
+            actor_type=AuditActorType.USER,
+            actor_user=self.actor,
+            entity_type="PurchaseOrder",
+            entity_id="PO-404",
+            entity_label="Missing purchase order",
+            summary="Purchase order approval failed",
+        )
+        self.export_denied = AuditEvent.objects.create(
+            module_key=AuditModuleKey.EXPORTS,
+            action_type=AuditActionType.EXPORT_FILE_DOWNLOAD_REFUSED,
+            severity=AuditSeverity.CRITICAL,
+            status=AuditStatus.DENIED,
+            actor_type=AuditActorType.SYSTEM,
+            actor_label="Export worker",
+            entity_type="ExportRun",
+            entity_id="RUN-9",
+            entity_label="Sensitive export",
+            summary="Export download refused",
+        )
+        AuditEvent.objects.create(
+            module_key=AuditModuleKey.FINANCE,
+            action_type=AuditActionType.FINANCIAL_TRANSACTION,
+            severity=AuditSeverity.INFO,
+            status=AuditStatus.SUCCESS,
+            actor_type=AuditActorType.SYSTEM,
+            actor_label="Ledger worker",
+            entity_type="JournalEntry",
+            entity_id="JE-1",
+            entity_label="Journal entry",
+            summary="Journal posted",
+        )
+
+    def test_repeated_query_values_validate_as_lists_and_filter_with_or_semantics(self):
+        query = QueryDict(
+            "module_key=PROCUREMENT&module_key=EXPORTS&"
+            "severity=WARNING&severity=CRITICAL&"
+            "status=FAILED&status=DENIED"
+        )
+        serializer = AuditEventFilterSerializer(data=query)
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        filters = serializer.validated_data
+        self.assertEqual(filters["module_key"], ["PROCUREMENT", "EXPORTS"])
+        self.assertEqual(filters["severity"], ["WARNING", "CRITICAL"])
+        self.assertEqual(filters["status"], ["FAILED", "DENIED"])
+
+        ids = set(
+            apply_audit_event_filters(AuditEvent.objects.all(), filters)
+            .values_list("id", flat=True)
+        )
+        self.assertEqual(ids, {self.procurement_failed.id, self.export_denied.id})
+
+    def test_scalar_json_values_remain_backward_compatible_and_text_is_trimmed(self):
+        serializer = AuditEventFilterSerializer(data={
+            "module_key": "PROCUREMENT",
+            "entity_type": "  PurchaseOrder  ",
+            "search": "  approval  ",
+        })
+
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+        self.assertEqual(serializer.validated_data["module_key"], ["PROCUREMENT"])
+        self.assertEqual(serializer.validated_data["entity_type"], "PurchaseOrder")
+        self.assertEqual(serializer.validated_data["search"], "approval")
+
+    def test_search_covers_action_code_and_actor_identity(self):
+        for term in ("PROCUREMENT_ACTION", "procurement.auditor", "Priya Buyer"):
+            with self.subTest(term=term):
+                ids = list(
+                    apply_audit_event_filters(
+                        AuditEvent.objects.all(),
+                        {"search": term},
+                    ).values_list("id", flat=True)
+                )
+                self.assertEqual(ids, [self.procurement_failed.id])
+
+    def test_combined_filter_groups_use_and_semantics(self):
+        ids = list(
+            apply_audit_event_filters(
+                AuditEvent.objects.all(),
+                {
+                    "module_key": ["PROCUREMENT", "EXPORTS"],
+                    "status": ["FAILED", "DENIED"],
+                    "entity_type": "purchaseorder",
+                },
+            ).values_list("id", flat=True)
+        )
+
+        self.assertEqual(ids, [self.procurement_failed.id])
+
+    def test_filter_enums_include_export_platform_and_procurement_action(self):
+        self.assertIn("EXPORTS", AuditModuleKey.values)
+        self.assertIn("PLATFORM", AuditModuleKey.values)
+        self.assertIn("PROCUREMENT_ACTION", AuditActionType.values)
 
 
 class ProxiedAuditAttributionTests(TestCase):

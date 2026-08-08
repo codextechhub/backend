@@ -250,15 +250,15 @@ class RequisitionSummaryView(_ProcBase):
 
 
 class RequisitionBudgetAvailabilityView(_ProcBase):
-    """Return the approved monthly budget and open-PO commitment for a department."""
+    """Return the approved monthly budget and open-PO commitment for a cost centre."""
     rbac_permission = "procurement.requisition.view"
 
     def get(self, request):
-        """Compare one entity cost center's annual approved plan with open commitments."""
+        """Compare one entity cost centre's annual approved plan with open commitments."""
         entity = resolve_entity(request)
         cost_center = _resolve_cost_center(entity, request.query_params.get("cost_center"))
         if cost_center is None:
-            raise ValidationError({"cost_center": "Select a department to check its budget."})
+            raise ValidationError({"cost_center": "Select a cost centre to check its budget."})
         as_of = _date(request.query_params.get("date"), "date") or timezone.localdate()
         period = FiscalPeriod.objects.filter(
             entity=entity, start_date__lte=as_of, end_date__gte=as_of,

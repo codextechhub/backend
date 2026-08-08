@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     AuditEventListView,
+    AuditEventFilterOptionsView,
     AuditEventDetailView,
     AuditDashboardSummaryView,
     EntityAuditTrailListView,
@@ -24,6 +25,7 @@ urlpatterns = [
     # Audit Events
     # -------------------------------------------------------------------------
     path("events/", AuditEventListView.as_view(), name="audit-event-list"),
+    path("events/filter-options/", AuditEventFilterOptionsView.as_view(), name="audit-event-filter-options"),
     path("events/<uuid:id>/", AuditEventDetailView.as_view(), name="audit-event-detail"),
 
     # -------------------------------------------------------------------------

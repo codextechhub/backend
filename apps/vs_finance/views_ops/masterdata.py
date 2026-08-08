@@ -187,8 +187,18 @@ class CostCenterListCreateView(_FinanceBase):
     @property
     # Handle the rbac permission workflow.
     def rbac_permission(self):
-        return "finance.costcenter.create" if self.request.method == "POST" \
-            else "finance.costcenter.view"
+        if self.request.method == "POST":
+            return "finance.costcenter.create"
+        # Cost centres are non-sensitive, entity-scoped reference data needed by
+        # requisition forms. Tenant procurement roles are administrator-owned and
+        # have no canonical requester/buyer template to backfill safely, so allow
+        # only the requisition grants that actually need this picker. Mutation
+        # remains exclusively behind the Finance create permission above.
+        return [
+            "finance.costcenter.view",
+            "procurement.requisition.create",
+            "procurement.requisition.update",
+        ]
 
     # Handle GET requests for this endpoint.
     def get(self, request):
@@ -268,5 +278,4 @@ class DimensionListCreateView(_FinanceBase):
             f"Dimension {code} {'created' if created else 'updated'}.",
             data=DimensionSerializer(dim).data, status=201 if created else 200,
         )
-
 

@@ -902,6 +902,10 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
     receipt_status = serializers.SerializerMethodField()
     received_item_count = serializers.SerializerMethodField()
     ordered_item_count = serializers.SerializerMethodField()
+    purchase_order_fulfilment_status = serializers.SerializerMethodField()
+    purchase_order_received_item_count = serializers.SerializerMethodField()
+    purchase_order_ordered_item_count = serializers.SerializerMethodField()
+    purchase_order_remaining_item_count = serializers.SerializerMethodField()
     total_value_naira = serializers.SerializerMethodField()
 
     class Meta:
@@ -910,6 +914,8 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
             "id", "document_number", "status", "receipt_status", "vendor_id", "vendor_code", "vendor_name", "received_by_name",
             "purchase_order_id", "purchase_order_number", "received_date", "reference", "narration",
             "received_item_count", "ordered_item_count",
+            "purchase_order_fulfilment_status", "purchase_order_received_item_count",
+            "purchase_order_ordered_item_count", "purchase_order_remaining_item_count",
             "total_value", "total_value_naira", "journal_id", "lines",
         ]
 
@@ -956,6 +962,42 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 
     def get_ordered_item_count(self, obj) -> str:
         return str(self._expected_quantity(obj))
+
+    def _purchase_order_fulfilment(self, obj):
+        """Return current PO-wide accepted progress without rewriting GRN history."""
+        cached = getattr(obj, "_purchase_order_fulfilment", None)
+        if cached is not None:
+            return cached
+        if not obj.purchase_order_id:
+            return None
+        lines = obj.purchase_order.lines.all()
+        ordered = sum((line.quantity for line in lines), 0)
+        received = sum((line.received_qty for line in lines), 0)
+        remaining = sum((max(line.quantity - line.received_qty, 0) for line in lines), 0)
+        value = {
+            "status": po_receipt_stage(ordered, received),
+            "received": received,
+            "ordered": ordered,
+            "remaining": remaining,
+        }
+        obj._purchase_order_fulfilment = value
+        return value
+
+    def get_purchase_order_fulfilment_status(self, obj) -> str | None:
+        progress = self._purchase_order_fulfilment(obj)
+        return progress["status"] if progress else None
+
+    def get_purchase_order_received_item_count(self, obj) -> str | None:
+        progress = self._purchase_order_fulfilment(obj)
+        return str(progress["received"]) if progress else None
+
+    def get_purchase_order_ordered_item_count(self, obj) -> str | None:
+        progress = self._purchase_order_fulfilment(obj)
+        return str(progress["ordered"]) if progress else None
+
+    def get_purchase_order_remaining_item_count(self, obj) -> str | None:
+        progress = self._purchase_order_fulfilment(obj)
+        return str(progress["remaining"]) if progress else None
 
 
 class GoodsReceivedNoteListSerializer(GoodsReceivedNoteSerializer):

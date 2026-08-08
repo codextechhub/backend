@@ -4,8 +4,8 @@ import csv
 import io
 from datetime import timedelta
 
-from django.db.models import Count, Q
-from django.db.models.functions import TruncDate, TruncHour
+from django.db.models import Count, Q, Value
+from django.db.models.functions import Concat, TruncDate, TruncHour
 from django.utils import timezone
 from rest_framework import generics
 from rest_framework.views import APIView
@@ -21,6 +21,9 @@ from .models import (
     ComplianceRule,
     AuditSeverity,
     AuditStatus,
+    AuditActorType,
+    AuditModuleKey,
+    AuditActionType,
     ExportJobStatus,
     ExportFormat,
 )
@@ -40,6 +43,73 @@ from .serializers import (
 # -----------------------------------------------------------------------------
 # Audit Event Views
 # -----------------------------------------------------------------------------
+
+def apply_audit_event_filters(queryset, filters):
+    """Apply the validated Event Explorer/export filter contract."""
+
+    if module_keys := filters.get("module_key"):
+        queryset = queryset.filter(module_key__in=module_keys)
+    if action_types := filters.get("action_type"):
+        queryset = queryset.filter(action_type__in=action_types)
+    if severities := filters.get("severity"):
+        queryset = queryset.filter(severity__in=severities)
+    if statuses := filters.get("status"):
+        queryset = queryset.filter(status__in=statuses)
+    if actor_type := filters.get("actor_type"):
+        queryset = queryset.filter(actor_type=actor_type)
+    if actor_user_id := filters.get("actor_user_id"):
+        queryset = queryset.filter(actor_user_id=actor_user_id)
+    if impersonation_session_id := filters.get("impersonation_session_id"):
+        queryset = queryset.filter(impersonation_session_id=impersonation_session_id)
+    if entity_type := filters.get("entity_type"):
+        queryset = queryset.filter(entity_type__iexact=entity_type)
+    if entity_id := filters.get("entity_id"):
+        queryset = queryset.filter(entity_id=entity_id)
+    if date_from := filters.get("date_from"):
+        queryset = queryset.filter(event_at__gte=date_from)
+    if date_to := filters.get("date_to"):
+        queryset = queryset.filter(event_at__lte=date_to)
+    if search := filters.get("search"):
+        queryset = queryset.annotate(
+            _actor_full_name=Concat(
+                "actor_user__first_name",
+                Value(" "),
+                "actor_user__last_name",
+            ),
+        ).filter(
+            Q(summary__icontains=search)
+            | Q(entity_label__icontains=search)
+            | Q(entity_id__icontains=search)
+            | Q(actor_label__icontains=search)
+            | Q(action_type__icontains=search)
+            | Q(actor_user__email__icontains=search)
+            | Q(_actor_full_name__icontains=search)
+        )
+
+    return queryset
+
+
+class AuditEventFilterOptionsView(APIView):
+    """Return the authoritative choices used by Event Explorer filters."""
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+    rbac_permission = "platform.audit.view"
+
+    def get(self, request):
+        def options(choices):
+            return [{"value": value, "label": label} for value, label in choices]
+
+        return success_response(
+            message="Audit event filter options retrieved.",
+            data={
+                "modules": options(AuditModuleKey.choices),
+                "actions": options(AuditActionType.choices),
+                "severities": options(AuditSeverity.choices),
+                "statuses": options(AuditStatus.choices),
+                "actor_types": options(AuditActorType.choices),
+            },
+        )
+
 
 class AuditEventListView(generics.ListAPIView):
     """
@@ -94,62 +164,7 @@ class AuditEventListView(generics.ListAPIView):
         filter_serializer.is_valid(raise_exception=True)
         filters = filter_serializer.validated_data
 
-        i_slug = filters.get("i_slug")
-        module_key = filters.get("module_key")
-        action_type = filters.get("action_type")
-        severity = filters.get("severity")
-        status = filters.get("status")
-        actor_type = filters.get("actor_type")
-        actor_user_id = filters.get("actor_user_id")
-        impersonation_session_id = filters.get("impersonation_session_id")
-        entity_type = filters.get("entity_type")
-        entity_id = filters.get("entity_id")
-        date_from = filters.get("date_from")
-        date_to = filters.get("date_to")
-        search = filters.get("search")
-
-        if module_key:
-            queryset = queryset.filter(module_key=module_key)
-
-        if action_type:
-            queryset = queryset.filter(action_type=action_type)
-
-        if severity:
-            queryset = queryset.filter(severity=severity)
-
-        if status:
-            queryset = queryset.filter(status=status)
-
-        if actor_type:
-            queryset = queryset.filter(actor_type=actor_type)
-
-        if actor_user_id:
-            queryset = queryset.filter(actor_user_id=actor_user_id)
-
-        if impersonation_session_id:
-            queryset = queryset.filter(impersonation_session_id=impersonation_session_id)
-
-        if entity_type:
-            queryset = queryset.filter(entity_type=entity_type)
-
-        if entity_id:
-            queryset = queryset.filter(entity_id=entity_id)
-
-        if date_from:
-            queryset = queryset.filter(event_at__gte=date_from)
-
-        if date_to:
-            queryset = queryset.filter(event_at__lte=date_to)
-
-        if search:
-            queryset = queryset.filter(
-                Q(summary__icontains=search) |
-                Q(entity_label__icontains=search) |
-                Q(entity_id__icontains=search) |
-                Q(actor_label__icontains=search)
-            )
-
-        return queryset.order_by("-event_at")
+        return apply_audit_event_filters(queryset, filters).order_by("-event_at")
 
 
 class AuditEventDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
@@ -345,33 +360,15 @@ class AuditExportJobListView(generics.ListCreateAPIView):
                 status=400,
             )
 
-        # Build the event queryset using the saved filter payload.
-        qs = AuditEvent.objects.select_related("actor_user").all()
+        filter_serializer = AuditEventFilterSerializer(data=filter_payload)
+        filter_serializer.is_valid(raise_exception=True)
+        normalized_filter_payload = filter_serializer.validated_data
 
-        def _get(key):
-            value = filter_payload.get(key)
-            return value if value not in (None, "", []) else None
-
-        if (module_key := _get("module_key")):
-            qs = qs.filter(module_key__in=module_key if isinstance(module_key, list) else [module_key])
-        if (action_type := _get("action_type")):
-            qs = qs.filter(action_type__in=action_type if isinstance(action_type, list) else [action_type])
-        if (severity := _get("severity")):
-            qs = qs.filter(severity__in=severity if isinstance(severity, list) else [severity])
-        if (status_val := _get("status")):
-            qs = qs.filter(status__in=status_val if isinstance(status_val, list) else [status_val])
-        if (actor_type := _get("actor_type")):
-            qs = qs.filter(actor_type=actor_type)
-        if (entity_type := _get("entity_type")):
-            qs = qs.filter(entity_type=entity_type)
-        if (entity_id := _get("entity_id")):
-            qs = qs.filter(entity_id=entity_id)
-        if (date_from := _get("date_from")):
-            qs = qs.filter(event_at__gte=date_from)
-        if (date_to := _get("date_to")):
-            qs = qs.filter(event_at__lte=date_to)
-
-        qs = qs.order_by("-event_at")
+        # Build exports through exactly the same validated filter path as the list.
+        qs = apply_audit_event_filters(
+            AuditEvent.objects.select_related("actor_user").all(),
+            normalized_filter_payload,
+        ).order_by("-event_at")
 
         # Apply masking from active rules (mirror what the UI hides).
         active_masking = list(

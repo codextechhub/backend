@@ -320,6 +320,23 @@ class ComplianceRuleCreateUpdateSerializer(serializers.ModelSerializer):
 # Search / Filter Serializer
 # -----------------------------------------------------------------------------
 
+class ChoiceListField(serializers.ListField):
+    """Accept one choice or repeated/list choices and always return a list.
+
+    Query parameters commonly arrive as ``?status=FAILED&status=DENIED`` while
+    older callers still send a single scalar.  Keeping that compatibility at
+    the validation boundary gives the event list and CSV export one contract.
+    """
+
+    def __init__(self, *, choices, **kwargs):
+        super().__init__(child=serializers.ChoiceField(choices=choices), **kwargs)
+
+    def to_internal_value(self, data):
+        if isinstance(data, str):
+            data = [data]
+        return super().to_internal_value(data)
+
+
 class AuditEventFilterSerializer(serializers.Serializer):
     """
     This serializer is not for saving to the database.
@@ -331,19 +348,19 @@ class AuditEventFilterSerializer(serializers.Serializer):
     - then apply them in the view/queryset
     """
 
-    module_key = serializers.ChoiceField(
+    module_key = ChoiceListField(
         choices=AuditModuleKey.choices,
         required=False,
     )
-    action_type = serializers.ChoiceField(
+    action_type = ChoiceListField(
         choices=AuditActionType.choices,
         required=False,
     )
-    severity = serializers.ChoiceField(
+    severity = ChoiceListField(
         choices=AuditSeverity.choices,
         required=False,
     )
-    status = serializers.ChoiceField(
+    status = ChoiceListField(
         choices=AuditStatus.choices,
         required=False,
     )
@@ -373,5 +390,9 @@ class AuditEventFilterSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {"date_to": "date_to must be greater than or equal to date_from."}
             )
+
+        for field in ("entity_type", "entity_id", "search"):
+            if field in attrs:
+                attrs[field] = attrs[field].strip()
 
         return attrs

@@ -1083,6 +1083,41 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(data["receipt_status"], "PARTIAL")
         self.assertEqual(data["lines"][0]["description"], po.lines.first().description)
 
+    def test_sequential_receipts_preserve_grn_history_and_complete_po_fulfilment(self):
+        from vs_procurement.serializers import GoodsReceivedNoteSerializer
+
+        entity, _, vendor, _, _ = self.build_p2p()
+        po = self.make_po(entity, vendor, [("5100", 12, 100_000, None)])
+        po_line = po.lines.get()
+
+        first = self.make_grn(entity, vendor, po, [(po_line, 4)])
+        first.lines.update(expected_qty=12)
+        post_grn(first)
+        first = GoodsReceivedNote.objects.prefetch_related("lines", "purchase_order__lines").get(pk=first.pk)
+        partial = GoodsReceivedNoteSerializer(first).data
+
+        self.assertEqual(partial["receipt_status"], "PARTIAL")
+        self.assertEqual(partial["purchase_order_fulfilment_status"], "PARTIAL")
+        self.assertEqual(partial["purchase_order_received_item_count"], "4.0000")
+        self.assertEqual(partial["purchase_order_remaining_item_count"], "8.0000")
+
+        second = self.make_grn(entity, vendor, po, [(po_line, 8)])
+        second.lines.update(expected_qty=8)
+        post_grn(second)
+        first = GoodsReceivedNote.objects.prefetch_related("lines", "purchase_order__lines").get(pk=first.pk)
+        second = GoodsReceivedNote.objects.prefetch_related("lines", "purchase_order__lines").get(pk=second.pk)
+        first_after_completion = GoodsReceivedNoteSerializer(first).data
+        completed = GoodsReceivedNoteSerializer(second).data
+
+        # Each delivery keeps its receipt-time snapshot; PO fulfilment is current.
+        self.assertEqual(first_after_completion["receipt_status"], "PARTIAL")
+        self.assertEqual(first_after_completion["purchase_order_fulfilment_status"], "RECEIVED")
+        self.assertEqual(first_after_completion["purchase_order_remaining_item_count"], "0.0000")
+        self.assertEqual(completed["receipt_status"], "FULL")
+        self.assertEqual(completed["purchase_order_fulfilment_status"], "RECEIVED")
+        self.assertEqual(completed["purchase_order_received_item_count"], "12.0000")
+        self.assertEqual(completed["purchase_order_ordered_item_count"], "12.0000")
+
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_draft_edit_rewrites_lines_and_can_add_a_line(self, _permission):
         from django.contrib.auth import get_user_model
