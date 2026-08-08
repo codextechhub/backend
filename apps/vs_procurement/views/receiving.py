@@ -177,6 +177,12 @@ class GoodsReceiptListCreateView(_ProcBase):
         entity = resolve_entity(request)
         body = request.data
         lines = _require_lines(body)
+        from ..settings import resolve_procurement_settings
+        policy = resolve_procurement_settings(entity)
+        if policy.require_purchase_order_for_receipts and not body.get("purchase_order"):
+            raise ValidationError({
+                "purchase_order": "This entity requires an approved purchase order for every goods receipt.",
+            })
         vendor = _resolve_vendor(entity, body.get("vendor"))
         po = None
         if body.get("purchase_order"):

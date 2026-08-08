@@ -8876,7 +8876,7 @@ class SeedFinancePermissionsTests(TestCase):
 
         for key in (
             "finance.account.view", "finance.journal.post", "finance.period.create",
-            "finance.period.close",
+            "finance.period.close", "finance.settings.view", "finance.settings.update",
         ):
             self.assertTrue(Permission.objects.filter(key=key).exists(), key)
             for role_key in ("xvs_super_admin", "xvs_platform_admin"):

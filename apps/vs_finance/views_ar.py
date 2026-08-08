@@ -334,17 +334,34 @@ class CustomerListCreateView(_FinanceBase):
             raise ValidationError({"billing_phone": "A billing phone number is required."})
         if len(billing_phone) > Customer._meta.get_field("billing_phone").max_length:
             raise ValidationError({"billing_phone": "Billing phone number cannot exceed 32 characters."})
-        # Default the AR control to the entity's 1200 Accounts Receivable if not given.
-        receivable = _resolve_account(
-            entity, body.get("receivable_account") or "1200",
-            "receivable_account", required=True)
+        # A caller may choose a customer-specific control account; otherwise use
+        # the entity's audited Accounts Receivable mapping.
+        if body.get("receivable_account"):
+            receivable = _resolve_account(
+                entity, body.get("receivable_account"),
+                "receivable_account", required=True,
+            )
+        else:
+            from .account_mappings import resolve_mapped_account
+            from .constants import AccountMappingKey
+            receivable = resolve_mapped_account(
+                entity, AccountMappingKey.ACCOUNTS_RECEIVABLE,
+                label="receivable account",
+            )
+        opening_balance = _money(body.get("opening_balance", 0), "opening_balance")
+        from .document_settings import resolve_finance_document_settings
+        policy = resolve_finance_document_settings(entity)
+        if opening_balance and not policy.allow_customer_opening_balances:
+            raise ValidationError({
+                "opening_balance": "Opening balances are disabled by this entity's Finance document policy.",
+            })
         customer = Customer.objects.create(
             entity=entity, code=code, name=name,
             billing_email=billing_email,
             billing_phone=billing_phone,
             billing_address=body.get("billing_address", ""),
             receivable_account=receivable,
-            opening_balance=_money(body.get("opening_balance", 0), "opening_balance"),
+            opening_balance=opening_balance,
             source_type=body.get("source_type", ""),
             source_id=str(body.get("source_id", "")),
             is_active=bool(body.get("is_active", True)),
@@ -535,7 +552,16 @@ class CustomerDetailView(_FinanceBase):
             customer.receivable_account = _resolve_account(
                 entity, body.get("receivable_account"), "receivable_account", required=True)
         if "opening_balance" in body:
-            customer.opening_balance = _money(body.get("opening_balance"), "opening_balance")
+            opening_balance = _money(body.get("opening_balance"), "opening_balance")
+            from .document_settings import resolve_finance_document_settings
+            if (
+                opening_balance
+                and not resolve_finance_document_settings(entity).allow_customer_opening_balances
+            ):
+                raise ValidationError({
+                    "opening_balance": "Opening balances are disabled by this entity's Finance document policy.",
+                })
+            customer.opening_balance = opening_balance
         if "is_active" in body:
             customer.is_active = bool(body.get("is_active"))
         customer.save()
@@ -1178,6 +1204,14 @@ class FeeStructureGenerateView(_FinanceBase):
             raise ValidationError({"applies_to":
                 "Only customer fee structures can generate AR invoices."})
         body = request.data or {}
+        from .document_settings import resolve_finance_document_settings
+        policy = resolve_finance_document_settings(entity)
+        invoice_date = _date(body.get("invoice_date"), "invoice_date") or datetime.date.today()
+        due_date = _date(body.get("due_date"), "due_date")
+        if due_date is None:
+            due_date = invoice_date + datetime.timedelta(
+                days=policy.default_invoice_due_days,
+            )
         if body.get("all_active"):
             customers = list(Customer.objects.filter(entity=entity, is_active=True))
         else:
@@ -1188,8 +1222,8 @@ class FeeStructureGenerateView(_FinanceBase):
             customers = [_resolve_customer(entity, r, "customers") for r in refs]
         invoices = generate_invoices(
             structure, customers,
-            invoice_date=_date(body.get("invoice_date"), "invoice_date"),
-            due_date=_date(body.get("due_date"), "due_date"),
+            invoice_date=invoice_date,
+            due_date=due_date,
             actor_user=request.user,
         )
         return success_response(

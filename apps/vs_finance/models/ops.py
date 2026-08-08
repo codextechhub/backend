@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from django.conf import settings
+from django.core.validators import MaxValueValidator
 from django.db import models
 
 from ..constants import (
@@ -91,6 +92,27 @@ class BankAccount(TimeStampedModel):
 
     def __str__(self) -> str:
         return f"{self.name} ({self.account_number or self.gl_account_id})"
+
+
+class FinanceDocumentSettings(TimeStampedModel):
+    """Entity defaults that shape customer documents and manual billing."""
+
+    entity = models.OneToOneField(
+        LedgerEntity, on_delete=models.CASCADE, related_name="finance_document_settings",
+    )
+    default_invoice_due_days = models.PositiveSmallIntegerField(
+        default=30, validators=[MaxValueValidator(365)],
+    )
+    default_invoice_narration = models.CharField(max_length=255, blank=True, default="")
+    auto_post_manual_invoices = models.BooleanField(default=True)
+    allow_customer_opening_balances = models.BooleanField(default=True)
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_document_settings_updates", null=True, blank=True,
+    )
+
+    def __str__(self) -> str:
+        return f"Finance document settings for {self.entity_id}"
 
 
 class BankStatementLine(TimeStampedModel):

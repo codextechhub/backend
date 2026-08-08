@@ -25,11 +25,10 @@ from collections import defaultdict
 
 from django.db import transaction
 
-from .accounts import resolve_account
+from .account_mappings import resolve_mapped_account
 from .audit import record, record_rejection
 from .constants import (
-    BAD_DEBT_EXPENSE_CODE,
-    CUSTOMER_CREDIT_CODE,
+    AccountMappingKey,
     CreditNoteKind,
     DocumentStatus,
     FinanceAuditAction,
@@ -249,7 +248,7 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
         if excess > 0:  # Unapplied credit creates a liability.
             line_no += 1  # Advance line number.
             JournalLine.objects.create(
-                entry=entry, account=resolve_account(note.entity, CUSTOMER_CREDIT_CODE, label="customer credit"),  # Resolve liability account.
+                entry=entry, account=resolve_mapped_account(note.entity, AccountMappingKey.CUSTOMER_CREDIT, label="customer credit"),  # Resolve liability account.
                 debit=0, credit=excess, description=f"Customer credit: {customer.code}", line_no=line_no,  # Cr customer credit.
             )
 
@@ -359,7 +358,7 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
         reference=note.reference, created_by=actor_user,  # Reference and actor.
     )
     JournalLine.objects.create(
-        entry=entry, account=resolve_account(note.entity, CUSTOMER_CREDIT_CODE, label="customer credit"),  # Resolve liability account.
+        entry=entry, account=resolve_mapped_account(note.entity, AccountMappingKey.CUSTOMER_CREDIT, label="customer credit"),  # Resolve liability account.
         debit=applied, credit=0, description=f"Customer credit applied: {customer.code}", line_no=1,  # Dr customer credit.
     )
     JournalLine.objects.create(
@@ -534,7 +533,7 @@ def _post_refund_atomic(refund, *, actor_user=None):
         reference=refund.reference, created_by=actor_user,  # Reference and actor.
     )
     JournalLine.objects.create(
-        entry=entry, account=resolve_account(refund.entity, CUSTOMER_CREDIT_CODE, label="customer credit"),  # Resolve liability.
+        entry=entry, account=resolve_mapped_account(refund.entity, AccountMappingKey.CUSTOMER_CREDIT, label="customer credit"),  # Resolve liability.
         debit=refund.amount, credit=0, description=f"Refund: {customer.code}", line_no=1,  # Dr customer credit.
     )
     JournalLine.objects.create(
@@ -624,8 +623,8 @@ def _write_off_invoice_atomic(invoice, *, amount=None, write_off_account=None,
     if ar_account is None:  # Credit side needs AR account.
         raise PostingError(f"Customer {customer.code} has no receivable (AR control) account set.")
 
-    expense = write_off_account or resolve_account(  # Use explicit write-off account or default.
-        invoice.entity, BAD_DEBT_EXPENSE_CODE, label="bad-debt expense",  # Resolve bad-debt expense account.
+    expense = write_off_account or resolve_mapped_account(  # Use explicit write-off account or default.
+        invoice.entity, AccountMappingKey.BAD_DEBT_EXPENSE, label="bad-debt expense",  # Resolve bad-debt expense account.
     )
     when = write_off_date or invoice.invoice_date  # Default write-off date to invoice date.
     # A debt cannot be conceded before it is owed: writing off on a date earlier than

@@ -1368,15 +1368,12 @@ def cash_flow_statement(entity, *, period=None) -> CashFlowStatement:
     financing (see :func:`_classify_cash_flow`), and reconciles opening + net change to
     closing cash. Scoped to ``period`` when given, else the whole ledger to date.
     """
-    from .constants import CASH_BANK_CODE, DocumentStatus, NormalBalance
-    from .models import Account, AccountBalance, BankAccount, JournalLine
+    from .account_mappings import resolve_mapped_account
+    from .constants import AccountMappingKey, DocumentStatus, NormalBalance
+    from .models import AccountBalance, BankAccount, JournalLine
 
     # 1. Identify the entity's cash accounts (1100 + any mapped bank GL account).
-    cash_ids = set(
-        Account.objects
-        .filter(entity=entity, code=CASH_BANK_CODE)
-        .values_list("id", flat=True)
-    )
+    cash_ids = {resolve_mapped_account(entity, AccountMappingKey.CASH_BANK).id}
     cash_ids |= set(
         BankAccount.objects.filter(entity=entity).values_list("gl_account_id", flat=True)
     )

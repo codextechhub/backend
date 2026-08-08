@@ -455,6 +455,11 @@ class FinanceAuditAction(models.TextChoices):
     PERIOD_REOPENED = "PERIOD_REOPENED", "Period re-opened"
     ACCOUNT_CREATED = "ACCOUNT_CREATED", "Account created"
     ACCOUNT_UPDATED = "ACCOUNT_UPDATED", "Account updated"
+    FINANCE_SETTINGS_UPDATED = "FINANCE_SETTINGS_UPDATED", "Finance settings updated"
+    FINANCE_DOCUMENT_SETTINGS_UPDATED = (
+        "FIN_DOCUMENT_SETTINGS_UPDATED", "Finance document settings updated"
+    )
+    PROCUREMENT_SETTINGS_UPDATED = "PROCUREMENT_SETTINGS_UPDATED", "Procurement settings updated"
     # Procure-to-Pay. The vendor/PO/GRN documents live in vs_procurement,
     # but their audit vocabulary belongs to finance's authoritative log (finance does
     # not import procurement - these are just string constants).
@@ -627,6 +632,24 @@ SALES_RETURNS_CODE = "4900"              # Sales returns (contra-revenue) - cred
 DISCOUNTS_ALLOWED_CODE = "4910"          # Discounts & allowances (contra-revenue) - concessions default here
 BAD_DEBT_EXPENSE_CODE = "5300"           # Bad-debt / general expense - write-offs default here
 CUSTOMER_CREDIT_CODE = "2140"            # Customer credit balances (liability) - overpayments / unapplied credit / refundable
+
+
+class AccountMappingKey(models.TextChoices):
+    """Entity-level account roles used by Finance and Procurement services."""
+
+    CASH_BANK = "CASH_BANK", "Cash and bank"
+    ACCOUNTS_RECEIVABLE = "ACCOUNTS_RECEIVABLE", "Accounts receivable"
+    ACCOUNTS_PAYABLE = "ACCOUNTS_PAYABLE", "Accounts payable"
+    CUSTOMER_CREDIT = "CUSTOMER_CREDIT", "Customer credit"
+    GRIR_CLEARING = "GRIR_CLEARING", "GR/IR clearing"
+    OUTPUT_VAT = "OUTPUT_VAT", "Output VAT"
+    WHT_PAYABLE = "WHT_PAYABLE", "WHT payable"
+    RETAINED_EARNINGS = "RETAINED_EARNINGS", "Retained earnings"
+    BAD_DEBT_EXPENSE = "BAD_DEBT_EXPENSE", "Bad debt expense"
+    BANK_CHARGES = "BANK_CHARGES", "Bank charges"
+    INVENTORY_ASSET = "INVENTORY_ASSET", "Inventory asset"
+    INVENTORY_ADJUSTMENT = "INVENTORY_ADJUSTMENT", "Inventory adjustment"
+    PURCHASE_PRICE_VARIANCE = "PURCHASE_PRICE_VARIANCE", "Purchase price variance"
 
 #: Reserved code for CodeX's own platform set of books (the operator's entity).
 #: An uppercase identifier (like all entity codes); the display name is "CodeX".

@@ -39,6 +39,7 @@ from .constants import (
 )
 from .exceptions import ThreeWayMatchError
 from .purchasing import resolve_account
+from .settings import resolve_procurement_settings
 
 
 # --------------------------------------------------------------------------- #
@@ -66,13 +67,15 @@ def match_vendor_invoice(invoice, *, save: bool = True) -> str:
     Per line linked to a PO line, compares the cumulative billed quantity and the unit
     price against what was ordered and received:
 
-    * billed beyond the ordered quantity  → ``OVER_BILLED`` (blocking)
-    * billed beyond the received quantity  → ``UNDER_RECEIVED`` (blocking)
-    * unit price differs from the PO       → ``PRICE_VARIANCE`` (flag, postable)
-    * otherwise                            → ``AUTO_MATCHED``
+    * billed beyond the configured ordered tolerance → ``OVER_BILLED`` (blocking)
+    * billed beyond the configured receipt tolerance → ``UNDER_RECEIVED`` (blocking)
+    * price variance outside tolerance                  → ``PRICE_VARIANCE``
+    * otherwise                                         → ``AUTO_MATCHED``
 
-    A bill with no PO linkage is treated as ``AUTO_MATCHED`` (nothing to match against).
+    A bill with no PO linkage follows the entity's explicit non-PO invoice policy.
     """
+    policy = resolve_procurement_settings(invoice.entity)
+    quantity_factor = Decimal(10000 + policy.quantity_tolerance_bps) / Decimal(10000)
     status = MatchStatus.AUTO_MATCHED  # Default to matched until a variance is found.
     has_po_line = False  # Track whether this bill has any PO-backed lines.
     billed_by_po_line: dict[int, Decimal] = defaultdict(Decimal)
@@ -88,7 +91,13 @@ def match_vendor_invoice(invoice, *, save: bool = True) -> str:
         # Several invoice rows may point at one PO row; aggregate them before
         # comparing so splitting a quantity cannot bypass the ordered/received cap.
         billed_by_po_line[po_line.pk] += Decimal(line.quantity)
-        if int(line.unit_price) != int(po_line.unit_price):
+        expected_price = abs(int(po_line.unit_price))
+        price_delta = abs(int(line.unit_price) - int(po_line.unit_price))
+        price_outside_tolerance = (
+            price_delta > 0 if expected_price == 0
+            else price_delta * 10000 > expected_price * policy.price_tolerance_bps
+        )
+        if price_outside_tolerance:
             price_variance = True
 
     for po_line_id, current_qty in billed_by_po_line.items():
@@ -97,18 +106,22 @@ def match_vendor_invoice(invoice, *, save: bool = True) -> str:
         ordered = Decimal(po_line.quantity)
         received = Decimal(po_line.received_qty)
 
-        if billed_cum > ordered:  # Cannot bill more than ordered.
+        if billed_cum > ordered * quantity_factor:  # Apply the configured quantity tolerance.
             status = MatchStatus.OVER_BILLED  # Blocking match status.
             break  # Exit the current loop.
-        if billed_cum > received:  # Cannot bill goods that have not been received.
+        if billed_cum > received * quantity_factor:  # Apply the configured receipt tolerance.
             status = MatchStatus.UNDER_RECEIVED  # Blocking match status.
             break  # Exit the current loop.
 
     if status == MatchStatus.AUTO_MATCHED and price_variance:
         status = MatchStatus.PRICE_VARIANCE  # Exact-price policy: any difference is visible but non-blocking.
 
-    if not has_po_line:  # Non-PO bills have no match source.
-        status = MatchStatus.AUTO_MATCHED  # Treat them as matched.
+    if not has_po_line:  # Non-PO bills follow the entity's explicit policy.
+        status = (
+            MatchStatus.AUTO_MATCHED
+            if policy.allow_non_po_invoices
+            else MatchStatus.NON_PO_BLOCKED
+        )
 
     invoice.match_status = status  # Store the computed match result on the invoice object.
     if save:  # Persist when the caller wants durable match state.

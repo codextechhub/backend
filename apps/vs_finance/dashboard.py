@@ -187,12 +187,10 @@ def _cash_account_ids(entity) -> set:
     statement uses, so the dashboard's cash position reconciles to it. (Many
     entities hold cash directly in ``1100`` with no operational BankAccount row.)
     """
-    from .constants import CASH_BANK_CODE
-    from .models import Account
+    from .account_mappings import resolve_mapped_account
+    from .constants import AccountMappingKey
 
-    ids = set(  # Start with canonical cash account when present.
-        Account.objects.filter(entity=entity, code=CASH_BANK_CODE).values_list("id", flat=True)
-    )
+    ids = {resolve_mapped_account(entity, AccountMappingKey.CASH_BANK).id}
     ids |= set(  # Include operational bank accounts mapped to GL accounts.
         BankAccount.objects.filter(entity=entity)
         .exclude(gl_account=None)

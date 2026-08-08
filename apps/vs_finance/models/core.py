@@ -27,6 +27,7 @@ from django.db import models, transaction
 from django.utils import timezone
 
 from ..constants import (
+    AccountMappingKey,
     DocType,
     DocumentStatus,
     PLATFORM_ENTITY_CODE,
@@ -61,11 +62,11 @@ class LedgerEntityManager(models.Manager):
 
 
 def derive_number_code(code: str, taken) -> str:
-    """Pick a short (≤3 char) document-number code from an entity code.
+    """Pick a short (≤3 char) reporting code from an entity code.
 
     Uses the first three alphanumerics of ``code`` (``CODEX`` → ``COD``); if that
     is already ``taken`` by another entity, walks a 2-char stem + suffix until a
-    free code is found, so the code embedded in document numbers stays unique.
+    free reporting code is found. Live document numbering uses the tenant sequence.
     """
     import re
 
@@ -94,7 +95,8 @@ class LedgerEntity(TimeStampedModel):
         code: Short, uppercase, unique identifier. Reserved code ``CODEX`` is the
             platform entity.
         number_code: A unique 2–3 character reporting code, auto-derived from
-            ``code``. It is retained for display/reporting but not document numbering.
+            ``code``. It is retained for display/reporting and does not control
+            live document numbering.
         kind: Classification (platform / tenant / product / other).
         tenant: Canonical owner. The originating school (when any) is derived from
             the tenant's ``school_profile``; platform/product tenants have none.
@@ -163,6 +165,46 @@ class LedgerEntity(TimeStampedModel):
     @property
     def is_platform(self) -> bool:
         return self.kind == self.Kind.PLATFORM
+
+
+class FinanceAccountMapping(TimeStampedModel):
+    """An entity-specific override for one well-known accounting role.
+
+    The role is stable while the selected account may change. Posting services
+    resolve the role inside the entity and fail closed when the selected account
+    is inactive, non-postable, or from another entity.
+    """
+
+    entity = models.ForeignKey(
+        LedgerEntity, on_delete=models.CASCADE, related_name="account_mappings",
+    )
+    key = models.CharField(max_length=32, choices=AccountMappingKey.choices)
+    account = models.ForeignKey(
+        "Account", on_delete=models.PROTECT, related_name="finance_mapping_roles",
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_account_mapping_updates", null=True, blank=True,
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["entity", "key"], name="uniq_finance_account_mapping_role",
+            ),
+        ]
+        indexes = [models.Index(fields=["entity", "key"])]
+
+    def clean(self):
+        if self.account_id and self.entity_id and self.account.entity_id != self.entity_id:
+            raise ValidationError({"account": "The mapped account must belong to the same entity."})
+
+    def save(self, *args, **kwargs):
+        self.full_clean()
+        return super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"{self.entity_id}:{self.key} -> {self.account_id}"
 
 
 class DocumentSequence(models.Model):

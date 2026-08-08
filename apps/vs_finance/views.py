@@ -284,7 +284,9 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
         ctx = super().get_serializer_context()
         if self._with_balance():
             entity = getattr(self, "entity", None) or resolve_entity(self.request)
-            from .constants import CASH_BANK_CODE
+            from .account_mappings import resolve_mapped_account
+            from .constants import AccountMappingKey
+            from .exceptions import MissingAccountError
             from .models import Customer
             control = set(
                 Customer.objects.filter(entity=entity).exclude(receivable_account=None)
@@ -299,9 +301,12 @@ class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
             except Exception:
                 pass
             ctx["control_ids"] = control
-            ctx["cash_ids"] = set(
-                Account.objects.filter(entity=entity, code=CASH_BANK_CODE).values_list("id", flat=True)
-            )
+            try:
+                ctx["cash_ids"] = {
+                    resolve_mapped_account(entity, AccountMappingKey.CASH_BANK).id,
+                }
+            except MissingAccountError:
+                ctx["cash_ids"] = set()
         return ctx
 
     # Handle the list workflow.
@@ -859,20 +864,28 @@ class InvoiceListCreateView(EntityScopedListMixin, generics.ListAPIView):
         entity = resolve_entity(request)
         body = request.data or {}
         lines = _require_lines(body)
-        should_post = body.get("post", True)
+        from .document_settings import resolve_finance_document_settings
+        policy = resolve_finance_document_settings(entity)
+        should_post = body.get("post", policy.auto_post_manual_invoices)
         if isinstance(should_post, str):
             should_post = should_post.lower() not in ("false", "0", "no")
+        invoice_date = _date(body.get("invoice_date"), "invoice_date", required=True)
+        due_date = _date(body.get("due_date"), "due_date")
+        if due_date is None:
+            due_date = invoice_date + datetime.timedelta(
+                days=policy.default_invoice_due_days,
+            )
 
         with transaction.atomic():
             invoice = Invoice.objects.create(
                 entity=entity,
                 customer=_resolve_customer(entity, body.get("customer")),
-                invoice_date=_date(body.get("invoice_date"), "invoice_date", required=True),
-                due_date=_date(body.get("due_date"), "due_date"),
+                invoice_date=invoice_date,
+                due_date=due_date,
                 currency=_resolve_currency(body.get("currency")),
                 source="MANUAL",
                 reference=body.get("reference", ""),
-                narration=body.get("narration", ""),
+                narration=body.get("narration") or policy.default_invoice_narration,
                 created_by=request.user,
             )
             for i, ln in enumerate(lines, start=1):

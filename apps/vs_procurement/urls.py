@@ -10,6 +10,8 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
+    path("settings/", views.ProcurementSettingsView.as_view(), name="proc-settings"),
+
     # Master data
     path("categories/", views.VendorCategoryListCreateView.as_view(), name="proc-categories"),
     path("categories/insights/", views.VendorCategoryInsightsView.as_view(), name="proc-category-insights"),

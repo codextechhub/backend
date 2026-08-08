@@ -161,6 +161,11 @@ class ContractListCreateView(_ProcBase):
         entity = resolve_entity(request)
         body = request.data
         vendor = _resolve_vendor(entity, body.get("vendor"))
+        from ..purchasing import vendor_purchase_block_reason
+        if reason := vendor_purchase_block_reason(vendor):
+            raise ValidationError({"vendor": reason})
+        from ..settings import resolve_procurement_settings
+        policy = resolve_procurement_settings(entity)
         # Reference is auto-generated server-side (sequential per entity, collision-safe);
         # a caller-supplied reference still works and stays unique per the DB constraint.
         reference = _text(body.get("reference"), "reference", 64) or contracts.next_contract_reference(entity)
@@ -173,9 +178,13 @@ class ContractListCreateView(_ProcBase):
             title=_text(body.get("title"), "title", 200, required=True),
             start_date=start_date, end_date=end_date,
             contract_value=_strict_kobo(body.get("contract_value", 0), "contract_value"),
-            payment_terms=_payment_terms(body.get("payment_terms")),
+            payment_terms=_payment_terms(
+                body.get("payment_terms", policy.default_payment_terms),
+            ),
             auto_renew=_strict_bool(body.get("auto_renew", False), "auto_renew"),
-            renewal_notice_days=_notice_days(body.get("renewal_notice_days")),
+            renewal_notice_days=_notice_days(
+                body.get("renewal_notice_days", policy.contract_renewal_notice_days),
+            ),
             notes=_text(body.get("notes"), "notes", 255),
             created_by=request.user if request.user.is_authenticated else None,
         )

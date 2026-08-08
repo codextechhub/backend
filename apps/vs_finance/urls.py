@@ -97,6 +97,7 @@ from .views_ar import (
     WriteOffRequestPostView,
     WriteOffRequestSubmitView,
 )
+from .views_settings import FinanceAccountSettingsView, FinanceDocumentSettingsView
 from .views_ops import (
     BankAccountDetailView,
     BankAccountListCreateView,
@@ -177,6 +178,10 @@ from .views_ops import (
 urlpatterns = [
     # Master data + documents
     path("entities/", EntityListCreateView.as_view(), name="finance-entity-list"),
+    path("settings/account-mappings/", FinanceAccountSettingsView.as_view(),
+         name="finance-account-settings"),
+    path("settings/documents/", FinanceDocumentSettingsView.as_view(),
+         name="finance-document-settings"),
     path("accounts/", AccountListCreateView.as_view(), name="finance-account-list"),
     path("accounts/<int:pk>/activity/", AccountActivityView.as_view(), name="finance-account-activity"),
     path("accounts/<int:pk>/", AccountDetailView.as_view(), name="finance-account-detail"),

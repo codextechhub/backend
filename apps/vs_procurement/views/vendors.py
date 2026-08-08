@@ -462,8 +462,15 @@ class VendorListCreateView(_ProcBase):
         if (kyc := request.query_params.get("kyc_status")):
             qs = qs.filter(kyc_status=kyc)
         if request.query_params.get("purchase_eligible") == "true":
-            # Pending KYC may be sourced, but rejected, inactive, and held vendors cannot receive commitments.
+            # Eligibility uses the entity's KYC threshold plus universal active and hold checks.
             qs = qs.filter(is_active=True, on_hold=False).exclude(kyc_status=VendorKycStatus.REJECTED)
+            from ..constants import VendorPurchaseKycRequirement
+            from ..settings import resolve_procurement_settings
+            if (
+                resolve_procurement_settings(entity).vendor_purchase_kyc_requirement
+                == VendorPurchaseKycRequirement.VERIFIED_ONLY
+            ):
+                qs = qs.filter(kyc_status=VendorKycStatus.VERIFIED)
         if (search := (request.query_params.get("search") or request.query_params.get("q") or "").strip()):
             qs = qs.filter(Q(code__icontains=search) | Q(name__icontains=search) | Q(category__name__icontains=search))
         return self.paginate(request, qs.order_by("code"), VendorListSerializer)
@@ -479,15 +486,27 @@ class VendorListCreateView(_ProcBase):
             raise ValidationError({"name": "A vendor name is required."})
         _require_sensitive_access(request, body)
         tax_id = _clean_text(body, "tax_id", 32, upper=True)
-        payable = _validate_account_type(
-            _resolve_account(entity, body.get("payable_account"), "payable_account"),
-            "payable_account", {AccountType.LIABILITY},
-        )
+        if body.get("payable_account"):
+            payable = _validate_account_type(
+                _resolve_account(entity, body.get("payable_account"), "payable_account"),
+                "payable_account", {AccountType.LIABILITY},
+            )
+        else:
+            from vs_finance.account_mappings import resolve_mapped_account
+            from vs_finance.constants import AccountMappingKey
+            payable = resolve_mapped_account(
+                entity, AccountMappingKey.ACCOUNTS_PAYABLE, label="payable account",
+            )
         expense = _validate_account_type(
             _resolve_account(entity, body.get("default_expense_account"), "default_expense_account"),
             "default_expense_account", {AccountType.EXPENSE},
         )
-        payment_terms = _validate_choice(body.get("payment_terms") or PaymentTerms.NET_30, PaymentTerms.values, "payment_terms")
+        from ..settings import resolve_procurement_settings
+        policy = resolve_procurement_settings(entity)
+        payment_terms = _validate_choice(
+            body.get("payment_terms") or policy.default_payment_terms,
+            PaymentTerms.values, "payment_terms",
+        )
         try:
             vendor = Vendor.objects.create(
                 entity=entity, code=code, name=name,

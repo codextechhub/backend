@@ -126,11 +126,19 @@ class RequisitionListCreateView(_ProcBase):
         entity = resolve_entity(request)
         body = request.data
         lines = _require_lines(body)
+        from ..settings import resolve_procurement_settings
+        policy = resolve_procurement_settings(entity)
+        request_date = _date(body.get("request_date"), "request_date", required=True)
+        needed_by = _date(body.get("needed_by"), "needed_by")
+        if needed_by is None and policy.default_requisition_lead_days:
+            needed_by = request_date + datetime.timedelta(
+                days=policy.default_requisition_lead_days,
+            )
         req = PurchaseRequisition.objects.create(
             entity=entity,
             title=str(body.get("title", "")).strip(),
-            request_date=_date(body.get("request_date"), "request_date", required=True),
-            needed_by=_date(body.get("needed_by"), "needed_by"),
+            request_date=request_date,
+            needed_by=needed_by,
             cost_center=_resolve_cost_center(entity, body.get("cost_center")),
             justification=body.get("justification", ""),
             requested_by=request.user if request.user.is_authenticated else None,

@@ -27,7 +27,11 @@ from vs_finance.money import format_naira
 from vs_finance.posting import post_journal, resolve_period
 from vs_finance.receivables import compute_line_net, compute_tax
 
-from .constants import GRIR_CLEARING_CODE, VendorKycStatus
+from .constants import (
+    GRIR_CLEARING_CODE,
+    VendorKycStatus,
+    VendorPurchaseKycRequirement,
+)
 from .exceptions import MissingControlAccountError, RequisitionError
 
 
@@ -42,16 +46,13 @@ def resolve_account(entity, code: str, *, label: str = ""):
     Chart-of-Accounts code. Raises :class:`MissingControlAccountError` when absent so a
     misconfigured entity fails loudly rather than posting into the wrong account.
     """
-    from vs_finance.models import Account
+    from vs_finance.account_mappings import resolve_default_code_mapping
+    from vs_finance.exceptions import MissingAccountError
 
-    account = (
-        Account.objects
-        .filter(entity=entity, code=code, is_active=True, is_postable=True)
-        .first()
-    )
-    if account is None:
-        raise MissingControlAccountError(code, label=label)
-    return account
+    try:
+        return resolve_default_code_mapping(entity, code, label=label)
+    except MissingAccountError as exc:
+        raise MissingControlAccountError(code, label=label) from exc
 
 
 def price_po(po) -> None:
@@ -88,7 +89,7 @@ def po_receipt_stage(ordered_qty, received_qty) -> str:
     return "AWAITING"
 
 
-def vendor_purchase_block_reason(vendor) -> str:
+def vendor_purchase_block_reason(vendor, *, policy=None) -> str:
     """Return the shared reason a vendor cannot receive a new purchasing commitment."""
     if not vendor.is_active:
         return f"Vendor {vendor.code} is inactive; new purchasing commitments are blocked."
@@ -96,6 +97,21 @@ def vendor_purchase_block_reason(vendor) -> str:
         return f"Vendor {vendor.code} is on hold; new purchasing commitments are blocked."
     if vendor.kyc_status == VendorKycStatus.REJECTED:
         return f"Vendor {vendor.code} has rejected KYC; new purchasing commitments are blocked."
+    if policy is None:
+        from .models import ProcurementSettings
+        policy = ProcurementSettings.objects.filter(entity_id=vendor.entity_id).only(
+            "vendor_purchase_kyc_requirement",
+        ).first()
+    requirement = (
+        policy.vendor_purchase_kyc_requirement
+        if policy is not None
+        else VendorPurchaseKycRequirement.PENDING_OR_VERIFIED
+    )
+    if (
+        requirement == VendorPurchaseKycRequirement.VERIFIED_ONLY
+        and vendor.kyc_status != VendorKycStatus.VERIFIED
+    ):
+        return f"Vendor {vendor.code} must have verified KYC before new purchasing commitments."
     return ""
 
 

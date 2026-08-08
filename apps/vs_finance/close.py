@@ -19,8 +19,10 @@ from django.db import transaction
 from django.utils import timezone
 
 from .audit import record
+from .account_mappings import resolve_mapped_account
 from .constants import (
     AssetStatus,
+    AccountMappingKey,
     DocumentStatus,
     FinanceAuditAction,
     PeriodStatus,
@@ -269,9 +271,8 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     """
     from django.db.models import Sum  # Aggregate per-account movement.
 
-    from .accounts import resolve_account  # Resolve the Retained Earnings account.
     from .constants import (  # Enums used only here.
-        AccountType, JournalSource, RETAINED_EARNINGS_CODE,
+        AccountType, JournalSource,
     )
     from .models import Account, AccountBalance, FiscalPeriod, JournalEntry, JournalLine
     from .posting import _period_accepts_posting, post_journal, resolve_period
@@ -326,7 +327,9 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
         return None, 0
 
     # Balance the entry to Retained Earnings: a profit credits equity, a loss debits it.
-    retained = resolve_account(entity, RETAINED_EARNINGS_CODE, label="retained earnings")
+    retained = resolve_mapped_account(
+        entity, AccountMappingKey.RETAINED_EARNINGS, label="retained earnings",
+    )
     if net_income > 0:  # Profit → credit Retained Earnings.
         closing_lines.append((retained, 0, net_income))
     else:  # Loss (or break-even handled above) → debit Retained Earnings.

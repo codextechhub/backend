@@ -17,9 +17,11 @@ from django.db import transaction
 from django.utils import timezone
 
 from .accounts import resolve_account
+from .account_mappings import resolve_mapped_account
 from .audit import record
 from .constants import (
     BankLineStatus,
+    AccountMappingKey,
     BankMatchSource,
     BankReconStatus,
     BankStatementStatus,
@@ -708,13 +710,13 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
     * outflow (amount < 0): ``Dr counter (expense), Cr cash``
     * inflow  (amount > 0): ``Dr cash, Cr counter (income/contra)``
 
+    The entity's configured bank-charge mapping supplies the default counter account.
     ``posting_date`` overrides where the journal lands; omitted, it follows
     :func:`resolve_adjustment_date`. The statement line's ``txn_date`` is always kept
     as the bank's value date - when the two differ the journal says so in its
     narration and the audit row carries both, so a charge booked into a later period
     is never mistaken for one the bank raised then.
     """
-    from .constants import BANK_CHARGES_CODE
     from .models import JournalEntry, JournalLine
 
     bank_account = statement_line.bank_account  # Resolve the owning bank account.
@@ -727,8 +729,12 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
         raise BankReconciliationError("Cannot adjust a zero-amount statement line.")
 
     if counter_account is None:  # Resolve a default counter account when one is not supplied.
-        counter_account = resolve_account(  # Default to bank charges if the caller didn't specify a code.
-            entity, counter_code or BANK_CHARGES_CODE, label="bank charge counter",
+        counter_account = (
+            resolve_account(entity, counter_code, label="bank charge counter")
+            if counter_code
+            else resolve_mapped_account(
+                entity, AccountMappingKey.BANK_CHARGES, label="bank charge counter",
+            )
         )
 
     book_date = resolve_adjustment_date(  # The date this adjustment can actually post on.

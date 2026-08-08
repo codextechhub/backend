@@ -39,6 +39,12 @@ class PaymentTerms(models.TextChoices):
     NET_90 = "NET_90", "Net 90 days"
 
 
+class VendorPurchaseKycRequirement(models.TextChoices):
+    """Minimum KYC state allowed for new sourcing and purchasing commitments."""
+    PENDING_OR_VERIFIED = "PENDING_OR_VERIFIED", "Pending or verified"
+    VERIFIED_ONLY = "VERIFIED_ONLY", "Verified only"
+
+
 #: Days implied by each :class:`PaymentTerms` value (for due-date arithmetic).
 PAYMENT_TERM_DAYS = {
     PaymentTerms.IMMEDIATE: 0,
@@ -178,10 +184,15 @@ class MatchStatus(models.TextChoices):
     UNDER_RECEIVED = "UNDER_RECEIVED", "Under received"
     OVER_BILLED = "OVER_BILLED", "Over billed"
     PRICE_VARIANCE = "PRICE_VARIANCE", "Price variance"
+    NON_PO_BLOCKED = "NON_PO_BLOCKED", "Non-PO invoice blocked"
 
 
 #: Match outcomes that must NOT post without an explicit variance override.
-MATCH_BLOCKING = frozenset({MatchStatus.UNDER_RECEIVED, MatchStatus.OVER_BILLED})
+MATCH_BLOCKING = frozenset({
+    MatchStatus.UNDER_RECEIVED,
+    MatchStatus.OVER_BILLED,
+    MatchStatus.NON_PO_BLOCKED,
+})
 
 class StockMovementType(models.TextChoices):
     """Direction/reason of a stock-ledger entry (perpetual inventory).

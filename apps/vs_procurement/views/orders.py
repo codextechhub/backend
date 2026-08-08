@@ -227,11 +227,15 @@ class PurchaseOrderListCreateView(_ProcBase):
         vendor = _resolve_vendor(entity, body.get("vendor"))
         # Optional explicit call-off link; validated against this PO's own vendor.
         contract = _resolve_po_contract(entity, vendor, body.get("contract"))
+        from ..settings import resolve_procurement_settings
+        policy = resolve_procurement_settings(entity)
         po = purchasing.create_po_from_requisition(
             req, vendor=vendor,
             order_date=_date(body.get("order_date"), "order_date", required=True),
             expected_date=_date(body.get("expected_date"), "expected_date"),
-            delivery_address=str(body.get("delivery_address", "")).strip(),
+            delivery_address=str(
+                body.get("delivery_address", policy.default_delivery_address)
+            ).strip(),
             payment_terms=str(body.get("payment_terms", vendor.payment_terms)).strip(),
             currency=_resolve_currency(entity, body.get("currency")),
             actor_user=request.user,

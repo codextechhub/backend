@@ -43,6 +43,7 @@ from .constants import (
     MilestoneStatus,
     PaymentTerms,
     ProcApprovalState,
+    VendorPurchaseKycRequirement,
     QuotationStatus,
     RfqStatus,
     StockMovementType,
@@ -99,6 +100,50 @@ class _AutoMasterCodeMixin:
                     kwargs["update_fields"] = set(kwargs["update_fields"]) | {"code"}
                 return super().save(*args, **kwargs)
         return super().save(*args, **kwargs)
+
+
+# --------------------------------------------------------------------------- #
+# Entity settings                                                             #
+# --------------------------------------------------------------------------- #
+
+class ProcurementSettings(TimeStampedModel):
+    """Typed purchasing defaults and invoice-match policy for one entity."""
+
+    entity = models.OneToOneField(
+        "vs_finance.LedgerEntity", on_delete=models.CASCADE,
+        related_name="procurement_settings",
+    )
+    default_payment_terms = models.CharField(
+        max_length=8, choices=PaymentTerms.choices, default=PaymentTerms.NET_30,
+    )
+    default_delivery_address = models.TextField(blank=True, default="")
+    quantity_tolerance_bps = models.PositiveSmallIntegerField(
+        default=0, validators=[MaxValueValidator(10000)],
+        help_text="Allowed ordered/received quantity overage in basis points.",
+    )
+    price_tolerance_bps = models.PositiveSmallIntegerField(
+        default=0, validators=[MaxValueValidator(10000)],
+        help_text="Allowed unit-price variance in basis points.",
+    )
+    allow_non_po_invoices = models.BooleanField(default=True)
+    vendor_purchase_kyc_requirement = models.CharField(
+        max_length=20, choices=VendorPurchaseKycRequirement.choices,
+        default=VendorPurchaseKycRequirement.PENDING_OR_VERIFIED,
+    )
+    require_purchase_order_for_receipts = models.BooleanField(default=False)
+    default_requisition_lead_days = models.PositiveSmallIntegerField(
+        default=0, validators=[MaxValueValidator(365)],
+    )
+    contract_renewal_notice_days = models.PositiveSmallIntegerField(
+        default=30, validators=[MaxValueValidator(365)],
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="procurement_settings_updates", null=True, blank=True,
+    )
+
+    def __str__(self) -> str:
+        return f"Procurement settings for {self.entity_id}"
 
 
 # --------------------------------------------------------------------------- #

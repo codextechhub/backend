@@ -47,12 +47,14 @@ def set_rfq_invitations(rfq, vendors, *, actor_user=None):
             f"invited vendors can only be changed while it is a draft.",
         )
 
+    from .settings import resolve_procurement_settings
+    policy = resolve_procurement_settings(rfq.entity)
     # De-duplicate by vendor pk, preserving first-seen order, validating each vendor.
     wanted: dict[int, object] = {}
     for vendor in vendors:
         if vendor.entity_id != rfq.entity_id:
             raise SourcingError(f"Vendor {vendor.code} belongs to a different entity.")
-        if reason := vendor_purchase_block_reason(vendor):
+        if reason := vendor_purchase_block_reason(vendor, policy=policy):
             raise SourcingError(reason)
         wanted.setdefault(vendor.pk, vendor)
     wanted_ids = set(wanted)

@@ -21,10 +21,10 @@ from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
 
-from .accounts import resolve_account
+from .account_mappings import resolve_mapped_account
 from .audit import record, record_rejection
 from .constants import (
-    CUSTOMER_CREDIT_CODE,
+    AccountMappingKey,
     DocumentStatus,
     FinanceAuditAction,
     InvoicePaymentStatus,
@@ -211,7 +211,7 @@ def post_opening_balance(customer, *, actor_user=None, date=None):
     """
     import datetime
 
-    from .constants import InvoiceSource, RETAINED_EARNINGS_CODE
+    from .constants import InvoiceSource
     from .models import Invoice, InvoiceLine
 
     amount = int(customer.opening_balance or 0)  # Normalize the starting balance to integer kobo.
@@ -220,8 +220,8 @@ def post_opening_balance(customer, *, actor_user=None, date=None):
 
     # Opening balances are prior-period value: credit equity (Retained Earnings),
     # not revenue - otherwise onboarding/migrating a customer inflates this year's P&L.
-    opening_equity = resolve_account(  # Book the offset to retained earnings.
-        customer.entity, RETAINED_EARNINGS_CODE, label="opening balance equity",
+    opening_equity = resolve_mapped_account(  # Book the offset to retained earnings.
+        customer.entity, AccountMappingKey.RETAINED_EARNINGS, label="opening balance equity",
     )
     invoice = Invoice.objects.create(
         entity=customer.entity, customer=customer,
@@ -597,7 +597,7 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
     if excess > 0:  # Unapplied cash becomes customer credit liability.
         line_no += 1  # Advance to the customer-credit line.
         JournalLine.objects.create(
-            entry=entry, account=resolve_account(payment.entity, CUSTOMER_CREDIT_CODE, label="customer credit"),
+            entry=entry, account=resolve_mapped_account(payment.entity, AccountMappingKey.CUSTOMER_CREDIT, label="customer credit"),
             debit=0, credit=excess, description=f"Customer credit: {customer.code}", line_no=line_no,
         )
 
@@ -664,7 +664,7 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
         reference=payment.reference, created_by=actor_user,
     )
     JournalLine.objects.create(
-        entry=entry, account=resolve_account(payment.entity, CUSTOMER_CREDIT_CODE, label="customer credit"),
+        entry=entry, account=resolve_mapped_account(payment.entity, AccountMappingKey.CUSTOMER_CREDIT, label="customer credit"),
         debit=applied, credit=0, description=f"Customer credit applied: {customer.code}", line_no=1,
     )
     JournalLine.objects.create(

@@ -1019,16 +1019,13 @@ def grir_balance(entity, *, as_of=None) -> int:
     invoiced and a negative result is a net debit/invoice-first position - the headline
     number a GR/IR aging drills into.
     """
-    from vs_finance.models import Account
+    from vs_finance.account_mappings import resolve_mapped_account
+    from vs_finance.constants import AccountMappingKey
+    from vs_finance.exceptions import MissingAccountError
 
-    from .constants import GRIR_CLEARING_CODE
-
-    account = (
-        Account.objects
-        .filter(entity=entity, code=GRIR_CLEARING_CODE)
-        .first()
-    )
-    if account is None:
+    try:
+        account = resolve_mapped_account(entity, AccountMappingKey.GRIR_CLEARING)
+    except MissingAccountError:
         return 0
     return (
         _account_gl_net_as_of(account, as_of)

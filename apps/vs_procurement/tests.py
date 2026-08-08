@@ -452,6 +452,9 @@ class SeedProcurementPermissionsTests(TestCase):
         override = Permission.objects.get(key="procurement.vendor_invoice.override_variance")
         self.assertEqual(override.sensitivity_level, Permission.Sensitivity.CRITICAL)
         self.assertTrue(override.is_restricted)
+        settings_update = Permission.objects.get(key="procurement.settings.update")
+        self.assertEqual(settings_update.sensitivity_level, Permission.Sensitivity.SENSITIVE)
+        self.assertTrue(settings_update.is_restricted)
         for role_key in ("xvs_super_admin", "xvs_platform_admin"):
             links = TenantRolePermission.objects.filter(
                 role__key=role_key, role__tenant__kind="PLATFORM",
