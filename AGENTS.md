@@ -75,9 +75,10 @@ an empty heading is worse than no heading, and never pad a section to fill it ou
   produced.
 - **What you decided** — decisions taken and locked, one line each. Only if
   decisions were actually made.
-- **What we found wrong in the code** — real defects and gaps, grouped under short
-  themes once there are more than about four. **Only if there are findings** — if
-  nothing is wrong, leave this out entirely rather than writing "nothing found".
+- **What was fixed** — resolved defects, written in the past tense. Include only
+  when knowing the original cause is useful and it has not already been explained.
+- **What still needs attention** — only defects, risks, or incomplete work that
+  remain after the task. Omit this section entirely when nothing remains.
 - **Where to go next** — the order of the next steps, and which of them are
   unblocked right now.
 
@@ -88,6 +89,9 @@ How to write it:
 - Size things honestly in both directions — say when something feared turns out to
   be a one-line fix, and say when something small turns out to be load-bearing.
 - Put the worst finding where it cannot be missed, even if that breaks the order.
+- Never place resolved problems under a heading that suggests they remain broken.
+  When all reported defects were fixed, say so plainly and omit any unresolved-
+  findings section.
 - Keep file/line references out of the breakdown; they belong in `todo.md` and in
   the detail above it.
 - Don't re-explain what I already know from the conversation.
