@@ -60,7 +60,7 @@ totals and chart summaries remain whole-entity/window totals, not page subtotals
 
 | Method + path | query fields actually read | what it does | response shape |
 |---|---|---|---|
-| `GET /reports/dashboard/` | — | Live requester-aware dashboard | Entity/currency/as-of/month start; KPIs; category spend; PO statuses; eight-month trend; five activities; up to four assigned approvals (`views/reports.py:358-370`; `dashboard.py:376-456`) |
+| `GET /reports/dashboard/` | - | Live requester-aware dashboard | Entity/currency/as-of/month start; KPIs; category spend; PO statuses; eight-month trend; five activities; up to four assigned approvals (`views/reports.py:358-370`; `dashboard.py:376-456`) |
 | `GET /reports/ap-aging/` | `as_of?`, `page?`, `page_size?` | Age open AP by vendor | Paginated vendor rows with payment terms/gross buckets/outstanding/unallocated credit/net; whole-report bucket totals and total net (`views/reports.py:49-79`) |
 | `GET /reports/ap-aging/vendor/` | `vendor` id or exact code, `as_of?`, `page?`, `page_size?` | Open-bill evidence for one vendor | Paginated invoices; whole-vendor bucket amounts, outstanding, unallocated credit, and net (`views/reports.py:195-232`) |
 | `GET /reports/ap-reconciliation/` | `as_of?` | Compare AP subledger with vendor-linked GL controls | Subledger total, control total, signed difference, reconciled flag (`views/reports.py:65-87`) |
@@ -279,7 +279,7 @@ request (`reports.py:71-181`; `views/reports.py:30-87`).
   directions have regression coverage
   (`reports.py:319-327,372-397,786-805`).
 
-### Selected follow-ups — fixed
+### Selected follow-ups - fixed
 
 - ✅ **Large report rows and invoice drawers are paginated.** Six primary
   analytical rankings and three invoice-evidence drawers use the standard

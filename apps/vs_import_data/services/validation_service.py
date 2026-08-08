@@ -145,8 +145,8 @@ def _validate_template_rules(import_batch) -> list[dict]:
     Apply dataset-level rules from template.validation_rules JSON.
 
     Supported keys:
-      min_rows (int)  — file must contain at least this many data rows.
-      max_rows (int)  — file must contain no more than this many data rows.
+      min_rows (int)  - file must contain at least this many data rows.
+      max_rows (int)  - file must contain no more than this many data rows.
     """
     issues = []
 
@@ -533,7 +533,7 @@ def _validate_branches_rules(import_batch) -> list[dict]:
                 })
             else:
                 seen_main_branch[school_key] = row_number
-                # Also check the DB — school may already have a main branch
+                # Also check the DB - school may already have a main branch
                 if import_batch.school is not None:
                     check_school = import_batch.school
                 else:

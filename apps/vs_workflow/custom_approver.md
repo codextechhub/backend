@@ -1,4 +1,4 @@
-# vs_workflow — Implementation Notes
+# vs_workflow - Implementation Notes
 
 ---
 
@@ -6,14 +6,14 @@
 
 ### Decision: Keep the current RBAC permission-based approach
 
-For a platform that handles multiple document types — procurement, leave, HR,
-admissions — the flows are too varied for a single organogram model. Purchase
+For a platform that handles multiple document types - procurement, leave, HR,
+admissions - the flows are too varied for a single organogram model. Purchase
 orders go to Finance, not the requester's manager. Legal sign-off goes to Legal
 regardless of where in the hierarchy the request originated. The RBAC approach
 handles all of these cleanly.
 
 The organogram scenario is supported as a **special case** via a custom approver
-resolver — see the section below.
+resolver - see the section below.
 
 ---
 
@@ -21,11 +21,11 @@ resolver — see the section below.
 
 ### The idea
 
-Today every `WorkflowStage` has an `approver_permission_key` — a string like
+Today every `WorkflowStage` has an `approver_permission_key` - a string like
 `"leave.approve.line_manager"`. The engine passes that string to `vs_rbac` to
 find who holds that role.
 
-For organogram-style flows you don't want a role lookup — you want to walk the
+For organogram-style flows you don't want a role lookup - you want to walk the
 org chart: *"the person directly above the requester is the approver."* You can
 do this inside the existing engine without changing any models or the template
 API. Register a **custom approver resolver** under a special key and the engine
@@ -36,7 +36,7 @@ the engine.
 
 ---
 
-### Step 1 — Add the resolver registry
+### Step 1 - Add the resolver registry
 
 Create `vs_workflow/approver_resolvers/` as a new sub-package.
 
@@ -65,7 +65,7 @@ _REGISTRY: Dict[str, Callable] = {}
 
 def register_approver_resolver(key: str):
     """
-    Decorator — register a function as the approver resolver for a given key.
+    Decorator - register a function as the approver resolver for a given key.
 
     The decorated function must accept (stage, instance) and return a list of
     EligibleApprover dataclasses (same type as services/approvers.py produces).
@@ -97,7 +97,7 @@ def has_approver_resolver(key: str) -> bool:
 
 ---
 
-### Step 2 — Plug the registry into `services/approvers.py`
+### Step 2 - Plug the registry into `services/approvers.py`
 
 Update `resolve_approvers` to check the registry first. If the key is
 registered there, call the custom function and skip RBAC entirely.
@@ -111,12 +111,12 @@ def resolve_approvers(stage, instance):
     if not stage.approver_permission_key:
         return []
 
-    # Custom resolver takes full control — bypasses RBAC and delegation expansion.
+    # Custom resolver takes full control - bypasses RBAC and delegation expansion.
     if has_approver_resolver(stage.approver_permission_key):
         resolver = get_approver_resolver(stage.approver_permission_key)
         return resolver(stage, instance)
 
-    # Default path — RBAC role lookup + delegation expansion (unchanged).
+    # Default path - RBAC role lookup + delegation expansion (unchanged).
     base_qs = _users_with_permission(
         school=instance.school,
         branch=instance.branch,
@@ -130,12 +130,12 @@ def resolve_approvers(stage, instance):
 ```
 
 > **Note:** Custom resolvers own their list completely. Delegation expansion and
-> requester-exclusion are skipped — the resolver is responsible for those rules
+> requester-exclusion are skipped - the resolver is responsible for those rules
 > if they apply.
 
 ---
 
-### Step 3 — Auto-discover resolver files on startup
+### Step 3 - Auto-discover resolver files on startup
 
 Add one line to `VsWorkflowConfig.ready()` in `apps.py`:
 
@@ -152,7 +152,7 @@ import it, triggering the `@register_approver_resolver` decorators.
 
 ---
 
-### Step 4 — Write the resolver in your feature app
+### Step 4 - Write the resolver in your feature app
 
 Create `workflow_approver_resolvers.py` inside the app that owns the org chart
 (e.g. `vs_hr`).
@@ -218,7 +218,7 @@ def resolve_skip_one_manager(stage, instance):
 
 ---
 
-### Step 5 — Use the resolver key in a template
+### Step 5 - Use the resolver key in a template
 
 Use the resolver key as `approver_permission_key`. Nothing else changes.
 

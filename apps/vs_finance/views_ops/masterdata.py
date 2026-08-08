@@ -42,7 +42,7 @@ from .base import (
 
 # Group endpoint behavior for Currency List Create View.
 class CurrencyListCreateView(_FinanceBase):
-    """GET (list) / POST (create) currencies — **global** reference data (no entity).
+    """GET (list) / POST (create) currencies - **global** reference data (no entity).
 
     docstring-name: Currencies
     """
@@ -85,7 +85,7 @@ class CurrencyListCreateView(_FinanceBase):
 
 # Group endpoint behavior for Fx Rate List Create View.
 class FxRateListCreateView(_FinanceBase):
-    """GET (list) / POST (create) FX rates — **global** reference data (no entity).
+    """GET (list) / POST (create) FX rates - **global** reference data (no entity).
 
     docstring-name: FX rates
     """

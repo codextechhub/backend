@@ -2,9 +2,9 @@
 
 The non-invoice ways a receivable changes after an invoice is posted: **credit /
 debit notes**, **customer refunds**, **bad-debt write-offs**, and **concessions**
-(`DISCOUNT` / `WAIVER` / `SCHOLARSHIP` — the last being the domain-neutral name a
+(`DISCOUNT` / `WAIVER` / `SCHOLARSHIP` - the last being the domain-neutral name a
 school tenant reads as a bursary). Each either gives value back to a customer,
-charges them more, or recognises that a balance won't be collected — without
+charges them more, or recognises that a balance won't be collected - without
 editing the original invoice (which is immutable once posted).
 
 Routes (mounted at `/v1/finance/`): `credit-notes/…`, `refunds/…`,
@@ -20,13 +20,13 @@ Routes (mounted at `/v1/finance/`): `credit-notes/…`, `refunds/…`,
 
 - **`CreditNote`** (`models/adjustments.py:33`): `kind=CREDIT` reduces AR (gives
   value back); `kind=DEBIT` increases AR (a supplementary charge). Doc-number
-  token tracks the kind — `CRN` vs `DRN` (`save()`, `models/adjustments.py:104`).
+  token tracks the kind - `CRN` vs `DRN` (`save()`, `models/adjustments.py:104`).
 - **`Refund`** (`models/adjustments.py:182`): pays **cash** back out of a
-  customer's **credit balance** (the `2140` liability) — *not* off an invoice.
+  customer's **credit balance** (the `2140` liability) - *not* off an invoice.
 - **`Concession`** (`models/adjustments.py:228`): a non-cash reduction of a
   *specific* invoice's balance; `kind` ∈ {DISCOUNT, WAIVER, SCHOLARSHIP}.
 - **Write-off**: an *action* on an invoice (`write_off_invoice`), recognising bad
-  debt. **It has no model** — only a journal + an audit-log row (§6).
+  debt. **It has no model** - only a journal + an audit-log row (§6).
 
 **This does NOT:**
 - **Refund against an invoice.** A refund draws down customer credit (`2140`);
@@ -36,7 +36,7 @@ Routes (mounted at `/v1/finance/`): `credit-notes/…`, `refunds/…`,
   `amount_credited` / `amount_paid` move, never its lines.
 - **Carry cost centres on refunds/write-offs/concessions.** Those are
   single-account postings with no analytics by design. (Credit/debit **notes** do
-  now carry the line's cost centre to the GL — §6.)
+  now carry the line's cost centre to the GL - §6.)
 
 ## 2. Domain model
 
@@ -51,7 +51,7 @@ Routes (mounted at `/v1/finance/`): `credit-notes/…`, `refunds/…`,
 
 - Money is kobo. `CreditNote`/`Refund`/`Concession` all extend `FinanceDocument`
   (entity scope, numbered, `status`, `created_by`).
-- **No `WriteOff` model** — write-offs exist only as a journal and a
+- **No `WriteOff` model** - write-offs exist only as a journal and a
   `FinanceAuditLog` row (`action=INVOICE_WRITTEN_OFF`); the AR-adjustments list
   reconstructs them from that log (`_writeoff_rows`, `views_ar.py:1058`).
 
@@ -61,35 +61,35 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 
 | Method + path | permission key | what it does | request body | response |
 |---|---|---|---|---|
-| `GET /credit-notes/` | `finance.creditnote.view` | List (paginated). Query: `kind`, `customer`, `search`, `status` (draft/issued/applied) | — | paginated `CreditNoteSerializer` |
+| `GET /credit-notes/` | `finance.creditnote.view` | List (paginated). Query: `kind`, `customer`, `search`, `status` (draft/issued/applied) | - | paginated `CreditNoteSerializer` |
 | `POST /credit-notes/` | `finance.creditnote.create` | Create a **draft** (priced) note | `customer`, `kind?`, `note_date`, `invoice?`, `reason?`, `lines:[{revenue_account, quantity?, unit_price, tax_code?, cost_center?}]` | `201` `CreditNoteSerializer` |
-| `GET /credit-notes/<pk>/` | `finance.creditnote.view` | One note | — | detail |
+| `GET /credit-notes/<pk>/` | `finance.creditnote.view` | One note | - | detail |
 | `POST /credit-notes/<pk>/post/` | `finance.creditnote.post` | Post it; CREDIT notes may auto/explicitly allocate | `allocations:[{invoice, amount}]?`, `auto_allocate?` | `CreditNoteSerializer` |
 | `POST /credit-notes/<pk>/allocate/` | `finance.creditnote.allocate` | Apply a posted CREDIT note's stored credit | `allocations:[{invoice, amount}]?` | `CreditNoteSerializer` |
-| `GET /refunds/` | `finance.refund.view` | Paginated list. Query: `status`, `customer` | — | paginated `RefundSerializer` |
-| `GET /refunds/availability/` | `finance.refund.create` | Active customers with unreserved refundable credit. Query: `search`, `page`, `page_size` | — | paginated `{customer_id, customer_code, customer_name, refundable_credit}` |
+| `GET /refunds/` | `finance.refund.view` | Paginated list. Query: `status`, `customer` | - | paginated `RefundSerializer` |
+| `GET /refunds/availability/` | `finance.refund.create` | Active customers with unreserved refundable credit. Query: `search`, `page`, `page_size` | - | paginated `{customer_id, customer_code, customer_name, refundable_credit}` |
 | `POST /refunds/` | `finance.refund.create` | Create a **draft** refund, capped at currently unreserved credit | `customer`, `refund_date`, `amount`, `method?`, `bank_account?` | `201` `RefundSerializer` |
-| `GET /refunds/<pk>/` | `finance.refund.view` | One refund | — | detail |
-| `POST /refunds/<pk>/post/` | `finance.refund.post` | Pay it out (capped at customer credit) | — | `RefundSerializer` |
+| `GET /refunds/<pk>/` | `finance.refund.view` | One refund | - | detail |
+| `POST /refunds/<pk>/post/` | `finance.refund.post` | Pay it out (capped at customer credit) | - | `RefundSerializer` |
 | `POST /invoices/<pk>/write-off/` | `finance.invoice.writeoff` | Write off bad debt | `amount?` (default full balance), `write_off_account?`, `write_off_date?`, `narration?` | `InvoiceSerializer` |
-| `GET /ar-adjustments/` | `finance.refund.view` | Unified refunds + write-offs + KPIs (paginated) | — | `{rows, kpis, pagination}` |
-| `GET /concessions/` | `finance.concession.view` | List (paginated). Query: `kind`, `customer`, `search` | — | paginated `ConcessionSerializer` |
+| `GET /ar-adjustments/` | `finance.refund.view` | Unified refunds + write-offs + KPIs (paginated) | - | `{rows, kpis, pagination}` |
+| `GET /concessions/` | `finance.concession.view` | List (paginated). Query: `kind`, `customer`, `search` | - | paginated `ConcessionSerializer` |
 | `POST /concessions/` | `finance.concession.create` | Create a **draft** concession | `customer`, `invoice`, `kind?`, `concession_date`, `amount`, `allowance_account?`, `reason?` | `201` `ConcessionSerializer` |
-| `GET /concessions/summary/` | `finance.concession.view` | KPI totals | — | `success_response` |
-| `GET /concessions/<pk>/` | `finance.concession.view` | One concession | — | detail |
-| `POST /concessions/<pk>/post/` | `finance.concession.post` | Post it (reduces the invoice) | — | `ConcessionSerializer` |
+| `GET /concessions/summary/` | `finance.concession.view` | KPI totals | - | `success_response` |
+| `GET /concessions/<pk>/` | `finance.concession.view` | One concession | - | detail |
+| `POST /concessions/<pk>/post/` | `finance.concession.post` | Post it (reduces the invoice) | - | `ConcessionSerializer` |
 
 ## 4. Lifecycle / state machine
 
 - **Credit/debit note:** `DRAFT` (priced) → `POSTED` (`post_credit_note`). A
   POSTED **CREDIT** note can then `allocate/` its stored credit onto invoices. A
-  **DEBIT** note cannot `allocate/` (it raised AR, not credit) — but because it
+  **DEBIT** note cannot `allocate/` (it raised AR, not credit) - but because it
   debits AR like an invoice, it **is settled by receipts**: `post_payment` /
   `allocate_payment` treat open DEBIT notes as AR open items and bump their
   `amount_paid` / `settlement_status` (UNPAID → PARTIAL → PAID) via
   `DebitNoteAllocation`. See `finance_invoicing_ar` §receipts.
 - **Refund / concession:** `DRAFT` → `POSTED` (`post_refund` / `post_concession`).
-- **Write-off:** no draft — a single posted action on a POSTED invoice.
+- **Write-off:** no draft - a single posted action on a POSTED invoice.
 
 ## 5. Calculations
 
@@ -112,7 +112,7 @@ two requests cannot promise the same credit. Drafts do not reserve value.
 
 ## 6. What posting does to the ledger
 
-**CREDIT note** (`_post_credit_note_atomic`, `credit_notes.py:93`) — give value back;
+**CREDIT note** (`_post_credit_note_atomic`, `credit_notes.py:93`) - give value back;
 split-at-source so AR never goes credit:
 ```
 Dr  revenue / returns (per account)   Σ net
@@ -120,14 +120,14 @@ Dr  output-tax reversal (per account) Σ tax
 Cr  receivable (AR control)           applied        (settles invoices)
 Cr  customer credit (2140)            excess          (unapplied remainder)
 ```
-**DEBIT note** — supplementary charge (debits AR just like an invoice):
+**DEBIT note** - supplementary charge (debits AR just like an invoice):
 ```
 Dr  receivable (AR control)   total
 Cr  revenue (per account)     Σ net
 Cr  output tax (per account)  Σ tax
 ```
 A later receipt settles it with no new GL beyond the receipt's own `Cr AR` for the
-applied portion — the DEBIT note's AR debit and the receipt's AR credit net off, and
+applied portion - the DEBIT note's AR debit and the receipt's AR credit net off, and
 only the true excess lands in `2140`. The sub-ledger record is a `DebitNoteAllocation`.
 **Refund** (`_post_refund_atomic`, `credit_notes.py:327`):
 ```
@@ -144,11 +144,11 @@ Cr  receivable (AR control)  amount        + invoice.amount_credited += amount
 Dr  discounts & allowances (4910)  amount
 Cr  receivable (AR control)        amount  + invoice.amount_credited += amount
 ```
-**Applying stored credit** (`allocate_credit_note`, `credit_notes.py:250`) — no cash:
+**Applying stored credit** (`allocate_credit_note`, `credit_notes.py:250`) - no cash:
 `Dr customer credit (2140) · Cr AR`. All paths run `post_journal` (the
 `finance_journals_posting` guards) and write a durable rejection audit on failure.
 
-> **Cost centres survive credit/debit-note posting** — `_post_credit_note_atomic`
+> **Cost centres survive credit/debit-note posting** - `_post_credit_note_atomic`
 > groups revenue by `(account, cost_center)` (`credit_notes.py:125`), so a line's
 > `cost_center` reaches the GL on both the CREDIT (Dr revenue/returns) and DEBIT
 > (Cr revenue) lines. Tax stays aggregated by account. See `finance_cost_centers` §6.
@@ -168,20 +168,20 @@ concession_date}` → draft; `post/` → `Dr 4910 500000 / Cr 1200 500000`, invo
 
 ## 8. Gotchas / known limitations
 
-- ✅ **Refund list paginates** (covered by the ops pagination sweep) — this gotcha was
+- ✅ **Refund list paginates** (covered by the ops pagination sweep) - this gotcha was
   stale; all four adjustment lists now use the standard `{pagination, data}` envelope.
-- **A refund needs existing credit** — you can't refund a customer who only has open
+- **A refund needs existing credit** - you can't refund a customer who only has open
   invoices; settle/credit first so `2140` holds the balance.
-- **Write-offs have no document** to list/detail — they're audit-log entries only;
+- **Write-offs have no document** to list/detail - they're audit-log entries only;
   the only "list" is `ar-adjustments/`.
 - **DEBIT note `allocate/` → 400** ("a debit note increases the receivable"). This
   only blocks the credit-note *allocate* verb (which reduces another invoice). A DEBIT
-  note is instead **settled by a receipt** — `post_payment`/`allocate_payment` pick it
+  note is instead **settled by a receipt** - `post_payment`/`allocate_payment` pick it
   up as an open AR item, or target it explicitly with
   `allocations:[{debit_note, amount}]`.
 - ✅ **Fixed 2026-07-05: receipts now settle DEBIT notes.** Previously a receipt could
   only allocate to invoices, so a DEBIT note with no invoice sat unsettled forever and
-  the whole receipt fell to `2140` — the customer's credit balance was overstated by
+  the whole receipt fell to `2140` - the customer's credit balance was overstated by
   the note amount and the note was unpayable. DEBIT notes are now first-class AR open
   items across allocation, the customer ledger, statement, and refund cap.
 
@@ -194,7 +194,7 @@ concession_date}` → draft; `post/` → `Dr 4910 500000 / Cr 1200 500000`, invo
 - Every action resolves the entity then `filter(entity=…, pk=…)` (e.g.
   `_note`/`_refund`/`_concession` bases), and `_resolve_customer`/`_resolve_invoice`
   are entity-scoped → another tenant's note/invoice/customer id → 404. ✅
-- Serializers expose ids/codes/money/dates/reason only — no secrets.
+- Serializers expose ids/codes/money/dates/reason only - no secrets.
 
 ## 10. Code map
 
@@ -217,7 +217,7 @@ Worth asserting if not already:
 - **403** per verb; **cross-tenant** note/refund/concession id → 404.
 - Refund **capped** at customer credit (over-refund → 400) and books `Dr 2140 / Cr bank`.
 - DEBIT note increases AR and **cannot** be allocated via `allocate/` (→ 400), but a
-  receipt **settles** it — `test_receipt_settles_standalone_debit_note` (the reported
+  receipt **settles** it - `test_receipt_settles_standalone_debit_note` (the reported
   bug: DN 20k + receipt 40k → DN PAID, 20k customer credit),
   `test_explicit_receipt_allocation_to_debit_note`, `test_stored_credit_settles_debit_note`,
   `test_receipt_allocates_across_invoice_and_debit_note_oldest_first`.

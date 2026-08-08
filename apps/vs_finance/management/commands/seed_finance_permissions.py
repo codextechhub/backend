@@ -10,7 +10,7 @@ Run order::
     python manage.py create_superuser             # platform roles
     python manage.py seed_finance_permissions
 
-Safe to re-run — all operations are idempotent.
+Safe to re-run - all operations are idempotent.
 """
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -75,13 +75,13 @@ FINANCE_RESOURCES = [
                                                 ("post", "CRITICAL"), ("pay", "CRITICAL"),
                                                 ("view_sensitive", "SENSITIVE")]),
     # The salary roster / structures (master data behind a run) get their own resource so
-    # editing them is not conflated with running payroll. Every verb is SENSITIVE — even
+    # editing them is not conflated with running payroll. Every verb is SENSITIVE - even
     # listing exposes who earns what.
     ("salary",       "employee salaries & structures", [("view", "SENSITIVE"), ("create", "SENSITIVE"),
                                                 ("update", "SENSITIVE"), ("delete", "SENSITIVE")]),
     # The fund/float (master data) and the voucher (a spend document) are distinct
-    # resources — mirroring how every other finance document (invoice, expenseclaim …)
-    # gets its own resource — so each verb is unambiguous.
+    # resources - mirroring how every other finance document (invoice, expenseclaim …)
+    # gets its own resource - so each verb is unambiguous.
     ("pettycash",        "petty cash funds",    [("view", "NORMAL"), ("create", "SENSITIVE"),
                                                 ("update", "SENSITIVE"), ("establish", "SENSITIVE"),
                                                 ("replenish", "SENSITIVE")]),
@@ -135,7 +135,7 @@ class Command(BaseCommand):
             )
             if created:
                 self.stdout.write(
-                    f"  + action '{name}' (auto-registered — run seed_actions for full description)"
+                    f"  + action '{name}' (auto-registered - run seed_actions for full description)"
                 )
 
         # ── Module bucket ─────────────────────────────────────────────────────
@@ -182,7 +182,7 @@ class Command(BaseCommand):
         codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
         if codex is None:
             self.stdout.write(self.style.WARNING(
-                "  ⚠  Codex platform tenant not found — run migrations first; grants skipped."
+                "  ⚠  Codex platform tenant not found - run migrations first; grants skipped."
             ))
         else:
             for role_id in PLATFORM_ROLE_IDS:

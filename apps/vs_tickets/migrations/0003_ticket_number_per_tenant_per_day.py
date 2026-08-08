@@ -3,7 +3,7 @@
 The old ``TicketSequence`` was a single global daily counter (behind the
 ``TCK-YYYYMMDD-NNNN`` format). The new scheme counts per (tenant, day), so the
 counters are reset: existing rows are stale and dropped. Already-issued ticket
-numbers live on ``Ticket.ticket_number`` and are left untouched — only new
+numbers live on ``Ticket.ticket_number`` and are left untouched - only new
 tickets use the new format.
 """
 import django.db.models.deletion

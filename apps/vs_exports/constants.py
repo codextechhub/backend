@@ -1,6 +1,6 @@
 """Closed vocabularies for the Export Centre.
 
-The design handoff (Deliverable 10) makes several of these sets *normative* — the UI
+The design handoff (Deliverable 10) makes several of these sets *normative* - the UI
 renders exactly these tokens and never invents its own. In particular:
 
 * :class:`RunStatus` is the closed set ``queued · running · completed ·
@@ -11,7 +11,7 @@ renders exactly these tokens and never invents its own. In particular:
   returns the code, a user-safe message and a support reference; the UI maps the code
   to a recommended action and never shows a traceback.
 * :class:`OmissionCode` explains a ``completed_with_omissions`` run. The reason list is
-  structured because the UI renders it — it must never have to infer it from prose.
+  structured because the UI renders it - it must never have to infer it from prose.
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ SUCCESSFUL_RUN_STATUSES = frozenset({
 
 
 class RunTrigger(models.TextChoices):
-    """What caused a run — shown verbatim in the Files list."""
+    """What caused a run - shown verbatim in the Files list."""
 
     MANUAL = "MANUAL", "Manual"
     QUICK = "QUICK", "Quick export"
@@ -70,7 +70,7 @@ class RunPhase(models.TextChoices):
 class FailureCode(models.TextChoices):
     """Machine reason codes. Every failure maps to exactly one.
 
-    ``retryable`` behaviour lives in :data:`RETRYABLE_FAILURE_CODES` — data and
+    ``retryable`` behaviour lives in :data:`RETRYABLE_FAILURE_CODES` - data and
     permission failures never auto-retry, because retrying them changes nothing.
     """
 
@@ -81,7 +81,7 @@ class FailureCode(models.TextChoices):
     REQUIRED_FILTER_MISSING = "REQUIRED_FILTER_MISSING", "A required filter is not set"
     NO_COLUMNS = "NO_COLUMNS", "Every selected column has become unavailable"
     ROW_CAP_EXCEEDED = "ROW_CAP_EXCEEDED", "The result is larger than the row cap"
-    #: Historical only. A wide date range no longer fails a run — it is advised
+    #: Historical only. A wide date range no longer fails a run - it is advised
     #: on in the estimate (``WIDE_DATE_RANGE``) and the row cap is the real
     #: ceiling. Kept because runs recorded before that change still carry it and
     #: their detail screens must keep rendering.
@@ -120,7 +120,7 @@ FAILURE_GUIDANCE = {
         "edit the export to use columns you can read."
     ),
     FailureCode.ROW_CAP_EXCEEDED: (
-        "Narrow the filters — a shorter date range is usually enough — and run it again."
+        "Narrow the filters - a shorter date range is usually enough - and run it again."
     ),
     FailureCode.DATE_SPAN_EXCEEDED: (
         "Shorten the date range to the maximum this dataset allows, then run it again."
@@ -141,21 +141,21 @@ FAILURE_GUIDANCE = {
 class OmissionCode(models.TextChoices):
     """Why part of a ``completed_with_omissions`` result was left out."""
 
-    FIELD_FORBIDDEN = "FIELD_FORBIDDEN", "Column left out — no access to the field"
-    FIELD_WITHDRAWN = "FIELD_WITHDRAWN", "Column left out — the field no longer exists"
-    ROW_CAP_HIT = "ROW_CAP_HIT", "Rows left out — the row cap was reached"
+    FIELD_FORBIDDEN = "FIELD_FORBIDDEN", "Column left out - no access to the field"
+    FIELD_WITHDRAWN = "FIELD_WITHDRAWN", "Column left out - the field no longer exists"
+    ROW_CAP_HIT = "ROW_CAP_HIT", "Rows left out - the row cap was reached"
 
 
 # --------------------------------------------------------------------------- #
 # Definitions and files                                                       #
 # --------------------------------------------------------------------------- #
 class DatasetScope(models.TextChoices):
-    """What boundary a dataset's rows live inside — a property of the *dataset*.
+    """What boundary a dataset's rows live inside - a property of the *dataset*.
 
     The Export Centre is a platform feature, not a Finance one. Finance, Payments and
     Procurement rows belong to a :class:`~vs_finance.models.LedgerEntity` (a set of
     books), and mixing two entities into one file would be an accounting error. Audit
-    events, users and configuration have no entity at all — they belong to the tenant.
+    events, users and configuration have no entity at all - they belong to the tenant.
 
     Declaring the boundary on the dataset is what lets one Export Centre serve both
     without the platform layer assuming everything is finance.
@@ -195,7 +195,7 @@ class Sharing(models.TextChoices):
 
 
 class Destination(models.TextChoices):
-    """Where a produced file goes. ``CENTRE`` is always on — it is the record."""
+    """Where a produced file goes. ``CENTRE`` is always on - it is the record."""
 
     CENTRE = "CENTRE", "Export Centre"
     EMAIL_LINK = "EMAIL_LINK", "Secure download link by email"
@@ -217,7 +217,7 @@ class DownloadOutcome(models.TextChoices):
 
 
 class DownloadRefusal(models.TextChoices):
-    """Why a download was refused — logged on every refused attempt."""
+    """Why a download was refused - logged on every refused attempt."""
 
     EXPIRED = "EXPIRED", "The file passed its availability date"
     PURGED = "PURGED", "The file has been deleted from storage"
@@ -239,7 +239,7 @@ DEFAULT_ROW_CAP = 500_000
 #: Above this, the review step warns (but never blocks).
 ROW_WARNING_THRESHOLD = 250_000
 
-#: Runs a single tenant may have in flight at once — the fair-share rule.
+#: Runs a single tenant may have in flight at once - the fair-share rule.
 CONCURRENT_RUN_LIMIT = 3
 
 #: A repeated run request carrying the same client key inside this window is the
@@ -258,7 +258,7 @@ EXACT_COUNT_LIMIT = 100_000
 # Permissions and audit                                                       #
 # --------------------------------------------------------------------------- #
 #: Module bucket in the audit trail. Must be a registered
-#: :class:`vs_audit.models.AuditModuleKey` — the vocabulary is validated on save, and
+#: :class:`vs_audit.models.AuditModuleKey` - the vocabulary is validated on save, and
 #: an unregistered key is silently swallowed, losing the event.
 MODULE_KEY = "EXPORTS"
 
@@ -288,7 +288,7 @@ class AuditAction:
     Each name is the design's event (``export.definition.created`` and friends); each
     value is the token registered in :class:`vs_audit.models.AuditActionType`, because
     that vocabulary is closed and validated when the event is saved. Adding an event
-    here means adding it there too — otherwise ``emit_audit_event`` swallows the
+    here means adding it there too - otherwise ``emit_audit_event`` swallows the
     validation error and the event is simply never recorded.
     """
 

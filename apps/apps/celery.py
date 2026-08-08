@@ -6,12 +6,12 @@ from celery.schedules import crontab
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "apps.settings.local")
 
 # task_cls makes TrackedTask the base of EVERY task (including @shared_task),
-# so each run is recorded in core.BackgroundJob — the user-facing queue.
+# so each run is recorded in core.BackgroundJob - the user-facing queue.
 app = Celery("apps", task_cls="core.tasks_base:TrackedTask")
 app.config_from_object("django.conf:settings", namespace="CELERY")
 app.autodiscover_tasks()
 
-# Periodic housekeeping. Runs only where a beat scheduler exists —
+# Periodic housekeeping. Runs only where a beat scheduler exists -
 # the worker service starts with ``celery -A apps worker -B``. Environments
 # in eager mode (local dev, staging until the worker is live) simply never
 # execute these; the tasks are all idempotent, so a missed window is safe.
@@ -49,7 +49,7 @@ app.conf.beat_schedule = {
     # --- vs_exports (Export Centre) --------------------------------------
     # Nightly: hard-delete storage for produced files past their 30-day
     # availability and mark them purged. Availability itself is derived at read
-    # time, so a missed night only delays reclaiming bytes — it never changes
+    # time, so a missed night only delays reclaiming bytes - it never changes
     # what a user sees. Idempotent.
     "exports-expire-files": {
         "task": "vs_exports.expire_files",

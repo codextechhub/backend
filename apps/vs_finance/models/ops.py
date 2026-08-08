@@ -29,7 +29,7 @@ from .core import TimeStampedModel, LedgerEntity, FinanceDocument
 from .gl import Account, CostCenter, Currency, FiscalYear, TaxCode
 
 # ---------------------------------------------------------------------------
-# Phase 4 — banking, expenses, payroll, budget, fixed assets, period close
+# Phase 4 - banking, expenses, payroll, budget, fixed assets, period close
 # ---------------------------------------------------------------------------
 #
 # All of these are entity-scoped finance-core concepts that post through the same
@@ -45,7 +45,7 @@ class BankAccount(TimeStampedModel):
     The ledger already tracks cash in a GL account (e.g. ``1100 Cash & Bank`` or a
     child of it); this model adds the banking-side metadata (bank name, number) and is
     the anchor for statement import and reconciliation. Money still only ever moves via
-    journals against ``gl_account`` — this is not a second source of truth for balance.
+    journals against ``gl_account`` - this is not a second source of truth for balance.
     """
 
     entity = models.ForeignKey(
@@ -71,7 +71,7 @@ class BankAccount(TimeStampedModel):
         default=False, help_text="The entity's main operating account (at most one).")
     is_primary_collection = models.BooleanField(
         default=False,
-        help_text="The entity's primary fee-collection account — the one printed as "
+        help_text="The entity's primary fee-collection account - the one printed as "
                   "'pay to' on customer invoices/receipts. At most one per entity.",
     )
 
@@ -159,9 +159,9 @@ class BankStatementLine(TimeStampedModel):
 class BankLineMatch(TimeStampedModel):
     """Links a statement line to a GL cash journal line in a **group** (many-to-one) match.
 
-    The 1:1 case uses :attr:`BankStatementLine.matched_line`. A group match — one bank
+    The 1:1 case uses :attr:`BankStatementLine.matched_line`. A group match - one bank
     line that settles several ledger movements (e.g. a PSP settlement covering many
-    receipts) — records each paired cash :class:`JournalLine` here instead; their signed
+    receipts) - records each paired cash :class:`JournalLine` here instead; their signed
     amounts sum to the statement line's amount. Unmatching deletes these rows.
     """
 
@@ -186,7 +186,7 @@ class BankLineMatch(TimeStampedModel):
 
 
 class BankStatement(TimeStampedModel):
-    """An imported bank statement — a batch of lines for a period, with opening/closing.
+    """An imported bank statement - a batch of lines for a period, with opening/closing.
 
     Grouping imported :class:`BankStatementLine`\\s under a statement gives the banking
     screen a per-period view (opening → closing) and a reconciliation target. The book
@@ -274,7 +274,7 @@ class BankStatementImportContext(TimeStampedModel):
 
 
 class BankReconciliation(TimeStampedModel):
-    """A reconciliation run snapshot — the book vs statement balances at a point in time.
+    """A reconciliation run snapshot - the book vs statement balances at a point in time.
 
     Recorded each time auto/assisted reconciliation runs, so the screen can show a
     history (and an out-of-balance trail) without recomputing the past.
@@ -309,9 +309,9 @@ class BankReconciliation(TimeStampedModel):
 
 
 class ExpenseClaim(FinanceDocument):
-    """A staff expense claim — staff acts as a one-off 'vendor' to be reimbursed.
+    """A staff expense claim - staff acts as a one-off 'vendor' to be reimbursed.
 
-    Posting raises ``Dr expense(s) (+ Dr input VAT), Cr accrued reimbursement`` — the
+    Posting raises ``Dr expense(s) (+ Dr input VAT), Cr accrued reimbursement`` - the
     liability owed to the employee. Settling it later (:func:`vs_finance.expenses.
     settle_expense_claim`) pays the employee: ``Dr accrued reimbursement, Cr bank``.
     Reuses :class:`InvoicePaymentStatus` for how much has been reimbursed.
@@ -430,7 +430,7 @@ class ExpenseClaimLine(TimeStampedModel):
 class PettyCashFund(TimeStampedModel):
     """A physical petty-cash float, mapped 1:1 to its own petty-cash GL account.
 
-    Master data (like :class:`BankAccount`) — money only ever moves via journals against
+    Master data (like :class:`BankAccount`) - money only ever moves via journals against
     :attr:`gl_account`; this row adds the operational metadata (custodian, the fixed
     ``float_amount`` the imprest is restored to) and a live ``current_balance`` mirror of
     the cash physically on hand. The fund runs **perpetually**: each
@@ -498,7 +498,7 @@ class PettyCashVoucher(FinanceDocument):
 
     Posting (perpetual) raises ``Dr expense(s) (+ Dr input VAT), Cr petty cash`` and lowers
     the fund's ``current_balance`` by the gross total. A voucher whose total exceeds the
-    cash on hand is rejected (:class:`~vs_finance.exceptions.PettyCashOverdrawError`) — you
+    cash on hand is rejected (:class:`~vs_finance.exceptions.PettyCashOverdrawError`) - you
     cannot pay out more than is in the tin.
     """
 
@@ -653,7 +653,7 @@ class TaxFiling(FinanceDocument):
 
     * **Prepare** (:func:`vs_finance.tax_filing.prepare_filing`): derive the amount owed
       from the GL movement of the obligation's ``liability_account`` over the period (for
-      VAT, less the recoverable input movement). No posting — a draft worksheet.
+      VAT, less the recoverable input movement). No posting - a draft worksheet.
     * **File** (:func:`vs_finance.tax_filing.file_filing`): freeze the figures and submit.
       Posts a netting/penalty journal only if there is recoverable input to clear or a
       penalty/interest adjustment, so the liability account is left holding exactly
@@ -736,15 +736,15 @@ class TaxFiling(FinanceDocument):
 
 
 class PayrollRun(FinanceDocument):
-    """A batch payroll run — gross/PAYE/pension/net for many employees at once.
+    """A batch payroll run - gross/PAYE/pension/net for many employees at once.
 
     Two postings (the classic payroll pair):
 
     * **Accrual** (:func:`vs_finance.payroll.post_payroll`):
       ``Dr salary expense (gross), Cr PAYE payable, Cr pension payable, Cr net wages
-      payable`` — recognises the cost and parks each statutory/ net liability.
+      payable`` - recognises the cost and parks each statutory/ net liability.
     * **Disbursement** (:func:`vs_finance.payroll.pay_payroll`):
-      ``Dr net wages payable, Cr bank`` — clears the net-pay liability when employees
+      ``Dr net wages payable, Cr bank`` - clears the net-pay liability when employees
       are actually paid.
     """
 
@@ -852,7 +852,7 @@ class PayrollLine(TimeStampedModel):
 
 
 class SalaryStructure(TimeStampedModel):
-    """A reusable named pay template — the earning/deduction components that define how
+    """A reusable named pay template - the earning/deduction components that define how
     an employee's gross is split into tranches and what's withheld.
 
     Assigning a structure to an :class:`EmployeeSalary` *derives* that employee's PAYE,
@@ -923,7 +923,7 @@ class SalaryComponent(TimeStampedModel):
 
 
 class EmployeeSalary(TimeStampedModel):
-    """An employee's standard monthly pay — the roster a payroll run is generated from.
+    """An employee's standard monthly pay - the roster a payroll run is generated from.
 
     Holds the recurring gross/PAYE/pension for each employee so a run can be raised
     for the whole active roster in one click, instead of typing every line. It never
@@ -1102,7 +1102,7 @@ class FixedAsset(FinanceDocument):
 
     @property
     def depreciable_base(self) -> int:
-        """Cost less salvage — the total to be spread over the asset's life (kobo)."""
+        """Cost less salvage - the total to be spread over the asset's life (kobo)."""
         return max(self.cost - self.salvage_value, 0)
 
     @property

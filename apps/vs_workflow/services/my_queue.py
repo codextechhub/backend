@@ -1,4 +1,4 @@
-"""A person's own approval queue — the snapshots they may still act on.
+"""A person's own approval queue - the snapshots they may still act on.
 
 Extracted from ``PendingApprovalsView`` so the dashboard aggregate counts the
 queue with the *same* rules the queue screen lists it by. Two implementations of
@@ -7,9 +7,9 @@ sees on their landing screen would stop matching the rows they find when they
 click through.
 
 The three filters that make a snapshot actionable are all here:
-  * live work only — an ACTIVE stage on an IN_PROGRESS instance;
-  * not already voted — the actor has an unreversed action for this attempt;
-  * not stale — snapshots from a previous attempt of the same stage are ignored,
+  * live work only - an ACTIVE stage on an IN_PROGRESS instance;
+  * not already voted - the actor has an unreversed action for this attempt;
+  * not stale - snapshots from a previous attempt of the same stage are ignored,
     which happens when a returned instance is resubmitted.
 """
 
@@ -21,8 +21,8 @@ from vs_workflow.models import WorkflowStageAction, WorkflowStageApprover
 def pending_approval_snapshots(user, school=None) -> list[WorkflowStageApprover]:
     """Approver snapshots *user* can still act on, newest activation first.
 
-    Starts from snapshots rather than instances so delegated approvals — where
-    the actor is not the original approver — are included.
+    Starts from snapshots rather than instances so delegated approvals - where
+    the actor is not the original approver - are included.
     """
     snaps_qs = WorkflowStageApprover.objects.filter(
         user=user,

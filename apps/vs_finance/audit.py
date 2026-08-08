@@ -7,7 +7,7 @@ The module keeps its **own** authoritative audit trail (the append-only
 * the audit row is written **transactionally** with the action (a posting can't
   commit without it), and a failure to write it is **not** swallowed; whereas  # Must commit with the action.
 * central ``vs_audit`` is best-effort by contract (it never raises, so it may drop
-  events) — perfect as a platform-wide *mirror*, wrong as the system of record.  # Mirror only, never source of truth.
+  events) - perfect as a platform-wide *mirror*, wrong as the system of record.  # Mirror only, never source of truth.
 
 :func:`record` writes the authoritative row and then mirrors a copy to ``vs_audit``
 best-effort, so the global activity view stays complete without becoming load-bearing.  # Keep the mirror non-blocking.
@@ -22,7 +22,7 @@ from .constants import FinanceAuditStatus
 # Support the mirror to central workflow.
 def _mirror_to_central(*, action, actor_user, entity, target_type, target_id,
                        document_number, status, message, metadata):
-    """Best-effort copy into central vs_audit. Never raises — the in-app log is truth."""
+    """Best-effort copy into central vs_audit. Never raises - the in-app log is truth."""
     try:  # Mirroring must never block the primary finance write.
         from vs_audit.services import emit_audit_event
         from vs_audit.models import AuditModuleKey, AuditActionType
@@ -49,7 +49,7 @@ def record(*, entity, action, actor_user=None, target=None, target_type="",
     """Write an authoritative :class:`FinanceAuditLog` row (and mirror to vs_audit).
 
     Call this **inside** the same transaction as a successful action so the audit row
-    shares its commit. For a *rejected* action — which rolls its transaction back —
+    shares its commit. For a *rejected* action - which rolls its transaction back -
     call it from outside that rolled-back atomic (see ``_record_rejection`` in
     :mod:`vs_finance.posting`) so the rejection still durably records.
 

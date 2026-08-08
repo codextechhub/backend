@@ -144,10 +144,10 @@ class PettyCashFundDetailView(_PettyCashFundActionBase):
             else:
                 counter = next((l for l in ln.entry.lines.all()
                                 if l.account_id != fund.gl_account_id and (l.debit or 0)), None)
-                category = counter.account.name if counter else "—"
+                category = counter.account.name if counter else "-"
             out.append({
                 "id": ln.id, "date": ln.entry.date,
-                "description": ln.description or ln.entry.narration or "—",
+                "description": ln.description or ln.entry.narration or "-",
                 "category": category, "in": inflow, "out": outflow,
                 "balance": int(running),
             })
@@ -190,7 +190,7 @@ class PettyCashFundDetailView(_PettyCashFundActionBase):
 
 # Group endpoint behavior for Petty Cash Fund Establish View.
 class PettyCashFundEstablishView(_PettyCashFundActionBase):
-    """POST — move cash from a bank account into the tin (Dr petty cash, Cr bank).
+    """POST - move cash from a bank account into the tin (Dr petty cash, Cr bank).
 
     docstring-name: Establish a petty cash fund
     """
@@ -219,7 +219,7 @@ class PettyCashFundEstablishView(_PettyCashFundActionBase):
 
 # Group endpoint behavior for Petty Cash Fund Replenish View.
 class PettyCashFundReplenishView(_PettyCashFundActionBase):
-    """POST — top the tin back up to its float (Dr petty cash, Cr bank).
+    """POST - top the tin back up to its float (Dr petty cash, Cr bank).
 
     docstring-name: Replenish a petty cash fund
     """
@@ -248,7 +248,7 @@ class PettyCashFundReplenishView(_PettyCashFundActionBase):
 
 # Group endpoint behavior for Petty Cash Status View.
 class PettyCashStatusView(_FinanceBase):
-    """GET — per-fund cash position + low-balance flags (replenishment alerts).
+    """GET - per-fund cash position + low-balance flags (replenishment alerts).
 
     docstring-name: Petty cash status
     """
@@ -399,7 +399,7 @@ class PettyCashVoucherPostView(_PettyCashVoucherActionBase):
 
 # Group endpoint behavior for Petty Cash Voucher Void View.
 class PettyCashVoucherVoidView(_PettyCashVoucherActionBase):
-    """POST — void a posted voucher (reverses its journal, returns the cash to the tin).
+    """POST - void a posted voucher (reverses its journal, returns the cash to the tin).
 
     docstring-name: Void a petty cash voucher
     """

@@ -51,7 +51,7 @@ _TAG_MAP = [
     ("/v1/user/password-resets", "Sessions & Security"),
     ("/v1/user/",             "User Management"),
     ("/v1/i/",                "Schools & Branches"),
-    ("/v1/admin/tasks",       "Admin Console — Task Monitor"),
+    ("/v1/admin/tasks",       "Admin Console - Task Monitor"),
     ("/v1/admin/",            "Admin Console"),
     ("/v1/rbac/vision/",      "Permission Registry"),
     ("/v1/rbac/schools/",     "School RBAC"),
@@ -65,7 +65,7 @@ _TAG_MAP = [
     ("/v1/finance/",          "Finance"),
     ("/v1/procurement/",      "Procurement"),
     ("/v1/payments/",         "Payments"),
-    ("/v1/todo/",             "ToDo — Org Accountability"),
+    ("/v1/todo/",             "ToDo - Org Accountability"),
     ("/media/",               "Media Files"),
 ]
 
@@ -82,7 +82,7 @@ class EnvelopeAutoSchema(AutoSchema):
         """Endpoint display name from the explicit ``docstring-name:`` tag.
 
         Convention: every view docstring ends with a paragraph like
-        ``docstring-name: School roles`` — that value (plus an operation
+        ``docstring-name: School roles`` - that value (plus an operation
         verb for multi-operation views) becomes the name shown in the API
         docs / Apidog. The tag is deliberate so doc names are always chosen,
         never leaked from implementation prose.
@@ -110,7 +110,7 @@ class EnvelopeAutoSchema(AutoSchema):
             return None
 
         verb = self._operation_verb()
-        return f"{title} — {verb}" if verb else title
+        return f"{title} - {verb}" if verb else title
 
     def _operation_verb(self):
         """A short verb suffix so multi-operation views get distinct names."""
@@ -153,7 +153,7 @@ class EnvelopeAutoSchema(AutoSchema):
                 if schema is None or _looks_enveloped(schema):
                     continue
                 # Paginated list schemas (XVSPagination) are already the full
-                # envelope including the pagination block — leave them alone.
+                # envelope including the pagination block - leave them alone.
                 props = schema.get("properties") or {}
                 if "pagination" in props:
                     continue

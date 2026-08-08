@@ -1,11 +1,11 @@
-"""Expense-claim services — staff reimbursements as a mini accounts-payable cycle.
+"""Expense-claim services - staff reimbursements as a mini accounts-payable cycle.
 
 An employee spends their own money on the entity's behalf; the entity owes them. That
 liability is recognised on posting and cleared when they are paid back:
 
 * **Post** (:func:`post_expense_claim`): ``Dr expense(s) (+ Dr recoverable input VAT),
-  Cr accrued reimbursement`` — the amount owed to the employee.
-* **Settle** (:func:`settle_expense_claim`): ``Dr accrued reimbursement, Cr bank`` —
+  Cr accrued reimbursement`` - the amount owed to the employee.
+* **Settle** (:func:`settle_expense_claim`): ``Dr accrued reimbursement, Cr bank`` -
   the reimbursement payment.
 
 All amounts are integer kobo; tax uses the same basis-point discipline as the rest of
@@ -241,7 +241,7 @@ def void_expense_claim(claim, *, actor_user=None):
     """Void a **posted, un-reimbursed** expense claim.
 
     Reverses the posting journal (an audit-correct mirror entry that backs out the
-    expense and the accrued-reimbursement liability) and marks the claim CANCELLED —
+    expense and the accrued-reimbursement liability) and marks the claim CANCELLED -
     the "undo" for a claim posted in error, without hand-reversing the journal.
 
     Refuses once any reimbursement has been paid: the cash has already left the bank,

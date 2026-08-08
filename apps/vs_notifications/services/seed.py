@@ -4,7 +4,7 @@
 # Seed helpers called by management commands and by vs_onboarding after a
 # new school is provisioned.
 #
-# All seed functions are idempotent — safe to run repeatedly without
+# All seed functions are idempotent - safe to run repeatedly without
 # creating duplicate records.
 # =============================================================================
 
@@ -25,7 +25,7 @@ def seed_event_types() -> dict:
       - New keys are inserted.
       - Existing keys have their metadata updated (label, description,
         supported_channels, default_enabled, is_active).
-      - Records for keys no longer in the registry are NOT deleted —
+      - Records for keys no longer in the registry are NOT deleted -
         set is_active=False manually if retiring an event type.
 
     Returns:
@@ -59,7 +59,7 @@ def seed_event_types() -> dict:
             logger.debug("Updated event type: %s", entry["key"])
 
     logger.info(
-        "seed_event_types complete — created: %d, updated: %d",
+        "seed_event_types complete - created: %d, updated: %d",
         created_count, updated_count,
     )
     return {"created": created_count, "updated": updated_count}
@@ -76,10 +76,10 @@ def seed_platform_settings() -> dict:
     event type's default_enabled directly; seeding them makes the defaults
     explicit and admin-visible.
 
-    Transactional event types are skipped — they bypass settings entirely, so a
+    Transactional event types are skipped - they bypass settings entirely, so a
     setting row for them would be dead data.
 
-    Uses get_or_create — existing rows are never overwritten, so an admin's
+    Uses get_or_create - existing rows are never overwritten, so an admin's
     platform-level change is preserved and new event types are picked up on the
     next run.
 
@@ -110,7 +110,7 @@ def seed_platform_settings() -> dict:
                 skipped_count += 1
 
     logger.info(
-        "seed_platform_settings complete — created: %d, skipped: %d",
+        "seed_platform_settings complete - created: %d, skipped: %d",
         created_count, skipped_count,
     )
     return {"created": created_count, "skipped": skipped_count}
@@ -128,7 +128,7 @@ def seed_school_settings(school) -> dict:
 
     For each active, non-transactional NotificationEventType and each supported
     channel, a row is created with is_enabled = event_type.default_enabled.
-    Uses get_or_create — existing admin-configured rows are never overwritten.
+    Uses get_or_create - existing admin-configured rows are never overwritten.
 
     Args:
         school:  A School model instance.
@@ -160,7 +160,7 @@ def seed_school_settings(school) -> dict:
                 skipped_count += 1
 
     logger.info(
-        "seed_school_settings complete for school=%s — created: %d, skipped: %d",
+        "seed_school_settings complete for school=%s - created: %d, skipped: %d",
         getattr(school, "slug", school.id),
         created_count,
         skipped_count,
@@ -174,7 +174,7 @@ def seed_notification_templates() -> dict:
     Create default NotificationTemplate records for all active event types
     and their supported channels.
 
-    Uses get_or_create — does NOT overwrite templates that Vision Staff have
+    Uses get_or_create - does NOT overwrite templates that Vision Staff have
     already customised.
 
     Default templates use all available context variables so Vision Staff can
@@ -219,7 +219,7 @@ def seed_notification_templates() -> dict:
                 skipped_count += 1
 
     logger.info(
-        "seed_notification_templates complete — created: %d, skipped: %d",
+        "seed_notification_templates complete - created: %d, skipped: %d",
         created_count, skipped_count,
     )
     return {"created": created_count, "skipped": skipped_count}
@@ -473,7 +473,7 @@ def _build_default_templates() -> dict:
             "body": "New ticket {{ ticket_number }}: {{ ticket_title }} was created by {{ requester_name }}.",
         },
         ("ticket.created", C.EMAIL): {
-            "subject": "New support ticket {{ ticket_number }} — {{ ticket_title }}",
+            "subject": "New support ticket {{ ticket_number }} - {{ ticket_title }}",
             "body": (
                 "A new support ticket has been created.\n\n"
                 "Ticket: {{ ticket_number }}\n"
@@ -489,7 +489,7 @@ def _build_default_templates() -> dict:
             "body": "Ticket {{ ticket_number }} has been assigned to you.",
         },
         ("ticket.assigned", C.EMAIL): {
-            "subject": "Ticket assigned to you — {{ ticket_number }}",
+            "subject": "Ticket assigned to you - {{ ticket_number }}",
             "body": (
                 "A support ticket has been assigned to you.\n\n"
                 "Ticket: {{ ticket_number }}\n"
@@ -503,7 +503,7 @@ def _build_default_templates() -> dict:
             "body": "Ticket {{ ticket_number }} moved from {{ old_status }} to {{ new_status }}.",
         },
         ("ticket.status_changed", C.EMAIL): {
-            "subject": "Ticket status updated — {{ ticket_number }}",
+            "subject": "Ticket status updated - {{ ticket_number }}",
             "body": "Ticket {{ ticket_number }} ({{ ticket_title }}) moved from {{ old_status }} to {{ new_status }}.",
         },
         ("ticket.commented", C.IN_APP): {
@@ -523,7 +523,7 @@ def _build_default_templates() -> dict:
             "body": "Ticket {{ ticket_number }} has been resolved.",
         },
         ("ticket.resolved", C.EMAIL): {
-            "subject": "Ticket resolved — {{ ticket_number }}",
+            "subject": "Ticket resolved - {{ ticket_number }}",
             "body": "Ticket {{ ticket_number }} ({{ ticket_title }}) has been resolved.",
         },
         ("ticket.closed", C.IN_APP): {
@@ -531,7 +531,7 @@ def _build_default_templates() -> dict:
             "body": "Ticket {{ ticket_number }} has been closed.",
         },
         ("ticket.closed", C.EMAIL): {
-            "subject": "Ticket closed — {{ ticket_number }}",
+            "subject": "Ticket closed - {{ ticket_number }}",
             "body": "Ticket {{ ticket_number }} ({{ ticket_title }}) has been closed.",
         },
         ("ticket.reopened", C.IN_APP): {
@@ -539,7 +539,7 @@ def _build_default_templates() -> dict:
             "body": "Ticket {{ ticket_number }} has been reopened.",
         },
         ("ticket.reopened", C.EMAIL): {
-            "subject": "Ticket reopened — {{ ticket_number }}",
+            "subject": "Ticket reopened - {{ ticket_number }}",
             "body": "Ticket {{ ticket_number }} ({{ ticket_title }}) has been reopened.",
         },
         ("ticket.attachment_added", C.IN_APP): {
@@ -560,7 +560,7 @@ def _build_default_templates() -> dict:
             ),
         },
         ("student.enrolled", C.EMAIL): {
-            "subject": "New student added to your class — {{ student_first_name }} {{ student_last_name }}",
+            "subject": "New student added to your class - {{ student_first_name }} {{ student_last_name }}",
             "body": (
                 "Dear Teacher,\n\n"
                 "A new student has been enrolled in {{ class_name }} at {{ branch_name }}.\n\n"
@@ -581,7 +581,7 @@ def _build_default_templates() -> dict:
             ),
         },
         ("student.deactivated", C.EMAIL): {
-            "subject": "Student record deactivated — {{ student_first_name }} {{ student_last_name }}",
+            "subject": "Student record deactivated - {{ student_first_name }} {{ student_last_name }}",
             "body": (
                 "A student record has been deactivated on CodeX Vision.\n\n"
                 "Student: {{ student_first_name }} {{ student_last_name }}\n"
@@ -601,7 +601,7 @@ def _build_default_templates() -> dict:
             ),
         },
         ("student.class_transferred", C.EMAIL): {
-            "subject": "Student class transfer — {{ student_first_name }} {{ student_last_name }}",
+            "subject": "Student class transfer - {{ student_first_name }} {{ student_last_name }}",
             "body": (
                 "A student has been transferred between classes.\n\n"
                 "Student: {{ student_first_name }} {{ student_last_name }}\n"
@@ -623,7 +623,7 @@ def _build_default_templates() -> dict:
             ),
         },
         ("student.promoted", C.EMAIL): {
-            "subject": "Student promotion batch completed — {{ branch_name }}",
+            "subject": "Student promotion batch completed - {{ branch_name }}",
             "body": (
                 "The student promotion batch for {{ branch_name }} has completed.\n\n"
                 "From session: {{ from_session_name }}\n"
@@ -661,7 +661,7 @@ def _build_default_templates() -> dict:
         ("workflow.submitted", C.IN_APP): {
             "subject": "",
             "body": (
-                "Approval required: {{ document_type }} — '{{ document_title }}' "
+                "Approval required: {{ document_type }} - '{{ document_title }}' "
                 "submitted by {{ submitter_name }} is awaiting your review at stage '{{ stage_name }}'."
             ),
         },
@@ -687,7 +687,7 @@ def _build_default_templates() -> dict:
             ),
         },
         ("workflow.approved", C.EMAIL): {
-            "subject": "Approval required at next stage — {{ document_type }}",
+            "subject": "Approval required at next stage - {{ document_type }}",
             "body": (
                 "A document has advanced to the next approval stage.\n\n"
                 "Document type: {{ document_type }}\n"
@@ -708,7 +708,7 @@ def _build_default_templates() -> dict:
             ),
         },
         ("workflow.rejected", C.EMAIL): {
-            "subject": "Your request has been rejected — {{ document_type }}",
+            "subject": "Your request has been rejected - {{ document_type }}",
             "body": (
                 "Your submitted document has been rejected.\n\n"
                 "Document type: {{ document_type }}\n"
@@ -729,7 +729,7 @@ def _build_default_templates() -> dict:
             ),
         },
         ("workflow.returned", C.EMAIL): {
-            "subject": "Revision requested on your submission — {{ document_type }}",
+            "subject": "Revision requested on your submission - {{ document_type }}",
             "body": (
                 "Your submitted document has been returned for revision.\n\n"
                 "Document type: {{ document_type }}\n"
@@ -750,7 +750,7 @@ def _build_default_templates() -> dict:
             ),
         },
         ("workflow.final_approved", C.EMAIL): {
-            "subject": "Your request has been fully approved — {{ document_type }}",
+            "subject": "Your request has been fully approved - {{ document_type }}",
             "body": (
                 "Your submitted document has been fully approved.\n\n"
                 "Document type: {{ document_type }}\n"
@@ -770,7 +770,7 @@ def _build_default_templates() -> dict:
             ),
         },
         ("workflow.escalated", C.EMAIL): {
-            "subject": "Escalated approval required — {{ document_type }}",
+            "subject": "Escalated approval required - {{ document_type }}",
             "body": (
                 "A document has been escalated to you for approval due to a stage timeout.\n\n"
                 "Document type: {{ document_type }}\n"
@@ -784,7 +784,7 @@ def _build_default_templates() -> dict:
 
         # ── billing.invoice_issued ──────────────────────────────────────────
         # NB: billing.* events are fired by the domain-neutral vs_finance ledger,
-        # which knows a generic {{ customer_name }} (the billing party) — not a
+        # which knows a generic {{ customer_name }} (the billing party) - not a
         # structured student first/last. Keep these on customer_name.
         ("billing.invoice_issued", C.IN_APP): {
             "subject": "",
@@ -794,7 +794,7 @@ def _build_default_templates() -> dict:
             ),
         },
         ("billing.invoice_issued", C.EMAIL): {
-            "subject": "New fee invoice — {{ customer_name }}",
+            "subject": "New fee invoice - {{ customer_name }}",
             "body": (
                 "Dear Parent/Guardian,\n\n"
                 "A new invoice has been issued for your child's school fees.\n\n"
@@ -817,9 +817,9 @@ def _build_default_templates() -> dict:
             ),
         },
         ("billing.debit_note_issued", C.EMAIL): {
-            "subject": "Debit note {{ note_number }} — additional charge of ₦{{ note_amount }}",
+            "subject": "Debit note {{ note_number }} - additional charge of ₦{{ note_amount }}",
             "body": (
-                "DEBIT NOTE — ADDITIONAL CHARGE\n\n"
+                "DEBIT NOTE - ADDITIONAL CHARGE\n\n"
                 "Hello {{ customer_name }},\n\n"
                 "{{ summary }}\n\n"
                 "Additional amount charged: ₦{{ note_amount }}\n"
@@ -850,9 +850,9 @@ def _build_default_templates() -> dict:
             ),
         },
         ("billing.credit_note_issued", C.EMAIL): {
-            "subject": "Credit note {{ note_number }} — ₦{{ note_amount }} credited",
+            "subject": "Credit note {{ note_number }} - ₦{{ note_amount }} credited",
             "body": (
-                "CREDIT NOTE — ACCOUNT CREDIT\n\n"
+                "CREDIT NOTE - ACCOUNT CREDIT\n\n"
                 "Hello {{ customer_name }},\n\n"
                 "{{ summary }}\n\n"
                 "Amount credited: ₦{{ note_amount }}\n"
@@ -882,7 +882,7 @@ def _build_default_templates() -> dict:
             ),
         },
         ("billing.payment_received", C.EMAIL): {
-            "subject": "Payment confirmed — {{ customer_name }}",
+            "subject": "Payment confirmed - {{ customer_name }}",
             "body": (
                 "Dear Parent/Guardian,\n\n"
                 "We have received your payment. Thank you.\n\n"
@@ -900,12 +900,12 @@ def _build_default_templates() -> dict:
             "subject": "",
             "body": (
                 "Overdue invoice: ₦{{ amount_outstanding }} outstanding for "
-                "{{ customer_name }} — {{ days_overdue }} day(s) overdue."
+                "{{ customer_name }} - {{ days_overdue }} day(s) overdue."
                 " {{ reminder_message }}"
             ),
         },
         ("billing.invoice_overdue", C.EMAIL): {
-            "subject": "Overdue fee invoice — {{ customer_name }}",
+            "subject": "Overdue fee invoice - {{ customer_name }}",
             "body": (
                 "Dear Parent/Guardian,\n\n"
                 "This is a reminder that the following invoice is overdue.\n\n"
@@ -929,7 +929,7 @@ def _build_default_templates() -> dict:
             ),
         },
         ("billing.refund_processed", C.EMAIL): {
-            "subject": "Refund processed — {{ customer_name }}",
+            "subject": "Refund processed - {{ customer_name }}",
             "body": (
                 "Dear Parent/Guardian,\n\n"
                 "A refund has been processed on your account.\n\n"
@@ -945,12 +945,12 @@ def _build_default_templates() -> dict:
         ("onboarding.step_completed", C.IN_APP): {
             "subject": "",
             "body": (
-                "Onboarding update: Step {{ step_number }}/{{ total_steps }} — "
+                "Onboarding update: Step {{ step_number }}/{{ total_steps }} - "
                 "'{{ step_name }}' completed by {{ completed_by_name }}."
             ),
         },
         ("onboarding.step_completed", C.EMAIL): {
-            "subject": "Onboarding step completed — {{ step_name }}",
+            "subject": "Onboarding step completed - {{ step_name }}",
             "body": (
                 "An onboarding step has been completed for {{ school_name }}.\n\n"
                 "Step {{ step_number }} of {{ total_steps }}: {{ step_name }}\n"
@@ -1036,12 +1036,12 @@ def _build_default_templates() -> dict:
         ("import.completed", C.IN_APP): {
             "subject": "",
             "body": (
-                "Import complete: {{ import_type }} — {{ success_count }} records imported "
+                "Import complete: {{ import_type }} - {{ success_count }} records imported "
                 "successfully. Errors: {{ error_count }}."
             ),
         },
         ("import.completed", C.EMAIL): {
-            "subject": "Data import completed — {{ import_type }}",
+            "subject": "Data import completed - {{ import_type }}",
             "body": (
                 "Your data import has finished.\n\n"
                 "Import type: {{ import_type }}\n"
@@ -1063,7 +1063,7 @@ def _build_default_templates() -> dict:
             ),
         },
         ("import.failed", C.EMAIL): {
-            "subject": "Data import failed — {{ import_type }}",
+            "subject": "Data import failed - {{ import_type }}",
             "body": (
                 "Your data import failed to complete.\n\n"
                 "Import type: {{ import_type }}\n"
@@ -1121,14 +1121,14 @@ def _build_default_templates() -> dict:
 
         # ── export.run_completed / export.run_failed (Export Centre) ─────────
         # Separate from task.completed above because a background job that
-        # succeeded can still have produced a file with columns left out —
+        # succeeded can still have produced a file with columns left out -
         # {{ error }} carries that, and the in-app body must be able to say so.
         # Manual successes are in-app only by design: the person is already
         # looking at the screen, so only failures and deliveries earn an email.
         ("export.run_completed", C.IN_APP): {
             "subject": "",
             "body": (
-                "{{ export_name }} is ready — {{ rows }} rows. {{ error }}"
+                "{{ export_name }} is ready - {{ rows }} rows. {{ error }}"
             ),
         },
         ("export.run_failed", C.IN_APP): {
@@ -1136,7 +1136,7 @@ def _build_default_templates() -> dict:
             "body": "{{ export_name }} failed to run. {{ error }}",
         },
         ("export.run_failed", C.EMAIL): {
-            "subject": "Export failed — {{ export_name }}",
+            "subject": "Export failed - {{ export_name }}",
             "body": (
                 "Your export did not run.\n\n"
                 "  Export    : {{ export_name }}\n"
@@ -1171,7 +1171,7 @@ def _build_default_templates() -> dict:
                 "{% if task_department %}  Department : {{ task_department }}\n{% endif %}"
                 "\n"
                 "Review it on the console under Tasks → My Team → {{ assignee_first }}.\n\n"
-                "— CodeX Vision Console (automated message)"
+                "- CodeX Vision Console (automated message)"
             ),
         },
     }

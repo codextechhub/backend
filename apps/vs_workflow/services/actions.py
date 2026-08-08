@@ -1,6 +1,6 @@
 """
-Action recording — record_action, withdraw, cancel, reverse_action, resubmit.
-Every function acquires select_for_update on the instance (F2 — pessimistic locking).
+Action recording - record_action, withdraw, cancel, reverse_action, resubmit.
+Every function acquires select_for_update on the instance (F2 - pessimistic locking).
 """
 
 import logging
@@ -66,7 +66,7 @@ def _active_stage_instance(instance: WorkflowInstance) -> WorkflowStageInstance:
 
     Ordering by attempt descending and taking .first() guards against the edge
     case where a resubmit creates a new attempt before the previous one is fully
-    resolved — callers always operate on the latest attempt in progress.
+    resolved - callers always operate on the latest attempt in progress.
     """
     if instance.current_stage is None:
         raise StageNotActiveError("No active stage on this instance.")
@@ -298,7 +298,7 @@ def resubmit(instance_id, requester) -> WorkflowInstance:
                                      "attempt": next_attempt})
 
         # If the stage was retired from the template while this instance was
-        # sitting in RETURNED, don't re-activate it — advance past it instead.
+        # sitting in RETURNED, don't re-activate it - advance past it instead.
         if returning_stage.retired_at is not None:
             instance.status = WorkflowInstanceStatus.IN_PROGRESS
             instance.state_version += 1

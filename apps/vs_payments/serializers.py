@@ -66,15 +66,15 @@ class VirtualAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
 class PayoutInstructionSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     amount_naira = serializers.SerializerMethodField()
-    # WHT withheld on this line (carried on metadata) — net = amount − wht, and the
+    # WHT withheld on this line (carried on metadata) - net = amount − wht, and the
     # settlement journal credits a WHT payable for it.
     wht_amount = serializers.SerializerMethodField()
-    # The bank/cash GL the booked payout credits — lets the console recap the
+    # The bank/cash GL the booked payout credits - lets the console recap the
     # real settlement journal (Dr Accounts payable / Cr this account).
     source_account_code = serializers.CharField(source="source_account.code", read_only=True, default=None)
     source_account_name = serializers.CharField(source="source_account.name", read_only=True, default=None)
 
-    # FLS: beneficiary bank details are PII — only holders of the sensitive grant
+    # FLS: beneficiary bank details are PII - only holders of the sensitive grant
     # see them.
     read_permissions = {
         "beneficiary_name": "payments.payout.view_sensitive",
@@ -131,7 +131,7 @@ class PaymentEventSerializer(serializers.ModelSerializer):
 
 
 class PayoutBatchSummarySerializer(serializers.ModelSerializer):
-    """List view — omits the (potentially large) child instruction array."""
+    """List view - omits the (potentially large) child instruction array."""
 
     entity_code = serializers.CharField(source="entity.code", read_only=True)
     total_amount_naira = serializers.SerializerMethodField()

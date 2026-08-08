@@ -17,7 +17,7 @@ class Migration(migrations.Migration):
             name="notify_owner",
             field=models.BooleanField(
                 default=True,
-                help_text="Whether the owner gets an in-app notification when the task ends. False for per-recipient fan-out plumbing (one invitation email per imported row), where one notification per job would spam the actor — the row is still tracked in View Queues.",
+                help_text="Whether the owner gets an in-app notification when the task ends. False for per-recipient fan-out plumbing (one invitation email per imported row), where one notification per job would spam the actor - the row is still tracked in View Queues.",
             ),
         ),
         migrations.AlterField(
@@ -25,7 +25,7 @@ class Migration(migrations.Migration):
             name="owner",
             field=models.ForeignKey(
                 blank=True,
-                help_text="The ACTOR who triggered the task — never the subject the task acts on. An invitation email to Jane queued by admin Ada is owned by Ada. Null for system/scheduled runs.",
+                help_text="The ACTOR who triggered the task - never the subject the task acts on. An invitation email to Jane queued by admin Ada is owned by Ada. Null for system/scheduled runs.",
                 null=True,
                 on_delete=django.db.models.deletion.SET_NULL,
                 related_name="background_jobs",

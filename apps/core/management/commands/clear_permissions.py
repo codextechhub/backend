@@ -5,7 +5,7 @@ Wipes all permission registry data and role data seeded into the RBAC
 tables, in the correct dependency order so no PROTECT constraint fires.
 
 Preserved (not touched):
-  PrebuiltRoleTemplate  — Vision-owned role library
+  PrebuiltRoleTemplate  - Vision-owned role library
 
 Cleared (in dependency order):
   1.  TenantRoleChangeRequest   → cascades TenantRoleChangeDeltaItem
@@ -62,7 +62,7 @@ class Command(BaseCommand):
 
         # ── deletion plan ────────────────────────────────────────────────────────
         # Each tuple: (label, queryset)
-        # Order matters — children before parents where PROTECT is used.
+        # Order matters - children before parents where PROTECT is used.
         steps = [
             # Step 1: change-request workflow
             # Deleting TenantRoleChangeRequest cascades TenantRoleChangeDeltaItem.
@@ -82,7 +82,7 @@ class Command(BaseCommand):
             ("GroupPermission",        GroupPermission.objects.all()),
             ("PermissionDependency",   PermissionDependency.objects.all()),
 
-            # Step 10: core registry — Permission is a PROTECT target for delta items,
+            # Step 10: core registry - Permission is a PROTECT target for delta items,
             # which are now gone, so this is safe.
             ("Permission", Permission.objects.all()),
 
@@ -112,7 +112,7 @@ class Command(BaseCommand):
             return
 
         if total == 0:
-            self.stdout.write(self.style.SUCCESS("\nNothing to delete — tables already empty.\n"))
+            self.stdout.write(self.style.SUCCESS("\nNothing to delete - tables already empty.\n"))
             return
 
         if not options["yes"]:

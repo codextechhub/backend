@@ -1,5 +1,5 @@
 """
-Routing and stage advancement — the core state machine.
+Routing and stage advancement - the core state machine.
 
 advance_instance: moves the instance forward from its current stage.
 _terminate_approved, _terminate_rejected, _return_to_requester: terminal transitions.
@@ -124,7 +124,7 @@ def _readonly_next_stage(template, document, from_stage, stages, has_routes):
                 if matches:
                     return route.to_stage
             raise TemplateInvalidError("preview: no route matched")
-        # No routes from this stage — fall through to linear order.
+        # No routes from this stage - fall through to linear order.
     if not stages:
         return None
     if from_stage is None:
@@ -284,14 +284,14 @@ def advance_instance(instance: WorkflowInstance, *, current_attempt: int = 1) ->
                 from_stage = next_stage
                 continue
 
-        # BRANCH stages are routing-only — skip and re-evaluate.
+        # BRANCH stages are routing-only - skip and re-evaluate.
         if next_stage.kind == StageKind.BRANCH:
             _skip_stage(instance, next_stage, current_attempt,
                          AuditEventType.STAGE_SKIPPED_CONDITION, "branch_node")
             from_stage = next_stage
             continue
 
-        # APPROVAL stage — activate it.
+        # APPROVAL stage - activate it.
         _activate_stage(instance, next_stage, current_attempt)
         eligible = approvers_service.resolve_approvers(next_stage, instance)
         if not eligible:
@@ -300,7 +300,7 @@ def advance_instance(instance: WorkflowInstance, *, current_attempt: int = 1) ->
                              AuditEventType.STAGE_SKIPPED_NO_APPROVER, "zero_eligible_approvers")
                 from_stage = next_stage
                 continue
-            # Block here — admins must intervene.
+            # Block here - admins must intervene.
             audit_service.write(instance, AuditEventType.STAGE_ACTIVATED, context={
                 "warning": "stage_active_with_no_approvers", "stage": next_stage.code,
             })
@@ -318,7 +318,7 @@ def _terminate_approved(instance: WorkflowInstance) -> WorkflowInstance:
     Called by advance_instance when _pick_next_stage returns None (no more
     stages). Fires on_approved so the document handler (e.g. sending an
     invitation, activating a user) runs inside the same atomic block as the
-    status write — if the handler raises, the whole transition rolls back.
+    status write - if the handler raises, the whole transition rolls back.
     """
     instance.status = WorkflowInstanceStatus.APPROVED
     instance.current_stage = None

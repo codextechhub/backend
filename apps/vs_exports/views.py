@@ -96,8 +96,8 @@ class _ExportBase(APIView):
         """One place for "does this caller hold key X", used by every finer check.
 
         ``HasRBACPermission`` already gates the route with the view's ``rbac_permission``
-        (any-of). This is for the decisions *inside* a route — a list view that also
-        accepts POST, or an ownership rule — where the coarse gate is not enough.
+        (any-of). This is for the decisions *inside* a route - a list view that also
+        accepts POST, or an ownership rule - where the coarse gate is not enough.
         """
         from vs_rbac.evaluator import has_permission
         from vs_rbac.permissions import is_vision_super_admin
@@ -141,7 +141,7 @@ class _ExportBase(APIView):
         if definition is None:
             raise NotFound("No export matches that id.")
         if for_write and definition.owner_id != self.request.user.pk and not self.is_admin_reader():
-            # Sharing grants sight, never edit rights — that is what keeps a shared
+            # Sharing grants sight, never edit rights - that is what keeps a shared
             # export's data promises stable for everyone it was shared with.
             raise PermissionDenied(
                 "Only the owner can change this export. Duplicate it to make your own "
@@ -161,7 +161,7 @@ class _ExportBase(APIView):
         """Build the :class:`~vs_exports.catalogue.ScopeContext` this dataset needs.
 
         ``?entity=`` is required for an entity-scoped dataset and ignored for a
-        tenant-scoped one — asking which set of books an audit export belongs to is a
+        tenant-scoped one - asking which set of books an audit export belongs to is a
         question with no answer. Which applies is the dataset's own declaration, so
         publishing a tenant-scoped dataset needs no change here.
         """
@@ -178,11 +178,11 @@ class _ExportBase(APIView):
 # Catalogue                                                                   #
 # --------------------------------------------------------------------------- #
 class CatalogueView(_ExportBase):
-    """``GET /v1/exports/catalogue/`` — datasets this caller may export.
+    """``GET /v1/exports/catalogue/`` - datasets this caller may export.
 
     Filtered by the caller's own permissions, so the builder never offers a dataset
     that would fail at run time. Modules with nothing available are still listed, with
-    an empty dataset list, because "Procurement — no datasets yet" is information.
+    an empty dataset list, because "Procurement - no datasets yet" is information.
     """
 
     rbac_permission = ExportPermission.CATALOGUE_VIEW
@@ -208,7 +208,7 @@ class CatalogueView(_ExportBase):
 
 
 class CatalogueDetailView(_ExportBase):
-    """``GET /v1/exports/catalogue/<key>/`` — one dataset in full."""
+    """``GET /v1/exports/catalogue/<key>/`` - one dataset in full."""
 
     rbac_permission = ExportPermission.CATALOGUE_VIEW
 
@@ -228,7 +228,7 @@ class CatalogueDetailView(_ExportBase):
 
 
 class CapabilitiesView(_ExportBase):
-    """``GET /v1/exports/capabilities/`` — flags so the UI can disable with a reason."""
+    """``GET /v1/exports/capabilities/`` - flags so the UI can disable with a reason."""
 
     rbac_permission = ExportPermission.CATALOGUE_VIEW
 
@@ -243,7 +243,7 @@ class CapabilitiesView(_ExportBase):
 # Preview and estimate                                                        #
 # --------------------------------------------------------------------------- #
 class PreviewView(_ExportBase):
-    """``POST /v1/exports/preview/?entity=<code>`` — rows, size and sample.
+    """``POST /v1/exports/preview/?entity=<code>`` - rows, size and sample.
 
     Called on every column and filter change, so it stays cheap: the count is a
     LIMITed one and the sample is ten rows. Anything the caller may not read is already
@@ -376,7 +376,7 @@ class DefinitionDetailView(_ExportBase):
         )
 
     def delete(self, request, pk):
-        """Archive rather than destroy — the files it produced must keep their history.
+        """Archive rather than destroy - the files it produced must keep their history.
 
         Runs reference the definition with ``SET_NULL``, so a hard delete would orphan
         them; archiving keeps the audit trail intact and takes the export out of the
@@ -397,7 +397,7 @@ class DefinitionDetailView(_ExportBase):
 
 
 class DefinitionDuplicateView(_ExportBase):
-    """``POST /definitions/<pk>/duplicate/`` — a private copy, owned by the caller."""
+    """``POST /definitions/<pk>/duplicate/`` - a private copy, owned by the caller."""
 
     rbac_permission = ExportPermission.DEFINITION_CREATE
 
@@ -432,7 +432,7 @@ class DefinitionDuplicateView(_ExportBase):
 
 
 class DefinitionShareView(_ExportBase):
-    """``POST /definitions/<pk>/share/`` — replace the share list.
+    """``POST /definitions/<pk>/share/`` - replace the share list.
 
     Sharing shows people the export and its files. It never lends them the owner's
     access: the run executes as the owner and every download is re-authorised against
@@ -448,7 +448,7 @@ class DefinitionShareView(_ExportBase):
 
         from vs_user.models import User
 
-        # Only people in the same tenant — a share must not cross a tenant boundary.
+        # Only people in the same tenant - a share must not cross a tenant boundary.
         users = list(User.objects.filter(
             pk__in=payload.validated_data["user_ids"], tenant=self.tenant,
         ).exclude(pk=definition.owner_id))
@@ -473,7 +473,7 @@ class DefinitionShareView(_ExportBase):
 
 
 class DefinitionRunView(_ExportBase):
-    """``POST /definitions/<pk>/run/`` — produce a file now."""
+    """``POST /definitions/<pk>/run/`` - produce a file now."""
 
     rbac_permission = ExportPermission.RUN_CREATE
 
@@ -492,14 +492,14 @@ class DefinitionRunView(_ExportBase):
             raise ValidationError({"detail": str(exc)})
         return success_response(
             "Export queued successfully." if created
-            else "This export is already running — showing the run in progress.",
+            else "This export is already running - showing the run in progress.",
             ExportRunDetailSerializer(run, context={"request": request}).data,
             status=201 if created else 200,
         )
 
 
 class QuickExportView(_ExportBase):
-    """``POST /v1/exports/quick/?entity=<code>`` — run a configuration without saving it.
+    """``POST /v1/exports/quick/?entity=<code>`` - run a configuration without saving it.
 
     The drawer opened from a module list screen sends the filters already on that
     screen. Nothing is saved: there is no definition, so the run's ``frozen_config`` is
@@ -534,7 +534,7 @@ class QuickExportView(_ExportBase):
             raise ValidationError({"detail": str(exc)})
         return success_response(
             "Export queued successfully." if created
-            else "This export is already running — showing the run in progress.",
+            else "This export is already running - showing the run in progress.",
             ExportRunDetailSerializer(run, context={"request": request}).data,
             status=201 if created else 200,
         )
@@ -544,7 +544,7 @@ class QuickExportView(_ExportBase):
 # Runs and files                                                              #
 # --------------------------------------------------------------------------- #
 class RunListView(_ExportBase):
-    """``GET /v1/exports/runs/`` — the Files list."""
+    """``GET /v1/exports/runs/`` - the Files list."""
 
     rbac_permission = ExportPermission.RUN_VIEW
 
@@ -560,7 +560,7 @@ class RunListView(_ExportBase):
 
 
 class RunDetailView(_ExportBase):
-    """``GET /v1/exports/runs/<pk>/`` — outcome, frozen config, drift, deliveries."""
+    """``GET /v1/exports/runs/<pk>/`` - outcome, frozen config, drift, deliveries."""
 
     rbac_permission = ExportPermission.RUN_VIEW
 
@@ -579,7 +579,7 @@ class RunDetailView(_ExportBase):
 
 
 class RunCancelView(_ExportBase):
-    """``POST /v1/exports/runs/<pk>/cancel/`` — stop a queued or running export."""
+    """``POST /v1/exports/runs/<pk>/cancel/`` - stop a queued or running export."""
 
     rbac_permission = ExportPermission.RUN_CANCEL
 
@@ -598,7 +598,7 @@ class RunCancelView(_ExportBase):
 
 
 class RunRetryView(_ExportBase):
-    """``POST /v1/exports/runs/<pk>/retry/`` — a fresh attempt of a failed run."""
+    """``POST /v1/exports/runs/<pk>/retry/`` - a fresh attempt of a failed run."""
 
     rbac_permission = ExportPermission.RUN_CREATE
 
@@ -616,7 +616,7 @@ class RunRetryView(_ExportBase):
 
 
 class FileListView(_ExportBase):
-    """``GET /v1/exports/files/`` — produced files with their availability."""
+    """``GET /v1/exports/files/`` - produced files with their availability."""
 
     rbac_permission = ExportPermission.RUN_VIEW
 
@@ -631,7 +631,7 @@ class FileListView(_ExportBase):
 
 
 class FileDownloadView(_ExportBase):
-    """``GET /v1/exports/files/<pk>/download/`` — the bytes, if you may have them.
+    """``GET /v1/exports/files/<pk>/download/`` - the bytes, if you may have them.
 
     Authorised against the *downloader* and the run's frozen entity and dataset, then
     logged either way. A refusal is recorded exactly like a success, because "who tried
@@ -695,7 +695,7 @@ def _refusal_message(reason, file) -> str:
 
 
 class FileDownloadLogView(_ExportBase):
-    """``GET /v1/exports/files/<pk>/downloads/`` — who took it, and who was refused."""
+    """``GET /v1/exports/files/<pk>/downloads/`` - who took it, and who was refused."""
 
     rbac_permission = ExportPermission.RUN_VIEW
 
@@ -713,7 +713,7 @@ class FileDownloadLogView(_ExportBase):
 # Deliveries and admin activity                                               #
 # --------------------------------------------------------------------------- #
 class DeliveryRevokeView(_ExportBase):
-    """``POST /v1/exports/deliveries/<pk>/revoke/`` — kill one secure link."""
+    """``POST /v1/exports/deliveries/<pk>/revoke/`` - kill one secure link."""
 
     rbac_permission = ExportPermission.DEFINITION_SHARE
 
@@ -732,7 +732,7 @@ class DeliveryRevokeView(_ExportBase):
 
 
 class ActivityView(_ExportBase):
-    """``GET /v1/exports/activity/`` — the admin console's all-activity view.
+    """``GET /v1/exports/activity/`` - the admin console's all-activity view.
 
     Defaults to the runs an administrator actually cares about: those that included a
     sensitive field or went to a recipient, newest first. Reading it is itself an audit
@@ -767,7 +767,7 @@ class ActivityView(_ExportBase):
 # Analytics                                                                   #
 # --------------------------------------------------------------------------- #
 class AnalyticsIngestView(_ExportBase):
-    """``POST /v1/exports/analytics/`` — the builder funnel, reported by the browser.
+    """``POST /v1/exports/analytics/`` - the builder funnel, reported by the browser.
 
     Only events in :data:`vs_exports.analytics.CLIENT_EVENTS` are accepted, and every
     property is filtered through the event's schema, so this cannot become a general
@@ -796,7 +796,7 @@ class AnalyticsIngestView(_ExportBase):
 
 
 class AnalyticsSummaryView(_ExportBase):
-    """``GET /v1/exports/analytics/summary/`` — the four metrics that judge this feature.
+    """``GET /v1/exports/analytics/summary/`` - the four metrics that judge this feature.
 
     Reuse and unhappy-run share are counted from the run rows; builder abandonment and
     failure-resolution time come from the events. Admin-only, because it describes how

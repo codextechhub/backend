@@ -5,21 +5,21 @@
 # All routes are prefixed with /api/v1/notifications/ by the root urls.py.
 #
 # Route summary:
-#   /notifications/                         — feed list (GET)
-#   /notifications/<uuid>/                  — feed detail (GET)
-#   /notifications/unread-count/            — unread count (GET)
-#   /notifications/mark-read/               — mark list as read (POST)
-#   /notifications/mark-all-read/           — mark all as read (POST)
-#   /notifications/acknowledge-route/       — mark viewed destination events (POST)
-#   /notifications/history/                 — admin history list (GET)
-#   /notifications/history/<uuid>/          — admin history detail (GET)
-#   /notifications/settings/               — effective settings matrix (GET)
-#   /notifications/settings/update/        — settings override upsert (PATCH)
-#   /notifications/templates/               — template list (GET) / create (POST)
-#   /notifications/templates/<uuid>/        — template retrieve (GET) / update (PATCH)
-#   /notifications/templates/<uuid>/preview/— template preview (POST)
-#   /notifications/event-types/             — event type list (GET)
-#   /notifications/event-types/<uuid>/      — event type retrieve (GET)
+#   /notifications/                         - feed list (GET)
+#   /notifications/<uuid>/                  - feed detail (GET)
+#   /notifications/unread-count/            - unread count (GET)
+#   /notifications/mark-read/               - mark list as read (POST)
+#   /notifications/mark-all-read/           - mark all as read (POST)
+#   /notifications/acknowledge-route/       - mark viewed destination events (POST)
+#   /notifications/history/                 - admin history list (GET)
+#   /notifications/history/<uuid>/          - admin history detail (GET)
+#   /notifications/settings/               - effective settings matrix (GET)
+#   /notifications/settings/update/        - settings override upsert (PATCH)
+#   /notifications/templates/               - template list (GET) / create (POST)
+#   /notifications/templates/<uuid>/        - template retrieve (GET) / update (PATCH)
+#   /notifications/templates/<uuid>/preview/- template preview (POST)
+#   /notifications/event-types/             - event type list (GET)
+#   /notifications/event-types/<uuid>/      - event type retrieve (GET)
 # =============================================================================
 
 from django.urls import path

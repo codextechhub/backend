@@ -14,13 +14,13 @@ from .core import TimeStampedModel, LedgerEntity, FinanceDocument
 from .ar import Customer, Invoice
 
 # ---------------------------------------------------------------------------
-# AR — dunning / automated payment reminders
+# AR - dunning / automated payment reminders
 # ---------------------------------------------------------------------------
 #
 # A dunning policy is a ladder of stages keyed by how many days an invoice is overdue.
 # Generating a run scans the entity's open invoices, matches the *highest* stage each
 # crosses, and emits a DunningNotice (idempotent per invoice+level). Notices never post
-# to the GL — vs_finance only tracks the reminder lifecycle; an outer notifications
+# to the GL - vs_finance only tracks the reminder lifecycle; an outer notifications
 # service dispatches PENDING notices through the recorded channel.
 
 
@@ -56,7 +56,7 @@ class DunningPolicy(TimeStampedModel):
 
 
 class DunningStage(TimeStampedModel):
-    """One rung of a :class:`DunningPolicy` — fires once an invoice is ``min_days_overdue``."""
+    """One rung of a :class:`DunningPolicy` - fires once an invoice is ``min_days_overdue``."""
 
     policy = models.ForeignKey(
         DunningPolicy, on_delete=models.CASCADE, related_name="stages",
@@ -91,7 +91,7 @@ class DunningStage(TimeStampedModel):
 class DunningNotice(FinanceDocument):
     """A single reminder raised for an overdue invoice at a given escalation level.
 
-    A communications overlay — it never posts to the GL. ``level`` snapshots the stage
+    A communications overlay - it never posts to the GL. ``level`` snapshots the stage
     that fired and ``amount_due`` the invoice balance when generated; the notice is keyed
     uniquely per (invoice, level) so re-running a policy never duplicates a reminder the
     customer already received at that rung.

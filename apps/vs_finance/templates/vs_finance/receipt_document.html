@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Receipt {{ receipt.document_number }} — {{ issuer.name }}</title>
+<title>Receipt {{ receipt.document_number }} - {{ issuer.name }}</title>
 <style>
   :root{
     --navy:#1B2A4A; --accent:#0E4D92; --rule-gold:#B08D57;
@@ -176,7 +176,7 @@
       <tr>
         <td><span class="inv-ref">Unallocated credit</span></td>
         <td class="num">{{ receipt.amount }}</td>
-        <td class="num">—</td>
+        <td class="num">-</td>
       </tr>
       {% endfor %}
     </tbody>
@@ -193,7 +193,7 @@
     <div class="gen-note">
       This is a computer-generated receipt and is valid without a physical signature.
       Retain it as proof of payment.
-      <div class="thanks">Thank you — your payment has been received and applied.</div>
+      <div class="thanks">Thank you - your payment has been received and applied.</div>
     </div>
     <div class="sign">
       <div class="sign-line"></div>

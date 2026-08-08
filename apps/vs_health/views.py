@@ -85,7 +85,7 @@ def _tenant_id(request):
 
 # Command Center payload combining posture, KPIs, queues, deployments, and incidents.
 class OverviewView(HealthViewMixin, APIView):
-    """GET /health/overview/ — the single-pane-of-glass Command Center payload.
+    """GET /health/overview/ - the single-pane-of-glass Command Center payload.
 
     docstring-name: Command Center overview
     """
@@ -126,7 +126,7 @@ class OverviewView(HealthViewMixin, APIView):
 
 # Return service cards sorted by operational severity.
 class ServiceListView(HealthViewMixin, APIView):
-    """GET /health/services/ — worst-first service grid."""
+    """GET /health/services/ - worst-first service grid."""
 
     def get(self, request):
         return success_response("Services retrieved successfully.",
@@ -135,7 +135,7 @@ class ServiceListView(HealthViewMixin, APIView):
 
 # Return a single monitored service with recent alerts and uptime summary.
 class ServiceDetailView(HealthViewMixin, APIView):
-    """GET /health/services/{key}/ — drill-down for one service."""
+    """GET /health/services/{key}/ - drill-down for one service."""
 
     def get(self, request, key):
         svc = MonitoredService.objects.filter(key=key).first()
@@ -160,7 +160,7 @@ class ServiceDetailView(HealthViewMixin, APIView):
 
 # Return the full uptime monitor grid.
 class UptimeMonitorsView(HealthViewMixin, APIView):
-    """GET /health/uptime/monitors/ — uptime bars, response charts, SSL, table."""
+    """GET /health/uptime/monitors/ - uptime bars, response charts, SSL, table."""
 
     def get(self, request):
         return success_response("Uptime monitors retrieved successfully.",
@@ -169,7 +169,7 @@ class UptimeMonitorsView(HealthViewMixin, APIView):
 
 # Return one uptime monitor by service key.
 class UptimeMonitorDetailView(HealthViewMixin, APIView):
-    """GET /health/uptime/monitors/{key}/ — one monitor."""
+    """GET /health/uptime/monitors/{key}/ - one monitor."""
 
     def get(self, request, key):
         monitor = next((m for m in services.uptime_monitors() if m["key"] == key), None)
@@ -184,7 +184,7 @@ class UptimeMonitorDetailView(HealthViewMixin, APIView):
 
 # Return endpoint health rows and top offenders for the selected range.
 class ApiEndpointsView(HealthViewMixin, APIView):
-    """GET /health/api-endpoints/ — endpoint table + top-5 cards + code series."""
+    """GET /health/api-endpoints/ - endpoint table + top-5 cards + code series."""
 
     def get(self, request):
         tr = _range(request)
@@ -204,7 +204,7 @@ class ApiEndpointsView(HealthViewMixin, APIView):
 
 # Return histogram and tenant breakdown for one route.
 class ApiEndpointDetailView(HealthViewMixin, APIView):
-    """GET /health/api-endpoints/detail/?route=... — endpoint drill-down drawer."""
+    """GET /health/api-endpoints/detail/?route=... - endpoint drill-down drawer."""
 
     def get(self, request):
         route = request.query_params.get("route")
@@ -221,7 +221,7 @@ class ApiEndpointDetailView(HealthViewMixin, APIView):
 
 # Return queue depth, throughput, failures, and worker availability.
 class QueuesView(HealthViewMixin, APIView):
-    """GET /health/queues/ — queue cards, depth trend, worker pool."""
+    """GET /health/queues/ - queue cards, depth trend, worker pool."""
 
     def get(self, request):
         return success_response("Queues retrieved successfully.", services.queue_overview())
@@ -229,7 +229,7 @@ class QueuesView(HealthViewMixin, APIView):
 
 # List tracked background jobs through the health console filters.
 class TaskListView(HealthViewMixin, generics.ListAPIView):
-    """GET /health/tasks/ — the task table (reads core.BackgroundJob).
+    """GET /health/tasks/ - the task table (reads core.BackgroundJob).
 
     Filters: ?status=, ?queue=, ?tenant=, ?kind=.
     """
@@ -298,7 +298,7 @@ class IncidentDetailView(RetrieveModelMixin, UpdateModelMixin, HealthWriteMixin,
 
 # Append timeline entries to an existing incident.
 class IncidentEventCreateView(HealthWriteMixin, APIView):
-    """POST /health/incidents/{id}/events/ — append a timeline update."""
+    """POST /health/incidents/{id}/events/ - append a timeline update."""
 
     def post(self, request, id):
         incident = Incident.objects.filter(id=id).first()
@@ -313,7 +313,7 @@ class IncidentEventCreateView(HealthWriteMixin, APIView):
 
 # Return MTTA, MTTR, and incident counts for reliability reporting.
 class ReliabilityView(HealthViewMixin, APIView):
-    """GET /health/incidents/reliability/ — MTTA/MTTR/counts."""
+    """GET /health/incidents/reliability/ - MTTA/MTTR/counts."""
 
     def get(self, request):
         return success_response("Reliability stats retrieved successfully.",
@@ -322,7 +322,7 @@ class ReliabilityView(HealthViewMixin, APIView):
 
 # List firing alerts by default, with resolved history available by filter.
 class AlertListView(HealthViewMixin, generics.ListAPIView):
-    """GET /health/alerts/ — firing alerts (?status=resolved for history)."""
+    """GET /health/alerts/ - firing alerts (?status=resolved for history)."""
     serializer_class = AlertSerializer
 
     def get_queryset(self):
@@ -355,7 +355,7 @@ class AlertRuleDetailView(RetrieveModelMixin, UpdateModelMixin, HealthWriteMixin
 
 # Return tenant-level health and noisy-neighbour indicators.
 class TenantListView(HealthViewMixin, APIView):
-    """GET /health/tenants/ — per-institution health grid + noisy-neighbour."""
+    """GET /health/tenants/ - per-institution health grid + noisy-neighbour."""
 
     def get(self, request):
         tr = _range(request)
@@ -365,7 +365,7 @@ class TenantListView(HealthViewMixin, APIView):
 
 # Return golden signals, series, and endpoints scoped to one tenant.
 class TenantDetailView(HealthViewMixin, APIView):
-    """GET /health/tenants/{tenant_id}/ — golden signals scoped to one tenant."""
+    """GET /health/tenants/{tenant_id}/ - golden signals scoped to one tenant."""
 
     def get(self, request, tenant_id):
         tr = _range(request)
@@ -396,7 +396,7 @@ class DeploymentListCreateView(CreateModelMixin, HealthWriteMixin, generics.List
 
 # Return SLO attainment and remaining error budget.
 class SLOView(HealthViewMixin, APIView):
-    """GET /health/slos/ — SLO attainment + error budgets."""
+    """GET /health/slos/ - SLO attainment + error budgets."""
 
     def get(self, request):
         return success_response("SLOs retrieved successfully.", {"slos": services.slo_status()})

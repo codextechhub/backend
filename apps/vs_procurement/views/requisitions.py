@@ -237,7 +237,7 @@ class RequisitionSummaryView(_ProcBase):
             "approved_mtd": {
                 "count": approved_mtd["count"], "amount": approved_mtd["amount"] or 0,
                 # This tile's headline is a *count*, so its delta is an absolute
-                # count change ("+2 vs prior month"), not a percentage — a % swing
+                # count change ("+2 vs prior month"), not a percentage - a % swing
                 # on a small integer (0→2 = "+∞%"/"+100%") reads as noise, and a
                 # zero prior month is a real comparison here, not a null one.
                 "change": approved_mtd["count"] - (approved_prior["count"] or 0),
@@ -312,7 +312,7 @@ class RequisitionBudgetAvailabilityView(_ProcBase):
 class RequisitionSubmitView(_ProcBase):
     """Submit a requisition into the ``vs_workflow`` approval engine.
 
-    Approval is no longer a direct endpoint — submitting hands the document to its
+    Approval is no longer a direct endpoint - submitting hands the document to its
     threshold-gated workflow template; approvers then vote through the ``vs_workflow``
     API, and the engine's callback drives the requisition to APPROVED.
 
@@ -391,7 +391,7 @@ class ApprovalTemplateSetupView(_ProcBase):
     """Provision the platform-wide default threshold-gated approval templates.
 
     POST body (all optional): ``threshold`` (kobo), ``manager_permission``,
-    ``senior_permission``. Idempotent — re-running upserts the templates in place.
+    ``senior_permission``. Idempotent - re-running upserts the templates in place.
 
     docstring-name: Set up approval templates
     """

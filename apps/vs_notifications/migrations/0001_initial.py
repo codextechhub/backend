@@ -151,7 +151,7 @@ class Migration(migrations.Migration):
                 (
                     "key",
                     models.CharField(
-                        help_text="Dot-notation identifier. e.g. billing.invoice_issued. Never changes after creation — other modules depend on this string.",
+                        help_text="Dot-notation identifier. e.g. billing.invoice_issued. Never changes after creation - other modules depend on this string.",
                         max_length=100,
                         unique=True,
                     ),
@@ -196,7 +196,7 @@ class Migration(migrations.Migration):
                     "is_transactional",
                     models.BooleanField(
                         default=False,
-                        help_text="Transactional events (e.g. password resets, invitations) bypass NotificationSetting checks entirely — they always dispatch on their supported channels. The platform kill switch (is_active) still wins over everything.",
+                        help_text="Transactional events (e.g. password resets, invitations) bypass NotificationSetting checks entirely - they always dispatch on their supported channels. The platform kill switch (is_active) still wins over everything.",
                     ),
                 ),
                 (

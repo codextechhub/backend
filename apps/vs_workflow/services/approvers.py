@@ -1,5 +1,5 @@
 """
-Approver resolution — builds the eligible approver list for a stage at activation time.
+Approver resolution - builds the eligible approver list for a stage at activation time.
 
 The list is frozen into WorkflowStageApprover rows the moment a stage activates.
 All subsequent eligibility checks read that snapshot rather than re-querying RBAC
@@ -107,13 +107,13 @@ def resolve_approvers(stage: WorkflowStage, instance: WorkflowInstance) -> List[
         CX organogram relative to the requester (direct manager, N levels up,
         department head, or a specific position).
 
-    The requester is always excluded — they cannot approve their own submission.
+    The requester is always excluded - they cannot approve their own submission.
     Active delegations then expand the list regardless of source: if an eligible
     approver has delegated their authority, the delegate is added on their behalf
     (and the delegator removed when the delegation is exclusive). De-duplication
     via a seen-set on (user_id, on_behalf_of_id) pairs prevents the same row
     appearing twice. A delegate acting for two different delegators intentionally
-    appears twice — once per delegator — because the on_behalf_of field differs.
+    appears twice - once per delegator - because the on_behalf_of field differs.
     """
     if stage.approver_source == ApproverSource.ORGANOGRAM:
         # Organogram approvers are already relative to the requester; still exclude self-approval.

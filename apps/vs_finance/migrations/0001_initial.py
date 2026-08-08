@@ -1185,7 +1185,7 @@ class Migration(migrations.Migration):
                     "is_optional",
                     models.BooleanField(
                         default=False,
-                        help_text="An opt-in charge (vs a required line). Informational for now — generation bills every line.",
+                        help_text="An opt-in charge (vs a required line). Informational for now - generation bills every line.",
                     ),
                 ),
                 ("line_no", models.PositiveSmallIntegerField(default=0)),
@@ -3236,7 +3236,7 @@ class Migration(migrations.Migration):
                     "is_primary_collection",
                     models.BooleanField(
                         default=False,
-                        help_text="The entity's primary fee-collection account — the one printed as 'pay to' on customer invoices/receipts. At most one per entity.",
+                        help_text="The entity's primary fee-collection account - the one printed as 'pay to' on customer invoices/receipts. At most one per entity.",
                     ),
                 ),
                 (

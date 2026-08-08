@@ -6,7 +6,7 @@ Usage:
     manage.py seed_finance --all           # seeds every active entity
 
 Always seeds the default currencies, then a starter Chart of Accounts for the chosen
-entity/entities. Idempotent — safe to re-run.
+entity/entities. Idempotent - safe to re-run.
 """
 from __future__ import annotations
 

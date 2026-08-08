@@ -20,7 +20,7 @@ from .gl import Account, CostCenter, Currency, TaxCode
 from .ar import Customer, Invoice
 
 # ---------------------------------------------------------------------------
-# Phase 4 — AR adjustments (credit/debit notes, refunds, write-offs)
+# Phase 4 - AR adjustments (credit/debit notes, refunds, write-offs)
 # ---------------------------------------------------------------------------
 #
 # The other side of the revenue cycle: not every billed amount is collected as first
@@ -72,7 +72,7 @@ class CreditNote(FinanceDocument):
         help_text="Portion of a CREDIT note's unapplied value already paid back out as "
                   "a customer refund, in kobo. Maintained by RefundAllocation.",
     )
-    # A DEBIT note is a supplementary charge that debits AR, so — like an invoice — it
+    # A DEBIT note is a supplementary charge that debits AR, so - like an invoice - it
     # is *settled* by receipts. ``amount_paid`` tracks cash allocated against it and
     # ``settlement_status`` mirrors Invoice.payment_status. Both are inert on CREDIT
     # notes (which are the ones with balances *given back*, tracked by allocated_amount).
@@ -104,7 +104,7 @@ class CreditNote(FinanceDocument):
     def unallocated_amount(self) -> int:
         """Credit not yet applied to an invoice (CREDIT notes only).
 
-        A sub-ledger fact, blind to refunds — see :attr:`credit_remaining` for the
+        A sub-ledger fact, blind to refunds - see :attr:`credit_remaining` for the
         amount actually still available to spend.
         """
         return self.total - self.allocated_amount
@@ -301,7 +301,7 @@ class Refund(FinanceDocument):
     """A cash refund paid back to a :class:`Customer` for an over-paid credit balance.
 
     Posting (:func:`vs_finance.credit_notes.post_refund`) raises ``Dr customer credit
-    (2140), Cr bank`` — paying out the customer's stored credit balance (not an open
+    (2140), Cr bank`` - paying out the customer's stored credit balance (not an open
     receivable), capped at their available credit.
 
     Args:
@@ -366,13 +366,13 @@ class RefundAllocation(TimeStampedModel):
     """Links a slice of a :class:`Refund` to the credit lot it was paid out of.
 
     A refund debits the customer-credit liability (2140) as one lump, but that
-    liability is made of dated parcels — individual receipts and CREDIT notes, each
+    liability is made of dated parcels - individual receipts and CREDIT notes, each
     with its own accounting date. Without this row the sub-ledger could not say
     *which* credit was handed back, so a receipt went on reporting its cash as
     unapplied and available long after it had been refunded, and two different parts
     of the system disagreed about whether the money was still there.
 
-    Exactly one of ``payment`` / ``note`` is set — the lot the money came from.
+    Exactly one of ``payment`` / ``note`` is set - the lot the money came from.
     :func:`vs_finance.chronology.plan_credit_draw` chooses the lots oldest-first, and
     posting keeps the lot's ``refunded_amount`` in step inside the same transaction.
     """
@@ -405,7 +405,7 @@ class RefundAllocation(TimeStampedModel):
             models.CheckConstraint(
                 check=models.Q(amount__gte=0), name="ck_finance_refalloc_non_negative",
             ),
-            # Exactly one source lot — a slice funded by both or neither is meaningless
+            # Exactly one source lot - a slice funded by both or neither is meaningless
             # and would silently break the 2140 attribution.
             models.CheckConstraint(
                 check=(
@@ -438,7 +438,7 @@ class WriteOffRequest(FinanceDocument):
     Making it a numbered :class:`FinanceDocument` gives it a lifecycle the workflow
     engine can attach to: it is created DRAFT, optionally routed through approval, and
     only on approval (or a direct post when ungated) does
-    :func:`vs_finance.credit_notes.write_off_invoice` run — unchanged — to post the
+    :func:`vs_finance.credit_notes.write_off_invoice` run - unchanged - to post the
     ``Dr bad-debt expense, Cr AR control`` journal and clear that much of the invoice
     via :attr:`Invoice.amount_credited`. The posted journal is linked back on
     :attr:`journal`.
@@ -495,11 +495,11 @@ class WriteOffRequest(FinanceDocument):
 
 
 class Concession(FinanceDocument):
-    """A non-cash reduction of a receivable — a discount, waiver or scholarship.
+    """A non-cash reduction of a receivable - a discount, waiver or scholarship.
 
     Posting (:func:`vs_finance.installments.post_concession`) raises ``Dr discounts &
     allowances, Cr AR control`` for ``amount`` and clears that much of the linked
-    invoice via :attr:`Invoice.amount_credited` — exactly like a targeted, single-line
+    invoice via :attr:`Invoice.amount_credited` - exactly like a targeted, single-line
     credit note, but tagged by :class:`~vs_finance.constants.ConcessionKind` for
     reporting (a school tenant's *scholarship*/*bursary* is just ``kind=SCHOLARSHIP``).
 
@@ -553,7 +553,7 @@ class Concession(FinanceDocument):
 class PaymentPlan(FinanceDocument):
     """An installment schedule that spreads a receivable over dated installments.
 
-    A pure scheduling overlay — it never posts to the GL. The invoice it references
+    A pure scheduling overlay - it never posts to the GL. The invoice it references
     already sits in AR; the plan only says *when* the customer is expected to pay and
     *how much* each time, so reminders/dunning and progress tracking have something to
     measure against. Settlement is reflected by distributing the linked invoice's

@@ -194,7 +194,7 @@ class GRIRAgingView(_ProcBase):
 
 
 class APAgingVendorDetailView(_ProcBase):
-    """docstring-name: AP aging — vendor detail
+    """docstring-name: AP aging - vendor detail
 
     Per-vendor AP drawer: aging buckets + the vendor's open POSTED bills. Report-gated
     so a report viewer can open it without holding ``vendor_invoice.view``.
@@ -206,7 +206,7 @@ class APAgingVendorDetailView(_ProcBase):
         from ..reports import AGING_BUCKETS, ap_vendor_open_bills
 
         entity = resolve_entity(request)
-        # Entity-scoped vendor resolution — a foreign vendor 404s rather than leaking.
+        # Entity-scoped vendor resolution - a foreign vendor 404s rather than leaking.
         vendor = _resolve_vendor(entity, request.query_params.get("vendor"))
         as_of = _date(request.query_params.get("as_of"), "as_of")
         detail = ap_vendor_open_bills(entity, vendor, as_of=as_of)
@@ -234,7 +234,7 @@ class APAgingVendorDetailView(_ProcBase):
 
 
 class GRIRGrnDetailView(_ProcBase):
-    """docstring-name: GR/IR aging — GRN detail
+    """docstring-name: GR/IR aging - GRN detail
 
     Per-GRN GR/IR drawer: the reconciliation figures + linked PO and matched invoices.
     Report-gated so a report viewer can open it without holding ``goods_receipt.view``.

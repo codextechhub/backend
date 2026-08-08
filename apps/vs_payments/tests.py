@@ -1,4 +1,4 @@
-"""Phase 6 tests — vs_payments gateway (collections + payouts + webhooks).
+"""Phase 6 tests - vs_payments gateway (collections + payouts + webhooks).
 
 Everything runs against the in-memory :class:`FakeProvider` (registered over the default
 provider name), so the suite exercises the full provider → service → ledger flow without a
@@ -180,7 +180,7 @@ class CollectionTests(_PaymentsFixtureMixin, TestCase):
     def test_collection_for_a_future_dated_invoice_parks_as_credit(self):
         """The payer's money has already moved, so the booking must never fail.
 
-        A receipt cannot settle an invoice that is not raised yet — the posting
+        A receipt cannot settle an invoice that is not raised yet - the posting
         service refuses an explicit allocation that would credit AR first. Here that
         refusal must not surface: raising would leave real cash unrecorded while the
         PSP retries a call that can never succeed. It is a prepayment, so it parks as
@@ -371,7 +371,7 @@ class WebhookTests(_PaymentsFixtureMixin, TestCase):
         # First delivery processes (fire the enqueued task); it flips the event to PROCESSED.
         with self.captureOnCommitCallbacks(execute=True):
             webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
-        # The provider retries the exact same event — rejected before enqueue, so no wrapping.
+        # The provider retries the exact same event - rejected before enqueue, so no wrapping.
         with self.assertRaises(DuplicateWebhookError):
             webhooks.ingest_webhook(provider="PAYSTACK", raw_body=raw, headers=headers)
         self.assertEqual(Payment.objects.filter(entity=entity).count(), 1)
@@ -380,7 +380,7 @@ class WebhookTests(_PaymentsFixtureMixin, TestCase):
     def test_webhook_does_not_book_when_provider_verify_disagrees(self):
         # SECURITY: a validly-signed "charge.success" must NOT book a receipt if the
         # provider's own API doesn't confirm the transaction settled. The event is only
-        # a trigger to re-verify — here verify returns PENDING (no forced_status), so
+        # a trigger to re-verify - here verify returns PENDING (no forced_status), so
         # nothing is booked despite the webhook claiming SUCCEEDED.
         entity, customer, _ = self.build()
         intent = services.initiate_collection(entity=entity, amount=30000, customer=customer)
@@ -662,7 +662,7 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
     # Verify an over-settlement never yields a negative fee behavior.
     def test_over_settlement_fee_is_clamped_to_zero(self):
         # If the matched bank line is larger than the gateway amount, the derived fee
-        # (gross − net) would go negative — it must clamp to 0 instead.
+        # (gross − net) would go negative - it must clamp to 0 instead.
         entity, customer, _ = self.build()
         intent = services.initiate_collection(entity=entity, amount=40000, customer=customer)
         services.confirm_collection(intent, status=CollectionStatus.SUCCEEDED)
@@ -731,11 +731,11 @@ class SettlementReconciliationTests(_PaymentsFixtureMixin, TestCase):
     # Verify amount-only matches are flagged for review; reference matches are not.
     def test_amount_only_matches_are_flagged_needs_review(self):
         entity, customer, vendor = self.build()
-        # A reference-matched collection — trusted, not flagged.
+        # A reference-matched collection - trusted, not flagged.
         c = services.initiate_collection(entity=entity, amount=40000, customer=customer)
         services.confirm_collection(c, status=CollectionStatus.SUCCEEDED)
         c.refresh_from_db()
-        # An amount-only-matched payout — ambiguous, flagged.
+        # An amount-only-matched payout - ambiguous, flagged.
         p = services.initiate_payout(
             entity=entity, amount=15000, beneficiary_name="Supplier Ltd",
             beneficiary_account_number="0123456789", beneficiary_bank_code="058",
@@ -1092,8 +1092,8 @@ class PaymentsAPITests(_PaymentsFixtureMixin, TestCase):
 class PayoutBatchApprovalTests(TestCase):
     """Approval-gating bulk payout batches via vs_workflow (opt-in by template).
 
-    A payout batch is the highest-risk cash-out path, so — when a
-    ``payments.payout_batch`` template exists for its scope — provider submission
+    A payout batch is the highest-risk cash-out path, so - when a
+    ``payments.payout_batch`` template exists for its scope - provider submission
     happens only after approval; with no template, direct submit is unchanged.
     """
 
@@ -1334,7 +1334,7 @@ class PaystackAdapterTests(TestCase):
     """Drive the real :class:`PaystackProvider` with recorded PSP payloads.
 
     Every network hop goes through ``vs_payments.providers.http.request_json``, imported
-    into the paystack module as ``request_json`` — so we patch it *there* (at the point of
+    into the paystack module as ``request_json`` - so we patch it *there* (at the point of
     use) and never open a socket. This exercises the adapter's real request/response
     mapping, signing, and webhook parsing rather than the FakeProvider.
     """

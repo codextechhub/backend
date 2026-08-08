@@ -7,7 +7,7 @@ Two concerns are covered:
     request context or the caller is the Vision super admin.
 2.  The finance / procurement / payments serialisers that carry PII (bank
     account numbers, beneficiary details, salaries) declare the expected
-    ``read_permissions`` wiring — so a refactor that drops the mixin or renames
+    ``read_permissions`` wiring - so a refactor that drops the mixin or renames
     a key fails loudly here instead of silently leaking data.
 """
 from __future__ import annotations
@@ -43,7 +43,7 @@ class FieldSecurityMixinBehaviourTest(TestCase):
     def setUpTestData(cls):
         from vs_user.models import User
 
-        # A plain Vision staff user with no platform assignment — authenticated
+        # A plain Vision staff user with no platform assignment - authenticated
         # but NOT the super admin, so FLS applies to them.
         cls.user = User.objects.create_user(
             email="fls-probe@test.com",

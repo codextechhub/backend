@@ -19,10 +19,10 @@ from .registry import MonitoredService
 
 
 class Severity(models.IntegerChoices):
-    SEV1 = 1, "SEV1 — Critical"
-    SEV2 = 2, "SEV2 — Major"
-    SEV3 = 3, "SEV3 — Minor"
-    SEV4 = 4, "SEV4 — Low"
+    SEV1 = 1, "SEV1 - Critical"
+    SEV2 = 2, "SEV2 - Major"
+    SEV3 = 3, "SEV3 - Minor"
+    SEV4 = 4, "SEV4 - Low"
 
 
 class Incident(TimeStampedModel):

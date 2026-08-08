@@ -1,4 +1,4 @@
-"""Tax-remittance / filing services — drain statutory liability control accounts.
+"""Tax-remittance / filing services - drain statutory liability control accounts.
 
 The platform's source transactions already park what is owed to the authorities in
 liability control accounts: sales credit **Output VAT** (2200), purchases debit recoverable
@@ -9,13 +9,13 @@ one such control account, its authority and filing cadence; a
 
 Three moments, mirroring the ``DRAFT → FILED → PAID`` lifecycle:
 
-* **Prepare** (:func:`prepare_filing`) — derive the amount owed straight from the GL: the
+* **Prepare** (:func:`prepare_filing`) - derive the amount owed straight from the GL: the
   net credit movement of the liability account over the period (for VAT, less the
   recoverable input movement). A draft worksheet; nothing posts.
-* **File** (:func:`file_filing`) — freeze the figures and submit. Posts a journal **only**
+* **File** (:func:`file_filing`) - freeze the figures and submit. Posts a journal **only**
   to net recoverable input VAT off the output payable and/or to add a penalty/interest
   adjustment, leaving the liability account holding exactly ``amount_due``.
-* **Pay** (:func:`pay_filing`) — ``Dr liability, Cr bank`` for the remittance; partial
+* **Pay** (:func:`pay_filing`) - ``Dr liability, Cr bank`` for the remittance; partial
   payments supported.
 
 :func:`outstanding_obligations` is a read-only view of what each obligation currently owes.
@@ -87,7 +87,7 @@ def _account_movement(entity, account, *, period_start=None, period_end=None):
 
 
 # --------------------------------------------------------------------------- #
-# Prepare (derive amount due from the GL — no posting)                         #
+# Prepare (derive amount due from the GL - no posting)                         #
 # --------------------------------------------------------------------------- #
 
 # Handle the prepare filing workflow.
@@ -243,7 +243,7 @@ def _file_filing_atomic(filing, *, filed_date, filing_reference, adjustment_amou
     filing.adjustment_account = adjustment_account  # Store adjustment expense account.
     filing.recompute_due(save=False)  # Recompute amount due after adjustment.
     if filing.amount_due <= 0:  # Nothing payable means no return to file in this workflow.
-        raise TaxFilingError("Nothing to file — the computed amount due is zero.")
+        raise TaxFilingError("Nothing to file - the computed amount due is zero.")
 
     obligation = filing.obligation  # Tax obligation being filed.
     recoverable = int(filing.recoverable_amount)  # Recoverable input amount to net.
@@ -308,7 +308,7 @@ def _file_filing_atomic(filing, *, filed_date, filing_reference, adjustment_amou
 
 
 # --------------------------------------------------------------------------- #
-# Unfile (revert a FILED return to DRAFT — the audit-correct undo)             #
+# Unfile (revert a FILED return to DRAFT - the audit-correct undo)             #
 # --------------------------------------------------------------------------- #
 
 # Public wrapper for reverting a filed return.
@@ -466,7 +466,7 @@ def _pay_filing_atomic(filing, *, bank_account, pay_date, amount, actor_user):
 
 
 # --------------------------------------------------------------------------- #
-# Read-only — what each obligation currently owes                              #
+# Read-only - what each obligation currently owes                              #
 # --------------------------------------------------------------------------- #
 
 # Snapshot unremitted tax balances by obligation.

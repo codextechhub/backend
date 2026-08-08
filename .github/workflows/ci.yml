@@ -26,7 +26,7 @@ jobs:
 
     env:
       DJANGO_SETTINGS_MODULE: apps.settings.ci
-      # Dummy values — base.py refuses to start without them; CI never talks
+      # Dummy values - base.py refuses to start without them; CI never talks
       # to Render/Zoho, and the email backend is in-memory.
       SECRET_KEY: ci-only-not-a-real-secret
       RENDER_API_KEY: ci-dummy

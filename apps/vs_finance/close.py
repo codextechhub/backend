@@ -1,4 +1,4 @@
-"""Period-close services — the controlled sealing of an accounting period.
+"""Period-close services - the controlled sealing of an accounting period.
 
 Closing a period is the control that stops the past being silently rewritten. Before a
 period is sealed, the close runs a **checklist** of integrity checks and posts the
@@ -7,8 +7,8 @@ through the 4-state lock (OPEN → SOFT_CLOSED → CLOSED → LOCKED).
 
 Decoupling note: this lives in ``vs_finance`` and therefore checks only finance-native
 invariants (trial balance balanced, AR sub-ledger == control, all due depreciation
-posted). The AP / GR-IR reconciliations live in ``vs_procurement`` — which depends on
-finance, not the other way round — so a caller passes those in via ``extra_checks``
+posted). The AP / GR-IR reconciliations live in ``vs_procurement`` - which depends on
+finance, not the other way round - so a caller passes those in via ``extra_checks``
 rather than finance importing procurement.
 """
 from __future__ import annotations
@@ -67,7 +67,7 @@ def close_checklist(entity, period, *, extra_checks=None) -> CloseChecklist:
     """Run the pre-close integrity checks for ``period`` and return the results.
 
     ``extra_checks`` is an optional iterable of zero-arg callables returning a
-    :class:`ChecklistItem` (or ``(name, passed, detail)`` tuples) — used to inject
+    :class:`ChecklistItem` (or ``(name, passed, detail)`` tuples) - used to inject
     checks from dependent apps (e.g. procurement's AP / GR-IR reconciliations) without
     finance importing them.
     """
@@ -76,7 +76,7 @@ def close_checklist(entity, period, *, extra_checks=None) -> CloseChecklist:
 
     items: list[ChecklistItem] = []  # Accumulate checklist results in display order.
 
-    # 1. Trial balance balances (it always should — a tripwire for corruption).  # Detect GL imbalance.
+    # 1. Trial balance balances (it always should - a tripwire for corruption).  # Detect GL imbalance.
     tb = trial_balance(entity, period=period)  # Compute trial balance for this period.
     items.append(ChecklistItem(  # Add trial balance check result.
         name="trial_balance_balanced", passed=tb.is_balanced,  # Pass only when debits equal credits.
@@ -239,7 +239,7 @@ def lock_period(entity, period, *, actor_user=None):
     _transition(  # Apply irreversible lock transition and audit it.
         period, PeriodStatus.LOCKED, actor_user=actor_user,  # Target locked status and actor.
         action=FinanceAuditAction.PERIOD_LOCKED,  # Audit action for lock.
-        message=f"Locked period '{period}' — permanently sealed.",  # Human-readable audit message.
+        message=f"Locked period '{period}' - permanently sealed.",  # Human-readable audit message.
     )
     return period  # Return locked period.
 
@@ -251,7 +251,7 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     """Post the year-end closing journal and mark ``fiscal_year`` CLOSED.
 
     The closing entry zeroes every postable income and expense account for the year
-    and rolls the net (profit or loss) into Retained Earnings (3200) — the formal
+    and rolls the net (profit or loss) into Retained Earnings (3200) - the formal
     year-end close that the live "current-year earnings" figure in the reports only
     anticipates. After it posts, the P&L accounts read zero and the year's result is
     permanently in equity.
@@ -261,9 +261,9 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
       closing the year is the normal operator sequence. A LOCKED period remains
       immutable, so the year must be closed before the final period is locked.
     * ``require_periods_closed`` (default) refuses while any period in the year is still
-      OPEN — draft/late entries should be posted and the months soft-/closed first.
+      OPEN - draft/late entries should be posted and the months soft-/closed first.
 
-    Idempotent: refuses a year already CLOSED/LOCKED. Returns ``(entry, net_income)`` —
+    Idempotent: refuses a year already CLOSED/LOCKED. Returns ``(entry, net_income)`` -
     the closing journal (``None`` when the year had no P&L activity) and the net result
     in kobo (positive = profit).
     """
@@ -304,7 +304,7 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
     }
     accounts = {a.id: a for a in Account.objects.filter(id__in=net_by_account)}  # Load once.
 
-    closing_lines = []  # (account, debit, credit) — each line zeroes one P&L account.
+    closing_lines = []  # (account, debit, credit) - each line zeroes one P&L account.
     net_income = 0  # Σ(credit − debit) over P&L = revenue minus expense = profit.
     for acc_id, (d, c) in net_by_account.items():  # Build one closing line per account.
         acc = accounts[acc_id]
@@ -314,7 +314,7 @@ def close_fiscal_year(entity, fiscal_year, *, actor_user=None, closing_date=None
             closing_lines.append((acc, 0, d - c))
         net_income += c - d  # Revenue adds; expense (d>c) subtracts.
 
-    if not closing_lines:  # No P&L activity — seal the year with no journal.
+    if not closing_lines:  # No P&L activity - seal the year with no journal.
         fiscal_year.status = PeriodStatus.CLOSED  # Mark the year closed.
         fiscal_year.save(update_fields=["status", "updated_at"])
         record(  # Audit the (empty) close.

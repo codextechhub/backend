@@ -98,7 +98,7 @@ def make_school_admin(branch, email="admin@test.com", password="testpass123", **
         "last_name": "Admin",
     }
     defaults.update(kwargs)
-    # Legacy callers still pass school=; the column is gone — the tenant
+    # Legacy callers still pass school=; the column is gone - the tenant
     # derives from the branch (or an explicit tenant= kwarg).
     school = defaults.pop("school", None)
     if school is not None and "tenant" not in defaults and defaults.get("branch") is None:
@@ -115,7 +115,7 @@ def make_staff_user(branch, email="staff@test.com", password="testpass123", **kw
         "last_name": "User",
     }
     defaults.update(kwargs)
-    # Legacy callers still pass school=; the column is gone — the tenant
+    # Legacy callers still pass school=; the column is gone - the tenant
     # derives from the branch (or an explicit tenant= kwarg).
     school = defaults.pop("school", None)
     if school is not None and "tenant" not in defaults and defaults.get("branch") is None:

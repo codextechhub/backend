@@ -2,7 +2,7 @@
 
 Ordered the way the pre-ship checklist asks: the security-critical cases first
 (permission denied, cross-tenant isolation, sensitive-field handling, download
-authorisation and its log), then the happy path, then every branch the design names —
+authorisation and its log), then the happy path, then every branch the design names -
 omissions, failure codes, idempotency, the concurrency cap, cancellation and expiry.
 
 Run against the local database::
@@ -109,7 +109,7 @@ class _ExportFixture:
             ExportPermission.RUN_CANCEL, ExportPermission.FILE_DOWNLOAD,
             "finance.invoice.view",
         ])
-        # No export keys at all — the 403 case.
+        # No export keys at all - the 403 case.
         self.stranger = self._user("stranger@test.com", role="no_exports", keys=[])
 
         self.other_tenant = Tenant.objects.create(
@@ -168,7 +168,7 @@ class _ExportFixture:
 # Security: permissions and tenant isolation                                  #
 # --------------------------------------------------------------------------- #
 class ExportPermissionTests(_ExportFixture, TestCase):
-    """No export key means no Export Centre — on every route that changes anything."""
+    """No export key means no Export Centre - on every route that changes anything."""
 
     def setUp(self):
         self.build()
@@ -443,7 +443,7 @@ class ExportRunTests(_ExportFixture, TestCase):
 
     def test_concurrency_cap_refuses_a_further_run(self):
         definition = self.make_definition()
-        # Three runs stuck in flight — the cap is 3.
+        # Three runs stuck in flight - the cap is 3.
         for _ in range(3):
             ExportRun.objects.create(
                 tenant=self.tenant, entity=self.entity, definition=definition,
@@ -564,7 +564,7 @@ class ExportOmissionAndFailureTests(_ExportFixture, TestCase):
     def test_a_wide_date_range_runs_and_only_warns(self):
         """The dataset's span is guidance about cost, not a ceiling.
 
-        It used to fail the run outright, which refused an ordinary request — a
+        It used to fail the run outright, which refused an ordinary request - a
         finance user asking for a quarter of postings. The hard limit on what one
         export may produce is the ROW CAP, measured on the actual result rather
         than guessed at from the calendar.
@@ -885,7 +885,7 @@ class ExportDeliveryTests(_ExportFixture, TestCase):
         self.assertNotIn(run.deliveries.get().token, str(body))
 
     def test_deliveries_are_skipped_when_no_rows_matched(self):
-        """An empty file is worse than no email — the recipient cannot tell why."""
+        """An empty file is worse than no email - the recipient cannot tell why."""
         self.definition.filters = [{
             "id": "invoice_date",
             "start": (self.today + datetime.timedelta(days=400)).isoformat(),
@@ -972,7 +972,7 @@ class ExportDeliveryTests(_ExportFixture, TestCase):
 
 
 # --------------------------------------------------------------------------- #
-# Dataset scope — entity-scoped versus tenant-scoped                          #
+# Dataset scope - entity-scoped versus tenant-scoped                          #
 # --------------------------------------------------------------------------- #
 class DatasetScopeTests(_ExportFixture, TestCase):
     """Scope is the dataset's declaration, not an assumption baked into the platform."""
@@ -1247,7 +1247,7 @@ class AnalyticsEndpointTests(_ExportFixture, TestCase):
         )
 
     def test_the_client_may_not_report_a_server_owned_event(self):
-        """run.triggered is the server's to state — accepting it from a browser would
+        """run.triggered is the server's to state - accepting it from a browser would
         let anyone inflate the reuse metric."""
         response = self.client.post("/v1/exports/analytics/", {
             "events": [{"name": "run.triggered", "properties": {"trigger": "MANUAL"}}],
@@ -1293,7 +1293,7 @@ class AnalyticsEndpointTests(_ExportFixture, TestCase):
 
         data = self.client.get("/v1/exports/analytics/summary/").json()["data"]
         self.assertEqual(data["runs"], 2)
-        # One from a saved definition, one quick — 50% reuse.
+        # One from a saved definition, one quick - 50% reuse.
         self.assertEqual(data["reuse"]["from_saved_definition"], 1)
         self.assertEqual(data["reuse"]["share"], 0.5)
         self.assertEqual(data["unhappy_runs"]["count"], 0)
@@ -1329,7 +1329,7 @@ class AnalyticsEndpointTests(_ExportFixture, TestCase):
         self.assertTrue(ExportAnalyticsEvent.objects.filter(pk=fresh.pk).exists())
 
     def test_analytics_never_breaks_the_request_that_emits_it(self):
-        """Telemetry is best-effort by contract — the opposite of the audit trail."""
+        """Telemetry is best-effort by contract - the opposite of the audit trail."""
         with patch(
             "vs_exports.models.ExportAnalyticsEvent.objects.create",
             side_effect=RuntimeError("analytics store down"),
@@ -1347,7 +1347,7 @@ class RetryRuleTests(_ExportFixture, TestCase):
     ``RETRYABLE_FAILURE_CODES`` was declared and used nowhere, and the run
     serializer reported ``retryable`` purely from "has a definition". A filter or
     permission failure therefore offered a Retry button that queued a run which
-    failed identically — a second wait and a second notification for nothing.
+    failed identically - a second wait and a second notification for nothing.
     """
 
     def setUp(self):

@@ -2,17 +2,17 @@
 # vs_notifications / serializers.py
 #
 # Serializers:
-#   NotificationListSerializer            — compact feed list (no body)
-#   NotificationDetailSerializer          — full record including body/html_body
-#   MarkReadSerializer                    — validates mark-read request payload
-#   AcknowledgeRouteSerializer            — validates viewed application routes
-#   NotificationHistorySerializer         — admin history log list view
-#   NotificationHistoryDetailSerializer   — admin history log detail view
-#   NotificationEventTypeSerializer       — event type read (all users)
-#   NotificationTemplateSerializer        — template management (Vision Staff)
-#   NotificationTemplatePreviewSerializer — preview render (Vision Staff)
-#   EffectiveSettingSerializer            — one row of the effective settings matrix
-#   SettingsBulkUpdateSerializer          — bulk PATCH payload validator
+#   NotificationListSerializer            - compact feed list (no body)
+#   NotificationDetailSerializer          - full record including body/html_body
+#   MarkReadSerializer                    - validates mark-read request payload
+#   AcknowledgeRouteSerializer            - validates viewed application routes
+#   NotificationHistorySerializer         - admin history log list view
+#   NotificationHistoryDetailSerializer   - admin history log detail view
+#   NotificationEventTypeSerializer       - event type read (all users)
+#   NotificationTemplateSerializer        - template management (Vision Staff)
+#   NotificationTemplatePreviewSerializer - preview render (Vision Staff)
+#   EffectiveSettingSerializer            - one row of the effective settings matrix
+#   SettingsBulkUpdateSerializer          - bulk PATCH payload validator
 #
 # FLS: Notification.metadata is INTERNAL-ONLY and is never exposed by any
 # serializer here. Do not add it.
@@ -32,7 +32,7 @@ from .services.routing import notification_action_url
 
 
 # ---------------------------------------------------------------------------
-# Notification — feed (list)
+# Notification - feed (list)
 # ---------------------------------------------------------------------------
 
 class NotificationPresentationMixin(serializers.ModelSerializer):
@@ -72,7 +72,7 @@ class NotificationListSerializer(NotificationPresentationMixin):
 
 
 # ---------------------------------------------------------------------------
-# Notification — detail
+# Notification - detail
 # ---------------------------------------------------------------------------
 
 class NotificationDetailSerializer(NotificationPresentationMixin):
@@ -80,7 +80,7 @@ class NotificationDetailSerializer(NotificationPresentationMixin):
     Full notification record including rendered body.
     Used for single-record retrieval (GET /notifications/{id}/).
 
-    metadata is deliberately absent — it is internal-only (FLS).
+    metadata is deliberately absent - it is internal-only (FLS).
     """
     event_type_key   = serializers.CharField(source="event_type.key",   read_only=True)
     event_type_label = serializers.CharField(source="event_type.label", read_only=True)
@@ -150,13 +150,13 @@ class AcknowledgeRouteSerializer(serializers.Serializer):
 
 
 # ---------------------------------------------------------------------------
-# Notification history — admin list
+# Notification history - admin list
 # ---------------------------------------------------------------------------
 
 class NotificationHistorySerializer(serializers.ModelSerializer):
     """
     Compact history log serializer for admin list view.
-    Body is excluded — fetch the detail endpoint for the full record.
+    Body is excluded - fetch the detail endpoint for the full record.
     """
     event_type_key   = serializers.CharField(source="event_type.key",   read_only=True)
     event_type_label = serializers.CharField(source="event_type.label", read_only=True)
@@ -192,20 +192,20 @@ class NotificationHistorySerializer(serializers.ModelSerializer):
 
 
 # ---------------------------------------------------------------------------
-# Notification history — admin detail
+# Notification history - admin detail
 # ---------------------------------------------------------------------------
 
 class NotificationHistoryDetailSerializer(NotificationHistorySerializer):
     """
     Full history record including rendered body and failure details.
-    metadata stays internal-only (FLS) — not exposed here.
+    metadata stays internal-only (FLS) - not exposed here.
     """
     class Meta(NotificationHistorySerializer.Meta):
         fields = NotificationHistorySerializer.Meta.fields + ["body"]
 
 
 # ---------------------------------------------------------------------------
-# Notification event type — read
+# Notification event type - read
 # ---------------------------------------------------------------------------
 
 class NotificationEventTypeSerializer(serializers.ModelSerializer):
@@ -231,7 +231,7 @@ class NotificationEventTypeSerializer(serializers.ModelSerializer):
 
 
 # ---------------------------------------------------------------------------
-# Notification template — Vision Staff management
+# Notification template - Vision Staff management
 # ---------------------------------------------------------------------------
 
 class NotificationTemplateSerializer(serializers.ModelSerializer):
@@ -299,7 +299,7 @@ class NotificationTemplateSerializer(serializers.ModelSerializer):
 
 
 # ---------------------------------------------------------------------------
-# Template preview — Vision Staff
+# Template preview - Vision Staff
 # ---------------------------------------------------------------------------
 
 class NotificationTemplatePreviewSerializer(serializers.Serializer):
@@ -343,7 +343,7 @@ class NotificationTemplatePreviewSerializer(serializers.Serializer):
 
 
 # ---------------------------------------------------------------------------
-# Effective settings matrix — read
+# Effective settings matrix - read
 # ---------------------------------------------------------------------------
 
 class EffectiveSettingSerializer(serializers.Serializer):
@@ -351,7 +351,7 @@ class EffectiveSettingSerializer(serializers.Serializer):
     One row of the EFFECTIVE settings matrix returned by GET .../settings/.
 
     Each row is one (event_type, channel) pair with its resolved value and the
-    layer that produced it. Not backed by a model — the view builds plain dicts
+    layer that produced it. Not backed by a model - the view builds plain dicts
     from resolve-layering, so this is a read-only shape validator/documenter.
     """
     event_type_key   = serializers.CharField()
@@ -365,7 +365,7 @@ class EffectiveSettingSerializer(serializers.Serializer):
 
 
 # ---------------------------------------------------------------------------
-# Settings bulk update — PATCH .../settings/update/
+# Settings bulk update - PATCH .../settings/update/
 # ---------------------------------------------------------------------------
 
 class SettingUpdateItemSerializer(serializers.Serializer):

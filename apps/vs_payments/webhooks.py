@@ -1,11 +1,11 @@
-"""Inbound webhook ingestion — verify, deduplicate, store, dispatch.
+"""Inbound webhook ingestion - verify, deduplicate, store, dispatch.
 
 The single entry point :func:`ingest_webhook` is the only thing the webhook view calls.
 It enforces the two non-negotiables of PSP webhooks:
 
-1. **Authenticity** — the raw body's signature must verify against the provider secret,
+1. **Authenticity** - the raw body's signature must verify against the provider secret,
    else we reject (401) and never act on it.
-2. **Idempotency** — every event is recorded under a unique ``dedupe_key``; a provider
+2. **Idempotency** - every event is recorded under a unique ``dedupe_key``; a provider
    retrying the same event finds the row already present and does nothing. The downstream
    ``confirm_*`` services are *also* idempotent (terminal-state short-circuit), so a
    duplicate can never book a second receipt/payout even under a race.
@@ -38,7 +38,7 @@ def ingest_webhook(*, provider: str, raw_body: bytes, headers: dict | None = Non
 
     This is the *fast, synchronous* half of the receiver: verify the signature, persist
     the event verbatim under its idempotency key, audit its arrival, and enqueue the
-    re-verify/book step for a Celery worker. The PSP only needs a prompt 200 ack — the
+    re-verify/book step for a Celery worker. The PSP only needs a prompt 200 ack - the
     outbound re-verification (an extra provider round-trip) happens off the request path
     in :func:`process_stored_event` via ``vs_payments.process_webhook_event``.
 
@@ -107,7 +107,7 @@ def process_stored_event(event_id: int) -> WebhookEvent | None:
     Idempotent by design: a missing or already-``PROCESSED`` event is a no-op, so a task
     retry (or a provider re-delivery that lands on the same row) can never double-book.
     Runs the same :func:`_dispatch` the synchronous path used to; on failure the event is
-    marked ``FAILED`` and the exception is *swallowed* — mirroring the platform's
+    marked ``FAILED`` and the exception is *swallowed* - mirroring the platform's
     "eager-mode first failure is final": the PSP re-delivers and ``confirm_*`` are
     idempotent, so re-raising would only surface a spurious 500 to the (already-acked) PSP.
     """

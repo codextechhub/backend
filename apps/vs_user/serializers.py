@@ -257,7 +257,7 @@ class UserCreateSerializer(serializers.Serializer):
         required=False, allow_blank=True, default='',
     )
     date_joined     = serializers.DateField(required=False, allow_null=True, default=None)
-    # Personal details (CX staff only) — prefilled onto the PlatformStaffProfile.
+    # Personal details (CX staff only) - prefilled onto the PlatformStaffProfile.
     date_of_birth   = serializers.DateField(required=False, allow_null=True, default=None)
     marital_status  = serializers.ChoiceField(
         choices=PlatformStaffProfile.MaritalStatus.choices,
@@ -445,7 +445,7 @@ class UserUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model  = User
         fields = ('first_name', 'last_name', 'phone', 'gender')
-        # role and user_type are intentionally excluded — changes go through
+        # role and user_type are intentionally excluded - changes go through
         # the TenantRoleChangeRequest workflow only.
         # Email changes go through the separate /email/change/ endpoint.
 
@@ -681,7 +681,7 @@ class PasswordResetAdminSerializer(serializers.ModelSerializer):
 
 
 class MyPasswordResetSerializer(serializers.ModelSerializer):
-    """Self-service view — omits the user field since it is always the requester."""
+    """Self-service view - omits the user field since it is always the requester."""
 
     class Meta:
         model  = PasswordResetRequest
@@ -719,7 +719,7 @@ class PositionInlineSerializer(serializers.ModelSerializer):
 
 
 class PlatformStaffProfileListSerializer(serializers.ModelSerializer):
-    """Slim representation for list endpoints — no sensitive payroll data."""
+    """Slim representation for list endpoints - no sensitive payroll data."""
 
     user = UserInlineSerializer(read_only=True)
     position = PositionInlineSerializer(read_only=True)
@@ -818,10 +818,10 @@ class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerial
         source='position', write_only=True, required=False, allow_null=True,
         queryset=Position.objects.all(),
     )
-    # org_node (the exact seat's node — could be a Team), department (the
+    # org_node (the exact seat's node - could be a Team), department (the
     # DEPARTMENT-tier ancestor), division (the
     # DIVISION-tier ancestor), and line manager are all DERIVED from the
-    # primary position — read only.
+    # primary position - read only.
     org_node             = OrgNodeInlineSerializer(read_only=True)
     department           = OrgNodeInlineSerializer(read_only=True)
     division             = OrgNodeInlineSerializer(read_only=True)
@@ -868,7 +868,7 @@ class PlatformStaffProfileSerializer(FieldSecurityMixin, serializers.ModelSerial
 
 
 # =============================================================================
-# Organogram — OrgNode / Position / PositionAssignment / MatrixReport
+# Organogram - OrgNode / Position / PositionAssignment / MatrixReport
 # =============================================================================
 
 class OrgNodeSerializer(serializers.ModelSerializer):
@@ -970,7 +970,7 @@ class PositionSerializer(serializers.ModelSerializer):
         read_only_fields = ('id', 'created_at', 'updated_at')
 
     # Occupancy from a single prefetched set of current assignments
-    # (PositionViewSet.get_queryset) — a 100-row list costs one query, not three
+    # (PositionViewSet.get_queryset) - a 100-row list costs one query, not three
     # per row. Falls back to the model's live query for the detail view.
     def _current_users(self, obj):
         pre = getattr(obj, '_current_assignments', None)

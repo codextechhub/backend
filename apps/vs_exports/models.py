@@ -3,12 +3,12 @@
 Four things, in the order a person meets them:
 
 :class:`ExportDefinition`
-    The *recipe* — dataset, entity, columns, filters, format, file name. Editing it
+    The *recipe* - dataset, entity, columns, filters, format, file name. Editing it
     changes future files only; files already produced are never altered.
 
 :class:`ExportRun`
-    One attempt to produce a file. Carries ``frozen_config`` — the configuration as it
-    was *at run time* — which is mandatory, not optional: it is the only way the run
+    One attempt to produce a file. Carries ``frozen_config`` - the configuration as it
+    was *at run time* - which is mandatory, not optional: it is the only way the run
     detail can honestly say what produced this file, and the only way the UI can show
     how the definition has drifted since.
 
@@ -90,7 +90,7 @@ class ExportDefinition(TimeStampedModel):
 
     columns = models.JSONField(
         default=list,
-        help_text="Ordered list of catalogue field ids — this is the column order in the file.",
+        help_text="Ordered list of catalogue field ids - this is the column order in the file.",
     )
     filters = models.JSONField(
         default=list,
@@ -98,7 +98,7 @@ class ExportDefinition(TimeStampedModel):
     )
     sort = models.JSONField(
         default=list, blank=True,
-        help_text="Ordered list of {field, direction} — direction is 'asc' or 'desc'.",
+        help_text="Ordered list of {field, direction} - direction is 'asc' or 'desc'.",
     )
 
     format = models.CharField(
@@ -128,7 +128,7 @@ class ExportDefinition(TimeStampedModel):
         max_length=8, choices=Sharing.choices, default=Sharing.PRIVATE,
     )
     is_draft = models.BooleanField(
-        default=False, help_text="A recipe that is not finished — visible, not runnable.",
+        default=False, help_text="A recipe that is not finished - visible, not runnable.",
     )
     is_archived = models.BooleanField(default=False)
 
@@ -136,8 +136,8 @@ class ExportDefinition(TimeStampedModel):
         default=False,
         help_text=(
             "Whether each run also sends a secure download link to the people this "
-            "export is shared with. The Export Centre destination is always on — it "
-            "is the record — so this is the only destination that is a choice."
+            "export is shared with. The Export Centre destination is always on - it "
+            "is the record - so this is the only destination that is a choice."
         ),
     )
 
@@ -265,7 +265,7 @@ class ExportRun(TimeStampedModel):
     rows_done = models.PositiveIntegerField(default=0)
     rows_total = models.PositiveIntegerField(
         null=True, blank=True,
-        help_text="Null means the UI renders indeterminate progress — expected, not an error.",
+        help_text="Null means the UI renders indeterminate progress - expected, not an error.",
     )
     row_count = models.PositiveIntegerField(
         null=True, blank=True, help_text="Rows actually written.",
@@ -374,7 +374,7 @@ class ExportFile(TimeStampedModel):
     row_count = models.PositiveIntegerField(default=0)
     columns_produced = models.JSONField(
         default=list,
-        help_text="Field ids actually written — may be fewer than the run requested.",
+        help_text="Field ids actually written - may be fewer than the run requested.",
     )
     available_until = models.DateTimeField(db_index=True)
     purged_at = models.DateTimeField(null=True, blank=True)
@@ -396,7 +396,7 @@ class ExportFile(TimeStampedModel):
 
     @property
     def is_expired(self) -> bool:
-        """Derived at read time — never a stored status."""
+        """Derived at read time - never a stored status."""
         return timezone.now() >= self.available_until
 
     @property
@@ -409,7 +409,7 @@ class ExportFile(TimeStampedModel):
 
 
 class ExportDownload(models.Model):
-    """Every download attempt on a file — allowed and refused alike.
+    """Every download attempt on a file - allowed and refused alike.
 
     Refusals are logged because "who tried and was told no" is exactly the question a
     compliance review asks, and a refusal that leaves no trace cannot be answered.
@@ -445,7 +445,7 @@ class ExportDelivery(TimeStampedModel):
 
     Separate from the run because a run can succeed while a delivery fails; without
     these rows the UI cannot say which happened and users retry the wrong thing.
-    Recipients receive a *link*, never an attachment — the token below resolves to the
+    Recipients receive a *link*, never an attachment - the token below resolves to the
     authenticated download endpoint and is worthless on its own.
     """
 
@@ -487,13 +487,13 @@ class ExportDelivery(TimeStampedModel):
 # Analytics                                                                   #
 # --------------------------------------------------------------------------- #
 class ExportAnalyticsEvent(models.Model):
-    """One product-analytics event — the pipeline that sits *beside* the audit trail.
+    """One product-analytics event - the pipeline that sits *beside* the audit trail.
 
     Deliberately unlike :class:`vs_audit.models.AuditEvent`: prunable rather than
     immutable, kept for :data:`vs_exports.analytics.RETENTION_DAYS` rather than
     forever, and carrying only counts and bucket labels. ``properties`` is filtered
     through :data:`vs_exports.analytics.SCHEMA` on the way in, so no row data or field
-    value can reach it — see :mod:`vs_exports.analytics` for why the two pipelines are
+    value can reach it - see :mod:`vs_exports.analytics` for why the two pipelines are
     separate.
 
     There is no entity column on purpose. This measures *behaviour*, not data, so the

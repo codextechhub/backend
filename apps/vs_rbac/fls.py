@@ -3,7 +3,7 @@ Field Level Security (FLS) mixin for DRF serializers.
 
 Protects individual fields behind permission keys so the backend
 strips unreadable fields from responses and rejects unauthorized
-writes — regardless of what the frontend renders.
+writes - regardless of what the frontend renders.
 
 Usage
 -----
@@ -25,7 +25,7 @@ Usage
 
 Behaviour
 ---------
-* Fields absent from both dicts are always exposed — FLS is opt-in per field.
+* Fields absent from both dicts are always exposed - FLS is opt-in per field.
 * When the serializer is called without a request context (management commands,
   login payload construction, tests that bypass auth) all fields pass through
   unchanged, so nothing silently disappears.
@@ -76,7 +76,7 @@ class FieldSecurityMixin:
         if not user or not getattr(user, "is_authenticated", False):
             return set()
 
-        # Vision super admins bypass FLS entirely — they get all fields regardless of grants.
+        # Vision super admins bypass FLS entirely - they get all fields regardless of grants.
         from vs_rbac.permissions import is_vision_super_admin
         if is_vision_super_admin(user):
             return None
@@ -113,7 +113,7 @@ class FieldSecurityMixin:
 
         user_perms = self._resolve_user_permissions()
         if user_perms is None:
-            return data  # no request context — skip FLS
+            return data  # no request context - skip FLS
 
         stripped: list[str] = []
         for field in list(data.keys()):

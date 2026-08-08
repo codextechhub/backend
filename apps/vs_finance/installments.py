@@ -1,16 +1,16 @@
-"""Installment plans and concessions — the "how they pay" / "give-back" of AR.
+"""Installment plans and concessions - the "how they pay" / "give-back" of AR.
 
 Two unrelated-but-adjacent receivable services live here:
 
-* **Payment plans** — split a receivable into dated installments. A *scheduling overlay
+* **Payment plans** - split a receivable into dated installments. A *scheduling overlay
   only*: nothing here touches the General Ledger. The invoice already sits in AR; the
   plan records the expected dates/amounts so progress, reminders and dunning have
   something to measure against. Settlement is reflected by distributing the linked
   invoice's settled amount across installments oldest-first.
 
-* **Concessions** — discounts, waivers and scholarships. These *do* post: ``Dr discounts
+* **Concessions** - discounts, waivers and scholarships. These *do* post: ``Dr discounts
   & allowances (contra-revenue), Cr AR control``, clearing that much of the invoice via
-  :attr:`Invoice.amount_credited` — a targeted, single-line credit on policy grounds.
+  :attr:`Invoice.amount_credited` - a targeted, single-line credit on policy grounds.
 
 Domain-neutral throughout: only generic customers, invoices and accounts. A school
 tenant's *scholarship/bursary* is simply a concession with ``kind=SCHOLARSHIP``. All
@@ -174,7 +174,7 @@ def _activate_payment_plan_atomic(plan, *, actor_user=None):
         )
 
     # Snapshot the invoice settlement that predates the plan. Because the plan spreads
-    # the *outstanding balance* (total minus what's already settled — e.g. a waiver),
+    # the *outstanding balance* (total minus what's already settled - e.g. a waiver),
     # that prior settlement is baked into total_amount and must not also be counted as
     # installment progress. Only settlement beyond this baseline advances the schedule.
     if plan.invoice_id is not None:  # Linked invoice plans need settlement baseline.
@@ -215,12 +215,12 @@ def refresh_plan_progress(plan, *, settled_amount=None, actor_user=None):
     """Distribute settlement across the plan's installments oldest-first.
 
     ``settled_amount`` (kobo) overrides the source figure; otherwise, for a plan linked
-    to an invoice, the settlement *since activation* is used — the invoice's
+    to an invoice, the settlement *since activation* is used - the invoice's
     :attr:`Invoice.settled_amount` (cash + non-cash credits) minus the plan's
     ``baseline_settled`` snapshot, so pre-plan credits/waivers baked into the plan total
     aren't double-counted. Each installment is filled in sequence, its ``amount_settled``
     and derived status updated. When the whole plan is settled it flips to COMPLETED.
-    Returns the plan. No GL effect — this only mirrors money already posted elsewhere.
+    Returns the plan. No GL effect - this only mirrors money already posted elsewhere.
     """
     if plan.plan_status not in (PaymentPlanStatus.ACTIVE, PaymentPlanStatus.COMPLETED):  # Draft/cancelled plans do not track progress.
         return plan
@@ -228,7 +228,7 @@ def refresh_plan_progress(plan, *, settled_amount=None, actor_user=None):
     if settled_amount is None:  # Derive settlement from linked invoice or current plan state.
         if plan.invoice_id is not None:  # Invoice-backed plans use invoice settlement.
             plan.invoice.refresh_from_db()
-            # Only settlement *after* the plan's baseline counts toward installments —
+            # Only settlement *after* the plan's baseline counts toward installments -
             # pre-plan credits/waivers are already reflected in the smaller total_amount.  # Avoid double-counting.
             settled_amount = plan.invoice.settled_amount - plan.baseline_settled  # Post-baseline settlement.
         else:  # Standalone plans have no invoice source.
@@ -290,7 +290,7 @@ def refresh_plans_for_invoice(invoice, *, actor_user=None):
 
 
 # --------------------------------------------------------------------------- #
-# Concessions — discounts / waivers / scholarships (Dr allowance, Cr AR)        #
+# Concessions - discounts / waivers / scholarships (Dr allowance, Cr AR)        #
 # --------------------------------------------------------------------------- #
 
 # Public wrapper for concession posting.
@@ -409,7 +409,7 @@ def _post_concession_atomic(concession, *, actor_user=None):
         balance_after=invoice.balance_due,  # Remaining invoice balance.
     )
 
-    # A concession settles part of the invoice — keep any active plan in step.  # Payment plans mirror settlement.
+    # A concession settles part of the invoice - keep any active plan in step.  # Payment plans mirror settlement.
     for plan in PaymentPlan.objects.filter(
         invoice=invoice, plan_status=PaymentPlanStatus.ACTIVE,  # Active invoice-backed plans.
     ):

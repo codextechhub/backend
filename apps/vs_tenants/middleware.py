@@ -27,7 +27,7 @@ def _record_proxy_activity(session, request, response):
 
     Writes and failures already land in the audit stream; the trail records
     what data the proxier viewed, deduped by path so browsing stays readable.
-    Never raises — bookkeeping must not break the proxied response.
+    Never raises - bookkeeping must not break the proxied response.
     """
     try:
         now = timezone.now()
@@ -50,7 +50,7 @@ def _record_proxy_activity(session, request, response):
                 update_fields.append("access_log")
             session.access_log = log
         session.save(update_fields=update_fields)
-    except Exception:  # pragma: no cover — defensive; see docstring.
+    except Exception:  # pragma: no cover - defensive; see docstring.
         pass
 
 

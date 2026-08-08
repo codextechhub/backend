@@ -57,7 +57,7 @@ class UserManager(BaseUserManager):
         else:
             # No password on creation.
             # The user sets their own password during activation
-            # via the invitation link — see models/invitation.py.
+            # via the invitation link - see models/invitation.py.
             user.set_unusable_password()
         user.full_clean()
         user.save(using=self._db)
@@ -84,8 +84,8 @@ class UserManager(BaseUserManager):
 
 class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     """
-    Every person who logs into any part of CodeX Vision — Vision staff,
-    school admins, teachers, students, parents — is a record here.
+    Every person who logs into any part of CodeX Vision - Vision staff,
+    school admins, teachers, students, parents - is a record here.
     """
 
     workflow_document_type = "PLATFORM_USER_CREATION"
@@ -147,7 +147,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         max_length=32, choices=UserType.choices,
         help_text=(
             'Inert domain marker for the person\'s persona. Migrates into the '
-            'future profile models and MUST NEVER drive authorization — all '
+            'future profile models and MUST NEVER drive authorization - all '
             'access decisions run through tenant RBAC, not this field.'
         ),
     )
@@ -169,7 +169,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     password_changed_at = models.DateTimeField(null=True, blank=True)
     last_login_at       = models.DateTimeField(null=True, blank=True)
 
-    # Tracks which admin created this user — useful for audit and support.
+    # Tracks which admin created this user - useful for audit and support.
     invited_by = models.ForeignKey(
         'self', on_delete=models.SET_NULL,
         null=True, blank=True, related_name='invited_users',
@@ -259,7 +259,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         # Derive the tenant BEFORE super().full_clean(): clean_fields() runs
         # first inside it and would otherwise collect a spurious
         # {'tenant': ['This field cannot be null.']}. Setting it in clean()
-        # is too late — clean_fields() has already run by then.
+        # is too late - clean_fields() has already run by then.
         self._derive_tenant()
         super().full_clean(*args, **kwargs)
 
@@ -303,7 +303,7 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
             self.is_active = False
         elif self.status == self.Status.ACTIVE:
             self.is_active = True
-        # LOCKED: is_active left unchanged — blocked at RBAC layer, not Django auth
+        # LOCKED: is_active left unchanged - blocked at RBAC layer, not Django auth
 
     # ── Properties ────────────────────────────────────────────────────────────
 
@@ -350,7 +350,7 @@ class UserInvitation(TimeStampedModel):
         SENT    = 'SENT',    'Sent'
         FAILED  = 'FAILED',  'Failed'
 
-    # OneToOne — a user can only have one invitation record at a time.
+    # OneToOne - a user can only have one invitation record at a time.
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -398,7 +398,7 @@ class UserInvitation(TimeStampedModel):
         """
         Mark as used after successful activation.
         After this, visiting vision.codexng.com/invite/{user.id}/
-        will show an error — account is already active.
+        will show an error - account is already active.
         """
         self.is_used = True
         self.save(update_fields=['is_used'])
@@ -452,7 +452,7 @@ class LoginSession(TimeStampedModel):
     device_label = models.CharField(max_length=128, blank=True, default='')
     last_seen_at = models.DateTimeField(default=timezone.now)
 
-    # JTI of the refresh token — links this session to the SimpleJWT blacklist.
+    # JTI of the refresh token - links this session to the SimpleJWT blacklist.
     refresh_jti = models.CharField(max_length=64, blank=True, default='', db_index=True)
 
     is_active  = models.BooleanField(default=True)
@@ -495,7 +495,7 @@ class AuthAttempt(TimeStampedModel):
 
     email_entered = models.EmailField(max_length=254)
 
-    # Null if the email was not found — do not reveal its existence.
+    # Null if the email was not found - do not reveal its existence.
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='auth_attempts',
@@ -533,7 +533,7 @@ class AuthAttempt(TimeStampedModel):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # AccountLockout
-# One row per user — keeps lockout state separate from the User model
+# One row per user - keeps lockout state separate from the User model
 # so the User model stays lean and lockout queries stay simple.
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -579,7 +579,7 @@ class AccountLockout(TimeStampedModel):
 
 class PasswordResetRequest(TimeStampedModel):
     """
-    Tracks password reset tokens. Only the SHA-256 hash is stored —
+    Tracks password reset tokens. Only the SHA-256 hash is stored -
     never the raw token. This limits exposure if the database is compromised.
 
     requested_by distinguishes self-service (1 hr expiry) from
@@ -655,7 +655,7 @@ class AuthEventLog(TimeStampedModel):
         PASSWORD_CHANGED         = 'PASSWORD_CHANGED',         'Password Changed'
         EMAIL_CHANGED            = 'EMAIL_CHANGED',            'Email Changed'
 
-    # Who performed the action — could be the user themselves or an admin.
+    # Who performed the action - could be the user themselves or an admin.
     actor = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL,
         null=True, blank=True, related_name='auth_events_as_actor',
@@ -697,7 +697,7 @@ class PlatformStaffProfile(TimeStampedModel):
     """
     Extended personal / HR profile for CX Staff (User.UserType.CX_STAFF).
     One row per platform staff member. Kept separate from User so the auth
-    model stays lean — same pattern as AccountLockout / LoginSession.
+    model stays lean - same pattern as AccountLockout / LoginSession.
 
     CX-only by design. School-side staff profiles will live in the future
     `staff` app and are intentionally out of scope here.
@@ -740,7 +740,7 @@ class PlatformStaffProfile(TimeStampedModel):
     )
     bio             = models.TextField(blank=True, default='')
 
-    # ── Contact (personal — work email/phone live on User) ────────────────────
+    # ── Contact (personal - work email/phone live on User) ────────────────────
     personal_email      = models.EmailField(max_length=254, blank=True, default='')
     alternate_phone     = models.CharField(max_length=32, blank=True, default='')
     residential_address = models.TextField(blank=True, default='')
@@ -773,7 +773,7 @@ class PlatformStaffProfile(TimeStampedModel):
     date_joined       = models.DateField(null=True, blank=True)
     date_exited       = models.DateField(null=True, blank=True)
 
-    # ── Payroll (sensitive — gated behind FLS at the serializer layer) ────────
+    # ── Payroll (sensitive - gated behind FLS at the serializer layer) ────────
     bank_name      = models.CharField(max_length=120, blank=True, default='')
     account_name   = models.CharField(max_length=200, blank=True, default='')
     account_number = models.CharField(max_length=20,  blank=True, default='')
@@ -849,7 +849,7 @@ class PlatformStaffProfile(TimeStampedModel):
 
 
 # =============================================================================
-# Organogram — OrgNode / Position / PositionAssignment / MatrixReport
+# Organogram - OrgNode / Position / PositionAssignment / MatrixReport
 # =============================================================================
 #
 # Position-based organisational chart for CX (platform) staff only.
@@ -897,7 +897,7 @@ class OrgNode(TimeStampedModel):
         max_length=16, choices=Kind.choices, default=Kind.DEPARTMENT,
     )
     # PROTECT, not SET_NULL: orphaning a child would produce a parentless
-    # Department/Team, a state clean() below forbids outright — such rows are
+    # Department/Team, a state clean() below forbids outright - such rows are
     # then neither editable (the serializer re-runs clean()) nor deletable, and
     # drop out of every department/division roll-up. Delete or re-parent the
     # subtree first; the API answers 409 with the blocking counts.
@@ -1029,7 +1029,7 @@ class Position(TimeStampedModel):
 
     title        = models.CharField(max_length=150)
     code         = models.CharField(max_length=40, unique=True)
-    # The org node this seat belongs to — may be a Division, Department, or Team.
+    # The org node this seat belongs to - may be a Division, Department, or Team.
     org_node     = models.ForeignKey(
         OrgNode,
         on_delete=models.PROTECT,

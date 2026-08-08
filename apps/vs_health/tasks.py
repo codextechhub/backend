@@ -1,6 +1,6 @@
 """Celery beat tasks: probes, queue snapshots, alert evaluation, rollups, pruning.
 
-All tasks are idempotent and best-effort — a missed or eager run is safe. They
+All tasks are idempotent and best-effort - a missed or eager run is safe. They
 are scheduled in ``apps/celery.py``.
 """
 from __future__ import annotations
@@ -74,7 +74,7 @@ def refresh_module_service_statuses(window_minutes: int = 15) -> int:
     """Derive module-service status from real request metrics.
 
     The "module" services (schools/billing/reports) are route groups of the
-    monolith, not separate processes — nothing can probe them independently.
+    monolith, not separate processes - nothing can probe them independently.
     Their honest status is the observed error rate + p95 latency of their own
     routes over the trailing window; with too little traffic (see
     ``MIN_P95_SAMPLE``) there is no usable signal and the status is UNKNOWN,
@@ -108,7 +108,7 @@ def refresh_module_service_statuses(window_minutes: int = 15) -> int:
         error_rate = round(errors / requests * 100, 2) if requests else 0.0
         p95 = percentile_from_hist(hist, 95)
         # window_status returns UNKNOWN for zero traffic *and* for windows below
-        # the small-sample floor — both are "no signal", not a claim.
+        # the small-sample floor - both are "no signal", not a claim.
         svc.set_status(window_status(requests, error_rate, p95))
         updated += 1
     return updated

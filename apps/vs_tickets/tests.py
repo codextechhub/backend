@@ -46,7 +46,7 @@ def _branch(school, name):
 
 def _user(email, first, last, *, user_type, school=None, branch=None):
     # ``school`` is accepted for call-site readability but the tenant is derived
-    # from the branch (or defaults to codex for CX staff) — User.school is gone.
+    # from the branch (or defaults to codex for CX staff) - User.school is gone.
     return User.objects.create_user(
         email=email,
         first_name=first,
@@ -231,7 +231,7 @@ class TicketServiceTests(TicketFixtureMixin, TestCase):
 
     def test_school_manage_grant_does_not_leak_cross_tenant(self):
         # A SCHOOL user holding tickets.ticket.manage manages tickets inside
-        # their own tenant only — the cross-tenant support span is reserved
+        # their own tenant only - the cross-tenant support span is reserved
         # for PLATFORM-tenant staff.
         _grant(
             self.school_a, self.peer,
@@ -468,7 +468,7 @@ class TicketPermissionSeedTests(TestCase):
 
         self.assertTrue(Permission.objects.filter(key="tickets.ticket.view").exists())
         self.assertTrue(Permission.objects.filter(key="tickets.comment.post").exists())
-        # Creation is keyless by design — the key must not exist.
+        # Creation is keyless by design - the key must not exist.
         self.assertFalse(Permission.objects.filter(key="tickets.ticket.create").exists())
         teacher = PrebuiltRoleTemplate.objects.get(key="teacher")
         self.assertTrue(

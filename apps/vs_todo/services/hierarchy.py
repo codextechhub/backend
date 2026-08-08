@@ -2,7 +2,7 @@
 
 The ToDo design treats the org as a tree: a person has a manager, a manager has
 reports, and "your area" is you plus everyone beneath you. None of that is
-stored on the task — it is read live from the existing CX organogram in vs_user
+stored on the task - it is read live from the existing CX organogram in vs_user
 (Position.reports_to / PositionAssignment), so the ToDo tree always tracks the
 current org structure.
 
@@ -110,7 +110,7 @@ class TodoHierarchy:
 
     @classmethod
     def area_user_ids(cls, user: User) -> Set[int]:
-        """The user plus everyone beneath them — their full scope (design: areaIds)."""
+        """The user plus everyone beneath them - their full scope (design: areaIds)."""
         ids = {d.pk for d in cls.descendant_users(user)}
         ids.add(user.pk)
         return ids

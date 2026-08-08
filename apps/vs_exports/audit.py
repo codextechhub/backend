@@ -2,7 +2,7 @@
 
 Every event listed in the handoff (D10·3) goes through :func:`record`, so the module
 key, entity type and severity are decided in one place rather than at twenty call
-sites. Audit failures never block business logic — :func:`vs_audit.services.emit_audit_event`
+sites. Audit failures never block business logic - :func:`vs_audit.services.emit_audit_event`
 already swallows its own errors, and nothing here adds a path that can raise.
 
 Two rules the design is explicit about and this module enforces by construction:

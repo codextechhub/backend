@@ -1,4 +1,4 @@
-"""Tests for vs_todo — the ToDo org-accountability tool.
+"""Tests for vs_todo - the ToDo org-accountability tool.
 
 Covers the two things the design is really about: the organogram-derived
 hierarchy (roll-up + assign-down rules) and task status/stats. The org tree is
@@ -268,7 +268,7 @@ class DashboardTests(OrganogramFixtureMixin, TestCase):
 
 
 class PermissionSeedTests(TestCase):
-    """The seed flow must capture every permission wired into views — the
+    """The seed flow must capture every permission wired into views - the
     organogram gap (platform.* defined only in create_superuser, missing from
     seed_all_permissions) is what this guards against, plus the new todo keys."""
 

@@ -2,7 +2,7 @@
 
 Statutory tax **remittance**: a `TaxObligation` maps a tax type (VAT / WHT / PAYE /
 pension) to the GL **liability control account** that accumulates it; a `TaxFiling`
-is one return for one period — **prepared** from the GL, **filed** (frozen, with VAT
+is one return for one period - **prepared** from the GL, **filed** (frozen, with VAT
 netting / penalties), then **paid** (`Dr liability, Cr bank`). The liabilities were
 parked by the source flows (sales VAT, payroll PAYE/pension, WHT); this slice is how
 they leave the books.
@@ -14,7 +14,7 @@ Routes (mounted at `/v1/finance/`): `tax-obligations/…`, `tax-obligations/outs
 
 ## 1. What it is (and what it is NOT)
 
-- **`TaxObligation`** (`models/ops.py:531`): master data — tax type → liability
+- **`TaxObligation`** (`models/ops.py:531`): master data - tax type → liability
   account (+ optional `recoverable_account`, input VAT, netted at filing), authority,
   frequency, `filing_day`. Configurable data, not hard-coded (`unique(entity, code)`).
 - **`TaxFiling`** (`models/ops.py:588`): one return, `DRAFT → FILED → PAID`.
@@ -28,7 +28,7 @@ Routes (mounted at `/v1/finance/`): `tax-obligations/…`, `tax-obligations/outs
   the obligation's `filing_day` (day N of the month after period end); an explicit
   date still wins.
 - **Un-file a return that's been paid.** `unfile/` reverts a FILED return to DRAFT
-  (reversing its netting/penalty journal) — but only while **no** remittance has been
+  (reversing its netting/penalty journal) - but only while **no** remittance has been
   recorded; a paid return needs its payment reversed first (§4).
 
 ## 2. Domain model
@@ -48,13 +48,13 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 | Method + path | permission key | what it does | request body | response |
 |---|---|---|---|---|
 | `GET/POST /tax-obligations/` | `finance.tax.view` / `.manage` | Obligation list / create | `code`, `name`, `obligation_type`, `liability_account`, `recoverable_account?`, `authority_name?`, `frequency?`, `filing_day?` | obligation |
-| `GET/PATCH /tax-obligations/<pk>/` | `finance.tax.view` / `.manage` | One obligation / edit | — | obligation |
-| `GET /tax-obligations/outstanding/` | `finance.tax.view` | Per-obligation **unremitted balance** now sitting in each control account (all-time GL net, less recoverable) | — | rows |
+| `GET/PATCH /tax-obligations/<pk>/` | `finance.tax.view` / `.manage` | One obligation / edit | - | obligation |
+| `GET /tax-obligations/outstanding/` | `finance.tax.view` | Per-obligation **unremitted balance** now sitting in each control account (all-time GL net, less recoverable) | - | rows |
 | `GET/POST /tax-filings/` | `finance.tax.view` / `.file` | Filings list (paginated) / **prepare** a draft from the GL | `obligation`, `period_start`, `period_end`, `due_date?` | filing |
-| `GET /tax-filings/summary/` | `finance.tax.view` | KPIs over all filings | — | summary |
-| `GET /tax-filings/<pk>/` | `finance.tax.view` | One filing | — | detail |
+| `GET /tax-filings/summary/` | `finance.tax.view` | KPIs over all filings | - | summary |
+| `GET /tax-filings/<pk>/` | `finance.tax.view` | One filing | - | detail |
 | `POST /tax-filings/<pk>/file/` | `finance.tax.file` | **File**: freeze, net input VAT, book penalty | `filed_date`, `filing_reference?`, `adjustment_amount?`, `adjustment_account?` | filing |
-| `POST /tax-filings/<pk>/unfile/` | `finance.tax.file` | **Un-file**: FILED → DRAFT, reversing the netting journal; refused once any payment made | — | filing |
+| `POST /tax-filings/<pk>/unfile/` | `finance.tax.file` | **Un-file**: FILED → DRAFT, reversing the netting journal; refused once any payment made | - | filing |
 | `POST /tax-filings/<pk>/pay/` | `finance.tax.pay` | **Remit** (full/partial) | `bank_account`, `pay_date`, `amount?` | filing |
 
 ## 4. Lifecycle / state machine
@@ -67,7 +67,7 @@ DRAFT ──file──▶ FILED ──pay (×N, partial ok)──▶ PAID
 - **Prepare** (`prepare_filing`, `tax_filing.py:72`): derives the amount owed from GL
   movement; re-running for the same `(obligation, period_start, period_end)` updates
   the existing DRAFT. A **new** draft whose window overlaps any other filing for the
-  obligation is **rejected** (names the clashing return) — which also blocks
+  obligation is **rejected** (names the clashing return) - which also blocks
   re-drafting an already-FILED period.
 - **File** (`file_filing`): DRAFT-only; refuses a zero amount-due; freezes figures,
   posts the netting/penalty journal (only if needed).
@@ -79,7 +79,7 @@ DRAFT ──file──▶ FILED ──pay (×N, partial ok)──▶ PAID
 
 ## 5. Calculations
 
-**Prepare** — GL movement over the period (`_account_movement`, `tax_filing.py:46`,
+**Prepare** - GL movement over the period (`_account_movement`, `tax_filing.py:46`,
 POSTED lines only, bounded by `entry__date`):
 ```
 gross       = max(credit − debit, 0)  on the liability account   (credit-normal payable)
@@ -87,13 +87,13 @@ recoverable = min(max(debit − credit, 0), gross)  on the recoverable account (
 amount_due  = gross − recoverable + adjustment
 ```
 **Outstanding** (`outstanding_obligations`, `:340`): same movement, **all-time**, per
-active obligation — "what would be owed if a return were filed for everything to date."
+active obligation - "what would be owed if a return were filed for everything to date."
 
 ## 6. What posting does to the ledger
 
 **Prepare posts nothing** (a draft worksheet).
 
-**File** (`_file_filing_atomic`, `tax_filing.py:175`) — a journal **only if** there is
+**File** (`_file_filing_atomic`, `tax_filing.py:175`) - a journal **only if** there is
 input VAT to net or a penalty, `source=CLOSING`:
 ```
 Dr  liability account        recoverable   ← net input VAT off the output payable
@@ -122,24 +122,24 @@ filing → PAID.
 
 ## 8. Gotchas / known limitations
 
-- ✅ **Un-file exists** (`unfile/`) — FILED → DRAFT with the netting journal reversed;
+- ✅ **Un-file exists** (`unfile/`) - FILED → DRAFT with the netting journal reversed;
   refused once any remittance is recorded (reverse the payment first). PAID remains
   final by design.
 - ✅ **Overlapping periods are rejected** at prepare time (any other filing for the
-  obligation whose window straddles the new one, exact-draft refresh excluded) — the
+  obligation whose window straddles the new one, exact-draft refresh excluded) - the
   double-remittance hole is closed.
-- ✅ **`filing_day` now drives the default `due_date`** — when the caller omits it,
+- ✅ **`filing_day` now drives the default `due_date`** - when the caller omits it,
   prepare sets day `filing_day` of the month after `period_end` (clamped to month
   length; December rolls the year). An explicit `due_date` always wins; a refresh
   with no explicit date re-derives it.
 - **`outstanding/` scans all-time GL movement** per obligation (two aggregates each)
-  — fine at this scale.
+  - fine at this scale.
 - `pay/` accepts a filing already PAID *only* to reject on `balance_due ≤ 0`; partials
   keep `filing_status=FILED` until fully remitted.
 
 ## 9. Permissions & tenant isolation
 
-- Verbs: `finance.tax.{view, manage (obligations), file, pay}` — filing and paying
+- Verbs: `finance.tax.{view, manage (obligations), file, pay}` - filing and paying
   are separate, `pay` is CRITICAL in the seed.
 - Entity-scoped resolution everywhere (`filter(entity=…, pk=…)`); `pay_filing`
   rejects a bank account from another entity. ✅

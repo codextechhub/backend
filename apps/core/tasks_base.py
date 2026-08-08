@@ -1,10 +1,10 @@
 """
-TrackedTask — the platform-wide Celery base class (wired via
+TrackedTask - the platform-wide Celery base class (wired via
 ``Celery(task_cls="core.tasks_base:TrackedTask")``), so EVERY task is
 automatically tracked in :class:`core.models.BackgroundJob`.
 
 Attribution: callers attach the owner by passing reserved kwargs to
-``.delay()`` / ``.apply_async()`` — they are stripped before the task runs,
+``.delay()`` / ``.apply_async()`` - they are stripped before the task runs,
 so task signatures stay untouched::
 
     execute_import_batch_task.delay(
@@ -15,17 +15,17 @@ so task signatures stay untouched::
         _job_kind="import",
     )
 
-``_job_owner_id`` is the ACTOR who triggered the work — never the subject the
+``_job_owner_id`` is the ACTOR who triggered the work - never the subject the
 work is *about*. An invitation email to Jane, queued by admin Ada, is owned by
 Ada: she triggered it, she sees it in View Queues, she is the one told when it
 lands. Passing the subject there hands a stranger someone else's queue row and
 completion notification. Omit ``_job_tenant_id`` unless it must differ from the
-owner's tenant — it is derived from the owner otherwise.
+owner's tenant - it is derived from the owner otherwise.
 
 Tasks queued without these kwargs (beat schedules, internal fan-out) are
 recorded as system rows (owner=None) when they start.
 
-On completion the owner gets an in-app notification (best-effort — a
+On completion the owner gets an in-app notification (best-effort - a
 notification failure never fails the task). Pass ``_job_notify=False`` for
 per-recipient fan-out (one email job per imported row) so the actor gets the
 queue rows without one bell notification per row.
@@ -98,7 +98,7 @@ class TrackedTask(Task):
                     kind=meta["_job_kind"] or _short_kind(self.name or ""),
                     task_name=self.name or "",
                     status=BackgroundJob.Status.QUEUED,
-                    # Absent kwarg means "notify" — only an explicit False opts out.
+                    # Absent kwarg means "notify" - only an explicit False opts out.
                     notify_owner=meta["_job_notify"] is not False,
                 ),
             )

@@ -1,8 +1,8 @@
-"""Sourcing services — competitive quotation before commitment.
+"""Sourcing services - competitive quotation before commitment.
 
 The pre-PO funnel: a buyer issues a :class:`~vs_procurement.models.RequestForQuotation`
 (optionally off an approved requisition), vendors reply with
-:class:`~vs_procurement.models.VendorQuotation` s, and the winning quote is **awarded** —
+:class:`~vs_procurement.models.VendorQuotation` s, and the winning quote is **awarded** -
 which converts it into a DRAFT :class:`~vs_procurement.models.PurchaseOrder` ready to be
 issued and received against. None of this touches the General Ledger; the first GL event
 is still the goods receipt on the resulting PO. All money is integer kobo.
@@ -33,7 +33,7 @@ def set_rfq_invitations(rfq, vendors, *, actor_user=None):
     ``vendors`` is an iterable of :class:`Vendor` objects. Each must belong to the RFQ's
     entity and pass :func:`vendor_purchase_block_reason`; the list is de-duplicated. A
     vendor that has **already responded** (a quotation exists from it on this RFQ) may
-    not be dropped — removing its invitation would strand that bid's history, so the call
+    not be dropped - removing its invitation would strand that bid's history, so the call
     is rejected with a clear error rather than silently deleting it.
 
     Only a draft RFQ's addressee list is editable; once issued the invitations are the
@@ -66,7 +66,7 @@ def set_rfq_invitations(rfq, vendors, *, actor_user=None):
     if stranded:
         codes = ", ".join(sorted(existing[vid].vendor.code for vid in stranded))
         raise SourcingError(
-            f"Cannot remove vendor(s) {codes} — they have already responded to this RFQ.",
+            f"Cannot remove vendor(s) {codes} - they have already responded to this RFQ.",
         )
 
     to_remove = set(existing) - wanted_ids
@@ -86,7 +86,7 @@ def set_rfq_invitations(rfq, vendors, *, actor_user=None):
 def issue_rfq(rfq, *, actor_user=None):
     """Move a DRAFT RFQ to ISSUED so vendors can quote against it.
 
-    Requires at least one line **and** at least one invited vendor — an RFQ is a request
+    Requires at least one line **and** at least one invited vendor - an RFQ is a request
     for quotation *sent to vendors*, so issuing one with no addressees is meaningless.
     The RFQ row is re-read under lock so draft edits and issue cannot cross in flight.
     """
@@ -155,7 +155,7 @@ def cancel_rfq(rfq, *, reason="", actor_user=None):
         if rfq.rfq_status == RfqStatus.AWARDED:
             raise SourcingError("An awarded RFQ cannot be cancelled.")
         return rfq
-    # Abandoning the RFQ abandons every live bid on it — reject them so none stays open.
+    # Abandoning the RFQ abandons every live bid on it - reject them so none stays open.
     _reject_live_quotations(rfq, actor_user=actor_user)
     rfq.rfq_status = RfqStatus.CANCELLED
     rfq.save(update_fields=["rfq_status", "updated_at"])
@@ -173,7 +173,7 @@ def close_rfq(rfq, *, reason="", actor_user=None):
     """Finish an ISSUED RFQ without awarding it; rejects its live quotations.
 
     The deliberate "we sourced but chose no one" outcome (distinct from CANCELLED, which
-    abandons before/around issue). Only an ISSUED RFQ can be closed — a draft was never
+    abandons before/around issue). Only an ISSUED RFQ can be closed - a draft was never
     open, and AWARDED/CLOSED/CANCELLED are terminal.
     """
     from .models import RequestForQuotation
@@ -250,7 +250,7 @@ def submit_quotation(quotation, *, actor_user=None):
     if not quotation.lines.exists():
         raise SourcingError("A quotation needs at least one priced line.")
     # Invited-only: a quote may only be submitted by a vendor still invited on its RFQ.
-    # Defensive — the create path already enforces this, but an invitation could have
+    # Defensive - the create path already enforces this, but an invitation could have
     # been withdrawn while the draft sat around.
     if not RfqInvitation.objects.filter(rfq=rfq, vendor=vendor).exists():
         raise SourcingError(
@@ -321,7 +321,7 @@ def award_quotation(quotation, *, order_date=None, actor_user=None):
         )
     if not quotation.lines.exists():
         raise SourcingError("Cannot award a quotation with no lines.")
-    # A lapsed offer is no longer a firm price — reject the award rather than commit to it.
+    # A lapsed offer is no longer a firm price - reject the award rather than commit to it.
     if quotation.valid_until is not None and quotation.valid_until < datetime.date.today():
         raise SourcingError(
             f"Quotation {quotation.document_number} validity lapsed on "
@@ -363,7 +363,7 @@ def award_quotation(quotation, *, order_date=None, actor_user=None):
         if expense is None:
             raise SourcingError(
                 f"Quotation line '{qline.description}' has no expense account and the "
-                f"vendor has no default — set one before awarding.",
+                f"vendor has no default - set one before awarding.",
             )
         requisition_line = (
             qline.rfq_line.requisition_line

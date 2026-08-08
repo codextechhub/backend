@@ -83,21 +83,21 @@ class NotificationTemplateAdmin(admin.ModelAdmin):
 # Inspect platform and school overrides together for support/debugging.
 @admin.register(NotificationSetting)
 class NotificationSettingAdmin(admin.ModelAdmin):
-    # school is nullable — a NULL school is a platform-wide default.
+    # school is nullable - a NULL school is a platform-wide default.
     list_display  = ["scope_label", "event_type", "channel", "is_enabled", "updated_at"]
     list_filter   = ["channel", "is_enabled", "event_type__source_module"]
     search_fields = ["tenant__name", "tenant__slug", "event_type__key"]
     readonly_fields = ["id", "updated_at"]
     ordering = ["tenant__name", "event_type__source_module", "event_type__key", "channel"]
 
-    # Show platform-wide rows too — the tenant-aware default manager would hide
+    # Show platform-wide rows too - the tenant-aware default manager would hide
     # NULL-school rows outside a school context; use the unscoped manager.
     def get_queryset(self, request):
         return NotificationSetting.all_objects.select_related("tenant", "event_type")
 
     @admin.display(description="Scope", ordering="tenant__name")
     def scope_label(self, obj):
-        return obj.tenant.name if obj.tenant_id else "— global —"
+        return obj.tenant.name if obj.tenant_id else "- global -"
 
     fieldsets = (
         ("Scope", {
@@ -139,7 +139,7 @@ class NotificationAdmin(admin.ModelAdmin):
         return False
 
     def has_change_permission(self, request, obj=None):
-        return False  # Read-only in admin — modifications go through the API
+        return False  # Read-only in admin - modifications go through the API
 
     fieldsets = (
         ("Dispatch", {
@@ -157,7 +157,7 @@ class NotificationAdmin(admin.ModelAdmin):
         ("Internal", {
             "fields": ("metadata",),
             "classes": ("collapse",),
-            "description": "Internal-only correlation data — never exposed via the API.",
+            "description": "Internal-only correlation data - never exposed via the API.",
         }),
         ("Read state", {
             "fields": ("is_read", "read_at"),

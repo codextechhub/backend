@@ -1,19 +1,19 @@
-"""Accounting-date integrity — can this transaction have happened on this date?
+"""Accounting-date integrity - can this transaction have happened on this date?
 
 The engine has always had two independent notions of "when":
 
-* **real time** — ``created_at``, the order rows were entered; and
-* **the accounting date** — ``invoice_date`` / ``payment_date`` / ``refund_date`` /
+* **real time** - ``created_at``, the order rows were entered; and
+* **the accounting date** - ``invoice_date`` / ``payment_date`` / ``refund_date`` /
   ``note_date`` / ``concession_date`` / ``write_off_date``, the date the movement
   takes effect in the ledger, chosen by the user.
 
-Every sub-ledger guard used to validate against *current, undated* state — an
-invoice's ``balance_due`` right now, a customer's lifetime credit right now — and
+Every sub-ledger guard used to validate against *current, undated* state - an
+invoice's ``balance_due`` right now, a customer's lifetime credit right now - and
 then post that decision on the user's chosen accounting date. Those two disagree the
 moment a date is backdated, which let the books record things that could not have
 happened: a refund paying out credit that arrives eight days later, a write-off
 clearing an invoice not yet raised, a receipt settling a bill that does not exist.
-The symptom is always the same shape — a control account (AR, or customer credit
+The symptom is always the same shape - a control account (AR, or customer credit
 2140) goes negative for a stretch of the timeline, and no "as at" report can ever be
 reconciled.
 
@@ -31,7 +31,7 @@ by allocations and refunds. Asking for the lots ``as_of`` a date is what makes
 refund availability answerable at the refund's own date rather than at "now".
 
 What backdating *is* still allowed: posting into any open period, receiving cash
-before the invoice exists (a genuine prepayment — the cash sits in 2140 and applies
+before the invoice exists (a genuine prepayment - the cash sits in 2140 and applies
 when the invoice arrives), and allocating an older credit to a newer invoice. That
 last one is legitimate and common; the rule there is not "refuse" but "date the
 reclassification journal on the later of the two documents", which is what
@@ -66,8 +66,8 @@ def accounting_date(document) -> _date | None:
     """The date ``document`` takes effect in the ledger, or ``None`` if it has none.
 
     Generic on purpose so shared planners (allocation plans, batch validators) can
-    order mixed document types — an invoice against a debit note, a receipt against
-    a vendor bill — without every caller learning each model's date field name.
+    order mixed document types - an invoice against a debit note, a receipt against
+    a vendor bill - without every caller learning each model's date field name.
     """
     for field in ACCOUNTING_DATE_FIELDS:  # Probe the known date fields in priority order.
         value = getattr(document, field, None)  # Read the candidate accounting date.
@@ -78,7 +78,7 @@ def accounting_date(document) -> _date | None:
 
 # Describe a document for a causality error message.
 def describe(document, fallback="the source document") -> str:
-    """A short human label for ``document`` — its number, else its type and pk."""
+    """A short human label for ``document`` - its number, else its type and pk."""
     number = getattr(document, "document_number", None)  # Prefer the user-facing number.
     if number:
         return str(number)
@@ -95,7 +95,7 @@ def ensure_on_or_after(*, subject, subject_date, source, source_date, remedy="")
     ``subject`` is the dependent movement ("Refund RF-126", "Write-off WO-12") and
     ``source`` is what it draws on ("the credit on RC-128", "invoice INV-9"); both
     are plain strings so the message reads as a sentence. ``remedy`` is appended
-    verbatim — give the user the concrete way out ("Date it 9 Sep 2026 or later.").
+    verbatim - give the user the concrete way out ("Date it 9 Sep 2026 or later.").
 
     A missing date on either side is not an error here: the period guard already
     refuses a dateless posting, and this guard must not turn an unrelated
@@ -115,7 +115,7 @@ def effective_allocation_date(credit_date, target_dates) -> _date:
     """The later of a credit's date and the newest document it is being applied to.
 
     Applying an older credit to a newer invoice is ordinary business (a prepayment
-    finding its bill), so it must not be refused — but the reclassification journal
+    finding its bill), so it must not be refused - but the reclassification journal
     ``Dr customer credit · Cr AR`` cannot be dated before the receivable it clears
     exists, or AR carries a credit balance for the gap. Dating the journal at the
     later of the two is the correct and standard treatment.
@@ -136,7 +136,7 @@ class CreditLot:
 
     ``remaining`` is what is left in the customer-credit liability for this document:
     its value less what has been allocated to invoices and less what has already been
-    refunded out. ``date`` is the lot's own accounting date — the date from which its
+    refunded out. ``date`` is the lot's own accounting date - the date from which its
     credit exists at all, and the whole point of modelling credit as lots.
     """
 
@@ -153,9 +153,9 @@ def credit_lots(entity, customer_ids=None, *, as_of=None) -> dict[int, list[Cred
     """Customer credit as FIFO-ordered :class:`CreditLot` parcels, keyed by customer id.
 
     A lot is included only when its own accounting date is on or before ``as_of``
-    (``None`` means "no cutoff — everything posted"). Ordering is oldest-lot-first,
-    then by id, so every consumer — the refund payout, the availability endpoint,
-    the receipts screen — drains and reports the same parcels in the same order.
+    (``None`` means "no cutoff - everything posted"). Ordering is oldest-lot-first,
+    then by id, so every consumer - the refund payout, the availability endpoint,
+    the receipts screen - drains and reports the same parcels in the same order.
 
     Lots with nothing left are dropped: callers want spendable credit, and keeping
     zero rows would make every FIFO walk scan exhausted receipts forever.
@@ -206,7 +206,7 @@ def plan_credit_draw(lots, amount: int) -> list[tuple[CreditLot, int]]:
     """Split ``amount`` kobo across ``lots`` FIFO, returning ``[(lot, taken)]``.
 
     Stops when the amount is satisfied. Returns a short plan if the lots cannot cover
-    it — the caller is expected to have already checked availability and to treat a
+    it - the caller is expected to have already checked availability and to treat a
     shortfall as a guard failure rather than silently under-refunding.
     """
     plan: list[tuple[CreditLot, int]] = []

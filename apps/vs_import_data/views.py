@@ -101,7 +101,7 @@ class SchoolContextMixin:
 
     - School-tenant users: always scoped to their own asserted tenant (request.tenant).
     - Platform-tenant users: unscoped (see every tenant's data). ?school= inputs no
-      longer influence scoping — the asserted tenant is authoritative.
+      longer influence scoping - the asserted tenant is authoritative.
     """
 
     def scope_tenant(self):

@@ -1,21 +1,21 @@
-"""Spend-approval services — the bridge between procurement docs and ``vs_workflow``.
+"""Spend-approval services - the bridge between procurement docs and ``vs_workflow``.
 
 Requisitions, purchase orders and vendor invoices are *submitted* into the generic
 ``vs_workflow`` engine instead of being approved at a direct endpoint. The engine runs
 a per-document-type template whose stages are **threshold-gated** (a senior stage only
 runs when the document's amount clears a configurable bar), resolves approvers via RBAC,
-collects their votes, and — on a terminal decision — calls back into the registered
+collects their votes, and - on a terminal decision - calls back into the registered
 handler (see :mod:`vs_procurement.workflow_handlers`). Those callbacks land here:
 
-* :func:`apply_approved`  — the workflow fully approved the document.
-* :func:`apply_rejected`  — the workflow terminally rejected it.
-* :func:`reset_pending`   — the requester withdrew / an admin cancelled it.
+* :func:`apply_approved`  - the workflow fully approved the document.
+* :func:`apply_rejected`  - the workflow terminally rejected it.
+* :func:`reset_pending`   - the requester withdrew / an admin cancelled it.
 
 :func:`submit_for_approval` is the hand-off the API calls; :func:`ensure_default_approval_templates`
 provisions the platform-wide default templates so any :class:`~vs_finance.models.LedgerEntity`
 works out of the box (branch/school templates still override via the engine's cascade).
 
-This module touches **no GL** — ``approval_state`` is a governance overlay independent of
+This module touches **no GL** - ``approval_state`` is a governance overlay independent of
 the ledger ``status``; for a requisition the approval also drives the existing
 ``DocumentStatus`` gate that PO creation depends on.
 """
@@ -70,8 +70,8 @@ def ensure_default_approval_templates(
 
     One template per approvable document type, each a two-stage ladder:
 
-    * **manager** — always runs; any holder of ``manager_permission`` can approve.
-    * **senior**  — gated by ``inclusion_condition`` ``amount >= threshold`` (kobo), so
+    * **manager** - always runs; any holder of ``manager_permission`` can approve.
+    * **senior**  - gated by ``inclusion_condition`` ``amount >= threshold`` (kobo), so
       only high-value documents escalate to a holder of ``senior_permission``.
 
     Templates are platform-scoped (``school=None, branch=None``) so they act as the

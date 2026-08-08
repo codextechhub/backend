@@ -4,7 +4,7 @@ from . import views
 
 urlpatterns = [
     # -------------------------------------------------------------------------
-    # Permission vocabulary — Module / Resource / Action
+    # Permission vocabulary - Module / Resource / Action
     # -------------------------------------------------------------------------
     path(
         "vision/permission-modules/",

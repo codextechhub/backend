@@ -1,7 +1,7 @@
 """One request for the console landing screen (`/overview`).
 
 The screen shows eight numbers that used to be eight endpoints. They were already
-issued in parallel, so the cost was never their sum — the win here is elsewhere:
+issued in parallel, so the cost was never their sum - the win here is elsewhere:
 
   * one authentication, tenant resolution and permission evaluation instead of
     eight;
@@ -15,7 +15,7 @@ issued in parallel, so the cost was never their sum — the win here is elsewher
 
 ## Permissions
 
-The endpoint itself needs nothing but an active account — this is the landing
+The endpoint itself needs nothing but an active account - this is the landing
 screen, everybody gets one. Each *section* is then gated by the same permission
 its own endpoint enforces, so this cannot become a back door to a number the
 caller could not otherwise fetch:
@@ -59,7 +59,7 @@ MY_TASKS_LIMIT = 3
 
 
 def _schools() -> dict:
-    """Active-school count — the conditional aggregate SchoolStatsView uses."""
+    """Active-school count - the conditional aggregate SchoolStatsView uses."""
     from vs_schools.models import School, SchoolStatus
 
     row = School.objects.aggregate(
@@ -92,7 +92,7 @@ def _tasks(user) -> dict:
 
     Ordering mirrors what the screen used to do client-side: overdue first, then
     by priority, then by nearest deadline. Sorted in Python over the list that
-    ``stats_for`` already materialised — no second query.
+    ``stats_for`` already materialised - no second query.
     """
     from vs_todo.serializers import TaskSerializer
     from vs_todo.services.stats import own_tasks_qs, stats_for
@@ -117,7 +117,7 @@ def _tasks(user) -> dict:
 
 
 def _approvals(user, school) -> dict:
-    """Decisions waiting on the caller — shares the queue screen's own rules."""
+    """Decisions waiting on the caller - shares the queue screen's own rules."""
     from vs_workflow.services import my_queue as my_queue_svc
 
     return {"pending": my_queue_svc.pending_approval_count(user, school)}
@@ -134,7 +134,7 @@ def _submissions(user, school) -> dict:
 
 
 def _notifications(user) -> dict:
-    """Unread in-app count — the same query behind the bell badge."""
+    """Unread in-app count - the same query behind the bell badge."""
     from vs_notifications.constants import ChannelChoices
     from vs_notifications.models import Notification
 
@@ -160,7 +160,7 @@ def _tickets(user) -> dict:
 
 
 def _health() -> dict:
-    """Service-derived posture only — not the whole Command Center payload."""
+    """Service-derived posture only - not the whole Command Center payload."""
     from vs_health import services as health_svc
 
     posture = health_svc.overall_posture()
@@ -177,7 +177,7 @@ def _setup(user, tenant) -> dict:
     Booleans, not counts, and deliberately so: the checklist renders a tick, and
     a count would hand the caller a number from a screen they may not be allowed
     to open. Each flag carries the same key as the screen it describes and is
-    omitted — not returned False — when the caller lacks it, so "not set up" and
+    omitted - not returned False - when the caller lacks it, so "not set up" and
     "not your business" stay distinguishable, exactly like the sections above.
 
     `.exists()` is a LIMIT 1 on an indexed column; neither flag walks the table.
@@ -222,7 +222,7 @@ def console_overview(request) -> dict:
     if getattr(user, "user_type", None) == "CX_STAFF":
         data["tasks"] = _tasks(user)
 
-    # Own queue and own submissions — no key beyond an active account, matching
+    # Own queue and own submissions - no key beyond an active account, matching
     # the dashboard endpoints they replace.
     data["approvals"] = _approvals(user, school)
     data["submissions"] = _submissions(user, school)

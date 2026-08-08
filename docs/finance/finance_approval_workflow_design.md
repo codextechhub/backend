@@ -1,11 +1,11 @@
-# Finance Approval Workflow — Design Doc
+# Finance Approval Workflow - Design Doc
 
 **Status:** Draft for review · **Author:** finance audit follow-up · **Date:** 2026-07-06
 **Scope:** How money-moving finance documents get a maker-checker / multi-level
-approval gate by plugging into the platform's **existing** `vs_workflow` engine —
+approval gate by plugging into the platform's **existing** `vs_workflow` engine -
 *not* by building a bespoke finance approval system.
 
-> TL;DR — Finance does **not** get its own approval code. Every approvable finance
+> TL;DR - Finance does **not** get its own approval code. Every approvable finance
 > document (a) exposes `workflow_document_type`, (b) is submitted through
 > `vs_workflow.submit_for_approval`, and (c) posts to the GL only inside the
 > engine's `on_approved` callback. The `DocumentStatus` enum already carries the
@@ -69,13 +69,13 @@ This is the crux of the whole design and must be settled first.
 
 2. **Platform/product entities have `source_school = None`.** The submission
    cascade already falls back to a **platform-wide** template
-   (`school=None, branch=None`) — `submission.py:41-45` — and approver scope
+   (`school=None, branch=None`) - `submission.py:41-45` - and approver scope
    `PLATFORM` passes `school=None` to RBAC. So platform books (CODEX) approve
    against platform-level roles. This is correct and needs no special-casing.
 
 3. **Accepted limitation:** approver eligibility is resolved at the *school*
    level, so two entities under the same school share one approver pool for a
-   given permission key. That is fine — approvers are people at a school, and the
+   given permission key. That is fine - approvers are people at a school, and the
    *entity* remains the ledger/isolation boundary. If per-entity approver
    isolation is ever needed, it is a future `approver_scope = ENTITY` extension in
    the engine, **out of scope here.** → **Confirm this is acceptable (Q1).**
@@ -100,7 +100,7 @@ post**, reusing the states already in the enum
 callback, never before.** So the money cannot hit the ledger until approval
 completes. Concretely, for a journal:
 
-1. User creates the journal (`DRAFT`) — unchanged.
+1. User creates the journal (`DRAFT`) - unchanged.
 2. User calls the new `POST /journals/<id>/submit/` → `submit_for_approval(journal, user)`.
    Handler's `validate_document` runs the **posting preconditions** (period open,
    balanced, accounts active) *now*, so a doomed document is rejected before it
@@ -111,7 +111,7 @@ completes. Concretely, for a journal:
    system>)`. Document → `POSTED`. (`on_rejected` → `DRAFT`; `on_returned` →
    `DRAFT` with the requester notified to amend.)
 
-Nothing in the posting engine changes — we are only moving *when* `post_journal`
+Nothing in the posting engine changes - we are only moving *when* `post_journal`
 is called and *who* is allowed to trigger it. The balanced-or-rejected, closed-
 period, audit-row guarantees remain exactly as they are.
 
@@ -120,7 +120,7 @@ period, audit-row guarantees remain exactly as they are.
 `post_journal(actor_user=...)` stamps `posted_by`. Options: (a) the final
 approver, (b) the original requester, (c) a system user. **Recommendation: stamp
 the original requester as `created_by` (already so) and the final approver as
-`posted_by`** — this is the cleanest maker-checker trail. The `WorkflowAuditLog`
+`posted_by`** - this is the cleanest maker-checker trail. The `WorkflowAuditLog`
 holds the full vote history regardless. → **Confirm (Q2).**
 
 ---
@@ -138,10 +138,10 @@ must be set per your policy):
 | Credit note | `finance.credit_note` | `/credit-notes/<id>/submit/` | 1 checker; + finance mgr ≥ ₦1m |
 | Debit note | `finance.debit_note` | same endpoint, kind-routed | 1 checker |
 | Refund (cash out to customer) | `finance.refund` | `/refunds/<id>/submit/` | 1 checker always (cash leaves) |
-| Bad-debt write-off | `finance.write_off` | `/write-offs/<id>/submit/` | Finance mgr; + controller ≥ ₦1m — **needs a new `WriteOffRequest` document (see below)** |
+| Bad-debt write-off | `finance.write_off` | `/write-offs/<id>/submit/` | Finance mgr; + controller ≥ ₦1m - **needs a new `WriteOffRequest` document (see below)** |
 | Concession (discount/waiver/scholarship) | `finance.concession` | `/concessions/<id>/submit/` | 1 checker; policy-holder ≥ threshold |
 | Expense claim | `finance.expense_claim` | replaces current post flow | Line mgr → finance (already half-built) |
-| Payroll run | `finance.payroll_run` | `/payroll-runs/<id>/submit/` | HR/finance mgr — high value, always |
+| Payroll run | `finance.payroll_run` | `/payroll-runs/<id>/submit/` | HR/finance mgr - high value, always |
 | Payout batch (money out via PSP) | `payments.payout_batch` | `/payout-batches/<id>/submit/` | 1 checker + controller ≥ threshold |
 | Budget | `finance.budget` | migrate existing `approve/` to engine | 1 approver (today it's a single call) |
 
@@ -149,17 +149,17 @@ must be set per your policy):
 
 Two "money-out" documents don't fit the base handler as-is:
 
-- **Write-offs** have no document today — `write_off_invoice` is an *action* on an
+- **Write-offs** have no document today - `write_off_invoice` is an *action* on an
   invoice, recorded only in `FinanceAuditLog`. **Decision:** add a lightweight
   `WriteOffRequest` document (`DRAFT → APPROVED → POSTED`, `entity`+`branch`+`invoice`
   +`amount`+`write_off_account`) that the workflow attaches to; `on_approved` calls
   the existing `write_off_invoice` service. This is the correct ERP shape (a
   write-off *should* be an approvable, first-class record) and is the **one
-  sanctioned new table** — it supersedes §10's "no new finance tables" for this doc
+  sanctioned new table** - it supersedes §10's "no new finance tables" for this doc
   type. The `ARAdjustmentListView`/`_writeoff_rows` reader should later prefer the
   new document over the audit-log reconstruction (backward-compatible: keep reading
   the log for historical write-offs).
-- **Payout batches** (`vs_payments`, gate the PSP *submission* not a GL post) —
+- **Payout batches** (`vs_payments`, gate the PSP *submission* not a GL post) -
   **now built** (2026-07-07): `PayoutBatch` gains `workflow_document_type =
   "payments.payout_batch"` + a `school`/`branch` bridge; a
   `vs_payments/workflow_handlers.py` handler whose `on_approved` calls
@@ -173,8 +173,8 @@ So cut-1 approval coverage = **journals → refunds → write-offs (via
 `WriteOffRequest`) → payout batches** (all done).
 
 **Invoices, customer receipts, and fee-run generation are intentionally NOT
-gated** — they are revenue capture, not disbursement, and gating them would break
-day-to-day billing. (Invoices instead get the *notification* track — separate
+gated** - they are revenue capture, not disbursement, and gating them would break
+day-to-day billing. (Invoices instead get the *notification* track - separate
 doc.) → **Confirm the matrix & which docs are in the first cut (Q3).**
 
 Threshold routing uses a `BRANCH` stage + two routes:
@@ -213,7 +213,7 @@ call the right `post_*` service in `on_approved`). New file:
 `apps/vs_finance/workflow_handlers.py` (auto-discovered by the engine on startup).
 
 ```python
-# apps/vs_finance/workflow_handlers.py  (sketch — not final)
+# apps/vs_finance/workflow_handlers.py  (sketch - not final)
 from vs_workflow.handlers import register_handler
 from vs_workflow.handlers.base import BaseWorkflowHandler
 from vs_workflow.exceptions import InvalidInstanceStateError
@@ -266,16 +266,16 @@ class JournalHandler(_FinancePostOnApprove):
 If `post_*` raises after approval (e.g. the period closed *while the doc sat in the
 queue*), we must not leave a half-approved document. Two options:
 
-- **(A) Preferred — re-validate at approval time and fail the transition.** The
+- **(A) Preferred - re-validate at approval time and fail the transition.** The
   engine records the action inside a transaction; if `on_approved` raises, the
   whole approval action rolls back and the stage stays ACTIVE with an error
   surfaced to the approver ("cannot post: period JAN-2026 is closed"). The
   document stays `APPROVED`-pending and a durable finance rejection audit row is
   written (the existing `record_rejection` path). Approver retries after the block
   clears, or the requester cancels. **This needs confirmation that the engine's
-  action transaction propagates a handler exception** — see Q4; if it swallows
+  action transaction propagates a handler exception** - see Q4; if it swallows
   exceptions, we add an explicit `POSTING_FAILED` state.
-- (B) Fallback — split "approve" from "post": `on_approved` only sets `APPROVED`,
+- (B) Fallback - split "approve" from "post": `on_approved` only sets `APPROVED`,
   and a separate `/journals/<id>/post/` (now gated on `status == APPROVED`)
   performs the posting. More clicks, but bulletproof.
 
@@ -295,7 +295,7 @@ class, mirroring the existing split convention):
 - `finance.refund.approve`, `finance.write_off.approve`, `finance.credit_note.approve`,
   `finance.concession.approve`, `finance.payroll.approve`, `payments.payout.approve`, …
 - Existing `*.post` keys are **retired from direct API exposure** for gated
-  documents — posting becomes an engine-only side effect. (Keep them internally;
+  documents - posting becomes an engine-only side effect. (Keep them internally;
   the views that exposed `/post/` either 404 or become the §5-B manual retry,
   gated on `APPROVED`.)
 
@@ -328,7 +328,7 @@ aren't ready. A small helper `approval_required(entity, document_type) -> bool`
 Approval notifications are **already** engine-native: set `notification_events`
 on each template (e.g. `{"stage_activated": true, "instance_approved": true,
 "instance_rejected": true, "instance_returned": true}`) and the engine's
-`dispatch_notification` Celery task calls `vs_notifications` — *no finance code
+`dispatch_notification` Celery task calls `vs_notifications` - *no finance code
 sends anything directly*, which is exactly the "route all notifications through the
 notification system" rule you set.
 
@@ -341,12 +341,12 @@ step):
    `finance.approval_rejected`. The engine event keys must map to these.
 2. **The school-scope caveat again:** `NotificationService.send` requires a
    `school`. Platform-entity documents (`school=None`) can't dispatch school-scoped
-   notifications — approver notice for platform books needs either a platform
+   notifications - approver notice for platform books needs either a platform
    notifications channel or in-app-only. → **Q6.**
 3. Recipients = the current stage's eligible approvers (for "requested") and the
    requester (for approved/rejected/returned). The engine already knows both.
 
-Dunning and invoice-issued emails are the **same spine** but a different track —
+Dunning and invoice-issued emails are the **same spine** but a different track -
 covered in the next doc; they will call `NotificationService.send` with
 `billing`/`finance` event keys rather than going through the workflow engine.
 
@@ -363,7 +363,7 @@ covered in the next doc; they will call `NotificationService.send` with
 - The document drawer links to its `WorkflowInstance` detail (stage history + audit)
   via `get_document_summary(...).link`.
 - Gate the Submit button on `finance.<doc>.submit`; the Approve/Reject actions are
-  already gated by the workflow endpoints. FE gating stays advisory — the backend
+  already gated by the workflow endpoints. FE gating stays advisory - the backend
   engine is the real gate.
 
 ---
@@ -374,17 +374,17 @@ covered in the next doc; they will call `NotificationService.send` with
   documents need no `workflow_instance_id` column (optional denormalised FK later
   if we want fast reverse lookups).
 - One tiny model change: the `school` **property** on `FinanceDocument` (no
-  migration — it's a Python property).
+  migration - it's a Python property).
 - New permission rows (seed command update, no schema migration).
 - `WorkflowTemplate` rows are **data**, published via the existing
-  `/v1/workflow/templates/publish/` API or a seed command — not migrations.
+  `/v1/workflow/templates/publish/` API or a seed command - not migrations.
 - The `DocumentStatus` values already exist, so **no enum migration**.
 
 ---
 
 ## 11. Testing plan (security-first, per house rules)
 
-1. **SoD:** requester cannot approve own document (`REQUESTER_CANNOT_APPROVE`) —
+1. **SoD:** requester cannot approve own document (`REQUESTER_CANNOT_APPROVE`) -
    assert 403 on self-approval for each document type.
 2. **Gate integrity:** with a template present, direct `/post/` is refused; the GL
    is untouched until `on_approved` fires (assert no `JournalEntry` POSTED, no
@@ -408,26 +408,26 @@ after.
 
 ## 12. Decisions (confirmed 2026-07-06)
 
-- **Q1 — Approver scoping:** ✅ Accept school-level scoping (default). Entity-level
+- **Q1 - Approver scoping:** ✅ Accept school-level scoping (default). Entity-level
   approver isolation is a future engine extension, out of scope.
-- **Q2 — Poster identity:** ✅ Default — `posted_by` = final approver,
+- **Q2 - Poster identity:** ✅ Default - `posted_by` = final approver,
   `created_by` = requester.
-- **Q3 — First cut:** ✅ **Money-out documents** — journals, refunds, bad-debt
+- **Q3 - First cut:** ✅ **Money-out documents** - journals, refunds, bad-debt
   write-offs, and payout batches ship together in cut 1 (the highest-risk cash-out
   paths). Remaining types (credit/debit notes, concessions, expense claims,
   payroll, budget) follow on the same base handler.
-- **Q4 — Post-failure behaviour:** ✅ **Option A** — a posting failure inside
+- **Q4 - Post-failure behaviour:** ✅ **Option A** - a posting failure inside
   `on_approved` rolls the approval action back and leaves the stage ACTIVE with the
   error surfaced to the approver, who retries once the block clears. *Build
   prerequisite:* confirm `vs_workflow`'s action transaction propagates a handler
   exception (see §5); if it swallows it, add an explicit `POSTING_FAILED` state and
   keep the §5-B manual retry endpoint as the fallback path.
-- **Q5 — Rollout:** ✅ **Opt-in by template** — a document type is approval-gated
+- **Q5 - Rollout:** ✅ **Opt-in by template** - a document type is approval-gated
   only when a `WorkflowTemplate` exists for it; otherwise it direct-posts as today.
   Enable one document type + one school at a time.
-- **Q6 — Platform-entity notifications:** ✅ Default — in-app only for CODEX (no
+- **Q6 - Platform-entity notifications:** ✅ Default - in-app only for CODEX (no
   school). A platform notifications channel is a later enhancement.
-- **Q7 — Thresholds:** ✅ Ship with placeholders; tune the real ₦ figures per
+- **Q7 - Thresholds:** ✅ Ship with placeholders; tune the real ₦ figures per
   document type after cut 1 lands.
 
 ---

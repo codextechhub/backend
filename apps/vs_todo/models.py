@@ -1,5 +1,5 @@
 # models.py
-# Models for the vs_todo module — "ToDo — Org Accountability".
+# Models for the vs_todo module - "ToDo - Org Accountability".
 #
 # Contents:
 #   TimeStampedModel  - re-used shared abstract base (from vs_user)
@@ -28,7 +28,7 @@ class Task(TimeStampedModel):
 
     A task is either self-set (``assigned_by`` is NULL) or handed down by a
     manager (``assigned_by`` points at that manager). A manager may only assign
-    to someone in their area — enforced in the service/serializer layer against
+    to someone in their area - enforced in the service/serializer layer against
     the live organogram, since the tree is not stored on the row.
     """
 
@@ -65,7 +65,7 @@ class Task(TimeStampedModel):
 
     # Snapshot of the assignee's department at creation time (derived from their
     # org node). Kept denormalized so historical tasks keep their department even
-    # if the person later moves teams — mirrors the design carrying it per task.
+    # if the person later moves teams - mirrors the design carrying it per task.
     department = models.CharField(max_length=150, blank=True, default="")
 
     # ── State ─────────────────────────────────────────────────────────────────

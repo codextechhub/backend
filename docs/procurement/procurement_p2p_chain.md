@@ -54,31 +54,31 @@ standard paginated `{pagination, data}` envelope (`views/base.py:281-298`).
 |---|---|---|---|---|
 | `GET /purchase-orders/` | `procurement.purchase_order.view` | List/search POs with derived receipt stage | Query `status`, `vendor`, `search` | Paginated PO headers/progress; no nested document arrays (`views/orders.py:129-155,202-218`; `serializers.py:835-849`) |
 | `POST /purchase-orders/` | `procurement.purchase_order.create` | Create a priced DRAFT PO from an approved requisition | `requisition`, `vendor`, `order_date`, `expected_date?`, `delivery_address?`, `payment_terms?`, `currency?`, `contract?` | `201` full PO + lines (`views/orders.py:220-244`; `serializers.py:776-812`) |
-| `GET /purchase-orders/summary/` | `procurement.purchase_order.view` | Entity-wide issued-PO pipeline KPIs | — | `{as_of, open, partially_received, awaiting_receipt, po_value_mtd}` (`views/orders.py:158-200,317-324`) |
-| `GET /purchase-orders/<pk>/` | `procurement.purchase_order.view` | Read source, progress, receipts, invoices, and workflow id | — | Full PO + `workflow_instance_id` (`views/orders.py:260-270`; `serializers.py:776-812`) |
+| `GET /purchase-orders/summary/` | `procurement.purchase_order.view` | Entity-wide issued-PO pipeline KPIs | - | `{as_of, open, partially_received, awaiting_receipt, po_value_mtd}` (`views/orders.py:158-200,317-324`) |
+| `GET /purchase-orders/<pk>/` | `procurement.purchase_order.view` | Read source, progress, receipts, invoices, and workflow id | - | Full PO + `workflow_instance_id` (`views/orders.py:260-270`; `serializers.py:776-812`) |
 | `PATCH /purchase-orders/<pk>/` | `procurement.purchase_order.update` | Edit only mutable DRAFT commercial terms; lines stay fixed | `vendor?`, `order_date?`, `expected_date?`, `delivery_address?`, `payment_terms?`, `contract?` | Updated full PO (`views/orders.py:272-314`) |
-| `POST /purchase-orders/<pk>/submit/` | `procurement.purchase_order.submit` | Submit PO to workflow; does not post | — | Workflow id/status, approval state, document (`views/requisitions.py:363-375`) |
+| `POST /purchase-orders/<pk>/submit/` | `procurement.purchase_order.submit` | Submit PO to workflow; does not post | - | Workflow id/status, approval state, document (`views/requisitions.py:363-375`) |
 | `GET /goods-receipts/` | `procurement.goods_receipt.view` | List entity GRNs | Query `status` | Paginated receipt headers/progress, no nested lines (`views/receiving.py:123-144`; `serializers.py:947-955`) |
 | `POST /goods-receipts/` | `procurement.goods_receipt.create` | Create an unposted physical-receipt snapshot | `vendor`, `purchase_order?`, `received_date`, `reference?`, `narration?`; `lines[]`: `po_line?`, `line_no?`, `description?`, `expense_account?`, `cost_center?`, `accepted_qty?`, `rejected_qty?`, `unit_price?` | `201` GRN + lines, including additive `cost_center_id/code` (`views/receiving.py:56-120,146-176`; `serializers.py:856-875`) |
-| `GET /goods-receipts/<pk>/` | `procurement.goods_receipt.view` | Read one GRN | — | GRN + derived receipt status/counts + lines (`views/receiving.py:178-198`; `serializers.py:856-945`) |
+| `GET /goods-receipts/<pk>/` | `procurement.goods_receipt.view` | Read one GRN | - | GRN + derived receipt status/counts + lines (`views/receiving.py:178-198`; `serializers.py:856-945`) |
 | `PATCH /goods-receipts/<pk>/` | `procurement.goods_receipt.update` | Edit DRAFT header; `lines` fully replaces receipt lines | `received_date?`, `reference?`, `narration?`, `lines?` using POST line fields | Updated GRN (`views/receiving.py:200-225`) |
-| `POST /goods-receipts/<pk>/post/` | `procurement.goods_receipt.post` | Post accepted value and advance PO receipt quantities | — | Posted GRN + journal id and receipt lines (`views/receiving.py:228-252`) |
+| `POST /goods-receipts/<pk>/post/` | `procurement.goods_receipt.post` | Post accepted value and advance PO receipt quantities | - | Posted GRN + journal id and receipt lines (`views/receiving.py:228-252`) |
 | `GET /vendor-invoices/` | `procurement.vendor_invoice.view` | List/search bills by independent lifecycle fields | Query `status`, `payment_status`, `match_status`, `vendor`, `display_status`, `search` | Paginated invoice headers; no lines (`views/receiving.py:456-483`; `serializers.py:1034-1040`) |
 | `POST /vendor-invoices/` | `procurement.vendor_invoice.create` | Create and price a DRAFT bill | `vendor`, `purchase_order?`, `invoice_date`, `due_date?`, `currency?`, `vendor_reference?`, `narration?`; `lines[]`: `po_line?`, `grn_line?`, `line_no?`, `description?`, `expense_account?`, `cost_center?`, `quantity?`, `unit_price?`, `tax_code?` | `201` invoice + match/payment/posting/activity overlays; line response includes additive `cost_center_id/code` (`views/receiving.py:332-388,485-518`; `serializers.py:964-978`) |
-| `GET /vendor-invoices/summary/` | `procurement.vendor_invoice.view` | Bill-review and overdue KPIs | — | `{as_of, under_review, approved, overdue, disputed}` (`views/receiving.py:521-538`) |
-| `GET /vendor-invoices/<pk>/` | `procurement.vendor_invoice.view` | Read match comparisons, allocations, posting lines, activity | — | Full invoice detail overlay (`views/receiving.py:391-453,541-555`) |
+| `GET /vendor-invoices/summary/` | `procurement.vendor_invoice.view` | Bill-review and overdue KPIs | - | `{as_of, under_review, approved, overdue, disputed}` (`views/receiving.py:521-538`) |
+| `GET /vendor-invoices/<pk>/` | `procurement.vendor_invoice.view` | Read match comparisons, allocations, posting lines, activity | - | Full invoice detail overlay (`views/receiving.py:391-453,541-555`) |
 | `PATCH /vendor-invoices/<pk>/` | `procurement.vendor_invoice.update` | Edit an unsubmitted/rejected DRAFT; optional `lines` fully replaces lines | `vendor?`, `purchase_order?`, `invoice_date?`, `due_date?`, `vendor_reference?`, `narration?`, `lines?` using POST line fields | Updated full invoice (`views/receiving.py:557-604`) |
-| `POST /vendor-invoices/<pk>/match/` | `procurement.vendor_invoice.match` | Reprice and run three-way match without GL posting | — | Full invoice with match result/comparisons (`views/receiving.py:607-627`) |
-| `POST /vendor-invoices/<pk>/submit/` | `procurement.vendor_invoice.submit` | Reprice/match, then submit current evidence to workflow | — | Workflow id/status, approval state, document (`views/requisitions.py:378-397`) |
+| `POST /vendor-invoices/<pk>/match/` | `procurement.vendor_invoice.match` | Reprice and run three-way match without GL posting | - | Full invoice with match result/comparisons (`views/receiving.py:607-627`) |
+| `POST /vendor-invoices/<pk>/submit/` | `procurement.vendor_invoice.submit` | Reprice/match, then submit current evidence to workflow | - | Workflow id/status, approval state, document (`views/requisitions.py:378-397`) |
 | `POST /vendor-invoices/<pk>/post/` | `procurement.vendor_invoice.post`; additionally `procurement.vendor_invoice.override_variance` when overriding | Post an approved bill; optionally override a blocking match | `allow_variance?` (JSON boolean only) | Posted full invoice detail (`views/receiving.py:630-669`) |
 | `GET /vendor-payments/` | `procurement.vendor_payment.view` | List/search payment instructions | Query `status`, `approval_state`, `search` | Paginated payment headers with allocations (`views/vendor_payments.py:165-185`; `serializers.py:1071-1130`) |
 | `POST /vendor-payments/` | `procurement.vendor_payment.create` | Create a gated DRAFT allocation plan; server derives money | `vendor`, `bank_account`, `payment_date`, `method?`, `wht_amount?`, `wht_tax_code?`, `reference?`, `narration?`; `allocations[]`: `vendor_invoice`, `amount` | `201` payment detail + workflow/posting/activity overlays (`views/vendor_payments.py:187-214`) |
 | `GET /vendor-payments/eligible-invoices/` | `procurement.vendor_payment.view` | Return at most 100 posted open bills, oldest due first | Query `vendor?` | Array of invoice settlement snapshots (`views/vendor_payments.py:217-239`) |
-| `GET /vendor-payments/<pk>/` | `procurement.vendor_payment.view` | Read plan/settlement, workflow, journal, activity | — | Full payment detail overlay (`views/vendor_payments.py:132-162,242-257`) |
+| `GET /vendor-payments/<pk>/` | `procurement.vendor_payment.view` | Read plan/settlement, workflow, journal, activity | - | Full payment detail overlay (`views/vendor_payments.py:132-162,242-257`) |
 | `PATCH /vendor-payments/<pk>/` | `procurement.vendor_payment.update` | Replace an unsubmitted/rejected DRAFT plan and derived totals | Same header fields as POST; `allocations` required | Updated payment detail (`views/vendor_payments.py:259-295`) |
-| `POST /vendor-payments/<pk>/submit/` | `procurement.vendor_payment.submit` | Submit a DRAFT allocation plan to workflow | — | Document, workflow id, approval state (`views/vendor_payments.py:298-315`) |
-| `POST /vendor-payments/<pk>/post/` | `procurement.vendor_payment.post` | Post the approved persisted plan and settle its invoices | — | Posted payment detail (`views/vendor_payments.py:318-336`) |
-| `POST /vendor-payments/<pk>/cancel/` | `procurement.vendor_payment.cancel` | Cancel a non-pending, unposted DRAFT | — | Cancelled payment (`views/vendor_payments.py:339-354`) |
+| `POST /vendor-payments/<pk>/submit/` | `procurement.vendor_payment.submit` | Submit a DRAFT allocation plan to workflow | - | Document, workflow id, approval state (`views/vendor_payments.py:298-315`) |
+| `POST /vendor-payments/<pk>/post/` | `procurement.vendor_payment.post` | Post the approved persisted plan and settle its invoices | - | Posted payment detail (`views/vendor_payments.py:318-336`) |
+| `POST /vendor-payments/<pk>/cancel/` | `procurement.vendor_payment.cancel` | Cancel a non-pending, unposted DRAFT | - | Cancelled payment (`views/vendor_payments.py:339-354`) |
 | `POST /vendor-payments/<pk>/reverse/` | `procurement.vendor_payment.reverse` | Reverse a posted payment and restore invoice balances | `date?` | Reversed payment detail (`views/vendor_payments.py:357-372`) |
 
 The cross-cutting `/approvals/` endpoints act on PO, invoice, and payment workflow
@@ -195,7 +195,7 @@ inventory controls do not (`payables.py:205-292`). After the balanced journal po
 `invoiced_qty` advances and the bill becomes POSTED (`payables.py:294-323`).
 
 GR/IR aging and its GRN/PO-line drill-downs use that same receipt-first, PO-fallback
-clearing basis—not billed net—so normal PPV does not appear as an open GR/IR item. Their
+clearing basis-not billed net-so normal PPV does not appear as an open GR/IR item. Their
 queries eager-load the source evidence rather than introducing per-line lookups
 (`reports.py:284-380,499-550,604-683,708-783`).
 

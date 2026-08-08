@@ -3,7 +3,7 @@
 Accounts-Receivable core: **customers** (the billable parties), **invoices** raised
 against them, **receipts/payments** that settle those invoices, and **fee
 structures** that mass-generate invoices. This is the sales/billing side of the
-ledger — money owed *to* the entity and the cash that clears it.
+ledger - money owed *to* the entity and the cash that clears it.
 
 Routes covered (mounted at `/v1/finance/`): `customers/`, `customers/<pk>/`,
 `customers/<pk>/receipt/`, `invoices/`, `invoices/summary/`, `invoices/<pk>/`,
@@ -25,7 +25,7 @@ Routes covered (mounted at `/v1/finance/`): `customers/`, `customers/<pk>/`,
 - An **`Invoice`** (`models/ar.py:85`) is a sales document. Posting raises the AR
   journal **Dr receivable / Cr revenue / Cr output tax** and links it via
   `journal`.
-- A **`Payment`** (`models/ar.py:219`) is a customer **receipt** — money in,
+- A **`Payment`** (`models/ar.py:219`) is a customer **receipt** - money in,
   settling one or more **open AR items** (invoices **and** posted DEBIT notes, which
   debit AR the same way); overflow becomes customer credit.
 
@@ -53,8 +53,8 @@ Routes covered (mounted at `/v1/finance/`): `customers/`, `customers/<pk>/`,
 - **Money is kobo.** `total = subtotal + tax_total`; `settled = amount_paid +
   amount_credited`; `balance_due = total − settled` (`models/ar.py:140`,`:147`).
 - **Two status axes on an invoice** (`models/ar.py:97`):
-  - document `status` — ledger lifecycle: `DRAFT → POSTED → CANCELLED`.
-  - `payment_status` — `UNPAID / PARTIAL / PAID`, *derived* from settled-vs-total
+  - document `status` - ledger lifecycle: `DRAFT → POSTED → CANCELLED`.
+  - `payment_status` - `UNPAID / PARTIAL / PAID`, *derived* from settled-vs-total
     by `refresh_payment_status` (`models/ar.py:162`), never set by hand.
 
 ## 3. Endpoint map
@@ -63,24 +63,24 @@ All require `?entity=<id|code>`. Gate: `IsAuthenticatedAndActive & HasRBACPermis
 
 | Method + path | permission key | what it does | request body | response |
 |---|---|---|---|---|
-| `GET /customers/` | `finance.customer.view` | List + computed `balance`/`account_status` (**paginated**). Query: `search`, `is_active` | — | paginated `CustomerSerializer` + balance |
+| `GET /customers/` | `finance.customer.view` | List + computed `balance`/`account_status` (**paginated**). Query: `search`, `is_active` | - | paginated `CustomerSerializer` + balance |
 | `POST /customers/` | `finance.customer.create` | Create. AR control **defaults to `1200`**; if `opening_balance>0`, posts an **opening invoice** (§6), backdatable via `opening_date` | `code`, `name`, `receivable_account?`, billing\_*?, `opening_balance?`, `opening_date?`, `source_type?/source_id?` | `201` `CustomerSerializer` |
-| `GET /customers/<pk>/` | `finance.customer.view` | Customer detail + ledger | — | detail |
+| `GET /customers/<pk>/` | `finance.customer.view` | Customer detail + ledger | - | detail |
 | `POST /customers/<pk>/receipt/` | `finance.payment.create` | Record a receipt, auto-allocate | `amount`, `payment_date`, `deposit_account`, `method?`, `auto_allocate?`, `allocation_strategy?` (`oldest`\|`largest`) | `201` `{allocated, unallocated}` |
-| `GET /invoices/` | `finance.invoice.view` | List. Query: `status`, `payment_status`, `bucket` (draft/issued/partial/paid/overdue), `search`, `customer` | — | paginated `InvoiceSerializer` |
+| `GET /invoices/` | `finance.invoice.view` | List. Query: `status`, `payment_status`, `bucket` (draft/issued/partial/paid/overdue), `search`, `customer` | - | paginated `InvoiceSerializer` |
 | `POST /invoices/` | `finance.invoice.create` | Manual invoice; **posts** unless `post=false` (priced draft) | `customer`, `invoice_date`, `lines:[{revenue_account, quantity?, unit_price, tax_code?, cost_center?}]`, `post?` | `201` `InvoiceSerializer` |
-| `GET /invoices/summary/` | `finance.invoice.view` | KPIs, status counts, 12-month series | — | `success_response` |
-| `GET /invoices/<pk>/` | `finance.invoice.view` | Full invoice: lines, allocations, GL, reminders | — | detail |
+| `GET /invoices/summary/` | `finance.invoice.view` | KPIs, status counts, 12-month series | - | `success_response` |
+| `GET /invoices/<pk>/` | `finance.invoice.view` | Full invoice: lines, allocations, GL, reminders | - | detail |
 | `POST /invoices/<pk>/pay/` | `finance.payment.create` | Receipt settling **this** invoice | `amount`, `payment_date`, `deposit_account`, `method?`, … | `201` `InvoiceSerializer` |
 | `POST /invoices/<pk>/remind/` | `finance.dunning.send` | Raise a dunning reminder → `finance_dunning` | `message?` | `DunningNoticeSerializer` |
-| `GET /payments/` | `finance.payment.view` | Posted receipts + allocation state (**paginated**). Query: `status` (ALLOCATED/PARTIAL/UNALLOCATED, filtered in-DB), `method`, `customer`, `search` | — | paginated `PaymentSerializer` |
-| `GET /payments/<pk>/` | `finance.payment.view` | Receipt + allocations + open-invoice **and open-debit-note** candidates + GL | — | detail |
+| `GET /payments/` | `finance.payment.view` | Posted receipts + allocation state (**paginated**). Query: `status` (ALLOCATED/PARTIAL/UNALLOCATED, filtered in-DB), `method`, `customer`, `search` | - | paginated `PaymentSerializer` |
+| `GET /payments/<pk>/` | `finance.payment.view` | Receipt + allocations + open-invoice **and open-debit-note** candidates + GL | - | detail |
 | `POST /payments/<pk>/allocate/` | `finance.payment.allocate` | Apply stored customer credit to open AR items | `allocations:[{invoice\|debit_note, amount}]` **or** `auto_allocate:true` (+ `allocation_strategy?`) | `PaymentSerializer` |
-| `GET/POST /fee-structures/…` | `finance.feestructure.view`/`.create` | Billing catalogue CRUD | — | `FeeStructureSerializer` |
+| `GET/POST /fee-structures/…` | `finance.feestructure.view`/`.create` | Billing catalogue CRUD | - | `FeeStructureSerializer` |
 | `POST /fee-structures/<pk>/generate/` | `finance.feestructure.generate` | One **posted** invoice per customer | `customers:[…]` or `all_active:true`, `invoice_date?`, `due_date?` | `201` invoices |
 
 > **Field note:** invoice/receipt creation reads `unit_price`×`quantity` and
-> `amount` (kobo) — there is no separate `amount` on invoice *lines*. A line's
+> `amount` (kobo) - there is no separate `amount` on invoice *lines*. A line's
 > `cost_center` now survives posting (see `finance_cost_centers` §6).
 
 ## 4. Lifecycle / state machine
@@ -96,7 +96,7 @@ applied later via `allocate/` (`allocate_payment`).
 
 ## 5. Calculations
 
-Pricing — `receivables.py`, all integer-exact `Decimal` then `ROUND_HALF_UP` to
+Pricing - `receivables.py`, all integer-exact `Decimal` then `ROUND_HALF_UP` to
 kobo:
 ```
 net = quantity × unit_price                      # compute_line_net (receivables.py:41)
@@ -106,7 +106,7 @@ invoice.subtotal/tax_total/total = Σ over lines  # price_invoice / recompute_to
 Example: `quantity=1, unit_price=100000, VAT rate_bps=750` → net `100000`, tax
 `7500`, total `107500`.
 
-Allocation cap — `_apply_payment_subledger` (`receivables.py:247`):
+Allocation cap - `_apply_payment_subledger` (`receivables.py:247`):
 ```
 apply = min(requested, invoice.balance_due, remaining_cash)   # per invoice
 excess = payment.amount − Σ apply                              # → customer credit
@@ -117,7 +117,7 @@ Derived reads: `balance_due = total − amount_paid − amount_credited`;
 
 ## 6. What posting does to the ledger
 
-**Invoice posting** — `_post_invoice_atomic` (`receivables.py:95`), atomic, only a
+**Invoice posting** - `_post_invoice_atomic` (`receivables.py:95`), atomic, only a
 `DRAFT` with a positive total and a customer that has an AR control:
 ```
 Dr  receivable (AR control)        invoice.total          ← gross, unallocated
@@ -128,7 +128,7 @@ Then `post_journal` (all the `finance_journals_posting` guards apply), link
 `invoice.journal`, stamp `POSTED`, `refresh_payment_status`, audit. A
 `FinanceError` writes a **durable rejection** row and re-raises (`receivables.py:78`).
 
-**Receipt posting** — `_post_payment_atomic` (`receivables.py:276`), the
+**Receipt posting** - `_post_payment_atomic` (`receivables.py:276`), the
 **split-at-source** design so AR never goes credit:
 ```
 Dr  deposit (bank/cash)            payment.amount
@@ -140,16 +140,16 @@ oldest-first open items); each row is written and the target's `amount_paid` bum
 *before* the GL line, capped at balance/remaining. A target is an **invoice**
 (`PaymentAllocation`, bumps `Invoice.amount_paid`) or a posted **DEBIT note**
 (`DebitNoteAllocation`, bumps `CreditNote.amount_paid`). Both debit AR when raised, so
-the single `Cr AR` for `applied` settles either — no debit-note-specific GL.
+the single `Cr AR` for `applied` settles either - no debit-note-specific GL.
 
-**Applying stored credit** — `allocate_payment` on an already-posted receipt
+**Applying stored credit** - `allocate_payment` on an already-posted receipt
 reclassifies, **no cash moves**:
 ```
 Dr  customer credit (2140)         applied
 Cr  receivable (AR control)        applied
 ```
 
-**Opening balance** — `post_opening_balance` (`receivables.py:188`) raises a posted
+**Opening balance** - `post_opening_balance` (`receivables.py:188`) raises a posted
 opening invoice (`source=OPENING`) when a customer is created with
 `opening_balance>0`, so the figure shows in both the GL and the (invoice-derived)
 outstanding:
@@ -158,7 +158,7 @@ Dr  receivable (AR control 1200)   opening_balance
 Cr  operating revenue (4100)       opening_balance
 ```
 
-**Auto-allocation order** — `_build_invoice_plan` (`receivables.py:272`) settles
+**Auto-allocation order** - `_build_invoice_plan` (`receivables.py:272`) settles
 either `oldest` (document date, default) or `largest` (biggest balance) first, across
 open invoices **and** open DEBIT notes together (`include_debit_notes=True` on the
 receipt paths; the credit-note sub-ledger keeps its own invoice-only plan);
@@ -186,20 +186,20 @@ the receipt shows `allocation_status:"PARTIAL"` (`unallocated_amount` 12500).
 
 ## 8. Gotchas / known limitations
 
-- **`opening_balance` posting is atomic with customer-create** — if no open period
+- **`opening_balance` posting is atomic with customer-create** - if no open period
   covers today (or `4100` is missing), the opening invoice fails and the whole
   customer create rolls back with a clear error. Intended (loud > silent), but
   worth knowing.
-- ✅ **The opening invoice is backdatable** — pass an optional `opening_date` on
+- ✅ **The opening invoice is backdatable** - pass an optional `opening_date` on
   customer create to seat migrated balances in their historical period (defaults to
   today; a closed/missing period still rolls the whole create back, loudly).
-- **Invoice create defaults `post=True`** — omitting `post` posts immediately;
+- **Invoice create defaults `post=True`** - omitting `post` posts immediately;
   pass `post:false` for a draft.
 - **`pay/` requires a POSTED invoice** (`views_ar.py`); paying a draft → 400.
-- **AR control defaults to `1200`** on customer create if omitted — verify the
+- **AR control defaults to `1200`** on customer create if omitted - verify the
   chart has it (it's in the seeded `DEFAULT_CHART`).
 - ✅ **Fixed 2026-07-05: receipts settle DEBIT notes.** A DEBIT note debits AR like an
-  invoice, but receipts used to allocate only to invoices — so a debit note raised with
+  invoice, but receipts used to allocate only to invoices - so a debit note raised with
   no invoice sat unsettled and the whole receipt fell to `2140`, overstating customer
   credit. Debit notes are now open AR items in allocation, the customer ledger/statement,
   and the refund cap (`customer_credit_balance` nets unsettled DN balances). See
@@ -221,7 +221,7 @@ supports `oldest`|`largest`; receipts settle DEBIT notes (2026-07-05)._
   attach. ✅
 - `InvoiceSerializer` exposes no secrets (ids, codes, money, dates, status). FLS
   not required here; billing PII (`billing_email/phone/address`) lives on
-  `CustomerSerializer` — review if those become sensitive.
+  `CustomerSerializer` - review if those become sensitive.
 
 ## 10. Code map
 

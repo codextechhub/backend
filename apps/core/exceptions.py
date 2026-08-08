@@ -39,7 +39,7 @@ def _blocker_summary(exc) -> tuple[str, dict]:
     """Human phrase + machine detail for a ProtectedError / RestrictedError.
 
     Returns e.g. ("2 positions", {"vs_user.position": 2}). Only model names and
-    counts are exposed — never the blocking rows themselves, which may live
+    counts are exposed - never the blocking rows themselves, which may live
     outside the caller's tenant/entity scope.
     """
     objects = (
@@ -91,7 +91,7 @@ def custom_exception_handler(exc, context):
         }, status=status.HTTP_400_BAD_REQUEST)
 
     # A delete blocked by an on_delete=PROTECT / RESTRICT foreign key is the
-    # client asking for something the data model forbids, not a server bug —
+    # client asking for something the data model forbids, not a server bug -
     # so it must carry an actionable message. This branch MUST stay above the
     # IntegrityError one: ProtectedError/RestrictedError subclass IntegrityError
     # and would otherwise be logged as an opaque 500 ("An unexpected error
@@ -144,7 +144,7 @@ def custom_exception_handler(exc, context):
             }
         }, status=response.status_code)
 
-    # Non-DRF, non-DB exception — log it and return JSON 500 instead of Django HTML page
+    # Non-DRF, non-DB exception - log it and return JSON 500 instead of Django HTML page
     logger.exception("Unhandled exception in request", exc_info=exc)
     return Response({
         "success": False,

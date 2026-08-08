@@ -134,7 +134,7 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
 
     def test_only_school_admin_gets_impersonation_by_default(self):
         # The most powerful school keys must never be a branch_admin/teacher
-        # default — they are opt-in for anyone below the school admin.
+        # default - they are opt-in for anyone below the school admin.
         impersonation = {
             "school.impersonation.start",
             "school.impersonation.end",
@@ -168,7 +168,7 @@ class SeedSchoolPrebuiltDefaultsTests(TestCase):
 
 
 class SeedSchoolBackfillTests(TestCase):
-    """The critical step — pre-existing tenant role templates get grants.
+    """The critical step - pre-existing tenant role templates get grants.
 
     Roles are found by the backfill through their native prebuilt key
     (key=<prebuilt.key> or key=<prebuilt.key>-<branch pk>).
@@ -206,7 +206,7 @@ class SeedSchoolBackfillTests(TestCase):
         self.assertIn("school.roles.create", keys)
         self.assertIn("academics.classes.assign", keys)
         # The backfill is what gives ALREADY-provisioned schools the new
-        # impersonation keys — provision_role_from_prebuilt only copies
+        # impersonation keys - provision_role_from_prebuilt only copies
         # prebuilt permissions on fresh role creation.
         self.assertIn("school.impersonation.start", keys)
         self.assertIn("school.impersonation.end", keys)

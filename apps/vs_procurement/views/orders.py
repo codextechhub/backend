@@ -112,14 +112,14 @@ def _resolve_po_contract(entity, vendor, raw):
 
 
 def _purchase_order_queryset(entity):
-    """Detail read shape — the full document flow the drawer renders, prefetched once."""
+    """Detail read shape - the full document flow the drawer renders, prefetched once."""
     return _po_base_queryset(entity).prefetch_related(
         "lines", "goods_receipts__lines", "vendor_invoices", "source_quotation",
     )
 
 
 def _purchase_order_list_queryset(entity):
-    """List read shape — only what a row and its computed status need. Receipt and
+    """List read shape - only what a row and its computed status need. Receipt and
     invoice documents are the drawer's concern, so they are neither prefetched nor
     serialised here (``lines`` stays prefetched because ``display_status`` derives
     from it, but the array itself is dropped by ``PurchaseOrderListSerializer``)."""
@@ -159,7 +159,7 @@ def purchase_order_summary(entity, *, as_of: datetime.date | None = None) -> dic
     """Build the PO-list KPIs from all *issued* entity orders, not the current page.
 
     Drafts and orders still in approval are not commitments a vendor is fulfilling,
-    so they are excluded from every count and value here — the same population the
+    so they are excluded from every count and value here - the same population the
     dashboard's "Open Purchase Orders" KPI reports.
     """
     as_of = as_of or timezone.localdate()
@@ -301,7 +301,7 @@ class PurchaseOrderDetailView(_ProcBase):
         elif po.contract_id and po.contract.vendor_id != po.vendor_id:
             # A vendor change without re-sending the link would strand a cross-vendor call-off.
             raise ValidationError(
-                {"contract": "Clear or re-select the contract link — it belongs to the previous vendor."})
+                {"contract": "Clear or re-select the contract link - it belongs to the previous vendor."})
         # PO lines remain the approved requisition snapshot; draft edits only change order terms.
         po.save(update_fields=[
             "vendor", "order_date", "expected_date", "delivery_address",
@@ -332,7 +332,7 @@ def _rfq_list_queryset(entity):
     """Entity-scoped RFQ list with the counts the list row needs, as annotations.
 
     ``line_count`` and ``response_count`` are computed once in SQL (not per-row) so a
-    long RFQ list stays a single query. A *response* is any non-draft quotation — a
+    long RFQ list stays a single query. A *response* is any non-draft quotation - a
     vendor's actual reply, not a half-captured draft.
     """
     return RequestForQuotation.objects.filter(entity=entity).select_related("requisition").annotate(
@@ -365,7 +365,7 @@ def _rfq_detail_queryset(entity):
 
 
 def _write_rfq_lines(entity, rfq, lines):
-    """Validate and (re)create an RFQ's spec lines — a full replacement on edit.
+    """Validate and (re)create an RFQ's spec lines - a full replacement on edit.
 
     Shared by create and the draft PATCH so both apply identical validation:
     positive/bounded quantity, active-postable EXPENSE account, entity-scoped tax code,
@@ -558,7 +558,7 @@ class RfqIssueView(_ProcBase):
 
 
 class RfqCloseView(_ProcBase):
-    """POST — close an ISSUED RFQ without an award; rejects its live quotations.
+    """POST - close an ISSUED RFQ without an award; rejects its live quotations.
 
     docstring-name: Close an RFQ
     """
@@ -632,7 +632,7 @@ def _quotation_detail_queryset(entity):
 
 
 def _write_quotation_lines(entity, quotation, rfq, lines):
-    """Validate and (re)create a quotation's priced lines — full replacement on edit.
+    """Validate and (re)create a quotation's priced lines - full replacement on edit.
 
     Every ``rfq_line`` reference must belong to *this* RFQ (not merely the entity),
     closing a cross-RFQ line-leak: a quote may only price lines of the RFQ it answers.
@@ -705,7 +705,7 @@ class QuotationListCreateView(_ProcBase):
         rfq = RequestForQuotation.objects.filter(entity=entity, pk=body.get("rfq")).first()
         if rfq is None:
             raise ValidationError({"rfq": "An RFQ is required."})
-        # A quotation is an offer against a *live* invitation — the RFQ must be issued.
+        # A quotation is an offer against a *live* invitation - the RFQ must be issued.
         if rfq.rfq_status != RfqStatus.ISSUED:
             raise ValidationError(
                 {"rfq": f"Quotations can only be captured against an ISSUED RFQ (this one is '{rfq.rfq_status}')."})
@@ -766,7 +766,7 @@ class QuotationDetailView(_ProcBase):
             entity=entity, pk=pk).first()
         if quotation is None:
             raise NotFound("No such quotation in this entity.")
-        # Submitted/awarded/rejected offers are firm and immutable — only a draft edits.
+        # Submitted/awarded/rejected offers are firm and immutable - only a draft edits.
         if quotation.quotation_status != QuotationStatus.DRAFT:
             raise ValidationError(
                 {"quotation_status": f"Only a draft quotation can be edited (this one is "
@@ -811,7 +811,7 @@ class QuotationSubmitView(_ProcBase):
 
 
 class QuotationAwardView(_ProcBase):
-    """POST — award the quotation: build a DRAFT PO and reject the losing quotes.
+    """POST - award the quotation: build a DRAFT PO and reject the losing quotes.
 
     docstring-name: Award a quotation
     """

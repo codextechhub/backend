@@ -22,13 +22,13 @@ Routes (mounted at `/v1/finance/`): `payroll-runs/…`, `payroll-runs/{summary,g
 
 **This does NOT:**
 - **Post from the roster or a structure.** `EmployeeSalary`/`SalaryStructure` never
-  hit the GL — they only shape the numbers a run copies into its lines
+  hit the GL - they only shape the numbers a run copies into its lines
   (`models/ops.py:800`, `:872`).
 - **Show individual salaries to everyone.** Per-employee names and pay figures are
-  **FLS-masked** — only holders of `finance.payrollrun.view_sensitive` see them; plain
+  **FLS-masked** - only holders of `finance.payrollrun.view_sensitive` see them; plain
   `view` sees the run and its **totals** but not who earns what (§9).
 - **One-click undo a *paid* run.** `cancel/` voids a DRAFT or POSTED (un-paid) run
-  (§4), but a **PAID** run is refused — the net wages already left, so the disbursement
+  (§4), but a **PAID** run is refused - the net wages already left, so the disbursement
   must be reversed (a real clawback) first.
 
 ## 2. Domain model
@@ -53,22 +53,22 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 
 | Method + path | permission key | what it does | request body | response |
 |---|---|---|---|---|
-| `GET /payroll-runs/` | `finance.payrollrun.view` | List runs (paginated). Query: `run_status` | — | paginated `PayrollRunSerializer` (lines FLS-masked) |
+| `GET /payroll-runs/` | `finance.payrollrun.view` | List runs (paginated). Query: `run_status` | - | paginated `PayrollRunSerializer` (lines FLS-masked) |
 | `POST /payroll-runs/` | `finance.payrollrun.create` | Create a **DRAFT** run + lines by hand | `pay_date`, `period_label?`, `bank_account?`, `lines:[{employee_name, gross_amount, paye_amount?, pension_amount?, cost_center?}]` | `201` run |
 | `POST /payroll-runs/generate/` | `finance.payrollrun.create` | Draft a run from the **active roster** | `pay_date`, `period_label?`, `narration?` | `201` run |
-| `GET /payroll-runs/summary/` | `finance.payrollrun.view` | KPIs over all runs | — | `success_response` |
-| `GET /payroll-runs/<pk>/` | `finance.payrollrun.view` | Run + lines | — | detail |
-| `POST /payroll-runs/<pk>/post/` | `finance.payrollrun.post` | **Accrue** (DRAFT → POSTED) | — | run |
+| `GET /payroll-runs/summary/` | `finance.payrollrun.view` | KPIs over all runs | - | `success_response` |
+| `GET /payroll-runs/<pk>/` | `finance.payrollrun.view` | Run + lines | - | detail |
+| `POST /payroll-runs/<pk>/post/` | `finance.payrollrun.post` | **Accrue** (DRAFT → POSTED) | - | run |
 | `POST /payroll-runs/<pk>/pay/` | `finance.payrollrun.pay` | **Disburse** net wages (POSTED → PAID) | `bank_account?`, `pay_date?` | run |
-| `POST /payroll-runs/<pk>/cancel/` | `finance.payrollrun.post` | Cancel a DRAFT, or **void** a POSTED (un-paid) run — reverses the accrual → CANCELLED. Refused once PAID | — | run |
+| `POST /payroll-runs/<pk>/cancel/` | `finance.payrollrun.post` | Cancel a DRAFT, or **void** a POSTED (un-paid) run - reverses the accrual → CANCELLED. Refused once PAID | - | run |
 | `GET/POST /employee-salaries/` | `finance.salary.view` / `.create` | Roster list / add | `name`, `gross_amount`, `structure?`, flat `paye/pension?`, `cost_center?` | salary |
-| `PATCH/DELETE /employee-salaries/<pk>/` | `finance.salary.update` / `.delete` | Edit / remove a roster row | — | salary |
+| `PATCH/DELETE /employee-salaries/<pk>/` | `finance.salary.update` / `.delete` | Edit / remove a roster row | - | salary |
 | `GET/POST /salary-structures/` | `finance.salary.view` / `.create` | Structure list / create | `name`, `components:[…]` | structure |
-| `GET/PATCH /salary-structures/<pk>/` | `finance.salary.view` / `.update` | One structure + components / edit | — | detail |
+| `GET/PATCH /salary-structures/<pk>/` | `finance.salary.view` / `.update` | One structure + components / edit | - | detail |
 
 > **Note:** the roster (`employee-salaries`) and templates (`salary-structures`) are
-> their own RBAC resource — `finance.salary.{view,create,update,delete}`, all
-> SENSITIVE — separate from the `payrollrun` family. Individual pay-figure visibility
+> their own RBAC resource - `finance.salary.{view,create,update,delete}`, all
+> SENSITIVE - separate from the `payrollrun` family. Individual pay-figure visibility
 > (FLS) remains keyed on `finance.payrollrun.view_sensitive` everywhere.
 
 ## 4. Lifecycle / state machine
@@ -80,7 +80,7 @@ DRAFT ──post (accrue)──▶ POSTED ──pay (disburse)──▶ PAID
   │                         │  │                        │
 cancel                    journal │              disbursement_journal
   ▼                          cancel (reverse accrual)
-CANCELLED  ◀─────────────────┘   (PAID can't be cancelled — reverse the disbursement first)
+CANCELLED  ◀─────────────────┘   (PAID can't be cancelled - reverse the disbursement first)
 ```
 - **post** requires a DRAFT with ≥1 line, positive gross, and **no negative net** on
   any line; it stamps `run_status=POSTED` and `status=POSTED`, and freezes the four
@@ -88,12 +88,12 @@ CANCELLED  ◀─────────────────┘   (PAID can
 - **pay** requires POSTED and a bank account; it clears net wages and sets `PAID`.
 - **cancel** (`cancel_payroll_run`): a DRAFT is just marked CANCELLED; a POSTED run is
   **voided** by reversing its accrual journal → CANCELLED; a PAID run is **refused**
-  (the cash left the bank — reverse the disbursement first). Idempotent when already
+  (the cash left the bank - reverse the disbursement first). Idempotent when already
   cancelled.
 
 ## 5. Calculations
 
-**Structure application** — `apply_structure` (`payroll.py:41`), integer kobo:
+**Structure application** - `apply_structure` (`payroll.py:41`), integer kobo:
 ```
 value(component) = amount                         if FIXED
                  = base × rate_bps / 10000          (base = gross, or basic for %-of-basic)
@@ -107,12 +107,12 @@ net (so the accrual always balances). An `EmployeeSalary` **with a structure der
 paye/pension** (its flat fields are ignored); **without one** it uses the flat
 `paye_amount`/`pension_amount`.
 
-**Run totals** — `recompute_totals` sums the lines; `compute_payroll` re-derives each
+**Run totals** - `recompute_totals` sums the lines; `compute_payroll` re-derives each
 `net = gross − paye − pension` first.
 
 ## 6. What posting does to the ledger
 
-**Accrual** — `_post_payroll_atomic` (`payroll.py:168`):
+**Accrual** - `_post_payroll_atomic` (`payroll.py:168`):
 ```
 Dr  salary expense (5200, split by cost centre)   Σ gross   ← P&L, carries cost centre
 Cr  PAYE payable (2310)                           Σ paye
@@ -124,13 +124,13 @@ cost centre) so the P&L slices by department; the three liabilities are balance-
 control accounts and stay aggregated. `Σ(gross by cost centre) == gross_total`, so it
 balances (`gross = paye + pension + net`).
 
-**Disbursement** — `_pay_payroll_atomic` (`payroll.py:272`):
+**Disbursement** - `_pay_payroll_atomic` (`payroll.py:272`):
 ```
 Dr  net wages payable (2330)   net_total
 Cr  bank (the bank account's GL cash)   net_total
 ```
 PAYE and pension **stay parked** as liabilities until remitted (a separate tax-filing
-/ AP payment — see `finance_tax_remittance`). Both postings run `post_journal` (the
+/ AP payment - see `finance_tax_remittance`). Both postings run `post_journal` (the
 `finance_journals_posting` guards) and write durable rejection rows on failure.
 
 ## 7. Worked example
@@ -145,32 +145,32 @@ gross total, but each employee line's name/amounts are stripped.
 
 ## 8. Gotchas / known limitations
 
-- ✅ **Cancel/void a run** (`cancel/`) — a DRAFT is cancelled; a POSTED run is voided
+- ✅ **Cancel/void a run** (`cancel/`) - a DRAFT is cancelled; a POSTED run is voided
   by reversing its accrual. **PAID runs are refused** (reverse the disbursement first);
   there's no `unpay`/clawback action, so a paid run in error still needs manual journal
   reversal.
 - **Totals are visible with plain `view`; only individual salaries are FLS-masked.**
-  `payrollrun.view` exposes `gross_total`/`net_total` etc. on the run — deliberate
-  (aggregate cost for finance) — but treat run-level totals as *not* secret.
-- **A structure silently overrides the flat PAYE/pension** on an `EmployeeSalary` — if
+  `payrollrun.view` exposes `gross_total`/`net_total` etc. on the run - deliberate
+  (aggregate cost for finance) - but treat run-level totals as *not* secret.
+- **A structure silently overrides the flat PAYE/pension** on an `EmployeeSalary` - if
   a row has both a structure and typed figures, the typed ones are ignored.
-- ✅ **Roster + structures have their own RBAC resource** —
+- ✅ **Roster + structures have their own RBAC resource** -
   `finance.salary.{view, create, update, delete}` (all SENSITIVE; even listing exposes
   who earns what), split from `payrollrun.*` like the petty-cash precedent. Generating
   a *run* from the roster still uses `payrollrun.create`. **Ops note:** roles that used
   `payrollrun.create` for roster edits need the new `salary.*` grants. The FLS
   "see individual pay figures" key stays unified on `payrollrun.view_sensitive`.
-- **`generate` copies the roster at that moment** — later roster edits don't touch an
+- **`generate` copies the roster at that moment** - later roster edits don't touch an
   already-generated draft; regenerate for a fresh copy.
 
 ## 9. Permissions & tenant isolation
 
 - Two resources: `finance.payrollrun.{view, create, post, pay, view_sensitive}` for
   runs, and `finance.salary.{view, create, update, delete}` for the roster and
-  structures. Every one of them is **SENSITIVE** (or CRITICAL) in the seed — payroll
+  structures. Every one of them is **SENSITIVE** (or CRITICAL) in the seed - payroll
   data is sensitive by nature.
 - **Field-level security:** `PayrollLineSerializer` and `EmployeeSalarySerializer` use
-  `FieldSecurityMixin` — `gross/paye/pension/net_amount`, `components` (and the line's
+  `FieldSecurityMixin` - `gross/paye/pension/net_amount`, `components` (and the line's
   `employee_name`) are stripped unless the caller holds
   `finance.payrollrun.view_sensitive` (`serializers.py:963`, `:1044`). The roster keeps
   **names** visible (it's the roster) but hides the amounts.

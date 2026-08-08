@@ -2,15 +2,15 @@
 # vs_notifications / models.py
 #
 # Models:
-#   NotificationEventType   — platform-defined event registry (seeded)
-#   NotificationTemplate    — per-(event_type, channel) editable template
-#   NotificationSetting     — enable/disable toggle per channel; school-scoped
+#   NotificationEventType   - platform-defined event registry (seeded)
+#   NotificationTemplate    - per-(event_type, channel) editable template
+#   NotificationSetting     - enable/disable toggle per channel; school-scoped
 #                             OR platform-wide (school=NULL)
-#   Notification            — dispatch record, one per recipient per channel
+#   Notification            - dispatch record, one per recipient per channel
 #
 # The platform is global: school users are only a fraction of notification
 # consumers (CX staff and future user types have no school). Notifications are
-# therefore RECIPIENT-centric — `Notification.school` is a nullable filter/
+# therefore RECIPIENT-centric - `Notification.school` is a nullable filter/
 # history anchor, not a dispatch requirement. Settings layer the same way:
 # a NotificationSetting with school=NULL is a platform-wide default.
 # =============================================================================
@@ -40,7 +40,7 @@ class NotificationEventType(models.Model):
         NotificationService.send(event_key="billing.invoice_issued", ...)
 
     Deleting an event type is blocked (PROTECT) while templates or settings
-    reference it — use is_active=False to retire an event type instead.
+    reference it - use is_active=False to retire an event type instead.
     """
 
     id = models.UUIDField(
@@ -53,7 +53,7 @@ class NotificationEventType(models.Model):
         unique=True,
         help_text=(
             "Dot-notation identifier. e.g. billing.invoice_issued. "
-            "Never changes after creation — other modules depend on this string."
+            "Never changes after creation - other modules depend on this string."
         ),
     )
     label = models.CharField(
@@ -89,7 +89,7 @@ class NotificationEventType(models.Model):
         default=False,
         help_text=(
             "Transactional events (e.g. password resets, invitations) bypass "
-            "NotificationSetting checks entirely — they always dispatch on their "
+            "NotificationSetting checks entirely - they always dispatch on their "
             "supported channels. The platform kill switch (is_active) still wins "
             "over everything."
         ),
@@ -123,7 +123,7 @@ class NotificationEventType(models.Model):
 class NotificationTemplate(models.Model):
     """
     Stores the subject and body content for a specific (event_type, channel)
-    pair.  One record exists per pair — enforced by unique_together.
+    pair.  One record exists per pair - enforced by unique_together.
 
     Vision Staff create and edit templates via the API or admin console.
     School users have no access to template management.
@@ -221,8 +221,8 @@ class NotificationSetting(models.Model):
     Per-event-type, per-channel enable/disable toggle.
 
     Two flavours, distinguished by `school`:
-      * school-scoped  (school=<School>)  — a school's override.
-      * platform-wide  (school=NULL)      — the default for every recipient
+      * school-scoped  (school=<School>)  - a school's override.
+      * platform-wide  (school=NULL)      - the default for every recipient
                                             that has no school-specific override.
 
     Resolution (most specific wins, see services/settings.resolve_channels):
@@ -232,7 +232,7 @@ class NotificationSetting(models.Model):
     data migration and seed command). School rows are written by School Admins
     via PATCH; CX staff write platform rows (or a specific school's rows).
 
-    The IN_APP channel cannot be disabled — enforced where settings are WRITTEN
+    The IN_APP channel cannot be disabled - enforced where settings are WRITTEN
     (serializer/service). resolve_channels only reads rows; it does not silently
     override a persisted value.
 
@@ -326,7 +326,7 @@ class Notification(models.Model):
 
     In-app notifications:
         Created with status=SENT and dispatched_at=now().  No Celery task
-        needed — database write IS delivery.
+        needed - database write IS delivery.
 
     Email notifications:
         Created with status=PENDING.  A Celery task (deliver_email_notification)
@@ -399,9 +399,9 @@ class Notification(models.Model):
         ),
     )
     # Internal-only correlation store, never serialized (FLS). Recognised keys:
-    #   activation_key — invitation tracking correlation for the delivery-signal
+    #   activation_key - invitation tracking correlation for the delivery-signal
     #                    receivers (vs_user.receivers).
-    #   from_name      — per-message From display name; deliver_email_notification
+    #   from_name      - per-message From display name; deliver_email_notification
     #                    builds the From address from it via build_from_email.
     metadata = models.JSONField(
         default=dict,

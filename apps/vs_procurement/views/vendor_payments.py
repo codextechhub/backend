@@ -35,7 +35,7 @@ def _payment_queryset(entity):
 
 
 def _payment_list_queryset(entity):
-    """Lighter list source — the list row never serializes the journal lines, so the
+    """Lighter list source - the list row never serializes the journal lines, so the
     journal select_related/prefetch the detail drawer needs are dropped here."""
     return VendorPayment.objects.filter(entity=entity).select_related(
         "vendor", "payment_account", "payment_account__bank_account", "wht_tax_code", "created_by",

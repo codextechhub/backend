@@ -1,7 +1,7 @@
 """
 Seed all RBAC permission keys for the vs_import_data app.
 
-Run once after initial setup (safe to re-run — uses get_or_create):
+Run once after initial setup (safe to re-run - uses get_or_create):
 
     python manage.py seed_import_permissions
 
@@ -125,7 +125,7 @@ class Command(BaseCommand):
                 action = PermissionAction.objects.filter(name=action_name).first()
                 if not action:
                     self.stdout.write(
-                        self.style.WARNING(f"  ⚠  Action '{action_name}' not found — run seed_actions first.")
+                        self.style.WARNING(f"  ⚠  Action '{action_name}' not found - run seed_actions first.")
                     )
                     continue
 
@@ -153,7 +153,7 @@ class Command(BaseCommand):
         codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
         if codex is None:
             self.stdout.write(self.style.WARNING(
-                "\n  ⚠  Codex platform tenant not found — run migrations first; grants skipped."
+                "\n  ⚠  Codex platform tenant not found - run migrations first; grants skipped."
             ))
         else:
             role_permission_keys = {
@@ -216,7 +216,7 @@ class Command(BaseCommand):
         groups = [
             (
                 "Data Import - all",
-                "Full access to the entire data import pipeline — templates, batches, jobs, and related resources.",
+                "Full access to the entire data import pipeline - templates, batches, jobs, and related resources.",
                 all_keys,
             ),
             (

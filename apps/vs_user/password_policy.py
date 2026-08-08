@@ -1,4 +1,4 @@
-"""Canonical password policy — the single source of truth for the rules we
+"""Canonical password policy - the single source of truth for the rules we
 enforce on every password-set flow (sign-up, invitation activation, reset,
 change) and advertise to clients via ``GET /auth/password/policy/``.
 
@@ -20,7 +20,7 @@ _SPECIAL_RE = re.compile(r"[^A-Za-z0-9]")
 
 
 def password_requirements() -> list[str]:
-    """Human-readable rules in display order — shown to users as instructions."""
+    """Human-readable rules in display order - shown to users as instructions."""
     return [
         f"At least {PASSWORD_MIN_LENGTH} characters",
         "An uppercase letter (A–Z)",
@@ -31,7 +31,7 @@ def password_requirements() -> list[str]:
 
 
 def password_policy_payload() -> dict:
-    """Structured policy for ``GET /auth/password/policy/`` — drives client hints."""
+    """Structured policy for ``GET /auth/password/policy/`` - drives client hints."""
     return {
         "min_length": PASSWORD_MIN_LENGTH,
         "require_uppercase": True,
@@ -48,7 +48,7 @@ class PasswordComplexityValidator:
     Registered in ``AUTH_PASSWORD_VALIDATORS`` so every ``validate_password()``
     call enforces exactly the rules the UI instructs and the policy endpoint
     advertises. Note: ``create_user()`` / ``set_password()`` do NOT run
-    validators — only the password serializers do — so this gates user-chosen
+    validators - only the password serializers do - so this gates user-chosen
     passwords, not system-seeded test/fixture ones.
     """
 

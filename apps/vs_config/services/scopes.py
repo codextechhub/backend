@@ -12,7 +12,7 @@ def scope_name(tenant=None, branch=None):
         return BRANCH_SCOPE
     if tenant is not None:
         # A tenant-level value maps to the definition's "school" allowed-scope
-        # label — a school IS a tenant; the label predates the cutover and is
+        # label - a school IS a tenant; the label predates the cutover and is
         # kept so ConfigurationDefinition.allowed_scopes shapes never change.
         return SCHOOL_SCOPE
     # Absence of a tenant means the value belongs to the platform default layer.
@@ -37,7 +37,7 @@ def resolve_request_scope(request, *, allow_platform=True):
 
     ``request.tenant`` is the single source of truth (set by
     TenantJWTAuthentication from the mandatory ``?tenant=`` assertion, which the
-    auth layer already validates against the caller's own tenant — platform
+    auth layer already validates against the caller's own tenant - platform
     staff may assert a business tenant only on views that opt in). There is no
     ``?school=`` override: a caller cannot read or write another tenant's rows
     by changing a query parameter.

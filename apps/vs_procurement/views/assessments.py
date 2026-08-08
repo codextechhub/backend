@@ -1,4 +1,4 @@
-"""Vendor assessments — point-in-time scorecards (list + create, immutable).
+"""Vendor assessments - point-in-time scorecards (list + create, immutable).
 
 Viewing rides ``procurement.report.view`` (it feeds the Vendor Performance report);
 recording one needs the dedicated ``procurement.vendor_assessment.create`` key.
@@ -78,7 +78,7 @@ class VendorAssessmentListCreateView(_ProcBase):
         )
         vendor_ref = request.query_params.get("vendor")
         if vendor_ref:
-            # _resolve_vendor is entity-scoped — a foreign vendor 404s rather than leaking.
+            # _resolve_vendor is entity-scoped - a foreign vendor 404s rather than leaking.
             qs = qs.filter(vendor=_resolve_vendor(entity, vendor_ref))
         # Model Meta already orders newest-first (-assessment_date, -id).
         return success_response(

@@ -2,7 +2,7 @@
 
 Foundations slice: the **ledger entity** (the tenant of every finance document),
 its **chart of accounts** (CoA), and its **fiscal calendar** (years + periods).
-Everything else in finance — invoices, journals, payroll, budgets — hangs off
+Everything else in finance - invoices, journals, payroll, budgets - hangs off
 these three.
 
 Routes covered (mounted at `/v1/finance/`):
@@ -12,7 +12,7 @@ Routes covered (mounted at `/v1/finance/`):
 
 ## 1. What it is (and what it is NOT)
 
-- A **`LedgerEntity`** is a distinct *set of books* — the accounting entity that
+- A **`LedgerEntity`** is a distinct *set of books* - the accounting entity that
   owns finance documents. Numbering is owned one level higher by its canonical
   tenant: several entities belonging to the same tenant share each document-code
   series (`models/core.py:220-227`; `vs_tenants/numbering.py:11-39`).
@@ -28,9 +28,9 @@ Routes covered (mounted at `/v1/finance/`):
   balances. Posting lives in `finance_journals_posting`; closing a period lives
   in `finance_period_close`.
 - Let you edit an account's `account_type`, `normal_balance`, or `parent` after
-  creation — those would reclassify already-posted history, so PATCH refuses
+  creation - those would reclassify already-posted history, so PATCH refuses
   them (`views.py:355`, only `name/subtype/description/is_active/is_postable`).
-- Scope the **entity list** to the caller's school — `GET /entities/` returns
+- Scope the **entity list** to the caller's school - `GET /entities/` returns
   *all* sets of books on the platform (see §9).
 
 ## 2. Domain model
@@ -38,7 +38,7 @@ Routes covered (mounted at `/v1/finance/`):
 | Model | File | Key fields | Scoping / constraints |
 |---|---|---|---|
 | `LedgerEntity` | `models/core.py:83` | `code` (uppercase lookup/display code; **not** in new document numbers), `name`, `kind` (PLATFORM/TENANT/PRODUCT/OTHER), `tenant`, `base_currency` (FK→Currency, default NGN), `is_active` | `code` **globally unique**; one tenant may own many entities |
-| `Account` | `models/gl.py:103` | `code`, `name`, `account_type`, `normal_balance` (derived), `is_contra`, `is_postable`, `parent` (self-FK tree), `subtype`, `ifrs_line` | `unique(entity, code)` — two entities can both run a `1000` |
+| `Account` | `models/gl.py:103` | `code`, `name`, `account_type`, `normal_balance` (derived), `is_contra`, `is_postable`, `parent` (self-FK tree), `subtype`, `ifrs_line` | `unique(entity, code)` - two entities can both run a `1000` |
 | `FiscalYear` | `models/gl.py:182` | `year` (accounting label; document numbers use their allocation date instead), `start_date`, `end_date`, `status` | `unique(entity, year)` |
 | `FiscalPeriod` | `models/gl.py:212` | `period_no` (1–12, 13+ adjustment), `name`, `start/end_date`, `status`, `closed_at/by` | `unique(fiscal_year, period_no)` |
 
@@ -72,17 +72,17 @@ is the thing that enumerates entities). Permission gate is
 
 | Method + path | permission key | what it does | request body (fields actually read) | response |
 |---|---|---|---|---|
-| `GET /entities/` | `finance.entity.view` | List **all** sets of books. Query: `kind`, `is_active` | — | paginated `LedgerEntitySerializer` |
+| `GET /entities/` | `finance.entity.view` | List **all** sets of books. Query: `kind`, `is_active` | - | paginated `LedgerEntitySerializer` |
 | `POST /entities/` | `finance.entity.create` | **Provision** a new entity *and* seed currencies + starter CoA + 12 periods | `code`, `name`, `kind?`, `base_currency?` (3-letter code), `source_school?`, `fiscal_year?`, `fiscal_start_month?` | `201` `LedgerEntitySerializer` |
-| `GET /accounts/?entity=` | `finance.account.view` | CoA. `?with_balance=true` → **full tree, un-paginated**, with `balance` + `tag`. Else paginated picker list. Query: `account_type` (single or `A,B`), `is_postable` | — | paginated **or** `success_response` tree of `AccountSerializer` |
+| `GET /accounts/?entity=` | `finance.account.view` | CoA. `?with_balance=true` → **full tree, un-paginated**, with `balance` + `tag`. Else paginated picker list. Query: `account_type` (single or `A,B`), `is_postable` | - | paginated **or** `success_response` tree of `AccountSerializer` |
 | `POST /accounts/?entity=` | `finance.account.create` | Create one CoA node | `code`, `name`, `account_type`, `parent?` (**by pk**), `is_contra?`, `is_postable?`, `subtype?`, `description?` | `201` `AccountSerializer` |
-| `GET /accounts/<pk>/?entity=` | `finance.account.view` | Account + balance summary + posted-line activity (running balance) | — | `success_response` (see §7) |
+| `GET /accounts/<pk>/?entity=` | `finance.account.view` | Account + balance summary + posted-line activity (running balance) | - | `success_response` (see §7) |
 | `PATCH /accounts/<pk>/?entity=` | `finance.account.update` | Edit **safe** fields only | `name?`, `subtype?`, `description?`, `is_active?`, `is_postable?` | `AccountSerializer` |
-| `GET /periods/?entity=` | `finance.period.view` | List fiscal periods. Query: `status`, `year` | — | paginated `FiscalPeriodSerializer` |
-| `GET /fiscal-years/?entity=` | `finance.period.view` | List fiscal years. Query: `status` | — | paginated `FiscalYearSerializer` |
+| `GET /periods/?entity=` | `finance.period.view` | List fiscal periods. Query: `status`, `year` | - | paginated `FiscalPeriodSerializer` |
+| `GET /fiscal-years/?entity=` | `finance.period.view` | List fiscal years. Query: `status` | - | paginated `FiscalYearSerializer` |
 
 > **Field gotcha (the kind that broke earlier docs):** account create reads
-> `parent` as a **pk** (`views.py:189`), *not* a code — unlike cost centers,
+> `parent` as a **pk** (`views.py:189`), *not* a code - unlike cost centers,
 > which resolve `parent` by code. `currency`, `ifrs_line`, and `normal_balance`
 > are **not** settable on create; `normal_balance` is always derived.
 
@@ -101,7 +101,7 @@ is the thing that enumerates entities). Permission gate is
 
 This slice has no money *movement*, but it derives two displayed numbers.
 
-**(a) Derived normal balance** — `Account.default_normal_balance()`
+**(a) Derived normal balance** - `Account.default_normal_balance()`
 (`models/gl.py:166`):
 ```
 base = NORMAL_BALANCE_BY_TYPE[account_type]      # ASSET→DEBIT, INCOME→CREDIT, …
@@ -110,9 +110,9 @@ normal_balance = flip(base) if is_contra else base
 Example: `account_type=ASSET, is_contra=True` (accumulated depreciation) → base
 `DEBIT`, flipped → **CREDIT**.
 
-**(b) Account balance, signed to normal side** — two code paths that must agree:
+**(b) Account balance, signed to normal side** - two code paths that must agree:
 
-- *Chart column* — `AccountSerializer.get_balance()` (`serializers.py:163`) off
+- *Chart column* - `AccountSerializer.get_balance()` (`serializers.py:163`) off
   the view's annotations `_bal_dr = Σ(opening_debit + debit_total)`,
   `_bal_cr = Σ(opening_credit + credit_total)` over `AccountBalance`
   (`views.py:206`):
@@ -120,7 +120,7 @@ Example: `account_type=ASSET, is_contra=True` (accumulated depreciation) → bas
   net = _bal_dr - _bal_cr
   if normal_balance != DEBIT: net = -net          # credit accounts read positive
   ```
-- *Detail running balance* — `AccountDetailView.get()` (`views.py:300`) walks
+- *Detail running balance* - `AccountDetailView.get()` (`views.py:300`) walks
   **posted** lines oldest-first:
   ```
   sign = +1 if normal_balance == DEBIT else -1
@@ -133,15 +133,15 @@ Example: `account_type=ASSET, is_contra=True` (accumulated depreciation) → bas
   list's running total is rebuilt from the actual lines.
 
 Worth noting: the **chart** balance reads the denormalised `AccountBalance`
-aggregate (all periods), while the **detail activity** re-sums raw posted lines —
+aggregate (all periods), while the **detail activity** re-sums raw posted lines -
 two representations of the same truth, by design.
 
 ## 6. What posting does to the ledger
 
-Nothing — **this slice never posts.** It is the *target* of postings made
+Nothing - **this slice never posts.** It is the *target* of postings made
 elsewhere: other slices resolve control accounts out of this chart **by code**
 through `resolve_account(entity, code, …)` (`accounts.py:14`), which returns only
-an **active, postable** account and otherwise raises `MissingAccountError` — a
+an **active, postable** account and otherwise raises `MissingAccountError` - a
 misconfigured chart fails loudly instead of posting into the wrong place. The
 seeded control codes those services expect include `1100` Cash & Bank, `1200` AR,
 `2100` AP, `2150` GR/IR, `2200`/`1300` Output/Input VAT, `2300` WHT Payable,
@@ -155,7 +155,7 @@ seeded control codes those services expect include `1100` Cash & Bank, `1200` AR
 { "code": "6100", "name": "Salaries", "account_type": "EXPENSE", "parent": 42 }
 ```
 → `normal_balance` derived to `DEBIT`; `201` with `AccountSerializer` data
-(`balance` is `null` here because picker/non-tree responses aren't annotated —
+(`balance` is `null` here because picker/non-tree responses aren't annotated -
 `serializers.py:171`).
 
 **Account detail** (`GET /v1/finance/accounts/55/?entity=LEKKI`) response shape:
@@ -185,18 +185,18 @@ seeded control codes those services expect include `1100` Cash & Bank, `1200` AR
 
 ## 8. Gotchas / known limitations
 
-- ✅ **`GET /entities/` is now tenancy-scoped** — CX staff see every set of books;
+- ✅ **`GET /entities/` is now tenancy-scoped** - CX staff see every set of books;
   a school-scoped user sees only entities sourced from their school (none without a
   school), matching `resolve_entity`'s rule. Defence in depth on top of the key being
   seeded to platform admins only.
 - ✅ **`parent` on account create accepts a code or a pk** (code tried first, like
   the cost-center resolver). Account create still silently ignores any
   `currency`/`ifrs_line` in the body.
-- **`with_balance=true` returns the whole tree un-paginated** — fine for a CoA
+- **`with_balance=true` returns the whole tree un-paginated** - fine for a CoA
   (bounded), but it also runs a `Sum` over `AccountBalance` per node; large
   charts pay for it.
 - `_resolve_period` treats a numeric `?period=` as a **pk only when > 12**,
-  otherwise as a `period_no` (`views.py:95`) — a quirk to remember when reusing
+  otherwise as a `period_no` (`views.py:95`) - a quirk to remember when reusing
   it.
 
 ## 9. Permissions & tenant isolation
@@ -220,7 +220,7 @@ seeded control codes those services expect include `1100` Cash & Bank, `1200` AR
 | `models/gl.py` | `Account`, `FiscalYear`, `FiscalPeriod`, `Currency`, balances |
 | `views.py` | `EntityListCreateView`, `AccountListCreateView`, `AccountDetailView`, `FiscalPeriod/YearListView`, `resolve_entity` |
 | `serializers.py` | `LedgerEntity(Create)Serializer`, `AccountSerializer`, `FiscalPeriod/YearSerializer` |
-| `accounts.py` | `resolve_account()` — control-account lookup by code (used by *other* slices) |
+| `accounts.py` | `resolve_account()` - control-account lookup by code (used by *other* slices) |
 | `seed.py` | `DEFAULT_CHART`, `seed_chart_of_accounts`, `seed_currencies`, `seed_fiscal_year` |
 | `constants.py` | `AccountType`, `NormalBalance`, `NORMAL_BALANCE_BY_TYPE`, `PeriodStatus` |
 

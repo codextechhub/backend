@@ -2,7 +2,7 @@
 Tests for vs_rbac API views.
 
 Covers:
-- Permission registry CRUD (Vision-only, vision/* routes — unchanged)
+- Permission registry CRUD (Vision-only, vision/* routes - unchanged)
 - Tenant role template CRUD (tenant-scoped)
 - Tenant user role assignment CRUD + revoke
 - Tenant role change request workflow + decision
@@ -82,7 +82,7 @@ def _q(url, tenant_slug, **params):
 
 
 # =============================================================================
-# Permission Registry (Vision-only) — vision/* routes are unchanged
+# Permission Registry (Vision-only) - vision/* routes are unchanged
 # =============================================================================
 class _AuthMixin:
     def _vision_client(self):
@@ -691,7 +691,7 @@ class TenantRoleChangeRequestViewTests(TestCase):
 
 
 # =============================================================================
-# Codex (platform) tenant — Vision super admin manages codex roles
+# Codex (platform) tenant - Vision super admin manages codex roles
 # =============================================================================
 class CodexTenantRoleViewTests(TestCase):
     def setUp(self):

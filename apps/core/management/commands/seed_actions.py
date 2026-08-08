@@ -1,7 +1,7 @@
 """
 Management command: seed_actions
 ==================================
-Seeds the canonical PermissionAction vocabulary — the global list of action
+Seeds the canonical PermissionAction vocabulary - the global list of action
 verbs used as the suffix of every permission key (module.resource.<action>).
 
 This is always the FIRST thing you run when building permissions from scratch.
@@ -30,7 +30,7 @@ ACTIONS: list[tuple[str, str]] = [
     ("create",     "Create a new record."),
     ("update",     "Modify an existing record's fields."),
     ("delete",     "Permanently remove a record (hard-delete or irreversible soft-delete)."),
-    ("manage",     "Full control over a resource — implies view, create, update, and delete."),
+    ("manage",     "Full control over a resource - implies view, create, update, and delete."),
 
     # ── Approval & lifecycle ──────────────────────────────────────────────────
     ("approve",    "Ratify or authorise a submitted record (scores, invoices, leave requests, etc.)."),
@@ -59,7 +59,7 @@ ACTIONS: list[tuple[str, str]] = [
     ("generate",   "Produce a document or report on demand (ID cards, report cards)."),
 
     # ── Communication ─────────────────────────────────────────────────────────
-    ("send",       "Dispatch a message — SMS, email, or push notification."),
+    ("send",       "Dispatch a message - SMS, email, or push notification."),
     ("post",       "Publish an announcement or bulletin to a board or feed."),
 
     # ── Tracking & observation ────────────────────────────────────────────────

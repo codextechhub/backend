@@ -31,7 +31,7 @@ def _unique_recipients(users, *, exclude=None):
 # Resolve the active platform users who should see new unassigned ticket activity.
 def support_recipients():
     """Active platform-tenant users who hold a ticket triage key through an active
-    platform role — not every platform user. Mirrors the platform-role branch of
+    platform role - not every platform user. Mirrors the platform-role branch of
     vs_rbac.permissions.user_has_rbac_permission."""
     return list(
         User.objects.filter(

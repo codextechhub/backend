@@ -133,7 +133,7 @@ class AuditEventListView(generics.ListAPIView):
         page = self.paginate_queryset(queryset)
         events = page if page is not None else list(queryset)
 
-        # Single bulk query to resolve entity users — avoids N+1.
+        # Single bulk query to resolve entity users - avoids N+1.
         # User.id is a BigAutoField so we must coerce entity_id to int and
         # discard any values that aren't numeric (e.g. UUID-format entity IDs
         # stored by older audit code), otherwise filter() raises ValueError.
@@ -218,7 +218,7 @@ class MyActivityView(generics.ListAPIView):
     """
     GET /audit/me/activity/
 
-    Audit events where the signed-in user is the actor — used by the
+    Audit events where the signed-in user is the actor - used by the
     /me/security/activity self-service page.
 
     docstring-name: My activity

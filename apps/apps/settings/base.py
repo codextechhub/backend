@@ -25,7 +25,7 @@ TEMP_PASSWORD_PEPPER = config("TEMP_PASSWORD_PEPPER")
 AUTH_USER_MODEL = "vs_user.User"
 
 REST_FRAMEWORK = {
-    # JSON only by default — local.py adds the browsable API for development.
+    # JSON only by default - local.py adds the browsable API for development.
     "DEFAULT_RENDERER_CLASSES": [
         "rest_framework.renderers.JSONRenderer",
     ],
@@ -48,7 +48,7 @@ REST_FRAMEWORK = {
         "login":          "5/minute",
         "password_reset": "3/minute",
         "activation":     "10/minute",
-        # Public barcode-login preview — throttled hard because it confirms
+        # Public barcode-login preview - throttled hard because it confirms
         # whether an email belongs to a known account (enumeration surface).
         "login_preview":  "10/minute",
     },
@@ -133,7 +133,7 @@ CELERY_TASK_SERIALIZER   = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE          = "UTC"
 
-# CORS — locked to known frontend origins (comma-separated env override).
+# CORS - locked to known frontend origins (comma-separated env override).
 # local.py re-opens this for development servers.
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGINS = [
@@ -183,7 +183,7 @@ WSGI_APPLICATION = "apps.wsgi.application"
 # Canonical policy = 12 chars + uppercase + lowercase + digit + special
 # (PasswordComplexityValidator, the single source of truth in
 # vs_user/password_policy.py), plus not-common and not-similar-to-user-info.
-# MinimumLength/Numeric are dropped — the complexity validator subsumes both.
+# MinimumLength/Numeric are dropped - the complexity validator subsumes both.
 AUTH_PASSWORD_VALIDATORS = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
@@ -197,7 +197,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
-# Email settings — Zoho SMTP (credentials come from environment)
+# Email settings - Zoho SMTP (credentials come from environment)
 EMAIL_BACKEND = config(
     "EMAIL_BACKEND",
     default="django.core.mail.backends.smtp.EmailBackend",
@@ -231,7 +231,7 @@ HEALTH_SSL_DOMAIN = config("HEALTH_SSL_DOMAIN", default="api.codexng.com")
 # --------------------------------------------------------------------------- #
 # Payment providers (vs_payments)                                             #
 # --------------------------------------------------------------------------- #
-# Secrets come from the environment — NEVER commit live keys. Each provider is
+# Secrets come from the environment - NEVER commit live keys. Each provider is
 # optional; an unconfigured provider raises ProviderNotConfiguredError when used.
 # Test/sandbox keys (sk_test_… for Paystack) are safe to use in non-production.
 # ``PAYMENTS_DEFAULT_PROVIDER`` selects the provider when a caller doesn't.
@@ -241,7 +241,7 @@ PAYMENTS_CALLBACK_URL = config(
     "PAYMENTS_CALLBACK_URL", default=f"{FRONTEND_BASE_URL}/payments/return"
 )
 
-# Platform (CodeX) issuer identity — the letterhead printed on invoices/receipts the
+# Platform (CodeX) issuer identity - the letterhead printed on invoices/receipts the
 # CodeX *platform* entity raises for its own customers (the schools). School-owned
 # entities take their letterhead from the school's own branding instead; this is only
 # the fallback identity for the platform books. The pay-to bank still comes from the
@@ -256,7 +256,7 @@ PLATFORM_ISSUER = {
     "logo_url": config("PLATFORM_ISSUER_LOGO_URL", default=""),
 }
 
-# Paystack — https://api.paystack.co ; Authorization: Bearer <secret_key>.
+# Paystack - https://api.paystack.co ; Authorization: Bearer <secret_key>.
 PAYSTACK_SECRET_KEY = config("PAYSTACK_SECRET_KEY", default="")
 PAYSTACK_PUBLIC_KEY = config("PAYSTACK_PUBLIC_KEY", default="")
 PAYSTACK_BASE_URL = config("PAYSTACK_BASE_URL", default="https://api.paystack.co")
@@ -283,7 +283,7 @@ STATICFILES_DIRS = [
 ]
 
 # Media: the platform only receives import spreadsheets and images, all
-# small — so uploads live in the DATABASE (core.storage.DatabaseStorage).
+# small - so uploads live in the DATABASE (core.storage.DatabaseStorage).
 # They survive ephemeral-disk redeploys, ride along with DB backups, and are
 # served with authentication by core.views.MediaView at /media/<name>.
 # Outgrow it? Point STORAGES["default"] at S3 and migrate the rows.
@@ -317,29 +317,29 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "2.0.0",
     "DESCRIPTION": (
         "The XVS API is the complete backend API for the X Vision Systems "
-        "platform — the single API layer through which all platform "
+        "platform - the single API layer through which all platform "
         "functionality is exposed, consumed by frontend collaborators "
         "building against defined contracts and by backend engineers "
         "extending the platform.\n\n"
-        "**Authentication** — all endpoints require a JWT Bearer token issued "
+        "**Authentication** - all endpoints require a JWT Bearer token issued "
         "at login (`/v1/user/auth/login/`). Unauthenticated requests receive "
         "401; authenticated requests without sufficient permission receive "
         "403. Use the Authorize button with `Bearer <access token>`.\n\n"
-        "**Permission model** — access is governed by the two-layer RBAC "
+        "**Permission model** - access is governed by the two-layer RBAC "
         "system (platform roles for CX staff, school roles for school "
         "users); the required permission is enforced per endpoint.\n\n"
-        "**Response envelope** — every response is wrapped in "
+        "**Response envelope** - every response is wrapped in "
         "`{success, message, data}`; list endpoints add a `pagination` "
         "block (`currentPage`, `pageSize`, `totalItems`, `totalPages`, "
         "`next`, `previous`). Errors use `{success: false, message, error}`.\n\n"
-        "**School references** — schools are addressed by numeric `id`; "
+        "**School references** - schools are addressed by numeric `id`; "
         "write fields and URL segments that accept a school also accept the "
         "slug, and responses render the slug for backward compatibility."
     ),
     "SCHEMA_PATH_PREFIX": r"/v1",
     "SERVE_INCLUDE_SCHEMA": False,
     "COMPONENT_SPLIT_REQUEST": True,
-    # Hide noisy warnings for plain APIViews without declared serializers —
+    # Hide noisy warnings for plain APIViews without declared serializers -
     # they are still listed, just without typed bodies (annotate over time).
     "DISABLE_ERRORS_AND_WARNINGS": False,
 }

@@ -5,7 +5,7 @@
 # call write_audit_log() from here.
 #
 # This keeps the coupling point in one place. If Module 5's interface changes,
-# only this file needs updating — not every service in vs_config.
+# only this file needs updating - not every service in vs_config.
 #
 # ConfigurationAuditEvent is authoritative locally; this module also mirrors
 # events to the platform audit trail.
@@ -70,12 +70,12 @@ def write_audit_log(
 
     Parameters
     ----------
-    actor       : UserAccount — the user performing the action
-    action      : str         — human-readable action label, e.g. 'config.key.created'
-    target_type : str         — the type of object being acted on
-    target_id   : str         — string representation of the target's primary key
-    detail      : dict        — optional payload with before/after values or extra context
-    branch      : Branch      — optional; set for branch-scoped changes
+    actor       : UserAccount - the user performing the action
+    action      : str         - human-readable action label, e.g. 'config.key.created'
+    target_type : str         - the type of object being acted on
+    target_id   : str         - string representation of the target's primary key
+    detail      : dict        - optional payload with before/after values or extra context
+    branch      : Branch      - optional; set for branch-scoped changes
 
     Design note:
     The import of vs_audit's emit_audit_event is inside the function body to avoid
@@ -101,7 +101,7 @@ def write_audit_log(
         )
     except ImportError:
         # vs_audit not yet available (e.g. during initial migrations or tests).
-        # Log a warning but do not raise — audit failures must never block
+        # Log a warning but do not raise - audit failures must never block
         # the primary config/flag operation.
         logger.warning(
             "vs_audit not available. "

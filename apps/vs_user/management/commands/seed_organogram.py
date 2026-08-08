@@ -6,13 +6,13 @@ Backfills the CX organogram for an existing database:
   1. Builds a starter OrgNode tree (DIVISION → DEPARTMENT → TEAM).
   2. Creates the Positions (seats) for that tree, with solid reporting lines.
   3. Ensures every CX_STAFF user has a PlatformStaffProfile.
-  4. Auto-assigns CX_STAFF users who have no current primary seat — filling the
+  4. Auto-assigns CX_STAFF users who have no current primary seat - filling the
      management seats first (so line-manager / department-head derivation works)
      then round-robin across the team seats.
 
 Safe to re-run: nodes/positions use get_or_create (by code), profiles use
 get_or_create, and only users WITHOUT a current primary assignment are slotted
-in — so an extra run just fills new gaps, it never reshuffles people.
+in - so an extra run just fills new gaps, it never reshuffles people.
 
 Usage
 -----
@@ -34,7 +34,7 @@ from vs_user.services.organogram import OrganogramService
 
 
 # ── Starter org tree ──────────────────────────────────────────────────────────
-# (code, name, kind, parent_code)  — ordered so parents come before children.
+# (code, name, kind, parent_code)  - ordered so parents come before children.
 ORG_NODES = [
     ("TECH",     "Technology",  OrgNode.Kind.DIVISION,   None),
     ("ENG",      "Engineering", OrgNode.Kind.DEPARTMENT, "TECH"),
@@ -45,7 +45,7 @@ ORG_NODES = [
     ("DESIGN",   "Design",      OrgNode.Kind.TEAM,       "PROD"),
 ]
 
-# (code, title, org_node_code, reports_to_code, headcount) — parents first.
+# (code, title, org_node_code, reports_to_code, headcount) - parents first.
 POSITIONS = [
     ("VP-TECH",  "VP, Technology",      "TECH",     None,       1),
     ("ENG-MGR",  "Engineering Manager", "ENG",      "VP-TECH",  1),
@@ -101,7 +101,7 @@ class Command(BaseCommand):
                 if dry_run:
                     raise _Rollback()
         except _Rollback:
-            self.stdout.write(self.style.WARNING("\nDRY RUN — all changes rolled back."))
+            self.stdout.write(self.style.WARNING("\nDRY RUN - all changes rolled back."))
 
         self.stdout.write(self.style.SUCCESS(
             "\nDone. nodes=%(nodes)d positions=%(positions)d heads=%(heads)d "
@@ -115,7 +115,7 @@ class Command(BaseCommand):
         for code, name, kind, parent_code in ORG_NODES:
             parent = nodes.get(parent_code) if parent_code else None
             # OrgNode.save() prefixes the code by tier (DV-/DT-/TM-), so look up
-            # by the prefixed code — matching on the bare code would never find
+            # by the prefixed code - matching on the bare code would never find
             # an existing node and would duplicate-key on every re-run.
             lookup_code = f"{OrgNode._KIND_PREFIX.get(kind, '')}{code}"
             node, created = OrgNode.objects.get_or_create(

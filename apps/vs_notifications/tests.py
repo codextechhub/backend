@@ -9,7 +9,7 @@
 # settings API (effective matrix shape + source, upsert, IN_APP + transactional
 # rejections), and the empty-list response shape.
 #
-# Runs on SQLite (apps.settings.test) and Postgres (apps.settings.local) — the
+# Runs on SQLite (apps.settings.test) and Postgres (apps.settings.local) - the
 # conditional UniqueConstraints exercise on both.
 # =============================================================================
 
@@ -119,7 +119,7 @@ class _NotifFixture(TestCase):
         ?tenant=<the user's home tenant slug> to every request, so
         TenantJWTAuthentication establishes request.tenant exactly as production
         traffic does. Requests that must assert a DIFFERENT tenant (cross-tenant
-        404 tests) build the URL with an explicit ?tenant=<other slug> — the
+        404 tests) build the URL with an explicit ?tenant=<other slug> - the
         client only appends when the path has no tenant param.
         """
         from core.test_utils import TenantAPIClient
@@ -130,7 +130,7 @@ class _NotifFixture(TestCase):
 
 
 # ---------------------------------------------------------------------------
-# resolve_channels — layering
+# resolve_channels - layering
 # ---------------------------------------------------------------------------
 
 class ResolveChannelsTests(_NotifFixture):
@@ -180,13 +180,13 @@ class ResolveChannelsTests(_NotifFixture):
 
 
 # ---------------------------------------------------------------------------
-# resolve_channels_bulk — layering across multiple event types, one query
+# resolve_channels_bulk - layering across multiple event types, one query
 # ---------------------------------------------------------------------------
 
 class ResolveChannelsBulkTests(_NotifFixture):
 
     def test_layering_across_multiple_event_types_one_call(self):
-        """school beats platform beats default — for several event types at once."""
+        """school beats platform beats default - for several event types at once."""
         et_school = self._event("ticket.created")       # school override wins
         et_platform = self._event("ticket.assigned")      # platform row wins
         et_default = self._event("ticket.resolved")       # no rows → default
@@ -206,7 +206,7 @@ class ResolveChannelsBulkTests(_NotifFixture):
         ).update(is_enabled=False)
         # et_default: no rows at all → default_enabled fallback.
         NotificationSetting.all_objects.filter(event_type=et_default).delete()
-        # et_tx: a disabled row must be ignored — transactional always fires.
+        # et_tx: a disabled row must be ignored - transactional always fires.
         NotificationSetting.all_objects.create(
             tenant=None, event_type=et_tx, channel=ChannelChoices.EMAIL, is_enabled=False,
         )
@@ -228,7 +228,7 @@ class ResolveChannelsBulkTests(_NotifFixture):
             resolve_channels_bulk(event_types, tenant=self.school_a.tenant)
 
     def test_matrix_build_costs_two_queries(self):
-        """1 event-type query + 1 settings query — no per-event resolve queries."""
+        """1 event-type query + 1 settings query - no per-event resolve queries."""
         from .views import NotificationSettingViewSet
         view = NotificationSettingViewSet()
         with self.assertNumQueries(2):
@@ -339,7 +339,7 @@ class DispatchTests(_NotifFixture):
         self.addCleanup(
             signals.notification_failed.disconnect, dispatch_uid="test-preflight",
         )
-        # The pre-flight FAILED signal fires from on_commit — capture it.
+        # The pre-flight FAILED signal fires from on_commit - capture it.
         with self.captureOnCommitCallbacks(execute=True):
             ids = NotificationService.send(
                 event_key="user.invited",
@@ -377,7 +377,7 @@ class DeliveryTaskTests(_NotifFixture):
 
     def _pending_email(self, html=""):
         et = self._event("ticket.created")
-        # tenant is required (non-null); its value is irrelevant to delivery — the
+        # tenant is required (non-null); its value is irrelevant to delivery - the
         # task keys off recipient/unregistered_email, not the anchor tenant.
         return Notification.objects.create(
             tenant=self.school_a.tenant, recipient=None,
@@ -464,7 +464,7 @@ class DeliveryTaskTests(_NotifFixture):
 
 
 # ---------------------------------------------------------------------------
-# Feed retrieve — cross-user isolation
+# Feed retrieve - cross-user isolation
 # ---------------------------------------------------------------------------
 
 class FeedRetrieveTests(_NotifFixture):
@@ -573,7 +573,7 @@ class FeedRetrieveTests(_NotifFixture):
 
 
 # ---------------------------------------------------------------------------
-# Settings API — security + shape + upsert
+# Settings API - security + shape + upsert
 # ---------------------------------------------------------------------------
 
 class SettingsApiTests(_NotifFixture):
@@ -617,7 +617,7 @@ class SettingsApiTests(_NotifFixture):
             format="json",
         )
         self.assertEqual(resp.status_code, 200, resp.content)
-        # A PLATFORM-kind assertion manages the platform DEFAULT layer — the
+        # A PLATFORM-kind assertion manages the platform DEFAULT layer - the
         # tenant-NULL rows every school inherits (codex-tenant rows would be
         # invisible to school dispatch resolution).
         row = NotificationSetting.all_objects.get(
@@ -679,7 +679,7 @@ class SettingsApiTests(_NotifFixture):
 
 
 # ---------------------------------------------------------------------------
-# History — school scoping
+# History - school scoping
 # ---------------------------------------------------------------------------
 
 class HistoryScopingTests(_NotifFixture):
@@ -743,7 +743,7 @@ class ResponseShapeTests(_NotifFixture):
 
 
 # ---------------------------------------------------------------------------
-# seed_notification_permissions — grants land in the tenant RBAC tables
+# seed_notification_permissions - grants land in the tenant RBAC tables
 # ---------------------------------------------------------------------------
 
 class SeedNotificationPermissionsTests(TestCase):

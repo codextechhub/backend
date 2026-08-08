@@ -1,16 +1,16 @@
-"""Payroll services — the two-step accrue-then-disburse payroll cycle.
+"""Payroll services - the two-step accrue-then-disburse payroll cycle.
 
 Payroll is booked in two postings, deliberately separate because the cost is incurred
 before the cash leaves (and the statutory deductions are held in between):
 
-* **Accrual** (:func:`post_payroll`): recognise the whole cost and park each liability —
+* **Accrual** (:func:`post_payroll`): recognise the whole cost and park each liability -
   ``Dr salary expense (Σgross), Cr PAYE payable (Σpaye), Cr pension payable (Σpension),
   Cr net wages payable (Σnet)``.
 * **Disbursement** (:func:`pay_payroll`): when employees are actually paid, clear the
-  net-pay liability — ``Dr net wages payable (Σnet), Cr bank (Σnet)``.
+  net-pay liability - ``Dr net wages payable (Σnet), Cr bank (Σnet)``.
 
 The statutory liabilities (PAYE, pension) stay on the balance sheet until remitted to
-the authorities — a separate AP payment outside this module. ``net = gross - paye -
+the authorities - a separate AP payment outside this module. ``net = gross - paye -
 pension`` per employee; all amounts are integer kobo.
 """
 from __future__ import annotations
@@ -57,7 +57,7 @@ def apply_structure(gross_amount, structure) -> dict:
         base = basic if component.calc_method == SalaryCalcMethod.PERCENT_OF_BASIC else gross  # Choose percentage base.
         return base * int(component.rate_bps or 0) // 10000  # Apply basis-point rate to base.
 
-    # Basic first — the base for any '% of basic' component (which must not itself be one).  # Required dependency order.
+    # Basic first - the base for any '% of basic' component (which must not itself be one).  # Required dependency order.
     basic = sum(  # Sum components marked as basic earnings.
         value_of(c, 0) for c in components  # Compute fixed/gross-percent basic components.
         if c.kind == SalaryComponentKind.EARNING and c.is_basic  # Only earning/basic components contribute.
@@ -346,11 +346,11 @@ def _pay_payroll_atomic(run, *, bank_account=None, pay_date=None, actor_user=Non
 def cancel_payroll_run(run, *, actor_user=None):
     """Cancel / void a payroll run raised in error, by its state:
 
-    * **DRAFT** — nothing posted, just mark it CANCELLED.
-    * **POSTED** (accrued, not yet paid) — reverse the accrual journal (an audit-correct
+    * **DRAFT** - nothing posted, just mark it CANCELLED.
+    * **POSTED** (accrued, not yet paid) - reverse the accrual journal (an audit-correct
       mirror that backs out the salary expense and the PAYE/pension/net liabilities) and
       mark it CANCELLED.
-    * **PAID** — refused: the net wages have already left the bank, so the disbursement
+    * **PAID** - refused: the net wages have already left the bank, so the disbursement
       must be reversed first (a real cash clawback), before the run can be voided.
 
     Idempotent on an already-cancelled run.
@@ -361,7 +361,7 @@ def cancel_payroll_run(run, *, actor_user=None):
         return run
     if run.run_status == PayrollRunStatus.PAID:  # Paid payroll cannot be voided without cash reversal.
         raise PayrollError(
-            "This run has been paid — the net wages already left the bank. Reverse the "
+            "This run has been paid - the net wages already left the bank. Reverse the "
             "disbursement before voiding the run.",
         )
 

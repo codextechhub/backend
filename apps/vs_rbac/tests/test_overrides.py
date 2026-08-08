@@ -2,7 +2,7 @@
 
 Covers the evaluator precedence rules, the tenant-scoped API (authz,
 cross-tenant isolation, instant effect, lift, replace), the audit trail, the
-self-override ban, and — the security crux — the self-visibility rule: an
+self-override ban, and - the security crux - the self-visibility rule: an
 affected user must never be able to learn they have overrides unless they
 themselves hold the ``.view``/``.manage`` key.
 """
@@ -210,7 +210,7 @@ class UserPermissionOverrideTests(TestCase):
         self.assertIn(self.actor.email, emails())
 
     # =========================================================================
-    # API — authorisation
+    # API - authorisation
     # =========================================================================
     def test_list_requires_the_view_or_manage_key(self):
         stranger = make_staff_user(self.branch, email="ovr-stranger@test.com")
@@ -276,7 +276,7 @@ class UserPermissionOverrideTests(TestCase):
         self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
 
     # =========================================================================
-    # API — behaviour
+    # API - behaviour
     # =========================================================================
     def _create(self, client=None, **payload):
         body = {"permission": TARGET_KEY, "mode": "DENY", "reason": "Under review."}
@@ -384,7 +384,7 @@ class UserPermissionOverrideTests(TestCase):
         self.assertTrue(UserPermissionOverride.objects.filter(pk=row.pk).exists())
 
     # =========================================================================
-    # Self-visibility — the security crux
+    # Self-visibility - the security crux
     # =========================================================================
     def test_affected_user_without_the_view_key_cannot_list_their_own_overrides(self):
         _override(self.target, TARGET_KEY, UserPermissionOverride.Mode.DENY)
@@ -414,7 +414,7 @@ class UserPermissionOverrideTests(TestCase):
             self.assertNotIn("override", field.lower())
 
     def test_holder_of_the_view_key_can_list_their_own_overrides(self):
-        # The gate is the VIEWER's key, not "is this me" — a user who legitimately
+        # The gate is the VIEWER's key, not "is this me" - a user who legitimately
         # holds .view sees their own row like any other.
         _grant(self.actor, [VIEW_KEY])
         _override(self.actor, TARGET_KEY, UserPermissionOverride.Mode.DENY)
@@ -459,7 +459,7 @@ class UserPermissionOverrideTests(TestCase):
         self.assertTrue(lifted.metadata["replaced"])
 
     # =========================================================================
-    # Impersonation — the evaluator runs as the effective user
+    # Impersonation - the evaluator runs as the effective user
     # =========================================================================
     def test_proxied_me_reflects_the_targets_overrides(self):
         from vs_admin_console.models import ImpersonationSession
@@ -513,7 +513,7 @@ class PlatformUserPermissionOverrideTests(TestCase):
 
     def test_school_key_does_not_grant_a_platform_actor_access(self):
         stranger = make_vision_user(email="cx-stranger@test.com")
-        _grant(stranger, [MANAGE_KEY])  # school namespace — no reach here
+        _grant(stranger, [MANAGE_KEY])  # school namespace - no reach here
         resp = _client(stranger).get(_q(self.url, self.slug))
         self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
 

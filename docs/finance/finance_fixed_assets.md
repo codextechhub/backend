@@ -12,7 +12,7 @@ Routes (mounted at `/v1/finance/`): `fixed-assets/`, `fixed-assets/summary/`,
 
 ## 1. What it is (and what it is NOT)
 
-- **`FixedAsset`** (`models/ops.py:986`): a depreciable asset —
+- **`FixedAsset`** (`models/ops.py:986`): a depreciable asset -
   `cost`, `salvage_value`, `useful_life_months`, `method`, three posting accounts
   (defaults: PP&E `1500`, accumulated depreciation `1900` contra, expense `5400`),
   `asset_status` (`DRAFT → ACTIVE → FULLY_DEPRECIATED / DISPOSED`).
@@ -24,7 +24,7 @@ Routes (mounted at `/v1/finance/`): `fixed-assets/`, `fixed-assets/summary/`,
   refuses once any row has posted (`assets.py:103`).
 - **Let depreciation overshoot.** Charges are integer-exact: the final month absorbs
   rounding; declining-balance never takes book value below salvage.
-- **Un-dispose / reverse depreciation** via API — corrections are journal reversals.
+- **Un-dispose / reverse depreciation** via API - corrections are journal reversals.
 
 ## 2. Domain model
 
@@ -42,10 +42,10 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 
 | Method + path | permission key | what it does | request body | response |
 |---|---|---|---|---|
-| `GET /fixed-assets/` | `finance.fixedasset.view` | Register list (paginated) | — | assets |
+| `GET /fixed-assets/` | `finance.fixedasset.view` | Register list (paginated) | - | assets |
 | `POST /fixed-assets/` | `finance.fixedasset.create` | Create a **DRAFT** asset | `name`, `acquisition_date`, `cost`, `salvage_value?`, `useful_life_months`, `method?`, `category?`, accounts? | `201` asset |
-| `GET /fixed-assets/summary/` | `finance.fixedasset.view` | Register KPIs (over all rows) | — | summary |
-| `GET /fixed-assets/<pk>/` | `finance.fixedasset.view` | Asset + schedule | — | detail |
+| `GET /fixed-assets/summary/` | `finance.fixedasset.view` | Register KPIs (over all rows) | - | summary |
+| `GET /fixed-assets/<pk>/` | `finance.fixedasset.view` | Asset + schedule | - | detail |
 | `POST /fixed-assets/<pk>/acquire/` | `finance.fixedasset.acquire` | Capitalise + build schedule (DRAFT → ACTIVE) | `bank_account` **or** `credit_account` | asset |
 | `POST /fixed-assets/<pk>/depreciate/` | `finance.fixedasset.depreciate` | Post this asset's due charges (one journal per row) | `up_to_date` | rows posted |
 | `POST /fixed-assets/run-depreciation/` | `finance.fixedasset.depreciate` (GET preview: `.view`) | One compound journal **per fiscal period** covering every due charge across the entity | `up_to_date` | `{journal_id, journal_ids[], period_count, total, …}` |
@@ -58,7 +58,7 @@ DRAFT ──acquire──▶ ACTIVE ──(last schedule row posts)──▶ FUL
                      │                                        │
                      └───────────── dispose ──────────────────┴──▶ DISPOSED
 ```
-Depreciation posts from **ACTIVE only** (a DRAFT asset — not yet capitalised — is
+Depreciation posts from **ACTIVE only** (a DRAFT asset - not yet capitalised - is
 refused) until the schedule is exhausted; disposal is allowed from ACTIVE or
 FULLY_DEPRECIATED.
 
@@ -68,7 +68,7 @@ FULLY_DEPRECIATED.
 ```
 per_month = base // months ;  final month += remainder   (Σ == base exactly)
 ```
-**Declining balance** (`_declining_balance_amounts`, `:72`) — double-declining with
+**Declining balance** (`_declining_balance_amounts`, `:72`) - double-declining with
 the textbook switch to straight-line:
 ```
 charge = max(book_value × 2/months, (book_value − salvage)/months_left)
@@ -82,15 +82,15 @@ charge = max(book_value × 2/months, (book_value − salvage)/months_left)
 **Acquire** (`_acquire_asset_atomic`, `assets.py:162`):
 `Dr PP&E (1500) cost / Cr bank-or-payable cost`, then builds the schedule.
 
-**Depreciate (per asset)** (`_post_depreciation_atomic`, `:240`) — for each due row:
+**Depreciate (per asset)** (`_post_depreciation_atomic`, `:240`) - for each due row:
 `Dr depreciation expense (5400) / Cr accumulated depreciation (1900)`, each in its
 **own** journal dated on the row's `depreciation_date` (so charges land in their own
 periods); rolls `accumulated_depreciation`; flips FULLY_DEPRECIATED when done.
 
-**Run (entity-wide)** (`_run_period_depreciation_atomic`) — due charges are grouped
+**Run (entity-wide)** (`_run_period_depreciation_atomic`) - due charges are grouped
 by their **fiscal period**, and each period gets its own compound journal (Dr per
 expense account / Cr per accum account) dated at the latest charge date within that
-period — so a backlog never collapses into one month. A CLOSED period in the range
+period - so a backlog never collapses into one month. A CLOSED period in the range
 raises cleanly (re-open it via `periods/<id>/reopen/`, then re-run); a date with no
 fiscal period raises a typed `DepreciationError`. Period close still auto-posts due
 depreciation with `allow_restricted` (into a SOFT_CLOSED period) via
@@ -113,22 +113,22 @@ Cr gain 50,000, Cr 1500 1,200,000`.
 
 ## 8. Gotchas / known limitations
 
-- ✅ **The run posts per-period** (was: one lump dated `up_to_date`) — a backlog now
+- ✅ **The run posts per-period** (was: one lump dated `up_to_date`) - a backlog now
   lands in its own months, matching the per-asset path. Response keeps `journal_id`
   (first/earliest) and adds `journal_ids` + `period_count`. A CLOSED period in the
-  backlog raises — by design; re-open, then re-run.
-- ✅ **Depreciation is ACTIVE-only** (was: DRAFT allowed) — an un-capitalised asset
+  backlog raises - by design; re-open, then re-run.
+- ✅ **Depreciation is ACTIVE-only** (was: DRAFT allowed) - an un-capitalised asset
   can no longer accrue depreciation.
-- ✅ **Disposal is blocked while due depreciation is unposted** — charges due on or
+- ✅ **Disposal is blocked while due depreciation is unposted** - charges due on or
   before the disposal date must be posted first (clear error names the count), so the
   gain/loss is always computed on an up-to-date book value. Charges dated *after* the
   disposal are still orphaned by design (the life is cut short).
-- **No un-dispose / no schedule edit** after posting starts — corrections via journal
+- **No un-dispose / no schedule edit** after posting starts - corrections via journal
   reversal only.
 
 ## 9. Permissions & tenant isolation
 
-- Verbs: `finance.fixedasset.{view, create, acquire, depreciate, dispose}` —
+- Verbs: `finance.fixedasset.{view, create, acquire, depreciate, dispose}` -
   `dispose` is CRITICAL in the seed.
 - Entity-scoped resolution throughout; bank/gain-loss accounts resolved within the
   entity. ✅
@@ -140,7 +140,7 @@ Cr gain 50,000, Cr 1500 1,200,000`.
 | `models/ops.py` | `FixedAsset`, `DepreciationSchedule` |
 | `assets.py` | schedule builders, `acquire_asset`, `post_depreciation`, `preview/run_period_depreciation`, `dispose_asset` |
 | `views_ops/assets.py` | register CRUD, summary, acquire/depreciate/dispose, run-depreciation (GET preview / POST run) |
-| `close.py` | `run_period_depreciation(entity, period)` — the close-time auto-posting |
+| `close.py` | `run_period_depreciation(entity, period)` - the close-time auto-posting |
 | `constants.py` | `AssetCategory`, `AssetStatus`, `DepreciationMethod`; account codes 1500/1900/5400 |
 
 ## 11. Test coverage & gaps

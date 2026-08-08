@@ -43,7 +43,7 @@ from .base import (
 # Vendor contracts                                                            #
 # --------------------------------------------------------------------------- #
 
-#: Contract statuses that are terminal — no further header edits allowed.
+#: Contract statuses that are terminal - no further header edits allowed.
 _TERMINAL_STATUSES = (ContractStatus.EXPIRED, ContractStatus.TERMINATED, ContractStatus.RENEWED)
 
 
@@ -104,8 +104,8 @@ def _build_milestones(contract, items, *, start_line_no=0):
     """Append :class:`ContractMilestone` rows from a request ``milestones`` list (optional).
 
     Hardened: name required (≤200), amount is strict integer kobo ≥0, due_date is a valid
-    ISO date. Uses *append* semantics (never deletes) so completed-milestone history — the
-    audit-recorded evidence a deliverable was met — is never clobbered by an edit.
+    ISO date. Uses *append* semantics (never deletes) so completed-milestone history - the
+    audit-recorded evidence a deliverable was met - is never clobbered by an edit.
     """
     for i, ms in enumerate(items or [], start=1):
         ContractMilestone.objects.create(
@@ -139,7 +139,7 @@ class ContractListCreateView(_ProcBase):
         )
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
-        # ``?expiring=1`` — ACTIVE contracts whose end_date falls in [today, today+30].
+        # ``?expiring=1`` - ACTIVE contracts whose end_date falls in [today, today+30].
         if request.query_params.get("expiring") in ("1", "true", "True"):
             qs = qs.filter(
                 status=ContractStatus.ACTIVE, end_date__isnull=False,
@@ -239,7 +239,7 @@ class ContractDetailView(_ProcBase):
         if "notes" in body:
             contract.notes = _text(body.get("notes"), "notes", 255)
         contract.save()
-        # Milestones added on edit are appended (existing ones — some completed — are preserved).
+        # Milestones added on edit are appended (existing ones - some completed - are preserved).
         if body.get("milestones"):
             _build_milestones(contract, body["milestones"], start_line_no=contract.milestones.count())
         return success_response("Vendor contract updated.", data=VendorContractSerializer(contract).data)
@@ -285,7 +285,7 @@ class ContractSummaryView(_ProcBase):
 
 
 class ContractLinkedPurchaseOrdersView(_ProcBase):
-    """GET — real purchase orders with this contract's vendor during its term.
+    """GET - real purchase orders with this contract's vendor during its term.
 
     docstring-name: Contract linked purchase orders
     """
@@ -371,7 +371,7 @@ class ContractTerminateView(_ContractActionBase):
 
 
 class ContractRenewView(_ContractActionBase):
-    """POST — create a successor contract that renews this one (marks this RENEWED).
+    """POST - create a successor contract that renews this one (marks this RENEWED).
 
     docstring-name: Renew a contract
     """
@@ -405,7 +405,7 @@ class ContractRenewView(_ContractActionBase):
 
 
 class ContractMilestoneCompleteView(_ProcBase):
-    """POST — mark a milestone COMPLETED.
+    """POST - mark a milestone COMPLETED.
 
     docstring-name: Complete a contract milestone
     """
@@ -430,7 +430,7 @@ class ContractMilestoneCompleteView(_ProcBase):
 
 
 class ContractRenewalsView(_ProcBase):
-    """GET — contracts due for renewal (inside their notice window or a ``within_days`` horizon).
+    """GET - contracts due for renewal (inside their notice window or a ``within_days`` horizon).
 
     docstring-name: Contracts due for renewal
     """

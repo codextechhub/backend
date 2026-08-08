@@ -73,7 +73,7 @@ class UptimeCheckResult(models.Model):
 
 
 class UptimeDailyRollup(models.Model):
-    """One row per service per day — drives the long-window uptime bars."""
+    """One row per service per day - drives the long-window uptime bars."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     service = models.ForeignKey(MonitoredService, on_delete=models.CASCADE, related_name="daily_uptime")

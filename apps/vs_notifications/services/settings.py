@@ -1,11 +1,11 @@
 # =============================================================================
 # vs_notifications / services / settings.py
 #
-# resolve_channels() / resolve_channels_bulk() — the single truth source for
+# resolve_channels() / resolve_channels_bulk() - the single truth source for
 # which channels should fire for a given (event_type, optional school).
 #
 # Called by dispatch.py before creating Notification records, and by the
-# settings API to compute the effective matrix (bulk variant — one query for
+# settings API to compute the effective matrix (bulk variant - one query for
 # all event types instead of one per event type).
 #
 # There is NO fail-open behaviour: the principled fallback for a missing
@@ -28,7 +28,7 @@ def resolve_channels_bulk(event_types, tenant=None, rows=None, school=None) -> d
            (Platform kill switch; wins over everything, including transactional.)
         2. is_transactional    → every supported channel is True.
            Transactional events (password resets, invites) bypass settings
-           entirely — they always dispatch on their supported channels.
+           entirely - they always dispatch on their supported channels.
         3. Otherwise overlay the persisted NotificationSetting rows:
                school row wins → else platform row → else default_enabled.
 
@@ -39,12 +39,12 @@ def resolve_channels_bulk(event_types, tenant=None, rows=None, school=None) -> d
     Note on the IN_APP invariant: this function only READS persisted rows. The
     "IN_APP cannot be disabled" rule is enforced where settings are WRITTEN
     (serializer/service), so a disabled IN_APP row should never exist. We do not
-    silently override values here — keeping read and write consistent.
+    silently override values here - keeping read and write consistent.
 
     Args:
         event_types:  Iterable of NotificationEventType instances.
         school:       A School instance, or None for a platform-scope resolve.
-        rows:         Optional pre-fetched rows — an iterable of dicts with
+        rows:         Optional pre-fetched rows - an iterable of dicts with
                       event_type_id / channel / is_enabled / school_id keys,
                       already scoped to (school + platform). Callers that need
                       the raw rows for their own purposes (e.g. the settings
@@ -113,7 +113,7 @@ def resolve_channels(event_type, tenant=None, school=None) -> dict[str, bool]:
     """
     Return {channel: is_enabled} for every channel in event_type.supported_channels.
 
-    Single-event convenience wrapper — delegates to resolve_channels_bulk so
+    Single-event convenience wrapper - delegates to resolve_channels_bulk so
     the layering rules live in exactly one place.
 
     Args:

@@ -1,7 +1,7 @@
 """vs_finance models package.
 
 Split from a single 2,400-line models.py (B25). Import everything through
-``vs_finance.models`` exactly as before — submodules are an internal layout
+``vs_finance.models`` exactly as before - submodules are an internal layout
 detail. Order follows the dependency chain core -> gl -> ar ->
 adjustments/dunning -> ops.
 """

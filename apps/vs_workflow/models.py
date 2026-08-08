@@ -1,15 +1,15 @@
 """
-Data models for vs_workflow — 8 models.
+Data models for vs_workflow - 8 models.
 
-WorkflowTemplate      — reusable blueprint.
-WorkflowStage         — one node (APPROVAL or BRANCH).
-WorkflowRoutePath     — directed edge between stages, optionally condition-guarded.
-WorkflowInstance      — one running execution against one business document.
-WorkflowStageInstance — per-instance, per-stage lifecycle record.
-WorkflowStageApprover — audit-grade snapshot of who was eligible when a stage activated.
-WorkflowStageAction   — every recorded approver vote, including reversals.
-ApprovalDelegation    — date-ranged delegation of approval authority.
-WorkflowAuditLog      — append-only structured event log.
+WorkflowTemplate      - reusable blueprint.
+WorkflowStage         - one node (APPROVAL or BRANCH).
+WorkflowRoutePath     - directed edge between stages, optionally condition-guarded.
+WorkflowInstance      - one running execution against one business document.
+WorkflowStageInstance - per-instance, per-stage lifecycle record.
+WorkflowStageApprover - audit-grade snapshot of who was eligible when a stage activated.
+WorkflowStageAction   - every recorded approver vote, including reversals.
+ApprovalDelegation    - date-ranged delegation of approval authority.
+WorkflowAuditLog      - append-only structured event log.
 """
 
 import shortuuid
@@ -45,7 +45,7 @@ class WorkflowTemplate(models.Model):
     A template is identified by the combination of (school, document_type, code).
     Multiple templates can exist for the same document type under different codes,
     enabling different approval paths (e.g. ``standard`` vs ``high_value``).
-    Publishing the same key again updates the template in place — no versioning.
+    Publishing the same key again updates the template in place - no versioning.
 
     Attributes:
         school: Optional school scope. Null means the template applies platform-wide.
@@ -119,8 +119,8 @@ class WorkflowStage(models.Model):
         kind: ``APPROVAL`` or ``BRANCH``. BRANCH stages are auto-skipped by the engine.
         order: Ascending integer used for linear routing when no routes are defined.
         approver_permission_key: RBAC permission key used to resolve eligible approvers.
-        approver_scope: ``BRANCH``, ``SCHOOL``, or ``PLATFORM`` — narrows the RBAC lookup.
-        advance_rule: ``UNANIMOUS``, ``QUORUM``, or ``ANY`` — how many approvals advance the stage.
+        approver_scope: ``BRANCH``, ``SCHOOL``, or ``PLATFORM`` - narrows the RBAC lookup.
+        advance_rule: ``UNANIMOUS``, ``QUORUM``, or ``ANY`` - how many approvals advance the stage.
         quorum_count: Minimum approvals required when advance_rule is ``QUORUM``.
         on_rejection: ``TERMINAL`` ends the workflow; ``RETURN_TO_REQUESTER`` sends it back.
         skip_if_no_approvers: Auto-skip this stage if no eligible approvers are found.
@@ -164,7 +164,7 @@ class WorkflowStage(models.Model):
     on_rejection = models.CharField(max_length=30, choices=StageOnRejection.choices,
                                     default=StageOnRejection.TERMINAL)
     skip_if_no_approvers = models.BooleanField(default=True)
-    # Declarative inclusion condition — stage only runs when this evaluates True.
+    # Declarative inclusion condition - stage only runs when this evaluates True.
     # {"op": "gte", "field": "amount", "value": 100000} or {"fn": "module.fn_name"}
     inclusion_condition = models.JSONField(null=True, blank=True)
     retired_at = models.DateTimeField(null=True, blank=True)
@@ -277,7 +277,7 @@ class WorkflowInstance(models.Model):
     document_content_type = models.ForeignKey(ContentType, on_delete=models.PROTECT)
     document_object_id = models.CharField(max_length=64, db_index=True)
     document = GenericForeignKey("document_content_type", "document_object_id")
-    # Denormalised for fast filtering — avoids a join through contenttypes.
+    # Denormalised for fast filtering - avoids a join through contenttypes.
     document_type = models.CharField(max_length=100, db_index=True)
     document_summary = models.JSONField(default=dict, blank=True)
     status = models.CharField(max_length=30, choices=WorkflowInstanceStatus.choices,
@@ -384,7 +384,7 @@ class WorkflowStageApprover(models.Model):
 class WorkflowStageAction(models.Model):
     """A recorded approver vote or admin reversal. Append-only.
 
-    Every decision taken on a stage — APPROVED, REJECTED, or RETURNED — writes a
+    Every decision taken on a stage - APPROVED, REJECTED, or RETURNED - writes a
     row here. Reversals never delete or modify the original row; instead a new row
     is created with is_reversal_of pointing to the original, and the original receives
     a reversed_at timestamp.
@@ -444,7 +444,7 @@ class ApprovalDelegation(models.Model):
         starts_at: Datetime from which the delegation becomes effective.
         ends_at: Datetime after which the delegation expires.
         document_type: Limits the delegation to a specific document type. Blank means all types.
-        exclusive: If True, the delegator is removed from the eligible list for the duration —
+        exclusive: If True, the delegator is removed from the eligible list for the duration -
             only the delegate can approve, not both.
         revoked_at: Set when an admin or the delegator manually revokes the delegation early.
     """
@@ -489,7 +489,7 @@ class ApprovalDelegation(models.Model):
 class WorkflowAuditLog(models.Model):
     """Append-only log of every material event in a workflow instance's lifecycle.
 
-    One row is written for each significant engine event — submission, stage activation,
+    One row is written for each significant engine event - submission, stage activation,
     vote, approval, rejection, and so on. Rows are never updated or deleted. Used for
     auditing, debugging, and driving notification dispatch.
 

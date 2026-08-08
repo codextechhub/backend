@@ -8,7 +8,7 @@ already appears in View Queues with the actor who triggered it.
 
 Retries: only :class:`~vs_exports.constants.FailureCode.INFRASTRUCTURE` outcomes are
 worth another attempt, and the service has already recorded the run as failed by the
-time we see one — so the task does not use Celery's ``autoretry_for``. Retrying a
+time we see one - so the task does not use Celery's ``autoretry_for``. Retrying a
 permission or filter failure would fail identically and cost the user three
 notifications instead of one.
 """
@@ -42,7 +42,7 @@ def expire_export_files_task():
     """Nightly: hard-delete storage for files past their 30-day availability.
 
     Availability itself is evaluated at read time, so a night this job misses changes
-    nothing a user sees — it only delays reclaiming the bytes.
+    nothing a user sees - it only delays reclaiming the bytes.
     """
     from .services import expire_files
 
@@ -54,7 +54,7 @@ def expire_export_files_task():
 def prune_analytics_task():
     """Nightly: drop product telemetry past its retention window.
 
-    Analytics is disposable — that is the whole difference between it and the audit
+    Analytics is disposable - that is the whole difference between it and the audit
     trail sitting beside it, which is kept indefinitely and never pruned by anything.
     """
     import datetime

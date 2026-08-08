@@ -1,8 +1,8 @@
-"""The dataset catalogue — what may be exported, by whom, and how it reads.
+"""The dataset catalogue - what may be exported, by whom, and how it reads.
 
 The handoff calls the catalogue the dependency that decides the outcome: "a thin or
 badly described catalogue makes every screen feel empty". It is declared **in code**
-rather than as tenant-editable rows because every entry has to name a real ORM path —
+rather than as tenant-editable rows because every entry has to name a real ORM path -
 a field label with no column behind it is a run-time failure waiting to happen. What
 administrators control (which datasets a role may export, which fields are sensitive)
 is expressed through RBAC keys, which *are* per tenant.
@@ -13,7 +13,7 @@ Three ideas:
     One exportable column. Carries the ORM path used to read it, the label a person
     sees, a ``kind`` that decides how the value renders in each
     :class:`~vs_exports.constants.ValuesMode`, plus ``locked`` (always present, cannot
-    be deselected — the row's identity) and ``sensitive`` (needs an extra permission
+    be deselected - the row's identity) and ``sensitive`` (needs an extra permission
     and is called out at review).
 
 :class:`FilterDef`
@@ -25,7 +25,7 @@ Three ideas:
     the fields and filters above, supported formats, a row cap and a maximum date span.
 
 Everything the API exposes about a dataset comes from here, so the UI never hardcodes
-fields, formats or option sets — which is exactly what the spec requires.
+fields, formats or option sets - which is exactly what the spec requires.
 """
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ from .constants import DatasetScope, ExportFormat, ValuesMode
 # --------------------------------------------------------------------------- #
 # Value rendering                                                             #
 # --------------------------------------------------------------------------- #
-#: Field kinds. The kind — not the column type — decides how a cell renders, because
+#: Field kinds. The kind - not the column type - decides how a cell renders, because
 #: "for people" and "for another system" are two different renderings of one value.
 KIND_TEXT = "text"
 KIND_DATE = "date"
@@ -62,7 +62,7 @@ def render_value(kind: str, value, mode: str, *, choices: dict | None = None):
     """
     people = mode == ValuesMode.PEOPLE
     if value is None or value == "":
-        return "—" if people else ""
+        return "-" if people else ""
 
     if kind == KIND_DATE:
         if isinstance(value, (datetime.date, datetime.datetime)):
@@ -102,7 +102,7 @@ def render_value(kind: str, value, mode: str, *, choices: dict | None = None):
 class Field:
     """One exportable column.
 
-    ``source`` is the ORM lookup path used with ``values_list`` — reading through
+    ``source`` is the ORM lookup path used with ``values_list`` - reading through
     ``values_list`` rather than model instances is what keeps a 500k-row export from
     turning into 500k queries, so every field must be expressible as a path.
     """
@@ -176,7 +176,7 @@ class FilterDef:
 
 @dataclass(frozen=True)
 class ScopeContext:
-    """The boundary one export reads inside — always a tenant, sometimes an entity.
+    """The boundary one export reads inside - always a tenant, sometimes an entity.
 
     Passed to :attr:`Dataset.base` instead of a bare entity so a tenant-scoped dataset
     (audit events, users, configuration) is expressible without inventing a fake
@@ -298,7 +298,7 @@ FORMAT_OPTION_SCHEMA = {
 
 # Merge caller options over the schema defaults for one format.
 def default_format_options(fmt: str) -> dict:
-    """Every option for ``fmt`` at its default — the starting point for a new export."""
+    """Every option for ``fmt`` at its default - the starting point for a new export."""
     return {k: v["default"] for k, v in FORMAT_OPTION_SCHEMA.get(fmt, {}).items()}
 
 
@@ -408,7 +408,7 @@ CUSTOMER_INVOICES = register(Dataset(
     ),
     fields=(
         Field("document_number", "Invoice number", "Invoice", KIND_TEXT, locked=True,
-              description="The invoice's document number — the row's identity."),
+              description="The invoice's document number - the row's identity."),
         Field("customer_name", "Customer", "Invoice", KIND_TEXT, source="customer__name"),
         Field("customer_code", "Customer code", "Invoice", KIND_TEXT, source="customer__code"),
         Field("invoice_date", "Invoice date", "Invoice", KIND_DATE),
@@ -569,7 +569,7 @@ AUDIT_EVENTS = register(Dataset(
     name="Audit events",
     description=(
         "Every audited action across the platform, one row per event. Covers the whole "
-        "organisation — audit is not kept per set of books."
+        "organisation - audit is not kept per set of books."
     ),
     base=_audit_events,
     scope=DatasetScope.TENANT,
@@ -597,7 +597,7 @@ AUDIT_EVENTS = register(Dataset(
     filters=(
         FilterDef("event_at", "When", FILTER_DATE_RANGE, required=True,
                   is_primary_date=True,
-                  description="Required — an unbounded audit export is never what "
+                  description="Required - an unbounded audit export is never what "
                               "anyone actually wants."),
         FilterDef("module_key", "Module", FILTER_CHOICE, choices=_AUDIT_MODULE),
         FilterDef("severity", "Severity", FILTER_CHOICE, choices=_AUDIT_SEVERITY),
@@ -636,7 +636,7 @@ def compile_filter(dataset: Dataset, spec: dict) -> Q:
     """Turn one stored filter dict into a ``Q``.
 
     Raises :class:`FilterError` when the filter refers to something the dataset no
-    longer has — the withdrawn-filter failure the design calls out by name. The error
+    longer has - the withdrawn-filter failure the design calls out by name. The error
     message is the one a finance user reads, so it names the filter, not a column.
     """
     filter_id = str(spec.get("id") or "")
@@ -698,7 +698,7 @@ def compile_filter(dataset: Dataset, spec: dict) -> Q:
 
 # Describe a filter in the plain language the review step reads back.
 def describe_filter(dataset: Dataset, spec: dict) -> str:
-    """One sentence a person can check — "Invoice date is 1 Jul 2026 to 31 Jul 2026"."""
+    """One sentence a person can check - "Invoice date is 1 Jul 2026 to 31 Jul 2026"."""
     fdef = dataset.filter_def(str(spec.get("id") or ""))
     if fdef is None:
         return f"{spec.get('id')} (no longer available)"

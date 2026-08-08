@@ -1,5 +1,5 @@
 # services/auth.py
-# Authentication logic — login, school context enforcement,
+# Authentication logic - login, school context enforcement,
 # lockout handling, and JWT token issuance.
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from ..tokens import CodeXRefreshToken
 from ..serializers import UserReadSerializer, school_public_info
 from .audit import log_auth_event, record_attempt, blacklist_all_user_tokens, get_client_ip, get_device_label
 
-# TODO: Default lockout threshold — overridable per school via System Config (Module 6).
+# TODO: Default lockout threshold - overridable per school via System Config (Module 6).
 DEFAULT_LOCK_THRESHOLD = 5
 DEFAULT_LOCK_MINUTES   = 15
 
@@ -26,7 +26,7 @@ class LoginService:
         """
         Authenticates a user and returns tokens + user data.
 
-        NOT wrapped in @transaction.atomic at the top level — audit writes
+        NOT wrapped in @transaction.atomic at the top level - audit writes
         (record_attempt, log_auth_event) must persist even when login fails.
         A top-level atomic block would roll them back together with the raised
         ValueError. Only the success path (session + token + user update) is
@@ -36,7 +36,7 @@ class LoginService:
           1. Find user by email
           2. Enforce school context (non-Vision Staff must provide slug)
           3. Authenticate credentials
-          4. Check account lockout — only AFTER a correct password, so the
+          4. Check account lockout - only AFTER a correct password, so the
              locked state is never revealed to someone who doesn't know it
              (prevents an account-state oracle)
           5. Check account status
@@ -49,7 +49,7 @@ class LoginService:
         user = User.objects.filter(email__iexact=email).first()
         tenant = user.tenant if user else None
 
-        # 2. School-binding enforcement — non-platform tenants must resolve to a
+        # 2. School-binding enforcement - non-platform tenants must resolve to a
         # school profile. Gated by the actor's TENANT KIND, not their user_type.
         if user and getattr(user.tenant, 'kind', None) != Tenant.Kind.PLATFORM:
             if getattr(user.tenant, 'school_profile', None) is None:
@@ -62,13 +62,13 @@ class LoginService:
                 raise ValueError({'code': 'INVALID_CREDENTIALS', 'detail': 'Invalid credentials.'})
 
         # 3. Authenticate credentials.
-        # check_password directly instead of django's authenticate() — authenticate()
+        # check_password directly instead of django's authenticate() - authenticate()
         # returns None for is_active=False users, masking the real reason.
         if not user or not user.check_password(password):
             LoginService._handle_failed_attempt(user, tenant, email, request)
             raise ValueError({'code': 'INVALID_CREDENTIALS', 'detail': 'Invalid credentials.'})
 
-        # 4. Lockout check — the caller proved they know the password, so a
+        # 4. Lockout check - the caller proved they know the password, so a
         # status-specific message is safe (and genuinely useful) here.
         with transaction.atomic():
             lockout = AccountLockout.objects.select_for_update().filter(user=user).first()
@@ -97,7 +97,7 @@ class LoginService:
             )
             raise ValueError(status_error)
 
-        # 6. Success path — atomic: session + token + user update must all commit or all roll back.
+        # 6. Success path - atomic: session + token + user update must all commit or all roll back.
         with transaction.atomic():
             lockout = AccountLockout.objects.select_for_update().filter(user=authed).first()
             if lockout:
@@ -122,7 +122,7 @@ class LoginService:
             authed.last_login_at = timezone.now()
             authed.save(update_fields=['last_login_at', 'updated_at'])
 
-        # 7. Audit writes — outside any transaction so they always persist.
+        # 7. Audit writes - outside any transaction so they always persist.
         record_attempt(
             email_entered=email,
             user=authed, tenant=authed.tenant,
@@ -190,7 +190,7 @@ class LoginService:
 
         The lockout update is wrapped in its own atomic block so the counter
         persists regardless of what the caller does after. record_attempt is
-        called outside that block for the same reason — it must never be rolled
+        called outside that block for the same reason - it must never be rolled
         back by a caller's exception handler.
         """
         just_locked = False
@@ -217,7 +217,7 @@ class LoginService:
                     event=AuthEventLog.Event.ACCOUNT_LOCKED, request=request,
                 )
 
-        # Always record the email as ENTERED — for unknown accounts this is the
+        # Always record the email as ENTERED - for unknown accounts this is the
         # only identifying datum the security team has (spraying, typos, probes).
         record_attempt(
             email_entered=email_entered or (user.email if user else ''),

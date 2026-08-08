@@ -10,7 +10,7 @@ Run order::
     python manage.py create_superuser
     python manage.py seed_payments_permissions
 
-Safe to re-run — all operations are idempotent.
+Safe to re-run - all operations are idempotent.
 """
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -69,7 +69,7 @@ class Command(BaseCommand):
             )
             if created:
                 self.stdout.write(
-                    f"  + action '{name}' (auto-registered — run seed_actions for full description)"
+                    f"  + action '{name}' (auto-registered - run seed_actions for full description)"
                 )
 
         # ── Module bucket ─────────────────────────────────────────────────────
@@ -116,7 +116,7 @@ class Command(BaseCommand):
         codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
         if codex is None:
             self.stdout.write(self.style.WARNING(
-                "  ⚠  Codex platform tenant not found — run migrations first; grants skipped."
+                "  ⚠  Codex platform tenant not found - run migrations first; grants skipped."
             ))
         else:
             for role_id in PLATFORM_ROLE_IDS:

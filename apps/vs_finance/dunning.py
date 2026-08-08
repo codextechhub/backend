@@ -1,9 +1,9 @@
-"""Dunning — automated, escalating reminders for overdue receivables.
+"""Dunning - automated, escalating reminders for overdue receivables.
 
 A :class:`~vs_finance.models.DunningPolicy` is a ladder of stages keyed by *days
 overdue*. :func:`generate_dunning` scans an entity's open invoices and, for each one
 past due, raises a :class:`~vs_finance.models.DunningNotice` at the **highest** stage it
-qualifies for — idempotent per ``(invoice, level)`` so re-running never re-issues a
+qualifies for - idempotent per ``(invoice, level)`` so re-running never re-issues a
 reminder the customer already got at that rung.
 
 Dunning is a *communications overlay*: nothing here touches the General Ledger.
@@ -105,9 +105,9 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
     For each posted, not-fully-paid invoice with an outstanding balance, days-overdue is
     measured from its due date (falling back to its invoice date) and the invoice is
     advanced **one rung**: the *lowest-level* :class:`~vs_finance.models.DunningStage` it
-    qualifies for that has not been issued yet. So escalation never skips a rung — a
+    qualifies for that has not been issued yet. So escalation never skips a rung - a
     backlog climbs L1 → L2 → L3 over successive runs rather than jumping straight to the
-    final notice — and at most one new notice is raised per invoice **per run date**
+    final notice - and at most one new notice is raised per invoice **per run date**
     (``as_of``), making same-day re-runs idempotent. Notices on invoices that have since
     been settled are flipped to RESOLVED. Returns the list of newly created notices.
     """
@@ -121,7 +121,7 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
         raise PostingError(f"Dunning policy '{policy.name}' has no stages defined.")
 
     # Narrow to overdue, still-owing invoices in SQL (not in Python): balance_due is a
-    # property, so annotate it and the effective due date and filter on them — the loop
+    # property, so annotate it and the effective due date and filter on them - the loop
     # then only loads invoices that can actually qualify for a stage.  # Keep the scan efficient.
     from django.db.models import F
     from django.db.models.functions import Coalesce
@@ -193,7 +193,7 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
 def remind_invoice(invoice, *, actor_user=None, send=True, message=""):
     """Raise (and, by default, send) a dunning reminder for a single invoice.
 
-    The per-invoice counterpart to :func:`generate_dunning` — used by the invoice
+    The per-invoice counterpart to :func:`generate_dunning` - used by the invoice
     drawer's *Send reminder* action. Picks the highest dunning stage the invoice's
     days-overdue qualifies for (or the gentlest stage if it isn't overdue yet), and
     reuses the existing notice for that ``(invoice, level)`` so the unique pair is
@@ -259,7 +259,7 @@ def _resolve_settled(entity, *, actor_user=None):
 
 # Send one notice through vs_notifications.
 def _dispatch_notice(notice, *, actor_user=None):
-    """Deliver a dunning ``notice`` through **vs_notifications** — never directly.
+    """Deliver a dunning ``notice`` through **vs_notifications** - never directly.
 
     Routing all delivery through the notification system keeps vs_finance out of the
     email business: it fires the ``billing.invoice_overdue`` event through the
@@ -271,12 +271,12 @@ def _dispatch_notice(notice, *, actor_user=None):
 
     Notifications are **recipient-centric**: ``school`` is an optional scope, not a
     gate. A platform/product book (no school profile on the tenant) still delivers to
-    the customer's billing email — the school only resolves settings overrides and
+    the customer's billing email - the school only resolves settings overrides and
     record attribution, so we pass it through as-is (possibly ``None``).
 
     **Best-effort:** delivery is handed off to vs_notifications, which owns its own
     delivery tracking and email retries. Any problem here (notifications app absent, an
-    unseeded/inactive event, a template render error) is logged and swallowed — it must
+    unseeded/inactive event, a template render error) is logged and swallowed - it must
     not break the dunning ladder or leave a notice wedged in PENDING forever. Returns
     the ``send_notification`` result (list of ids), or ``None`` when delivery was
     skipped/failed.
@@ -293,7 +293,7 @@ def _dispatch_notice(notice, *, actor_user=None):
             "customer_name": customer.name,  # Customer display name.
             "invoice_number": invoice.document_number,  # Posted invoice number.
             "amount_outstanding": f"{to_naira(notice.amount_due):,.2f}",  # Human-readable outstanding amount.
-            "due_date": invoice.due_date.isoformat() if invoice.due_date else "—",  # ISO due date or dash.
+            "due_date": invoice.due_date.isoformat() if invoice.due_date else "-",  # ISO due date or dash.
             "days_overdue": notice.days_overdue,  # Overdue age for template copy.
             "school_name": school.name if school else "",  # Optional school display name.
             # Escalation wording is owned by the dunning policy stage, not the event.  # Keep wording configurable.
@@ -311,7 +311,7 @@ def _dispatch_notice(notice, *, actor_user=None):
                 ),
             ],
         )
-    except Exception:  # best-effort — a notification problem must not break dunning
+    except Exception:  # best-effort - a notification problem must not break dunning
         logger.warning(  # Log failure with stack trace for operations.
             "Dunning notice %s delivery failed; marking sent anyway "  # Explain lifecycle still advances.
             "(vs_notifications owns delivery tracking/retries).",  # Ownership of retries.
@@ -324,7 +324,7 @@ def _dispatch_notice(notice, *, actor_user=None):
 def mark_notice_sent(notice, *, actor_user=None):
     """Deliver a PENDING notice through vs_notifications, then record it SENT.
 
-    Idempotent once sent. Delivery is handed to vs_notifications (best-effort — see
+    Idempotent once sent. Delivery is handed to vs_notifications (best-effort - see
     :func:`_dispatch_notice`) before the SENT flip; a delivery problem is logged there
     and the notice is still marked sent, since vs_notifications owns delivery tracking
     and its own email retries. Delivery is recipient-centric (works with or without a

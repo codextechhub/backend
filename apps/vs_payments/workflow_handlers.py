@@ -1,13 +1,13 @@
 """vs_workflow handler for approval-gating bulk payout batches.
 
 A :class:`~vs_payments.models.PayoutBatch` disburses money *out* to many
-beneficiaries at once, so it is the highest-risk cash-out path — exactly the thing
+beneficiaries at once, so it is the highest-risk cash-out path - exactly the thing
 a maker-checker gate belongs on. When a ``payments.payout_batch`` WorkflowTemplate
 is published for a batch's ``(school, branch)`` scope, submitting the batch to the
 provider happens only after approval; with no template, direct submit is unchanged
 (opt-in by template, mirroring the finance approval slices).
 
-Unlike a finance document, a payout batch is **not** a GL posting — approval gates
+Unlike a finance document, a payout batch is **not** a GL posting - approval gates
 the *provider submission* (:func:`vs_payments.services.submit_payout_batch`), which
 dispatches the batch's pending instructions to the PSP. The batch's own
 ``PayoutBatchStatus`` has no approval states, so we track the approval phase in
@@ -42,7 +42,7 @@ class PayoutBatchApprovalHandler(BaseWorkflowHandler):
         """The user whose approving vote completed the workflow (the checker).
 
         The engine's ``on_approved`` context does not carry the acting user, so we read
-        it back from the immutable action log — the most recent non-reversed APPROVED
+        it back from the immutable action log - the most recent non-reversed APPROVED
         vote on this instance, visible in the same transaction that recorded it. Falls
         back to the requester only if no human ever voted (a fully auto-skipped template).
         """

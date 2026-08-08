@@ -24,7 +24,7 @@ from .views import (
     CurrentUserView,
     MySecurityStatsView,
     MyPasswordResetsView,
-    # Activation — UUID-based, no token
+    # Activation - UUID-based, no token
     ActivationPreviewView,
     ActivationView,
     InvitationResendView,

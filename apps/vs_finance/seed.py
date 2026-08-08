@@ -1,6 +1,6 @@
 """Default reference data: currencies and a starter Chart of Accounts.
 
-The CoA here is a deliberately small, domain-neutral skeleton — the five roots and
+The CoA here is a deliberately small, domain-neutral skeleton - the five roots and
 the handful of control accounts every entity needs (cash, AR, AP, VAT, share capital,
 retained earnings, a generic income and expense). Product adapters (school fees,
 payroll …) extend it; nothing here mentions students or schools, honouring the
@@ -101,7 +101,7 @@ DEFAULT_IFRS_LINE_BY_CODE = {  # Maps default account codes to statutory present
     "5400": IFRSLine.ADMIN_EXPENSES, "5500": IFRSLine.FINANCE_COSTS,  # Depreciation and finance costs.
 }
 
-#: parent_code by child_code — wires the tree after the flat create.
+#: parent_code by child_code - wires the tree after the flat create.
 _PARENTS = {  # Parent account code by child account code.
     "1100": "1000", "1110": "1000", "1200": "1000", "1300": "1000", "1400": "1000",  # Asset children.
     "1500": "1000", "1900": "1000",  # More asset children.

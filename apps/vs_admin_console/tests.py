@@ -8,7 +8,7 @@ tenant-mismatch assertion, Codex-on-Codex sessions, lifecycle termination
 attribution on impersonated requests.
 
 All API calls go through the real JWT layer (CodeXRefreshToken + ?tenant=),
-never force_authenticate — the auth path IS the subject under test.
+never force_authenticate - the auth path IS the subject under test.
 """
 from django.test import TestCase
 from django.utils import timezone
@@ -66,7 +66,7 @@ def _grant_platform(user, keys):
     return role
 
 
-# The helper is tenant-agnostic — it builds the role on the user's OWN tenant —
+# The helper is tenant-agnostic - it builds the role on the user's OWN tenant -
 # so school actors use the same machinery under a clearer name.
 _grant_school = _grant_platform
 
@@ -112,7 +112,7 @@ class ImpersonationStartTests(ImpersonationTestBase):
     def test_school_actor_cannot_start_in_a_foreign_tenant(self):
         # School impersonation exists now, but it stops at the tenant edge: a
         # school user cannot even assert the foreign tenant, so this is a
-        # non-enumerating 404 from the auth layer — even when they hold the
+        # non-enumerating 404 from the auth layer - even when they hold the
         # full school.impersonation.* set in their OWN tenant.
         other_school = make_school(slug="imp-other", name="Other School")
         other_branch = make_branch(other_school)
@@ -125,7 +125,7 @@ class ImpersonationStartTests(ImpersonationTestBase):
         self.assertFalse(ImpersonationSession.objects.exists())
 
     def test_school_actor_without_the_school_key_is_forbidden(self):
-        # Same tenant this time, so the auth layer lets it through — the denial
+        # Same tenant this time, so the auth layer lets it through - the denial
         # must come from RBAC, and platform.* keys must not satisfy it.
         school_actor = make_school_admin(self.branch, email="nokey@school.test")
         _grant_school(school_actor, IMPERSONATION_KEYS)  # platform.* only
@@ -588,7 +588,7 @@ class SchoolImpersonationTests(ImpersonationTestBase):
         self.assertFalse(ImpersonationSession.objects.exists())
 
     def test_school_actor_cannot_target_a_platform_user(self):
-        # The CX user is not in the actor's tenant, so it is a 404 — and the
+        # The CX user is not in the actor's tenant, so it is a 404 - and the
         # actor could not assert the codex tenant either (covered below).
         resp = self._start(target=self.admin)
         self.assertEqual(resp.status_code, 404)
@@ -640,7 +640,7 @@ class SchoolImpersonationTests(ImpersonationTestBase):
 
     def test_school_proxy_evaluates_rbac_as_the_target(self):
         # The actor holds school.impersonation.view; the target does not, so the
-        # proxied request must be denied — no union with the actor's grants.
+        # proxied request must be denied - no union with the actor's grants.
         self.assertEqual(self._start().status_code, 201)
         session = ImpersonationSession.objects.get()
         resp = self._proxied_client(session).get(
@@ -725,7 +725,7 @@ class SchoolImpersonationTests(ImpersonationTestBase):
         _grant_school(starter, ("school.impersonation.start",))
         self.assertEqual(self._start(actor=starter).status_code, 201)
         session = ImpersonationSession.objects.get()
-        # self.school_actor holds school.impersonation.end — the tenant kill switch.
+        # self.school_actor holds school.impersonation.end - the tenant kill switch.
         resp = self.client_for(self.school_actor).post(
             f"/v1/admin/impersonations/end/?tenant={self.slug}",
             {"session_id": session.pk},

@@ -236,7 +236,7 @@ class BudgetApproveView(_BudgetActionBase):
 
 # Group endpoint behavior for Budget Variance View.
 class BudgetVarianceView(_BudgetActionBase):
-    """GET ?period_no — budget-vs-actual variance for the budget.
+    """GET ?period_no - budget-vs-actual variance for the budget.
 
     docstring-name: Budget vs actual variance
     """
@@ -280,7 +280,7 @@ class BudgetVarianceView(_BudgetActionBase):
 
 # Group endpoint behavior for Budget Heatmap View.
 class BudgetHeatmapView(_BudgetActionBase):
-    """GET — per-account, per-period budget-vs-actual matrix (the variance heatmap).
+    """GET - per-account, per-period budget-vs-actual matrix (the variance heatmap).
 
     Cells are bare kobo (budget/actual) to keep the 12×N grid small; the FE colours
     each by its actual/budget ratio and formats locally.

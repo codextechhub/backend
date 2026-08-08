@@ -45,28 +45,28 @@ standard paginated `{pagination, data}` envelope.
 |---|---|---|---|
 | `GET /categories/` | `procurement.category.view` | Query `is_active`, `search`/`q` | Paginated categories + direct vendor/child/catalog counts (`views/vendors.py:265-283`) |
 | `POST /categories/` | `procurement.category.create` | `code`, `name`, `parent?`, `default_expense_account?`, `is_active?` | `201` category (`views/vendors.py:286-311`) |
-| `GET /categories/<pk>/` | `procurement.category.view` | — | Category + direct counts |
+| `GET /categories/<pk>/` | `procurement.category.view` | - | Category + direct counts |
 | `PATCH /categories/<pk>/` | `procurement.category.update` | `code?` (must be unchanged), `name?`, `parent?`, `default_expense_account?`, `is_active?` | Updated category (`views/vendors.py:344-385`) |
-| `GET /categories/insights/` | `procurement.report.view` | — | Category activity/spend insight (`views/vendors.py:388-429`) |
+| `GET /categories/insights/` | `procurement.report.view` | - | Category activity/spend insight (`views/vendors.py:388-429`) |
 | `GET /vendors/` | `procurement.vendor.view` | Query `is_active`, `on_hold`, `kyc_status`, `purchase_eligible`, `search`/`q` | Paginated non-sensitive vendor rows (`views/vendors.py:444-469`) |
 | `POST /vendors/` | `procurement.vendor.create` | `code`, `name`, category/contact/bank/tax fields, `payable_account?`, `default_expense_account?`, `default_wht_tax_code?`, `payment_terms?` | `201` vendor; KYC/risk/hold/activity are server defaults (`views/vendors.py:472-511`) |
-| `GET /vendors/<pk>/` | `procurement.vendor.view` | — | Vendor detail; sensitive fields are FLS-masked |
+| `GET /vendors/<pk>/` | `procurement.vendor.view` | - | Vendor detail; sensitive fields are FLS-masked |
 | `PATCH /vendors/<pk>/` | `procurement.vendor.update`; additionally `procurement.vendor.manage` for KYC/risk/hold | All mutable detail fields; `code` cannot change | Updated vendor (`views/vendors.py:575-632`) |
-| `GET /vendors/summary/` | `procurement.report.view` | — | Counts, YTD posted spend, average terms (`views/vendors.py:519-535`) |
-| `GET /vendors/<pk>/insights/` | `procurement.report.view` | — | Spend/performance insight (`views/vendors.py:638-653`) |
+| `GET /vendors/summary/` | `procurement.report.view` | - | Counts, YTD posted spend, average terms (`views/vendors.py:519-535`) |
+| `GET /vendors/<pk>/insights/` | `procurement.report.view` | - | Spend/performance insight (`views/vendors.py:638-653`) |
 | `GET /catalog-items/` | `procurement.catalog_item.view` | Query `is_active`, `vendor`, `category`, `search`/`q` | Paginated items; `stock_status` only with `procurement.stock.view` (`views/catalog.py:207-227`) |
 | `POST /catalog-items/` | `procurement.catalog_item.create` | `code`, `name`, `description?`, `unit_of_measure?`, category/vendor/account/tax defaults, `lead_time_days?`, `standard_unit_price?`, `is_active?` | `201` item (`views/catalog.py:229-259`) |
-| `GET /catalog-items/<pk>/` | `procurement.catalog_item.view` | — | Item with permission-gated stock overlay |
+| `GET /catalog-items/<pk>/` | `procurement.catalog_item.view` | - | Item with permission-gated stock overlay |
 | `PATCH /catalog-items/<pk>/` | `procurement.catalog_item.update` | Same mutable defaults; `code` cannot change | Updated item (`views/catalog.py:281-323`) |
-| `GET /catalog-items/<pk>/insights/` | `procurement.report.view` | — | Usage and approved-PO price history (`views/catalog.py:326-370`) |
+| `GET /catalog-items/<pk>/insights/` | `procurement.report.view` | - | Usage and approved-PO price history (`views/catalog.py:326-370`) |
 | `GET /contracts/` | `procurement.contract.view` | Query `status`, `expiring`, `vendor`, `search`/`q` | Paginated contract rows (`views/contracts.py:133-156`) |
 | `POST /contracts/` | `procurement.contract.create` | `vendor`, `reference?`, `title`, dates, `contract_value`, `payment_terms?`, `auto_renew?`, `renewal_notice_days?`, `notes?`, `milestones?` | `201` DRAFT contract (`views/contracts.py:159-186`) |
-| `GET /contracts/<pk>/` | `procurement.contract.view` | — | Header, milestones, renewal lineage, audit activity |
+| `GET /contracts/<pk>/` | `procurement.contract.view` | - | Header, milestones, renewal lineage, audit activity |
 | `PATCH /contracts/<pk>/` | `procurement.contract.update` | Header fields above + appended `milestones?` | Updated non-terminal contract (`views/contracts.py:215-246`) |
-| `GET /contracts/summary/` | `procurement.contract.view` | — | Active/expiring/expired counts + active kobo value (`views/contracts.py:255-284`) |
+| `GET /contracts/summary/` | `procurement.contract.view` | - | Active/expiring/expired counts + active kobo value (`views/contracts.py:255-284`) |
 | `GET /contracts/renewals/` | `procurement.contract.view` | Query `as_of?`, `within_days?` | Active contracts in renewal window (`views/contracts.py:440-452`) |
-| `GET /contracts/<pk>/linked-pos/` | `procurement.purchase_order.view` | — | Explicit call-offs + unlinked same-vendor term associations (`views/contracts.py:287-334`) |
-| `POST /contracts/<pk>/activate/` | `procurement.contract.activate` | — | ACTIVE contract |
+| `GET /contracts/<pk>/linked-pos/` | `procurement.purchase_order.view` | - | Explicit call-offs + unlinked same-vendor term associations (`views/contracts.py:287-334`) |
+| `POST /contracts/<pk>/activate/` | `procurement.contract.activate` | - | ACTIVE contract |
 | `POST /contracts/<pk>/terminate/` | `procurement.contract.terminate` | `reason?` | TERMINATED contract |
 | `POST /contracts/<pk>/renew/` | `procurement.contract.renew` | `reference?`, `start_date`, `end_date`, `contract_value?`, `copy_milestones?` | `201` ACTIVE successor (`views/contracts.py:373-404`) |
 | `POST /contracts/<pk>/milestones/<milestone_id>/complete/` | `procurement.contract.update` | `completed_date?` | Contract with completed milestone (`views/contracts.py:407-429`) |

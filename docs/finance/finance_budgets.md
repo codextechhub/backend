@@ -2,7 +2,7 @@
 
 Planning: a **`Budget`** is an entity's plan of P&L amounts for a fiscal year, broken
 into **`BudgetLine`** cells of `(account, cost centre, period 1–12)`. It **never posts
-to the ledger** — it's the yardstick actuals are measured against. The one rule with
+to the ledger** - it's the yardstick actuals are measured against. The one rule with
 teeth: **approval locks the plan**, so a disappointing variance can't be quietly fixed
 by rewriting the budget after the fact.
 
@@ -13,17 +13,17 @@ Routes (mounted at `/v1/finance/`): `budgets/`, `budgets/<pk>/`,
 
 ## 1. What it is (and what it is NOT)
 
-- **`Budget`** (`models/ops.py:909`): `fiscal_year`, `name`, `status` — two states
-  only, `DRAFT → APPROVED` (approval *is* the lock) — auto code
+- **`Budget`** (`models/ops.py:909`): `fiscal_year`, `name`, `status` - two states
+  only, `DRAFT → APPROVED` (approval *is* the lock) - auto code
   `BG-<tenant_id><YYMMDD><daily_sequence>` from the shared tenant document
   sequence (`budgets.py:39-50`; `vs_tenants/numbering.py:11-39`).
 - **`BudgetLine`** (`:956`): one budgeted cell; `unique(budget, account, cost_center,
   period_no)`.
 
 **This does NOT:**
-- **Post anything, ever** — read-only against the ledger (`models/ops.py:912`).
+- **Post anything, ever** - read-only against the ledger (`models/ops.py:912`).
 - **Budget balance-sheet accounts.** Lines are **income/expense only**
-  (`_ensure_pl_account`, `budgets.py:25`) — variance is P&L movement.
+  (`_ensure_pl_account`, `budgets.py:25`) - variance is P&L movement.
 - **Allow edits after approval.** Every mutating service runs `_ensure_editable`
   (`budgets.py:18`); approval is **one-way** (no un-approve endpoint).
 
@@ -40,26 +40,26 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 
 | Method + path | permission key | what it does | request body | response |
 |---|---|---|---|---|
-| `GET /budgets/` | `finance.budget.view` | List (paginated, page-scoped enrichment) | — | budgets |
+| `GET /budgets/` | `finance.budget.view` | List (paginated, page-scoped enrichment) | - | budgets |
 | `POST /budgets/` | `finance.budget.create` | Create a DRAFT (optionally with lines) | `name`, `fiscal_year`, `lines?` | `201` budget |
 | `GET/PATCH/DELETE /budgets/<pk>/` | `finance.budget.view` / `.edit` / `.delete` | Detail / rename (draft-only; `lines` replaces wholesale) / delete a **draft** | `name?`, `lines?` | budget |
 | `POST /budgets/<pk>/lines/` | `finance.budget.edit` | Add/update one cell (upsert on the cell key) | `account`, `period_no`, `amount`, `cost_center?` | line |
-| `PATCH/DELETE /budgets/<pk>/lines/<line_id>/` | `finance.budget.edit` | Edit / remove a cell (draft-only) | — | — |
-| `POST /budgets/<pk>/approve/` | `finance.budget.approve` | DRAFT → APPROVED (locks) | — | budget |
-| `GET /budgets/<pk>/variance/` | `finance.budget.view` | Budget-vs-actual per account (`?period_no` scopes) | — | rows + totals |
-| `GET /budgets/<pk>/heatmap/` | `finance.budget.view` | Per-account × per-period matrix (bare kobo cells) | — | matrix |
+| `PATCH/DELETE /budgets/<pk>/lines/<line_id>/` | `finance.budget.edit` | Edit / remove a cell (draft-only) | - | - |
+| `POST /budgets/<pk>/approve/` | `finance.budget.approve` | DRAFT → APPROVED (locks) | - | budget |
+| `GET /budgets/<pk>/variance/` | `finance.budget.view` | Budget-vs-actual per account (`?period_no` scopes) | - | rows + totals |
+| `GET /budgets/<pk>/heatmap/` | `finance.budget.view` | Per-account × per-period matrix (bare kobo cells) | - | matrix |
 
 ## 4. Lifecycle / state machine
 
 ```
-DRAFT ──approve──▶ APPROVED  (locked — approval is the lock; there is no third state)
+DRAFT ──approve──▶ APPROVED  (locked - approval is the lock; there is no third state)
 ```
-Draft: create/rename/line edits (add, wholesale replace, delete). Approved: frozen —
+Draft: create/rename/line edits (add, wholesale replace, delete). Approved: frozen -
 only variance/heatmap reads. No un-approve, no delete-budget endpoint.
 
 ## 5. Calculations
 
-**Variance** — `budget_vs_actual` (`reports.py:586`):
+**Variance** - `budget_vs_actual` (`reports.py:586`):
 ```
 budget[account] = Σ BudgetLine.amount        (summed across cost centres + periods)
 actual[account] = Σ AccountBalance movement  (debit_total − credit_total, signed to the
@@ -69,15 +69,15 @@ variance        = actual − budget            (per row and in total)
 - `?period_no` scopes **both** sides to one period.
 - Unbudgeted accounts appear **only if P&L** with non-zero movement (the cash/AR contra
   side of postings is deliberately excluded as noise).
-- **Cost-centre budgets are summed away here** — variance is per *account* only,
+- **Cost-centre budgets are summed away here** - variance is per *account* only,
   because actuals come from `AccountBalance`, which carries no cost centre (§8).
 
-**Heatmap** — `budget_monthly_matrix` (`reports.py:703`): the same comparison as a
+**Heatmap** - `budget_monthly_matrix` (`reports.py:703`): the same comparison as a
 12-column per-account grid, bare kobo (FE colours by actual/budget ratio).
 
 ## 6. What posting does to the ledger
 
-**Nothing — by design.** Budgets are compared against the denormalised
+**Nothing - by design.** Budgets are compared against the denormalised
 `AccountBalance` read model; no journal is ever raised by any budget action.
 
 ## 7. Worked example
@@ -93,20 +93,20 @@ locked. Post ₦45,000 of salaries in period 1 → `variance/?period_no=1` shows
 - ✅ **The dead `LOCKED` enum was removed** (migration `0026`; no data existed with
   that value). `BudgetStatus` is now honestly two states, and
   `income_statement_compare`'s budget lookup was updated with it.
-- **Approval is one-way** — no un-approve. A wrong approved budget can only be
+- **Approval is one-way** - no un-approve. A wrong approved budget can only be
   superseded by a new budget (the `unique(entity, year, name)` means a new name).
 - **No cost-centre variance.** Budget cells carry cost centres, but the variance and
   heatmap collapse them per account (actuals from `AccountBalance` have no cost
   centre). Now that GL lines carry cost centres, a line-level actuals query (as in
   `analytics_slice`) could close this.
-- **`PATCH lines` replaces wholesale** (delete + recreate) — send the full set.
+- **`PATCH lines` replaces wholesale** (delete + recreate) - send the full set.
 - ✅ **Draft budgets can be deleted** (`DELETE /budgets/<pk>/`, key
   `finance.budget.delete`, audited as `BUDGET_DELETED`); an approved budget still
-  refuses — the lock survives.
+  refuses - the lock survives.
 
 ## 9. Permissions & tenant isolation
 
-- Verbs: `finance.budget.{view, create, edit, approve}` — editing and approving are
+- Verbs: `finance.budget.{view, create, edit, approve}` - editing and approving are
   separated (maker/checker).
 - Entity-scoped resolution; `_resolve_lines` resolves accounts/cost-centres within
   the entity → no cross-tenant cells. ✅

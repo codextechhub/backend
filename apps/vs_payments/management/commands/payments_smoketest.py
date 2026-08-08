@@ -20,7 +20,7 @@ Usage::
     manage.py payments_smoketest --entity 1 --provider PAYSTACK --amount 50000 --email you@test.com
     manage.py payments_smoketest --verify CXP-ABC123...   # check a reference's status
 
-Money is in **kobo** (integer minor units) — ``--amount 10000`` == ₦100.00. Never pass a
+Money is in **kobo** (integer minor units) - ``--amount 10000`` == ₦100.00. Never pass a
 float. Keys are read from settings (``PAYSTACK_SECRET_KEY`` etc.); nothing is hard-coded.
 """
 from __future__ import annotations
@@ -139,7 +139,7 @@ class Command(BaseCommand):
             self._fail_provider(exc)
 
         naira = amount / 100
-        self.stdout.write(self.style.SUCCESS("Checkout created — your credentials work."))
+        self.stdout.write(self.style.SUCCESS("Checkout created - your credentials work."))
         self.stdout.write(f"  reference          : {result.reference}")
         self.stdout.write(f"  provider_reference : {result.provider_reference or '(none)'}")
         self.stdout.write(f"  amount             : {amount} kobo (₦{naira:,.2f} {options['currency']})")

@@ -11,10 +11,10 @@ and the ``on_*`` lifecycle callbacks on each transition.
 never before.** So money cannot hit the ledger until approval completes. The
 posting call reuses the existing per-document-type service unchanged
 (:func:`vs_finance.posting.post_journal` for journals,
-:func:`vs_finance.credit_notes.post_refund` for refunds) — this module only moves
+:func:`vs_finance.credit_notes.post_refund` for refunds) - this module only moves
 *when* it is called and *who* triggers it.
 
-**Post-failure behaviour — Option A (design §12 Q4).** The engine records an
+**Post-failure behaviour - Option A (design §12 Q4).** The engine records an
 approver's vote inside ``record_action``'s ``transaction.atomic`` block, and the
 final approval reaches ``on_approved`` via ``advance_instance`` →
 ``_terminate_approved`` inside that *same* transaction. So if ``post_journal``
@@ -43,7 +43,7 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
     """Shared base: submit → PENDING_APPROVAL; approve → APPROVED then post; reject/return → DRAFT.
 
     Subclasses supply the concrete model (``document_model``) and the three
-    document-type hooks — :meth:`preflight` (the write-free posting guards),
+    document-type hooks - :meth:`preflight` (the write-free posting guards),
     :meth:`post` (the real GL posting) and :meth:`summary` (the approval-screen
     snapshot). Everything else is uniform across finance document types.
     """
@@ -69,7 +69,7 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
         read it back from the immutable action log: the most recent non-reversed
         APPROVED ``WorkflowStageAction`` on this instance. This runs inside the same
         transaction that recorded that vote, so the row is visible. Falls back to
-        ``instance.requested_by`` only if — for a fully auto-skipped template — no
+        ``instance.requested_by`` only if - for a fully auto-skipped template - no
         human ever voted.
         """
         from vs_workflow.models import WorkflowStageAction
@@ -91,8 +91,8 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
         """Reject anything but a DRAFT, then run the posting preflight (no writes).
 
         Running the posting guards at submission time means a document that could
-        never post — unbalanced, empty, into a closed period, or touching an
-        inactive account — is refused before it ever enters the approval queue,
+        never post - unbalanced, empty, into a closed period, or touching an
+        inactive account - is refused before it ever enters the approval queue,
         rather than failing at ``on_approved`` after approvers have spent effort.
         """
         if getattr(document, "status", None) != DocumentStatus.DRAFT:  # Only draft finance docs enter approval.
@@ -122,7 +122,7 @@ class _FinancePostOnApprove(BaseWorkflowHandler):
     def _mark_approved(self, doc) -> None:
         """Flip the document to APPROVED before the GL posting (design §5).
 
-        The intermediate APPROVED write is transient — the ``post`` call overwrites
+        The intermediate APPROVED write is transient - the ``post`` call overwrites
         it with POSTED inside the same transaction. Subclasses whose posting service
         insists on a DRAFT document (e.g. the refund service re-guards ``status ==
         DRAFT``) override this to hand ``post`` a DRAFT document instead and let it
@@ -176,7 +176,7 @@ class JournalHandler(_FinancePostOnApprove):
 
         Reuses the exact guards :func:`vs_finance.posting.post_journal` applies at
         post time (period resolvable + open, ≥1 line, balanced, every account
-        active + postable) so the preflight and the eventual post agree — the only
+        active + postable) so the preflight and the eventual post agree - the only
         difference is this one never mutates.
         """
         from .posting import ensure_balanced, ensure_period_open, sum_sides
@@ -210,7 +210,7 @@ class JournalHandler(_FinancePostOnApprove):
             "subtitle": "Journal entry",  # Document type label.
             "fields": [  # Key facts shown to approvers.
                 {"label": "Date", "value": document.date.isoformat()},  # Journal date.
-                {"label": "Narration", "value": document.narration or "—"},  # Journal narration.
+                {"label": "Narration", "value": document.narration or "-"},  # Journal narration.
                 {"label": "Total", "value": format_naira(document.total_debit_kobo)},  # Journal total.
             ],
             "link": f"/finance/journals/{document.pk}/",  # Frontend deep link.
@@ -235,7 +235,7 @@ class RefundHandler(_FinancePostOnApprove):
         # first. On approval the refund thus moves PENDING_APPROVAL → DRAFT → POSTED,
         # with post_refund driving the final POSTED write exactly as on the ungated
         # direct-post path. (If post_refund raises, this DRAFT write rolls back with
-        # the whole approval action — Option A — so the doc is never left DRAFT.)  # Preserve service invariants.
+        # the whole approval action - Option A - so the doc is never left DRAFT.)  # Preserve service invariants.
         if doc.status != DocumentStatus.DRAFT:  # Reset only when currently pending/approved.
             doc.status = DocumentStatus.DRAFT  # Hand draft state to post_refund.
             doc.save(update_fields=["status", "updated_at"])
@@ -247,7 +247,7 @@ class RefundHandler(_FinancePostOnApprove):
         Mirrors the guards in :func:`vs_finance.credit_notes._post_refund_atomic`
         (positive amount, amount within the customer's available credit **as at the
         refund's own date**, a resolvable deposit/bank account) with the same
-        ``PostingError`` messages — so the preflight and the eventual post agree — but
+        ``PostingError`` messages - so the preflight and the eventual post agree - but
         never mutates. The DRAFT check is handled by the base ``validate_document``.
 
         Measuring availability at the refund date matters most here: an approval queue
@@ -304,7 +304,7 @@ class WriteOffHandler(_FinancePostOnApprove):
     Unlike the refund handler, the default ``_mark_approved`` (flip to APPROVED
     before posting) is correct here: :func:`write_off_invoice` guards the *invoice*'s
     status, not the request's, and :func:`post_write_off_request` accepts an APPROVED
-    request — so no DRAFT-override is needed.
+    request - so no DRAFT-override is needed.
     """
 
     @property
@@ -320,8 +320,8 @@ class WriteOffHandler(_FinancePostOnApprove):
         Mirrors :func:`vs_finance.credit_notes._write_off_invoice_atomic` (invoice
         POSTED, not written off before the invoice was raised, outstanding balance > 0,
         effective amount positive and within the balance, customer has an AR control
-        account) with the same ``PostingError`` messages — so the preflight and the
-        eventual post agree — but never mutates.
+        account) with the same ``PostingError`` messages - so the preflight and the
+        eventual post agree - but never mutates.
         """
         from .chronology import ensure_on_or_after
         from .exceptions import PostingError
@@ -376,7 +376,7 @@ class WriteOffHandler(_FinancePostOnApprove):
                 {"label": "Invoice", "value": invoice.document_number or str(invoice.pk)},  # Target invoice.
                 {"label": "Customer", "value": invoice.customer.code},  # Customer code.
                 {"label": "Amount", "value": format_naira(amount)},  # Write-off amount.
-                {"label": "Reason", "value": document.reason or "—"},  # Request reason.
+                {"label": "Reason", "value": document.reason or "-"},  # Request reason.
             ],
             "link": f"/finance/write-offs/{document.pk}/",  # Frontend deep link.
         }

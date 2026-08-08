@@ -44,7 +44,7 @@ def _capture_old_is_active(sender, instance, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# Permission — creation and deactivation
+# Permission - creation and deactivation
 # ---------------------------------------------------------------------------
 
 pre_save.connect(_capture_old_is_active, sender=Permission)
@@ -90,7 +90,7 @@ def audit_permission_change(sender, instance, created, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# PermissionDependency — dependency created / removed
+# PermissionDependency - dependency created / removed
 # ---------------------------------------------------------------------------
 
 @receiver(post_save, sender=PermissionDependency)
@@ -141,7 +141,7 @@ def audit_permission_dependency_removed(sender, instance, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# GroupPermission — permission added to / removed from a group
+# GroupPermission - permission added to / removed from a group
 # ---------------------------------------------------------------------------
 
 @receiver(post_save, sender=GroupPermission)
@@ -188,7 +188,7 @@ def audit_group_permission_removed(sender, instance, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# PermissionModule — created, updated (is_active), deleted
+# PermissionModule - created, updated (is_active), deleted
 # ---------------------------------------------------------------------------
 
 pre_save.connect(_capture_old_is_active, sender=PermissionModule)
@@ -227,7 +227,7 @@ def audit_permission_module(sender, instance, created, **kwargs):
         entity_id=instance.name,
         entity_label=instance.name,
         severity=severity,
-        summary=f"Permission module '{instance.name}' {verb} — all permissions under this module are affected",
+        summary=f"Permission module '{instance.name}' {verb} - all permissions under this module are affected",
         diff_data={"is_active": {"before": old_active, "after": instance.is_active}},
         metadata={"name": instance.name},
     )
@@ -247,13 +247,13 @@ def audit_permission_module_deleted(sender, instance, **kwargs):
         entity_id=instance.name,
         entity_label=instance.name,
         severity=AuditSeverity.CRITICAL,
-        summary=f"Permission module '{instance.name}' deleted — all associated permissions and resources are cascade-removed",
+        summary=f"Permission module '{instance.name}' deleted - all associated permissions and resources are cascade-removed",
         metadata={"name": instance.name},
     )
 
 
 # ---------------------------------------------------------------------------
-# PermissionResource — created, updated (is_active), deleted
+# PermissionResource - created, updated (is_active), deleted
 # ---------------------------------------------------------------------------
 
 pre_save.connect(_capture_old_is_active, sender=PermissionResource)
@@ -294,7 +294,7 @@ def audit_permission_resource(sender, instance, created, **kwargs):
         entity_id=label,
         entity_label=label,
         severity=severity,
-        summary=f"Permission resource '{label}' {verb} — all permissions under this resource are affected",
+        summary=f"Permission resource '{label}' {verb} - all permissions under this resource are affected",
         diff_data={"is_active": {"before": old_active, "after": instance.is_active}},
         metadata={"module": instance.module_id, "resource": instance.name},
     )
@@ -315,13 +315,13 @@ def audit_permission_resource_deleted(sender, instance, **kwargs):
         entity_id=label,
         entity_label=label,
         severity=AuditSeverity.CRITICAL,
-        summary=f"Permission resource '{label}' deleted — all permissions under this resource are cascade-removed",
+        summary=f"Permission resource '{label}' deleted - all permissions under this resource are cascade-removed",
         metadata={"module": instance.module_id, "resource": instance.name},
     )
 
 
 # ---------------------------------------------------------------------------
-# PermissionAction — created, updated (is_active), deleted
+# PermissionAction - created, updated (is_active), deleted
 # ---------------------------------------------------------------------------
 
 pre_save.connect(_capture_old_is_active, sender=PermissionAction)
@@ -360,7 +360,7 @@ def audit_permission_action(sender, instance, created, **kwargs):
         entity_id=instance.name,
         entity_label=instance.name,
         severity=severity,
-        summary=f"Permission action '{instance.name}' {verb} — all permissions using this action verb are affected",
+        summary=f"Permission action '{instance.name}' {verb} - all permissions using this action verb are affected",
         diff_data={"is_active": {"before": old_active, "after": instance.is_active}},
         metadata={"name": instance.name},
     )
@@ -380,18 +380,18 @@ def audit_permission_action_deleted(sender, instance, **kwargs):
         entity_id=instance.name,
         entity_label=instance.name,
         severity=AuditSeverity.CRITICAL,
-        summary=f"Permission action '{instance.name}' deleted — all permissions using this action verb are cascade-removed",
+        summary=f"Permission action '{instance.name}' deleted - all permissions using this action verb are cascade-removed",
         metadata={"name": instance.name},
     )
 
 
 # ===========================================================================
-# Unified tenant RBAC audit (canonical tables — mirror the legacy receivers
+# Unified tenant RBAC audit (canonical tables - mirror the legacy receivers
 # with entity types updated to the tenant models)
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# TenantUserRoleAssignment — role assignment / revocation
+# TenantUserRoleAssignment - role assignment / revocation
 # ---------------------------------------------------------------------------
 
 @receiver(post_save, sender=TenantUserRoleAssignment)
@@ -447,7 +447,7 @@ def audit_tenant_role_assignment(sender, instance, created, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# TenantRoleTemplate — creation and status changes
+# TenantRoleTemplate - creation and status changes
 # ---------------------------------------------------------------------------
 
 pre_save.connect(_capture_old_status, sender=TenantRoleTemplate)
@@ -491,7 +491,7 @@ def audit_tenant_role_template(sender, instance, created, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# TenantRoleGroup — group attached to / detached from a tenant role
+# TenantRoleGroup - group attached to / detached from a tenant role
 # ---------------------------------------------------------------------------
 
 @receiver(post_save, sender=TenantRoleGroup)
@@ -539,7 +539,7 @@ def audit_tenant_role_group_detached(sender, instance, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# TenantRoleChangeRequest — submission and denial / apply-failure
+# TenantRoleChangeRequest - submission and denial / apply-failure
 # (approval + permission diff is audited in services.apply_role_change_request)
 # ---------------------------------------------------------------------------
 

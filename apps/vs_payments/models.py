@@ -1,6 +1,6 @@
 """Gateway-layer models for vs_payments.
 
-This app sits *in front of* the ledger. Nothing here is itself an accounting entry —
+This app sits *in front of* the ledger. Nothing here is itself an accounting entry -
 the authoritative money movement is always a ``vs_finance`` journal (a customer receipt
 for collections, a vendor payment for payouts). These models track the **external PSP
 side**: what we asked a provider to do, what it told us, and the raw webhook events that
@@ -177,7 +177,7 @@ class PayoutBatch(TimeStampedModel):
     """A bulk disbursement: one envelope grouping many :class:`PayoutInstruction` rows.
 
     The batch is the unit operators work with for payroll runs, vendor settlement runs,
-    etc. — they assemble many beneficiaries, then submit once. Submission loops the
+    etc. - they assemble many beneficiaries, then submit once. Submission loops the
     existing per-instruction provider transfer (there is no proprietary bank-file export);
     the batch tracks the aggregate so a partially-settled run is visible at a glance.
     ``total_amount``/``item_count`` are denormalised sums of the child instructions, kept
@@ -325,7 +325,7 @@ class PayoutInstruction(TimeStampedModel):
 
 
 class WebhookEvent(TimeStampedModel):
-    """A raw inbound provider webhook — stored verbatim, deduplicated, then dispatched.
+    """A raw inbound provider webhook - stored verbatim, deduplicated, then dispatched.
 
     The store is the idempotency backbone: ``dedupe_key`` is unique, so a provider
     retrying the same event can never drive a second receipt/payout. We persist the raw

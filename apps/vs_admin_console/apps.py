@@ -6,4 +6,4 @@ class VsAdminConsoleConfig(AppConfig):
     name = "vs_admin_console"
 
     def ready(self):
-        import vs_admin_console.receivers  # noqa: F401 — end impersonations on tenant deactivation
+        import vs_admin_console.receivers  # noqa: F401 - end impersonations on tenant deactivation

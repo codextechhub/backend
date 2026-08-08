@@ -10,7 +10,7 @@ Design points worth knowing before changing anything:
 * **Expiry is never a run transition.** :func:`expire_files` purges storage and stamps
   ``purged_at``; the run stays COMPLETED forever. Availability is answered by the file.
 * **Downloads are re-authorised against the downloader**, not the owner, and every
-  attempt — allowed or refused — is written to :class:`~vs_exports.models.ExportDownload`
+  attempt - allowed or refused - is written to :class:`~vs_exports.models.ExportDownload`
   before the bytes move.
 """
 from __future__ import annotations
@@ -69,7 +69,7 @@ logger = logging.getLogger(__name__)
 
 
 class ExportServiceError(Exception):
-    """A request the service refuses — surfaced to the caller as a 400."""
+    """A request the service refuses - surfaced to the caller as a 400."""
 
 
 # --------------------------------------------------------------------------- #
@@ -101,7 +101,7 @@ def freeze(definition) -> dict:
 
 # Compare a run's frozen configuration against the definition as it stands now.
 def config_drift(run) -> list[dict]:
-    """``[{field, then, now}]`` — what changed since this run was produced.
+    """``[{field, then, now}]`` - what changed since this run was produced.
 
     Powers the run detail's "this differs from the export's current setup in N places".
     Returns an empty list for a quick export, which never had a definition to drift
@@ -149,7 +149,7 @@ def queue_position(run) -> int | None:
     """How many of this tenant's runs are ahead of ``run``, or ``None`` if it started.
 
     The design asks for this so a wait of more than 30 seconds can be *explained*
-    ("your export is 4th in the queue") rather than met with silence — silence is what
+    ("your export is 4th in the queue") rather than met with silence - silence is what
     makes people run the same export twice.
     """
     if run.status != RunStatus.QUEUED:
@@ -168,8 +168,8 @@ def queue_position(run) -> int | None:
 def _accept_run(tenant, client_key):
     """Idempotency and the fair-share cap, in one place for every trigger path.
 
-    Returns the existing run when ``client_key`` repeats inside the window — that is
-    the difference between a double-click and a duplicate export — and raises
+    Returns the existing run when ``client_key`` repeats inside the window - that is
+    the difference between a double-click and a duplicate export - and raises
     :class:`ExportServiceError` when the tenant is at its concurrency cap, so one
     500k-row export cannot starve everyone else's queue.
     """
@@ -200,8 +200,8 @@ def trigger_run(*, definition, actor, trigger=RunTrigger.MANUAL, client_key="",
 
     if definition.is_draft:
         raise ExportServiceError(
-            "This export is still a draft. Finish it — it needs a dataset, columns and "
-            "any required filters — before it can run."
+            "This export is still a draft. Finish it - it needs a dataset, columns and "
+            "any required filters - before it can run."
         )
 
     run = ExportRun.objects.create(
@@ -229,7 +229,7 @@ def trigger_run(*, definition, actor, trigger=RunTrigger.MANUAL, client_key="",
 
 
 def trigger_quick_run(*, config, entity, tenant, actor, client_key="", queue=True):
-    """Run a configuration that was never saved — the Quick export path.
+    """Run a configuration that was never saved - the Quick export path.
 
     Started from a module list screen with its filters already applied, so there is no
     recipe to reuse and ``definition`` stays null. Everything downstream already copes:
@@ -291,7 +291,7 @@ def enqueue(run, actor=None):
     """Queue the Celery task and link the resulting BackgroundJob row.
 
     The job is attributed to the *actor* who asked for it, never to the export's
-    subject — that is the platform convention for View Queues and its completion
+    subject - that is the platform convention for View Queues and its completion
     notification.
     """
     from core.models import BackgroundJob
@@ -329,7 +329,7 @@ def retry_run(run, actor):
     # The rule this function's docstring has always claimed, now enforced. A
     # filter, permission or row-cap failure fails again identically, so retrying
     # it costs the user a second wait and a second notification and changes
-    # nothing — the guidance for the code is the actual next step.
+    # nothing - the guidance for the code is the actual next step.
     if run.failure_code and run.failure_code not in RETRYABLE_FAILURE_CODES:
         raise ExportServiceError(
             f"{run.failure_message or 'This run failed.'} "
@@ -553,7 +553,7 @@ def _finish_failed(run, code, message, *, detail=""):
         label=run.reference, severity="CRITICAL", status="FAILED",
         metadata={"code": code, "detail": detail[:500]},
     )
-    # Any pending delivery is skipped rather than left pending forever — a run with no
+    # Any pending delivery is skipped rather than left pending forever - a run with no
     # file has nothing to deliver, and the UI must be able to say so.
     ExportDelivery.objects.filter(run=run, state=DeliveryState.PENDING).update(
         state=DeliveryState.SKIPPED, failure_reason="No file was produced.",
@@ -564,7 +564,7 @@ def _finish_failed(run, code, message, *, detail=""):
 
 # Finalise a cancelled run.
 def _finish_cancelled(run):
-    """No partial file is ever kept — nothing was stored before this point."""
+    """No partial file is ever kept - nothing was stored before this point."""
     run.status = RunStatus.CANCELLED
     run.phase = RunPhase.DONE
     run.ended_at = timezone.now()
@@ -576,7 +576,7 @@ def _finish_cancelled(run):
 def _notify(run, *, failed=False, omissions=False):
     """Notify the owner on completion, failure and omissions.
 
-    Which channels actually fire is the event type's business, not this function's —
+    Which channels actually fire is the event type's business, not this function's -
     both keys support in-app and email, and a tenant can switch the email channel off
     per event. Here we only decide *which* event and what it says.
     """
@@ -589,7 +589,7 @@ def _notify(run, *, failed=False, omissions=False):
     label = run.frozen_config.get("name") or run.reference
     detail = (
         f"{run.failure_message} {run.failure_guidance}".strip() if failed
-        else "Some columns were left out — open the run to see which." if omissions
+        else "Some columns were left out - open the run to see which." if omissions
         else ""
     )
     try:
@@ -604,7 +604,7 @@ def _notify(run, *, failed=False, omissions=False):
             },
             recipients=[recipient],
             tenant=run.tenant,
-            # Lets the bell deep-link to THIS run rather than the Files list —
+            # Lets the bell deep-link to THIS run rather than the Files list -
             # a failure notice is only useful next to the thing that failed.
             metadata={"export_run_id": run.pk},
         )
@@ -621,7 +621,7 @@ def _open_deliveries(run):
     """Create the PENDING delivery rows this run will try to send.
 
     Written at trigger time, not on completion, so a run that fails still shows *who
-    was going to receive it* and that they did not — a run can succeed while a
+    was going to receive it* and that they did not - a run can succeed while a
     delivery fails, and the UI can only say which if the rows exist either way.
 
     Recipients are the people the export is shared with. v1 delivers to signed-in
@@ -647,8 +647,8 @@ def _open_deliveries(run):
 def _dispatch_deliveries(run, file):
     """Send each pending delivery, or skip it when there is nothing worth sending.
 
-    Recipients receive a link to the authenticated download endpoint — never the file
-    itself — so access is judged against the recipient at the moment they click, not at
+    Recipients receive a link to the authenticated download endpoint - never the file
+    itself - so access is judged against the recipient at the moment they click, not at
     the moment we send. One failed send never fails the run or the other recipients.
     """
     pending = list(
@@ -734,8 +734,8 @@ def revoke_delivery(delivery, actor):
 def authorise_download(file, user, tenant):
     """Decide whether ``user`` may take ``file`` now. Returns ``(ok, refusal_reason)``.
 
-    Checked against the run's *frozen* entity and dataset — not the definition's
-    current ones — because the file contains what it contains, and access to it must be
+    Checked against the run's *frozen* entity and dataset - not the definition's
+    current ones - because the file contains what it contains, and access to it must be
     judged on that. Expiry and purge are checked first: they are properties of the
     file, so they apply to the owner too.
     """
@@ -777,7 +777,7 @@ def log_download(file, user, *, outcome, reason="", ip=""):
     """Write the download record and keep the file's counter in step.
 
     Every attempt is logged before the bytes move, so a refused attempt leaves the same
-    trail as an allowed one — which is exactly the question a compliance review asks.
+    trail as an allowed one - which is exactly the question a compliance review asks.
     """
     record = ExportDownload.objects.create(
         file=file, user=user, outcome=outcome, refusal_reason=reason or "", ip_address=ip or "",
@@ -786,7 +786,7 @@ def log_download(file, user, *, outcome, reason="", ip=""):
         # F() so two people downloading at once cannot lose a count.
         ExportFile.objects.filter(pk=file.pk).update(download_count=F("download_count") + 1)
         # How old files are when people fetch them tells us whether 30 days is the
-        # right retention window — the one product question the run rows cannot answer.
+        # right retention window - the one product question the run rows cannot answer.
         analytics.record(
             analytics.Event.FILE_DOWNLOADED, tenant=file.run.tenant, actor=user,
             properties={"age_days": (timezone.now() - file.created_at).days},
@@ -835,7 +835,7 @@ def expire_files(*, now=None) -> int:
 # Capabilities                                                                #
 # --------------------------------------------------------------------------- #
 def capabilities(user, tenant):
-    """What this user may do, as flags — so the UI can disable with a reason.
+    """What this user may do, as flags - so the UI can disable with a reason.
 
     The handoff is emphatic about this: capability flags rather than booleans buried in
     errors are what make the permission experience humane. Failing at submit is the

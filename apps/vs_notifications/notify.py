@@ -31,7 +31,7 @@
 #       metadata={"activation_key": key},   # internal-only correlation data
 #   )
 #
-# `school` is OPTIONAL — notifications are recipient-centric. Pass it to scope
+# `school` is OPTIONAL - notifications are recipient-centric. Pass it to scope
 # history and pick up a school's settings overrides; omit it for school-less
 # recipients (CX staff, invitees).
 #
@@ -71,7 +71,7 @@ def send_notification(
         school:                  Optional School instance. Stored on each record for
                                  filtering/history and used to resolve school-specific
                                  settings overrides. Defaults to None (platform scope).
-        suppress:                Pass True to skip dispatch entirely — useful when
+        suppress:                Pass True to skip dispatch entirely - useful when
                                  bulk-creating records where notifications would be noise.
         unregistered_recipients: List of UnregisteredRecipient(email, name) for
                                  recipients who have no User account yet (e.g. user.invited).

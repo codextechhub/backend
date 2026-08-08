@@ -7,7 +7,7 @@
 #
 # Optionally materialises per-school override rows with --school <slug> / --all
 # (an explicit override path; platform defaults already cover every school).
-# Uses get_or_create — existing admin-configured rows are never overwritten.
+# Uses get_or_create - existing admin-configured rows are never overwritten.
 #
 # Usage:
 #   python manage.py seed_notification_settings                 # platform rows
@@ -24,7 +24,7 @@ class Command(BaseCommand):
     help = (
         "Seed platform-wide NotificationSetting rows (school=NULL) from each "
         "event type's default_enabled. Optionally add per-school override rows "
-        "with --school <slug> or --all. Uses get_or_create — existing settings "
+        "with --school <slug> or --all. Uses get_or_create - existing settings "
         "are never overwritten."
     )
 
@@ -56,7 +56,7 @@ class Command(BaseCommand):
         if not options.get("school") and not options.get("all_schools"):
             return
 
-        from vs_schools.models import School  # Late import — avoids coupling at module load
+        from vs_schools.models import School  # Late import - avoids coupling at module load
 
         if options["all_schools"]:
             schools = School.objects.filter(status="ACTIVE")

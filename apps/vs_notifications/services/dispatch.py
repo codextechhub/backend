@@ -1,7 +1,7 @@
 # =============================================================================
 # vs_notifications / services / dispatch.py
 #
-# NotificationService — the primary entry point for all notification dispatch.
+# NotificationService - the primary entry point for all notification dispatch.
 #
 # Called by other module services (vs_finance, vs_workflow, vs_user, etc.).
 # Never called directly from views.
@@ -12,7 +12,7 @@
 #
 # Responsibilities:
 #   - Validate the event key
-#   - Resolve which channels fire (resolve_channels — school row → platform row
+#   - Resolve which channels fire (resolve_channels - school row → platform row
 #     → default_enabled; transactional events bypass settings)
 #   - Render templates (subject, plain body, optional HTML body)
 #   - Create Notification records (storing metadata + html_body)
@@ -69,7 +69,7 @@ class NotificationService:
             event_key="billing.invoice_overdue",
             context={...},
             recipients=[guardian_user],
-            school=school,            # optional — omit for school-less recipients
+            school=school,            # optional - omit for school-less recipients
         )
     """
 
@@ -97,7 +97,7 @@ class NotificationService:
                                      resolve school-specific settings overrides.
                                      Defaults to None (platform scope).
             suppress:                If True, return immediately without dispatching.
-            unregistered_recipients: Optional list of UnregisteredRecipient — for
+            unregistered_recipients: Optional list of UnregisteredRecipient - for
                                      recipients who have no User account yet.
             metadata:                Optional dict stored on EVERY created record's
                                      internal-only metadata field (e.g. an
@@ -143,7 +143,7 @@ class NotificationService:
         enabled_channels = [ch for ch, on in channel_enabled.items() if on]
         if not enabled_channels:
             logger.debug(
-                "All channels disabled for event_key=%s (school=%s) — nothing to dispatch.",
+                "All channels disabled for event_key=%s (school=%s) - nothing to dispatch.",
                 event_key,
                 getattr(school, "id", None),
             )
@@ -162,7 +162,7 @@ class NotificationService:
                 template = templates.get(channel)
                 if template is None:
                     logger.warning(
-                        "No active template for event_key=%s channel=%s — channel skipped.",
+                        "No active template for event_key=%s channel=%s - channel skipped.",
                         event_key,
                         channel,
                     )
@@ -171,7 +171,7 @@ class NotificationService:
                 # Email delivery cannot proceed without an address, but history should record the failure.
                 email_addr = _resolve_email(target)
                 if channel == ChannelChoices.EMAIL and not email_addr:
-                    # Pre-flight FAILED — no point rendering or queuing.
+                    # Pre-flight FAILED - no point rendering or queuing.
                     notifications_to_create.append(
                         _build_failed_notification(
                             event_type=event_type,
@@ -218,7 +218,7 @@ class NotificationService:
                         body=rendered_body,
                         html_body=rendered_html if not is_in_app else "",
                         metadata=metadata,
-                        # IN_APP is immediately SENT — no async task needed
+                        # IN_APP is immediately SENT - no async task needed
                         status=NotificationStatus.SENT if is_in_app else NotificationStatus.PENDING,
                         dispatched_at=timezone.now() if is_in_app else None,
                     )
@@ -283,7 +283,7 @@ def _fetch_templates(event_type, channels: list) -> dict:
     """
     Return a dict of {channel: NotificationTemplate} for the given channels.
     Only active templates are returned.  Missing or inactive templates produce
-    no entry in the dict — callers handle the None case.
+    no entry in the dict - callers handle the None case.
     """
     qs = NotificationTemplate.objects.filter(
         event_type=event_type,

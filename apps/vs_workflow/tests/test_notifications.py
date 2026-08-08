@@ -124,7 +124,7 @@ class WorkflowNotificationTests(TestCase):
             stage_instance=si, user=self.approver, attempt=1,
         )
         # on_rejection=TERMINAL routes through _terminate_rejected, whose
-        # document handler isn't registered for TEST_DOC — stub it out.
+        # document handler isn't registered for TEST_DOC - stub it out.
         with patch.object(routing_service, "get_handler", return_value=MagicMock()):
             with self.captureOnCommitCallbacks(execute=True):
                 actions_service.record_action(
@@ -178,7 +178,7 @@ class WorkflowNotificationTests(TestCase):
         self.assertIn("approved by Ada Approver", row.body)
 
     def test_template_opt_out_suppresses_notification(self):
-        """A configured notification_events dict is exact intent — missing key = off."""
+        """A configured notification_events dict is exact intent - missing key = off."""
         self.template.notification_events = {"workflow.rejected": True}
         self.template.save(update_fields=["notification_events"])
         try:

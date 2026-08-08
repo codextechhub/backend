@@ -1,4 +1,4 @@
-"""Inventory / stock-ledger services — perpetual inventory at weighted-average cost.
+"""Inventory / stock-ledger services - perpetual inventory at weighted-average cost.
 
 The stock ledger keeps a :class:`~vs_procurement.models.StockItem`'s on-hand quantity
 and GL value in lock-step. Valuation is **weighted-average held without floats**: the
@@ -8,12 +8,12 @@ equals the perpetual-inventory balance carried in the item's ``inventory_account
 
 Three movement kinds touch the ledger:
 
-* **receipt**  — :func:`receive_stock`, called from :func:`vs_procurement.purchasing.post_grn`
+* **receipt**  - :func:`receive_stock`, called from :func:`vs_procurement.purchasing.post_grn`
   for a stock-tracked GRN line. Raises qty/value at the purchase cost; the GRN journal
   (Dr inventory, Cr GR/IR) is what posts the GL side, so this only updates the sub-ledger.
-* **issue**    — :func:`issue_stock`. Values the outflow at the current moving average and
+* **issue**    - :func:`issue_stock`. Values the outflow at the current moving average and
   posts **Dr expense, Cr inventory**.
-* **adjustment** — :func:`adjust_stock`. A signed stock-count / shrinkage / write-up
+* **adjustment** - :func:`adjust_stock`. A signed stock-count / shrinkage / write-up
   correction, posting the value delta between inventory and an adjustment account.
 
 :func:`reorder_report` and :func:`stock_valuation` are read-only views over the same state.
@@ -112,7 +112,7 @@ def _record_movement(stock_item, *, movement_type, quantity, value_amount,
 
 
 def _issue_value(stock_item, quantity: Decimal) -> int:
-    """Weighted-average value (kobo) of issuing ``quantity`` — proportion of total value.
+    """Weighted-average value (kobo) of issuing ``quantity`` - proportion of total value.
 
     Computed as ``stock_value × quantity / on_hand_qty`` and rounded once to integer
     kobo. When ``quantity == on_hand_qty`` the ratio returns the entire carried value,
@@ -129,7 +129,7 @@ def _issue_value(stock_item, quantity: Decimal) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# Receipt (called from the GRN posting — GL side already booked there)        #
+# Receipt (called from the GRN posting - GL side already booked there)        #
 # --------------------------------------------------------------------------- #
 
 @transaction.atomic
@@ -175,7 +175,7 @@ def issue_stock(stock_item, *, quantity, movement_date, expense_account=None,
     """Issue ``quantity`` out of stock at moving-average cost (Dr expense, Cr inventory).
 
     Wrapper recording a durable rejection audit on any :class:`FinanceError`, then
-    re-raising — mirroring the journal posting contract.
+    re-raising - mirroring the journal posting contract.
     """
     try:
         return _issue_stock_atomic(

@@ -2,7 +2,7 @@
 
 A refund debits the customer-credit liability (2140) as one lump, and nothing
 recorded *which* credit it drained. The originating receipt therefore went on
-reporting its cash as unapplied and available after it had been handed back —
+reporting its cash as unapplied and available after it had been handed back -
 two parts of the system disagreeing about whether the money was still there.
 
 Schema adds the attribution rows plus the denormalised ``refunded_amount`` each
@@ -12,8 +12,8 @@ read model is correct the moment the migration lands rather than after a
 separate command someone has to remember to run.
 
 The backfill deliberately ignores accounting dates. Refunds already in the books
-include ones that were backdated before their credit existed — that is the very
-defect this change prevents going forward — and re-litigating history here would
+include ones that were backdated before their credit existed - that is the very
+defect this change prevents going forward - and re-litigating history here would
 leave those refunds unattributed and the balances overstated. Attribution is
 about *which* credit was spent, not whether spending it was allowed.
 """

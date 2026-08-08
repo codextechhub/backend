@@ -1,7 +1,7 @@
 """Seed the default currencies (NGN base, plus USD/GBP/EUR).
 
 Reference data shared by every entity; idempotent and reversible. The Chart of
-Accounts is intentionally *not* seeded here — it is per-entity and created on demand
+Accounts is intentionally *not* seeded here - it is per-entity and created on demand
 via ``manage.py seed_finance`` so tenants opt in to a starter chart explicitly.
 
 Must run BEFORE 0004_seed_platform_entity: LedgerEntity.base_currency is a

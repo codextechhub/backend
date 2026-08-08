@@ -103,7 +103,7 @@ class PayrollRunListCreateView(_FinanceBase):
 
 # Group endpoint behavior for Payroll Run Summary View.
 class PayrollRunSummaryView(_FinanceBase):
-    """GET — header KPIs over **all** payroll runs (accurate under pagination).
+    """GET - header KPIs over **all** payroll runs (accurate under pagination).
 
     docstring-name: Payroll runs
     """
@@ -204,7 +204,7 @@ class PayrollRunPayView(_PayrollActionBase):
 
 # Group endpoint behavior for Payroll Run Cancel View.
 class PayrollRunCancelView(_PayrollActionBase):
-    """POST — cancel a draft run, or void a posted (un-paid) run by reversing its accrual.
+    """POST - cancel a draft run, or void a posted (un-paid) run by reversing its accrual.
 
     docstring-name: Cancel a payroll run
     """
@@ -252,7 +252,7 @@ def _resolve_structure(entity, raw, *, required=False):
 
 # Group endpoint behavior for Employee Salary List Create View.
 class EmployeeSalaryListCreateView(_FinanceBase):
-    """GET (list) / POST (add) employee salaries — the roster a run is generated from.
+    """GET (list) / POST (add) employee salaries - the roster a run is generated from.
 
     docstring-name: Employee salaries
     """
@@ -347,7 +347,7 @@ class EmployeeSalaryDetailView(_FinanceBase):
 
 # Group endpoint behavior for Payroll Run Generate View.
 class PayrollRunGenerateView(_FinanceBase):
-    """POST — raise a draft payroll run from the active employee-salary roster.
+    """POST - raise a draft payroll run from the active employee-salary roster.
 
     docstring-name: Generate a payroll run
     """

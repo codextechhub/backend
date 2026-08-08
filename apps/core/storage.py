@@ -7,12 +7,12 @@ Configured as STORAGES["default"], so every FileField/ImageField
 
 Scope guard: the platform only accepts spreadsheets and images, so the
 storage enforces an extension allowlist and a size ceiling as
-defense-in-depth — serializer-level validation remains the first line.
+defense-in-depth - serializer-level validation remains the first line.
 
 Files are served by ``core.views.MediaView`` at ``/media/<name>`` (the URL
 this storage hands back), which requires authentication.
 
-Access model — **capability URLs.** ``MediaView`` authenticates the caller but
+Access model - **capability URLs.** ``MediaView`` authenticates the caller but
 cannot authorise per-file (the ``StoredFile`` row has no owner/entity). To stop a
 logged-in user from fetching another tenant's file by guessing a predictable path
 (e.g. ``expense-receipts/receipt.pdf``), every stored file's name carries a
@@ -39,7 +39,7 @@ ALLOWED_EXTENSIONS = {
     ".pdf",  # supporting documents (e.g. expense receipts)
 }
 
-# 25 MB default ceiling — far above any sane logo/photo/import sheet.
+# 25 MB default ceiling - far above any sane logo/photo/import sheet.
 MAX_BYTES_DEFAULT = 25 * 1024 * 1024
 
 
@@ -72,14 +72,14 @@ class DatabaseStorage(Storage):
         ext = os.path.splitext(name)[1].lower()
         if ext not in ALLOWED_EXTENSIONS:
             raise ValidationError(
-                f"File type '{ext or 'unknown'}' is not accepted — only "
+                f"File type '{ext or 'unknown'}' is not accepted - only "
                 f"spreadsheets (csv/xlsx), images and PDFs are stored."
             )
         data = content.read()
         max_bytes = getattr(settings, "MEDIA_DB_MAX_BYTES", MAX_BYTES_DEFAULT)
         if len(data) > max_bytes:
             raise ValidationError(
-                f"File is {len(data)} bytes — the upload ceiling is {max_bytes}."
+                f"File is {len(data)} bytes - the upload ceiling is {max_bytes}."
             )
         content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
         self._model.objects.update_or_create(

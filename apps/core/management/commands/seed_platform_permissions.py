@@ -3,7 +3,7 @@
 This is the single source of truth for the platform-administration permissions
 (permissions registry, roles, team, staff profiles, payroll, organogram,
 schools, branches, audit, dashboard). Both ``create_superuser`` and
-``seed_all_permissions`` run this — keeping the keys defined in exactly one
+``seed_all_permissions`` run this - keeping the keys defined in exactly one
 place so a new resource (e.g. organogram) can never again be wired into views
 but forgotten by the seed.
 
@@ -13,7 +13,7 @@ but forgotten by the seed.
 
 Grants: every platform permission to ``xvs_super_admin``; the same set EXCEPT
 ``platform.roles.transfer`` to ``xvs_platform_admin`` (only the Super Admin may
-hand off the Super Admin role). Safe to re-run — everything uses get_or_create.
+hand off the Super Admin role). Safe to re-run - everything uses get_or_create.
 """
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -103,7 +103,7 @@ PLATFORM_RESOURCES: list[tuple[str, str, list[tuple[str, str, bool, str]]]] = [
     ),
     (
         "organogram",
-        "CX organogram — departments, positions, assignments, matrix lines",
+        "CX organogram - departments, positions, assignments, matrix lines",
         [
             ("view",   "View organogram summary metrics",             False, _NORMAL),
             ("manage", "Edit departments, positions and assignments", True, _SENSITIVE),
@@ -196,7 +196,7 @@ class Command(BaseCommand):
                 action = PermissionAction.objects.filter(name=action_name).first()
                 if not action:
                     self.stdout.write(self.style.WARNING(
-                        f"  ⚠  Action '{action_name}' not found — run seed_actions first."
+                        f"  ⚠  Action '{action_name}' not found - run seed_actions first."
                     ))
                     continue
 
@@ -226,7 +226,7 @@ class Command(BaseCommand):
         codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
         if codex is None:
             self.stdout.write(self.style.WARNING(
-                "  ⚠  Codex platform tenant not found — run migrations first. Skipping grants."
+                "  ⚠  Codex platform tenant not found - run migrations first. Skipping grants."
             ))
         else:
             for role_key in PLATFORM_ROLE_KEYS:

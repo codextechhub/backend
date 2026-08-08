@@ -8,7 +8,7 @@ unbalanced entry.
 In Phase 0 the ``FiscalPeriod`` model does not exist yet, so these guards are
 duck-typed: they operate on any object exposing a ``status`` (and optionally a
 ``label``). Phase 1 introduces the real model and the full ``post_journal`` service,
-which will call these same guards — keeping the enforcement point singular.
+which will call these same guards - keeping the enforcement point singular.
 """
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def ensure_period_open(
     Args:
         period: Any object with a ``status`` string drawn from
             :class:`~vs_finance.constants.PeriodStatus`.
-        allow_restricted: When ``True``, soft-closed periods are permitted — used by
+        allow_restricted: When ``True``, soft-closed periods are permitted - used by
             privileged close-process auto-postings (depreciation, accruals). Ordinary
             postings pass ``False`` and are blocked from soft-closed periods too.
         allow_closed: A narrower year-end-close escape hatch. When ``True`` a CLOSED
@@ -82,7 +82,7 @@ def ensure_period_open(
         raise PeriodClosedError(period_label=label, status=str(status))
 
     if status != PeriodStatus.OPEN and status not in PERIOD_POSTING_RESTRICTED:  # Anything unknown must fail closed.
-        # Unknown / unset status — fail closed rather than guess.  # Prevent silent posting into invalid state.
+        # Unknown / unset status - fail closed rather than guess.  # Prevent silent posting into invalid state.
         raise PeriodClosedError(period_label=label, status=str(status or "unknown"))
 
 
@@ -126,7 +126,7 @@ def posting_window(entity, *, today=None) -> dict:
     ordinary user may pick.
 
     ``default_date`` is the date a new document should open on: today when today is
-    postable, else the nearest open day in either direction — backward to the most
+    postable, else the nearest open day in either direction - backward to the most
     recent open day, or forward to the earliest upcoming one, whichever is closer,
     preferring the past on a tie (backdating into a still-open period is the ordinary
     case during a close; post-dating is not). ``None`` when the entity has no open
@@ -198,7 +198,7 @@ def _period_brief(period) -> dict | None:
 def ensure_balanced(debit_kobo: int, credit_kobo: int) -> None:
     """Raise :class:`UnbalancedJournalError` unless debits exactly equal credits.
 
-    Amounts are integer kobo, so equality is exact — there is no rounding tolerance,
+    Amounts are integer kobo, so equality is exact - there is no rounding tolerance,
     and none is wanted: a ledger that is off by one kobo is wrong.
     """
     if debit_kobo != credit_kobo:  # Even one kobo imbalance is invalid.
@@ -222,7 +222,7 @@ def sum_sides(lines: Iterable) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 — posting services
+# Phase 1 - posting services
 # ---------------------------------------------------------------------------
 #
 # These are the ONLY supported way to make a journal affect balances. They run the
@@ -323,7 +323,7 @@ def _post_journal_atomic(
       3. Guard every line's account is active and postable.
       4. Apply the line amounts to the per-period :class:`AccountBalance` aggregates.
       5. Stamp the entry POSTED with ``posted_at``/``posted_by``.
-      6. Write the authoritative ``JOURNAL_POSTED`` audit row — same commit as 4–5.
+      6. Write the authoritative ``JOURNAL_POSTED`` audit row - same commit as 4–5.
     """
     from .audit import record
     from .models import JournalEntry
@@ -331,7 +331,7 @@ def _post_journal_atomic(
     # Serialise concurrent posts of the *same* entry: take a row lock and re-read the
     # status under it before doing anything. Without this, two requests can both pass
     # the status guard on a stale in-memory copy and each apply the lines to
-    # AccountBalance — double-counting the ledger. The loser blocks here, then sees
+    # AccountBalance - double-counting the ledger. The loser blocks here, then sees
     # POSTED and is rejected. (Document numbering is already lock-safe; posting was not.)
     locked_status = (  # Re-read status while holding the journal row lock.
         JournalEntry.objects.select_for_update()
@@ -486,8 +486,8 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
                     document_owner=None):
     """Reverse a posted journal by raising a mirror-image entry that nets it to zero.
 
-    The original is left untouched on the record (marked REVERSED) and a new journal —
-    debits and credits swapped — is created and posted, linked back via ``reverses``.
+    The original is left untouched on the record (marked REVERSED) and a new journal -
+    debits and credits swapped - is created and posted, linked back via ``reverses``.
     This is the audit-correct way to undo: history is appended to, never edited.
 
     The reversing entry posts into ``date``'s period (defaults to the original's
@@ -527,7 +527,7 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
     # reversal to the original's period regardless of the date passed). Prefer the
     # caller's date; else the original's. But if the original's period has since
     # closed and no explicit date was given, fall back to today so a prior-period
-    # correction can still be booked into the current open period — the standard way
+    # correction can still be booked into the current open period - the standard way
     # to reverse after a period closes.
     reversal_date = date or entry.date  # Prefer explicit reversal date, otherwise original date.
     from .chronology import ensure_on_or_after
@@ -598,7 +598,7 @@ def reverse_journal(entry, *, actor_user=None, date=None, allow_restricted: bool
 @transaction.atomic
 def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
                       actor_user=None):  # Create and post a raw direct journal entry.
-    """Post a direct journal entry — money/balances seated into the books with no source doc.
+    """Post a direct journal entry - money/balances seated into the books with no source doc.
 
     This is the *sanctioned* way to record anything that has no sub-ledger document behind
     it: capital injections and equity contributions, loan drawdowns, grants, opening cash,
@@ -606,13 +606,13 @@ def post_direct_entry(entity, *, lines, date=None, narration="", reference="",
     journal from an invoice/payment/etc.), a direct entry is the one place a caller supplies
     raw lines. It posts with ``source=OPENING`` (the catch-all for sourceless entries).
 
-    ``lines`` is a list of ``(account, debit_kobo, credit_kobo)`` — optionally extended
-    with a 4th element ``cost_center`` and a 5th element ``dimensions`` — where ``account``
+    ``lines`` is a list of ``(account, debit_kobo, credit_kobo)`` - optionally extended
+    with a 4th element ``cost_center`` and a 5th element ``dimensions`` - where ``account``
     is a code string (resolved within ``entity``) or an :class:`~vs_finance.models.Account`,
     the optional ``cost_center`` is a :class:`~vs_finance.models.CostCenter` (or ``None``)
     and ``dimensions`` is a ``{axis_code: value}`` map, both carried onto the GL line. The
     entry must balance (Σdebits == Σcredits); it posts into
-    ``date``'s open period — ``date`` defaults to the entity's earliest period start, else
+    ``date``'s open period - ``date`` defaults to the entity's earliest period start, else
     today. The normal :func:`post_journal` guards apply (period open, balanced, accounts
     active/postable), and it is reversible like any journal. Returns the posted entry.
     """

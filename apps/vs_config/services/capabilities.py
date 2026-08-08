@@ -67,7 +67,7 @@ def effective_capability(capability, *, tenant=None, branch=None, _seen=None):
         if state and state != CapabilityOverride.State.INHERIT:
             return state == CapabilityOverride.State.ENABLED
     # No concrete override. Reaching here means the entitlement gate passed,
-    # so a plan-gated capability is ON — being in the plan is what switches it
+    # so a plan-gated capability is ON - being in the plan is what switches it
     # on (a DISABLED override is the lever to suppress it). Ungated
     # capabilities fall back to the catalogue default.
     if capability.requires_entitlement:

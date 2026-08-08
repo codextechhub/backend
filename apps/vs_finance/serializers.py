@@ -184,7 +184,7 @@ class LedgerEntityCreateSerializer(serializers.ModelSerializer):
 
 class AccountSerializer(serializers.ModelSerializer):
     parent_code = serializers.CharField(source="parent.code", read_only=True, default=None)
-    # Net GL balance signed to the account's normal balance — populated from the
+    # Net GL balance signed to the account's normal balance - populated from the
     # ``_bal_dr``/``_bal_cr`` annotations the chart-of-accounts view adds.
     balance = serializers.SerializerMethodField()
     # Sub-ledger role: AR/AP control account, or the cash & bank account.
@@ -204,7 +204,7 @@ class AccountSerializer(serializers.ModelSerializer):
         dr = getattr(obj, "_bal_dr", None)
         cr = getattr(obj, "_bal_cr", None)
         if dr is None and cr is None:
-            return None  # not annotated (e.g. picker queries) — omit
+            return None  # not annotated (e.g. picker queries) - omit
         net = (dr or 0) - (cr or 0)
         if obj.normal_balance != NormalBalance.DEBIT:
             net = -net
@@ -405,7 +405,7 @@ class FeeStructureSerializer(serializers.ModelSerializer):
     total_with_tax_naira = serializers.SerializerMethodField()
     applies_to_display = serializers.CharField(
         source="get_applies_to_display", read_only=True)
-    # Usage/activity — only computed for the detail view (context with_usage=True),
+    # Usage/activity - only computed for the detail view (context with_usage=True),
     # so the list endpoint stays a single query per page.
     created_by_name = serializers.SerializerMethodField()
     usage = serializers.SerializerMethodField()
@@ -568,7 +568,7 @@ class PaymentSerializer(serializers.ModelSerializer):
         return format_naira(obj.amount)
 
     def get_allocation_status(self, obj) -> str:
-        """Where this receipt's cash ended up — settled, refunded, or still sitting.
+        """Where this receipt's cash ended up - settled, refunded, or still sitting.
 
         REFUNDED is its own state rather than a flavour of UNALLOCATED: the cash never
         settled a bill, but it is also gone, and calling that "unallocated" is precisely
@@ -739,7 +739,7 @@ class BankAccountSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     unreconciled_count = serializers.SerializerMethodField()
     last_reconciled_at = serializers.SerializerMethodField()
 
-    # FLS: the funding account number is sensitive — only holders of the
+    # FLS: the funding account number is sensitive - only holders of the
     # sensitive grant see it; everyone else gets the record with it stripped.
     read_permissions = {
         "account_number": "finance.bankaccount.view_sensitive",
@@ -1010,7 +1010,7 @@ class PettyCashVoucherSerializer(serializers.ModelSerializer):
         return format_naira(obj.total)
 
     def get_expense_account(self, obj):
-        """The voucher's expense category — the first line's account (code · name)."""
+        """The voucher's expense category - the first line's account (code · name)."""
         lines = list(obj.lines.all()[:2])
         if not lines:
             return None
@@ -1073,7 +1073,7 @@ class TaxFilingSerializer(serializers.ModelSerializer):
 class PayrollLineSerializer(FieldSecurityMixin, serializers.ModelSerializer):
     cost_center = serializers.CharField(source="cost_center.code", read_only=True, default=None)
 
-    # FLS: per-employee names and pay figures are sensitive — only holders of
+    # FLS: per-employee names and pay figures are sensitive - only holders of
     # the payroll sensitive grant see them; everyone else gets the line with
     # these fields stripped.
     read_permissions = {
@@ -1097,7 +1097,7 @@ class PayrollLineSerializer(FieldSecurityMixin, serializers.ModelSerializer):
 class PayrollRunSerializer(serializers.ModelSerializer):
     lines = PayrollLineSerializer(many=True, read_only=True)
     net_total_naira = serializers.SerializerMethodField()
-    # Statutory liability accounts the run credited (set on post) — let the FE match the
+    # Statutory liability accounts the run credited (set on post) - let the FE match the
     # real outstanding balance (trial balance) to show remittance status honestly.
     paye_payable_account = serializers.CharField(source="paye_payable_account.code", read_only=True, default=None)
     pension_payable_account = serializers.CharField(source="pension_payable_account.code", read_only=True, default=None)
@@ -1118,7 +1118,7 @@ class PayrollRunSerializer(serializers.ModelSerializer):
 
 
 class SalaryComponentSerializer(serializers.ModelSerializer):
-    """A structure line. Not FLS-stripped — a structure is configuration (e.g. 'Basic =
+    """A structure line. Not FLS-stripped - a structure is configuration (e.g. 'Basic =
     40% of gross'), not any one person's pay."""
 
     class Meta:
@@ -1155,7 +1155,7 @@ class EmployeeSalarySerializer(FieldSecurityMixin, serializers.ModelSerializer):
     net_amount = serializers.SerializerMethodField()
     components = serializers.SerializerMethodField()
 
-    # FLS: the pay figures are sensitive — names stay visible (the roster), but the
+    # FLS: the pay figures are sensitive - names stay visible (the roster), but the
     # amounts are stripped unless the caller holds the sensitive grant.
     # Note: field-level "see individual pay figures" stays keyed on the single
     # finance.payrollrun.view_sensitive grant (NOT finance.salary.*, which gates the
@@ -1274,7 +1274,7 @@ class FinanceAuditLogSerializer(serializers.ModelSerializer):
         model = FinanceAuditLog
         # `before`/`after` are the human-meaningful field-level snapshot the UI
         # summarises ("N fields changed"); `metadata` is an internal bag (ids,
-        # request context) with no reader value — deliberately NOT exposed.
+        # request context) with no reader value - deliberately NOT exposed.
         fields = [
             "id", "action", "action_display", "status", "actor", "target_type",
             "target_id", "document_number", "message", "before", "after", "created_at",

@@ -7,7 +7,7 @@ guarantee holds even for bulk/ORM-bypassing writes.
 
 Vendor-branched: PostgreSQL (trigger function + RAISE EXCEPTION) is what the platform
 actually runs (local/CI/staging); a MySQL/MariaDB branch (SIGNAL SQLSTATE '45000') is
-kept for the legacy fallback. Fully reversible — the reverse drops the triggers and
+kept for the legacy fallback. Fully reversible - the reverse drops the triggers and
 (Postgres) the function.
 """
 from django.db import migrations

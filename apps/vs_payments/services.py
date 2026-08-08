@@ -65,7 +65,7 @@ def initiate_collection(*, entity, amount, customer=None, invoice=None,
     """Create a :class:`CollectionIntent` and ask the provider to start a collection.
 
     Returns the intent with ``checkout_url`` (and ``provider_reference``) populated. No
-    ledger entry is made yet — the receipt is booked only when the collection is
+    ledger entry is made yet - the receipt is booked only when the collection is
     *confirmed* (webhook or verify).
     """
     from .constants import CollectionChannel
@@ -209,7 +209,7 @@ def set_virtual_account_status(va, *, status, actor_user=None):
 @transaction.atomic
 # Handle the confirm collection workflow.
 def confirm_collection(intent, *, status=None, amount=None, actor_user=None):
-    """Confirm a collection and book the receipt — idempotently.
+    """Confirm a collection and book the receipt - idempotently.
 
     ``status`` (a :class:`CollectionStatus` value) is taken from a webhook/verify result;
     if omitted, the provider is polled. A SUCCEEDED collection books a customer receipt
@@ -293,7 +293,7 @@ def _book_receipt(intent, *, actor_user=None):
         narration=intent.narration or f"Gateway collection {intent.reference}",
     )
 
-    # A receipt cannot settle an invoice that is not raised yet — crediting AR before
+    # A receipt cannot settle an invoice that is not raised yet - crediting AR before
     # the invoice debits it drives the control negative for the gap, and the posting
     # service now refuses an explicit allocation that does so. Here that refusal must
     # not be allowed to surface: the payer's money has already moved, and failing the
@@ -407,7 +407,7 @@ def create_payout_batch(*, entity, items, provider=None, source_account=None,
     ``items`` is an iterable of dicts, each with ``amount`` (kobo) and beneficiary fields
     (``beneficiary_name``, ``beneficiary_account_number``, ``beneficiary_bank_code``) and
     optional ``vendor`` / ``narration`` / ``wht_amount`` / ``metadata`` / ``source_account``.
-    Nothing is sent to the provider yet — call :func:`submit_payout_batch` for that.
+    Nothing is sent to the provider yet - call :func:`submit_payout_batch` for that.
     """
     from django.conf import settings
 
@@ -525,7 +525,7 @@ def _recompute_batch_status(batch):
 @transaction.atomic
 # Handle the confirm payout workflow.
 def confirm_payout(payout, *, status=None, amount=None, actor_user=None):
-    """Confirm a payout and book the vendor payment — idempotently.
+    """Confirm a payout and book the vendor payment - idempotently.
 
     ``amount`` (kobo) optionally overrides the booked amount; if omitted on the verify
     path, the provider-reported settled amount is adopted (mirrors ``confirm_collection``).

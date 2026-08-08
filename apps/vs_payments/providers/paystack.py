@@ -1,4 +1,4 @@
-"""Paystack provider — collections + payouts + webhooks.  # Concrete adapter for the Paystack PSP.
+"""Paystack provider - collections + payouts + webhooks.  # Concrete adapter for the Paystack PSP.
 
 Reference: https://paystack.com/docs/api/ . Base URL ``https://api.paystack.co``; every
 call authenticates with ``Authorization: Bearer <secret_key>``. Amounts are in **kobo**
@@ -6,7 +6,7 @@ already (Paystack's NGN minor unit), so no conversion. Webhooks are signed with
 ``x-paystack-signature`` = HMAC-SHA512 of the raw request body using the same secret key.  # Use the raw body for signature verification.
 
 All network I/O goes through :func:`vs_payments.providers.http.request_json`, which tests
-patch — so this client is fully exercised without ever calling Paystack.  # Keep HTTP interactions centralized and testable.
+patch - so this client is fully exercised without ever calling Paystack.  # Keep HTTP interactions centralized and testable.
 """
 from __future__ import annotations
 

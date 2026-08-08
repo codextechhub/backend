@@ -46,7 +46,7 @@ from .services import SUPER_ADMIN_ROLE_KEY
 
 
 # -----------------------------------------------------------------------------
-# Tenant-scoped RBAC — shared plumbing
+# Tenant-scoped RBAC - shared plumbing
 # -----------------------------------------------------------------------------
 # Permission keys per operation are any-of lists spanning the school-side
 # (``school.roles.*``) and platform-side (``platform.roles.*``) vocabularies so
@@ -87,7 +87,7 @@ class TenantScopedRBACMixin:
 
 
 # -----------------------------------------------------------------------------
-# Permission vocabulary — Module / Resource / Action (Vision-owned)
+# Permission vocabulary - Module / Resource / Action (Vision-owned)
 # -----------------------------------------------------------------------------
 
 # List and create permission modules in the Vision-owned vocabulary.
@@ -1041,7 +1041,7 @@ class TenantRoleChangeRequestDecisionView(TenantScopedRBACMixin, APIView):
 # Per-user permission overrides
 # -----------------------------------------------------------------------------
 # Which namespace gates the endpoint is decided by the ACTOR's home tenant, not
-# by the target — exactly like impersonation (vs_admin_console.views). The two
+# by the target - exactly like impersonation (vs_admin_console.views). The two
 # sets are never unioned, so a school role that somehow carried a platform key
 # still gets no extra reach: a school actor cannot assert another tenant at all
 # (TenantJWTAuthentication), and a platform actor needs the platform key.
@@ -1068,7 +1068,7 @@ class _UserPermissionOverrideBase(TenantScopedRBACMixin):
     Self-visibility rule (owner requirement): there is deliberately **no**
     self-service exemption here. Reading your own overrides still requires the
     viewer's ``.view``/``.manage`` key, so a user without it can never learn
-    that exceptions exist on their account — they only observe permissions
+    that exceptions exist on their account - they only observe permissions
     working or not working. Nothing about overrides is exposed on ``/me`` or
     any self-service profile serializer.
     """
@@ -1101,7 +1101,7 @@ class _UserPermissionOverrideBase(TenantScopedRBACMixin):
 
         Prevents self-escalation via ALLOW (and reviewer-dodging via a token
         self-DENY). Both identities are checked so an impersonator cannot use
-        a proxy session to edit their own — or the proxied user's own — access.
+        a proxy session to edit their own - or the proxied user's own - access.
         """
         actor = self._actor()
         effective = getattr(self.request, "user", None)
@@ -1149,7 +1149,7 @@ class UserPermissionOverrideListCreateView(
     """
     Tenant-facing:
     - GET: list the permission exceptions on one user (viewer needs the
-      ``.view`` or ``.manage`` key — including for their own id).
+      ``.view`` or ``.manage`` key - including for their own id).
     - POST: create an exception. Both modes apply immediately; a new override
       for a key the user already has REPLACES the old row (both audited).
 
@@ -1207,7 +1207,7 @@ class UserPermissionOverrideListCreateView(
                 .first()
             )
             if existing is not None:
-                # Replace rather than stack — the unique constraint guarantees
+                # Replace rather than stack - the unique constraint guarantees
                 # one row per (user, key). Both halves land in the audit trail.
                 self._audit(
                     action_type="OVERRIDE_LIFTED",

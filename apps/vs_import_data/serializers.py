@@ -231,7 +231,7 @@ class ImportTemplateUpdateSerializer(serializers.ModelSerializer):
     """
     Used when a CX staff member PATCHes an existing system template.
     Columns are optional; when provided they fully replace all existing columns.
-    dataset_type and code are intentionally excluded — change them via migration.
+    dataset_type and code are intentionally excluded - change them via migration.
     """
     columns = ImportTemplateColumnWriteSerializer(many=True, required=False)
 

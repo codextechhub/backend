@@ -1,5 +1,5 @@
 """
-Tests for TenantJWTAuthentication — the school-context-aware JWT auth class.
+Tests for TenantJWTAuthentication - the school-context-aware JWT auth class.
 
 These guard the B1 fix: Django middleware runs before DRF authentication, so
 the school context MUST be established by the authentication class itself.
@@ -90,7 +90,7 @@ class TenantJWTAuthenticationTests(TestCase):
             user_type="CX_STAFF", status="ACTIVE",
             first_name="Pre", last_name="Tenant",
         )
-        # A vanilla AccessToken carries no tenant_slug/tenant_id claims — a
+        # A vanilla AccessToken carries no tenant_slug/tenant_id claims - a
         # pre-refactor token shape.
         legacy = str(AccessToken.for_user(user))
         request = self._authed_request(user, token=legacy)

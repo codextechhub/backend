@@ -14,13 +14,13 @@
 # receivers in vs_user/receivers.py.
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# SECTION 1 — INVITATION EMAIL
+# SECTION 1 - INVITATION EMAIL
 # ─────────────────────────────────────────────────────────────────────────────
 # Dispatched when a new user account is created or when an admin resends.
 # The invitation link is: {FRONTEND_BASE_URL}/activate/{user.activation_key}
-# No token is embedded — the user's activation_key is the identifier.
+# No token is embedded - the user's activation_key is the identifier.
 #
-# SECTION 2 — PASSWORD RESET EMAIL
+# SECTION 2 - PASSWORD RESET EMAIL
 # ─────────────────────────────────────────────────────────────────────────────
 # Dispatched for both self-service and admin-triggered password resets.
 # The raw token (never stored) is embedded in the reset link.
@@ -37,7 +37,7 @@ logger = logging.getLogger('vs_user.tasks')
 
 
 # =============================================================================
-# SECTION 1 — INVITATION EMAIL
+# SECTION 1 - INVITATION EMAIL
 # =============================================================================
 
 @shared_task(bind=True, name="vs_user.send_invitation_email_task")
@@ -51,7 +51,7 @@ def send_invitation_email_task(self, activation_key: str):
       - The school name (or a school-less variant when the user has no school)
       - The 7-day expiry notice
 
-    The URL is the same on resend — only the expiry window is extended.
+    The URL is the same on resend - only the expiry window is extended.
 
     From-address parity: the inviter's display name is carried in metadata as
     from_name so the delivery task builds the From from it. Delivery tracking
@@ -98,7 +98,7 @@ def send_invitation_email_task(self, activation_key: str):
 
 
 # =============================================================================
-# SECTION 2 — PASSWORD RESET EMAIL
+# SECTION 2 - PASSWORD RESET EMAIL
 # =============================================================================
 
 @shared_task(bind=True, name="vs_user.send_password_reset_email_task")
@@ -107,11 +107,11 @@ def send_password_reset_email_task(self, activation_key: str, origin: str, sende
     Dispatch a password reset email via the notification engine.
 
     origin values:
-      SELF  — user requested it themselves. Link valid for 1 hour.
-      ADMIN — admin triggered it. Link valid for 24 hours.
+      SELF  - user requested it themselves. Link valid for 1 hour.
+      ADMIN - admin triggered it. Link valid for 24 hours.
 
     The raw token is embedded in the reset URL. It is never stored in the
-    database — only its SHA-256 hash is stored in PasswordResetRequest.
+    database - only its SHA-256 hash is stored in PasswordResetRequest.
 
     From-address parity: sender_name is carried in metadata as from_name so the
     delivery task builds the From from it.

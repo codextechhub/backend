@@ -29,7 +29,7 @@ def _resolve_account(entity, ref, field):
     """Resolve a GL account by **code** (e.g. "2100") or id within ``entity``.
 
     Codes in the Chart of Accounts are numeric strings, so we match on code *first*
-    and only fall back to a primary-key lookup — otherwise "2100" would be mistaken
+    and only fall back to a primary-key lookup - otherwise "2100" would be mistaken
     for a row id. Returns ``None`` when ``ref`` is blank.
     """
     if ref in (None, ""):
@@ -134,7 +134,7 @@ def _quantity(value, field):
     """A strictly positive, finite quantity within the line model's 14,4 precision.
 
     Sourcing-specific hardening (NaN/inf/zero/negative are all real payloads a client
-    can send). Deliberately *not* folded into :func:`_dec` — other document types rely
+    can send). Deliberately *not* folded into :func:`_dec` - other document types rely
     on ``_dec`` accepting any parseable number, and this change must not alter them.
     """
     try:
@@ -206,7 +206,7 @@ def _strict_kobo(value, field):
         raise ValidationError({field: "Expected a whole integer amount in kobo."})
     if value < 0:
         raise ValidationError({field: "Amount cannot be negative."})
-    if value > 9_223_372_036_854_775_807:  # Fits BIGINT — the MoneyField storage width.
+    if value > 9_223_372_036_854_775_807:  # Fits BIGINT - the MoneyField storage width.
         raise ValidationError({field: "Amount is too large."})
     return value
 
@@ -239,8 +239,8 @@ def _lead_time_days(value, field="lead_time_days"):
 def _resolve_expense_account(entity, ref, field="expense_account"):
     """Resolve an active, postable **EXPENSE** account in ``entity`` (or ``None``).
 
-    Sourcing line accounts must be genuinely postable expense accounts — the same rule
-    the catalog/category defaults enforce — so an award cannot carry a header/income/
+    Sourcing line accounts must be genuinely postable expense accounts - the same rule
+    the catalog/category defaults enforce - so an award cannot carry a header/income/
     inactive account onto the resulting PO line.
     """
     account = _resolve_account(entity, ref, field)
@@ -257,8 +257,8 @@ def _resolve_asset_account(entity, ref, field="inventory_account"):
     """Resolve an active, postable **ASSET** account in ``entity`` (or ``None``).
 
     A stock item's inventory-value must be carried in a genuinely postable balance-sheet
-    asset account — the same active/postable rule :func:`_resolve_expense_account` enforces
-    for expenses — so an item can never carry its value onto a header/liability/inactive
+    asset account - the same active/postable rule :func:`_resolve_expense_account` enforces
+    for expenses - so an item can never carry its value onto a header/liability/inactive
     account.
     """
     account = _resolve_account(entity, ref, field)

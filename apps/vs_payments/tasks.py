@@ -1,9 +1,9 @@
-"""Celery tasks for vs_payments — asynchronous webhook processing.  # Off-request PSP work.
+"""Celery tasks for vs_payments - asynchronous webhook processing.  # Off-request PSP work.
 
 The webhook receiver (:func:`vs_payments.webhooks.ingest_webhook`) stores-and-acks fast,
 then enqueues :func:`process_webhook_event` so the outbound PSP re-verify + booking runs
 on a worker rather than inside the provider's HTTP callback. ``apps/apps/celery.py`` calls
-``autodiscover_tasks()``, so this module is picked up automatically — no beat entry, it is
+``autodiscover_tasks()``, so this module is picked up automatically - no beat entry, it is
 purely event-driven off the ``transaction.on_commit`` enqueue.  # Keep the request path fast.
 """
 from __future__ import annotations

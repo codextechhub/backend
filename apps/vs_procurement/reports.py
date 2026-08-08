@@ -619,7 +619,7 @@ class APVendorDetail:
 
 
 def ap_vendor_open_bills(entity, vendor, *, as_of=None) -> APVendorDetail:
-    """Age one vendor's open bills for the AP drawer — buckets + the invoice list.
+    """Age one vendor's open bills for the AP drawer - buckets + the invoice list.
 
     Scoped to a single ``vendor`` (entity-checked by the caller), this mirrors
     :func:`ap_aging`'s per-vendor arithmetic but returns the underlying open invoices too:
@@ -736,7 +736,7 @@ def grir_grn_detail(entity, grn_id, *, as_of=None) -> GRIRGrnDetail | None:
     )
 
 
-#: GR/IR line status labels — mirror the prototype's per-PO-line status chips.
+#: GR/IR line status labels - mirror the prototype's per-PO-line status chips.
 GRIR_LINE_CLEARED = "Cleared"
 GRIR_LINE_RECV_GT_INV = "Received > Invoiced"
 GRIR_LINE_INV_GT_RECV = "Invoiced > Received"
@@ -795,7 +795,7 @@ def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
     REVERSED orders excluded), ``received_qty``/``received_value`` sum the POSTED
     ``GoodsReceivedNoteLine``s pointing at it, while ``invoiced_qty`` and the GR/IR
     clearing-basis ``invoiced_value`` sum POSTED ``VendorInvoiceLine``s pointing at it
-    (the direct ``po_line`` FK — the same link that advances invoiced quantity). Only
+    (the direct ``po_line`` FK - the same link that advances invoiced quantity). Only
     lines with any receipt or invoice activity are returned. ``as_of`` cuts both sides
     off by their posted journal dates. All amounts are integer kobo.
     """
@@ -810,7 +810,7 @@ def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
     as_of = as_of or timezone.now().date()
     report = GRIRPoLinesReport(entity_id=entity.id, as_of=as_of)
 
-    # Live PO lines only — a cancelled/reversed order is not an open GR/IR obligation.
+    # Live PO lines only - a cancelled/reversed order is not an open GR/IR obligation.
     po_lines = (
         PurchaseOrderLine.objects
         .filter(purchase_order__entity=entity)
@@ -819,7 +819,7 @@ def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
         .order_by("purchase_order__order_date", "purchase_order_id", "line_no", "id")
     )
 
-    # Two bulk aggregates keyed by po_line — no per-line query (avoids N+1).
+    # Two bulk aggregates keyed by po_line - no per-line query (avoids N+1).
     # Received side: accepted qty + booked value from POSTED goods-receipt lines.
     recv = defaultdict(lambda: (Decimal(0), 0))
     grn_agg = (
@@ -870,7 +870,7 @@ def grir_po_lines(entity, *, as_of=None) -> GRIRPoLinesReport:
     for line in po_lines:
         received_qty, received_value = recv.get(line.id, (Decimal(0), 0))
         invoiced_qty, invoiced_value = inv.get(line.id, (Decimal(0), 0))
-        # Skip lines with no receipt and no invoice — nothing to reconcile yet.
+        # Skip lines with no receipt and no invoice - nothing to reconcile yet.
         if received_qty == 0 and invoiced_qty == 0:
             continue
         balance = received_value - invoiced_value
@@ -1016,7 +1016,7 @@ def grir_balance(entity, *, as_of=None) -> int:
 
     The GR/IR control nets to **zero** when every received good has been invoiced (and
     vice-versa). Because GR/IR is normally credit, a positive result is received-not-
-    invoiced and a negative result is a net debit/invoice-first position — the headline
+    invoiced and a negative result is a net debit/invoice-first position - the headline
     number a GR/IR aging drills into.
     """
     from vs_finance.models import Account
@@ -1037,7 +1037,7 @@ def grir_balance(entity, *, as_of=None) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# Procurement analytics — spend, vendor performance, PR→payment cycle time     #
+# Procurement analytics - spend, vendor performance, PR→payment cycle time     #
 # --------------------------------------------------------------------------- #
 #
 # Management reporting over the P2P chain. Spend analysis reads realised cost
@@ -1078,7 +1078,7 @@ class SpendRow:
 class SpendPeriod:
     """One calendar month's realised gross spend (kobo)."""
 
-    period: str          # "YYYY-MM" — sorts chronologically as a plain string
+    period: str          # "YYYY-MM" - sorts chronologically as a plain string
     label: str           # "Mon YYYY" (e.g. "Jan 2026")
     gross: int = 0
     invoice_count: int = 0
@@ -1108,7 +1108,7 @@ def spend_analysis(entity, *, start_date=None, end_date=None, vendor=None, categ
     vendor and by vendor category (uncategorised vendors roll into an "Uncategorised"
     bucket), each sorted by descending gross spend. Pass ``vendor`` to scope the whole
     computation to a single supplier; pass ``category`` (a category code, or the literal
-    ``"UNCATEGORISED"``) to scope it to one purchasing category — the per-category drawer
+    ``"UNCATEGORISED"``) to scope it to one purchasing category - the per-category drawer
     reuses this so its by_vendor / by_period reflect only that category. Both supplied
     date bounds are inclusive, and every amount remains gross/net/tax integer kobo.
     """
@@ -1224,12 +1224,12 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None) -
 
     For each vendor with activity in ``[start_date, end_date]``:
 
-    * **Ordering** — count and value of POs (``order_date`` in window, excluding
+    * **Ordering** - count and value of POs (``order_date`` in window, excluding
       CANCELLED / REVERSED).
-    * **Delivery** — POSTED goods receipts (``received_date`` in window) classified
+    * **Delivery** - POSTED goods receipts (``received_date`` in window) classified
       on-time vs late against their PO's ``expected_date`` (receipts whose PO has no
       expected date are not rated).
-    * **Billing & payment** — POSTED vendor invoices and the average days from
+    * **Billing & payment** - POSTED vendor invoices and the average days from
       ``invoice_date`` to each allocating payment's ``payment_date``. The denominator is
       allocation rows, while ``payment_count`` de-duplicates payment documents per vendor.
 
@@ -1338,7 +1338,7 @@ def vendor_performance(entity, *, start_date=None, end_date=None, vendor=None) -
     for vid, days in pay_days.items():
         rows[vid].avg_payment_days = _avg_days(days)
 
-    # Attach each vendor's category name — one query for every row's vendor (no N+1),
+    # Attach each vendor's category name - one query for every row's vendor (no N+1),
     # used as the performance table's per-vendor subtitle.
     if rows:
         from .models import Vendor

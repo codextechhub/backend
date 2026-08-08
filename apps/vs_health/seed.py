@@ -1,9 +1,9 @@
-"""Idempotent seeding for vs_health — CONFIGURATION ONLY.
+"""Idempotent seeding for vs_health - CONFIGURATION ONLY.
 
 Creates the service registry, uptime checks, alert rules, SLO targets, and
 the RBAC permissions. It never writes telemetry: every measurement on the
 health screens (request metrics, uptime rollups, queue snapshots, incidents,
-alerts) comes exclusively from the live collectors — RequestMetricsMiddleware,
+alerts) comes exclusively from the live collectors - RequestMetricsMiddleware,
 the celery-beat probe/snapshot tasks, and the alert engine. Screens are
 honestly empty until real traffic and probes have accrued.
 
@@ -190,7 +190,7 @@ def seed_slos(stdout=None):
 
 # Run all health configuration seeders in dependency order.
 def run(stdout=None):
-    _log(stdout, "Seeding vs_health (configuration only — telemetry comes from live collectors)")
+    _log(stdout, "Seeding vs_health (configuration only - telemetry comes from live collectors)")
     seed_permissions(stdout)
     seed_services(stdout)
     seed_checks(stdout)

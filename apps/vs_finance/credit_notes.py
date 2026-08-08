@@ -1,19 +1,19 @@
-"""AR adjustment services — credit/debit notes, refunds and bad-debt write-offs.
+"""AR adjustment services - credit/debit notes, refunds and bad-debt write-offs.
 
 The companion to :mod:`vs_finance.receivables`: where that layer *bills and collects*,
 this one *gives back, charges more, refunds and writes off*. Like the rest of the AR
-core it is domain-neutral — it speaks only generic customers, invoices and accounts.
+core it is domain-neutral - it speaks only generic customers, invoices and accounts.
 
 The postings raised here:
 
-* **Credit note** (``Dr revenue/returns + Dr output tax, Cr AR``) — reduce a customer's
+* **Credit note** (``Dr revenue/returns + Dr output tax, Cr AR``) - reduce a customer's
   receivable for a return, allowance or over-bill; optionally *applied* to invoices
   (a non-cash settlement that bumps :attr:`Invoice.amount_credited`).
-* **Debit note** (``Dr AR, Cr revenue + Cr output tax``) — charge a customer more; a
+* **Debit note** (``Dr AR, Cr revenue + Cr output tax``) - charge a customer more; a
   supplementary invoice, so never applied to reduce another invoice.
-* **Refund** (``Dr AR control, Cr bank``) — hand cash back for an over-paid credit
+* **Refund** (``Dr AR control, Cr bank``) - hand cash back for an over-paid credit
   balance, restoring the receivable.
-* **Write-off** (``Dr bad-debt expense, Cr AR control``) — concede an uncollectable
+* **Write-off** (``Dr bad-debt expense, Cr AR control``) - concede an uncollectable
   receivable; clears the invoice's balance via ``amount_credited``.
 
 All amounts are integer kobo; tax uses the same ``ROUND_HALF_UP`` discipline as
@@ -71,8 +71,8 @@ def price_credit_note(note) -> None:
 def post_credit_note(note, *, actor_user=None, auto_allocate=False, allocations=None):
     """Price, validate and post a :class:`CreditNote`, raising its AR journal.
 
-    For a CREDIT note, ``allocations`` (a list of ``(invoice, amount_kobo)``) — or
-    ``auto_allocate`` — applies the credit to open invoices oldest-first. DEBIT notes
+    For a CREDIT note, ``allocations`` (a list of ``(invoice, amount_kobo)``) - or
+    ``auto_allocate`` - applies the credit to open invoices oldest-first. DEBIT notes
     increase the receivable and are never allocated.
     """
     try:  # Atomic worker performs posting and optional allocation.
@@ -104,7 +104,7 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
     invoices) in one transaction.
 
     One ``note.kind`` drives two mirror-image postings, so the body forks on
-    ``is_debit``. Everything runs atomically — subledger writes (allocation rows +
+    ``is_debit``. Everything runs atomically - subledger writes (allocation rows +
     invoice ``amount_credited``) and the GL journal commit together or not at all.
 
     Steps:
@@ -116,15 +116,15 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
          so the cost-centre split survives into the GL; output tax is aggregated by
          its collected (output-tax) account. This keeps the journal to one line per
          distinct account instead of one per note line.
-      4. **Post the journal — direction depends on kind:**
+      4. **Post the journal - direction depends on kind:**
          * **DEBIT note** (charge more, a supplementary invoice): ``Dr AR`` (gross),
            ``Cr revenue`` + ``Cr output tax``. Never allocated → ``applied = 0``.
          * **CREDIT note** (give value back): ``Dr revenue/returns`` +
-           ``Dr output-tax reversal``, then split the credit like a payment —
+           ``Dr output-tax reversal``, then split the credit like a payment -
            ``_build_invoice_plan`` picks which invoices to settle (explicit
            ``allocations`` or ``auto_allocate`` oldest-first), and
            ``_apply_creditnote_subledger`` writes the CreditNoteAllocation rows and
-           bumps each invoice's ``amount_credited`` (no GL — this function owns the
+           bumps each invoice's ``amount_credited`` (no GL - this function owns the
            journal), returning ``applied``. The applied portion credits AR
            (``Cr AR``); any ``excess`` is booked to the customer-credit liability
            (``Cr 2140``) so AR never carries a credit balance. That stored credit is
@@ -193,7 +193,7 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
 
     line_no = 0  # Journal line counter.
     if is_debit:  # Debit note charges the customer more.
-        # Dr AR (gross), Cr revenue + Cr output tax — a supplementary charge.  # Mirror of invoice posting.
+        # Dr AR (gross), Cr revenue + Cr output tax - a supplementary charge.  # Mirror of invoice posting.
         line_no += 1  # First line is AR debit.
         JournalLine.objects.create(
             entry=entry, account=ar_account, debit=note.total, credit=0,  # Dr receivables.
@@ -216,7 +216,7 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
             )
         applied = 0  # Debit notes are never allocated to invoices.
     else:  # Credit note gives value back.
-        # Dr revenue/returns + Dr output tax — give value back. The credit settles
+        # Dr revenue/returns + Dr output tax - give value back. The credit settles
         # invoices (Cr AR) for the applied portion; the unapplied remainder becomes a
         # customer-credit liability (Cr 2140) so AR never carries a credit balance.  # Keep AR non-negative.
         for (acc_id, cc_id), amount in revenue_by_key.items():  # Emit grouped revenue/return debits.
@@ -277,7 +277,7 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
 # Apply credit-note value to invoice subledger.
 def _apply_creditnote_subledger(note, plan, *, remaining):
     """Create/extend CreditNoteAllocation rows + bump invoice ``amount_credited`` for
-    the plan, capped at each invoice balance and ``remaining``. GL-agnostic — the
+    the plan, capped at each invoice balance and ``remaining``. GL-agnostic - the
     caller posts the journal.
 
     Returns ``(applied_total, created_rows, latest_invoice_date)``; the caller needs
@@ -323,7 +323,7 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
     settles the invoices. ``allocations`` is an optional ``[(invoice, amount)]`` plan;
     without it, open invoices are settled oldest-first.
 
-    An older note may be applied to a newer invoice — that is legitimate — but the
+    An older note may be applied to a newer invoice - that is legitimate - but the
     reclassification is dated at the later of the two, never before the receivable it
     clears exists.
     """
@@ -417,7 +417,7 @@ def _attribute_refund_to_lots(refund, customer, *, as_of):
     Writes one :class:`~vs_finance.models.RefundAllocation` per lot touched and bumps
     that lot's ``refunded_amount``, so a receipt stops advertising cash that has been
     handed back. Without this the GL and the sub-ledger disagree: 2140 drains, but the
-    originating receipt still reports its cash as unapplied and available — which is
+    originating receipt still reports its cash as unapplied and available - which is
     exactly how the same money could be allocated or refunded twice.
 
     Returns the created allocation rows. Raises :class:`PostingError` if the lots
@@ -455,7 +455,7 @@ def _attribute_refund_to_lots(refund, customer, *, as_of):
 def post_refund(refund, *, actor_user=None):
     """Post a customer :class:`Refund` (``Dr customer-credit (2140), Cr bank``).
 
-    A refund pays out a customer's credit balance — so it draws down the
+    A refund pays out a customer's credit balance - so it draws down the
     customer-credit liability, not AR. Capped at the customer's available credit.
     Records a durable rejection audit on any :class:`FinanceError`, then re-raises.
     """
@@ -507,12 +507,12 @@ def _post_refund_atomic(refund, *, actor_user=None):
         later = customer_refund_available_balance(
             customer, exclude_refund_id=refund.pk)  # Same figure with no date cutoff.
         hint = ""
-        if later > available:  # The shortfall is purely a dating problem — say so.
+        if later > available:  # The shortfall is purely a dating problem - say so.
             first = _earliest_credit_date(customer, refund.amount, exclude_refund_id=refund.pk)
             hint = (
                 f" {format_naira(later)} is available today, but not as at "
                 f"{refund.refund_date}"
-                + (f" — the credit exists from {first}." if first else ".")
+                + (f" - the credit exists from {first}." if first else ".")
             )
         raise PostingError(
             f"Refund of {format_naira(refund.amount)} exceeds {customer.code}'s credit "
@@ -683,7 +683,7 @@ def post_write_off_request(wor, *, actor_user=None):
     flips the request POSTED.
 
     ``status`` must be DRAFT (the ungated direct-post path) or APPROVED (the approval
-    path, after the workflow base handler flips it) — both are valid entry states.
+    path, after the workflow base handler flips it) - both are valid entry states.
     Any :class:`~vs_finance.exceptions.FinanceError` raised by ``write_off_invoice``
     propagates unchanged (it records its own durable rejection audit); on the approval
     path that rollback leaves the request non-POSTED for a retry. Returns the request.

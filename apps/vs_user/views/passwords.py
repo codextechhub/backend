@@ -36,7 +36,7 @@ class PasswordPolicyView(APIView):
     """
     GET /auth/password/policy/
     The canonical password requirements, so every set/change screen can show
-    the same instructions the backend actually enforces. Public — the reset and
+    the same instructions the backend actually enforces. Public - the reset and
     activation screens are unauthenticated.
 
     docstring-name: Password policy
@@ -94,9 +94,9 @@ class PasswordResetRequestView(APIView):
     POST /auth/password/reset/request/
     Self-service reset request.
     Always returns 200 regardless of whether the email exists
-    — prevents user enumeration.
+    - prevents user enumeration.
 
-    Permission: AllowAny (public — user may be locked out or forgot password).
+    Permission: AllowAny (public - user may be locked out or forgot password).
     RBAC: identity.user_password.reset
 
     docstring-name: Request password reset
@@ -125,7 +125,7 @@ class PasswordResetPreviewView(APIView):
     Verifies the token and returns the user's name and email
     so the frontend can pre-fill them as read-only fields.
 
-    Permission: AllowAny (public — user hasn't logged in yet).
+    Permission: AllowAny (public - user hasn't logged in yet).
     RBAC: identity.user_password.reset
 
     docstring-name: Password reset preview
@@ -158,7 +158,7 @@ class PasswordResetConfirmView(APIView):
     Confirms a reset using the token from the email.
     Ends all active sessions on success.
 
-    Permission: AllowAny (public — token validity is the gate).
+    Permission: AllowAny (public - token validity is the gate).
     RBAC: identity.user_password.reset
 
     docstring-name: Confirm password reset

@@ -55,15 +55,15 @@ class PlatformStaffProfileViewSet(
     """
     CX Staff HR / personal profiles. One profile per CX_STAFF user.
 
-    GET    /platform-staff-profiles/         — list (slim, no payroll)
-    POST   /platform-staff-profiles/         — create a profile for a CX staff user
-    GET    /platform-staff-profiles/{id}/    — retrieve brief or authorised full profile
-    PATCH  /platform-staff-profiles/{id}/    — update profile
-    GET    /platform-staff-profiles/me/      — own profile (self-service)
-    PATCH  /platform-staff-profiles/me/      — edit own profile (self-service)
+    GET    /platform-staff-profiles/         - list (slim, no payroll)
+    POST   /platform-staff-profiles/         - create a profile for a CX staff user
+    GET    /platform-staff-profiles/{id}/    - retrieve brief or authorised full profile
+    PATCH  /platform-staff-profiles/{id}/    - update profile
+    GET    /platform-staff-profiles/me/      - own profile (self-service)
+    PATCH  /platform-staff-profiles/me/      - edit own profile (self-service)
 
     Sensitive payroll fields (bank_name, account_name, account_number) are
-    gated by FLS — only callers holding platform.staff_payroll.view/manage
+    gated by FLS - only callers holding platform.staff_payroll.view/manage
     can read/write them, regardless of endpoint.
 
     Permission matrix:
@@ -118,7 +118,7 @@ class PlatformStaffProfileViewSet(
         )
 
         if user := params.get('user'):
-            # Look a profile up by its owner — powers Team Management's
+            # Look a profile up by its owner - powers Team Management's
             # "View Details", which knows the user id but not the profile id.
             qs = qs.filter(user_id=user)
 
@@ -210,7 +210,7 @@ class PlatformStaffProfileViewSet(
 
         The single source of truth for avatars across the whole console: the
         client fetches this once, caches it, and resolves any user's photo by
-        id — so individual serializers don't each need to carry the photo.
+        id - so individual serializers don't each need to carry the photo.
         Any authenticated user may read it (avatars are low-sensitivity; the
         image bytes themselves stay auth-gated by MediaView). Absolute URLs are
         required because /media/ sits outside the API's /v1 prefix.
@@ -230,7 +230,7 @@ class PlatformStaffProfileViewSet(
 
 
 # =============================================================================
-# Organogram — Department / Position / PositionAssignment / MatrixReport
+# Organogram - Department / Position / PositionAssignment / MatrixReport
 # =============================================================================
 
 class OrgNodeViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
@@ -257,7 +257,7 @@ class OrgNodeViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         params = self.request.query_params
         # Prefetch each head seat's CURRENT holders once (primary first) and
         # annotate the child count, so the serializer's `head`/`children_count`
-        # cost no per-row queries — the list was N+1 (minutes over a high-latency
+        # cost no per-row queries - the list was N+1 (minutes over a high-latency
         # DB). `_current_assignments` and `_children_count` back those fields.
         current = (
             PositionAssignment.objects
@@ -315,7 +315,7 @@ class PositionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     def get_queryset(self):
         params = self.request.query_params
         # Prefetch the CURRENT holders once so the serializer's occupancy fields
-        # (current_holders / is_vacant / open_seats) cost no per-row queries —
+        # (current_holders / is_vacant / open_seats) cost no per-row queries -
         # the list was N+1 (3 queries per seat → minutes over a high-latency DB).
         current = (
             PositionAssignment.objects

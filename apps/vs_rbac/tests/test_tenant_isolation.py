@@ -57,7 +57,7 @@ class TenantAwareManagerIsolationTests(TestCase):
 
 class DirectTenantFieldIsolationTests(TestCase):
     """Models that own rows via a direct ``tenant`` FK (the TenantOwnedModel
-    shape every converted app uses) must be ambient-scoped too — the manager
+    shape every converted app uses) must be ambient-scoped too - the manager
     auto-detect must prefer ``tenant`` over the legacy school/branch paths."""
 
     def setUp(self):

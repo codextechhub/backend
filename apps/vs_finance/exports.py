@@ -1,4 +1,4 @@
-"""Tabular exports for finance reports — CSV, Excel (xlsx) and PDF.
+"""Tabular exports for finance reports - CSV, Excel (xlsx) and PDF.
 
 A report is reduced to a neutral :class:`ReportTable` (title + column headers + rows,
 with optional bold *summary* rows for totals); three renderers turn that into bytes.

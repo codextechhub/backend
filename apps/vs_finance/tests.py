@@ -408,7 +408,7 @@ class PostingWindowTests(TestCase):
     """The read-side window must agree with the guard, and snap to the nearest open day.
 
     These cover the cases a date picker actually meets: today postable, today in a
-    closed month, no open period at all, and a closed gap between two open periods —
+    closed month, no open period at all, and a closed gap between two open periods -
     the shape ``min``/``max`` bounds cannot express.
     """
 
@@ -477,14 +477,14 @@ class PostingWindowTests(TestCase):
         self.assertEqual(near_past["default_date"], datetime.date(2026, 1, 31))
 
         # Late April is closer to May's opening than to January's close, so it snaps
-        # forward — the direction has to follow distance, not a fixed preference.
+        # forward - the direction has to follow distance, not a fixed preference.
         near_future = posting_window(entity, today=datetime.date(2026, 4, 28))
         self.assertEqual(near_future["default_date"], datetime.date(2026, 5, 1))
 
     # Verify soft closed is not selectable behavior.
     def test_soft_closed_is_not_selectable(self):
         # SOFT_CLOSED only accepts privileged close-process postings, so an ordinary
-        # picker must treat it as blocked — same rule ensure_period_open applies.
+        # picker must treat it as blocked - same rule ensure_period_open applies.
         entity = self.build_periods({
             1: PeriodStatus.OPEN, 2: PeriodStatus.SOFT_CLOSED,
         })
@@ -527,8 +527,8 @@ class PostingWindowTests(TestCase):
 class PostingWindowEndpointTests(TestCase):
     """The window is gated on module membership, not on finance.period.view.
 
-    The whole point of the endpoint is that a procurement officer can read it — their
-    GRNs and vendor payments post through the same guard — while a user with no stake
+    The whole point of the endpoint is that a procurement officer can read it - their
+    GRNs and vendor payments post through the same guard - while a user with no stake
     in either module still cannot, and no one reads another tenant's books.
     """
 
@@ -630,7 +630,7 @@ class PostingWindowEndpointTests(TestCase):
         )
         user = self.user_holding("finance.invoice.view", email="cross@test.com")
 
-        # Module access is not entity access — resolve_entity 404s rather than
+        # Module access is not entity access - resolve_entity 404s rather than
         # confirming the code exists to someone outside the tenant.
         resp = self.call_as(user, entity_code=foreign.code)
         self.assertEqual(resp.status_code, 404)
@@ -884,7 +884,7 @@ class TrialBalanceTests(_GLFixtureMixin, TestCase):
     # Verify period scope is cumulative and all periods is not double counted behavior.
     def test_period_scope_is_cumulative_and_all_periods_is_not_double_counted(self):
         """A period-scoped TB is the running balance *through* that period; the
-        all-periods TB is the cumulative all-time balance — never a sum that
+        all-periods TB is the cumulative all-time balance - never a sum that
         double-counts across periods."""
         entity, jan = self.build_ledger()
         feb = FiscalPeriod.objects.create(
@@ -1306,7 +1306,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
             entity, customer, amount=20000, date=datetime.date(2026, 1, 10))
         # A debit note is an AR charge; it never touches 2140, so the stored credit is
         # untouched and still agrees with the GL (asserted below). What it does offset
-        # is *refundability* — you do not hand back cash a customer still owes you.
+        # is *refundability* - you do not hand back cash a customer still owes you.
         self.assertEqual(customer_credit_balance(customer), 20000)
         self.assertEqual(customer_refund_available_balance(customer), 0)
 
@@ -1365,7 +1365,7 @@ class CreditNoteTests(_ARFixtureMixin, TestCase):
     # Verify overpayment books excess as customer credit behavior.
     def test_overpayment_books_excess_as_customer_credit(self):
         # A receipt larger than the invoice settles AR and books the excess as a
-        # customer-credit liability (2140) — AR never carries a credit balance.
+        # customer-credit liability (2140) - AR never carries a credit balance.
         entity, period, customer, vat = self.build_ar()
         bank = Account.objects.get(entity=entity, code="1100")
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
@@ -1500,7 +1500,7 @@ class ConcessionTests(_ARFixtureMixin, TestCase):
 
         self.assertEqual(concession.status, "POSTED")
         self.assertTrue(concession.document_number.startswith(f"CC-{concession.entity.tenant_id}"))
-        # Dr 4910 Discounts & Concessions, Cr AR — balanced.
+        # Dr 4910 Discounts & Concessions, Cr AR - balanced.
         debit, credit = concession.journal.totals()
         self.assertEqual(debit, credit)
         self.assertEqual(debit, 20000)
@@ -1594,7 +1594,7 @@ class PaymentPlanTests(_ARFixtureMixin, TestCase):
 
     # Verify receipt auto refreshes linked plan behavior.
     def test_receipt_auto_refreshes_linked_plan(self):
-        # A receipt advances the plan on its own — no manual refresh_plan_progress call.
+        # A receipt advances the plan on its own - no manual refresh_plan_progress call.
         entity, period, customer, _ = self.build_ar()
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 100000, None)])
         post_invoice(inv)
@@ -1621,7 +1621,7 @@ class PaymentPlanTests(_ARFixtureMixin, TestCase):
     # Verify pre plan waiver does not pre settle installments behavior.
     def test_pre_plan_waiver_does_not_pre_settle_installments(self):
         """A waiver applied before the plan reduces the spread total but must NOT count
-        as an installment payment — the first installment stays fully PENDING."""
+        as an installment payment - the first installment stays fully PENDING."""
         entity, period, customer, _ = self.build_ar()
         inv = self.make_invoice(entity, customer, lines=[("4100", 1, 3225000, None)])
         post_invoice(inv)  # ₦3,225,000 outstanding
@@ -1647,7 +1647,7 @@ class PaymentPlanTests(_ARFixtureMixin, TestCase):
         activate_payment_plan(plan)
         plan.refresh_from_db()
 
-        # The waiver is the plan's baseline — nothing is pre-settled.
+        # The waiver is the plan's baseline - nothing is pre-settled.
         self.assertEqual(plan.baseline_settled, 322500)
         installs = list(plan.installments.order_by("seq_no"))
         self.assertEqual([i.status for i in installs], ["PENDING", "PENDING", "PENDING"])
@@ -1796,7 +1796,7 @@ class DunningTests(_ARFixtureMixin, TestCase):
                                 due=datetime.date(2026, 1, 25))
         post_invoice(inv)  # 100,000 outstanding, due 25 Jan
 
-        # 35 days late qualifies for all three rungs, but a run advances ONE step —
+        # 35 days late qualifies for all three rungs, but a run advances ONE step -
         # the lowest rung not yet issued (L1), not straight to the final notice.
         notices = generate_dunning(entity, as_of=datetime.date(2026, 3, 1))
         self.assertEqual(len(notices), 1)
@@ -1896,7 +1896,7 @@ class DunningTests(_ARFixtureMixin, TestCase):
 
 
 # =========================================================================== #
-# Phase 4 — banking, expenses, payroll, budget, fixed assets, period close     #
+# Phase 4 - banking, expenses, payroll, budget, fixed assets, period close     #
 # =========================================================================== #
 
 
@@ -1988,7 +1988,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
     def test_auto_reconcile_leaves_ambiguous_ties_unmatched(self):
         entity, _, periods = self.build_books()
         bank = self.make_bank(entity)
-        # Two GL cash inflows of +50,000 on the same date — a statement line of +50,000
+        # Two GL cash inflows of +50,000 on the same date - a statement line of +50,000
         # has two equally-good candidates, so auto-match must leave it for a human.
         for _ in range(2):
             post_journal(self.make_entry(
@@ -2114,7 +2114,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
 
         entity, _, periods = self.build_books()
         bank = self.make_bank(entity)
-        # Two receipts (30k + 20k) land as one 50,000 bank settlement line — no single
+        # Two receipts (30k + 20k) land as one 50,000 bank settlement line - no single
         # GL line equals 50,000, but their sum does.
         e1 = self.make_entry(entity, periods[0], [("1100", 30000, 0), ("4100", 0, 30000)],
                              date=datetime.date(2026, 1, 15))
@@ -2130,7 +2130,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
         self.assertEqual(sline.status, BankLineStatus.MATCHED)
         self.assertEqual(sline.line_matches.count(), 2)
         self.assertEqual(list(_unmatched_gl_lines(bank)), [])  # both GL lines consumed
-        # group=False disables the second pass — nothing groups.
+        # group=False disables the second pass - nothing groups.
         _, l2, _ = import_statement_lines(bank, [
             {"txn_date": datetime.date(2026, 1, 17), "amount": 50000, "external_id": "S2"}])
         e3 = self.make_entry(entity, periods[0], [("1100", 30000, 0), ("4100", 0, 30000)],
@@ -2223,7 +2223,7 @@ class BankReconciliationTests(_Phase4FixtureMixin, TestCase):
     def test_adjustment_in_closed_month_books_on_the_nearest_open_day(self):
         # The bug this fixes: a statement legitimately covers a month that has since
         # closed. Import and match post nothing so neither is blocked, but the
-        # adjustment was pinned to the line's date and 409'd with no way out — the
+        # adjustment was pinned to the line's date and 409'd with no way out - the
         # date was not selectable anywhere in the UI.
         entity, _, periods = self.build_books()
         bank = self.make_bank(entity)
@@ -2730,7 +2730,7 @@ class PettyCashTests(_Phase4FixtureMixin, TestCase):
         bank = self.make_bank(entity)
         fund = self._make_fund(entity, float_amount=1000000)
         establish_fund(fund, bank_account=bank, amount=1000000, date=datetime.date(2026, 1, 1))
-        # Spend down to 20% of float — below the default 25% threshold.
+        # Spend down to 20% of float - below the default 25% threshold.
         voucher = self._make_voucher(fund, lines=[("5500", 1, 800000, None)])
         post_voucher(voucher)
         rows = fund_status(entity)
@@ -3080,7 +3080,7 @@ class TaxFilingTests(_Phase4FixtureMixin, TestCase):
         wht = rows.get(code="WHT")
         self.assertEqual(wht.liability_account.code, "2300")
         self.assertIsNone(wht.recoverable_account)
-        # Re-running is idempotent — no duplicates.
+        # Re-running is idempotent - no duplicates.
         seed_tax_obligations(entity)
         self.assertEqual(TaxObligation.objects.filter(entity=entity).count(), 4)
 
@@ -3527,7 +3527,7 @@ class FixedAssetTests(_Phase4FixtureMixin, TestCase):
     # Verify post depreciation on draft asset is rejected behavior.
     def test_post_depreciation_on_draft_asset_is_rejected(self):
         entity, _, _ = self.build_books()
-        asset = self._make_asset(entity)  # DRAFT — never acquired
+        asset = self._make_asset(entity)  # DRAFT - never acquired
         self.assertEqual(asset.asset_status, AssetStatus.DRAFT)
         with self.assertRaises(DepreciationError):
             post_depreciation(asset, up_to_date=datetime.date(2026, 12, 31))
@@ -3822,7 +3822,7 @@ class FinancialStatementTests(_Phase4FixtureMixin, TestCase):
     # Verify balance sheet nets contra asset and balances behavior.
     def test_balance_sheet_nets_contra_asset_and_balances(self):
         # Accumulated depreciation is a contra-asset (credit balance). It must REDUCE
-        # PP&E and keep the sheet balanced — not be added to assets.
+        # PP&E and keep the sheet balanced - not be added to assets.
         from .reports import balance_sheet_sections
         entity, _, periods = self.build_books()
         p = periods[0]
@@ -4358,7 +4358,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     # Verify customer opening balance credits equity not revenue behavior.
     def test_customer_opening_balance_credits_equity_not_revenue(self):
         # Regression: an opening balance is prior-period value, so it must credit
-        # equity (Retained Earnings 3200), never current-period revenue (4100) —
+        # equity (Retained Earnings 3200), never current-period revenue (4100) -
         # otherwise every migrated-in customer overstates the income statement.
         from vs_finance.constants import InvoiceSource
         from vs_finance.models import Customer, Invoice
@@ -4918,7 +4918,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
             format="json",
         )
         self.assertEqual(created.status_code, 201, created.content)
-        # An opening invoice (Dr 1200 AR / Cr 3200 Retained Earnings) was raised —
+        # An opening invoice (Dr 1200 AR / Cr 3200 Retained Earnings) was raised -
         # opening balances credit equity, not current-period revenue.
         inv = Invoice.objects.get(entity=entity, source="OPENING", customer__code="OPN1")
         self.assertEqual(inv.status, "POSTED")
@@ -5241,7 +5241,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
     # Verify customer crud and invoice filter behavior.
     def test_customer_crud_and_invoice_filter(self):
         entity, _, _ = self.build_books()
-        # Create — receivable account defaults to 1200.
+        # Create - receivable account defaults to 1200.
         resp = self.client.post(
             f"/v1/finance/customers/?entity={entity.code}",
             {"code": "cust1", "name": "Acme Ltd", "billing_email": "a@acme.test",
@@ -5309,7 +5309,7 @@ class FinanceAPITests(_Phase4FixtureMixin, TestCase):
             f"/v1/finance/reports/trial-balance/?entity={entity.code}").json()["data"]
         self.assertTrue(tb["is_balanced"])
 
-        # Re-running is idempotent — no second invoice for the same customer/structure.
+        # Re-running is idempotent - no second invoice for the same customer/structure.
         again = self.client.post(
             f"/v1/finance/fee-structures/JSS1T1/generate/?entity={entity.code}",
             {"customers": ["STU1"]}, format="json")
@@ -5933,7 +5933,7 @@ class OpsSummaryAndPaginationTests(_Phase4FixtureMixin, TestCase):
         entity, _, _ = self.build_books()
         self._audit(entity, action=FinanceAuditAction.JOURNAL_POSTED, target_type="JournalEntry")
         self._audit(entity, action=FinanceAuditAction.PAYMENT_POSTED, target_type="Payment")
-        # Two rows share JOURNAL_POSTED — the facet must still be de-duplicated
+        # Two rows share JOURNAL_POSTED - the facet must still be de-duplicated
         # (guards the .distinct()/Meta.ordering gotcha that returned dup codes).
         self._audit(entity, action=FinanceAuditAction.JOURNAL_POSTED, target_type="JournalEntry")
         data = self.client.get(f"/v1/finance/audit-logs/facets/?entity={entity.code}").json()["data"]
@@ -5951,7 +5951,7 @@ class EntityCreatePermissionTests(TestCase):
     """Provisioning a new entity must be gated on ``finance.entity.create``.
 
     A plain authenticated staff user holding no role (hence no grant) must be
-    denied — proving the POST is RBAC-gated, not open like the GET-only list was.
+    denied - proving the POST is RBAC-gated, not open like the GET-only list was.
     """
 
     # Prepare or verify the setUp test path.
@@ -6108,7 +6108,7 @@ class FinanceDashboardTests(_ARFixtureMixin, TestCase):
             debit=0, credit=5000, line_no=2,
         )
 
-        # A capital injection into 1100 Cash & Bank must surface as cash position —
+        # A capital injection into 1100 Cash & Bank must surface as cash position -
         # even with no operational BankAccount record (the reported glitch).
         post_journal(self.make_entry(entity, period, [("1100", 8000000, 0), ("3100", 0, 8000000)]))
 
@@ -6201,7 +6201,7 @@ class InvoiceDetailEndpointTests(_ARFixtureMixin, TestCase):
     # Verify detail surfaces credit note concession and write off settlements behavior.
     def test_detail_surfaces_credit_note_concession_and_write_off_settlements(self):
         """A credit note, a concession and a write-off must all appear in settlements,
-        gl_journals and the summary — not just cash payments."""
+        gl_journals and the summary - not just cash payments."""
         import json
         from django.contrib.auth import get_user_model
         from rest_framework.test import APIRequestFactory, force_authenticate
@@ -6303,7 +6303,7 @@ class FinanceDocumentEndpointTests(_ARFixtureMixin, TestCase):
         # BankAccount.gl_account is unique per entity, so each bank account needs its
         # own GL cash account.
         cash_ops = Account.objects.create(
-            entity=entity, code="1101", name="Cash — Operations", account_type="ASSET",
+            entity=entity, code="1101", name="Cash - Operations", account_type="ASSET",
         )
         BankAccount.objects.create(
             entity=entity, name="Operations Account",
@@ -6368,9 +6368,9 @@ class FinanceDocumentEndpointTests(_ARFixtureMixin, TestCase):
         from vs_finance.documents import primary_collection_account
 
         entity, period, customer, vat = self.build_ar()
-        # BankAccount.gl_account is unique per entity — give each its own GL account.
+        # BankAccount.gl_account is unique per entity - give each its own GL account.
         cash2 = Account.objects.create(
-            entity=entity, code="1102", name="Cash — Secondary", account_type="ASSET",
+            entity=entity, code="1102", name="Cash - Secondary", account_type="ASSET",
         )
         inactive = BankAccount.objects.create(
             entity=entity, name="Inactive",
@@ -6395,7 +6395,7 @@ class FinanceDocumentEndpointTests(_ARFixtureMixin, TestCase):
     })
     def test_platform_entity_prints_codex_issuer_details(self):
         # When the CodeX platform entity bills a customer (a school), the document
-        # letterhead is CodeX's own identity from PLATFORM_ISSUER — not blanks.
+        # letterhead is CodeX's own identity from PLATFORM_ISSUER - not blanks.
         from vs_finance.views import InvoiceDocumentView
 
         seed_currencies()
@@ -6951,7 +6951,7 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
             entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 20),
             method="BANK_TRANSFER", amount=amount,
             deposit_account=Account.objects.get(entity=entity, code="1100"))
-        post_payment(p, auto_allocate=False)   # posts Dr bank, Cr AR — left unallocated
+        post_payment(p, auto_allocate=False)   # posts Dr bank, Cr AR - left unallocated
         return p
 
     # Verify list returns unallocated status behavior.
@@ -7033,7 +7033,7 @@ class ReceiptAllocationEndpointTests(_ARFixtureMixin, TestCase):
 class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
     """Analytical dimensions: constrained values, write-through to the GL, and the slice.
 
-    Mirrors :class:`CostCenterPropagationTests` but for the second axis — the
+    Mirrors :class:`CostCenterPropagationTests` but for the second axis - the
     ``{axis: value}`` map carried on a journal line and the report that buckets by it.
     """
 
@@ -7150,7 +7150,7 @@ class DimensionAnalyticsTests(_Phase4FixtureMixin, TestCase):
             {r.bucket: r.net for r in by_fund.rows if r.code == "5500"},
             {"GRANT-A": 100000, "INTERNAL": 40000})
 
-        # Only cost-centre-tagged lines appear — the untagged 40,000 spend is excluded
+        # Only cost-centre-tagged lines appear - the untagged 40,000 spend is excluded
         # (no "Unassigned" catch-all).
         by_cc = analytics_slice(entity, axis="cost_center")
         self.assertEqual(
@@ -7326,8 +7326,8 @@ def _school_finance_requester(school, email, *, exclude_approve=True):
 class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
     """The journal approval slice: opt-in-by-template gating, SoD, and post-on-approve.
 
-    Wires a manual JournalEntry into vs_workflow so that — when a template exists
-    for ``finance.journal`` — GL posting happens only inside the engine's
+    Wires a manual JournalEntry into vs_workflow so that - when a template exists
+    for ``finance.journal`` - GL posting happens only inside the engine's
     ``on_approved`` callback. When no template exists, direct posting is unchanged
     (regression guard). Covers the security-first cases from design §11.
     """
@@ -7503,7 +7503,7 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
         self._submit(entry)
         instance = self._instance_for(entry)
         # The requester is never on the eligible snapshot and is hard-blocked either
-        # way — both are correct SoD outcomes.
+        # way - both are correct SoD outcomes.
         with self.assertRaises((RequesterCannotApproveError, NotAnEligibleApproverError)):
             wf_actions.record_action(instance.id, self.requester, ActionEnum.APPROVED)
         entry.refresh_from_db()
@@ -7601,7 +7601,7 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
         with self.assertRaises(PeriodClosedError):
             wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
 
-        # Option A: the approval action rolled back — journal not POSTED, and the
+        # Option A: the approval action rolled back - journal not POSTED, and the
         # stage is still ACTIVE for a retry once the period reopens.
         entry.refresh_from_db()
         self.assertNotEqual(entry.status, DocumentStatus.POSTED)
@@ -7628,8 +7628,8 @@ class JournalApprovalWorkflowTests(_GLFixtureMixin, TestCase):
 class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     """The refund approval slice: opt-in-by-template gating, SoD, and payout-on-approve.
 
-    Wires a customer :class:`Refund` into vs_workflow so that — when a template
-    exists for ``finance.refund`` — the cash payout happens only inside the engine's
+    Wires a customer :class:`Refund` into vs_workflow so that - when a template
+    exists for ``finance.refund`` - the cash payout happens only inside the engine's
     ``on_approved`` callback (``credit_notes.post_refund``). With no template, direct
     posting is unchanged. Reuses the same RBAC/user/template fixture shape as the
     journal slice; a refund needs a customer holding available credit, seated here by
@@ -7694,7 +7694,7 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         """Seat ``amount`` kobo of available customer credit via a standalone payment.
 
         A receipt with no open invoices books its whole amount to the customer-credit
-        liability (2140) — exactly what a refund pays back out.
+        liability (2140) - exactly what a refund pays back out.
         """
         pay = Payment.objects.create(
             entity=self.entity, customer=self.customer,
@@ -7917,7 +7917,7 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         with self.assertRaises(PostingError):
             wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
 
-        # Option A: the approval action rolled back — refund not POSTED, no journal,
+        # Option A: the approval action rolled back - refund not POSTED, no journal,
         # and the stage is still ACTIVE for a retry.
         refund.refresh_from_db()
         self.assertNotEqual(refund.status, DocumentStatus.POSTED)
@@ -7942,8 +7942,8 @@ class RefundApprovalWorkflowTests(_ARFixtureMixin, TestCase):
 class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
     """The bad-debt write-off approval slice: opt-in gating, SoD, write-off-on-approve.
 
-    Wires the first-class :class:`WriteOffRequest` document into vs_workflow so that —
-    when a template exists for ``finance.write_off`` — the invoice write-off happens
+    Wires the first-class :class:`WriteOffRequest` document into vs_workflow so that -
+    when a template exists for ``finance.write_off`` - the invoice write-off happens
     only inside ``on_approved`` (``credit_notes.write_off_invoice``, unchanged). With
     no template, the direct-post path (and the invoice-write-off bridge) is unchanged.
     Reuses the same RBAC/user/template fixture shape as the refund slice; needs a
@@ -8234,7 +8234,7 @@ class WriteOffRequestApprovalWorkflowTests(_ARFixtureMixin, TestCase):
         with self.assertRaises(PostingError):
             wf_actions.record_action(instance.id, approver, ActionEnum.APPROVED)
 
-        # Option A: the approval action rolled back — request not POSTED, no journal,
+        # Option A: the approval action rolled back - request not POSTED, no journal,
         # invoice untouched by any write-off, stage still ACTIVE for a retry.
         wor.refresh_from_db()
         self.assertNotEqual(wor.status, DocumentStatus.POSTED)
@@ -8399,7 +8399,7 @@ class DunningNotificationTests(_GLFixtureMixin, TestCase):
     # Verify no school entity still delivers behavior.
     def test_no_school_entity_still_delivers(self):
         # Recipient-centric notifications: a platform/product book (no source_school)
-        # still delivers to the customer's billing_email — school is an optional scope,
+        # still delivers to the customer's billing_email - school is an optional scope,
         # not a gate. (Tracks the notifications overhaul.)
         from vs_notifications.models import Notification
 
@@ -8476,7 +8476,7 @@ class DunningNotificationTests(_GLFixtureMixin, TestCase):
         ensure_default_policy(self.entity)
         self._overdue_invoice(due=datetime.date(2026, 1, 5))
 
-        # A second school entity with NO policy — must be skipped, not crash the run.
+        # A second school entity with NO policy - must be skipped, not crash the run.
         other_school = School.objects.create(name="Oak", slug="oak-dnt", code="OAKDN", status="ACTIVE")
         seed_school_settings(other_school)
         other = LedgerEntity.objects.create(
@@ -8655,7 +8655,7 @@ class InvoiceNotificationTests(_GLFixtureMixin, TestCase):
         self.customer.opening_balance = 500000
         self.customer.save(update_fields=["opening_balance"])
         post_opening_balance(self.customer, date=datetime.date(2026, 1, 5))
-        # Opening balances are migration artefacts — no invoice_issued email.
+        # Opening balances are migration artefacts - no invoice_issued email.
         self.assertFalse(self._issued().exists())
 
     # Verify posting receipt notifies customer behavior.
@@ -8851,7 +8851,7 @@ class YearEndCloseTests(_GLFixtureMixin, TestCase):
         from vs_finance.close import close_fiscal_year
 
         entity, jan = self.build_ledger()
-        # Only a balance-sheet entry (capital injection) — no income/expense.
+        # Only a balance-sheet entry (capital injection) - no income/expense.
         post_journal(self.make_entry(entity, jan, [("1100", 500000, 0), ("3100", 0, 500000)]))
         self._soft_close(jan)
         entry, net = close_fiscal_year(
@@ -8894,9 +8894,9 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
 
     The reported instance: a batch refund dated 1 Sep paid out credit that only
     arrived on a 9 Sep receipt, and the receipt went on showing that cash as
-    unallocated afterwards. The root cause was general — every AR guard validated
+    unallocated afterwards. The root cause was general - every AR guard validated
     against *current, undated* state and then posted on a user-chosen accounting date
-    — so these cases cover the whole class, not just the refund that surfaced it.
+    - so these cases cover the whole class, not just the refund that surfaced it.
     """
 
     # --- fixtures ---------------------------------------------------------- #
@@ -8948,7 +8948,7 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
         with self.assertRaises(PostingError) as ctx:
             post_refund(refund)
 
-        # The message must name the date, not just the shortfall — that is the
+        # The message must name the date, not just the shortfall - that is the
         # difference between a fixable error and a baffling one.
         self.assertIn("2026-02-01", str(ctx.exception))
         refund.refresh_from_db()

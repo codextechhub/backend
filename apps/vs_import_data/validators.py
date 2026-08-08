@@ -298,9 +298,9 @@ def validate_boolean(value, row_number: int, column_name: str) -> dict | None:
 
 
 _DATE_FORMATS = [
-    "%Y-%m-%d",      # 2015-09-01  — already correct, fast-path
+    "%Y-%m-%d",      # 2015-09-01  - already correct, fast-path
     "%Y/%m/%d",      # 2015/09/01
-    "%d/%m/%Y",      # 01/09/2015  — DD/MM/YYYY (preferred for NG)
+    "%d/%m/%Y",      # 01/09/2015  - DD/MM/YYYY (preferred for NG)
     "%d-%m-%Y",      # 01-09-2015
     "%d.%m.%Y",      # 01.09.2015
     "%d %b %Y",      # 01 Sep 2015
@@ -310,8 +310,8 @@ _DATE_FORMATS = [
     "%b %d %Y",      # Sep 01 2015
     "%B %d %Y",      # September 01 2015
     "%Y%m%d",        # 20150901
-    "%d/%m/%y",      # 01/09/15  — 2-digit year
-    "%m/%d/%Y",      # 09/01/2015 — US format, lowest priority
+    "%d/%m/%y",      # 01/09/15  - 2-digit year
+    "%m/%d/%Y",      # 09/01/2015 - US format, lowest priority
 ]
 
 

@@ -9,11 +9,11 @@ same entity, so operators can see at a glance:  # Compare gateway truth with ban
 * which gateway transactions have **not** yet appeared on the bank (unsettled), and
 * which bank lines have **no** matching gateway record (unexplained).
 
-Matching is deliberately conservative: first on a shared reference, then — for anything
-still open — on an exact signed-amount match within the date window. Money stays integer
+Matching is deliberately conservative: first on a shared reference, then - for anything
+still open - on an exact signed-amount match within the date window. Money stays integer
 **kobo**; the bank line's ``amount`` is signed (+inflow/-outflow) and we sign each gateway
 record the same way (collection ``+amount``, payout ``-amount``) so a correct pairing nets
-to zero. Nothing here writes — it never mutates a bank line or books a journal.  # Read-only, two-pass matching only.
+to zero. Nothing here writes - it never mutates a bank line or books a journal.  # Read-only, two-pass matching only.
 """
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ class SettlementRow:
     @property
     # Handle the fee amount workflow.
     def fee_amount(self) -> int:
-        """Gross (gateway) minus net (bank) — the PSP fee, in absolute kobo."""
+        """Gross (gateway) minus net (bank) - the PSP fee, in absolute kobo."""
         if self.settled_amount is None:  # No settlement means we cannot derive a fee yet.
             return 0
         return max(0, abs(self.amount) - abs(self.settled_amount))  # Fee is gross − net, clamped so an over-settlement never reads negative.
@@ -221,7 +221,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
 
         Settlement lands on or just after we confirm, so among same-amount candidates we
         prefer a bank date on/after confirmation, then the smallest day-distance, then the
-        lowest id — a deterministic, least-surprising tie-break. Still a heuristic (no
+        lowest id - a deterministic, least-surprising tie-break. Still a heuristic (no
         global optimum), just a far better one than insertion order.
         """
         conf = row.confirmed_at.date() if row.confirmed_at else None
@@ -229,7 +229,7 @@ def settlement_reconciliation(entity, *, start_date=None, end_date=None, provide
         for cand in candidates:
             if cand.id in consumed:  # Skip bank lines already matched.
                 continue
-            if conf is None:  # No confirmation date to compare against — fall back to id order.
+            if conf is None:  # No confirmation date to compare against - fall back to id order.
                 key = (0, 0, cand.id)
             else:
                 delta = (cand.txn_date - conf).days  # +ve = bank date on/after confirmation.

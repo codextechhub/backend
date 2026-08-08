@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# reseed-dev.sh — drop, recreate, migrate and fully seed the LOCAL dev database.
+# reseed-dev.sh - drop, recreate, migrate and fully seed the LOCAL dev database.
 #
 #   ./reseed-dev.sh
 #
-# Safe to run from any directory. DESTRUCTIVE for the local cx_db only —
+# Safe to run from any directory. DESTRUCTIVE for the local cx_db only -
 # it never touches staging. Kicks out any open DBeaver/psql sessions first.
 #
-# Result: the CX-staff-focused dev world — 25-seat Codex organogram with HR
+# Result: the CX-staff-focused dev world - 25-seat Codex organogram with HR
 # profiles and platform roles, ToDo board, login/security history, one
 # impersonation session, plus 3 schools / 35 school users / RBAC /
 # notifications as the customer base. Finance, procurement and payments
@@ -14,7 +14,7 @@
 #
 # Logins after seeding:
 #   super admin   admin@codexng.com            Admin@123456
-#   vision staff  ada.nwachukwu@vision.edu     Vision@2025   (MD — and 24 others)
+#   vision staff  ada.nwachukwu@vision.edu     Vision@2025   (MD - and 24 others)
 #   school admin  admin@greenfield-academy.example.com  School@2025
 
 set -o errexit

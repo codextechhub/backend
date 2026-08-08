@@ -1,10 +1,10 @@
-"""Fixed-asset services — acquisition and straight-line depreciation.
+"""Fixed-asset services - acquisition and straight-line depreciation.
 
 A capital asset is recognised at cost, then its cost (less salvage) is spread over its
 useful life as an expense, period by period:
 
-* **Acquire** (:func:`acquire_asset`): ``Dr PP&E, Cr bank/payable`` — capitalise the
-  cost — then lay down the depreciation schedule.
+* **Acquire** (:func:`acquire_asset`): ``Dr PP&E, Cr bank/payable`` - capitalise the
+  cost - then lay down the depreciation schedule.
 * **Depreciate** (:func:`post_depreciation`): ``Dr depreciation expense, Cr accumulated
   depreciation`` for each due schedule row. The accumulated-depreciation contra-asset
   nets the PP&E down to net book value without touching the original cost.
@@ -78,7 +78,7 @@ def _declining_balance_amounts(cost: int, salvage: int, months: int) -> list[int
 
     Each month charges the greater of the declining-balance rate (``2 / months`` of the
     opening book value) and straight-lining the remaining depreciable amount over the
-    months left — the textbook switch that still lands exactly on ``salvage``. Charges
+    months left - the textbook switch that still lands exactly on ``salvage``. Charges
     never take book value below salvage; the final month absorbs the remainder.
     """
     base = cost - salvage  # Total depreciable amount.
@@ -96,7 +96,7 @@ def _declining_balance_amounts(cost: int, salvage: int, months: int) -> list[int
         charge = max(charge, 0)  # Prevent negative charges when salvage exceeds book value.
         amounts.append(charge)  # Store this month's depreciation.
         book_value -= charge  # Reduce book value for next month.
-    # Guard: rounding can leave a kobo or two — pile any remainder on the last charge.  # Keep total exact.
+    # Guard: rounding can leave a kobo or two - pile any remainder on the last charge.  # Keep total exact.
     drift = base - sum(amounts)  # Difference between intended base and generated charges.
     if drift and amounts:  # Adjust only when there is a schedule to adjust.
         amounts[-1] += drift  # Put any rounding drift on final charge.
@@ -348,11 +348,11 @@ def preview_period_depreciation(entity, *, up_to_date):
 
 # Public wrapper for compound depreciation run.
 def run_period_depreciation(entity, *, up_to_date, actor_user=None):
-    """Post depreciation due up to ``up_to_date`` — one compound journal **per period**.
+    """Post depreciation due up to ``up_to_date`` - one compound journal **per period**.
 
     Due charges are grouped by their :class:`FiscalPeriod` and each period gets its own
     compound journal (Dr per expense account / Cr per accumulated-depreciation account),
-    dated at the latest ``depreciation_date`` in that period — so a charge never posts
+    dated at the latest ``depreciation_date`` in that period - so a charge never posts
     into the wrong period. If a period is CLOSED, :func:`post_journal` raises
     :class:`PeriodClosedError` and it propagates: the operator re-opens that period (via
     the period-reopen endpoint) and re-runs. Records a durable rejection audit on any

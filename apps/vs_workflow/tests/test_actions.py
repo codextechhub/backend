@@ -1,4 +1,4 @@
-"""Tests for services/actions.py — record_action, withdraw, cancel, resubmit, reverse_action."""
+"""Tests for services/actions.py - record_action, withdraw, cancel, resubmit, reverse_action."""
 import logging
 from unittest.mock import patch
 
@@ -135,7 +135,7 @@ class RecordActionTests(_Base):
 
     def test_duplicate_vote_raises(self):
         # Use UNANIMOUS + a second approver so the first vote doesn't resolve
-        # the stage — otherwise the stage moves to APPROVED and the second call
+        # the stage - otherwise the stage moves to APPROVED and the second call
         # raises StageNotActiveError instead of DuplicateApproverActionError.
         self.stage.advance_rule = StageAdvanceRule.UNANIMOUS
         self.stage.save(update_fields=["advance_rule"])

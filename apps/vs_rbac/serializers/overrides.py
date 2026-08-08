@@ -1,7 +1,7 @@
 """Per-user permission override serializers.
 
 Read rows carry a computed ``granted_by_role`` flag so the UI can say
-"the role grants this — denied for this user" (or, for a pre-emptive deny,
+"the role grants this - denied for this user" (or, for a pre-emptive deny,
 "the role doesn't grant this anyway") without a second round trip.
 
 Scope is never taken from the request body: ``tenant``, ``user`` and

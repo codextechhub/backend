@@ -1,7 +1,7 @@
 # finance_reports_statements
 
-The read-only reporting surface — financial statements, AR analyses, the dashboard,
-exports — plus **period close** (the one write in this slice). Reports are plain
+The read-only reporting surface - financial statements, AR analyses, the dashboard,
+exports - plus **period close** (the one write in this slice). Reports are plain
 dataclasses rendered straight to JSON (no ModelSerializer); most read the
 denormalised `AccountBalance` aggregates, a few (statements of record, analytics)
 re-read posted `JournalLine`s.
@@ -22,7 +22,7 @@ ar-aging, ar-reconciliation, customer-statement, analytics-slice}/`,
 
 **This does NOT:**
 - **Recompute the ledger.** Statements read `AccountBalance` (kept in step by the
-  posting engine); they're views over truth, not re-derivations — except AR aging /
+  posting engine); they're views over truth, not re-derivations - except AR aging /
   customer statements / analytics-slice, which walk documents/lines directly.
 - **Leave close as the only period control.** Re-opening a mis-closed period
   (`periods/<id>/reopen/`) and permanently sealing one (`periods/<id>/lock/`) are
@@ -30,7 +30,7 @@ ar-aging, ar-reconciliation, customer-statement, analytics-slice}/`,
 
 ## 2. Domain model
 
-No models of its own — dataclasses only (`TrialBalance`, `IncomeStatement`(+Compare),
+No models of its own - dataclasses only (`TrialBalance`, `IncomeStatement`(+Compare),
 `BalanceSheet`(+Sections), `CashFlowStatement`, `StatementOfChangesInEquity`,
 `StatutoryPack`, `AgingReport`, `ARReconciliation`, `CustomerStatement`,
 `AnalyticsSlice`, `BudgetVarianceReport`, `CloseChecklist`). `ReportTable`
@@ -77,25 +77,25 @@ such).
 
 **Checklist** (`close_checklist`, `close.py:60`): ① trial balance balances
 (blocking), ② no draft journals in the period (warning only), ③ AR sub-ledger
-reconciles to control (blocking), ④ all due depreciation posted (blocking) — plus
+reconciles to control (blocking), ④ all due depreciation posted (blocking) - plus
 injectable `extra_checks` from other apps (procurement AP/GR-IR).
 
 ## 5. Calculations (the ones that bite)
 
 - **Trial balance**: one row per account = its **latest period's** cumulative
-  closing (`opening + movement`) — summing opening+movement across every period
+  closing (`opening + movement`) - summing opening+movement across every period
   would double-count roll-forwards (`reports.py:60`).
 - **Net income** for BS/SoCE: income minus expense movement signed to normal
   balances; the balance sheet folds current-year P&L into equity so it balances.
 - **Cash-flow classification** (`_classify_cash_flow`, `reports.py:1162`): heuristic
-  by account type/code (operating/investing/financing) — a custom chart may need its
+  by account type/code (operating/investing/financing) - a custom chart may need its
   codes to follow the seeded ranges to classify well.
 - **Statutory pack**: groups by `Account.ifrs_line`, falling back to a per-type
   default line when blank.
 
 ## 6. What posting does to the ledger
 
-Reports: **nothing**. Close: the depreciation auto-posting (one compound journal —
+Reports: **nothing**. Close: the depreciation auto-posting (one compound journal -
 see `finance_fixed_assets` §6) and the period-status transition + audit rows
 (`PERIOD_CLOSED` / `PERIOD_REOPENED` / `PERIOD_LOCKED`). A forced close is recorded
 as "(forced over checklist failures)".
@@ -112,21 +112,21 @@ depreciation posted, checklist green, period CLOSED.
 - ✅ **Reopen and lock are now routed** (`periods/<id>/reopen/` and `…/lock/`), each
   behind its own CRITICAL key (`finance.period.reopen` / `.lock`). Lock remains
   deliberately irreversible; treat both keys as top-tier privileges.
-- **`force` close is powerful** — it overrides *blocking* integrity failures
+- **`force` close is powerful** - it overrides *blocking* integrity failures
   (unbalanced TB included). It's audited, but treat `finance.period.close` as a
   highly privileged key.
 - **Dashboard + several AR reports are Python-heavy** (walk documents/lines);
   acceptable at current scale, same O(n) caveat as dunning had.
-- **Cash-flow buckets are heuristic** — verify against a customised chart.
+- **Cash-flow buckets are heuristic** - verify against a customised chart.
 - Reports return live JSON; nothing is cached/persisted (a snapshot per close could
   be a future need for auditors).
 
 ## 9. Permissions & tenant isolation
 
-- Reads: `finance.report.view` (one key for the whole surface — no per-statement
+- Reads: `finance.report.view` (one key for the whole surface - no per-statement
   granularity). Close: `finance.period.close` (CRITICAL).
 - Every view resolves the entity first; report functions all filter by entity. ✅
-- Exports render the same rows the JSON returns — no extra fields leak.
+- Exports render the same rows the JSON returns - no extra fields leak.
 
 ## 10. Code map
 

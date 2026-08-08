@@ -1,5 +1,5 @@
 # vs_users/management/commands/create_superuser.py
-# ENHANCED VERSION — with optional defaults for quick bootstrap
+# ENHANCED VERSION - with optional defaults for quick bootstrap
 #
 # Usage with defaults:
 #   python manage.py create_superuser
@@ -134,7 +134,7 @@ class Command(BaseCommand):
         parser.add_argument(
             '--assign-role',
             action='store_true',
-            help='Skip user creation — just assign Vision Super Admin role to an existing user (use with --email)',
+            help='Skip user creation - just assign Vision Super Admin role to an existing user (use with --email)',
         )
     
     @transaction.atomic
@@ -167,7 +167,7 @@ class Command(BaseCommand):
         # ── Display Configuration ─────────────────────────────────────────────
         
         self.stdout.write('\n' + '═' * 60)
-        self.stdout.write(self.style.MIGRATE_HEADING('  CodeX Vision — Superuser Creation'))
+        self.stdout.write(self.style.MIGRATE_HEADING('  CodeX Vision - Superuser Creation'))
         self.stdout.write('═' * 60 + '\n')
         
         self.stdout.write(self.style.WARNING('Creating superuser with the following details:\n'))
@@ -226,7 +226,7 @@ class Command(BaseCommand):
         # ── Assign XVS Super Admin role (codex tenant) ────────────────────────
         if not _assign_super_admin(user):
             self.stdout.write(self.style.WARNING(
-                "  ⚠️  Codex tenant / 'xvs_super_admin' role not found — run migrations first."
+                "  ⚠️  Codex tenant / 'xvs_super_admin' role not found - run migrations first."
             ))
 
         # ── Audit Log ─────────────────────────────────────────────────────────
@@ -282,7 +282,7 @@ class Command(BaseCommand):
     def _bootstrap_permission_creation_capability(self):
         """Ensure the codex platform roles exist and carry the full platform set.
 
-        Delegates to ``seed_platform_permissions`` — the single source of truth
+        Delegates to ``seed_platform_permissions`` - the single source of truth
         for the platform permission keys (organogram, schools, audit, …) and
         their grants. That command idempotently get_or_creates the codex-tenant
         ``xvs_super_admin`` / ``xvs_platform_admin`` roles (required by
@@ -344,7 +344,7 @@ class Command(BaseCommand):
 # USAGE EXAMPLES
 # =============================================================================
 #
-# 1. Use all defaults (FASTEST — one command!):
+# 1. Use all defaults (FASTEST - one command!):
 #    python manage.py create_superuser
 #
 #    Creates:

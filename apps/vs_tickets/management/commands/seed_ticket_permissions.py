@@ -2,7 +2,7 @@
 
 The ticket module is a cross-cutting support surface. Platform roles receive all
 keys. School prebuilt roles receive request-side defaults (school-wide viewing,
-commenting, attachments). Ticket *creation* is deliberately keyless — any
+commenting, attachments). Ticket *creation* is deliberately keyless - any
 authenticated active user may file a ticket.
 """
 import re

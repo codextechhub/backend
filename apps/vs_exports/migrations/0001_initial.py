@@ -56,7 +56,7 @@ class Migration(migrations.Migration):
                     "columns_produced",
                     models.JSONField(
                         default=list,
-                        help_text="Field ids actually written — may be fewer than the run requested.",
+                        help_text="Field ids actually written - may be fewer than the run requested.",
                     ),
                 ),
                 ("available_until", models.DateTimeField(db_index=True)),
@@ -97,7 +97,7 @@ class Migration(migrations.Migration):
                     "columns",
                     models.JSONField(
                         default=list,
-                        help_text="Ordered list of catalogue field ids — this is the column order in the file.",
+                        help_text="Ordered list of catalogue field ids - this is the column order in the file.",
                     ),
                 ),
                 (
@@ -112,7 +112,7 @@ class Migration(migrations.Migration):
                     models.JSONField(
                         blank=True,
                         default=list,
-                        help_text="Ordered list of {field, direction} — direction is 'asc' or 'desc'.",
+                        help_text="Ordered list of {field, direction} - direction is 'asc' or 'desc'.",
                     ),
                 ),
                 (
@@ -162,7 +162,7 @@ class Migration(migrations.Migration):
                     "is_draft",
                     models.BooleanField(
                         default=False,
-                        help_text="A recipe that is not finished — visible, not runnable.",
+                        help_text="A recipe that is not finished - visible, not runnable.",
                     ),
                 ),
                 ("is_archived", models.BooleanField(default=False)),
@@ -170,7 +170,7 @@ class Migration(migrations.Migration):
                     "email_recipients",
                     models.BooleanField(
                         default=False,
-                        help_text="Whether each run also sends a secure download link to the people this export is shared with. The Export Centre destination is always on — it is the record — so this is the only destination that is a choice.",
+                        help_text="Whether each run also sends a secure download link to the people this export is shared with. The Export Centre destination is always on - it is the record - so this is the only destination that is a choice.",
                     ),
                 ),
                 (
@@ -393,7 +393,7 @@ class Migration(migrations.Migration):
                     "rows_total",
                     models.PositiveIntegerField(
                         blank=True,
-                        help_text="Null means the UI renders indeterminate progress — expected, not an error.",
+                        help_text="Null means the UI renders indeterminate progress - expected, not an error.",
                         null=True,
                     ),
                 ),

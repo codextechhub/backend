@@ -1,4 +1,4 @@
-"""Tests for submit_for_approval — focusing on template cascade lookup."""
+"""Tests for submit_for_approval - focusing on template cascade lookup."""
 from unittest.mock import patch, MagicMock
 
 from django.test import TestCase
@@ -27,7 +27,7 @@ class _BranchDoc(_Doc):
     branch = "branch-1"
 
 
-# ── Cascade logic (unit tests — no DB needed) ─────────────────────────────────
+# ── Cascade logic (unit tests - no DB needed) ─────────────────────────────────
 
 class TemplateCascadeTests(TestCase):
 
@@ -83,7 +83,7 @@ class TemplateCascadeTests(TestCase):
         school_tpl = self._make_template("school")
         platform_tpl = self._make_template("platform")
         result, calls = self._run(doc, branch_tpl, school_tpl, platform_tpl)
-        # Only one get() call — found on first try.
+        # Only one get() call - found on first try.
         self.assertEqual(len(calls), 1)
 
     def test_falls_back_to_school_when_no_branch_template(self):
@@ -102,7 +102,7 @@ class TemplateCascadeTests(TestCase):
         self.assertEqual(len(calls), 3)  # branch miss → school miss → platform hit
 
     def test_school_doc_skips_branch_scope(self):
-        """Document with no branch only tries school-wide and platform — no branch scope."""
+        """Document with no branch only tries school-wide and platform - no branch scope."""
         doc = _SchoolDoc()
         school_tpl = self._make_template("school")
         _, calls = self._run(doc, None, school_tpl, None)

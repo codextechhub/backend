@@ -1,9 +1,9 @@
-"""Banking services — statement import and bank reconciliation.
+"""Banking services - statement import and bank reconciliation.
 
 The bank balance the ledger believes (the GL cash account) and the balance the bank
 reports (the statement) drift apart for honest reasons: in-flight cheques, charges the
 bank deducted that the books don't know about yet, interest credited. Reconciliation
-is the discipline of explaining every difference — pairing each statement line to a
+is the discipline of explaining every difference - pairing each statement line to a
 ledger movement, and raising an *adjusting journal* for anything the books are missing.
 
 A bank-statement ``amount`` is **signed from our perspective**: positive is money in
@@ -72,8 +72,8 @@ def import_statement_lines(bank_account, rows, *, statement_date=None, period_la
     * a row whose ``external_id`` already exists for this account is skipped (exact dup);
     * a row **without** an ``external_id`` that matches an existing line on
       ``(txn_date, amount, description, reference)`` is treated as a *suspected*
-      re-import — held back and returned in ``suspected_duplicates`` rather than
-      imported — **unless** ``force`` is set.
+      re-import - held back and returned in ``suspected_duplicates`` rather than
+      imported - **unless** ``force`` is set.
 
     Two genuinely identical same-day transactions in one *fresh* batch are both kept
     (the check is against already-stored lines, not within the batch).
@@ -245,7 +245,7 @@ def _signed_gl(line) -> int:
 # Support the unique summing subset workflow.
 def _unique_summing_subset(lines, target, *, max_size):
     """The **unique** subset (size 2..``max_size``) of ``lines`` whose signed amounts
-    sum to ``target`` — or ``None`` when there is no such subset **or more than one**
+    sum to ``target`` - or ``None`` when there is no such subset **or more than one**
     (ambiguous). Conservative on purpose: auto-grouping only fires when there's a single
     unambiguous answer.
     """
@@ -285,12 +285,12 @@ def auto_reconcile(bank_account, *, tolerance_days=4, group=True,
                    max_group=GROUP_AUTO_MATCH_MAX, actor_user=None):
     """Pair unmatched statement lines to unmatched GL cash lines by amount + date.
 
-    **First pass — 1:1:** a statement line auto-matches a posted cash-account journal
+    **First pass - 1:1:** a statement line auto-matches a posted cash-account journal
     line with the **same signed amount** whose journal date is within ``tolerance_days``,
     but only when there is **exactly one** such unconsumed candidate; ambiguous ties are
     left for a human.
 
-    **Second pass — group (when ``group``):** for each still-unmatched line, if a
+    **Second pass - group (when ``group``):** for each still-unmatched line, if a
     **unique** small subset (size 2..``max_group``) of same-direction, in-tolerance GL
     lines *sums* to it (one bank line covering several receipts), they are group-matched
     via :class:`~vs_finance.models.BankLineMatch`. Skipped when the candidate pool is
@@ -400,7 +400,7 @@ def _record_reconciliation(bank_account, *, matched_count, actor_user=None):
 @transaction.atomic
 # Handle the complete reconciliation workflow.
 def complete_reconciliation(bank_account, *, actor_user=None):
-    """Finalise a reconciliation — record a snapshot of the account's current state."""
+    """Finalise a reconciliation - record a snapshot of the account's current state."""
     from .models import BankStatementLine
 
     matched = BankStatementLine.objects.filter(
@@ -449,7 +449,7 @@ def group_match(statement_line, journal_lines, *, actor_user=None):
     ledger movements. Each line must be posted, on this bank's GL cash account, and not
     already matched (1:1 or in another group); their signed amounts
     (``debit − credit``) must total the statement line's signed amount exactly. Records
-    a :class:`~vs_finance.models.BankLineMatch` per pair — no ledger effect. Returns the
+    a :class:`~vs_finance.models.BankLineMatch` per pair - no ledger effect. Returns the
     statement line.
     """
     from .models import BankLineMatch
@@ -515,7 +515,7 @@ def split_match(journal_line, statement_lines, *, actor_user=None):
     lines (e.g. a payout split into principal + fee). Each statement line must be
     unmatched and on the same bank account as the journal line's GL cash account; their
     signed amounts total the journal line's signed amount. Records a
-    :class:`~vs_finance.models.BankLineMatch` per statement line — no ledger effect.
+    :class:`~vs_finance.models.BankLineMatch` per statement line - no ledger effect.
     Unmatching any one of them later frees just that line (see :func:`unmatch_line`).
     """
     from .models import BankLineMatch
@@ -577,7 +577,7 @@ def split_match(journal_line, statement_lines, *, actor_user=None):
 @transaction.atomic
 # Handle the unmatch line workflow.
 def unmatch_line(statement_line, *, actor_user=None):
-    """Undo a match — and reverse the adjusting journal if the match created one.
+    """Undo a match - and reverse the adjusting journal if the match created one.
 
     A plain match just drops the pairing (no ledger effect). A match that booked
     an adjusting journal reverses that journal (a mirror entry that nets to zero),
@@ -648,19 +648,19 @@ def set_line_ignored(statement_line, *, ignored=True, reason="", actor_user=None
 def resolve_adjustment_date(entity, txn_date, *, requested=None):
     """Return the date a bank adjustment should post on, for ``txn_date``'s line.
 
-    A bank statement legitimately covers a month that is already closed — importing
+    A bank statement legitimately covers a month that is already closed - importing
     and matching it post nothing, so neither is blocked. Booking an adjustment does
     post, and pinning it to the line's ``txn_date`` made a late-discovered charge
     impossible to record: the date was not user-selectable, so the 409 had no remedy.
 
     Resolution order:
 
-    * ``requested`` — an explicit caller/operator choice, used as given so the
+    * ``requested`` - an explicit caller/operator choice, used as given so the
       posting guard can reject it with a message the operator can act on.
-    * ``txn_date`` when that date is still postable — the common case, unchanged.
+    * ``txn_date`` when that date is still postable - the common case, unchanged.
     * otherwise the **earliest open day on or after** ``txn_date``. A closed month
       cannot be rewritten, so the charge books as close to its real date as the
-      calendar allows — a January charge lands in February, not in whatever month
+      calendar allows - a January charge lands in February, not in whatever month
       happens to be current. ``txn_date`` stays on the journal as the value date.
     * only when every later period is closed does it fall back to the latest open
       day *before* the line, since pre-dating is better than not booking at all.
@@ -670,7 +670,7 @@ def resolve_adjustment_date(entity, txn_date, *, requested=None):
     snaps around *today*, which would drop a January charge into the current month
     and distort it. This answers "where does an already-dated item land".
 
-    Raises :class:`PeriodClosedError` when the entity has no open period at all —
+    Raises :class:`PeriodClosedError` when the entity has no open period at all -
     nothing can post then, and failing closed is the only honest answer.
     """
     if requested is not None:
@@ -699,8 +699,8 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
                          narration="", posting_date=None, actor_user=None):
     """Book an unrecorded statement line (charge/interest) and match it.
 
-    For a line the books don't yet know about — a bank charge (outflow) or interest
-    (inflow) — raise the adjusting journal against ``counter_account`` (or resolve
+    For a line the books don't yet know about - a bank charge (outflow) or interest
+    (inflow) - raise the adjusting journal against ``counter_account`` (or resolve
     ``counter_code``; defaults to ``5500 Bank Charges``) and the bank's cash account,
     then reconcile the statement line to the new cash line. Direction follows the sign
     of ``amount``:
@@ -710,7 +710,7 @@ def post_bank_adjustment(statement_line, *, counter_account=None, counter_code=N
 
     ``posting_date`` overrides where the journal lands; omitted, it follows
     :func:`resolve_adjustment_date`. The statement line's ``txn_date`` is always kept
-    as the bank's value date — when the two differ the journal says so in its
+    as the bank's value date - when the two differ the journal says so in its
     narration and the audit row carries both, so a charge booked into a later period
     is never mistaken for one the bank raised then.
     """

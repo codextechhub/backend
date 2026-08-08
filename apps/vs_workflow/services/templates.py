@@ -1,4 +1,4 @@
-"""Template publishing — create or update in place."""
+"""Template publishing - create or update in place."""
 
 from typing import Optional
 
@@ -56,7 +56,7 @@ def publish_template(*, tenant, branch=None, document_type: str, code: str, name
 
     # Upsert stages by code. The payload is the desired ACTIVE set: stages in it
     # are created/updated (and un-retired if previously removed); existing stages
-    # absent from it are soft-retired — never hard-deleted, since running
+    # absent from it are soft-retired - never hard-deleted, since running
     # instances reference them (FK is PROTECT). The engine skips retired stages
     # in all future routing, so live instances are unaffected.
     stage_by_code = {}
@@ -72,7 +72,7 @@ def publish_template(*, tenant, branch=None, document_type: str, code: str, name
             "approver_source": s.get("approver_source", "RBAC_PERMISSION"),
             "approver_permission_key": s.get("approver_permission_key", ""),
             "approver_scope": s.get("approver_scope", "SCHOOL"),
-            # Organogram config — only meaningful when approver_source==ORGANOGRAM.
+            # Organogram config - only meaningful when approver_source==ORGANOGRAM.
             "organogram_target": s.get("organogram_target", ""),
             "organogram_levels": s.get("organogram_levels", 1),
             "organogram_position": _resolve_position(s.get("organogram_position_code")),
@@ -94,7 +94,7 @@ def publish_template(*, tenant, branch=None, document_type: str, code: str, name
      .filter(retired_at__isnull=True)
      .update(retired_at=timezone.now()))
 
-    # Replace routes entirely — they carry no instance-level FK references.
+    # Replace routes entirely - they carry no instance-level FK references.
     WorkflowRoutePath.objects.filter(template=template).delete()
     for r in (routes_payload or []):
         from_code = r.get("from_stage_code")
@@ -115,7 +115,7 @@ def active_instances_for_template(template: WorkflowTemplate) -> "QuerySet[Workf
     """Return all non-terminal instances currently running against this template.
 
     Used before retiring or replacing a template to surface live work that
-    would be affected. Callers should warn the admin rather than blocking —
+    would be affected. Callers should warn the admin rather than blocking -
     in-flight instances continue using their snapshotted stage definitions
     even after a new publish.
     """

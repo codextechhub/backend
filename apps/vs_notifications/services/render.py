@@ -46,12 +46,12 @@ def render_template(template_text: str, context: dict) -> str:
     applied to a variable raises an exception).
 
     Unlike validate_template_syntax, this catches runtime errors that only
-    surface when the context is applied — not just syntax errors.
+    surface when the context is applied - not just syntax errors.
 
     Args:
         template_text:  Raw template string (body or subject).
         context:        Dict of variables to inject. Unknown variables render
-                        as empty string (Django default — string_if_invalid="").
+                        as empty string (Django default - string_if_invalid="").
     """
     try:
         t = Template(template_text)
@@ -79,7 +79,7 @@ def render_notification_template(notification_template, context: dict) -> tuple[
     Empty template fields render as "" (in-app templates carry no subject; most
     templates carry no html_body). A render failure of html_body is raised the
     same way as a body failure (TemplateRenderError) so the caller treats the
-    whole record as FAILED — an email that would ship a broken HTML alternative
+    whole record as FAILED - an email that would ship a broken HTML alternative
     is not worth sending.
 
     Args:

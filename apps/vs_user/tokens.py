@@ -98,7 +98,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
 
 # ---------------------------------------------------------------------------
 # Custom TokenObtainPairView
-# Optional — only needed if you expose the standard SimpleJWT /token/ endpoint.
+# Optional - only needed if you expose the standard SimpleJWT /token/ endpoint.
 # The vs_users LoginView handles authentication directly via LoginService,
 # so this view is registered but not the primary login path.
 # ---------------------------------------------------------------------------

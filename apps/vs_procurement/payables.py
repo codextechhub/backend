@@ -1,4 +1,4 @@
-"""Accounts-Payable services — the pay side of Procure-to-Pay.
+"""Accounts-Payable services - the pay side of Procure-to-Pay.
 
 Mirrors the AR revenue cycle in :mod:`vs_finance.receivables`, but for money *out*:
 
@@ -6,7 +6,7 @@ Mirrors the AR revenue cycle in :mod:`vs_finance.receivables`, but for money *ou
   ``Dr GR/IR clearing (+ Dr input VAT), Cr AP control``. For a PO-based bill the debit
   clears the GR/IR liability the goods receipt parked, so once goods are both received
   and billed **GR/IR nets to zero**. A non-PO bill debits the expense directly.
-* **Vendor payment** → ``Dr AP (gross), Cr bank (net), Cr WHT payable (withheld)`` —
+* **Vendor payment** → ``Dr AP (gross), Cr bank (net), Cr WHT payable (withheld)`` -
   then the gross is *allocated* across bills (a sub-ledger act with no further GL).
 
 All amounts are integer kobo; tax/WHT are computed from basis points with the same
@@ -42,7 +42,7 @@ from .purchasing import resolve_account
 
 
 # --------------------------------------------------------------------------- #
-# Vendor invoice — pricing + three-way match                                  #
+# Vendor invoice - pricing + three-way match                                  #
 # --------------------------------------------------------------------------- #
 
 # Handle the price vendor invoice workflow.
@@ -126,8 +126,8 @@ def post_vendor_invoice(invoice, *, actor_user=None, allow_variance=False):
 
     Pricing and the three-way match run **before** the posting transaction and persist
     durably, so a rejected bill still records its computed totals and match outcome
-    (the posting itself rolls back). Any :class:`FinanceError` — a blocking match
-    failure included — writes a durable rejection audit row, then re-raises.
+    (the posting itself rolls back). Any :class:`FinanceError` - a blocking match
+    failure included - writes a durable rejection audit row, then re-raises.
     """
     if invoice.status == DocumentStatus.DRAFT:  # Draft bills are priced and matched before posting.
         price_vendor_invoice(invoice)  # Ensure bill totals are current.
@@ -333,7 +333,7 @@ def post_vendor_payment(payment, *, actor_user=None, auto_allocate=True, allocat
 
     ``system_originated`` marks a post that records an already-completed disbursement
     (e.g. booking a gateway payout that has paid). Such posts skip the pre-disbursement
-    governance/eligibility gates — those belong upstream, at payout initiation — while
+    governance/eligibility gates - those belong upstream, at payout initiation - while
     every ledger-integrity check still applies.
     """
     try:  # The atomic worker owns the GL and allocation work.
@@ -404,7 +404,7 @@ def _post_vendor_payment_atomic(payment, *, actor_user=None, auto_allocate=True,
     vendor = payment.vendor  # Vendor drives AP and blocking rules.
     # Pre-disbursement governance + vendor-eligibility gates. A system-originated
     # post records a disbursement that has already happened (e.g. a gateway
-    # payout), so it skips these — refusing the ledger entry after the money has
+    # payout), so it skips these - refusing the ledger entry after the money has
     # left would strand the payment. Eligibility is enforced upstream at payout
     # initiation. Ledger-integrity checks below still apply either way.
     if not system_originated:
@@ -510,7 +510,7 @@ def allocate_vendor_payment(payment, *, allocations=None, actor_user=None, stric
     already produced the AP/bank/WHT journal, so this service must not create another GL
     entry. Returns the list of created allocation rows.
 
-    A payment may not settle a bill dated after it — on the payment's own date that
+    A payment may not settle a bill dated after it - on the payment's own date that
     liability does not exist, and an AP aging as at that date would show a bill paid
     before it was raised. As on the AR side, auto-allocation skips such bills (the
     money stays unallocated until they are raised) while an explicitly named bill is

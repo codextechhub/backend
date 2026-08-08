@@ -3,7 +3,7 @@
 Read-side serialisers for the AP sub-ledger and the purchasing chain
 (PR → PO → GRN → vendor invoice → vendor payment). Document *creation* is handled in
 the views (they parse the request, resolve GL accounts by code/id and call the
-purchasing/payables services), so these serialisers stay read-only — mirroring how
+purchasing/payables services), so these serialisers stay read-only - mirroring how
 ``vs_finance`` serialises its documents while the services own the writes.
 
 Money is always integer kobo; each headline money field is mirrored with a ``*_naira``
@@ -99,7 +99,7 @@ class VendorSerializer(FieldSecurityMixin, serializers.ModelSerializer):
         source="default_wht_tax_code.code", read_only=True, default=None,
     )
 
-    # FLS: vendor banking details are PII used for disbursement — only holders of
+    # FLS: vendor banking details are PII used for disbursement - only holders of
     # the sensitive grant see them; everyone else gets the record with these
     # fields stripped.
     read_permissions = {
@@ -198,7 +198,7 @@ def _contract_activity(entity, contract_id):
 
 class VendorContractListSerializer(serializers.ModelSerializer):
     """Lean contract list row. ``milestone_count`` is a queryset annotation (see
-    :meth:`ContractListCreateView.get`) — never a per-row count, so the list stays O(1).
+    :meth:`ContractListCreateView.get`) - never a per-row count, so the list stays O(1).
     ``is_expired`` is a computed display overlay, never a persisted status."""
 
     vendor_code = serializers.CharField(source="vendor.code", read_only=True)
@@ -497,7 +497,7 @@ class RequisitionSerializer(serializers.ModelSerializer):
 
 
 # --------------------------------------------------------------------------- #
-# Sourcing — shared helpers                                                   #
+# Sourcing - shared helpers                                                   #
 # --------------------------------------------------------------------------- #
 
 def _sourcing_activity(entity, target_type, target_id):
@@ -555,7 +555,7 @@ class RfqLineSerializer(serializers.ModelSerializer):
 
 class RfqListSerializer(serializers.ModelSerializer):
     """Lean list row. ``line_count``/``response_count`` are queryset annotations
-    (see :func:`RfqListCreateView.get`) — never per-row counts, so the list stays O(1)."""
+    (see :func:`RfqListCreateView.get`) - never per-row counts, so the list stays O(1)."""
 
     requisition_number = serializers.CharField(
         source="requisition.document_number", read_only=True, default=None,
@@ -632,7 +632,7 @@ class RfqDetailSerializer(serializers.ModelSerializer):
 
     def get_invitations(self, obj):
         # Derive each invitation's "responded" flag by joining the invited vendors to
-        # this RFQ's newest-first quotations in Python (both prefetched) — never a
+        # this RFQ's newest-first quotations in Python (both prefetched) - never a
         # per-row query. Multiple quotations are allowed; the newest is canonical.
         quote_by_vendor = {}
         for q in obj.quotations.all():
@@ -841,7 +841,7 @@ class PurchaseOrderListSerializer(PurchaseOrderSerializer):
     """Lighter list row: the nested line/receipt/invoice documents belong to the
     detail drawer (its own request), so the list never ships or prefetches them.
     ``display_status``/``received_pct``/``invoiced_pct`` are still computed from the
-    prefetched lines — only the serialised line array is dropped."""
+    prefetched lines - only the serialised line array is dropped."""
 
     lines = None
     receipt_documents = None
@@ -1003,7 +1003,7 @@ class GoodsReceivedNoteSerializer(serializers.ModelSerializer):
 class GoodsReceivedNoteListSerializer(GoodsReceivedNoteSerializer):
     """Lighter list row: the receipt lines belong to the detail drawer (its own
     request). ``receipt_status`` and the item counts are still computed from the
-    prefetched lines — only the serialised line array is dropped from the payload."""
+    prefetched lines - only the serialised line array is dropped from the payload."""
 
     lines = None
 

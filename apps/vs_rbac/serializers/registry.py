@@ -53,7 +53,7 @@ class SchoolField(serializers.PrimaryKeyRelatedField):
 
         if isinstance(value, School):
             return value.slug
-        # PKOnlyObject fast path — fetch the slug.
+        # PKOnlyObject fast path - fetch the slug.
         return School.objects.filter(pk=value.pk).values_list("slug", flat=True).first()
 
 
@@ -100,7 +100,7 @@ class PermissionKeyListValidationMixin:
 
 
 # -----------------------------------------------------------------------------
-# 1) Permission vocabulary — Module / Resource / Action
+# 1) Permission vocabulary - Module / Resource / Action
 # -----------------------------------------------------------------------------
 
 class PermissionModuleSerializer(serializers.ModelSerializer):
@@ -233,7 +233,7 @@ class PermissionSerializer(serializers.ModelSerializer):
                 "resource": f"Resource '{resource.name}' does not belong to module '{module.name}'."
             })
 
-        # Duplicate key guard — checks the composed key before hitting the DB unique constraint
+        # Duplicate key guard - checks the composed key before hitting the DB unique constraint
         if module and isinstance(resource, PermissionResource) and action:
             composed_key = f"{module.pk}.{resource.name}.{action.pk}"
             qs = Permission.objects.filter(key=composed_key)
@@ -314,7 +314,7 @@ class PermissionDetailSerializer(PermissionSerializer):
 
 
 # -----------------------------------------------------------------------------
-# 1b) Permission Groups — reusable permission bundles shared across school and
+# 1b) Permission Groups - reusable permission bundles shared across school and
 #     platform role templates.
 # -----------------------------------------------------------------------------
 class PermissionGroupListSerializer(serializers.ModelSerializer):

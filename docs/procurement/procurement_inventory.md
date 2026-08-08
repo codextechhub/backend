@@ -54,8 +54,8 @@ their nested `data.entity`, `data.rows`, and valuation-total contract
 |---|---|---|---|---|
 | `GET /stock-items/` | `procurement.stock.view` | List inventory masters | Query `is_active=true|false`, `q`, `needs_reorder=true` | Paginated rows with accounting/catalog ids and codes, reorder data, live quantity/value, derived unit cost/reorder flag, active flag (`views/stock.py:91-102`; `serializers.py:343-377`) |
 | `POST /stock-items/` | `procurement.stock.manage` | Create a zero-balance stock master | `code`, `name`, `description?`, `unit_of_measure?`, `catalog_item?`, `inventory_account`, `default_expense_account?`, `reorder_level?`, `reorder_qty?`, `is_active?` | `201` detail item with `movements` and `activity` (`views/stock.py:104-149`; `serializers.py:380-404`) |
-| `GET /stock-items/summary/` | `procurement.stock.view` | Return entity-wide stock KPIs | — | `{tracked, active, low_stock, out_of_stock, total_value, total_value_naira}` (`views/stock.py:315-350`) |
-| `GET /stock-items/<pk>/` | `procurement.stock.view` | Read one item and recent history | — | Item fields plus newest 50 movements and finance-audit activity (`views/stock.py:164-171`; `serializers.py:380-440`) |
+| `GET /stock-items/summary/` | `procurement.stock.view` | Return entity-wide stock KPIs | - | `{tracked, active, low_stock, out_of_stock, total_value, total_value_naira}` (`views/stock.py:315-350`) |
+| `GET /stock-items/<pk>/` | `procurement.stock.view` | Read one item and recent history | - | Item fields plus newest 50 movements and finance-audit activity (`views/stock.py:164-171`; `serializers.py:380-440`) |
 | `PATCH /stock-items/<pk>/` | `procurement.stock.manage` | Change master defaults, never balances | `code?` as same-code no-op, `name?`, `description?`, `unit_of_measure?`, `catalog_item?`, `inventory_account?`, `default_expense_account?`, `reorder_level?`, `reorder_qty?`, `is_active?` | Updated detail item (`views/stock.py:173-232`) |
 | `POST /stock-items/<pk>/issue/` | `procurement.stock.issue` | Consume stock at moving-average cost | `quantity`, `movement_date?`, `expense_account?`, `reference?`, `narration?` | `201 {movement, stock_item}` with the posted journal id and new balances (`views/stock.py:235-270`; `serializers.py:407-440`) |
 | `POST /stock-items/<pk>/adjust/` | `procurement.stock.adjust` | Apply a signed physical-count correction | `quantity_delta`, `movement_date?`, `adjustment_account?`, `unit_cost?` in integer kobo, `reference?`, `narration?` | `201 {movement, stock_item}` (`views/stock.py:273-312`; `serializers.py:407-440`) |
@@ -252,7 +252,7 @@ are additive and omitted above for brevity (`views/stock.py:243-270`;
   `is_active` requires a real JSON boolean (`views/base.py:178-196`;
   `views/stock.py:51-55,104-149,173-232,243-262,281-304`).
 
-### Selected follow-ups — fixed
+### Selected follow-ups - fixed
 
 - ✅ **GRN create/PATCH now accepts stock-backed lines.** Active entity stock items
   resolve by id or case-insensitive code, persist on the receipt line, appear in every

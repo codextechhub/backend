@@ -96,7 +96,7 @@ def execute_dataset_handler(import_batch, payload: dict, queued_by) -> ImportExe
 def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecutionResult:
     """
     Import one CX (CodeX platform) staff row via UserCreateSerializer, entering
-    the NORMAL creation flow — created PENDING_APPROVAL and submitted to the
+    the NORMAL creation flow - created PENDING_APPROVAL and submitted to the
     platform-user approval workflow (an invite follows on approval), exactly like
     a single add. These are never drafts; they land in the CX Users members list.
 
@@ -128,7 +128,7 @@ def import_cx_users_row(import_batch, payload: dict, queued_by) -> ImportExecuti
             action=ImportRowActionChoices.SKIP,
             instance=None,
             target_model="User",
-            message=f"User with email '{email}' already exists — skipped.",
+            message=f"User with email '{email}' already exists - skipped.",
         )
 
     data = {"user_type": "CX_STAFF"}
@@ -186,7 +186,7 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
         school_admin_role       optional – defaults to "IT Head"
 
     Main branch  (one branch per row, always marked is_main=True)
-        branch_name             optional – defaults to "<school name> — Main Campus"
+        branch_name             optional – defaults to "<school name> - Main Campus"
         branch_type             optional – defaults to "Combined"
         branch_address          optional – falls back to school address
         branch_email            optional
@@ -228,14 +228,14 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
             action=ImportRowActionChoices.SKIP,
             instance=None,
             target_model="School",
-            message=f"School with slug '{slug}' already exists — skipped.",
+            message=f"School with slug '{slug}' already exists - skipped.",
         )
     elif not slug and name and School.objects.filter(name=name).exists():
         return ImportExecutionResult(
             action=ImportRowActionChoices.SKIP,
             instance=None,
             target_model="School",
-            message=f"School named '{name}' already exists — skipped.",
+            message=f"School named '{name}' already exists - skipped.",
         )
 
     # --- School-level admin ---
@@ -260,7 +260,7 @@ def import_schools_row(import_batch, payload: dict, queued_by) -> ImportExecutio
     }
 
     # --- Branch ---
-    branch_name = _s("branch_name") or f"{_s('name')} — Main Campus"
+    branch_name = _s("branch_name") or f"{_s('name')} - Main Campus"
     branch = {
         "name": branch_name,
         "_type": _s("branch_type") or "Combined",
@@ -395,7 +395,7 @@ def import_branches_row(import_batch, payload: dict, queued_by) -> ImportExecuti
             action=ImportRowActionChoices.SKIP,
             instance=None,
             target_model="Branch",
-            message=f"Branch named '{branch_name}' already exists in this school — skipped.",
+            message=f"Branch named '{branch_name}' already exists in this school - skipped.",
         )
 
     # --- Branch admin ---
@@ -543,7 +543,7 @@ def execute_import(import_batch, queued_by):
     rows = import_batch.preview_rows or []
     total_rows = len(rows)
 
-    # start_import_job is its own @transaction.atomic — committed immediately.
+    # start_import_job is its own @transaction.atomic - committed immediately.
     job = start_import_job(import_batch=import_batch, queued_by=queued_by)
 
     processed_rows = 0

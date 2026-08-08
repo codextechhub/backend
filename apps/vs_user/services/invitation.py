@@ -38,7 +38,7 @@ class InvitationService:
         Creates a UserInvitation record for a newly created user.
         Called by UserCreationService immediately after the user row is saved.
 
-        Uses get_or_create so it is safe to call multiple times —
+        Uses get_or_create so it is safe to call multiple times -
         if a record already exists it is reset instead of duplicated.
         """
         with transaction.atomic():
@@ -155,7 +155,7 @@ class InvitationService:
             'activation_key',
         ])
 
-        # 5. Consume the invitation — link is now dead
+        # 5. Consume the invitation - link is now dead
         invitation.consume()
 
         # 7. Audit log
@@ -178,7 +178,7 @@ class InvitationService:
     def resend(user: User, requested_by: User, request=None) -> UserInvitation:
         """
         Resets the invitation and dispatches a new invitation email.
-        The URL stays the same — vision.codexng.com/invite/{user.id}/ —
+        The URL stays the same - vision.codexng.com/invite/{user.id}/ -
         but the expiry is extended to 7 days from now.
 
         Only valid for PENDING accounts. Caller must check status before
@@ -188,7 +188,7 @@ class InvitationService:
             invitation = UserInvitation.objects.get(user=user)
             invitation.reset(invited_by=requested_by)
         except UserInvitation.DoesNotExist:
-            # No invitation record exists — create one fresh.
+            # No invitation record exists - create one fresh.
             invitation = InvitationService.create(
                 user=user,
                 invited_by=requested_by,
@@ -198,7 +198,7 @@ class InvitationService:
         try:
             send_invitation_email_task.delay(
                 str(user.activation_key),
-                # Owner is the admin doing the resend — not the invitee.
+                # Owner is the admin doing the resend - not the invitee.
                 _job_owner_id=str(requested_by.id) if requested_by else None,
                 _job_label=f"Invitation email to {user.email}",
                 _job_kind="email",
@@ -206,11 +206,11 @@ class InvitationService:
                 _job_notify=False,
             )
         except Exception:
-            # The invitation record is already reset — an email dispatch
+            # The invitation record is already reset - an email dispatch
             # failure must not fail the resend request. The failure is
             # visible via the invitation's email_status tracking.
             logger.error(
-                'Failed to dispatch invitation email for user %s — email will need to be resent manually.',
+                'Failed to dispatch invitation email for user %s - email will need to be resent manually.',
                 user.pk, exc_info=True,
             )
 

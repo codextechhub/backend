@@ -1,7 +1,7 @@
 """Seed demo Accounts-Receivable data so the AR screens can be driven end-to-end.
 
 Builds on :mod:`vs_finance.seed` (currencies + chart of accounts), then adds a
-handful of customers wired to the AR control account and a starter fee structure —
+handful of customers wired to the AR control account and a starter fee structure -
 the master data the *New invoice* drawer and *Batch generate* modal need to be
 exercised in dev. Idempotent: keyed by ``(entity, code)``, safe to re-run.
 
@@ -33,7 +33,7 @@ from vs_finance.models import (
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies
 
 DEMO_CUSTOMERS = [
-    # @example.com is the RFC-2606 reserved demo domain — well-formed, so the
+    # @example.com is the RFC-2606 reserved demo domain - well-formed, so the
     # payment gateway accepts it (a bare ".example" TLD is rejected by PSPs).
     ("CUST-001", "Adeyemi & Sons Ltd", "billing.adeyemi@example.com"),
     ("CUST-002", "Brightline Logistics", "brightline.billing@example.com"),
@@ -77,7 +77,7 @@ class Command(BaseCommand):
             self._seed_entity(entity)
 
     def _seed_entity(self, entity):
-        self.stdout.write(self.style.MIGRATE_HEADING(f"\n  {entity.code} — {entity.name}"))
+        self.stdout.write(self.style.MIGRATE_HEADING(f"\n  {entity.code} - {entity.name}"))
 
         # Ensure the chart of accounts exists (AR control + revenue + output VAT).
         seed_chart_of_accounts(entity)

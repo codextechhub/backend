@@ -68,7 +68,7 @@ def trial_balance(entity, *, period=None) -> TrialBalance:
     """Build a trial balance for ``entity``, optionally scoped to one ``period``.
 
     Each account's net position is reduced to a single side: if accumulated debits
-    exceed credits the remainder sits in the debit column, else the credit column —
+    exceed credits the remainder sits in the debit column, else the credit column -
     the conventional trial-balance presentation. Because every posted journal
     balanced, the column totals are equal.
     """
@@ -76,11 +76,11 @@ def trial_balance(entity, *, period=None) -> TrialBalance:
 
     qs = AccountBalance.objects.filter(account__entity=entity).select_related("account")
     if period is not None:
-        # Cumulative balance AS OF the selected period — every movement up to and
+        # Cumulative balance AS OF the selected period - every movement up to and
         # including it. A trial balance is a point-in-time statement of balances,
         # not one period's activity, so "Jun 2026" means the running balance through
         # June, not June's movement alone. (Openings aren't rolled forward in this
-        # ledger — each row carries only its period's movement — so a straight sum
+        # ledger - each row carries only its period's movement - so a straight sum
         # of movements through the period is the running balance.)
         qs = qs.filter(period__start_date__lte=period.start_date)
 
@@ -127,7 +127,7 @@ def trial_balance(entity, *, period=None) -> TrialBalance:
 
 
 # --------------------------------------------------------------------------- #
-# Analytical slice — net activity per account, bucketed by an axis            #
+# Analytical slice - net activity per account, bucketed by an axis            #
 # --------------------------------------------------------------------------- #
 
 @dataclass
@@ -160,7 +160,7 @@ class AnalyticsSlice:
     """Posted activity for an entity sliced by one axis (a cost centre or a dimension).
 
     Unlike the trial balance this reads posted :class:`~vs_finance.models.JournalLine`
-    rows directly — the denormalised ``AccountBalance`` carries neither the cost centre
+    rows directly - the denormalised ``AccountBalance`` carries neither the cost centre
     nor the dimensions map, so it cannot answer "per bucket" questions.
     """
 
@@ -177,7 +177,7 @@ def analytics_slice(entity, *, axis, period=None, account_type=None) -> Analytic
     """Net movement per account, bucketed by ``axis``, over posted journals.
 
     ``axis`` is either the literal ``"cost_center"`` or a :class:`~vs_finance.models.Dimension`
-    code (e.g. ``"FUND"``). **Only lines actually tagged on the axis are included** — a
+    code (e.g. ``"FUND"``). **Only lines actually tagged on the axis are included** - a
     line with no cost centre (or no value for the dimension) is not part of that axis's
     analysis and is skipped, so the report shows genuinely-allocated activity rather
     than a catch-all bucket. Optionally scope to one ``period`` and/or one
@@ -339,7 +339,7 @@ def ar_aging(entity, *, as_of=None) -> AgingReport:
         r.buckets[bucket] += due
         r.outstanding += due
 
-    # Unallocated payment credit reduces a customer's net balance — but only the part
+    # Unallocated payment credit reduces a customer's net balance - but only the part
     # still there. ``unallocated_amount`` is refund-blind, so a refunded receipt used to
     # go on netting down the customer's AR long after the cash had been handed back.
     posted_payments = (
@@ -451,7 +451,7 @@ def reconcile_ar(entity, *, as_of=None) -> ARReconciliation:
 @dataclass
 # Group behavior for Statement Entry.
 class StatementEntry:
-    """One movement on a customer's account — a debit *raises* what they owe.
+    """One movement on a customer's account - a debit *raises* what they owe.
 
     Invoices, debit notes and refunds debit (increase the receivable); receipts,
     credit notes and concessions credit (reduce it). ``balance`` is the running
@@ -473,7 +473,7 @@ class StatementEntry:
 class CustomerStatement:
     """A dated ledger of a customer's account with a running balance (all kobo).
 
-    Built from the customer's *posted* AR documents — invoices, receipts,
+    Built from the customer's *posted* AR documents - invoices, receipts,
     credit/debit notes, refunds and concessions. ``opening_balance`` is the net of
     everything dated before ``start_date``; ``entries`` are the movements within
     ``[start_date, end_date]``; ``closing_balance`` is where the account stands at
@@ -679,7 +679,7 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
 
     Budgeted amounts come from the (frozen) :class:`~vs_finance.models.BudgetLine`
     cells; actuals come from the denormalised :class:`AccountBalance` *movement* in
-    the matching fiscal periods (period movement only — opening balances are
+    the matching fiscal periods (period movement only - opening balances are
     excluded), signed to each account's normal balance so an expense budget of
     ``100`` lines up with ``100`` of actual expense. Pass a configured ``period_no``
     to scope both sides to a single period; otherwise the whole fiscal year is summed.
@@ -732,14 +732,14 @@ def budget_vs_actual(budget, *, period_no=None) -> BudgetVarianceReport:
     for bal in balances:
         acc = bal.account
         # An unbudgeted, non-P&L account (e.g. the cash contra side) is not part of a
-        # budget variance — only surface budgeted accounts and unbudgeted P&L activity.
+        # budget variance - only surface budgeted accounts and unbudgeted P&L activity.
         if acc.id not in slots and acc.account_type not in _PL_TYPES:
             continue
         movement = bal.debit_total - bal.credit_total
         if acc.normal_balance != NormalBalance.DEBIT:
             movement = -movement
         if movement == 0 and acc.id not in slots:
-            continue  # untouched, unbudgeted account — skip the noise
+            continue  # untouched, unbudgeted account - skip the noise
         slot_for(acc)["actual"] += movement
 
     rows: list[BudgetVarianceRow] = []
@@ -799,11 +799,11 @@ class BudgetMatrix:
 
 # Handle the budget period matrix workflow.
 def budget_monthly_matrix(budget) -> BudgetMatrix:
-    """Per-account, per-period budget vs actual for a budget — the variance heatmap.
+    """Per-account, per-period budget vs actual for a budget - the variance heatmap.
 
     One row per account (budgeted accounts + unbudgeted P&L activity), with one cell
     per configured regular period. Built in two passes (budget lines, then period
-    balances) — no per-cell query — so the whole grid is one cheap read.
+    balances) - no per-cell query - so the whole grid is one cheap read.
     """
     from .constants import AccountType, NormalBalance
     from .models import AccountBalance, BudgetLine, FiscalPeriod
@@ -883,14 +883,14 @@ def budget_monthly_matrix(budget) -> BudgetMatrix:
 
 
 # --------------------------------------------------------------------------- #
-# Financial statements — Income Statement, Balance Sheet, Cash Flow            #
+# Financial statements - Income Statement, Balance Sheet, Cash Flow            #
 # --------------------------------------------------------------------------- #
 #
 # The three primary statements, all read from the same denormalised
 # ``AccountBalance`` aggregates (the cash-flow statement additionally scans posted
 # journal lines to classify cash movements). The cardinal links they demonstrate:
 #
-#   * Income Statement net income, for the open year, is *unclosed* — it has not yet
+#   * Income Statement net income, for the open year, is *unclosed* - it has not yet
 #     been journalled into Retained Earnings. The Balance Sheet therefore folds that
 #     same net income into equity, which is exactly why ``assets == liabilities +
 #     equity`` holds before the year is closed.
@@ -922,7 +922,7 @@ def _net_by_account(balances, *, account_types=None) -> dict:
 
     ``net`` is the closing position (opening + movement) signed to the account **type's**
     natural side (ASSET/EXPENSE → debit-positive; LIABILITY/EQUITY/INCOME →
-    credit-positive) — *not* the account's own ``normal_balance``. That distinction
+    credit-positive) - *not* the account's own ``normal_balance``. That distinction
     matters for **contra** accounts: accumulated depreciation (a contra-asset) carries a
     credit balance, so signing it as an asset (dr − cr) makes it *reduce* PP&E on the
     statements, and a contra-income (sales returns) reduces revenue. Signing by the
@@ -1050,8 +1050,8 @@ class IncomeStatementCompare:
 
     Unlike :func:`income_statement` (which sums income/expense across *all* periods),
     this is **fiscal-year scoped**: "this period" is the current fiscal year (or one
-    period of it), so the Prior-year column — the same scope in the previous fiscal
-    year — is a like-for-like comparison. Budget comes from the entity's budget for the
+    period of it), so the Prior-year column - the same scope in the previous fiscal
+    year - is a like-for-like comparison. Budget comes from the entity's budget for the
     current fiscal year. Variance is signed *favourable* (revenue: actual − budget;
     expense: budget − actual; net income: actual − budget).
     """
@@ -1106,7 +1106,7 @@ def income_statement_compare(entity, *, period=None) -> IncomeStatementCompare:
     has_prior = prior_fy is not None
     pri_inc, pri_exp = _actuals(prior_fy) if has_prior else ({}, {})
 
-    # Budget for the current fiscal year — prefer an approved (locked) plan over a draft.
+    # Budget for the current fiscal year - prefer an approved (locked) plan over a draft.
     budget = (
         Budget.objects.filter(
             entity=entity, fiscal_year=fy,
@@ -1228,7 +1228,7 @@ def balance_sheet(entity, *, as_of=None) -> BalanceSheet:
     """Build the balance sheet for ``entity`` as at ``as_of`` (default: today).
 
     Aggregates ASSET / LIABILITY / EQUITY balances across every period that has begun
-    on or before ``as_of`` (period granularity — partial-period cut-offs are not
+    on or before ``as_of`` (period granularity - partial-period cut-offs are not
     interpolated). The same window's net income (income − expense) is reported as
     ``retained_earnings`` and folded into equity, which is what makes ``assets ==
     liabilities + equity`` hold while the year is still open.
@@ -1285,7 +1285,7 @@ def _classify_cash_flow(account) -> str:
     bucket each leg lands in, the three buckets *always* foot to net change in cash.
 
     * INCOME / EXPENSE and working-capital accounts (current AR / AP) → **operating**
-    * non-current ASSET — property, plant & equipment and its accumulated
+    * non-current ASSET - property, plant & equipment and its accumulated
       depreciation contra → **investing**
     * EQUITY (capital, drawings) → **financing**
     * other LIABILITY (assumed borrowings) → **financing**
@@ -1454,12 +1454,12 @@ def cash_flow_statement(entity, *, period=None) -> CashFlowStatement:
 # movement into *profit for the period* and *owner contributions / distributions*.
 #
 # In this ledger the year is never closed into Retained Earnings (P&L sits unclosed
-# and the Balance Sheet folds it into equity — see ``balance_sheet``). The SOCE
+# and the Balance Sheet folds it into equity - see ``balance_sheet``). The SOCE
 # mirrors that exactly: each booked EQUITY account becomes a column whose movement in
 # the window is a contribution/distribution, and a synthetic *Retained earnings*
 # column carries the unclosed net income (opening = cumulative P&L before the window,
 # profit = P&L during the window). Closing therefore equals
-# ``balance_sheet(as_of=window end).total_equity`` — the invariant ``is_reconciled``
+# ``balance_sheet(as_of=window end).total_equity`` - the invariant ``is_reconciled``
 # proves.
 
 
@@ -1642,7 +1642,7 @@ def statement_of_changes_in_equity(entity, *, period=None) -> StatementOfChanges
 # is regrouped onto IFRS-for-SMEs presentation *lines* (see
 # :class:`~vs_finance.constants.IFRSLine`) rather than listed account-by-account.
 #
-# The pack never re-derives the numbers — it *regroups* the rows the existing
+# The pack never re-derives the numbers - it *regroups* the rows the existing
 # ``balance_sheet`` and ``income_statement`` already produce, so its section totals
 # foot to those statements by construction (``total_assets`` == the balance sheet's
 # total assets, etc.) and the accounting equation it asserts is exactly the one the
@@ -1651,7 +1651,7 @@ def statement_of_changes_in_equity(entity, *, period=None) -> StatementOfChanges
 
 
 #: Statement-of-Financial-Position sections, each an ordered list of its IFRS lines.
-#: (key, label, [IFRSLine, …]) — drives both presentation order and section subtotals.
+#: (key, label, [IFRSLine, …]) - drives both presentation order and section subtotals.
 # Support the ifrs sofp sections workflow.
 def _ifrs_sofp_sections():
     from .constants import IFRSLine

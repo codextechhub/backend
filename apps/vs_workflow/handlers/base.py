@@ -1,4 +1,4 @@
-"""BaseWorkflowHandler — subclass this in workflow_handlers.py of your app."""
+"""BaseWorkflowHandler - subclass this in workflow_handlers.py of your app."""
 from typing import Any, Dict, Optional, Type
 
 # Contract each app implements to connect documents to the workflow engine.
@@ -30,7 +30,7 @@ class BaseWorkflowHandler:
               "link": str,   # optional deep link to the source record
             }
 
-        Default is empty — override to surface details.
+        Default is empty - override to surface details.
         """
         return {}
 

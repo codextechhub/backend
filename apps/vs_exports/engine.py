@@ -1,4 +1,4 @@
-"""The export engine — turn a configuration into rows, an estimate, or a file.
+"""The export engine - turn a configuration into rows, an estimate, or a file.
 
 Three responsibilities, deliberately separated from the views and the queue:
 
@@ -6,7 +6,7 @@ Three responsibilities, deliberately separated from the views and the queue:
 line sharply: at build time permission checks are *advisory* (they shape the catalogue
 so the UI can disable things with a reason); at run time they are *authoritative* and
 re-evaluated as the owner. A field the owner has since lost is dropped and named in
-:class:`Omission` — the run completes with omissions rather than failing, because a
+:class:`Omission` - the run completes with omissions rather than failing, because a
 file missing two columns is more use than no file, provided nothing is silent about it.
 
 **Reading is done through ``values_list``.** Every catalogue field is an ORM path, so
@@ -15,7 +15,7 @@ a 200k-row export costs one query rather than 200k.
 
 **Failures carry a code.** :class:`ExportError` pairs a
 :class:`~vs_exports.constants.FailureCode` with a user-safe sentence. The view and the
-worker both render only the code, the sentence and the run reference — never a
+worker both render only the code, the sentence and the run reference - never a
 traceback.
 """
 from __future__ import annotations
@@ -93,7 +93,7 @@ def _holds(user, key: str, tenant) -> bool:
 
 # Decide whether a user may export a dataset at all.
 def may_export_dataset(user, dataset, tenant) -> bool:
-    """The dataset's own permission key — the coarse gate."""
+    """The dataset's own permission key - the coarse gate."""
     return _holds(user, dataset.permission, tenant)
 
 
@@ -107,7 +107,7 @@ def resolve_columns(user, dataset, column_ids, tenant):
     """Reduce requested columns to the ones this user may actually read.
 
     Returns ``(fields, omissions)``. Locked fields are always included and always
-    first — they are the row's identity, and a file whose rows cannot be identified is
+    first - they are the row's identity, and a file whose rows cannot be identified is
     not an export. Withdrawn fields and fields the caller has lost access to each
     produce their own :class:`Omission`, so the run detail can say *which* of the two
     happened rather than "something was left out".
@@ -214,7 +214,7 @@ def _primary_date_span(dataset, filters):
 def _check_date_bounds(dataset, filters):
     """Both ends of a required date range must be given.
 
-    This is about the filter being genuinely set, not about how wide it is —
+    This is about the filter being genuinely set, not about how wide it is -
     a dataset that declares its date filter required means a bounded read, and
     "from the beginning of time" is not a range. How wide the range may be is
     :func:`date_span_warning`'s business, and it only warns.
@@ -230,7 +230,7 @@ def _check_date_bounds(dataset, filters):
         )
 
 
-# Advise on an unusually wide date range — never block on it.
+# Advise on an unusually wide date range - never block on it.
 def date_span_warning(dataset, filters):
     """``{code, message}`` when the range is wider than the dataset suggests.
 
@@ -259,7 +259,7 @@ def build_queryset(dataset, scope, filters, sort=None):
     """Scoped queryset with every saved filter and sort applied.
 
     The boundary comes from the dataset's own ``base`` factory rather than a filter, so
-    it cannot be edited away by a caller and there is no code path that reads past it —
+    it cannot be edited away by a caller and there is no code path that reads past it -
     another entity's books for an entity-scoped dataset, another tenant's rows for a
     tenant-scoped one.
     """
@@ -291,7 +291,7 @@ def build_queryset(dataset, scope, filters, sort=None):
 # --------------------------------------------------------------------------- #
 # Estimation and preview                                                      #
 # --------------------------------------------------------------------------- #
-#: Rough bytes per cell, per format. Deliberately coarse — the run records the truth.
+#: Rough bytes per cell, per format. Deliberately coarse - the run records the truth.
 _BYTES_PER_CELL = {"xlsx": 11, "csv": 9}
 
 
@@ -306,8 +306,8 @@ def estimate(user, dataset, scope, config, tenant):
     fields, omissions = resolve_columns(user, dataset, config.get("columns"), tenant)
     qs = build_queryset(dataset, scope, config.get("filters"), config.get("sort"))
 
-    # Count one row past the limit — a LIMITed COUNT, so a huge table costs the same
-    # as a small one — which is enough to tell "exactly N" from "more than N".
+    # Count one row past the limit - a LIMITed COUNT, so a huge table costs the same
+    # as a small one - which is enough to tell "exactly N" from "more than N".
     rows = qs.values("pk")[: EXACT_COUNT_LIMIT + 1].count()
     exact = rows <= EXACT_COUNT_LIMIT
 
@@ -337,7 +337,7 @@ def estimate(user, dataset, scope, config, tenant):
             "code": "ROW_CAP_EXCEEDED",
             "message": (
                 f"This is above the {row_cap:,}-row cap for {dataset.name}. Narrow the "
-                f"filters — a shorter date range is usually enough."
+                f"filters - a shorter date range is usually enough."
             ),
         })
     if (wide := date_span_warning(dataset, config.get("filters"))) is not None:
@@ -389,7 +389,7 @@ def produce(user, config, scope, tenant, *, progress=None, is_cancelled=None):
 
     ``progress`` is called as ``progress(phase, rows_done, rows_total)`` so the run row
     can report determinate progress; ``is_cancelled`` is polled between chunks, which
-    is what makes cancellation cooperative — the caller can stop us without leaving a
+    is what makes cancellation cooperative - the caller can stop us without leaving a
     half-written file, because nothing is stored until this function returns.
     """
     from .constants import RunPhase
@@ -443,7 +443,7 @@ def produce(user, config, scope, tenant, *, progress=None, is_cancelled=None):
 
     rows = []
     # islice rather than a sliced queryset so the cap and the streaming cursor stay
-    # independent — the reader still fetches in chunks, it just stops early.
+    # independent - the reader still fetches in chunks, it just stops early.
     source = islice(qs.values_list(*paths).iterator(chunk_size=CHUNK_SIZE), row_cap)
     for index, record in enumerate(source, start=1):
         rows.append([
@@ -480,7 +480,7 @@ class Cancelled(Exception):
 
 # Describe what produced a file, for the workbook's Filters sheet and the run detail.
 def filters_summary(dataset, config, scope):
-    """``[(label, value)]`` — the provenance a reader needs six weeks later."""
+    """``[(label, value)]`` - the provenance a reader needs six weeks later."""
     rows = [
         ("Dataset", dataset.name),
         ("Scope", scope.label),
@@ -490,7 +490,7 @@ def filters_summary(dataset, config, scope):
     for spec in config.get("filters") or []:
         rows.append(("Filter", describe_filter(dataset, spec)))
     if not config.get("filters"):
-        rows.append(("Filter", f"None — the whole dataset for {scope.label}"))
+        rows.append(("Filter", f"None - the whole dataset for {scope.label}"))
     return rows
 
 
@@ -504,6 +504,6 @@ def plain_sentence(dataset, config, scope, *, rows=None) -> str:
     filters = [describe_filter(dataset, s) for s in config.get("filters") or []]
     scope = f" where {'; '.join(filters)}" if filters else ""
     return (
-        f"{dataset.name} in {where}{scope} — {columns} columns, {count} — as {fmt}. "
+        f"{dataset.name} in {where}{scope} - {columns} columns, {count} - as {fmt}. "
         f"Files stay available for 30 days."
     )

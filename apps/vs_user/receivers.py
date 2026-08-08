@@ -9,7 +9,7 @@
 # fields the old bypass task wrote (email_attempts / email_status / email_sent_at
 # / email_last_error).
 #
-# Receivers must never raise — a tracking failure must not break dispatch or the
+# Receivers must never raise - a tracking failure must not break dispatch or the
 # delivery task. They filter on the user.invited event key so other events are
 # ignored cheaply.
 

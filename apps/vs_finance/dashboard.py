@@ -43,7 +43,7 @@ def _m(kobo) -> dict:
 
 # Build a display label for a user or system actor.
 def _user_label(user) -> str:
-    """Human label for an actor — the custom User has no ``get_full_name``."""
+    """Human label for an actor - the custom User has no ``get_full_name``."""
     if user is None:  # System-generated rows have no user.
         return "system"
     name = f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()  # Build full name defensively.
@@ -117,7 +117,7 @@ def _closing_series(account_ids, window_periods, normal) -> list[int]:
     In this denormalised model each :class:`AccountBalance` row holds only that
     period's *movement* (opening is 0) and rows exist only for periods with activity.
     So the closing balance at period ``p`` is the **cumulative** signed movement over
-    every period up to and including ``p`` — including movements that predate the
+    every period up to and including ``p`` - including movements that predate the
     sparkline window (e.g. an opening capital injection in period 1).
     """
     if not account_ids or not window_periods:  # No accounts or periods means zero series.
@@ -145,7 +145,7 @@ def _net_income_series(entity, window_periods) -> list[int]:
 
     Every income/expense leg contributes ``credit − debit`` to net income (income is
     credit-natural so adds; expense is debit-natural so its ``c−d`` is negative and
-    subtracts). Accumulated within each period's fiscal year up to its period number —
+    subtracts). Accumulated within each period's fiscal year up to its period number -
     so it's true year-to-date even when the window starts mid-year.
     """
     if not window_periods:  # No period window means no series.
@@ -183,7 +183,7 @@ def _kpi(series: list[int]) -> dict:
 # Resolve GL account ids that count as cash.
 def _cash_account_ids(entity) -> set:
     """Cash accounts = the canonical ``1100 Cash & Bank`` GL account plus any GL
-    account a :class:`BankAccount` maps to — the same definition the cash-flow
+    account a :class:`BankAccount` maps to - the same definition the cash-flow
     statement uses, so the dashboard's cash position reconciles to it. (Many
     entities hold cash directly in ``1100`` with no operational BankAccount row.)
     """

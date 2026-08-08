@@ -31,7 +31,7 @@ class TenantAPIClient(APIClient):
         return f"{path}{sep}tenant={self._tenant_slug}"
 
     # GET/HEAD encode ``data`` into the query string, which would override a
-    # path-appended parameter — inject into data when it is used.
+    # path-appended parameter - inject into data when it is used.
     def get(self, path, data=None, **extra):
         if self._tenant_slug:
             if data is not None:

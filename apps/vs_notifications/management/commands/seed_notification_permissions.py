@@ -1,12 +1,12 @@
 """Seed the communication permission keys enforced by vs_notifications views.
 
 Only the three keys the views actually check are seeded (see
-NotificationPermission in constants.py — the rest of that class is reserved
+NotificationPermission in constants.py - the rest of that class is reserved
 for future messaging work and gets seeded when something enforces it):
 
-    communication.notification_templates.configure   — template editor
-    communication.communication_permissions.enforce  — settings matrix GET/PATCH
-    communication.message_activity.audit             — delivery history log
+    communication.notification_templates.configure   - template editor
+    communication.communication_permissions.enforce  - settings matrix GET/PATCH
+    communication.message_activity.audit             - delivery history log
 
 Platform roles receive all three. School admin/branch admin prebuilt roles
 receive the settings + history keys, because the backend already scopes both

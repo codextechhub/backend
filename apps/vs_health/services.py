@@ -482,7 +482,7 @@ def overall_posture() -> dict:
 def global_uptime(days: int = 30) -> float | None:
     """Mean uptime across services over the last *days* (from daily rollups).
 
-    None when no rollups exist yet — an uptime figure must never be claimed
+    None when no rollups exist yet - an uptime figure must never be claimed
     without a single real check behind it.
     """
     from .models import UptimeDailyRollup

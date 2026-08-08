@@ -1,10 +1,10 @@
 """Constants, enums, and permission keys for vs_todo.
 
-vs_todo is the platform-side "ToDo — Org Accountability" tool used by CodeX
+vs_todo is the platform-side "ToDo - Org Accountability" tool used by CodeX
 (CX) staff on the internal intranet. It models accountability the same way the
 design does: every task belongs to one person, a manager can roll up their whole
 area (themselves + everyone beneath them), and assignment only ever flows *down*
-the organogram — never sideways or up.
+the organogram - never sideways or up.
 
 The reporting hierarchy is NOT stored on the task. It is derived live from the
 existing CX organogram (vs_user: Position.reports_to / PositionAssignment), so
@@ -20,7 +20,7 @@ class Priority(models.TextChoices):
 
 
 class TaskStatus(models.TextChoices):
-    """Derived, never stored — see Task.status. Listed here so the API and the
+    """Derived, never stored - see Task.status. Listed here so the API and the
     frontend share one vocabulary for filtering."""
     COMPLETED   = "COMPLETED",   "Completed"
     IN_PROGRESS = "IN_PROGRESS", "In Progress"

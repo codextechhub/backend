@@ -1,4 +1,4 @@
-# Migration Reset — Staging Runbook (one-time, 2026-06-12)
+# Migration Reset - Staging Runbook (one-time, 2026-06-12)
 
 All apps' migrations were squashed to fresh initials (77 files → 26).
 The two finance data seeds survive as `vs_finance/migrations/0003_seed_currencies`
@@ -11,12 +11,12 @@ no longer needs.
 Staging's `django_migrations` table records the OLD migration names. Deploying
 the new chain and running `migrate` normally would try to apply `0001_initial`
 on top of existing tables and fail. The fix: tell Django the new chain is
-already applied — the schema is identical, only the bookkeeping changes.
+already applied - the schema is identical, only the bookkeeping changes.
 
 ## Steps (run on staging, IN THIS ORDER)
 
 ⚠️ Do NOT use the Render Shell for the adoption: the shell runs the
-PREVIOUSLY-deployed build, which still carries the OLD migration files —
+PREVIOUSLY-deployed build, which still carries the OLD migration files -
 faking there records the wrong names (we learned this the hard way). The
 adoption must execute with the NEW code, and the only place that's guaranteed
 pre-deploy is the build itself.
@@ -32,7 +32,7 @@ pre-deploy is the build itself.
    ```
 
    `--fake` records every new migration as applied WITHOUT executing any SQL.
-   That includes the data-seed migrations — correct, because staging already
+   That includes the data-seed migrations - correct, because staging already
    holds the currencies and the CODEX entity.
 
 3. Deploy (`./deploy-staging.sh`). The build log shows the truncate line and
@@ -40,7 +40,7 @@ pre-deploy is the build itself.
 
 4. **Revert build.sh to the plain `migrate` immediately** (leaving the
    truncate in would re-fake on every deploy) and deploy once more. That
-   build's migrate prints "No migrations to apply." — done forever.
+   build's migrate prints "No migrations to apply." - done forever.
 
 ## Colleagues' local databases
 

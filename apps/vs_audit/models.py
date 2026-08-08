@@ -127,7 +127,7 @@ class AuditActionType(models.TextChoices):
     EXPORT_FAILED = "EXPORT_FAILED", "Export Failed"
 
     # Export Centre (vs_exports). The vocabulary is closed and validated on save,
-    # so every event the module emits must be registered here — an unregistered
+    # so every event the module emits must be registered here - an unregistered
     # action_type is silently swallowed by emit_audit_event and the trail is lost.
     # Labels carry the design's dotted event name so the two stay traceable.
     EXPORT_DEFINITION_CREATED = "EXPORT_DEFINITION_CREATED", "Export Defined (export.definition.created)"

@@ -1,7 +1,7 @@
-# Module-docs playbook — how this initiative runs
+# Module-docs playbook - how this initiative runs
 
 The repeatable method behind `docs/finance/` (16 slice reports, July 2026). Any new
-session continuing this work — **next: `vs_payments`, then `vs_procurement`** —
+session continuing this work - **next: `vs_payments`, then `vs_procurement`** -
 follows this file. It is the source of truth for process; per-slice content truth is
 always the code.
 
@@ -10,22 +10,22 @@ always the code.
 Document every backend module as **per-subject slice reports** so future programmers
 can trace endpoints → calculations → output shapes without reading the code cold.
 
-- ✅ `vs_finance` — complete: 16 slices in `docs/finance/`, every gotcha fixed or
+- ✅ `vs_finance` - complete: 16 slices in `docs/finance/`, every gotcha fixed or
   explicitly justified in each doc's §8.
-- ✅ `vs_payments` — complete: 3 slices in `docs/payments/` — `payment_collections`
+- ✅ `vs_payments` - complete: 3 slices in `docs/payments/` - `payment_collections`
   (collections + virtual accounts), `payment_settlement` (payouts, batches,
   settlement reconciliation + movements/transactions feeds),
   `payment_webhooks_providers` (async webhook pipeline + OPay/Paystack/Fake
   adapters). Gotchas swept; suite 70 green. One OPEN operational item (`todo.md`):
   seed a `payments.payout_batch` approval template per live entity before go-live.
-- ✅ `vs_procurement` — complete: all 5 slices written:
+- ✅ `vs_procurement` - complete: all 5 slices written:
   `procurement_master_data`, `procurement_sourcing`, `procurement_p2p_chain`,
   `procurement_inventory`, and `procurement_reports`. Every reports §8 decision
   is implemented or justified; full procurement QA is 263 green.
 
 ## The loop (per slice)
 
-1. **Trace the real code** — models, service functions, views (rbac keys + request
+1. **Trace the real code** - models, service functions, views (rbac keys + request
    bodies actually read), serializers (exposed fields, FLS), URLs, enums, seeds.
    Never write from memory of "how it should work".
 2. **Write the doc** from `docs/finance/_report_template.md` (11 sections). The three
@@ -33,11 +33,11 @@ can trace endpoints → calculations → output shapes without reading the code 
    reads*, §5 *formula → the function that computes it*, §6 *what survives posting*.
    Cite `file:line` on every calc/posting/field claim. §8 lists gotchas honestly.
 3. **Commit the doc** (docs-only commit, message style `docs(payments): …`).
-4. **Gotcha briefing** — explain every §8 item to the user in *simple, non-technical
+4. **Gotcha briefing** - explain every §8 item to the user in *simple, non-technical
    terms*, sorted into: recommend-fix / judgment call / justified-by-design, each
    with a one-line verdict. Obvious wrong-money/crash bugs: fix immediately without
    asking. Everything else: wait for the user's picks.
-5. **Fixes** — see Working mode below. After fixes land: flip the doc's §8 items to
+5. **Fixes** - see Working mode below. After fixes land: flip the doc's §8 items to
    ✅ with the how, update `todo.md` (Done entry), commit.
 
 ## Working mode (conductor)
@@ -58,7 +58,7 @@ can trace endpoints → calculations → output shapes without reading the code 
 
 ## Conventions that bit us (learn once)
 
-- **Stage files explicitly — never `git add -A`** (it once swept the user's
+- **Stage files explicitly - never `git add -A`** (it once swept the user's
   unrelated in-progress work into a commit).
 - Commit **directly to `main`**, do **not push** (user pushes). Trailer:
   `Co-Authored-By:` line per the harness rules.
@@ -66,25 +66,25 @@ can trace endpoints → calculations → output shapes without reading the code 
   --settings=apps.settings.local --noinput` (Postgres). **Never run two test
   processes concurrently** (shared test DB → phantom failures). Suite baseline at
   handoff: **282 green** (`vs_finance core`); payments/procurement have their own
-  tests — establish their baseline first.
+  tests - establish their baseline first.
 - Money is integer kobo everywhere. Pagination is the `XVSPagination`
   `{pagination, data}` envelope (page 25, `?page_size=` ≤ 100). Response-shape
-  changes are **frontend-visible** — always flag them in the report/commit.
+  changes are **frontend-visible** - always flag them in the report/commit.
 - RBAC: every view has an `rbac_permission`; keys live in per-app
   `seed_*_permissions.py`; canonical verbs in `core/…/seed_actions.py`. New
   documents get their **own resource** (see the pettycash/salary splits). FLS
-  (`FieldSecurityMixin.read_permissions`) masks sensitive fields — payments already
+  (`FieldSecurityMixin.read_permissions`) masks sensitive fields - payments already
   uses `payments.payout.view_sensitive` (beneficiary masking in the movements feed).
 - The finance posting engine is the reference for money-touching QA: balanced-or-
   rejected, closed-period guards, corrections by reversal (never edit posted
   history), audit row in the same commit, durable rejection rows.
-- `todo.md` at repo root: Undone/Done ledger — add fix batches to Done with detail.
+- `todo.md` at repo root: Undone/Done ledger - add fix batches to Done with detail.
 
 ## Session-start checklist for the next session
 
 1. Read this file + `docs/finance/_report_template.md`; skim one finished example
    (`docs/finance/finance_banking_reconciliation.md` is the richest).
-2. `git log --oneline -10` and `git status` — note any user commits since; if the
+2. `git log --oneline -10` and `git status` - note any user commits since; if the
    user changed vs_payments/vs_procurement, study those commits first (the user
    sometimes asks "study my commit and sync docs").
 3. Establish the module's test baseline (`python manage.py test vs_payments

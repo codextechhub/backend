@@ -8,7 +8,7 @@ Purpose
 Creates or updates the canonical ImportTemplate records and their
 ImportTemplateColumn children for every supported dataset type.
 
-This command is idempotent — running it multiple times is safe.
+This command is idempotent - running it multiple times is safe.
 Existing templates are matched by `code` and updated in place.
 Existing columns are matched by (template, column_name) and updated
 in place. Nothing is deleted automatically; retired templates must be
@@ -81,7 +81,7 @@ TEMPLATES: list[dict] = [
             ),
             "instructions": (
                 "Fill one school per row. School Slug must be lowercase letters and "
-                "hyphens only — no spaces or special characters. Example: greenfield-academy. "
+                "hyphens only - no spaces or special characters. Example: greenfield-academy. "
                 "Slugs cannot match reserved system words (admin, api, www, etc.). "
                 "Ownership Type must be one of: PUBLIC, PRIVATE, FAITH_BASED, NGO. "
                 "Term Structure must be one of: 3_TERMS, 2_SEMESTERS. "
@@ -105,7 +105,7 @@ TEMPLATES: list[dict] = [
                 "School Admin Email":    "admin@greenfieldacademy.edu.ng",
                 "School Admin Phone":    "08051234567",
                 "School Admin Role":     "IT Head",
-                "Branch Name":           "Greenfield Academy — Main Campus",
+                "Branch Name":           "Greenfield Academy - Main Campus",
                 "Branch Type":           "Combined",
                 "Branch Address":        "14 Admiralty Way, Lekki Phase 1, Lagos",
                 "Branch Email":          "main@greenfieldacademy.edu.ng",
@@ -314,12 +314,12 @@ TEMPLATES: list[dict] = [
                 "column_name":   "Branch Name",
                 "target_field":  "branch_name",
                 "display_name":  "Branch Name",
-                "help_text":     "Name of the school's initial main branch. Defaults to '<School Name> — Main Campus' if blank.",
+                "help_text":     "Name of the school's initial main branch. Defaults to '<School Name> - Main Campus' if blank.",
                 "data_type":     TemplateColumnDataTypeChoices.STRING,
                 "is_required":   False,
                 "is_unique":     False,
                 "max_length":    255,
-                "sample_value":  "Greenfield Academy — Main Campus",
+                "sample_value":  "Greenfield Academy - Main Campus",
                 "column_order":  15,
             },
             {
@@ -510,7 +510,7 @@ TEMPLATES: list[dict] = [
         # Branches
         # -----------------------------------------------------------------------
         # Covers: identity, type, contact, location, status, and branch admin.
-        # School Slug cross-references an existing School row —
+        # School Slug cross-references an existing School row -
         # so the Schools template must be imported first.
         #
         # Branch codes are auto-allocated by Branch.save(), so no Code column
@@ -529,9 +529,9 @@ TEMPLATES: list[dict] = [
             ),
             "instructions": (
                 "Fill one branch per row. School Slug must exactly match an existing "
-                "school slug — check spelling carefully. "
+                "school slug - check spelling carefully. "
                 "Only one branch per school may have Is Main Branch set to TRUE. "
-                "Branch codes are assigned automatically — do not add a code column. "
+                "Branch codes are assigned automatically - do not add a code column. "
                 "Date columns must follow YYYY-MM-DD format."
             ),
             "allow_sample_row": True,
@@ -750,7 +750,7 @@ TEMPLATES: list[dict] = [
         # -----------------------------------------------------------------------
         # One row = one CodeX platform staff member. Each is created through the
         # normal flow (submitted for approval, invited on approval) by
-        # import_cx_users_row — never a draft. Platform-scoped: no school column.
+        # import_cx_users_row - never a draft. Platform-scoped: no school column.
         # -----------------------------------------------------------------------
         "template": {
             "code": "cx_users_master_v1",
@@ -803,7 +803,7 @@ TEMPLATES: list[dict] = [
             },
             {
                 "column_name":  "Email", "target_field": "email",
-                "display_name": "Email", "help_text": "Work email — must be unique across the platform.",
+                "display_name": "Email", "help_text": "Work email - must be unique across the platform.",
                 "data_type": TemplateColumnDataTypeChoices.EMAIL,
                 "is_required": True, "is_unique": True,
                 "sample_value": "ada.obi@codexng.com", "column_order": 3,
@@ -1025,7 +1025,7 @@ class Command(BaseCommand):
         dry_run: bool = options["dry_run"]
 
         if dry_run:
-            self.stdout.write(self.style.WARNING("DRY RUN — no changes will be saved.\n"))
+            self.stdout.write(self.style.WARNING("DRY RUN - no changes will be saved.\n"))
 
         # Filter down to the requested dataset type if one was given
         entries_to_process = (

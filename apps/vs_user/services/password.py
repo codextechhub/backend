@@ -29,7 +29,7 @@ class PasswordService:
     def change(user, new_password: str, request=None):
         """
         Changes the password for a logged-in user.
-        Ends all active sessions — the user must log in again.
+        Ends all active sessions - the user must log in again.
         """
         try:
             validate_password(new_password, user=user)
@@ -134,7 +134,7 @@ class PasswordService:
         Creates a PasswordResetRequest record and dispatches the reset email.
 
         ``actor`` owns the resulting queue row and gets the completion
-        notification — the requesting admin for ADMIN origin, the user
+        notification - the requesting admin for ADMIN origin, the user
         themselves for SELF. It is never the target user on an admin reset.
         """
         expiry_hours = RESET_EXPIRY_SELF_HOURS if origin == "SELF" else RESET_EXPIRY_ADMIN_HOURS
@@ -161,7 +161,7 @@ class PasswordService:
                     _job_kind="email",
                 )
             except Exception:
-                # Broker unavailable — run synchronously so the email still goes out
+                # Broker unavailable - run synchronously so the email still goes out
                 send_password_reset_email_task.apply(
                     kwargs=dict(
                         activation_key=str(user.activation_key),
@@ -170,6 +170,6 @@ class PasswordService:
                     )
                 )
         except Exception:
-            # The reset row already exists — an email failure must never
+            # The reset row already exists - an email failure must never
             # break the reset request itself. The user can request again.
             logger.exception("Password reset email dispatch failed for user %s", user.pk)

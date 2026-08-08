@@ -3,8 +3,8 @@ Custom QuerySet and Manager for automatic tenant-aware filtering.
 
 The tenant context is established per-request by TenantJWTAuthentication and
 stored in a contextvar (vs_tenants.context). ``TenantAwareManager`` applies it
-EAGERLY in ``get_queryset()``, so every entry point — ``all()``, ``filter()``,
-``get()``, ``exists()``, related lookups through the default manager —
+EAGERLY in ``get_queryset()``, so every entry point - ``all()``, ``filter()``,
+``get()``, ``exists()``, related lookups through the default manager -
 is scoped without any per-call machinery.
 
 Usage in models:
@@ -32,7 +32,7 @@ Options:
         For models whose tenant FK isn't named ``school``.
 
 Vision (CX) staff requests never set a school context, so their queries are
-never filtered. Celery tasks have no thread-local context either — they see
+never filtered. Celery tasks have no thread-local context either - they see
 everything and must scope explicitly, which is the correct default for
 platform jobs.
 """
@@ -84,7 +84,7 @@ class TenantAwareManager(models.Manager.from_queryset(TenantAwareQuerySet)):
         if self.tenant_field:
             return self.tenant_field
         field_names = {f.name for f in self.model._meta.get_fields()}
-        # Direct tenant ownership wins — every converted model carries it.
+        # Direct tenant ownership wins - every converted model carries it.
         if "tenant" in field_names:
             return "tenant"
         if "school" in field_names:

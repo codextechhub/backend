@@ -19,8 +19,8 @@ def submit_for_approval(document, requested_by, *,
                          template_code: Optional[str] = None) -> WorkflowInstance:
     """Create a WorkflowInstance for document and activate its first stage.
 
-    Template resolution uses a three-level cascade — branch-specific →
-    school-wide → platform-wide — so a platform template acts as a fallback
+    Template resolution uses a three-level cascade - branch-specific →
+    school-wide → platform-wide - so a platform template acts as a fallback
     without forcing admins to duplicate it at every school and branch.
     Calling code must ensure the document declares workflow_document_type and
     that a matching handler is registered, otherwise InvalidInstanceStateError
@@ -36,7 +36,7 @@ def submit_for_approval(document, requested_by, *,
     handler.validate_document(document, requested_by)
 
     code = template_code or handler.resolve_default_template_code(document)
-    # Direct tenant attribute wins — including an explicit None (platform-scoped
+    # Direct tenant attribute wins - including an explicit None (platform-scoped
     # documents must try ONLY the platform template). Finance-style documents
     # scope through their ledger entity's owning tenant; documents with neither
     # fall back to the requester's home tenant. Must resolve identically to

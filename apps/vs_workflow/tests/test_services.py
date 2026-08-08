@@ -102,7 +102,7 @@ class AdvanceInstanceTests(TestCase):
         instance = _make_instance(self.template, self.user)
         with patch("vs_workflow.services.routing.approvers_service.resolve_approvers",
                    return_value=[]):
-            # No more stages after the skipped one — should terminate APPROVED.
+            # No more stages after the skipped one - should terminate APPROVED.
             with patch("vs_workflow.services.routing.get_handler") as mock_handler:
                 mock_handler.return_value.on_approved.return_value = None
                 routing_svc.advance_instance(instance, current_attempt=1)

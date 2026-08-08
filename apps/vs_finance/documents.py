@@ -50,14 +50,14 @@ def primary_collection_account(entity):
 # --------------------------------------------------------------------------- #
 
 def _issuer_block(entity, *, branch=None) -> dict:
-    """Letterhead identity for the document's issuer — *the entity keeping the books*.
+    """Letterhead identity for the document's issuer - *the entity keeping the books*.
 
     The invoice/receipt is a generic document, so the issuer adapts to who is billing:
 
     * A **school-owned** entity prints the *school's* own branding (name, motto, logo,
-      address, website) — a school billing its parents shows its own letterhead.
+      address, website) - a school billing its parents shows its own letterhead.
     * The **platform (CodeX)** entity prints CodeX's identity from ``PLATFORM_ISSUER``
-      settings — when CodeX bills a school (its customer), the school sees CodeX's
+      settings - when CodeX bills a school (its customer), the school sees CodeX's
       details.
     * Any other school-less entity falls back to the ledger entity's name.
 
@@ -185,8 +185,8 @@ def invoice_document_context(invoice) -> dict:
         "customer": _customer_block(invoice.customer),  # Bill-to block.
         "invoice": {  # Invoice-specific template values.
             "document_number": invoice.document_number,  # Invoice number.
-            "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else "—",  # Display invoice date.
-            "due_date": invoice.due_date.isoformat() if invoice.due_date else "—",  # Display due date.
+            "invoice_date": invoice.invoice_date.isoformat() if invoice.invoice_date else "-",  # Display invoice date.
+            "due_date": invoice.due_date.isoformat() if invoice.due_date else "-",  # Display due date.
             "reference": invoice.reference or "",  # External/reference text.
             "narration": invoice.narration or "",  # Narrative text.
             "payment_status": invoice.payment_status,  # Raw payment status.
@@ -253,7 +253,7 @@ def receipt_document_context(payment) -> dict:
         "customer": _customer_block(payment.customer),  # Receipt customer block.
         "receipt": {  # Receipt-specific template values.
             "document_number": payment.document_number,  # Receipt number.
-            "payment_date": payment.payment_date.isoformat() if payment.payment_date else "—",  # Display payment date.
+            "payment_date": payment.payment_date.isoformat() if payment.payment_date else "-",  # Display payment date.
             "method": method_label,  # Human-readable payment method.
             "provider_reference": _provider_reference(payment),  # Gateway provider reference when present.
             "amount": format_naira(payment.amount),  # Display receipt amount.

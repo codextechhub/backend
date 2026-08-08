@@ -95,7 +95,7 @@ class FixedAssetListCreateView(_FinanceBase):
 
 # Group endpoint behavior for Fixed Asset Summary View.
 class FixedAssetSummaryView(_FinanceBase):
-    """GET — register KPIs over **all** assets (accurate under pagination).
+    """GET - register KPIs over **all** assets (accurate under pagination).
 
     docstring-name: Fixed assets
     """
@@ -160,7 +160,7 @@ class FixedAssetDetailView(_FixedAssetActionBase):
 
 # Group endpoint behavior for Fixed Asset Acquire View.
 class FixedAssetAcquireView(_FixedAssetActionBase):
-    """POST {bank_account?, credit_account?} — capitalise + build the schedule.
+    """POST {bank_account?, credit_account?} - capitalise + build the schedule.
 
     docstring-name: Acquire a fixed asset
     """
@@ -187,7 +187,7 @@ class FixedAssetAcquireView(_FixedAssetActionBase):
 
 # Group endpoint behavior for Fixed Asset Depreciate View.
 class FixedAssetDepreciateView(_FixedAssetActionBase):
-    """POST {up_to_date} — post every due depreciation charge up to a date.
+    """POST {up_to_date} - post every due depreciation charge up to a date.
 
     docstring-name: Run depreciation
     """
@@ -214,7 +214,7 @@ class FixedAssetDepreciateView(_FixedAssetActionBase):
 
 # Group endpoint behavior for Fixed Asset Run Depreciation View.
 class FixedAssetRunDepreciationView(_FinanceBase):
-    """GET ?up_to_date — preview the period's depreciation posting; POST to run it.
+    """GET ?up_to_date - preview the period's depreciation posting; POST to run it.
 
     The run posts ONE compound journal covering every due charge across active assets.
 
@@ -256,7 +256,7 @@ class FixedAssetRunDepreciationView(_FinanceBase):
 
 # Group endpoint behavior for Fixed Asset Dispose View.
 class FixedAssetDisposeView(_FixedAssetActionBase):
-    """POST {disposal_date, proceeds?, bank_account?, gain_loss_account?} — retire/sell.
+    """POST {disposal_date, proceeds?, bank_account?, gain_loss_account?} - retire/sell.
 
     docstring-name: Dispose a fixed asset
     """

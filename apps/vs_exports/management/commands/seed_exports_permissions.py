@@ -19,13 +19,13 @@ Run order::
     python manage.py create_superuser
     python manage.py seed_exports_permissions
 
-Safe to re-run — all operations are idempotent.
+Safe to re-run - all operations are idempotent.
 """
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
 MODULE_NAME = "exports"
-MODULE_DESCRIPTION = "Export Centre — build, run and download data exports."
+MODULE_DESCRIPTION = "Export Centre - build, run and download data exports."
 PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
 _PLATFORM_ROLE_NAMES = {
     "xvs_super_admin": "XVS Super Admin",
@@ -34,7 +34,7 @@ _PLATFORM_ROLE_NAMES = {
 
 _RESTRICTED = {"SENSITIVE", "CRITICAL"}
 
-#: Keys only the super-admin role receives — see the module docstring.
+#: Keys only the super-admin role receives - see the module docstring.
 SUPER_ADMIN_ONLY = {"exports.sensitive_field.export", "exports.activity.view"}
 
 # (resource_name, resource_label, [(action, sensitivity), ...])
@@ -80,7 +80,7 @@ class Command(BaseCommand):
             )
             if created:
                 self.stdout.write(
-                    f"  + action '{name}' (auto-registered — run seed_actions for full description)"
+                    f"  + action '{name}' (auto-registered - run seed_actions for full description)"
                 )
 
         module, created = PermissionModule.objects.get_or_create(
@@ -124,7 +124,7 @@ class Command(BaseCommand):
         codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
         if codex is None:
             self.stdout.write(self.style.WARNING(
-                "  ⚠  Codex platform tenant not found — run migrations first; grants skipped."
+                "  ⚠  Codex platform tenant not found - run migrations first; grants skipped."
             ))
         else:
             for role_id in PLATFORM_ROLE_IDS:

@@ -1,7 +1,7 @@
-"""REST API for vs_finance — entity-scoped reads, documents and key actions.
+"""REST API for vs_finance - entity-scoped reads, documents and key actions.
 
 Every endpoint is scoped to a :class:`~vs_finance.models.LedgerEntity` (the ledger's
-tenant — *never* a School): pass ``?entity=<id or code>``. Master-data and document
+tenant - *never* a School): pass ``?entity=<id or code>``. Master-data and document
 lists use the platform's paginated envelope (:class:`core.pagination.XVSPagination`)
 and RBAC gate (``finance.<resource>.<action>``); the financial statements are returned
 as plain JSON by dedicated report endpoints. Domain errors raised by the services are
@@ -56,14 +56,14 @@ from .serializers import (
 def resolve_entity(request):
     """Resolve the ``?entity=`` query param (id or code) to a :class:`LedgerEntity`.
 
-    Authorization: holding a finance permission key is NOT enough — the caller
+    Authorization: holding a finance permission key is NOT enough - the caller
     must also be entitled to this specific entity's books. The entity must belong
     to the caller's asserted tenant (request.tenant). Unknown and forbidden
     entities both return NotFound so an outsider can't probe which entity codes
     exist.
 
     Raises DRF :class:`ValidationError` when missing, :class:`NotFound` when
-    unknown/forbidden — both rendered into the standard error envelope by the
+    unknown/forbidden - both rendered into the standard error envelope by the
     custom exception handler.
     """
     raw = request.query_params.get("entity")
@@ -136,9 +136,9 @@ def _resolve_date_param(request, param):
 
 # Group endpoint behavior for Entity List Create View.
 class EntityListCreateView(generics.ListCreateAPIView):
-    """GET /finance/entities/ — the ledger entities (sets of books) on the platform.
+    """GET /finance/entities/ - the ledger entities (sets of books) on the platform.
 
-    POST /finance/entities/ — provision a **new** set of books. Entity creation is a
+    POST /finance/entities/ - provision a **new** set of books. Entity creation is a
     structural, platform-level operation (a new entity becomes the tenant of its own
     documents and numbering), so it is gated on the dedicated ``finance.entity.create``
     key, which is granted only to the platform admin roles.
@@ -191,10 +191,10 @@ class EntityListCreateView(generics.ListCreateAPIView):
 
 # Group endpoint behavior for Account List Create View.
 class AccountListCreateView(EntityScopedListMixin, generics.ListAPIView):
-    """GET /finance/accounts/?entity= — the entity's chart of accounts.
+    """GET /finance/accounts/?entity= - the entity's chart of accounts.
 
     ``?with_balance=true`` returns the **whole tree** (un-paginated) with each
-    account's net GL ``balance`` and sub-ledger ``tag`` (CONTROL / CASH) — for the
+    account's net GL ``balance`` and sub-ledger ``tag`` (CONTROL / CASH) - for the
     Chart-of-Accounts screen. Without it, the plain paginated list is served (used
     by the account pickers).
 
@@ -321,7 +321,7 @@ class AccountDetailView(APIView):
 
     GET returns the account, a balance summary (current, fiscal-year opening,
     line/journal counts) and its posted journal-line activity (newest first, with
-    a running balance) — feeds the Chart-of-Accounts detail drawer.
+    a running balance) - feeds the Chart-of-Accounts detail drawer.
 
     docstring-name: Account detail & ledger
     """
@@ -527,7 +527,7 @@ class AccountActivityView(APIView):
 
 
 class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
-    """GET /finance/periods/?entity= — the entity's fiscal periods.
+    """GET /finance/periods/?entity= - the entity's fiscal periods.
 
     docstring-name: Fiscal periods
     """
@@ -567,7 +567,7 @@ class FiscalPeriodListView(EntityScopedListMixin, generics.ListAPIView):
 
 # Expose the dates an ordinary posting may currently use.
 class PostingWindowView(APIView):
-    """GET /finance/posting-window/?entity= — which dates accept a posting today.
+    """GET /finance/posting-window/?entity= - which dates accept a posting today.
 
     Feeds every date picker that carries a document date, in this console and in
     procurement (GRNs, vendor invoices and payments post through the same guard).
@@ -577,11 +577,11 @@ class PostingWindowView(APIView):
     Gated on module membership rather than ``finance.period.view``: a procurement
     officer raising a GRN needs this window but has no business on the period-close
     screens. The payload is period names, dates and statuses for an entity the
-    caller is already entitled to — no amounts, no balances.
+    caller is already entitled to - no amounts, no balances.
 
     Unpaginated by design. ``/finance/periods/`` paginates at 25 ordered oldest
     first, so the current periods fall off page one once an entity has three years
-    of history — a paginated window would silently be the wrong window.
+    of history - a paginated window would silently be the wrong window.
 
     docstring-name: Posting window
     """
@@ -712,7 +712,7 @@ class FiscalYearListView(EntityScopedListMixin, generics.ListAPIView):
 
 # Group endpoint behavior for Journal Entry List View.
 class JournalEntryListView(EntityScopedListMixin, generics.ListAPIView):
-    """GET /finance/journals/?entity= — posted/draft journal entries for the entity.
+    """GET /finance/journals/?entity= - posted/draft journal entries for the entity.
 
     docstring-name: Journal entries
     """
@@ -804,7 +804,7 @@ class JournalSummaryView(APIView):
 
 # Group endpoint behavior for Journal Entry Detail View.
 class JournalEntryDetailView(RetrieveModelMixin, generics.RetrieveAPIView):
-    """GET /finance/journals/<id>/?entity= — one journal entry with its lines.
+    """GET /finance/journals/<id>/?entity= - one journal entry with its lines.
 
     docstring-name: Journal entries
     """
@@ -1034,7 +1034,7 @@ class InvoiceSummaryView(APIView):
 
 # Group endpoint behavior for Invoice Detail View.
 class InvoiceDetailView(APIView):
-    """GET /finance/invoices/<id>/ — the full invoice for the detail drawer:
+    """GET /finance/invoices/<id>/ - the full invoice for the detail drawer:
     lines, allocated payments, GL postings (from its journal), reminders, and a
     derived activity timeline.
 
@@ -1065,7 +1065,7 @@ class InvoiceDetailView(APIView):
         if inv is None:
             raise NotFound("No such invoice in this entity.")
 
-        # Write-offs leave no allocation row and their journal has no invoice FK — the
+        # Write-offs leave no allocation row and their journal has no invoice FK - the
         # only structured link back to the invoice is the audit trail. Pull the
         # successful write-off events, then fetch their journals for the GL history.
         writeoff_logs = list(
@@ -1087,7 +1087,7 @@ class InvoiceDetailView(APIView):
 
         lines = [
             {
-                "description": ln.description or "—",
+                "description": ln.description or "-",
                 "account_code": ln.revenue_account.code,
                 "account_name": ln.revenue_account.name,
                 "quantity": str(ln.quantity),
@@ -1099,7 +1099,7 @@ class InvoiceDetailView(APIView):
             for ln in inv.lines.all()
         ]
 
-        # Cash receipts allocated to this invoice — kept as `payments` for existing
+        # Cash receipts allocated to this invoice - kept as `payments` for existing
         # consumers; also fed into the unified `settlements` list below.
         payments = [
             {
@@ -1144,7 +1144,7 @@ class InvoiceDetailView(APIView):
             })
         settlements.sort(key=lambda x: x["date"])
 
-        # Flat lines of the invoice's own AR journal — kept as `gl_postings` for
+        # Flat lines of the invoice's own AR journal - kept as `gl_postings` for
         # existing consumers. `gl_journals` is the full GL history: the invoice posting
         # plus every settlement's journal, grouped per source document.
         gl_postings = []
@@ -1227,7 +1227,7 @@ class InvoiceDetailView(APIView):
                 "label": f"Write-off ({format_naira(amount)})",
             })
         for r in reminders:
-            activity.append({"date": r["date"], "label": f"Reminder level {r['level']} — {r['status']}"})
+            activity.append({"date": r["date"], "label": f"Reminder level {r['level']} - {r['status']}"})
         activity.sort(key=lambda x: x["date"])
 
         return success_response(
@@ -1256,7 +1256,7 @@ class InvoiceDetailView(APIView):
 
 # Group endpoint behavior for Invoice Document View.
 class InvoiceDocumentView(APIView):
-    """GET /finance/invoices/<id>/document/ — printable HTML invoice."""
+    """GET /finance/invoices/<id>/document/ - printable HTML invoice."""
 
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
     rbac_permission = "finance.invoice.view"
@@ -1288,7 +1288,7 @@ class InvoiceDocumentView(APIView):
 
 # Group endpoint behavior for Journal Submit View.
 class JournalSubmitView(APIView):
-    """POST /finance/journals/<id>/submit/?entity= — submit a draft journal for approval.
+    """POST /finance/journals/<id>/submit/?entity= - submit a draft journal for approval.
 
     Hands the journal to the ``vs_workflow`` engine via
     :func:`vs_workflow.services.submission.submit_for_approval`. The handler's
@@ -1322,12 +1322,12 @@ class JournalSubmitView(APIView):
 
 # Group endpoint behavior for Journal Post View.
 class JournalPostView(APIView):
-    """POST /finance/journals/<id>/post/?entity= — post a draft journal.
+    """POST /finance/journals/<id>/post/?entity= - post a draft journal.
 
     When a workflow template is published for this journal's ``finance.journal``
     document type (opt-in gate), direct posting is refused: the journal must go
     through ``/submit/`` and posts only on approval. With no template, this behaves
-    exactly as it always has — a direct draft → POSTED post.
+    exactly as it always has - a direct draft → POSTED post.
 
     docstring-name: Post a journal entry
     """
@@ -1359,7 +1359,7 @@ class JournalPostView(APIView):
 
 # Group endpoint behavior for Journal Reverse View.
 class JournalReverseView(APIView):
-    """POST /finance/journals/<id>/reverse/?entity= — reverse a posted journal.
+    """POST /finance/journals/<id>/reverse/?entity= - reverse a posted journal.
 
     docstring-name: Reverse a journal entry
     """
@@ -1396,11 +1396,11 @@ class JournalReverseView(APIView):
 
 # Group endpoint behavior for Direct Entry Create View.
 class DirectEntryCreateView(APIView):
-    """POST /finance/direct-entries/?entity= — post a direct journal entry.
+    """POST /finance/direct-entries/?entity= - post a direct journal entry.
 
     Body: ``{"date"?, "narration"?, "reference"?, "lines": [{"account", "debit"|"credit"}]}``
     with amounts in kobo. The one sanctioned way to book money/balances that have no sub-ledger
-    document behind them — capital injections, equity contributions, loan drawdowns, grants,
+    document behind them - capital injections, equity contributions, loan drawdowns, grants,
     opening balances and manual adjustments. Every other journal is a side-effect of an action.
 
     docstring-name: Post a direct entry
@@ -1442,7 +1442,7 @@ class DirectEntryCreateView(APIView):
 
 # Group endpoint behavior for Period Close View.
 class PeriodCloseView(APIView):
-    """POST /finance/periods/<id>/close/?entity= — run the checklist and close a period.
+    """POST /finance/periods/<id>/close/?entity= - run the checklist and close a period.
 
     Body (all optional): ``{"soft": bool, "force": bool, "run_depreciation": bool}``.
 
@@ -1506,7 +1506,7 @@ class PeriodCloseView(APIView):
 
 # Group endpoint behavior for Period Reopen View.
 class PeriodReopenView(APIView):
-    """POST /finance/periods/<id>/reopen/?entity= — re-open a CLOSED/SOFT_CLOSED period.
+    """POST /finance/periods/<id>/reopen/?entity= - re-open a CLOSED/SOFT_CLOSED period.
 
     A LOCKED period cannot be re-opened; an already-OPEN period is refused.
 
@@ -1538,7 +1538,7 @@ class PeriodReopenView(APIView):
 
 # Group endpoint behavior for Period Lock View.
 class PeriodLockView(APIView):
-    """POST /finance/periods/<id>/lock/?entity= — permanently seal a CLOSED period.
+    """POST /finance/periods/<id>/lock/?entity= - permanently seal a CLOSED period.
 
     Only a CLOSED period can be locked; the lock is irreversible.
 
@@ -1570,11 +1570,11 @@ class PeriodLockView(APIView):
 
 # Group endpoint behavior for Fiscal Year Close View.
 class FiscalYearCloseView(APIView):
-    """POST /finance/fiscal-years/<id>/close/?entity= — post the year-end closing entry.
+    """POST /finance/fiscal-years/<id>/close/?entity= - post the year-end closing entry.
 
     Zeroes every income/expense account for the year and rolls the net profit or loss
     into Retained Earnings (3200), then marks the fiscal year CLOSED. Body (optional):
-    ``{"closing_date": ISO, "force": bool}`` — ``force`` closes the year even while some
+    ``{"closing_date": ISO, "force": bool}`` - ``force`` closes the year even while some
     periods are still OPEN. The formal entry may use an OPEN, SOFT_CLOSED or CLOSED
     final period, but never a permanently LOCKED one.
 
@@ -1950,7 +1950,7 @@ class CashFlowView(APIView):
 
 # Group endpoint behavior for Analytics Slice View.
 class AnalyticsSliceView(APIView):
-    """GET /finance/reports/analytics-slice/?entity=&axis= — net activity per account,
+    """GET /finance/reports/analytics-slice/?entity=&axis= - net activity per account,
     bucketed by one analytical axis (a cost centre or a dimension).
 
     ``axis`` is required: either ``cost_center`` or a registered Dimension code (e.g.
@@ -2180,7 +2180,7 @@ class StatutoryPackView(APIView):
 
 # Group endpoint behavior for Finance Dashboard View.
 class FinanceDashboardView(APIView):
-    """Aggregated **Finance overview** — every dashboard block in one payload.
+    """Aggregated **Finance overview** - every dashboard block in one payload.
 
     Computed live from the GL and entity-scoped. Optional ``?period=<period_no>``
     pins the "as of" period; otherwise the latest open period is used.

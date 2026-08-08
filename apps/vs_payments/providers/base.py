@@ -1,8 +1,8 @@
 """Provider-neutral payment interface.  # Shared abstractions for all payment providers.
 
 Two capabilities, kept separate per the build plan: :class:`CollectionProvider` (pull
-money in — hosted checkout, dedicated virtual accounts, verification) and
-:class:`PayoutProvider` (push money out — bank transfers). A concrete provider (Paystack,
+money in - hosted checkout, dedicated virtual accounts, verification) and
+:class:`PayoutProvider` (push money out - bank transfers). A concrete provider (Paystack,
 Fake) implements both plus the webhook contract in :class:`WebhookCapable`.
 
 Every method speaks in **neutral result dataclasses** carrying integer **kobo** and our

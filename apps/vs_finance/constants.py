@@ -57,7 +57,7 @@ class DocType(models.TextChoices):
 
     The token becomes the prefix of a document number, e.g. ``IV`` in
     ``IV-12607221``. Keep tokens short (2 chars), uppercase, unique and
-    stable — they are persisted inside human-facing identifiers.
+    stable - they are persisted inside human-facing identifiers.
     """
     JOURNAL = "JN", "Journal Entry"
     INVOICE = "IV", "Sales / AR Invoice"
@@ -134,7 +134,7 @@ class NormalBalance(models.TextChoices):
 class FeeAppliesTo(models.TextChoices):
     """Who a :class:`vs_finance.models.FeeStructure` bills.
 
-    This is a *generic* platform — a fee structure is not tied to a school term.
+    This is a *generic* platform - a fee structure is not tied to a school term.
     It classifies the counterparty type the template charges: a client/customer
     (e.g. a school's students/payers), a vendor, a staff member, or a general
     template not bound to any counterparty type. Only ``CUSTOMER`` structures can
@@ -158,7 +158,7 @@ NORMAL_BALANCE_BY_TYPE = {
 
 # Group behavior for Journal Source.
 class JournalSource(models.TextChoices):
-    """Where a journal entry originated — for filtering and audit, not for posting logic.
+    """Where a journal entry originated - for filtering and audit, not for posting logic.
 
     MANUAL entries are typed by a person; the rest are raised by sub-ledgers and
     automated processes (AR/AP postings, bank reconciliation, period-close accruals
@@ -177,7 +177,7 @@ class JournalSource(models.TextChoices):
 
 # Group behavior for Invoice Source.
 class InvoiceSource(models.TextChoices):
-    """What generated an invoice — keeps the AR core domain-neutral.
+    """What generated an invoice - keeps the AR core domain-neutral.
 
     The invoice model is generic; ``source`` records the originating mechanism so a
     school-fee run, a subscription engine or an API caller can all emit the *same*
@@ -193,7 +193,7 @@ class InvoiceSource(models.TextChoices):
 
 # Define Invoice Payment Status values.
 class InvoicePaymentStatus(models.TextChoices):
-    """How much of an invoice has been settled — distinct from its document status.
+    """How much of an invoice has been settled - distinct from its document status.
 
     Document ``status`` (DRAFT→POSTED→…) tracks the *ledger* lifecycle; this tracks
     *cash* against the invoice and is derived from amount paid vs total.
@@ -210,7 +210,7 @@ class CreditNoteKind(models.TextChoices):
     CREDIT reduces what the customer owes (a sales return, allowance or correction:
     ``Dr revenue/returns + Dr output tax, Cr AR``); it may be *applied* to specific
     invoices like a non-cash payment. DEBIT increases what the customer owes (an extra
-    charge or under-bill correction: ``Dr AR, Cr revenue + Cr output tax``) — a
+    charge or under-bill correction: ``Dr AR, Cr revenue + Cr output tax``) - a
     supplementary invoice, so it is never allocated to reduce another invoice.
     """
     CREDIT = "CREDIT", "Credit note (reduces AR)"
@@ -258,7 +258,7 @@ class ConcessionKind(models.TextChoices):
     SCHOLARSHIP -> a granted allowance against billed amounts (domain-neutral name for
                    a bursary/scholarship in a school tenant).
 
-    All three post the same way — ``Dr discounts & allowances, Cr AR control`` — and
+    All three post the same way - ``Dr discounts & allowances, Cr AR control`` - and
     reduce the invoice's balance via :attr:`Invoice.amount_credited`; ``kind`` is a
     reporting tag, not a different posting.
     """
@@ -271,7 +271,7 @@ class ConcessionKind(models.TextChoices):
 class DunningChannel(models.TextChoices):
     """How a dunning reminder is delivered (operational detail; vs_finance only records it).
 
-    vs_finance does not itself send email/SMS — it tracks the *intent* and outcome; an
+    vs_finance does not itself send email/SMS - it tracks the *intent* and outcome; an
     outer service (notifications) reads PENDING notices and dispatches them.
     """
     EMAIL = "EMAIL", "Email"
@@ -305,7 +305,7 @@ class PaymentMethod(models.TextChoices):
 
 
 # --------------------------------------------------------------------------- #
-# Phase 4 — banking, expenses, payroll, budget, fixed assets, period close     #
+# Phase 4 - banking, expenses, payroll, budget, fixed assets, period close     #
 # --------------------------------------------------------------------------- #
 
 # Define Bank Line Status values.
@@ -369,7 +369,7 @@ class SalaryCalcMethod(models.TextChoices):
 
 # Define Statutory Type values.
 class StatutoryType(models.TextChoices):
-    """Which statutory liability a deduction feeds — routes the GL credit and the return.
+    """Which statutory liability a deduction feeds - routes the GL credit and the return.
 
     Earnings are always ``NONE``; deductions must be ``PAYE`` or ``PENSION`` so the
     accrual journal stays balanced (``net = gross - paye - pension``).
@@ -384,7 +384,7 @@ class BudgetStatus(models.TextChoices):
     """Lifecycle of a budget; approval locks the figures so actuals can't be re-planned.
 
     Two states only: a DRAFT budget is editable; APPROVED locks it (see
-    :attr:`Budget.is_locked`). There is no separate LOCKED state — approval *is* the lock.
+    :attr:`Budget.is_locked`). There is no separate LOCKED state - approval *is* the lock.
     """
     DRAFT = "DRAFT", "Draft"
     APPROVED = "APPROVED", "Approved"
@@ -424,7 +424,7 @@ class FinanceAuditAction(models.TextChoices):
 
     The ledger itself (immutable posted/reversed journals + period locks) is the
     primary financial audit trail; this enum names the *actions around* it that the
-    journals can't capture on their own — who pressed post, rejected attempts, period
+    journals can't capture on their own - who pressed post, rejected attempts, period
     state changes and master-data edits.
     """
     JOURNAL_POSTED = "JOURNAL_POSTED", "Journal posted"
@@ -457,7 +457,7 @@ class FinanceAuditAction(models.TextChoices):
     ACCOUNT_UPDATED = "ACCOUNT_UPDATED", "Account updated"
     # Procure-to-Pay. The vendor/PO/GRN documents live in vs_procurement,
     # but their audit vocabulary belongs to finance's authoritative log (finance does
-    # not import procurement — these are just string constants).
+    # not import procurement - these are just string constants).
     REQUISITION_APPROVED = "REQUISITION_APPROVED", "Requisition approved"
     RFQ_ISSUED = "RFQ_ISSUED", "Request for quotation issued"
     RFQ_CANCELLED = "RFQ_CANCELLED", "Request for quotation cancelled"
@@ -484,7 +484,7 @@ class FinanceAuditAction(models.TextChoices):
     STOCK_ISSUE_REJECTED = "STOCK_ISSUE_REJECTED", "Stock issue rejected"
     STOCK_ADJUSTED = "STOCK_ADJUSTED", "Stock adjusted"
     STOCK_ADJUST_REJECTED = "STOCK_ADJUST_REJECTED", "Stock adjustment rejected"
-    # Phase 4 — banking, expenses, payroll, budget, fixed assets, period close.
+    # Phase 4 - banking, expenses, payroll, budget, fixed assets, period close.
     BANK_STATEMENT_CORRECTED = "BANK_STATEMENT_CORRECTED", "Bank statement corrected"
     BANK_RECONCILED = "BANK_RECONCILED", "Bank statement reconciled"
     BANK_CHARGE_POSTED = "BANK_CHARGE_POSTED", "Bank charge posted"
@@ -561,23 +561,23 @@ class IFRSLine(models.TextChoices):
     :data:`DEFAULT_IFRS_LINE_BY_TYPE`), so the mapping degrades gracefully on a
     customised chart.
     """
-    # Statement of Financial Position — non-current assets.
+    # Statement of Financial Position - non-current assets.
     PPE = "PPE", "Property, plant and equipment"
     INTANGIBLES = "INTANGIBLES", "Intangible assets"
     INVESTMENTS = "INVESTMENTS", "Investments"
-    # Statement of Financial Position — current assets.
+    # Statement of Financial Position - current assets.
     INVENTORIES = "INVENTORIES", "Inventories"
     TRADE_RECEIVABLES = "TRADE_RECEIVABLES", "Trade and other receivables"
     CURRENT_TAX_ASSET = "CURRENT_TAX_ASSET", "Current tax assets"
     CASH = "CASH", "Cash and cash equivalents"
     OTHER_CURRENT_ASSETS = "OTHER_CURRENT_ASSETS", "Other current assets"
-    # Statement of Financial Position — equity.
+    # Statement of Financial Position - equity.
     SHARE_CAPITAL = "SHARE_CAPITAL", "Share capital"
     RETAINED_EARNINGS = "RETAINED_EARNINGS", "Retained earnings"
     OTHER_RESERVES = "OTHER_RESERVES", "Other reserves"
-    # Statement of Financial Position — non-current liabilities.
+    # Statement of Financial Position - non-current liabilities.
     LONG_TERM_BORROWINGS = "LONG_TERM_BORROWINGS", "Long-term borrowings"
-    # Statement of Financial Position — current liabilities.
+    # Statement of Financial Position - current liabilities.
     TRADE_PAYABLES = "TRADE_PAYABLES", "Trade and other payables"
     CURRENT_TAX_PAYABLE = "CURRENT_TAX_PAYABLE", "Current tax payable"
     EMPLOYEE_PAYABLES = "EMPLOYEE_PAYABLES", "Employee benefit obligations"
@@ -611,8 +611,8 @@ PPE_ACCOUNT_CODE = "1500"                 # Property, Plant & Equipment (asset)
 ACCUM_DEPRECIATION_CODE = "1900"          # Accumulated depreciation (contra-asset)
 ACCRUED_REIMBURSEMENT_CODE = "2400"       # Staff expense-claim liability
 PETTY_CASH_CODE = "1110"                  # Petty cash float (asset, child of 1100)
-OUTPUT_VAT_CODE = "2200"                  # Output VAT payable (liability) — sales collect here
-INPUT_VAT_CODE = "1300"                   # Input VAT recoverable (asset) — purchases offset here
+OUTPUT_VAT_CODE = "2200"                  # Output VAT payable (liability) - sales collect here
+INPUT_VAT_CODE = "1300"                   # Input VAT recoverable (asset) - purchases offset here
 WHT_PAYABLE_CODE = "2300"                 # Withholding-tax payable (liability)
 PAYE_PAYABLE_CODE = "2310"                # PAYE (employee income tax) payable
 PENSION_PAYABLE_CODE = "2320"             # Pension payable
@@ -620,13 +620,13 @@ NET_WAGES_PAYABLE_CODE = "2330"           # Net wages payable (cleared on disbur
 SALARIES_EXPENSE_CODE = "5200"            # Salaries & wages expense
 DEPRECIATION_EXPENSE_CODE = "5400"        # Depreciation expense
 BANK_CHARGES_CODE = "5500"               # Bank charges expense
-RETAINED_EARNINGS_CODE = "3200"          # Retained earnings (equity) — net income closes here
-OPERATING_REVENUE_CODE = "4100"          # Operating revenue (income) — generic revenue line
+RETAINED_EARNINGS_CODE = "3200"          # Retained earnings (equity) - net income closes here
+OPERATING_REVENUE_CODE = "4100"          # Operating revenue (income) - generic revenue line
 CASH_BANK_CODE = "1100"                  # Cash & bank (the cash-flow statement's cash line)
-SALES_RETURNS_CODE = "4900"              # Sales returns (contra-revenue) — credit notes default here
-DISCOUNTS_ALLOWED_CODE = "4910"          # Discounts & allowances (contra-revenue) — concessions default here
-BAD_DEBT_EXPENSE_CODE = "5300"           # Bad-debt / general expense — write-offs default here
-CUSTOMER_CREDIT_CODE = "2140"            # Customer credit balances (liability) — overpayments / unapplied credit / refundable
+SALES_RETURNS_CODE = "4900"              # Sales returns (contra-revenue) - credit notes default here
+DISCOUNTS_ALLOWED_CODE = "4910"          # Discounts & allowances (contra-revenue) - concessions default here
+BAD_DEBT_EXPENSE_CODE = "5300"           # Bad-debt / general expense - write-offs default here
+CUSTOMER_CREDIT_CODE = "2140"            # Customer credit balances (liability) - overpayments / unapplied credit / refundable
 
 #: Reserved code for CodeX's own platform set of books (the operator's entity).
 #: An uppercase identifier (like all entity codes); the display name is "CodeX".

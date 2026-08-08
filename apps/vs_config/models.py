@@ -39,7 +39,7 @@ class ConfigurationDefinition(models.Model):
     """Declare one typed setting: its key, type, rules, and where it may be set.
 
     This is the SCHEMA half of the configuration system. A definition does
-    not hold any live value itself (other than the fallback default) — it
+    not hold any live value itself (other than the fallback default) - it
     describes a setting so that ConfigurationValue rows can be validated
     against it and application code can read it through
     ``vs_config.conf.get_config(key)``.
@@ -61,7 +61,7 @@ class ConfigurationDefinition(models.Model):
             both the default and every scoped value.
         default_value: Fallback JSON value returned by resolution when no
             platform/school/branch value exists. May be null.
-        validation_rules: Type-specific constraints as JSON — ``choices``
+        validation_rules: Type-specific constraints as JSON - ``choices``
             (list) for CHOICE, ``min``/``max`` bounds for numeric types.
         allowed_scopes: List of scope names ("platform", "school",
             "branch") where a value may be written. ``set_value()`` rejects
@@ -71,7 +71,7 @@ class ConfigurationDefinition(models.Model):
             (e.g. ``env://PAYMENTS_SECRET``) and every serializer, effective
             read, and audit snapshot redacts it to "[REDACTED]".
         is_active: Soft-archive flag. Inactive definitions are hidden from
-            default listings and never resolve — ``get_config`` returns the
+            default listings and never resolve - ``get_config`` returns the
             caller's default instead. Archive is the DELETE verb; rows are
             never hard-deleted because values and audit history point here.
         created_by: User who created the definition (nullable history;
@@ -133,8 +133,8 @@ class ScopedModel(models.Model):
         branch set                -> branch scope (tenant auto-filled from the
                                      branch's owning school)
 
-    ``scope_key`` is a denormalized string form of that placement —
-    "platform", "tenant:<id>", or "branch:<id>" — computed on every save. It
+    ``scope_key`` is a denormalized string form of that placement -
+    "platform", "tenant:<id>", or "branch:<id>" - computed on every save. It
     exists so that:
 
     * unique constraints can express "one row per definition per scope"
@@ -157,7 +157,7 @@ class ScopedModel(models.Model):
     Behavior:
         ``save()`` always runs ``clean()`` (tenant/branch consistency) and
         ``set_scope_key()`` first, so rows can never be persisted with a
-        scope_key that disagrees with their FKs. Abstract — creates no
+        scope_key that disagrees with their FKs. Abstract - creates no
         table of its own.
     """
 
@@ -203,8 +203,8 @@ class ConfigurationValue(ScopedModel):
     """Store one concrete value for a definition at exactly one scope.
 
     This is the DATA half of the configuration system. At most one row may
-    exist per (definition, scope) — enforced by the ``uniq_config_value_scope``
-    constraint on (definition, scope_key) — so writes are upserts
+    exist per (definition, scope) - enforced by the ``uniq_config_value_scope``
+    constraint on (definition, scope_key) - so writes are upserts
     (``services.resolution.set_value``) and reads walk the precedence chain
     (``services.resolution.resolve_value``):
 
@@ -218,7 +218,7 @@ class ConfigurationValue(ScopedModel):
     Fields:
         id: Stable UUID primary key.
         definition: The ConfigurationDefinition this value belongs to.
-            CASCADE — values die with their definition.
+            CASCADE - values die with their definition.
         value: The JSON-native payload. Its shape is guaranteed by
             ``validate_value()`` to match ``definition.value_type`` and
             ``definition.validation_rules`` at write time.
@@ -267,17 +267,17 @@ class Capability(models.Model):
 
     Replaces the legacy XVSModules + BranchFeatureFlag split: a capability
     is either a whole product MODULE (finance, attendance, student_portal)
-    or a smaller FEATURE (bulk_import, email_alerts) — the ``kind`` field
+    or a smaller FEATURE (bulk_import, email_alerts) - the ``kind`` field
     is the only distinction. Whether a capability is ON for a given
     school/branch is never stored here; it is computed by
     ``services.capabilities.effective_capability`` from three inputs:
 
-        1. entitlement — is the school allowed to have it?
+        1. entitlement - is the school allowed to have it?
            (CapabilityEntitlement; skipped when ``requires_entitlement``
            is False)
-        2. dependencies — are all prerequisite capabilities effective?
+        2. dependencies - are all prerequisite capabilities effective?
            (CapabilityDependency)
-        3. override — has an operator toggled it at branch, school, or
+        3. override - has an operator toggled it at branch, school, or
            platform scope? (CapabilityOverride; most specific scope wins,
            falling back to ``default_enabled``)
 
@@ -300,7 +300,7 @@ class Capability(models.Model):
             any scope in the chain.
         is_active: Catalogue lifecycle flag. Inactive capabilities never
             resolve as enabled and are hidden from default listings;
-            archiving is the DELETE verb (no hard deletes — entitlements,
+            archiving is the DELETE verb (no hard deletes - entitlements,
             overrides, and audit history reference this row).
         metadata: Free-form, non-authoritative JSON for display or
             integration hints (icons, ordering, docs links). Never used in
@@ -337,7 +337,7 @@ class CapabilityDependency(models.Model):
 
     Forms a directed acyclic graph over the catalogue. During evaluation,
     ``effective_capability`` recursively checks every ``requires`` edge in
-    the SAME scope as the capability being evaluated — so enabling
+    the SAME scope as the capability being evaluated - so enabling
     ``procurement`` at a branch demands that ``finance`` also resolves as
     effective for that branch (entitlement, overrides and all), not merely
     that it exists.
@@ -350,7 +350,7 @@ class CapabilityDependency(models.Model):
             (CASCADE).
 
     Integrity:
-        Three layers keep the graph sane — a unique constraint rejects
+        Three layers keep the graph sane - a unique constraint rejects
         duplicate edges, a DB check constraint rejects self-references, and
         ``clean()`` (always run via ``save()``) walks the existing graph to
         reject any edge that would create a cycle, since a cycle would make
@@ -412,7 +412,7 @@ class CapabilityEntitlement(models.Model):
 
     Scoping is deliberately narrower than ScopedModel: entitlements exist
     only at tenant or platform level (a NULL tenant means "every tenant"),
-    because branches don't buy modules — tenants do. Hence this model
+    because branches don't buy modules - tenants do. Hence this model
     carries its own tenant FK + scope_key rather than inheriting the
     three-level contract. A tenant-specific row always beats the platform
     row during evaluation, which lets a platform-wide grant carry
@@ -431,7 +431,7 @@ class CapabilityEntitlement(models.Model):
             capability per scope and writes are upserts.
         state: GRANTED or DENIED. An explicit DENIED row at tenant level
             overrides a platform-wide GRANTED.
-        source: Where the decision came from — PACKAGE (school package
+        source: Where the decision came from - PACKAGE (school package
             setup), PLATFORM, MANUAL, or IMPORT (legacy migration).
         starts_at: Optional activation time; the grant is inert before it.
         ends_at: Optional exclusive expiry (subscription end); the grant is
@@ -498,7 +498,7 @@ class CapabilityEntitlement(models.Model):
 class CapabilityOverride(ScopedModel):
     """The runtime toggle: is an entitled capability actually switched ON here?
 
-    The operational half of the entitlement/override pair — this is what
+    The operational half of the entitlement/override pair - this is what
     replaced the legacy BranchFeatureFlag. Overrides may sit at any of the
     three scopes, and evaluation reads the MOST SPECIFIC non-INHERIT row:
 
@@ -512,8 +512,8 @@ class CapabilityOverride(ScopedModel):
     ENABLED for a capability the scope's tenant is not entitled to, so
     runtime toggles can never widen commercial access.
 
-    At most one override exists per (capability, scope) — the
-    ``uniq_capability_override_scope`` constraint — so writes are upserts
+    At most one override exists per (capability, scope) - the
+    ``uniq_capability_override_scope`` constraint - so writes are upserts
     through ``services.capabilities.set_override``, which audits every
     change.
 
@@ -573,8 +573,8 @@ class CapabilityOverride(ScopedModel):
 class ConfigurationAuditEvent(ScopedModel):
     """Append-only record of every configuration and capability mutation.
 
-    Every write in this app — definition changes, value writes, capability
-    catalogue edits, entitlement and override changes — creates exactly one
+    Every write in this app - definition changes, value writes, capability
+    catalogue edits, entitlement and override changes - creates exactly one
     of these rows inside the same transaction, via
     ``services.audit.record_configuration_event`` (which also mirrors the
     event to the platform-wide vs_audit trail; THIS table is the

@@ -1,4 +1,4 @@
-"""Accounts-Receivable services — the revenue cycle.
+"""Accounts-Receivable services - the revenue cycle.
 
 Domain-neutral on purpose: these functions move generic invoices and payments into
 the General Ledger and never mention students, parents or fees. A billing *source*
@@ -8,7 +8,7 @@ the General Ledger and never mention students, parents or fees. A billing *sourc
 The two postings this layer raises:
 
 * **Invoice** → ``Dr receivable control, Cr revenue (per line), Cr output tax``.
-* **Payment** → ``Dr bank/cash, Cr receivable control`` — then the cash is *allocated*
+* **Payment** → ``Dr bank/cash, Cr receivable control`` - then the cash is *allocated*
   across invoices (a sub-ledger act with no further GL effect).
 
 All amounts are integer kobo; tax is computed from basis points with the same
@@ -83,7 +83,7 @@ def post_invoice(invoice, *, actor_user=None):
     """Price, validate and post an :class:`Invoice`, raising its AR journal.
 
     Wrapper that records a durable rejection audit on any :class:`FinanceError`, then
-    re-raises — mirroring the journal posting contract.
+    re-raises - mirroring the journal posting contract.
     """
     try:  # The atomic worker owns the ledger write; this wrapper owns the rejection audit.
         result = _post_invoice_atomic(invoice, actor_user=actor_user)  # Post the invoice into AR and the GL.
@@ -201,7 +201,7 @@ def post_opening_balance(customer, *, actor_user=None, date=None):
     """Seat a customer's ``opening_balance`` as a posted opening invoice.
 
     Raises an :class:`~vs_finance.models.Invoice` (``source=OPENING``) that posts
-    ``Dr AR control · Cr Retained Earnings`` — the opening figure is prior-period
+    ``Dr AR control · Cr Retained Earnings`` - the opening figure is prior-period
     value, so it credits **equity**, never current-period revenue (crediting
     revenue would overstate the income statement every time a customer is migrated
     in with a balance). It still shows in the customer's outstanding (which is
@@ -219,7 +219,7 @@ def post_opening_balance(customer, *, actor_user=None, date=None):
         return None
 
     # Opening balances are prior-period value: credit equity (Retained Earnings),
-    # not revenue — otherwise onboarding/migrating a customer inflates this year's P&L.
+    # not revenue - otherwise onboarding/migrating a customer inflates this year's P&L.
     opening_equity = resolve_account(  # Book the offset to retained earnings.
         customer.entity, RETAINED_EARNINGS_CODE, label="opening balance equity",
     )
@@ -282,7 +282,7 @@ def customer_credit_balances(entity, customer_ids=None, *, as_of=None) -> dict[i
     """Return customer-credit (2140) balances keyed by customer id.
 
     Credit is the sum of the customer's :class:`~vs_finance.chronology.CreditLot`
-    parcels — unapplied receipts and unapplied CREDIT notes, each already net of what
+    parcels - unapplied receipts and unapplied CREDIT notes, each already net of what
     has been refunded back out of it. Open invoices do not consume stored credit
     automatically; only an explicit allocation moves value out of 2140.
 
@@ -292,7 +292,7 @@ def customer_credit_balances(entity, customer_ids=None, *, as_of=None) -> dict[i
     assumption that let backdated refunds spend credit from the future.
 
     Note the deliberate asymmetry: lots are filtered by date, but the deductions
-    inside a lot (allocations, prior refunds) are not. That is the safe direction —
+    inside a lot (allocations, prior refunds) are not. That is the safe direction -
     value that has since been spent stays spent, so an as-of figure can only ever be
     conservative and never authorises paying the same kobo out twice.
     """
@@ -319,13 +319,13 @@ def customer_refund_available_balances(
 
     Three deductions sit between stored credit and refundable credit:
 
-    * **Unsettled DEBIT notes** — the customer still owes these, so their value is
+    * **Unsettled DEBIT notes** - the customer still owes these, so their value is
       not handed back as cash. (Open *invoices* deliberately do not reduce it; only
       an explicit allocation settles those.)
     * **Pending approvals** reserve their amount, so two requests cannot promise the
       same credit. Drafts deliberately do not reserve; they are revalidated on submit
       and again on post.
-    * **``as_of``** — credit that does not yet exist on the refund's own accounting
+    * **``as_of``** - credit that does not yet exist on the refund's own accounting
       date cannot fund it. Callers must pass the refund date, not today.
     """
     from django.db.models import F, Sum
@@ -384,7 +384,7 @@ def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_deb
                         as_of=None, settlement="This settlement"):
     """An explicit ``[(target, amount)]`` plan, or open AR items in ``strategy`` order.
 
-    A *target* is an :class:`Invoice` or — when ``include_debit_notes`` is set — a posted
+    A *target* is an :class:`Invoice` or - when ``include_debit_notes`` is set - a posted
     DEBIT :class:`CreditNote`, which debits AR just like an invoice and is settled the
     same way by receipts. Both expose ``balance_due``. ``strategy`` (when ``allocations``
     is not given): ``"oldest"`` settles by document date first (the default), ``"largest"``
@@ -399,7 +399,7 @@ def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_deb
     The two modes handle that differently, on purpose:
 
     * **Auto-allocation** silently *skips* not-yet-raised targets. This is not a
-      failure — it is a prepayment, and the cash correctly falls through to the
+      failure - it is a prepayment, and the cash correctly falls through to the
       customer-credit liability to be applied when the bill arrives.
     * **An explicit plan** names a target the user chose, so silently dropping it
       would post something other than what was asked for. It raises instead, and
@@ -435,7 +435,7 @@ def _build_invoice_plan(customer, allocations, *, strategy="oldest", include_deb
     )
     if as_of is not None:  # Auto-allocation only settles what already exists.
         open_invoices = [inv for inv in open_invoices if inv.invoice_date <= as_of]
-    # (target, balance_due, sort_date) — sort_date drives oldest-first across both types.
+    # (target, balance_due, sort_date) - sort_date drives oldest-first across both types.
     items = [(inv, inv.balance_due, inv.due_date or inv.invoice_date) for inv in open_invoices]  # Invoice settlement candidates.
     if include_debit_notes:  # Optionally include posted debit notes in the settlement plan.
         open_notes = list(  # Load open debit notes for the customer.
@@ -459,7 +459,7 @@ def _apply_payment_subledger(payment, plan, *, remaining):
     """Settle the plan's AR targets from a payment, capped at each target's balance and
     ``remaining``. A target is an :class:`Invoice` (→ PaymentAllocation, bump
     ``amount_paid``) or a DEBIT :class:`CreditNote` (→ DebitNoteAllocation, bump its
-    ``amount_paid``). GL-agnostic — the caller posts the journal (the applied total
+    ``amount_paid``). GL-agnostic - the caller posts the journal (the applied total
     credits AR either way).
 
     Returns ``(applied_total, created_rows, latest_target_date)``. The last value is the
@@ -518,25 +518,25 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
 
     Runs in one transaction so the subledger (PaymentAllocation rows + invoice
     ``amount_paid``) and the general ledger (JournalEntry/JournalLine) can never
-    drift apart — either everything commits or nothing does.
+    drift apart - either everything commits or nothing does.
 
     Steps:
       1. **Guard.** Only a DRAFT payment with a positive amount can post, and the
          customer must have an AR control account and the payment a deposit
-         (bank/cash) account — otherwise there's nowhere to book the two sides.
+         (bank/cash) account - otherwise there's nowhere to book the two sides.
       2. **Plan.** ``_build_invoice_plan`` turns ``allocations`` (an explicit
          ``[(invoice, amount)]`` list) or ``auto_allocate`` (open invoices in
-         ``strategy`` order — ``"oldest"`` by due date, ``"largest"`` by balance)
+         ``strategy`` order - ``"oldest"`` by due date, ``"largest"`` by balance)
          into what to settle. Empty plan if neither is supplied.
       3. **Apply to subledger.** ``_apply_payment_subledger`` writes/extends the
          PaymentAllocation rows and bumps each invoice's ``amount_paid`` (capped at
-         its balance and the cash left), returning ``applied`` — the total actually
+         its balance and the cash left), returning ``applied`` - the total actually
          settled. It touches no GL accounts; this function owns the journal.
       4. **Split the cash.** ``excess = amount - applied`` is unapplied cash. We
          *split at source*: settled cash clears AR, but any excess is booked as a
          customer-credit liability so the AR control account never carries a credit
          balance. (That stored credit is later drained by ``allocate_payment``.)
-      5. **Journal.** Balanced entry — Dr deposit account (cash in) for the full
+      5. **Journal.** Balanced entry - Dr deposit account (cash in) for the full
          amount; Cr AR for ``applied``; Cr customer-credit (2140) for ``excess``.
          ``post_journal`` validates it balances and marks it posted.
       6. **Finalise.** Link the journal, flip status to POSTED, store
@@ -566,7 +566,7 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
     # credit balance).
     # ``as_of`` the receipt's own date: cash received today cannot clear a bill raised
     # next week. Auto-allocation skips those, and the money falls through to 2140 as a
-    # prepayment — which is what it is.
+    # prepayment - which is what it is.
     plan = (_build_invoice_plan(customer, allocations, strategy=strategy,  # Build the settlement plan from invoices.
                                 include_debit_notes=True, as_of=payment.payment_date,
                                 settlement=f"Receipt {payment.document_number or payment.pk}")
@@ -624,11 +624,11 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
 
     After posting, any unapplied cash sits in the customer-credit liability (2140).
     Applying it to invoices reclassifies it back to AR (``Dr customer-credit · Cr AR``)
-    and settles the invoices — no cash moves. ``allocations`` is an optional explicit
+    and settles the invoices - no cash moves. ``allocations`` is an optional explicit
     ``[(invoice, amount)]`` plan; without it, open invoices are settled in ``strategy``
     order (``"oldest"`` by due date, or ``"largest"`` balance first).
 
-    Applying an older receipt to a newer invoice is ordinary and allowed — that is a
+    Applying an older receipt to a newer invoice is ordinary and allowed - that is a
     prepayment finding its bill. What is *not* allowed is dating the reclassification
     on the receipt's date when the invoice is newer, which would credit AR before the
     receivable existed; the journal is dated at the later of the two instead.

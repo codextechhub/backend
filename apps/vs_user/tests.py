@@ -504,7 +504,7 @@ class OrgNodeSerializerUniquenessTests(TestCase):
 
 
 class OrganogramListQueryTests(TestCase):
-    """The org-node and position list endpoints must not be N+1 — three queries
+    """The org-node and position list endpoints must not be N+1 - three queries
     per seat (holders/vacancy/open-seats) made the Manage page hang over a
     high-latency DB. The query count must stay bounded as seats grow."""
 
@@ -559,7 +559,7 @@ class OrganogramListQueryTests(TestCase):
 
 
 class SeedOrganogramCommandTests(TestCase):
-    """`seed_organogram` builds a non-empty tree and seats CX staff — an empty
+    """`seed_organogram` builds a non-empty tree and seats CX staff - an empty
     chart is usually just this seed not having been run."""
 
     def test_seed_builds_tree_and_seats_staff(self):
@@ -588,7 +588,7 @@ class OrgNodeDeleteProtectionTests(TestCase):
     """Deleting an org unit must either succeed or explain itself.
 
     Two regressions live here: (a) `parent` used to be SET_NULL, so deleting a
-    Division silently orphaned its subtree into a state clean() forbids —
+    Division silently orphaned its subtree into a state clean() forbids -
     un-editable and un-deletable; (b) ProtectedError subclasses IntegrityError,
     so every blocked delete surfaced as a 500 "An unexpected error occurred."
     """
@@ -640,7 +640,7 @@ class OrgNodeDeleteProtectionTests(TestCase):
 
     def test_protection_covers_every_tier_not_just_divisions(self):
         """`parent` is one self-FK, so Department→Team is guarded exactly like
-        Division→Department — deleting a Department with Teams under it must not
+        Division→Department - deleting a Department with Teams under it must not
         orphan them either."""
         from vs_user.models import OrgNode
 
@@ -669,7 +669,7 @@ class OrgNodeDeleteProtectionTests(TestCase):
 
 
 class LoginLockoutOracleTests(TestCase):
-    """B13 — wrong-password attempts must never reveal the locked state."""
+    """B13 - wrong-password attempts must never reveal the locked state."""
 
     def setUp(self):
         self.password = "Str0ng!pass123"
@@ -703,7 +703,7 @@ class LoginLockoutOracleTests(TestCase):
 
 
 class FailedAttemptAuditTests(TestCase):
-    """B14 — the attempted email is recorded even when no account matches."""
+    """B14 - the attempted email is recorded even when no account matches."""
 
     def test_unknown_email_is_recorded_as_entered(self):
         with self.assertRaises(ValueError):
@@ -721,7 +721,7 @@ class FailedAttemptAuditTests(TestCase):
 
 
 class SessionScopedLogoutTests(TestCase):
-    """B10/B11 — multi-device session integrity."""
+    """B10/B11 - multi-device session integrity."""
 
     def setUp(self):
         self.password = "Str0ng!pass123"
@@ -867,7 +867,7 @@ class SelfServiceSecurityScopeTests(TestCase):
 
 
 # =============================================================================
-# WP-B1 — school branding in auth payloads (A.1)
+# WP-B1 - school branding in auth payloads (A.1)
 # =============================================================================
 
 class SchoolBrandingPayloadTests(TestCase):
@@ -875,7 +875,7 @@ class SchoolBrandingPayloadTests(TestCase):
 
     Login is exercised through ``LoginService.login`` (the service returns the
     payload dict that the view wraps verbatim) with a real request so absolute
-    logo URLs are built — this mirrors the existing tests in this module and
+    logo URLs are built - this mirrors the existing tests in this module and
     sidesteps the login rate-throttle. ``/me`` is hit over HTTP.
     """
 
@@ -973,7 +973,7 @@ class SchoolBrandingPayloadTests(TestCase):
 
 class EmailFailureResilienceTests(TestCase):
     """
-    Regression — an SMTP outage during eager (in-process) email sending must
+    Regression - an SMTP outage during eager (in-process) email sending must
     not 500 the request.
 
     Email now flows through the vs_notifications engine: the vs_user task
@@ -981,7 +981,7 @@ class EmailFailureResilienceTests(TestCase):
     deliver_email_notification does the SMTP send. Under eager mode the delivery
     task runs in-process; its eager guard treats the first failure as final, so
     celery.exceptions.Retry never propagates through the HTTP request even when
-    smtp.zoho.com is unreachable — the PasswordResetRequest / UserInvitation row
+    smtp.zoho.com is unreachable - the PasswordResetRequest / UserInvitation row
     is already persisted.
     """
 
@@ -1070,7 +1070,7 @@ class EmailFailureResilienceTests(TestCase):
         )
 
         with mock.patch("vs_notifications.tasks.send_email", side_effect=self._smtp_down):
-            # dispatch enqueues the delivery task via transaction.on_commit —
+            # dispatch enqueues the delivery task via transaction.on_commit -
             # capture and execute it so the eager delivery runs and fails.
             with self.captureOnCommitCallbacks(execute=True):
                 send_invitation_email_task.apply(
@@ -1219,7 +1219,7 @@ class PasswordPolicyTests(TestCase):
         from django.core.exceptions import ValidationError
 
         weak = [
-            "Sh0rt!Aa",          # only 8 chars — too short
+            "Sh0rt!Aa",          # only 8 chars - too short
             "alllowercase1!",    # no uppercase
             "ALLUPPERCASE1!",    # no lowercase
             "NoDigitsHere!!",    # no digit
@@ -1438,7 +1438,7 @@ class QueueSummaryTests(TestCase):
 
     Regression: the summary aggregated off the LIST queryset, which carries
     ``.order_by("-created_at")``. Django adds ORDER BY columns to the GROUP BY,
-    so the counts were grouped by (status, created_at) — one bucket per row —
+    so the counts were grouped by (status, created_at) - one bucket per row -
     and ``dict()`` kept only the last of each duplicated status key. Every card
     read 1 no matter how many rows the table showed.
     """

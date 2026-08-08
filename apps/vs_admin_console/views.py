@@ -33,7 +33,7 @@ def _user_label(user) -> str:
 
 
 # Impersonation is initiated by either PLATFORM (CX) staff or a school actor.
-# The actor's home tenant kind — never the asserted tenant — decides which
+# The actor's home tenant kind - never the asserted tenant - decides which
 # permission namespace, target pool and audit module apply.
 def is_platform_actor(actor) -> bool:
     """True when *actor* belongs to the PLATFORM (Codex) tenant."""
@@ -117,7 +117,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             self.rbac_permission = self._platform_rbac_permission()
         else:
             self.rbac_permission = {
-                # One start key covers the whole (own-tenant) target pool —
+                # One start key covers the whole (own-tenant) target pool -
                 # there is no tiering to do when reach stops at the tenant edge.
                 "targets": "school.impersonation.start",
                 "start": "school.impersonation.start",
@@ -145,7 +145,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         if self.action == "start":
             # The required scope depends on WHO is being impersonated: the target
             # lives in the asserted tenant (request.tenant), so its kind decides
-            # the key. Any-of — start_all always suffices; the narrow key covers
+            # the key. Any-of - start_all always suffices; the narrow key covers
             # only its own tenant kind. request.tenant is bound by auth before
             # permission checks run.
             tenant = getattr(self.request, "tenant", None)
@@ -188,7 +188,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         from vs_user.models import User
 
         # Impersonation is always initiated by the original actor, never by the
-        # effective (proxied) user — that would allow proxy chaining.
+        # effective (proxied) user - that would allow proxy chaining.
         actor = getattr(request, "actor_user", request.user)
         query = request.query_params.get("search", "").strip()
         if len(query) < 2:
@@ -218,8 +218,8 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         else:
             # School actor: every active user in their OWN tenant is eligible
             # (peers and fellow school admins included); self is excluded by the
-            # .exclude(pk=actor.pk) below. Pinned to actor.tenant_id — NOT to
-            # request.tenant and NOT to ~PLATFORM — so no ?tenant= value and no
+            # .exclude(pk=actor.pk) below. Pinned to actor.tenant_id - NOT to
+            # request.tenant and NOT to ~PLATFORM - so no ?tenant= value and no
             # sibling school can ever widen the pool. Reaching this line already
             # required school.impersonation.start (see get_permissions).
             eligible_kind = Q(tenant_id=actor.tenant_id)
@@ -305,7 +305,7 @@ class ImpersonationSessionViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
             # A school actor may only proxy inside their OWN tenant. The auth
             # layer already 404s a foreign ?tenant= for non-platform actors, but
             # the rule is re-asserted here so it survives independently of that
-            # view flag — and it stays a non-enumerating 404, never a 403 that
+            # view flag - and it stays a non-enumerating 404, never a 403 that
             # would confirm the tenant exists.
             if not is_platform_actor(actor) and tenant.pk != actor.tenant_id:
                 return error_response(
@@ -495,7 +495,7 @@ class ConsoleOverviewView(APIView):
     queue, returned submissions, unread notifications, open tickets and system
     posture.
 
-    Replaces eight separate dashboard calls. Assembly and — importantly — the
+    Replaces eight separate dashboard calls. Assembly and - importantly - the
     per-section permission gating live in ``overview.py``; a section the caller
     may not see is omitted rather than zeroed, so this is not a way to read a
     number they could not fetch directly.

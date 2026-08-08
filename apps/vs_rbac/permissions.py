@@ -20,7 +20,7 @@ def _get_user(obj, request):
 def is_vision_super_admin(user):
     """Return True if *user* currently holds an active xvs_super_admin role.
 
-    Memoised on the user instance — user objects are re-fetched on every
+    Memoised on the user instance - user objects are re-fetched on every
     request, so this saves one EXISTS query per permission check within a
     request without ever serving stale data across requests.
     """
@@ -108,7 +108,7 @@ class IsVisionStaff(BasePermission):
 # Allow only the active xvs_super_admin role holder into top-level controls.
 class IsVisionSuperAdmin(BasePermission):
     """
-    Grants access only to the active Vision Super Admin —
+    Grants access only to the active Vision Super Admin -
     the single user with an active xvs_super_admin TenantUserRoleAssignment.
     """
 
@@ -216,7 +216,7 @@ class HasAnyModuleAccess(BasePermission):
     DRF permission that passes if the user holds ANY permission in a named module.
 
     For endpoints that carry no privilege of their own but are only meaningful to
-    someone already working inside a module — shared reference data that every
+    someone already working inside a module - shared reference data that every
     screen in that module needs. Listing every equivalent key on
     ``rbac_permission`` would work but goes stale the moment a new resource is
     added, so the check is on the module namespace instead::
@@ -225,7 +225,7 @@ class HasAnyModuleAccess(BasePermission):
             permission_classes = [IsAuthenticatedAndActive & HasAnyModuleAccess]
             rbac_modules = ["finance", "procurement"]
 
-    This is deliberately weaker than :class:`HasRBACPermission` — use it only for
+    This is deliberately weaker than :class:`HasRBACPermission` - use it only for
     reads whose payload is not sensitive on its own. Entity/tenant scoping is a
     separate concern and still has to be enforced in the view.
     """

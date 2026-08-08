@@ -3,7 +3,7 @@
 An **imprest petty-cash float**: a physical cash tin, mapped 1:1 to its own GL
 account. You **establish** the float from a bank account, spend it via **vouchers**
 (each posting `Dr expense, Cr petty cash`), and **replenish** it back to the float
-when it runs low. It runs perpetually — the fund's `current_balance` mirrors the GL
+when it runs low. It runs perpetually - the fund's `current_balance` mirrors the GL
 petty-cash account's balance at all times.
 
 Routes (mounted at `/v1/finance/`): `petty-cash-funds/…`,
@@ -14,7 +14,7 @@ Routes (mounted at `/v1/finance/`): `petty-cash-funds/…`,
 
 ## 1. What it is (and what it is NOT)
 
-- A **`PettyCashFund`** (`models/ops.py:370`) is master data — like a `BankAccount` —
+- A **`PettyCashFund`** (`models/ops.py:370`) is master data - like a `BankAccount` -
   mapped **1:1** to a petty-cash GL account (`gl_account`, OneToOne). It holds the
   custodian, the `float_amount` (the imprest it's restored to), and a live
   `current_balance` (cash on hand).
@@ -26,12 +26,12 @@ Routes (mounted at `/v1/finance/`): `petty-cash-funds/…`,
 **This does NOT:**
 - **Hold a second source of truth.** The **GL petty-cash account is truth**;
   `current_balance` is a denormalised mirror **re-synced from the GL after every
-  operation**, and the overdraw guard reads the GL live — so the mirror can't drift or
+  operation**, and the overdraw guard reads the GL live - so the mirror can't drift or
   mis-authorise a payout (§6/§8).
 - **Let you overspend the tin.** A voucher whose total exceeds the **live GL** cash on
   hand is **rejected** (`PettyCashOverdrawError`); a row lock stops two concurrent
   vouchers both slipping under the guard.
-- **Reject a posted voucher** — but a posted voucher **can be voided** (`void/`):
+- **Reject a posted voucher** - but a posted voucher **can be voided** (`void/`):
   it reverses the journal (cash back to the tin) and marks the voucher CANCELLED (§4).
 
 ## 2. Domain model
@@ -52,21 +52,21 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 
 | Method + path | permission key | what it does | request body | response |
 |---|---|---|---|---|
-| `GET /petty-cash-funds/` | `finance.pettycash.view` | List funds. Query: `is_active` | — | `PettyCashFundSerializer[]` (un-paginated) |
+| `GET /petty-cash-funds/` | `finance.pettycash.view` | List funds. Query: `is_active` | - | `PettyCashFundSerializer[]` (un-paginated) |
 | `POST /petty-cash-funds/` | `finance.pettycash.create` | Create a fund (maps to a GL account) | `name`, `gl_account`, `custodian?`/`custodian_name?`, `float_amount?`, `currency?` | `201` fund |
-| `GET /petty-cash-funds/<pk>/` | `finance.pettycash.view` | Fund + week spend + movement register | — | detail |
+| `GET /petty-cash-funds/<pk>/` | `finance.pettycash.view` | Fund + week spend + movement register | - | detail |
 | `PATCH /petty-cash-funds/<pk>/` | `finance.pettycash.update` | Edit fund settings | `name?`, `custodian?`, `float_amount?`, `is_active?` | fund |
 | `POST /petty-cash-funds/<pk>/establish/` | `finance.pettycash.establish` | Move cash bank → tin (open/increase the float) | `bank_account`, `amount`, `date` | fund |
 | `POST /petty-cash-funds/<pk>/replenish/` | `finance.pettycash.replenish` | Top the tin back to its float (or by `amount`) | `bank_account`, `date`, `amount?` | fund |
 | `GET /petty-cash-status/` | `finance.pettycash.view` | Per-fund position + low-balance flags | Query: `threshold_bps` (default 2500 = 25%) | `{rows[]}` |
-| `GET /petty-cash-vouchers/` | `finance.pettycashvoucher.view` | List vouchers (paginated). Query: `fund`, `status` | — | paginated `PettyCashVoucherSerializer` |
+| `GET /petty-cash-vouchers/` | `finance.pettycashvoucher.view` | List vouchers (paginated). Query: `fund`, `status` | - | paginated `PettyCashVoucherSerializer` |
 | `POST /petty-cash-vouchers/` | `finance.pettycashvoucher.create` | Create a **DRAFT** voucher + lines | `fund`, `voucher_date`, `payee?`, `spent_by?`, `lines:[{expense_account, quantity?, unit_price, tax_code?, cost_center?}]` | `201` voucher |
-| `GET /petty-cash-vouchers/<pk>/` | `finance.pettycashvoucher.view` | One voucher | — | detail |
-| `POST /petty-cash-vouchers/<pk>/post/` | `finance.pettycashvoucher.post` | Post it (relieve the tin) | — | voucher |
-| `POST /petty-cash-vouchers/<pk>/void/` | `finance.pettycashvoucher.post` | Void a **posted** voucher (reverses journal, cash back to tin → CANCELLED) | — | voucher |
+| `GET /petty-cash-vouchers/<pk>/` | `finance.pettycashvoucher.view` | One voucher | - | detail |
+| `POST /petty-cash-vouchers/<pk>/post/` | `finance.pettycashvoucher.post` | Post it (relieve the tin) | - | voucher |
+| `POST /petty-cash-vouchers/<pk>/void/` | `finance.pettycashvoucher.post` | Void a **posted** voucher (reverses journal, cash back to tin → CANCELLED) | - | voucher |
 
-> **Two resources:** the **fund** (`finance.pettycash.*` — `view/create/update/
-> establish/replenish`) and the **voucher** (`finance.pettycashvoucher.*` —
+> **Two resources:** the **fund** (`finance.pettycash.*` - `view/create/update/
+> establish/replenish`) and the **voucher** (`finance.pettycashvoucher.*` -
 > `view/create/post`) are separate RBAC resources, mirroring how every other finance
 > document gets its own resource, so each verb is unambiguous (§9).
 
@@ -108,7 +108,7 @@ Each action posts a journal, then **re-syncs `current_balance` from the GL**
 Dr  petty cash (fund gl_account)   amount
 Cr  bank (bank account's GL cash)  amount
 ```
-**Voucher** (`_post_voucher_atomic`) — DRAFT, positive total, fund active, and
+**Voucher** (`_post_voucher_atomic`) - DRAFT, positive total, fund active, and
 **total ≤ live GL cash on hand** (row-locked):
 ```
 Dr  expense  (per (account, cost centre))   Σ net   ← P&L, carries the cost centre
@@ -120,7 +120,7 @@ Cr  petty cash (fund gl_account)            total
 Dr  petty cash (fund gl_account)   top_up
 Cr  bank                           top_up          → last_replenished_at = date
 ```
-**Void** (`void_voucher`) — reverses a posted voucher's journal (a mirror
+**Void** (`void_voucher`) - reverses a posted voucher's journal (a mirror
 `Dr petty cash, Cr expense`), so the cash returns to the tin and the voucher is
 CANCELLED.
 
@@ -141,25 +141,25 @@ shortfall back to ₦50,000.
 
 ## 8. Gotchas / known limitations
 
-- ✅ **`current_balance` can't drift** — it's re-synced from the GL after every op and
+- ✅ **`current_balance` can't drift** - it's re-synced from the GL after every op and
   the overdraw guard reads the GL live (`gl_cash_on_hand`), so a stray direct journal to
   the account no longer leaves the mirror or the guard stale (they self-heal on the next
   op / on any read via `fund_status`).
-- ✅ **A posted voucher can be voided** (`void/`) — reverses the journal, returns the
+- ✅ **A posted voucher can be voided** (`void/`) - reverses the journal, returns the
   cash to the tin, marks CANCELLED.
-- ✅ **Permission verbs cleaned up** — the fund and voucher are now separate RBAC
+- ✅ **Permission verbs cleaned up** - the fund and voucher are now separate RBAC
   resources with unambiguous verbs (§9).
 - **`custodian`/`spent_by` are optional** (free-text fallback), so "who spent it"
   reporting needs the FK set. *(Left intentional.)*
-- Fund list and the status endpoint are **un-paginated** (funds are few — fine); the
+- Fund list and the status endpoint are **un-paginated** (funds are few - fine); the
   voucher list *is* paginated.
 
 ## 9. Permissions & tenant isolation
 
 - **Two resources, unambiguous verbs:**
-  - `finance.pettycash.{view, create, update, establish, replenish}` — the **fund**
+  - `finance.pettycash.{view, create, update, establish, replenish}` - the **fund**
     (master data + cash-in movements).
-  - `finance.pettycashvoucher.{view, create, post}` — the **voucher** (`void/` reuses
+  - `finance.pettycashvoucher.{view, create, post}` - the **voucher** (`void/` reuses
     `post`, like other undo-an-approval actions).
 - Every action resolves the entity then `filter(entity=…, pk=…)` (`_fund`/`_voucher`),
   and `establish`/`replenish` reject a `bank_account` from another entity → no

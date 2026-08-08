@@ -77,7 +77,7 @@ def _stock_detail(entity, pk):
     return item
 
 class StockItemListCreateView(_ProcBase):
-    """GET (list) / POST (create) stock items — perpetual-inventory masters.
+    """GET (list) / POST (create) stock items - perpetual-inventory masters.
 
     docstring-name: Stock items
     """
@@ -105,7 +105,7 @@ class StockItemListCreateView(_ProcBase):
         """Create a stock master with validated asset/expense accounting defaults."""
         entity = resolve_entity(request)
         body = request.data
-        # Codes are entity-unique identifiers — normalise to trimmed upper-case so the
+        # Codes are entity-unique identifiers - normalise to trimmed upper-case so the
         # uniqueness constraint and later immutability check compare like-for-like.
         code = _text(body.get("code"), "code", 40).upper()
         name = _text(body.get("name"), "name", 200, required=True)
@@ -178,7 +178,7 @@ class StockItemDetailView(_ProcBase):
         if item is None:
             raise NotFound("No such stock item in this entity.")
         body = request.data
-        # The code is the item's stable identifier — sending a different one is an error,
+        # The code is the item's stable identifier - sending a different one is an error,
         # never a silent rename (movements/valuation reference it). Compare on the same
         # trimmed upper-case normalisation used at create.
         if "code" in body:
@@ -233,7 +233,7 @@ class StockItemDetailView(_ProcBase):
 
 
 class StockIssueView(_ProcBase):
-    """POST — issue stock out at moving-average cost (Dr expense, Cr inventory).
+    """POST - issue stock out at moving-average cost (Dr expense, Cr inventory).
 
     docstring-name: Issue stock
     """
@@ -271,7 +271,7 @@ class StockIssueView(_ProcBase):
 
 
 class StockAdjustView(_ProcBase):
-    """POST — apply a signed stock-count correction (write-up or shrinkage).
+    """POST - apply a signed stock-count correction (write-up or shrinkage).
 
     docstring-name: Adjust stock
     """
@@ -313,7 +313,7 @@ class StockAdjustView(_ProcBase):
 
 
 class StockItemSummaryView(_ProcBase):
-    """GET — entity-wide stock-item KPI strip (tracked / active / low / out / value).
+    """GET - entity-wide stock-item KPI strip (tracked / active / low / out / value).
 
     docstring-name: Stock items summary
     """
@@ -323,7 +323,7 @@ class StockItemSummaryView(_ProcBase):
     def get(self, request):
         """Return entity-wide stock counts and carried value in integer kobo."""
         entity = resolve_entity(request)
-        # ONE aggregate over the item rows — conditional counts avoid loading any rows.
+        # ONE aggregate over the item rows - conditional counts avoid loading any rows.
         # low_stock: active, at/below its reorder level but still holding something;
         # out_of_stock: active with nothing on hand. total_value sums the carried kobo.
         agg = StockItem.objects.filter(entity=entity).aggregate(
@@ -351,7 +351,7 @@ class StockItemSummaryView(_ProcBase):
 
 
 class StockMovementListView(_ProcBase):
-    """GET — the stock ledger (movements), optionally filtered to one item.
+    """GET - the stock ledger (movements), optionally filtered to one item.
 
     docstring-name: Stock movements
     """

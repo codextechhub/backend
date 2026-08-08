@@ -1,4 +1,4 @@
-# payment_settlement — payouts, batches, reconciliation & the money feeds
+# payment_settlement - payouts, batches, reconciliation & the money feeds
 
 > Slice 2 of `vs_payments`. Covers **money-out** and the **read-side money views**:
 > the `PayoutInstruction` (single payout), the `PayoutBatch` (bulk disbursement,
@@ -12,13 +12,13 @@
 ## 1. What it is (and what it is NOT)
 
 A *payout* is a request to push money **out** of the entity to a beneficiary
-through a PSP — the disbursement mirror of a collection. A `PayoutInstruction` is
+through a PSP - the disbursement mirror of a collection. A `PayoutInstruction` is
 the gateway record of that request; the authoritative money movement is a
 **`vs_procurement.VendorPayment`** (Dr AP, Cr bank, Cr WHT), booked **only on
 confirmation** (`services.py:510`, `_book_vendor_payment` at `services.py:536-559`).
 
 A *payout batch* groups many instructions into one envelope an operator assembles
-and submits once — the bulk-disbursement (payroll / vendor-run) unit. As of
+and submits once - the bulk-disbursement (payroll / vendor-run) unit. As of
 `944ecee`, submitting a batch to the provider can be **approval-gated** via
 `vs_workflow` (maker-checker), opt-in per published template.
 
@@ -27,30 +27,30 @@ The *settlement reconciliation*, *movements feed*, and *transactions log* are
 imported bank statement).
 
 This does **NOT**:
-- move money itself — the PSP does; we book the ledger mirror after confirmation.
-- book anything at `initiate`/`submit` time — a `PENDING`/`PROCESSING` payout has
+- move money itself - the PSP does; we book the ledger mirror after confirmation.
+- book anything at `initiate`/`submit` time - a `PENDING`/`PROCESSING` payout has
   no `vendor_payment_id` (`services.py:296-307`).
-- **write** during reconciliation — it never mutates a bank line or books a
+- **write** during reconciliation - it never mutates a bank line or books a
   journal; matching is advisory (`reconciliation.py:16`).
-- gate money-out by default — approval only applies where a
+- gate money-out by default - approval only applies where a
   `payments.payout_batch` template is published for the batch's scope; **absent a
   template, a single `payments.payout.create` holder disburses directly** (§8).
-- ignore a provider-reported settled amount — like collections, `confirm_payout`
+- ignore a provider-reported settled amount - like collections, `confirm_payout`
   now adopts the PSP's settled figure when it differs (see §5/§8.3).
 
 ## 2. Domain model
 
-### `PayoutInstruction` — `models.py:229-299`
+### `PayoutInstruction` - `models.py:229-299`
 One request to send money out. Money is integer **kobo** (`amount`).
-- `entity` (PROTECT) — tenant scope; `batch` → `PayoutBatch` (nullable, the bulk
+- `entity` (PROTECT) - tenant scope; `batch` → `PayoutBatch` (nullable, the bulk
   envelope this belongs to).
-- `reference` — our merchant reference / idempotency key, `unique`
+- `reference` - our merchant reference / idempotency key, `unique`
   (`CXP-<tenant_id><YYMMDD><daily_sequence>`, allocated per tenant/local day);
-  `provider_reference` / `recipient_code` — the PSP's ids (`services.py:42-48`).
+  `provider_reference` / `recipient_code` - the PSP's ids (`services.py:42-48`).
 - `provider`, `amount`, `currency`.
-- `beneficiary_name`, `beneficiary_account_number` (**both FLS-masked** — PII, §9),
+- `beneficiary_name`, `beneficiary_account_number` (**both FLS-masked** - PII, §9),
   `beneficiary_bank_code`.
-- `source_account` → `vs_finance.Account` (nullable — the bank/cash GL the booked
+- `source_account` → `vs_finance.Account` (nullable - the bank/cash GL the booked
   payout credits; falls back to `1100`).
 - `status` (`PayoutStatus`, default `PENDING`): `PENDING → PROCESSING → PAID |
   FAILED | REVERSED` (`constants.py:63-71`); terminal set `{PAID, FAILED,
@@ -62,13 +62,13 @@ One request to send money out. Money is integer **kobo** (`amount`).
   `confirmed_at`, `created_by`.
 - Indexes `(entity, status)`, `(provider, provider_reference)`.
 
-### `PayoutBatch` — `models.py:171-247`
+### `PayoutBatch` - `models.py:171-247`
 A bulk-disbursement envelope grouping many instructions.
 - `entity` (PROTECT), `provider`, `reference` (`unique`), `title`, `narration`.
 - `status` (`PayoutBatchStatus`, default `DRAFT`): `DRAFT → PROCESSING → COMPLETED
   | PARTIALLY_COMPLETED | FAILED` (`constants.py:79-100`); terminal set
   `{COMPLETED, PARTIALLY_COMPLETED, FAILED}`.
-- `total_amount` / `item_count` — **denormalised** sums of the children, kept in
+- `total_amount` / `item_count` - **denormalised** sums of the children, kept in
   sync by the service (`services.py:409-411`).
 - `source_account` (default bank/cash GL for the children), `currency`,
   `submitted_at`, `metadata` (carries `approval_status`), `created_by`.
@@ -77,10 +77,10 @@ A bulk-disbursement envelope grouping many instructions.
   entity-scoped batch to `entity.source_school` for the school-scoped approval
   engine, `branch` is always `None` (`models.py:233-247`).
 
-### `PaymentEvent` — `models.py:351-391`
+### `PaymentEvent` - `models.py:351-391`
 Append-only, immutable gateway action log (the transactions log). `save()` on an
 existing pk and `delete()` both raise `ValueError` (`models.py:382-388`). `entity`
-is **nullable** — and webhook-received/rejected events are written with no entity
+is **nullable** - and webhook-received/rejected events are written with no entity
 (§8). Carries `action` (`PaymentAuditAction`), `provider`, `reference`,
 `succeeded`, `message`, `metadata`, `actor_user`.
 
@@ -95,10 +95,10 @@ Base `/v1/payments/`; all require `?entity=<id|code>`, platform envelope + RBAC.
 | `GET /payouts/summary/` | `payments.payout.view` | KPI totals (settled 7d, pending, failed) + group counts | query: `provider` | `success_response(data={total, settled7d, pending, failed, group_counts})` |
 | `GET /payout-batches/` | `payments.payout.view` | list batches (summary serializer, no child array) | query: `status` | `{pagination, data:[PayoutBatchSummarySerializer]}` |
 | `POST /payout-batches/` | `payments.payout.create` | assemble a DRAFT batch + children; `submit:true` dispatches **only if not approval-gated** | `items:[{amount, beneficiary_name, beneficiary_account_number, beneficiary_bank_code, vendor**, narration, wht_amount, metadata}]`, `source_account`, `provider`, `title`, `narration`, `submit` | `success_response(data=PayoutBatchSerializer, 201)` |
-| `GET /payout-batches/summary/` | `payments.payout.view` | batch KPI totals (queued, completed7d, drafts) | — | `success_response(data={total, queued, completed7d, drafts})` |
-| `GET /payout-batches/<pk>/` | `payments.payout.view` | one batch **with** its child instructions | — | `success_response(data=PayoutBatchSerializer)` |
-| `POST /payout-batches/<pk>/` | `payments.payout.create` | **direct** submit pending children — **refused (400) if approval-gated** | — | `success_response(data=PayoutBatchSerializer)` |
-| `POST /payout-batches/<pk>/submit-for-approval/` | `payments.payout_batch.submit` | route the batch through the vs_workflow approval engine | — | `success_response(data=PayoutBatchSerializer)` |
+| `GET /payout-batches/summary/` | `payments.payout.view` | batch KPI totals (queued, completed7d, drafts) | - | `success_response(data={total, queued, completed7d, drafts})` |
+| `GET /payout-batches/<pk>/` | `payments.payout.view` | one batch **with** its child instructions | - | `success_response(data=PayoutBatchSerializer)` |
+| `POST /payout-batches/<pk>/` | `payments.payout.create` | **direct** submit pending children - **refused (400) if approval-gated** | - | `success_response(data=PayoutBatchSerializer)` |
+| `POST /payout-batches/<pk>/submit-for-approval/` | `payments.payout_batch.submit` | route the batch through the vs_workflow approval engine | - | `success_response(data=PayoutBatchSerializer)` |
 | `GET /reports/settlement-reconciliation/` | `payments.report.view` | gateway-confirmed movements vs. imported bank lines | query: `start_date`, `end_date` (ISO, inclusive), `provider` | `success_response(data={…, summary, rows[], unmatched_bank_lines[]})` |
 | `GET /transactions/` | `payments.report.view` | the append-only gateway action log | query: `action`, `provider`, `succeeded` | `{pagination, data:[PaymentEventSerializer]}` |
 | `GET /movements/` | `payments.report.view` | unified in+out feed, newest first; payout PII FLS-masked | query: `direction` (in/out), `group`, `provider` | `{pagination, data:[row]}` |
@@ -109,7 +109,7 @@ Base `/v1/payments/`; all require `?entity=<id|code>`, platform envelope + RBAC.
   **within the entity** by code or pk (`views.py:489-495`); a missing/foreign
   vendor is a 400. `source_account` resolves within-entity via `_entity_obj`.
 - On `POST /payout-batches/` with `submit:true`, the direct dispatch is **skipped
-  when a template exists** (`approval_required(batch)`, `views.py:514-517`) — the
+  when a template exists** (`approval_required(batch)`, `views.py:514-517`) - the
   response message tells the caller to route it for approval instead.
 - **Approval-gate approve/reject/return** are driven through the **vs_workflow**
   action endpoints (not vs_payments URLs); the handler's `on_approved` calls
@@ -132,14 +132,14 @@ via `select_for_update` + terminal short-circuit. A webhook triggers
 `confirm_payout(payout)` with **no** status, so it **re-verifies** against the PSP
 (`webhooks.py:115`; see §8/slice 3) rather than trusting the event.
 
-### Payout batch — ungated (no template)
+### Payout batch - ungated (no template)
 `create_payout_batch` → **DRAFT** with PENDING children (`services.py:360-418`).
 `submit_payout_batch` loops `_dispatch_transfer` over each PENDING child
-(best-effort — a per-item rejection marks that child FAILED, does not abort),
+(best-effort - a per-item rejection marks that child FAILED, does not abort),
 then `_recompute_batch_status` derives the aggregate (`services.py:422-479`).
 Confirming children moves the batch COMPLETED / PARTIALLY_COMPLETED / FAILED.
 
-### Payout batch — approval-gated (template published)
+### Payout batch - approval-gated (template published)
 ```
 create (DRAFT)                submit-for-approval            checker APPROVES
 DRAFT ─────────► DRAFT + meta.approval_status=PENDING_APPROVAL ─────────► on_approved:
@@ -156,7 +156,7 @@ approver** (read from the workflow action log, `workflow_handlers.py:41-60,105-1
 
 **Payout net & journal split** (`_book_vendor_payment`, `services.py:536-559` →
 `vs_procurement/payables.py:268-343`), all kobo:
-- `gross = payout.amount` — where `confirm_payout` first adopts the PSP's settled
+- `gross = payout.amount` - where `confirm_payout` first adopts the PSP's settled
   amount when it reports one that differs (`settled = amount or payout.amount`,
   keeping the original in `metadata["instructed_amount"]`, `services.py:522-527`);
   `wht = metadata["wht_amount"]` (default 0);
@@ -164,7 +164,7 @@ approver** (read from the workflow action log, `workflow_handlers.py:41-60,105-1
   `PostingError` (`payables.py:290`). Example: instructed `70 000`, `wht = 7 000`
   → net `63 000`.
 
-**Batch totals** — `total_amount = Σ child amounts`, `item_count = len(items)`,
+**Batch totals** - `total_amount = Σ child amounts`, `item_count = len(items)`,
 computed once at assembly (`services.py:408-411`); not recomputed on child failure
 (a FAILED child still counts toward `total_amount`).
 
@@ -174,13 +174,13 @@ computed once at assembly (`services.py:408-411`); not recomputed on child failu
 - Matching is two-pass: **reference** first (our ref or the PSP ref), then an exact
   signed-**amount** fallback that picks the **date-nearest** bank line among equal
   amounts (`_closest`, `reconciliation.py:218-242`; see §8.4).
-- `fee_amount = |gateway amount| − |settled bank amount|` — the PSP fee
+- `fee_amount = |gateway amount| − |settled bank amount|` - the PSP fee
   (`reconciliation.py:57-61`). Example: gross `40 000` settles to a `39 100` bank
   line → fee `900`.
 - `is_reconciled` iff `unsettled_count == 0 and no unmatched bank lines`
   (`reconciliation.py:125-129`).
 
-**Movements/summary** — 7-day money-in = `Σ collection.amount where status=SUCCEEDED
+**Movements/summary** - 7-day money-in = `Σ collection.amount where status=SUCCEEDED
 and confirmed_at ≥ now−7d`; money-out likewise for `status=PAID`
 (`views.py:872-881`).
 
@@ -210,7 +210,7 @@ Carried vs dropped:
   payout **settles the vendor's oldest open bills** (`payables.py:341-342`,
   `allocate_vendor_payment`). Parallel to the collections auto-allocation, but for
   a vendor payment this is the intended AP behaviour (§8).
-- A `PayoutBatch` posts **nothing itself** — each *child* posts its own
+- A `PayoutBatch` posts **nothing itself** - each *child* posts its own
   `VendorPayment` on confirmation.
 
 ## 7. Worked example
@@ -240,13 +240,13 @@ Batch of two, approval-gated (from `PayoutBatchApprovalTests`,
 > Hardening pass (2026-07-12) closed items 2, 3, 4, 5, 6, 7. Item 1 is tracked as
 > an operational go-live task (`todo.md`).
 
-1. ⚠️ **Maker-checker is opt-in per template — no template means single-actor
+1. ⚠️ **Maker-checker is opt-in per template - no template means single-actor
    disbursement.** `approval_required(batch)` is false without a published
    `payments.payout_batch` template, so a lone `payments.payout.create` holder can
    `POST /payout-batches/<id>/` (or create-with-`submit:true`) and push money out
    with no second approver (`views.py:514-517,598-603`). **By design** (mirrors the
    finance approval slices), but a real control gap until a template is published
-   per scope. **Open — operational:** tracked in `todo.md` (seed a
+   per scope. **Open - operational:** tracked in `todo.md` (seed a
    `payments.payout_batch` approval template for every live entity before go-live).
 
 2. ✅ **Webhook events now carry the matched record's entity.** `ingest_webhook`
@@ -269,7 +269,7 @@ Batch of two, approval-gated (from `PayoutBatchApprovalTests`,
    takes the first unconsumed same-amount line; `_closest` picks the candidate whose
    `txn_date` is nearest the gateway row's confirmation, preferring on/after
    confirmation, then smallest day-distance, then lowest id (`reconciliation.py:218-242`).
-   Deterministic and order-independent for well-separated dates — still an advisory
+   Deterministic and order-independent for well-separated dates - still an advisory
    heuristic (no global optimum), and the console still flags `match_basis ==
    "amount"` rows for a human. Test:
    `test_amount_match_prefers_the_date_nearest_bank_line`. (Pass 1 reference matching
@@ -283,7 +283,7 @@ Batch of two, approval-gated (from `PayoutBatchApprovalTests`,
    `PayoutBatchSummaryView` sums child `PayoutInstruction` amounts where
    `batch is not null and status in (PENDING, PROCESSING)` instead of the batches'
    denormalised `total_amount` (`views.py:551-560`), so a FAILED child no longer
-   inflates money-in-flight. (`total_amount` itself remains the assembly sum — the
+   inflates money-in-flight. (`total_amount` itself remains the assembly sum - the
    batch's face value.) Test:
    `test_payout_batch_summary_queued_counts_only_in_flight_children`.
 
@@ -296,14 +296,14 @@ Batch of two, approval-gated (from `PayoutBatchApprovalTests`,
 
 Keys (`seed_payments_permissions.py:26-34`), granted to `xvs_super_admin` /
 `xvs_platform_admin`:
-- `payments.payout.view` (NORMAL) — list/detail/summary/batches.
-- `payments.payout.create` (**CRITICAL**) — POST payout, POST batch, direct batch
+- `payments.payout.view` (NORMAL) - list/detail/summary/batches.
+- `payments.payout.create` (**CRITICAL**) - POST payout, POST batch, direct batch
   submit.
-- `payments.payout.view_sensitive` (SENSITIVE) — unmask beneficiary name/account
+- `payments.payout.view_sensitive` (SENSITIVE) - unmask beneficiary name/account
   (serializer FLS + movements masking).
-- `payments.report.view` (NORMAL) — reconciliation, transactions, movements.
-- `payments.payout_batch.submit` (SENSITIVE) — route a batch for approval.
-- `payments.payout_batch.approve` / `.approve_high_value` (**CRITICAL**) — the
+- `payments.report.view` (NORMAL) - reconciliation, transactions, movements.
+- `payments.payout_batch.submit` (SENSITIVE) - route a batch for approval.
+- `payments.payout_batch.approve` / `.approve_high_value` (**CRITICAL**) - the
   approval votes (consumed by vs_workflow stages, not a vs_payments view).
 
 Verb correctness: POST/submit paths take `create` (or the dedicated `submit`),
@@ -330,20 +330,20 @@ the same fields manually (`views.py:836-838`).
 
 ## 10. Code map
 
-- `models.py:171-391` — `PayoutBatch` (+ workflow bridge), `PayoutInstruction`,
+- `models.py:171-391` - `PayoutBatch` (+ workflow bridge), `PayoutInstruction`,
   `PaymentEvent`.
-- `constants.py:63-131` — payout / batch statuses + terminal sets, audit actions.
-- `services.py:279-559` — `initiate_payout`, `_dispatch_transfer`,
+- `constants.py:63-131` - payout / batch statuses + terminal sets, audit actions.
+- `services.py:279-559` - `initiate_payout`, `_dispatch_transfer`,
   `create_payout_batch`, `submit_payout_batch`, `_recompute_batch_status`,
   `confirm_payout`, `_refresh_batch`, `_book_vendor_payment`.
-- `workflow_handlers.py` — `PayoutBatchApprovalHandler` (the approval gate).
-- `reconciliation.py` — `settlement_reconciliation` + the row/summary dataclasses.
-- `views.py:336-887` — payout, batch (+ submit-for-approval), reconciliation,
+- `workflow_handlers.py` - `PayoutBatchApprovalHandler` (the approval gate).
+- `reconciliation.py` - `settlement_reconciliation` + the row/summary dataclasses.
+- `views.py:336-887` - payout, batch (+ submit-for-approval), reconciliation,
   transactions, movements views; `_movement_querysets` (`views.py:768-798`).
-- `serializers.py:66-149` — payout / batch / batch-summary / payment-event
+- `serializers.py:66-149` - payout / batch / batch-summary / payment-event
   serializers (+ FLS).
-- `vs_procurement/payables.py:246-343` — `post_vendor_payment` (the payout journal).
-- `vs_finance/approvals.py` — `approval_required` (the opt-in gate, shared with
+- `vs_procurement/payables.py:246-343` - `post_vendor_payment` (the payout journal).
+- `vs_finance/approvals.py` - `approval_required` (the opt-in gate, shared with
   finance).
 
 ## 11. Test coverage & gaps
@@ -375,13 +375,13 @@ Baseline after hardening: **55 green** (`python manage.py test vs_payments
   `SettlementReconciliationTests.test_amount_match_prefers_the_date_nearest_bank_line`.
 
 Gaps still open:
-- **403 / permission-denied** — no test that a caller lacking `payout.create` /
+- **403 / permission-denied** - no test that a caller lacking `payout.create` /
   `report.view` / `payout_batch.submit` gets 403.
-- **Cross-tenant isolation** — no test that a foreign batch/payout `pk` or
+- **Cross-tenant isolation** - no test that a foreign batch/payout `pk` or
   `?entity` 404s on these routes.
-- **Movements feed** — beyond the `linked_id` check, `/movements/` union +
+- **Movements feed** - beyond the `linked_id` check, `/movements/` union +
   `direction` filter + FLS masking of payout PII, and `/movements/summary/`, remain
   lightly covered.
-- **FLS negative case** — no test that a caller without `payout.view_sensitive`
+- **FLS negative case** - no test that a caller without `payout.view_sensitive`
   sees beneficiary details masked.
 </content>

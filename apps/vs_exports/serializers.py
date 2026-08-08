@@ -3,8 +3,8 @@
 Two things to keep in mind when editing:
 
 **Nothing here exposes a raw JSONField.** ``frozen_config``, ``format_options`` and
-``filters`` are all JSON on the model, but each is re-shaped for the API — the run
-serializer publishes the readable summary, not the blob — so an internal id or a stray
+``filters`` are all JSON on the model, but each is re-shaped for the API - the run
+serializer publishes the readable summary, not the blob - so an internal id or a stray
 key added later cannot leak by default.
 
 **Write serializers validate against the catalogue, not against themselves.** Columns,
@@ -66,7 +66,7 @@ class ExportDefinitionListSerializer(serializers.ModelSerializer):
             "id": obj.dataset_key,
             "name": dataset.name if dataset else obj.dataset_key,
             "module": dataset.module if dataset else "",
-            # A withdrawn dataset is stated, not hidden — the row must explain itself.
+            # A withdrawn dataset is stated, not hidden - the row must explain itself.
             "available": dataset is not None,
         }
 
@@ -121,8 +121,8 @@ class ExportDefinitionDetailSerializer(ExportDefinitionListSerializer):
 class ExportDefinitionWriteSerializer(serializers.ModelSerializer):
     """Create/update payload, validated against the catalogue.
 
-    ``tenant``, ``entity`` and ``owner`` are set by the view from the request — never
-    from the body — so a caller cannot assign an export to another tenant, another
+    ``tenant``, ``entity`` and ``owner`` are set by the view from the request - never
+    from the body - so a caller cannot assign an export to another tenant, another
     entity or another person by adding a field.
     """
 
@@ -253,7 +253,7 @@ class ExportRunListSerializer(serializers.ModelSerializer):
     def get_progress(self, obj):
         """``{phase, rows_done, rows_total, queue_position}``.
 
-        A null ``rows_total`` means the UI renders indeterminate progress — expected,
+        A null ``rows_total`` means the UI renders indeterminate progress - expected,
         not an error. ``queue_position`` is null once the run starts; while it is
         queued it is what lets the UI explain a wait instead of going quiet.
         """
@@ -287,7 +287,7 @@ class ExportRunDetailSerializer(ExportRunListSerializer):
         """The outcome as a person can act on it: what happened, and what to do.
 
         ``retryable`` is deliberately narrow. Only a transient infrastructure
-        fault gets a Retry button — a filter, permission, row-cap or date-span
+        fault gets a Retry button - a filter, permission, row-cap or date-span
         failure fails again in exactly the same way, so offering a retry there
         wastes the user's time and teaches them the button does not work. For
         those, ``recommended_action`` is the real next step and the UI leads
@@ -328,13 +328,13 @@ class ExportRunDetailSerializer(ExportRunListSerializer):
         }
 
     def get_drift(self, obj):
-        """How the definition has moved on since this run — as READABLE changes.
+        """How the definition has moved on since this run - as READABLE changes.
 
         `config_drift` returns the raw before/after, which is the stored blob:
         column ids, filter specs, format-option dicts. Publishing that would put
         a raw JSONField on the wire, which this module does not do. So each
         change is rendered through the same helpers the configuration block uses
-        — labels, filter sentences, format names — and the UI can show "what
+        - labels, filter sentences, format names - and the UI can show "what
         changed" without ever seeing an internal id.
         """
         from .services import config_drift
@@ -382,21 +382,21 @@ def _readable_config_value(field, value, dataset) -> str:
     already shows, and an options object becomes a count rather than its keys.
     """
     if value in (None, "", [], {}):
-        return "—"
+        return "-"
     if field == "columns":
         labels = [
             (dataset.field(c).label if dataset and dataset.field(c) else str(c))
             for c in value
         ]
-        return ", ".join(labels) or "—"
+        return ", ".join(labels) or "-"
     if field == "filters":
         if not dataset:
             return f"{len(value)} filters"
-        return "; ".join(describe_filter(dataset, spec) for spec in value) or "—"
+        return "; ".join(describe_filter(dataset, spec) for spec in value) or "-"
     if field == "sort":
         return ", ".join(
             f"{s.get('field')} {s.get('direction', 'asc')}" for s in value
-        ) or "—"
+        ) or "-"
     if field == "format_options":
         return f"{len(value)} option{'' if len(value) == 1 else 's'} set"
     if field == "dataset_key":
@@ -410,7 +410,7 @@ def _readable_config_value(field, value, dataset) -> str:
 
 
 class ExportDownloadSerializer(serializers.ModelSerializer):
-    """The download log — who took it, when, and who was refused."""
+    """The download log - who took it, when, and who was refused."""
 
     user_name = serializers.SerializerMethodField()
 
@@ -420,7 +420,7 @@ class ExportDownloadSerializer(serializers.ModelSerializer):
 
     def get_user_name(self, obj):
         user = obj.user
-        return getattr(user, "get_full_name", lambda: "")() or getattr(user, "email", "—")
+        return getattr(user, "get_full_name", lambda: "")() or getattr(user, "email", "-")
 
 
 class ExportDeliverySerializer(serializers.ModelSerializer):
@@ -443,7 +443,7 @@ class ExportDeliverySerializer(serializers.ModelSerializer):
 # Ad-hoc payloads                                                             #
 # --------------------------------------------------------------------------- #
 class PreviewSerializer(serializers.Serializer):
-    """Body for the preview/estimate endpoint — a configuration, not a saved export."""
+    """Body for the preview/estimate endpoint - a configuration, not a saved export."""
 
     dataset_key = serializers.CharField()
     columns = serializers.ListField(child=serializers.CharField(), allow_empty=True)
@@ -479,7 +479,7 @@ class RunRequestSerializer(serializers.Serializer):
 
     client_key = serializers.CharField(
         required=False, allow_blank=True, max_length=64,
-        help_text="Idempotency key — the same key inside 60s returns the run already going.",
+        help_text="Idempotency key - the same key inside 60s returns the run already going.",
     )
 
 
@@ -492,7 +492,7 @@ class ShareSerializer(serializers.Serializer):
 class AnalyticsIngestSerializer(serializers.Serializer):
     """A batch of client-reported analytics events.
 
-    The browser reports what only it knows — which wizard step someone was on when
+    The browser reports what only it knows - which wizard step someone was on when
     they gave up, how long they lingered. Validation is deliberately narrow: an unknown
     event name is rejected here, and :func:`vs_exports.analytics.sanitise` drops any
     property the event does not declare, so this endpoint cannot become a channel for

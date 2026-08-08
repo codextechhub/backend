@@ -42,7 +42,7 @@ def log_auth_event(*, actor, subject, tenant, event: str, request=None, metadata
     """
     Emit a single identity/auth action as a vs_audit AuditEvent.
 
-    Never raises — a logging failure must never prevent an auth action from completing.
+    Never raises - a logging failure must never prevent an auth action from completing.
     actor: the user who performed the action (may be None for system-initiated events).
     subject: the user the action was performed on.
     tenant: the tenant context; its school profile (when any) is stored in metadata.
@@ -79,7 +79,7 @@ def log_auth_event(*, actor, subject, tenant, event: str, request=None, metadata
             metadata=extra_meta,
         )
     except Exception as exc:
-        logger.critical('log_auth_event failed — audit trail may be incomplete: %s', exc, exc_info=True)
+        logger.critical('log_auth_event failed - audit trail may be incomplete: %s', exc, exc_info=True)
 
 
 def record_attempt(*, email_entered, user=None,
@@ -102,7 +102,7 @@ def record_attempt(*, email_entered, user=None,
             metadata=metadata or {},
         )
     except Exception as exc:
-        logger.critical('record_attempt failed — auth attempt not recorded: %s', exc, exc_info=True)
+        logger.critical('record_attempt failed - auth attempt not recorded: %s', exc, exc_info=True)
 
 
 def blacklist_all_user_tokens(user):

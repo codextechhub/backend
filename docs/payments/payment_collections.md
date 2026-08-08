@@ -1,4 +1,4 @@
-# payment_collections — collections & virtual accounts
+# payment_collections - collections & virtual accounts
 
 > Slice 1 of `vs_payments`. Covers **money-in**: the `CollectionIntent` gateway
 > record, the `VirtualAccount` (dedicated NUBAN) record, and the endpoints/services
@@ -19,62 +19,62 @@ with no checkout step, and the deposit self-attributes to them.
 Nothing in this slice is itself an accounting entry. A `CollectionIntent` only
 records *what we asked the provider to do and what it told us*. The authoritative
 money movement is a **`vs_finance.Payment` receipt** (Dr bank, Cr AR), and it is
-booked **only when the collection is confirmed** — never at initiation
+booked **only when the collection is confirmed** - never at initiation
 (`services.py:59-64`, `services.py:172-216`).
 
 This does **NOT**:
-- move money by itself — the provider does; we book the ledger mirror after the
+- move money by itself - the provider does; we book the ledger mirror after the
   fact.
-- book anything at `initiate` time — a `PENDING`/`PROCESSING` intent has no
+- book anything at `initiate` time - a `PENDING`/`PROCESSING` intent has no
   `payment` (`services.py:78-120`).
-- reconcile against the bank statement — that is `SettlementReconciliation`
+- reconcile against the bank statement - that is `SettlementReconciliation`
   (settlement slice).
 - tear down a virtual account at the provider when you deactivate it locally
   (`services.py:150-169`).
 
 ## 2. Domain model
 
-### `CollectionIntent` — `models.py:88-168`
+### `CollectionIntent` - `models.py:88-168`
 One request to collect money in. Money is integer **kobo** (`amount`, a
 `vs_finance.MoneyField`, `models.py:109`).
 
 Key fields:
-- `entity` → `vs_finance.LedgerEntity` (PROTECT) — the tenant scope (`models.py:97-99`).
-- `reference` — **our** merchant reference / idempotency key, `unique` globally
+- `entity` → `vs_finance.LedgerEntity` (PROTECT) - the tenant scope (`models.py:97-99`).
+- `reference` - **our** merchant reference / idempotency key, `unique` globally
   (`CXP-<tenant_id><YYMMDD><daily_sequence>`, generated from the entity's tenant
   at `services.py:42-48`); `provider_reference` is what the
   PSP returns (`models.py:104-108`).
 - `provider` (`PaymentProvider`: OPAY / PAYSTACK / FAKE), `channel`
   (`CollectionChannel`: CHECKOUT / VIRTUAL_ACCOUNT / CARD / BANK_TRANSFER / USSD),
   `constants.py:15-37`.
-- `status` (`CollectionStatus`, default `PENDING`) — `PENDING → PROCESSING →
+- `status` (`CollectionStatus`, default `PENDING`) - `PENDING → PROCESSING →
   SUCCEEDED | FAILED | ABANDONED | REFUNDED` (`constants.py:40-53`). Terminal set:
   `{SUCCEEDED, FAILED, ABANDONED, REFUNDED}` (`constants.py:57-60`); `is_terminal`
   at `models.py:164-168`.
-- `customer` (nullable), `invoice` (nullable — the invoice this collection
-  settles), `deposit_account` (nullable — the bank/cash GL the receipt debits),
-  `virtual_account` (nullable — the VA it arrived through).
-- `payment` → `vs_finance.Payment` (nullable) — the booked receipt, set on confirm
+- `customer` (nullable), `invoice` (nullable - the invoice this collection
+  settles), `deposit_account` (nullable - the bank/cash GL the receipt debits),
+  `virtual_account` (nullable - the VA it arrived through).
+- `payment` → `vs_finance.Payment` (nullable) - the booked receipt, set on confirm
   (`models.py:140-144`).
 - `checkout_url`, `authorization_code`, `payer_email`, `payer_name`, `narration`.
-- `metadata` / `raw_response` — free `JSONField`s (payer-supplied + raw PSP body).
+- `metadata` / `raw_response` - free `JSONField`s (payer-supplied + raw PSP body).
 - `confirmed_at`, `created_by`.
 
 Indexes: `(entity, status)`, `(provider, provider_reference)`, `(customer)`
 (`models.py:153-158`). Ordering `-id`.
 
-### `VirtualAccount` — `models.py:33-85`
+### `VirtualAccount` - `models.py:33-85`
 A dedicated NUBAN issued by a provider for self-reconciling collection.
 - `entity` (PROTECT), `provider`, `customer` (nullable), `deposit_account`
-  (nullable — GL account collections into this NUBAN land in), `currency`.
-- `account_number`, `bank_name`, `account_name` — the funding coordinates
+  (nullable - GL account collections into this NUBAN land in), `currency`.
+- `account_number`, `bank_name`, `account_name` - the funding coordinates
   (`account_number`/`account_name` are **FLS-masked**, see §9).
 - `provider_reference`, `status` (`VirtualAccountStatus`: ACTIVE / INACTIVE,
   default ACTIVE, `constants.py:103-105`), `raw` (`JSONField`).
 - **Uniqueness:** only `uniq_payments_va_provider_account` on
   `(provider, account_number)` (`models.py:72-77`). The docstring's claim of "one
   active account per provider *per customer*" is **not** enforced by a constraint
-  or a service check — see §8.
+  or a service check - see §8.
 - Indexes `(entity, provider)`, `(customer)`.
 
 Both are `TimeStampedModel` (reuses `vs_finance`) and scoped per `LedgerEntity`;
@@ -94,7 +94,7 @@ and use the platform envelope + RBAC, except where noted. Request body lists
 | `GET /collections/<pk>/` | `payments.collection.view` | fetch one; `?verify=1` polls provider & confirms if settled | query: `verify` | `success_response(data=CollectionIntentSerializer)` |
 | `GET /virtual-accounts/` | `payments.virtual_account.view` | list VAs, **custom** pagination + KPIs (see note) | query: `status`, `provider`, `customer`, `search`, `page`, `page_size` | `{success, message, pagination, kpis, data:[VirtualAccountSerializer]}` |
 | `POST /virtual-accounts/` | `payments.virtual_account.create` | provision a dedicated NUBAN | `customer`(**required**), `deposit_account`, `provider`, `bank_code` | `success_response(data=VirtualAccountSerializer, 201)` |
-| `GET /virtual-accounts/<pk>/` | `payments.virtual_account.view` | fetch one VA | — | `success_response(data=VirtualAccountSerializer)` |
+| `GET /virtual-accounts/<pk>/` | `payments.virtual_account.view` | fetch one VA | - | `success_response(data=VirtualAccountSerializer)` |
 | `PATCH /virtual-accounts/<pk>/` | `payments.virtual_account.manage` | activate / deactivate (local only) | `status` (ACTIVE/INACTIVE) | `success_response(data=VirtualAccountSerializer)` |
 
 Notes:
@@ -102,12 +102,12 @@ Notes:
   that matter on POST /collections/.** `amount` is coerced with
   `int(body.get("amount") or 0)` and must be `> 0` (`views.py:123-125`). `customer`
   / `invoice` / `deposit_account` resolve **within the entity** by pk **or code**
-  via `_entity_obj` (`views.py:58-75`) — a ref from another tenant raises a 400.
+  via `_entity_obj` (`views.py:58-75`) - a ref from another tenant raises a 400.
 - **VA list now uses the shared `_paginate` envelope** (`views.py:239-242`),
   routing through `XVSPagination` (page size **25**, real `next`/`previous`) and
-  injecting the extra top-level `kpis` object onto `resp.data` — consistent with
+  injecting the extra top-level `kpis` object onto `resp.data` - consistent with
   every other list in this app.
-- There is no `?entity` exception here — every collections/VA route is
+- There is no `?entity` exception here - every collections/VA route is
   entity-scoped (unlike `vs_finance` currencies/fx-rates).
 
 ## 4. Lifecycle / state machine
@@ -143,7 +143,7 @@ and audits it; same-status is a no-op; unknown status → 400
 
 ## 5. Calculations
 
-This slice has almost no arithmetic of its own — the money value is carried
+This slice has almost no arithmetic of its own - the money value is carried
 verbatim (`amount`, kobo) from request → intent → receipt. The two computed
 surfaces:
 
@@ -155,16 +155,16 @@ adopts the **settled** amount: `settled = amount or intent.amount`; if
 before booking (`services.py:214-220`). So `booked = settled` when the provider
 reports one, else the requested amount. Example: intent for `5 000 000` kobo
 (₦50,000); webhook reports `amount: 4 900 000` → we book **4 900 000** and keep
-`requested_amount: 5 000 000` on metadata. (A `0` report never overrides — the
+`requested_amount: 5 000 000` on metadata. (A `0` report never overrides - the
 FakeProvider `verify` reports 0, so verify-driven confirms keep the requested
 amount.)
 
 **Collections summary success rate** (`views.py:170-171`):
 `rate = round(paid_count × 100 / (paid_count + failed_count))`, `None` when no
 terminal rows. Group sums (`collected`/`pending`/`failed`) are `Sum(amount, filter=…)`
-coalesced to 0 over the whole entity (`views.py:160-169`) — kobo, no rounding.
+coalesced to 0 over the whole entity (`views.py:160-169`) - kobo, no rounding.
 
-**VA KPIs** (`views.py:225-230`): plain `count()`s — total / active / inactive /
+**VA KPIs** (`views.py:225-230`): plain `count()`s - total / active / inactive /
 distinct providers.
 
 ## 6. What posting does to the ledger
@@ -189,7 +189,7 @@ Carried vs dropped on the way to the ledger:
   `resolve_account(entity, CASH_BANK_CODE="1100")` (`services.py:228-230`,
   `vs_finance/constants.py:564`).
 - **Allocation:** if the intent has an `invoice`, `allocations = [(invoice, amount)]`
-  — a fixed split against that invoice. **If it has no invoice, `_book_receipt`
+  - a fixed split against that invoice. **If it has no invoice, `_book_receipt`
   now passes `auto_allocate=False`** (`services.py:259-264`), so a standalone
   collection is parked in `2140` customer credit rather than silently settling the
   customer's open invoices. (Standalone receipts are a confirmed use case.)
@@ -206,7 +206,7 @@ Carried vs dropped on the way to the ledger:
   (`services.py:206-209`), and a `COLLECTION_CONFIRMED` `PaymentEvent` is written
   in the same transaction (`services.py:210-215`).
 
-`VirtualAccount` provisioning posts **nothing** — it only stores the NUBAN.
+`VirtualAccount` provisioning posts **nothing** - it only stores the NUBAN.
 
 ## 7. Worked example
 
@@ -265,13 +265,13 @@ Using the `FakeProvider` (test wiring, `tests.py:119-151`,
 
 5. ⚠️ **`REFUNDED` is a dead state in this slice.** It is in the enum and the
    summary `group_counts` (`constants.py:53`, `views.py:168`) but no
-   endpoint/service transitions into it. **Open — by design for now** (refunds are a
+   endpoint/service transitions into it. **Open - by design for now** (refunds are a
    later capability); worth ensuring the console does not advertise a refund action
    that no-ops.
 
 6. ✅ **VA list now uses the standard envelope.** `GET /virtual-accounts/` routes
    through `_paginate`/`XVSPagination` (page size 25, real next/previous) with
-   `kpis` injected onto `resp.data` (`views.py:239-242`) — consistent with every
+   `kpis` injected onto `resp.data` (`views.py:239-242`) - consistent with every
    other list. Frontend-visible change: default page size 20 → 25. Test:
    `test_virtual_account_list_uses_standard_envelope`.
 
@@ -279,34 +279,34 @@ Using the `FakeProvider` (test wiring, `tests.py:119-151`,
    raises `PaymentStateError` when the linked VA is INACTIVE (`services.py:241-244`);
    the webhook path marks the event FAILED (retained/replayable) rather than posting
    to a deactivated NUBAN. Note: `set_virtual_account_status` is still local-only
-   (no provider-side teardown — by design). Test:
+   (no provider-side teardown - by design). Test:
    `test_inactive_virtual_account_deposit_is_held`.
 
 8. ⚠️ **`search` on account_number is an FLS oracle.** `account_number` is
    FLS-masked in the serializer (§9), but the list view lets any
    `payments.virtual_account.view` holder filter by `search=<digits>` against
    `account_number` (`views.py:235-238`), so presence can be probed without the
-   sensitive grant. **Open** — low severity; revisit in the settlement/FLS review.
+   sensitive grant. **Open** - low severity; revisit in the settlement/FLS review.
 
 ## 9. Permissions & tenant isolation
 
 RBAC keys, seeded by `seed_payments_permissions.py:26-33` and granted to
 `xvs_super_admin` / `xvs_platform_admin`:
-- `payments.collection.view` (NORMAL) — list/detail/summary.
-- `payments.collection.create` (**CRITICAL**) — POST initiate.
-- `payments.virtual_account.view` (NORMAL) — list/detail.
-- `payments.virtual_account.create` (**SENSITIVE**) — POST provision.
-- `payments.virtual_account.manage` (SENSITIVE) — PATCH status.
-- `payments.virtual_account.view_sensitive` (SENSITIVE) — unmask VA funding
+- `payments.collection.view` (NORMAL) - list/detail/summary.
+- `payments.collection.create` (**CRITICAL**) - POST initiate.
+- `payments.virtual_account.view` (NORMAL) - list/detail.
+- `payments.virtual_account.create` (**SENSITIVE**) - POST provision.
+- `payments.virtual_account.manage` (SENSITIVE) - PATCH status.
+- `payments.virtual_account.view_sensitive` (SENSITIVE) - unmask VA funding
   number/name.
 
 Verb correctness: POST paths take `create`, PATCH takes `manage`, reads take
-`view` — via the `rbac_permission` property switching on `request.method`
+`view` - via the `rbac_permission` property switching on `request.method`
 (`views.py:99-103, 217-220, 287-290`). Every view class is
 `IsAuthenticatedAndActive & HasRBACPermission`.
 
 **Tenant isolation.** Every endpoint calls `resolve_entity(request)`
-(`vs_finance/views.py:47-78`): holding a permission key is not enough — a non-CX
+(`vs_finance/views.py:47-78`): holding a permission key is not enough - a non-CX
 user is restricted to entities sourced from their school, and unknown/forbidden
 entities both return **404** (no existence oracle). All querysets are
 `.filter(entity=entity)` and detail lookups are `.filter(entity=entity, pk=pk)`
@@ -317,28 +317,28 @@ mass-assignment.
 
 **FLS.** `VirtualAccountSerializer.read_permissions` masks `account_number` and
 `account_name` unless the caller holds `payments.virtual_account.view_sensitive`
-(`serializers.py:41-63`) — the list/detail views pass `context={"request": …}` so
+(`serializers.py:41-63`) - the list/detail views pass `context={"request": …}` so
 the mixin can see the user. (Oracle caveat in §8.8.) `CollectionIntentSerializer`
 exposes no PII beyond payer email/name it was given, and does **not** serialize
-`metadata`/`raw_response` (`serializers.py:27-35`) — good; the raw PSP body stays
+`metadata`/`raw_response` (`serializers.py:27-35`) - good; the raw PSP body stays
 server-side.
 
 ## 10. Code map
 
-- `models.py:33-168` — `VirtualAccount`, `CollectionIntent`.
-- `constants.py:15-60,103-131` — providers, channels, collection statuses +
+- `models.py:33-168` - `VirtualAccount`, `CollectionIntent`.
+- `constants.py:15-60,103-131` - providers, channels, collection statuses +
   terminal set, VA status, audit actions.
-- `views.py:91-313` — collection list/create/summary/detail + VA list/create/detail
+- `views.py:91-313` - collection list/create/summary/detail + VA list/create/detail
   views; `_entity_obj`/`_paginate` helpers (`views.py:49-75`).
-- `services.py:55-241` — `initiate_collection`, `create_virtual_account`,
+- `services.py:55-241` - `initiate_collection`, `create_virtual_account`,
   `set_virtual_account_status`, `confirm_collection`, `_book_receipt`.
-- `serializers.py:18-63` — `CollectionIntentSerializer`, `VirtualAccountSerializer`
+- `serializers.py:18-63` - `CollectionIntentSerializer`, `VirtualAccountSerializer`
   (+ FLS).
-- `providers/base.py` — neutral `CheckoutResult` / `VirtualAccountResult` /
-  `CollectionStatusResult`; `providers/registry.py` — name → client (test override);
-  `providers/fake.py` — deterministic test provider.
-- `audit.py` — immutable `PaymentEvent` writer (`record` / `record_rejection`).
-- `vs_finance/receivables.py:226-398` — `post_payment` (the actual journal).
+- `providers/base.py` - neutral `CheckoutResult` / `VirtualAccountResult` /
+  `CollectionStatusResult`; `providers/registry.py` - name → client (test override);
+  `providers/fake.py` - deterministic test provider.
+- `audit.py` - immutable `PaymentEvent` writer (`record` / `record_rejection`).
+- `vs_finance/receivables.py:226-398` - `post_payment` (the actual journal).
 
 ## 11. Test coverage & gaps
 
@@ -346,7 +346,7 @@ Baseline after hardening: **38 green** (`python manage.py test vs_payments
 --settings=apps.settings.local`). Collections/VA-relevant:
 - `CollectionTests`: initiate → PROCESSING + checkout + audit row; verify → books
   receipt & settles invoice; failed collection books nothing; **confirm
-  idempotency**; plus the five hardening tests — `test_settled_amount_overrides_
+  idempotency**; plus the five hardening tests - `test_settled_amount_overrides_
   requested`, `test_standalone_receipt_parks_credit_not_auto_settling`,
   `test_customerless_initiate_is_rejected`,
   `test_one_active_virtual_account_per_customer_provider`,
@@ -360,14 +360,14 @@ Baseline after hardening: **38 green** (`python manage.py test vs_payments
   `test_virtual_account_list_uses_standard_envelope`.
 
 Gaps still open:
-- **403 / permission-denied** — no test asserts a caller *without*
+- **403 / permission-denied** - no test asserts a caller *without*
   `collection.create` / `virtual_account.create` gets 403.
-- **Cross-tenant isolation** — no test that a `pk` or `?entity` from another
+- **Cross-tenant isolation** - no test that a `pk` or `?entity` from another
   tenant 404s on these routes.
-- **FLS masking (negative case)** — no test that a caller *without*
+- **FLS masking (negative case)** - no test that a caller *without*
   `view_sensitive` sees VA `account_number` stripped; and the §8.8 `search` oracle
   is unaddressed.
-- **Empty-list shape** — `success_response` coerces `[]`→`{}`; the collections
+- **Empty-list shape** - `success_response` coerces `[]`→`{}`; the collections
   empty list envelope is unasserted.
 </content>
 </invoke>

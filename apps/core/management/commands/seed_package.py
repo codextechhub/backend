@@ -79,7 +79,7 @@ class Command(BaseCommand):
     help = (
         "Seeds the PackagePlan table with the platform's four subscription tiers: "
         "Basic, Standard, Premium, Enterprise. "
-        "Safe to run multiple times — uses update_or_create on `code`."
+        "Safe to run multiple times - uses update_or_create on `code`."
     )
 
     def add_arguments(self, parser):

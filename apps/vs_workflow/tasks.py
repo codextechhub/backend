@@ -18,7 +18,7 @@ def dispatch_notification(*, instance_id: str, event_key: str,
         instance = WorkflowInstance.objects.select_related("template").get(pk=instance_id)
     except WorkflowInstance.DoesNotExist:
         return
-    # Template opt-in: an untouched template ({} — never configured) notifies
+    # Template opt-in: an untouched template ({} - never configured) notifies
     # for every wired event; once the author has configured ANY key, the dict
     # is exact intent and missing keys mean off.
     events = instance.template.notification_events or {}

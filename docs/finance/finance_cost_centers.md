@@ -3,7 +3,7 @@
 > **This file replaces the earlier cost-centers write-up, which was wrong on the
 > two claims that matter most** (cost centers surviving invoice posting; an
 > expense-claim `amount` field). Both are corrected below and the underlying
-> behavior is traced to code. Read §1 and §6 first — they overturn the old doc.
+> behavior is traced to code. Read §1 and §6 first - they overturn the old doc.
 
 A **`CostCenter`** is the finance module's analytical bucket for slicing activity
 by department / project / branch unit (Primary, Secondary, Admin, Sports). It is
@@ -27,12 +27,12 @@ Route covered (mounted at `/v1/finance/`): `cost-centers/`.
 - ❌ **It is NOT a replacement for the chart of accounts.** Keep accounts generic
   and split them with cost centers, not by minting per-department accounts.
 
-> **History — what the old draft got wrong, and the fix.** The earlier write-up
+> **History - what the old draft got wrong, and the fix.** The earlier write-up
 > claimed an invoice's cost center "keeps the same cost center" on the posted
 > journal. At the time that was *false in the other direction*: `post_invoice`
 > (and every other sub-ledger posting) aggregated lines **by account only** and
 > **dropped** the cost center, so cost centers never reached the GL at all. That
-> gap has since been **fixed** — P&L lines now split by `(account, cost center)`
+> gap has since been **fixed** - P&L lines now split by `(account, cost center)`
 > and carry the tag into the ledger (§6). Balance-sheet control and tax lines
 > still (correctly) do not.
 
@@ -46,7 +46,7 @@ Lines that *can* hold a `cost_center` FK (nullable): `JournalLine`
 (`models/gl.py:444`), plus `InvoiceLine`, `ExpenseClaimLine`, `PayrollLine`,
 `BudgetLine`. Setting it is optional; omitting it leaves the line unallocated.
 
-> Sibling concept: **`Dimension`** (`models/gl.py:331`) — user-defined extra axes
+> Sibling concept: **`Dimension`** (`models/gl.py:331`) - user-defined extra axes
 > (FUND, PROGRAMME …) carried as a `{axis: value}` JSON map on `JournalLine.dimensions`.
 > Each axis has an `allowed_values` list (`models/gl.py:345`); a line's value must be
 > one of them. Like cost centres, dimensions are now wired end-to-end on **direct
@@ -60,20 +60,20 @@ Requires `?entity=<id|code>`. Gate: `IsAuthenticatedAndActive & HasRBACPermissio
 
 | Method + path | permission key | what it does | request body | response |
 |---|---|---|---|---|
-| `GET /cost-centers/?entity=` | `finance.costcenter.view` | List cost centers. Query: `is_active=true\|false` | — | `success_response` list of `CostCenterSerializer` (un-paginated) |
+| `GET /cost-centers/?entity=` | `finance.costcenter.view` | List cost centers. Query: `is_active=true\|false` | - | `success_response` list of `CostCenterSerializer` (un-paginated) |
 | `POST /cost-centers/?entity=` | `finance.costcenter.create` | **Upsert** a cost center (`update_or_create` on `(entity, code)`) | `code` (required), `name?` (defaults to `code`), `parent?` (**code or pk**), `is_active?` | `201` if created / `200` if updated, `CostCenterSerializer` |
 
 `CostCenterSerializer` exposes: `id, code, name, parent_id, parent_code,
 is_active` (`serializers.py:619`). No sensitive fields.
 
 > **Field note:** `parent` is resolved by `_resolve_cost_center`
-> (`views_ops/base.py:59`), which tries **code first, then numeric pk** — unlike
+> (`views_ops/base.py:59`), which tries **code first, then numeric pk** - unlike
 > account-create, where `parent` is a pk only. POSTing the same `code` again
 > **updates** it (`update_or_create`, `masterdata.py:197`); it does not error.
 
 ## 4. Lifecycle / state machine
 
-No workflow — cost centers are master data. `is_active=false` stops new
+No workflow - cost centers are master data. `is_active=false` stops new
 allocations conceptually without deleting historical references (there is no DB
 guard preventing selection of an inactive one; it's a list filter). Created/edited
 only via the upsert POST.
@@ -81,7 +81,7 @@ only via the upsert POST.
 ## 5. Calculations
 
 None. A cost center carries no amount; it's a tag. The arithmetic that slices by
-cost center lives in reports, which read GL lines — and those GL lines now carry
+cost center lives in reports, which read GL lines - and those GL lines now carry
 the cost center (§6), so cost-center P&L slicing works.
 
 ## 6. What posting does to the ledger  ← the core behavior (now fixed)
@@ -99,9 +99,9 @@ split survives.
 | Petty-cash voucher | expense (Dr) | `(expense_account, cost_center)` | **Yes** | `petty_cash.py:170` |
 | Payroll accrual (`post_payroll`) | gross salary (Dr) | `cost_center` (single salary account) | **Yes** | `payroll.py:198` |
 | Credit/debit note (`post_credit_note`) | revenue/returns | `(revenue_account, cost_center)` | **Yes** | `credit_notes.py:125` |
-| Reversal (`reverse_journal`) | mirrors original | per original line | **Yes — copies it** | `posting.py:272` |
+| Reversal (`reverse_journal`) | mirrors original | per original line | **Yes - copies it** | `posting.py:272` |
 
-What stays **un**-allocated (by design — these are not P&L analytics): the AR/AP
+What stays **un**-allocated (by design - these are not P&L analytics): the AR/AP
 control line, output/input **tax** liability lines, the accrued-reimbursement
 liability, and the PAYE/pension/net-wages payables. **`direct-entries` accept an
 optional per-line `cost_center`** (code/id) **and `dimensions`** (`{axis: value}`),
@@ -114,9 +114,9 @@ in the axis allow-list is a `400`.
 activity (`views.py:325`) carry real values for postings made after the fix, and the
 dedicated **analytics-slice report** (`GET /finance/reports/analytics-slice/?axis=`,
 `reports.py:analytics_slice`) answers "net per account, bucketed by cost centre or a
-dimension" — reading posted `JournalLine`s directly because `AccountBalance` carries
+dimension" - reading posted `JournalLine`s directly because `AccountBalance` carries
 neither axis. (Journals posted *before* the fix have no cost centre on their GL
-lines — historical only.)
+lines - historical only.)
 
 ## 7. Worked examples (corrected)
 
@@ -132,22 +132,22 @@ lines — historical only.)
 ```
 Re-POSTing `code: "PRI"` returns `200` `"Cost centre PRI updated."`.
 
-**Child cost center** — `parent` by code:
+**Child cost center** - `parent` by code:
 ```json
 { "code": "PRI-Y1", "name": "Primary Year 1", "parent": "PRI" }
 ```
 
-**Attach to an invoice line** (request the API *does* read — corrected):
+**Attach to an invoice line** (request the API *does* read - corrected):
 ```json
 { "customer": "CUST-0001", "invoice_date": "2026-06-26", "reference": "INV-DEMO-001",
   "lines": [ { "revenue_account": "4000", "description": "Primary tuition",
                "quantity": "1", "unit_price": 25000000, "cost_center": "PRI" } ] }
 ```
 The cost center is stored on the **`InvoiceLine`**. ⚠️ But when the invoice posts,
-the revenue GL line is created **without** it (§6) — do **not** claim it survives
+the revenue GL line is created **without** it (§6) - do **not** claim it survives
 to the journal.
 
-**Expense-claim line — use `unit_price`, NOT `amount`** (the old draft's bug):
+**Expense-claim line - use `unit_price`, NOT `amount`** (the old draft's bug):
 ```json
 { "claimant_name": "EMP-001", "claim_date": "2026-06-26",
   "lines": [ { "expense_account": "6100", "description": "Teaching supplies",
@@ -159,24 +159,24 @@ recorded a **0-kobo** line. Same drop on posting applies.
 
 ## 8. Gotchas / known limitations
 
-- ✅ **Cost centers reach the GL as of the §6 fix** — but only on the **P&L**
+- ✅ **Cost centers reach the GL as of the §6 fix** - but only on the **P&L**
   lines. Don't expect them on AR/AP/tax/payable lines (intentional).
 - **Pre-fix history is unallocated.** Journals posted before the fix have no cost
   center on their GL lines; reports spanning that boundary will show a gap.
-- POST is an **upsert**, not strict create — a typo'd re-POST silently mutates an
+- POST is an **upsert**, not strict create - a typo'd re-POST silently mutates an
   existing center rather than 409-ing.
 - `is_active=false` is a soft filter only; nothing stops a service resolving an
   inactive center if a caller passes its code.
 - `direct-entries` now tag a cost center **and dimensions** per line (optional);
   the balancing contra leg (e.g. cash) is typically left unallocated by the caller.
-- **Dimensions are direct-entry-only so far** — sub-ledger document lines
+- **Dimensions are direct-entry-only so far** - sub-ledger document lines
   (invoice/expense/etc.) accept `cost_center` but not `dimensions` input yet.
 - A dimension value must be in its axis's `allowed_values`; an axis with an empty
   allow-list accepts **no** values (set them on the dimension upsert first).
 
 ## 9. Permissions & tenant isolation
 
-- `finance.costcenter.view` (GET) / `finance.costcenter.create` (POST) — separate
+- `finance.costcenter.view` (GET) / `finance.costcenter.create` (POST) - separate
   verbs.
 - `resolve_entity` scopes every call (CX-staff-all, else `source_school`);
   `_resolve_cost_center` filters `CostCenter.objects.filter(entity=entity)`
@@ -195,7 +195,7 @@ recorded a **0-kobo** line. Same drop on posting applies.
 | `views_ops/base.py` | `_resolve_cost_center` (code-then-pk, entity-scoped) |
 | `serializers.py` | `CostCenterSerializer` |
 | `receivables.py` / `expenses.py` / `petty_cash.py` / `payroll.py` | postings that **split P&L lines** by `(account, cost_center)` and carry it to the GL |
-| `posting.py` | `reverse_journal` — mirrors the cost center on a reversal |
+| `posting.py` | `reverse_journal` - mirrors the cost center on a reversal |
 
 ## 11. Test coverage & gaps
 

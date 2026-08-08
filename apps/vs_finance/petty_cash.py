@@ -1,19 +1,19 @@
-"""Petty-cash services — a small physical float run on the perpetual imprest system.
+"""Petty-cash services - a small physical float run on the perpetual imprest system.
 
 A :class:`~vs_finance.models.PettyCashFund` is a tin of cash a custodian holds for
 day-to-day small spends. It runs **perpetually**: money moves through the GL the moment
-it happens. The **GL petty-cash account is the source of truth** for cash on hand — the
+it happens. The **GL petty-cash account is the source of truth** for cash on hand - the
 overdraw guard reads it live, and the fund's ``current_balance`` is *re-synced from it*
 after every operation (so it self-heals and can't silently drift).
 
 Three moments touch the ledger:
 
-* **Establish / top up** (:func:`establish_fund`) — move cash from the bank into the tin:
+* **Establish / top up** (:func:`establish_fund`) - move cash from the bank into the tin:
   ``Dr petty cash, Cr bank``. Raises ``current_balance``; first call sets the float.
-* **Spend** (:func:`post_voucher`) — record a voucher slip's expenses as they are paid:
+* **Spend** (:func:`post_voucher`) - record a voucher slip's expenses as they are paid:
   ``Dr expense(s) (+ Dr input VAT), Cr petty cash``. Lowers ``current_balance``; a voucher
   exceeding the cash on hand is rejected (:class:`PettyCashOverdrawError`).
-* **Replenish** (:func:`replenish_fund`) — restore the tin to its float after spending:
+* **Replenish** (:func:`replenish_fund`) - restore the tin to its float after spending:
   ``Dr petty cash, Cr bank`` for the shortfall (or a given amount).
 
 :func:`fund_status` is a read-only view used for low-balance / replenishment alerts.
@@ -41,7 +41,7 @@ from .receivables import compute_line_net, compute_tax
 
 # Read live GL balance for a petty-cash fund.
 def gl_cash_on_hand(fund) -> int:
-    """Live cash on hand for ``fund`` — the posted GL balance of its petty-cash account.
+    """Live cash on hand for ``fund`` - the posted GL balance of its petty-cash account.
 
     The source of truth (an asset, signed to its natural debit balance). Used for the
     overdraw guard and to re-sync the fund's denormalised ``current_balance`` after each
@@ -296,7 +296,7 @@ def void_voucher(voucher, *, actor_user=None):
 
 
 # --------------------------------------------------------------------------- #
-# Replenishment (Dr petty cash, Cr bank — restore the float)                   #
+# Replenishment (Dr petty cash, Cr bank - restore the float)                   #
 # --------------------------------------------------------------------------- #
 
 # Public wrapper for petty-cash replenishment.
@@ -334,7 +334,7 @@ def _replenish_fund_atomic(fund, *, bank_account, date, amount=None, actor_user=
     top_up = fund.shortfall if amount is None else int(amount)  # Use automatic shortfall or explicit amount.
     if top_up <= 0:  # Nothing valid to replenish.
         raise PettyCashError(
-            "Nothing to replenish — the fund is already at (or above) its float."
+            "Nothing to replenish - the fund is already at (or above) its float."
             if amount is None else "Replenishment amount must be positive.",
         )
 

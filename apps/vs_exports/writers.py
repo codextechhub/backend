@@ -1,4 +1,4 @@
-"""File writers — the only place that knows what a CSV or an XLSX looks like.
+"""File writers - the only place that knows what a CSV or an XLSX looks like.
 
 Kept apart from the engine so a new format is one function here plus one entry in
 :data:`~vs_exports.constants.FORMAT_MEDIA`, and so the engine can stay about rows and

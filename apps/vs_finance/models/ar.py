@@ -17,12 +17,12 @@ from .core import TimeStampedModel, LedgerEntity, FinanceDocument
 from .gl import Account, CostCenter, Currency, TaxCode
 
 # ---------------------------------------------------------------------------
-# Phase 2 — Accounts Receivable (the revenue cycle)
+# Phase 2 - Accounts Receivable (the revenue cycle)
 # ---------------------------------------------------------------------------
 #
 # A deliberately **domain-neutral** AR core: a generic Customer is billed with a
 # generic Invoice and settles with a generic Payment. Nothing here knows about
-# students, parents, fees or terms — a school billing run is just one *source* that
+# students, parents, fees or terms - a school billing run is just one *source* that
 # emits these same generic invoices (the adapter, behind a module flag, comes later).
 # The link back to a domain record is a loose, nullable string reference so the ledger
 # never imports the students app.
@@ -34,7 +34,7 @@ class Customer(TimeStampedModel):
     Generic on purpose: a customer may be a parent/student in a school tenant, a
     client in another, or an internal counterparty in Codex's own books. The optional
     ``source_type``/``source_id`` pair is a *loose* reference to the originating
-    domain record (e.g. ``"vs_schools.Student"`` + the student's pk) — stored as plain
+    domain record (e.g. ``"vs_schools.Student"`` + the student's pk) - stored as plain
     strings, never an FK, so the ledger stays decoupled from any product app.
 
     ``receivable_account`` is the AR control account this customer's balance rolls up
@@ -243,7 +243,7 @@ class InvoiceLine(TimeStampedModel):
 
 
 class Payment(FinanceDocument):
-    """A customer receipt — money in, settling one or more invoices.
+    """A customer receipt - money in, settling one or more invoices.
 
     Extends :class:`FinanceDocument` (DOC_TYPE RECEIPT → ``CFX-…-RCP-…``). Posting
     (:func:`vs_finance.receivables.post_payment`) raises Dr bank/cash, Cr AR control,
@@ -291,11 +291,11 @@ class Payment(FinanceDocument):
 
     @property
     def unallocated_amount(self) -> int:
-        """Cash not yet applied to any invoice — a pure sub-ledger fact.
+        """Cash not yet applied to any invoice - a pure sub-ledger fact.
 
         Deliberately blind to refunds: it answers "how much of this receipt never
         settled a bill?", which is what the allocation sub-ledger is for. It is *not*
-        the money still available — a refund can have paid that cash back out without
+        the money still available - a refund can have paid that cash back out without
         touching a single allocation row. Use :attr:`credit_remaining` whenever the
         question is "is there still credit here to spend?".
         """
@@ -351,7 +351,7 @@ class FeeStructure(TimeStampedModel):
 
     A fee structure is a catalogue of charges; it holds no money itself. Calling
     :func:`vs_finance.fees.generate_invoices` materialises one posted :class:`Invoice`
-    per selected customer from this structure's :class:`FeeItem` lines — the only place
+    per selected customer from this structure's :class:`FeeItem` lines - the only place
     billing turns a template into real AR. ``applies_to`` classifies the counterparty
     type the template charges (customer / vendor / staff / general); this is a generic
     platform, so a structure is not tied to any entity type.
@@ -429,7 +429,7 @@ class FeeItem(TimeStampedModel):
     )
     is_optional = models.BooleanField(
         default=False,
-        help_text="An opt-in charge (vs a required line). Informational for now — "
+        help_text="An opt-in charge (vs a required line). Informational for now - "
                   "generation bills every line.")
     line_no = models.PositiveSmallIntegerField(default=0)
 

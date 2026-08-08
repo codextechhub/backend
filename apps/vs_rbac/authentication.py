@@ -17,7 +17,7 @@ class TenantJWTAuthentication(JWTAuthentication):
         """Fetch and validate the actor's ACTIVE impersonation session.
 
         Runs the full session validation (existence, expiry, actor eligibility,
-        target still active) but NOT the asserted-tenant match check — the
+        target still active) but NOT the asserted-tenant match check - the
         caller does that once the requested tenant is known. Returns the
         effective (target) user or raises AuthenticationFailed.
         """
@@ -50,7 +50,7 @@ class TenantJWTAuthentication(JWTAuthentication):
             impersonation.save(update_fields=["status", "ended_at"])
             raise AuthenticationFailed("Impersonation session has expired.")
         # Platform (CX) staff may ride a session into any tenant. A school actor
-        # may ride only a session pinned to their OWN tenant — the session's
+        # may ride only a session pinned to their OWN tenant - the session's
         # tenant is fixed at start and immutable, so this is the single choke
         # point that keeps school impersonation intra-tenant no matter which
         # ?tenant= the caller asserts.
@@ -80,8 +80,8 @@ class TenantJWTAuthentication(JWTAuthentication):
             raise AuthenticationFailed("Session predates the tenant upgrade. Sign in again.")
 
         # DRF runs authentication lazily inside the view's initial(), so the
-        # resolved view — and its tenant_param_required /
-        # platform_cross_tenant_param flags — is available on the DRF request's
+        # resolved view - and its tenant_param_required /
+        # platform_cross_tenant_param flags - is available on the DRF request's
         # parser_context here. (Plain WSGI requests lack it → view is None,
         # which falls back to the required-param defaults.)
         view = (getattr(request, "parser_context", None) or {}).get("view")

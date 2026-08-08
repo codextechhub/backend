@@ -6,7 +6,7 @@ from vs_health import seed
 class Command(BaseCommand):
     help = (
         "Seed Health configuration: services, checks, alert rules, SLO targets, and "
-        "RBAC permissions. Never writes telemetry — all measurements come from the "
+        "RBAC permissions. Never writes telemetry - all measurements come from the "
         "live collectors (request middleware, probes, queue snapshots)."
     )
 

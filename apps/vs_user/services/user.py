@@ -87,7 +87,7 @@ class UserCreationService:
         )
 
         # role_instance is a native TenantRoleTemplate resolved by the serializer
-        # within the target tenant. Drafts may not have one yet — the assignment
+        # within the target tenant. Drafts may not have one yet - the assignment
         # is written when the draft is submitted (see submit_draft).
         if role_instance is not None:
             TenantUserRoleAssignment.objects.create(
@@ -208,7 +208,7 @@ class UserCreationService:
             )
         except Exception:
             logger.error(
-                'Failed to dispatch invitation email for user %s — email will need to be resent manually.',
+                'Failed to dispatch invitation email for user %s - email will need to be resent manually.',
                 user.pk, exc_info=True,
             )
 
@@ -220,7 +220,7 @@ class EmailChangeService:
     def change_email(target_user, new_email: str, requesting_user, request=None) -> User:
         """
         Changes a user's email immediately.
-        Ends all active sessions — the user must log in again with the new email.
+        Ends all active sessions - the user must log in again with the new email.
         """
         new_email      = new_email.lower().strip()
         previous_email = target_user.email
@@ -228,14 +228,14 @@ class EmailChangeService:
         if new_email == target_user.email.lower():
             raise ValueError({'error_code': 'SAME_EMAIL', 'message': 'This is already your email address.'})
 
-        # Global uniqueness check — email must be unique across the whole platform.
+        # Global uniqueness check - email must be unique across the whole platform.
         if User.objects.filter(email__iexact=new_email).exclude(pk=target_user.pk).exists():
             raise ValueError({'error_code': 'DUPLICATE_EMAIL', 'message': 'This email is already in use.'})
 
         target_user.email = new_email
         target_user.save(update_fields=['email', 'updated_at'])
 
-        # End all sessions — user logs in again with the new email.
+        # End all sessions - user logs in again with the new email.
         # all_objects: the RBAC-authorized target may live outside the ambient
         # tenant (platform actor acting on a school user); every session ends.
         blacklist_all_user_tokens(target_user)
@@ -273,7 +273,7 @@ class  UserStatusService:
         target_user.save(update_fields=['status', 'is_active', 'updated_at'])
         blacklist_all_user_tokens(target_user)
 
-        # all_objects — see EmailChangeService: cross-tenant target sessions.
+        # all_objects - see EmailChangeService: cross-tenant target sessions.
         LoginSession.all_objects.filter(user=target_user, is_active=True).update(
             is_active=False, ended_at=timezone.now(), end_reason='SUSPENDED',
         )

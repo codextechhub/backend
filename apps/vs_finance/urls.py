@@ -3,7 +3,7 @@
 Families: entity-scoped master-data / document lists + actions, the financial-statement
 reports, and the operational/setup surface (reference data, banking, expense claims,
 payroll, budgets, fixed assets, audit) wired from :mod:`vs_finance.views_ops`. Every
-endpoint expects ``?entity=<id or code>`` — except the **global** currency/FX routes.
+endpoint expects ``?entity=<id or code>`` - except the **global** currency/FX routes.
 """
 from django.urls import path
 
@@ -209,7 +209,7 @@ urlpatterns = [
     path("invoices/<int:pk>/remind/", InvoiceRemindView.as_view(), name="finance-invoice-remind"),
     path("invoices/<int:pk>/void/", InvoiceVoidView.as_view(), name="finance-invoice-void"),
 
-    # AR adjustments — credit/debit notes, refunds, write-offs
+    # AR adjustments - credit/debit notes, refunds, write-offs
     path("credit-notes/", CreditNoteListCreateView.as_view(), name="finance-creditnote-list"),
     path("credit-notes/<int:pk>/", CreditNoteDetailView.as_view(), name="finance-creditnote-detail"),
     path("credit-notes/<int:pk>/post/", CreditNotePostView.as_view(), name="finance-creditnote-post"),
@@ -232,7 +232,7 @@ urlpatterns = [
     path("ar-adjustments/batch/", ARAdjustmentBatchView.as_view(), name="finance-ar-adjustment-batch"),
     path("ar-adjustments/", ARAdjustmentListView.as_view(), name="finance-ar-adjustments"),
 
-    # Concessions — discounts / waivers / scholarships
+    # Concessions - discounts / waivers / scholarships
     path("concessions/", ConcessionListCreateView.as_view(), name="finance-concession-list"),
     path("concessions/summary/", ConcessionSummaryView.as_view(), name="finance-concession-summary"),
     path("concessions/<int:pk>/", ConcessionDetailView.as_view(), name="finance-concession-detail"),
@@ -249,7 +249,7 @@ urlpatterns = [
     path("payment-plans/<int:pk>/cancel/", PaymentPlanCancelView.as_view(),
          name="finance-paymentplan-cancel"),
 
-    # Dunning — policies + automated reminder notices
+    # Dunning - policies + automated reminder notices
     path("dunning-policies/", DunningPolicyListCreateView.as_view(), name="finance-dunning-policy-list"),
     path("dunning-policies/<int:pk>/", DunningPolicyDetailView.as_view(),
          name="finance-dunning-policy-detail"),
@@ -286,7 +286,7 @@ urlpatterns = [
     path("reports/ar-reconciliation/", ARReconciliationView.as_view(), name="finance-ar-reconciliation"),
     path("reports/customer-statement/", CustomerStatementView.as_view(), name="finance-customer-statement"),
 
-    # Setup / reference data (currencies + FX rates are GLOBAL — no ?entity)
+    # Setup / reference data (currencies + FX rates are GLOBAL - no ?entity)
     path("currencies/", CurrencyListCreateView.as_view(), name="finance-currency-list"),
     path("fx-rates/", FxRateListCreateView.as_view(), name="finance-fxrate-list"),
     path("tax-codes/", TaxCodeListCreateView.as_view(), name="finance-taxcode-list"),
@@ -339,7 +339,7 @@ urlpatterns = [
     path("expense-claims/<int:pk>/lines/<int:line_id>/receipt/", ExpenseClaimReceiptView.as_view(),
          name="finance-expense-line-receipt"),
 
-    # Petty cash — funds, vouchers, replenishment
+    # Petty cash - funds, vouchers, replenishment
     path("petty-cash-funds/", PettyCashFundListCreateView.as_view(), name="finance-pettycash-fund-list"),
     path("petty-cash-funds/<int:pk>/", PettyCashFundDetailView.as_view(),
          name="finance-pettycash-fund-detail"),

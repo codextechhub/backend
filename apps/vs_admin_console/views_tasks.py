@@ -1,7 +1,7 @@
 """
 Background-task monitoring for the admin console (engine-room view).
 
-Reads core.BackgroundJob — the single source of truth for every Celery run
+Reads core.BackgroundJob - the single source of truth for every Celery run
 (written by core.tasks_base.TrackedTask). The owner-facing slice of the same
 table lives at /v1/user/me/tasks/.
 

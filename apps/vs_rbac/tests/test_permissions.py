@@ -373,7 +373,7 @@ class HasRBACPermissionTests(TestCase):
         self.assertFalse(self.perm_class.has_permission(request, view))
 
     def test_granted_any_of_multiple_permissions(self):
-        """View declares a list of permission keys — user needs any one."""
+        """View declares a list of permission keys - user needs any one."""
         user = make_staff_user(self.branch)
         role = make_role(self.school, name="Approver")
         make_role_permission(role, self.perm_approve)

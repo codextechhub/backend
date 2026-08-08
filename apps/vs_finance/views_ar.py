@@ -1,7 +1,7 @@
 """REST API for the AR adjustment cycle (mounted at ``/v1/finance/``).
 
 Credit/debit notes, customer refunds, bad-debt write-offs, concessions
-(discounts/waivers/scholarships) and installment payment plans — the give-back and
+(discounts/waivers/scholarships) and installment payment plans - the give-back and
 "how they pay" side of receivables that complements the invoice/payment endpoints. Same
 conventions as the rest of the surface: entity-scoped via ``?entity=<id|code>``, the
 platform ``{success, message, data}`` envelope, RBAC-gated
@@ -138,7 +138,7 @@ def _allocation_plan(entity, raw_allocations):
     """Coerce a request ``allocations`` list into ``[(target, amount_kobo), ...]``.
 
     Each item settles an invoice (``{"invoice": ref, "amount": …}``) or a DEBIT note
-    (``{"debit_note": ref, "amount": …}``) — both debit AR and are settled by receipts.
+    (``{"debit_note": ref, "amount": …}``) - both debit AR and are settled by receipts.
     """
     if not raw_allocations:
         return None
@@ -187,7 +187,7 @@ def _customer_ledger(entity, customer_ids=None):
     ``credit`` comes from :func:`~vs_finance.receivables.customer_credit_balances`
     rather than being re-derived here. This screen used to keep its own copy of that
     arithmetic, which is how the console ended up with two definitions of "available
-    credit" that could disagree — one of them refund-blind.
+    credit" that could disagree - one of them refund-blind.
     """
     import datetime
     from django.db.models import F, Q, Sum
@@ -245,7 +245,7 @@ def _account_status(net: int, overdue: bool) -> str:
 
 # Support the money obj workflow.
 def _money_obj(kobo) -> dict:
-    """Money payload {kobo, naira} — the AR drawer shape (mirrors views._money)."""
+    """Money payload {kobo, naira} - the AR drawer shape (mirrors views._money)."""
     from .money import format_naira
     return {"kobo": int(kobo), "naira": format_naira(int(kobo))}
 
@@ -403,7 +403,7 @@ class CustomerDetailView(_FinanceBase):
         credit_notes = list(CreditNote.objects.filter(
             entity=entity, customer=customer, status=DocumentStatus.POSTED,
         ).order_by("note_date", "id")[:500])
-        # DEBIT notes are supplementary AR charges — their unsettled balance is an
+        # DEBIT notes are supplementary AR charges - their unsettled balance is an
         # open item, just like an invoice. CREDIT notes remain account movements but
         # are value returned to the customer, not amounts the customer still owes.
         debit_notes = [n for n in credit_notes if n.kind == CreditNoteKind.DEBIT]
@@ -546,7 +546,7 @@ class CustomerDetailView(_FinanceBase):
 
 # Group endpoint behavior for Customer Receipt View.
 class CustomerReceiptView(_FinanceBase):
-    """POST /customers/<pk>/receipt/ — record a receipt for a customer and auto-
+    """POST /customers/<pk>/receipt/ - record a receipt for a customer and auto-
     allocate it across their open invoices (oldest first). Any excess stays as
     unallocated credit on the customer.
 
@@ -599,7 +599,7 @@ class CustomerReceiptView(_FinanceBase):
 
 # Group endpoint behavior for Customer Summary View.
 class CustomerSummaryView(_FinanceBase):
-    """GET /finance/customers/summary/ — entity-wide KPI totals + status counts for the
+    """GET /finance/customers/summary/ - entity-wide KPI totals + status counts for the
     Customers header cards (computed over ALL rows, so they stay accurate while the list
     itself paginates). Honors the same ``?search=``/``?is_active=`` as the list.
 
@@ -644,7 +644,7 @@ class CustomerSummaryView(_FinanceBase):
 
 # Group endpoint behavior for Payment List View.
 class PaymentListView(_FinanceBase):
-    """GET /finance/payments/ — customer receipts and their allocation state.
+    """GET /finance/payments/ - customer receipts and their allocation state.
 
     Filters: ``?status=`` (ALLOCATED|PARTIAL|UNALLOCATED|REFUNDED), ``?method=``,
     ``?customer=`` (code/id), ``?search=`` (doc no / customer / reference).
@@ -679,7 +679,7 @@ class PaymentListView(_FinanceBase):
         # allocation_status is derived from allocated_amount/refunded_amount vs amount;
         # express it as a DB filter so paging counts are correct (it used to filter
         # post-slice in Python). Mirror PaymentSerializer.get_allocation_status exactly
-        # — refunded is checked before unallocated, or refunded cash would be counted
+        # - refunded is checked before unallocated, or refunded cash would be counted
         # as still available.
         status_f = request.query_params.get("status")
         if status_f == "ALLOCATED":
@@ -698,7 +698,7 @@ class PaymentListView(_FinanceBase):
 
 # Group endpoint behavior for Payment Summary View.
 class PaymentSummaryView(_FinanceBase):
-    """GET /finance/payments/summary/ — receipts KPI totals + allocation-status counts
+    """GET /finance/payments/summary/ - receipts KPI totals + allocation-status counts
     for the header cards, over ALL rows (accurate while the list paginates). Honors the
     same ``?method=``/``?customer=``/``?search=`` as the list.
 
@@ -767,7 +767,7 @@ class PaymentSummaryView(_FinanceBase):
 
 # Group endpoint behavior for Payment Detail View.
 class PaymentDetailView(_FinanceBase):
-    """GET /finance/payments/<id>/ — a receipt, its current allocations, the
+    """GET /finance/payments/<id>/ - a receipt, its current allocations, the
     customer's open invoices (allocation candidates) and the receipt's GL posting.
 
     docstring-name: Customer receipts
@@ -807,7 +807,7 @@ class PaymentDetailView(_FinanceBase):
             ).exclude(payment_status=InvoicePaymentStatus.PAID).order_by("due_date", "invoice_date", "id")
             if i.balance_due > 0
         ]
-        # DEBIT notes are settleable AR items too — offer the customer's open ones.
+        # DEBIT notes are settleable AR items too - offer the customer's open ones.
         open_debit_notes = [
             {"id": n.id, "document_number": n.document_number,
              "note_date": n.note_date.isoformat() if n.note_date else None,
@@ -836,7 +836,7 @@ class PaymentDetailView(_FinanceBase):
 
 # Group endpoint behavior for Payment Receipt View.
 class PaymentReceiptView(_FinanceBase):
-    """GET /finance/payments/<id>/receipt/ — printable HTML payment receipt."""
+    """GET /finance/payments/<id>/receipt/ - printable HTML payment receipt."""
 
     rbac_permission = "finance.payment.view"
 
@@ -866,7 +866,7 @@ class PaymentReceiptView(_FinanceBase):
 
 # Group endpoint behavior for Payment Allocate View.
 class PaymentAllocateView(_FinanceBase):
-    """POST /finance/payments/<id>/allocate/ — apply a receipt to open invoices.
+    """POST /finance/payments/<id>/allocate/ - apply a receipt to open invoices.
 
     Body ``{allocations:[{invoice, amount}]}`` for an explicit split, or
     ``{auto_allocate:true}`` to settle oldest-first. Each amount is capped at the
@@ -904,7 +904,7 @@ class PaymentAllocateView(_FinanceBase):
 
 
 class PaymentVoidView(_FinanceBase):
-    """POST /finance/payments/<id>/void/ — void a posted receipt atomically."""
+    """POST /finance/payments/<id>/void/ - void a posted receipt atomically."""
 
     rbac_permission = "finance.payment.reverse"
 
@@ -928,7 +928,7 @@ class PaymentVoidView(_FinanceBase):
 
 
 class InvoiceVoidView(_FinanceBase):
-    """POST /finance/invoices/<id>/void/ — void an unencumbered posted invoice."""
+    """POST /finance/invoices/<id>/void/ - void an unencumbered posted invoice."""
 
     rbac_permission = "finance.invoice.reverse"
 
@@ -1116,7 +1116,7 @@ class FeeStructureDetailView(_FinanceBase):
 class FeeStructureDuplicateView(_FinanceBase):
     """Clone a fee structure (code + lines) into a new **draft** structure.
 
-    Body: ``{code, name?}`` — a new unique code is required; the clone copies
+    Body: ``{code, name?}`` - a new unique code is required; the clone copies
     applies_to, description and every line (incl. fee code / optional flag) and is
     created **inactive** so it can be reviewed before use.
 
@@ -1157,7 +1157,7 @@ class FeeStructureDuplicateView(_FinanceBase):
 
 # Group endpoint behavior for Fee Structure Generate View.
 class FeeStructureGenerateView(_FinanceBase):
-    """POST — raise a posted invoice per customer from this fee structure.
+    """POST - raise a posted invoice per customer from this fee structure.
 
     Body: ``{customers:[code|id, ...]}`` or ``{all_active:true}``; optional
     ``invoice_date``, ``due_date`` (ISO). Returns the invoices created.
@@ -1302,7 +1302,7 @@ class _CreditNoteActionBase(_FinanceBase):
 
 # Group endpoint behavior for Credit Note Detail View.
 class CreditNoteDetailView(_CreditNoteActionBase):
-    """GET /finance/credit-notes/<id>/ — retrieve one credit or debit note (by id),
+    """GET /finance/credit-notes/<id>/ - retrieve one credit or debit note (by id),
     with its lines and current allocation state.
 
     docstring-name: Credit notes
@@ -1319,7 +1319,7 @@ class CreditNoteDetailView(_CreditNoteActionBase):
 
 # Group endpoint behavior for Credit Note Post View.
 class CreditNotePostView(_CreditNoteActionBase):
-    """POST /finance/credit-notes/<id>/post/ — post a draft credit/debit note to the GL.
+    """POST /finance/credit-notes/<id>/post/ - post a draft credit/debit note to the GL.
 
     Body ``{allocations:[{invoice, amount}]}`` for an explicit split, or
     ``{auto_allocate:true}`` (the default when no allocations are given) to apply a
@@ -1351,7 +1351,7 @@ class CreditNotePostView(_CreditNoteActionBase):
 
 # Group endpoint behavior for Credit Note Allocate View.
 class CreditNoteAllocateView(_CreditNoteActionBase):
-    """POST /finance/credit-notes/<id>/allocate/ — apply an already-posted CREDIT note to
+    """POST /finance/credit-notes/<id>/allocate/ - apply an already-posted CREDIT note to
     the customer's open invoices. Body ``{allocations:[{invoice, amount}]}``; each amount
     is capped at the invoice balance and the note's unallocated remainder.
 
@@ -1375,7 +1375,7 @@ class CreditNoteAllocateView(_CreditNoteActionBase):
 
 
 class CreditNoteVoidView(_CreditNoteActionBase):
-    """POST /finance/credit-notes/<id>/void/ — void a posted credit/debit note."""
+    """POST /finance/credit-notes/<id>/void/ - void a posted credit/debit note."""
 
     rbac_permission = "finance.creditnote.reverse"
 
@@ -1402,7 +1402,7 @@ class RefundAvailabilityView(_FinanceBase):
     """GET customers with credit available for a new refund request.
 
     ``?as_of=YYYY-MM-DD`` measures availability on that accounting date rather than
-    today — the refund date the user has picked. Credit that only arrives afterwards
+    today - the refund date the user has picked. Credit that only arrives afterwards
     cannot fund a refund dated before it, so the picker must not offer it: without
     this the screen advertises credit the posting guard will refuse.
 
@@ -1523,7 +1523,7 @@ def _validated_refund_amount(customer, raw_amount, available, *, as_of=None):
             today_available = customer_refund_available_balance(customer)
             if today_available > available:
                 detail = (
-                    f" {format_naira(today_available)} is available today — pick a "
+                    f" {format_naira(today_available)} is available today - pick a "
                     f"later refund date to use it."
                 )
         raise ValidationError({
@@ -1548,7 +1548,7 @@ class _RefundActionBase(_FinanceBase):
 
 # Group endpoint behavior for Refund Detail View.
 class RefundDetailView(_RefundActionBase):
-    """GET /finance/refunds/<id>/ — retrieve one customer refund (by id).
+    """GET /finance/refunds/<id>/ - retrieve one customer refund (by id).
 
     docstring-name: Refunds
     """
@@ -1562,7 +1562,7 @@ class RefundDetailView(_RefundActionBase):
 
 # Group endpoint behavior for Refund Submit View.
 class RefundSubmitView(_RefundActionBase):
-    """POST /finance/refunds/<id>/submit/ — submit a draft refund for approval.
+    """POST /finance/refunds/<id>/submit/ - submit a draft refund for approval.
 
     Hands the refund to the ``vs_workflow`` engine via
     :func:`vs_workflow.services.submission.submit_for_approval`. The handler's
@@ -1594,7 +1594,7 @@ class RefundSubmitView(_RefundActionBase):
 
 # Group endpoint behavior for Refund Post View.
 class RefundPostView(_RefundActionBase):
-    """POST /finance/refunds/<id>/post/ — post a draft refund, paying the customer's
+    """POST /finance/refunds/<id>/post/ - post a draft refund, paying the customer's
     credit back out (Dr customer credit / Cr bank) and recording the GL journal.
 
     When a workflow template is published for this refund's ``finance.refund``
@@ -1626,7 +1626,7 @@ class RefundPostView(_RefundActionBase):
 
 
 class RefundVoidView(_RefundActionBase):
-    """POST /finance/refunds/<id>/void/ — void a posted customer refund."""
+    """POST /finance/refunds/<id>/void/ - void a posted customer refund."""
 
     rbac_permission = "finance.refund.reverse"
 
@@ -1725,7 +1725,7 @@ class _WriteOffActionBase(_FinanceBase):
 
 # Group endpoint behavior for Write Off Request Detail View.
 class WriteOffRequestDetailView(_WriteOffActionBase):
-    """GET /finance/write-offs/<id>/ — retrieve one bad-debt write-off request.
+    """GET /finance/write-offs/<id>/ - retrieve one bad-debt write-off request.
 
     docstring-name: Write-off requests
     """
@@ -1740,7 +1740,7 @@ class WriteOffRequestDetailView(_WriteOffActionBase):
 
 # Group endpoint behavior for Write Off Request Submit View.
 class WriteOffRequestSubmitView(_WriteOffActionBase):
-    """POST /finance/write-offs/<id>/submit/ — submit a draft write-off for approval.
+    """POST /finance/write-offs/<id>/submit/ - submit a draft write-off for approval.
 
     Hands the request to ``vs_workflow``; the handler's ``validate_document`` runs the
     write-off preflight (invoice POSTED, outstanding balance, amount within balance)
@@ -1766,7 +1766,7 @@ class WriteOffRequestSubmitView(_WriteOffActionBase):
 
 # Group endpoint behavior for Write Off Request Post View.
 class WriteOffRequestPostView(_WriteOffActionBase):
-    """POST /finance/write-offs/<id>/post/ — post a draft write-off request.
+    """POST /finance/write-offs/<id>/post/ - post a draft write-off request.
 
     When a workflow template is published for this request's ``finance.write_off``
     document type (opt-in gate), direct posting is refused: it must go through
@@ -1797,12 +1797,12 @@ class WriteOffRequestPostView(_WriteOffActionBase):
 
 # Group endpoint behavior for Invoice Write Off View.
 class InvoiceWriteOffView(_FinanceBase):
-    """POST /invoices/<pk>/write-off/ — write off an uncollectable balance as bad debt.
+    """POST /invoices/<pk>/write-off/ - write off an uncollectable balance as bad debt.
 
     Now routes through the first-class :class:`WriteOffRequest` document so the same
     entry point picks up approval gating transparently: it builds a DRAFT request from
-    the body, then — if a ``finance.write_off`` template is published for this
-    invoice's scope — submits it for approval and returns the request; otherwise it
+    the body, then - if a ``finance.write_off`` template is published for this
+    invoice's scope - submits it for approval and returns the request; otherwise it
     posts the write-off directly and returns the invoice **exactly as before**, so the
     ungated UX is unchanged.
 
@@ -2016,7 +2016,7 @@ class ARAdjustmentBatchView(_FinanceBase):
                 entity, body.get("bank_account"), required=True)
             customers = _batch_customers(entity, items)
             # The whole batch shares one accounting date, so availability is measured
-            # on that date — not today. A batch dated before the credit arrived is
+            # on that date - not today. A batch dated before the credit arrived is
             # refused per line here rather than blowing up mid-loop in the posting
             # service and rolling the whole batch back with a cryptic 409.
             available = customer_refund_available_balances(
@@ -2163,7 +2163,7 @@ def _writeoff_rows(entity, *, limit=1000):
 
     * POSTED write-offs come from the finance audit log (``INVOICE_WRITTEN_OFF``
       SUCCESS). This covers legacy bare-invoice write-offs *and* posted
-      ``WriteOffRequest`` documents — posting one runs ``write_off_invoice``,
+      ``WriteOffRequest`` documents - posting one runs ``write_off_invoice``,
       which writes that log. Always reported "POSTED".
     * Non-posted ``WriteOffRequest`` documents (DRAFT / PENDING_APPROVAL /
       APPROVED) come from the table itself, carrying their real status and
@@ -2190,7 +2190,7 @@ def _writeoff_rows(entity, *, limit=1000):
             "key": f"W{l.id}", "kind": "WRITEOFF", "reference": l.document_number,
             "date": l.created_at.date().isoformat(),
             "customer_code": l.metadata.get("customer_code") or (inv.customer.code if inv else ""),
-            "customer_name": l.metadata.get("customer_name") or (inv.customer.name if inv else "—"),
+            "customer_name": l.metadata.get("customer_name") or (inv.customer.name if inv else "-"),
             "reason": l.metadata.get("narration") or "Bad-debt write-off",
             "amount": int(l.metadata.get("amount") or 0), "amount_naira": format_naira(int(l.metadata.get("amount") or 0)),
             "status": "POSTED", "refund_id": None, "write_off_id": None,
@@ -2216,7 +2216,7 @@ def _writeoff_rows(entity, *, limit=1000):
 
 # Group endpoint behavior for A R Adjustment List View.
 class ARAdjustmentListView(_FinanceBase):
-    """GET /finance/ar-adjustments/ — unified customer refunds + bad-debt write-offs.
+    """GET /finance/ar-adjustments/ - unified customer refunds + bad-debt write-offs.
 
     Filters: ``?type=(refund|writeoff)`` and ``?search=``. The merged list is sorted
     by date and paginated; KPI totals (written-off YTD, pending refund count) ride
@@ -2249,7 +2249,7 @@ class ARAdjustmentListView(_FinanceBase):
             })
         writeoff_rows = _writeoff_rows(entity)
 
-        # KPI totals — from the full sets, independent of the type filter / page.
+        # KPI totals - from the full sets, independent of the type filter / page.
         year = timezone.now().year
         # "Written off YTD" is money actually written off → POSTED rows only
         # (writeoff_rows now also carries non-posted requests).
@@ -2301,7 +2301,7 @@ class ARAdjustmentListView(_FinanceBase):
 
 # Group endpoint behavior for Invoice Pay View.
 class InvoicePayView(_FinanceBase):
-    """POST /invoices/<pk>/pay/ — record a customer receipt and settle this invoice.
+    """POST /invoices/<pk>/pay/ - record a customer receipt and settle this invoice.
 
     Body: ``{amount(kobo), payment_date, method?, deposit_account, reference?,
     narration?}``. Posts the receipt (Dr bank/cash, Cr AR) and allocates it to this
@@ -2352,7 +2352,7 @@ class InvoicePayView(_FinanceBase):
 
 # Group endpoint behavior for Invoice Remind View.
 class InvoiceRemindView(_FinanceBase):
-    """POST /invoices/<pk>/remind/ — raise & send a dunning reminder for this invoice.
+    """POST /invoices/<pk>/remind/ - raise & send a dunning reminder for this invoice.
 
     docstring-name: Send an invoice reminder
     """
@@ -2378,7 +2378,7 @@ class InvoiceRemindView(_FinanceBase):
 
 
 # --------------------------------------------------------------------------- #
-# Concessions — discounts / waivers / scholarships                            #
+# Concessions - discounts / waivers / scholarships                            #
 # --------------------------------------------------------------------------- #
 
 # Group endpoint behavior for Concession List Create View.
@@ -2450,7 +2450,7 @@ class _ConcessionActionBase(_FinanceBase):
 
 # Group endpoint behavior for Concession Detail View.
 class ConcessionDetailView(_ConcessionActionBase):
-    """GET /finance/concessions/<id>/ — retrieve one concession (discount / waiver /
+    """GET /finance/concessions/<id>/ - retrieve one concession (discount / waiver /
     scholarship) by id.
 
     docstring-name: Concessions
@@ -2467,7 +2467,7 @@ class ConcessionDetailView(_ConcessionActionBase):
 
 # Group endpoint behavior for Concession Post View.
 class ConcessionPostView(_ConcessionActionBase):
-    """POST /finance/concessions/<id>/post/ — post a draft concession, writing the
+    """POST /finance/concessions/<id>/post/ - post a draft concession, writing the
     discount/waiver/scholarship off against the allowance account (Dr allowance / Cr AR)
     so it reduces the linked invoice's balance and the customer's outstanding.
 
@@ -2489,7 +2489,7 @@ class ConcessionPostView(_ConcessionActionBase):
 
 
 class ConcessionVoidView(_ConcessionActionBase):
-    """POST /finance/concessions/<id>/void/ — void a posted concession."""
+    """POST /finance/concessions/<id>/void/ - void a posted concession."""
 
     rbac_permission = "finance.concession.reverse"
 
@@ -2510,7 +2510,7 @@ class ConcessionVoidView(_ConcessionActionBase):
 
 # Group endpoint behavior for Concession Summary View.
 class ConcessionSummaryView(_FinanceBase):
-    """GET /finance/concessions/summary/ — KPI totals (kobo) for the header cards.
+    """GET /finance/concessions/summary/ - KPI totals (kobo) for the header cards.
 
     docstring-name: Concession summary
     """
@@ -2621,7 +2621,7 @@ class _PaymentPlanActionBase(_FinanceBase):
 
 # Group endpoint behavior for Payment Plan Detail View.
 class PaymentPlanDetailView(_PaymentPlanActionBase):
-    """GET /finance/payment-plans/<id>/ — retrieve one installment payment plan (by id),
+    """GET /finance/payment-plans/<id>/ - retrieve one installment payment plan (by id),
     including its scheduled installments and progress.
 
     docstring-name: Payment plans
@@ -2636,7 +2636,7 @@ class PaymentPlanDetailView(_PaymentPlanActionBase):
 
 # Group endpoint behavior for Payment Plan Activate View.
 class PaymentPlanActivateView(_PaymentPlanActionBase):
-    """POST /finance/payment-plans/<id>/activate/ — move a draft plan into ACTIVE so its
+    """POST /finance/payment-plans/<id>/activate/ - move a draft plan into ACTIVE so its
     installment schedule becomes live and can be tracked against customer receipts.
 
     docstring-name: Activate a payment plan
@@ -2658,7 +2658,7 @@ class PaymentPlanActivateView(_PaymentPlanActionBase):
 
 # Group endpoint behavior for Payment Plan Refresh View.
 class PaymentPlanRefreshView(_PaymentPlanActionBase):
-    """POST /finance/payment-plans/<id>/refresh/ — recompute the plan's progress, marking
+    """POST /finance/payment-plans/<id>/refresh/ - recompute the plan's progress, marking
     installments paid and advancing plan status. Body may carry a ``settled_amount``
     (kobo) to apply against the schedule; omit it to just re-derive from what's settled.
 
@@ -2686,7 +2686,7 @@ class PaymentPlanRefreshView(_PaymentPlanActionBase):
 
 # Group endpoint behavior for Payment Plan Cancel View.
 class PaymentPlanCancelView(_PaymentPlanActionBase):
-    """POST /finance/payment-plans/<id>/cancel/ — cancel a plan, closing out its remaining
+    """POST /finance/payment-plans/<id>/cancel/ - cancel a plan, closing out its remaining
     installments so it no longer tracks against the customer's balance.
 
     docstring-name: Cancel a payment plan
@@ -2752,7 +2752,7 @@ class CustomerStatementView(_FinanceBase):
                    format_naira(stmt.closing_balance)]
         period = f"{stmt.start_date or 'inception'} → {stmt.end_date}"
         export = _maybe_export(request, ReportTable(
-            title=f"Statement of Account — {stmt.customer_name}",
+            title=f"Statement of Account - {stmt.customer_name}",
             subtitle=f"{entity.code} · {stmt.customer_code} · {period} · "
                      f"opening {format_naira(stmt.opening_balance)}",
             columns=columns,
@@ -2791,7 +2791,7 @@ class CustomerStatementView(_FinanceBase):
 
 
 # --------------------------------------------------------------------------- #
-# Dunning — policies, stages and automated reminder notices                   #
+# Dunning - policies, stages and automated reminder notices                   #
 # --------------------------------------------------------------------------- #
 
 # Support the normalize channels workflow.
@@ -2968,7 +2968,7 @@ class DunningGenerateView(_FinanceBase):
 
 # Group endpoint behavior for Dunning Summary View.
 class DunningSummaryView(_FinanceBase):
-    """GET /finance/dunning/summary/ — open-receivable aging buckets for the header.
+    """GET /finance/dunning/summary/ - open-receivable aging buckets for the header.
 
     ``due_soon`` is the next 7 days (not yet overdue); the rest are days past due.
 
@@ -3048,7 +3048,7 @@ class _DunningNoticeActionBase(_FinanceBase):
 
 # Group endpoint behavior for Dunning Notice Detail View.
 class DunningNoticeDetailView(_DunningNoticeActionBase):
-    """GET /finance/dunning-notices/<id>/ — retrieve one dunning (reminder) notice by id.
+    """GET /finance/dunning-notices/<id>/ - retrieve one dunning (reminder) notice by id.
 
     docstring-name: Dunning notices
     """
@@ -3064,7 +3064,7 @@ class DunningNoticeDetailView(_DunningNoticeActionBase):
 
 # Group endpoint behavior for Dunning Notice Send View.
 class DunningNoticeSendView(_DunningNoticeActionBase):
-    """POST /finance/dunning-notices/<id>/send/ — dispatch a pending notice over its
+    """POST /finance/dunning-notices/<id>/send/ - dispatch a pending notice over its
     stage's channels (in-app + email) and mark it SENT.
 
     docstring-name: Send a dunning notice
@@ -3086,7 +3086,7 @@ class DunningNoticeSendView(_DunningNoticeActionBase):
 
 # Group endpoint behavior for Dunning Notice Cancel View.
 class DunningNoticeCancelView(_DunningNoticeActionBase):
-    """POST /finance/dunning-notices/<id>/cancel/ — cancel a notice before it goes out,
+    """POST /finance/dunning-notices/<id>/cancel/ - cancel a notice before it goes out,
     recording an optional ``reason``.
 
     docstring-name: Cancel a dunning notice

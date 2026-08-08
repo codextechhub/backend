@@ -47,7 +47,7 @@ class OrganogramService:
 
         If `is_primary`, any existing current primary assignment for the user is
         closed first (end_date = today) so the "one current primary" invariant
-        holds — MariaDB cannot express this as a conditional unique constraint.
+        holds - MariaDB cannot express this as a conditional unique constraint.
 
         On a primary assignment the user's PlatformStaffProfile.position is
         synced to this position, so department, line manager, and the whole
@@ -208,7 +208,7 @@ class OrganogramService:
 
     @staticmethod
     def resolve_direct_manager(user: User) -> List[User]:
-        """Climb mode: DIRECT_MANAGER — holder of the parent (reports_to) seat."""
+        """Climb mode: DIRECT_MANAGER - holder of the parent (reports_to) seat."""
         position = OrganogramService.primary_position_for(user)
         if position is None or position.reports_to_id is None:
             return []
@@ -217,7 +217,7 @@ class OrganogramService:
 
     @staticmethod
     def resolve_n_levels_up(user: User, levels: int) -> List[User]:
-        """Climb mode: N_LEVELS_UP — holder(s) of the seat `levels` up the chain."""
+        """Climb mode: N_LEVELS_UP - holder(s) of the seat `levels` up the chain."""
         levels = max(int(levels or 1), 1)
         chain = OrganogramService.manager_chain(user)
         if not chain:
@@ -229,7 +229,7 @@ class OrganogramService:
     @staticmethod
     def resolve_department_head(user: User) -> List[User]:
         """
-        Climb mode: DEPARTMENT_HEAD — holder of the head_position of the org node
+        Climb mode: DEPARTMENT_HEAD - holder of the head_position of the org node
         the user sits in, walking UP the org tree (Team → Department → Division)
         until a node with a filled head seat is found.
         """
@@ -248,7 +248,7 @@ class OrganogramService:
 
     @staticmethod
     def resolve_specific_position(position: Position, exclude_user: User = None) -> List[User]:
-        """Climb mode: SPECIFIC_POSITION — current holders of an explicit seat."""
+        """Climb mode: SPECIFIC_POSITION - current holders of an explicit seat."""
         if position is None:
             return []
         holders = position.current_holders

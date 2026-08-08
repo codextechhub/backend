@@ -2,7 +2,7 @@
 Authenticated media serving for the database-backed storage (B9).
 
 GET /media/<name> streams the StoredFile row with its stored content type.
-Authentication is required — staff photos and import sheets are not public
+Authentication is required - staff photos and import sheets are not public
 assets. Image responses are cacheable client-side; spreadsheets are not.
 """
 from __future__ import annotations

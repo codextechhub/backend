@@ -4,7 +4,7 @@
 # Celery tasks for vs_notifications.
 #
 # Tasks:
-#   deliver_email_notification  — dispatches a single email Notification record
+#   deliver_email_notification  - dispatches a single email Notification record
 #
 # On terminal transition (SENT / FAILED) the task fires the corresponding
 # delivery signal (notification_sent / notification_failed) so downstream
@@ -42,7 +42,7 @@ def deliver_email_notification(self, notification_id: str):
     Locking / transactions:
         - The record is fetched, guarded, and bookkept under a single
           transaction.atomic() with select_for_update() (which requires an
-          open transaction — the previous code called it outside one, which
+          open transaction - the previous code called it outside one, which
           errors on Postgres).
         - The actual SMTP send happens OUTSIDE the row lock: we release the
           lock after reading, send, then re-open a short transaction to write
@@ -52,7 +52,7 @@ def deliver_email_notification(self, notification_id: str):
         - Under CELERY_TASK_ALWAYS_EAGER the task runs in-process inside the
           HTTP request; self.retry() would raise straight through the request.
           The first failure is therefore treated as final (mark FAILED, fire
-          notification_failed, no retry raise) — mirroring the old vs_user
+          notification_failed, no retry raise) - mirroring the old vs_user
           bypass tasks so migrating them onto the engine keeps that guarantee.
 
     From-address override:
@@ -97,9 +97,9 @@ def deliver_email_notification(self, notification_id: str):
         )
         return
 
-    # ── No email address — mark FAILED (terminal) and fire the signal ──────
+    # ── No email address - mark FAILED (terminal) and fire the signal ──────
     if not email_addr:
-        # Should not normally reach here — dispatch.py catches this pre-flight.
+        # Should not normally reach here - dispatch.py catches this pre-flight.
         # Guard defensively for records created by other paths.
         with transaction.atomic():
             notif = Notification.objects.select_for_update().get(id=notification_id)
@@ -139,13 +139,13 @@ def deliver_email_notification(self, notification_id: str):
             notification_id, attempts, exc,
         )
 
-        # Eager mode runs in-process during the HTTP request — retrying would
+        # Eager mode runs in-process during the HTTP request - retrying would
         # raise celery.exceptions.Retry straight through the caller. Treat the
         # first failure as final in that mode.
         if not self.request.is_eager and self.request.retries < max_retries:
             raise self.retry(exc=exc, countdown=retry_backoff)
 
-        # Final failure — mark FAILED (terminal) and fire the signal.
+        # Final failure - mark FAILED (terminal) and fire the signal.
         with transaction.atomic():
             notif = Notification.objects.select_for_update().get(id=notification_id)
             # The retry budget is exhausted, so downstream trackers can treat this as final.
@@ -159,7 +159,7 @@ def deliver_email_notification(self, notification_id: str):
         notification_failed.send(sender=Notification, notification=notif)
         return
 
-    # ── Success — mark SENT (terminal) and fire the signal ─────────────────
+    # ── Success - mark SENT (terminal) and fire the signal ─────────────────
     with transaction.atomic():
         notif = Notification.objects.select_for_update().get(id=notification_id)
         # Success is terminal; later task duplicates exit through the SENT guard above.

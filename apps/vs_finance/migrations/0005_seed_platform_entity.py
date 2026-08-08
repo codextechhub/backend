@@ -1,7 +1,7 @@
 """Seed Codex's own platform set of books.
 
 Creates the single ``CODEX`` platform :class:`LedgerEntity` so internal CX_STAFF
-finance staff have real, isolated books from day one — entirely separate from any
+finance staff have real, isolated books from day one - entirely separate from any
 tenant's ledger. Owned by the codex PLATFORM tenant (seeded by vs_tenants/0002).
 Idempotent and reversible. Depends on 0004 because ``base_currency`` is a
 protected FK onto the seeded NGN currency.

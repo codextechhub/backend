@@ -3,13 +3,13 @@
 NON-NEGOTIABLE RULE
 -------------------
 Every monetary value in finance/procurement is stored as an **integer number of
-minor units (kobo)** — never a float, never a scaled Decimal column. ₦1,250.50 is
+minor units (kobo)** - never a float, never a scaled Decimal column. ₦1,250.50 is
 stored as the integer ``125050``.
 
 Floats cannot represent decimal currency exactly (0.1 + 0.2 != 0.3), so they must
 never touch a balance, a journal line, a price or a tax computation. The design
 HTML uses JS floats; values crossing the API boundary are converted to kobo here,
-once, at the edge — and stay integers everywhere inside the backend.
+once, at the edge - and stay integers everywhere inside the backend.
 
 Use :func:`to_kobo` / :func:`to_naira` to convert at the boundary, and
 :class:`MoneyField` for every monetary model column.
@@ -161,7 +161,7 @@ class MoneyField(models.BigIntegerField):
 
     ``BigIntegerField`` (64-bit) is used deliberately: even at kobo resolution it
     comfortably holds national-scale balances. Defaults to ``0`` and is non-null so
-    a money column is never ambiguously empty — "no money" is ``0``, explicitly.
+    a money column is never ambiguously empty - "no money" is ``0``, explicitly.
 
     This is a thin, intention-revealing subclass: a reviewer scanning a model sees
     ``MoneyField()`` and immediately knows the column is kobo, not naira and not a

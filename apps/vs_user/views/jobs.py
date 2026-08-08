@@ -1,5 +1,5 @@
 """
-"My queues" — the owner-facing window onto background tasks.
+"My queues" - the owner-facing window onto background tasks.
 
 Backs the frontend's Export → View Queues page:
 
@@ -105,7 +105,7 @@ class MyTasksSummaryView(APIView):
         qs = _scoped_queryset(request)
         # `.order_by()` clears the "-created_at" ordering _scoped_queryset applies
         # for the LIST. Without it Django adds every ORDER BY column to the GROUP
-        # BY — "GROUP BY status, created_at" — which buckets one row per
+        # BY - "GROUP BY status, created_at" - which buckets one row per
         # timestamp instead of one per status, and dict() then keeps only the
         # last of each duplicated key. The cards read 1 where the table showed 56.
         # An aggregate must never inherit a presentation ordering.

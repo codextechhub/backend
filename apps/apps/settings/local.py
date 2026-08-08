@@ -4,7 +4,7 @@ DEBUG = True
 
 ALLOWED_HOSTS = []
 
-# Dev conveniences — open CORS and the browsable API (both locked down in base).
+# Dev conveniences - open CORS and the browsable API (both locked down in base).
 CORS_ALLOW_ALL_ORIGINS = True
 REST_FRAMEWORK = {
     **REST_FRAMEWORK,
@@ -27,14 +27,14 @@ EMAIL_PORT    = 465
 EMAIL_USE_SSL = True
 EMAIL_USE_TLS = False
 
-# Run Celery tasks synchronously in local dev — no broker needed.
+# Run Celery tasks synchronously in local dev - no broker needed.
 CELERY_TASK_ALWAYS_EAGER     = True
 CELERY_TASK_EAGER_PROPAGATES = True
 
-# Frontend URL — must point to the React dev server, not the Django backend
+# Frontend URL - must point to the React dev server, not the Django backend
 FRONTEND_BASE_URL = 'http://localhost:5173'  # Vite default
 
-# PostgreSQL — the only engine, same as staging and CI. The MariaDB
+# PostgreSQL - the only engine, same as staging and CI. The MariaDB
 # fallback was retired 2026-06-12; final dump: ~/cx_db_mariadb_final_backup.sql.gz
 DATABASES = {
     "default": {

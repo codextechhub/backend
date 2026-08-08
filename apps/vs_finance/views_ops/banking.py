@@ -145,7 +145,7 @@ class BankAccountDetailView(_FinanceBase):
             out.append({
                 "id": ln.id,
                 "date": ln.entry.date,
-                "description": ln.description or ln.entry.narration or "—",
+                "description": ln.description or ln.entry.narration or "-",
                 "reference": ln.entry.document_number or ln.entry.reference or "",
                 "debit": int(ln.debit or 0),
                 "credit": int(ln.credit or 0),
@@ -298,7 +298,7 @@ class BankStatementLineView(_FinanceBase):
         )
         message = f"Imported {len(created)} statement line(s)."
         if suspected:
-            message += (f" {len(suspected)} suspected duplicate(s) held back — "
+            message += (f" {len(suspected)} suspected duplicate(s) held back - "
                         f"re-send with force=true to import them anyway.")
         return success_response(
             message,
@@ -842,7 +842,7 @@ class BankStatementImportWizardView(_FinanceBase):
 
 # Group endpoint behavior for Bank Auto Reconcile View.
 class BankAutoReconcileView(_FinanceBase):
-    """POST — auto-match unmatched statement lines to posted cash journal lines.
+    """POST - auto-match unmatched statement lines to posted cash journal lines.
 
     docstring-name: Auto-reconcile a bank statement
     """
@@ -870,7 +870,7 @@ class BankAutoReconcileView(_FinanceBase):
 
 # Group endpoint behavior for Bank Book Lines View.
 class BankBookLinesView(_FinanceBase):
-    """GET — posted cash-account journal lines not yet matched to a statement line.
+    """GET - posted cash-account journal lines not yet matched to a statement line.
 
     The "book" side of the reconciliation workbench. ``amount`` is signed kobo
     (debit − credit) so it lines up with a statement line's signed amount.
@@ -898,7 +898,7 @@ class BankBookLinesView(_FinanceBase):
         # Handle the humanize workflow.
         def humanize(desc: str) -> str:
             label, sep, tail = (desc or "").partition(": ")
-            return f"{label}: {names[tail]}" if sep and tail in names else (desc or "—")
+            return f"{label}: {names[tail]}" if sep and tail in names else (desc or "-")
 
         # Paginate the unmatched book lines (was capped at [:200]); build rows per page.
         paginator = XVSPagination()
@@ -906,7 +906,7 @@ class BankBookLinesView(_FinanceBase):
         rows = [{
             "id": ln.id,
             "date": ln.entry.date,
-            "description": humanize(ln.description or ln.entry.narration or "—"),
+            "description": humanize(ln.description or ln.entry.narration or "-"),
             "reference": ln.entry.document_number or ln.entry.reference or "",
             "amount": int((ln.debit or 0) - (ln.credit or 0)),
         } for ln in page]
@@ -915,7 +915,7 @@ class BankBookLinesView(_FinanceBase):
 
 # Group endpoint behavior for Bank Reconcile Complete View.
 class BankReconcileCompleteView(_FinanceBase):
-    """POST — finalise the reconciliation, recording a snapshot of the current state.
+    """POST - finalise the reconciliation, recording a snapshot of the current state.
 
     docstring-name: Complete a bank reconciliation
     """
@@ -954,7 +954,7 @@ class _StatementLineActionBase(_FinanceBase):
 
 # Group endpoint behavior for Bank Statement Line Match View.
 class BankStatementLineMatchView(_StatementLineActionBase):
-    """POST {journal_line} — manually pair a statement line to a cash journal line.
+    """POST {journal_line} - manually pair a statement line to a cash journal line.
 
     docstring-name: Match a bank statement line
     """
@@ -981,7 +981,7 @@ class BankStatementLineMatchView(_StatementLineActionBase):
 
 # Group endpoint behavior for Bank Statement Line Group Match View.
 class BankStatementLineGroupMatchView(_StatementLineActionBase):
-    """POST {journal_lines:[ids]} — match a statement line to several cash journal lines
+    """POST {journal_lines:[ids]} - match a statement line to several cash journal lines
     whose signed amounts sum to it (one settlement covering many receipts).
 
     docstring-name: Group-match a bank statement line
@@ -1014,7 +1014,7 @@ class BankStatementLineGroupMatchView(_StatementLineActionBase):
 
 # Group endpoint behavior for Bank Split Match View.
 class BankSplitMatchView(_FinanceBase):
-    """POST {journal_line, statement_lines:[ids]} — match one cash journal line to
+    """POST {journal_line, statement_lines:[ids]} - match one cash journal line to
     several statement lines that sum to it (one ledger movement the bank split).
 
     docstring-name: Split-match a cash journal line
@@ -1056,7 +1056,7 @@ class BankSplitMatchView(_FinanceBase):
 
 # Group endpoint behavior for Bank Statement Line Adjust View.
 class BankStatementLineAdjustView(_StatementLineActionBase):
-    """POST {counter_account?, counter_code?, narration?, posting_date?} — book + match.
+    """POST {counter_account?, counter_code?, narration?, posting_date?} - book + match.
 
     ``posting_date`` is optional: omitted, the adjustment books on the statement
     line's own date, or on the nearest open day when that date's period is closed
@@ -1091,7 +1091,7 @@ class BankStatementLineAdjustView(_StatementLineActionBase):
 
 # Group endpoint behavior for Bank Statement Line Unmatch View.
 class BankStatementLineUnmatchView(_StatementLineActionBase):
-    """POST — undo a match (reverses the adjusting journal if the match created one).
+    """POST - undo a match (reverses the adjusting journal if the match created one).
 
     docstring-name: Unmatch a bank statement line
     """
@@ -1112,7 +1112,7 @@ class BankStatementLineUnmatchView(_StatementLineActionBase):
 
 # Group endpoint behavior for Bank Statement Line Ignore View.
 class BankStatementLineIgnoreView(_StatementLineActionBase):
-    """POST {ignored?: true, reason?} — mark an unmatched line IGNORED (a known
+    """POST {ignored?: true, reason?} - mark an unmatched line IGNORED (a known
     duplicate / opening-balance line), or revert it with ``ignored: false``.
 
     docstring-name: Ignore a bank statement line

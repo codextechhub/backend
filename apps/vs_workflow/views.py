@@ -269,7 +269,7 @@ class ReverseActionView(SchoolScopedMixin, APIView):
 # ── Dashboards ────────────────────────────────────────────────────────────────
 
 class PendingApprovalsView(SchoolScopedMixin, APIView):
-    """GET /workflow/dashboard/pending/ — instances where the user is eligible to act.
+    """GET /workflow/dashboard/pending/ - instances where the user is eligible to act.
 
     docstring-name: My pending approvals
     """
@@ -291,7 +291,7 @@ class PendingApprovalsView(SchoolScopedMixin, APIView):
 
 
 class MySubmissionsView(SchoolScopedMixin, APIView):
-    """GET /workflow/dashboard/submitted/ — instances the user has submitted.
+    """GET /workflow/dashboard/submitted/ - instances the user has submitted.
 
     docstring-name: My submissions
     """
@@ -309,7 +309,7 @@ class MySubmissionsView(SchoolScopedMixin, APIView):
 
 
 class TeamLoadView(SchoolScopedMixin, APIView):
-    """GET /workflow/dashboard/team-load/ — active instance counts by stage.
+    """GET /workflow/dashboard/team-load/ - active instance counts by stage.
 
     docstring-name: Team approval load
     """

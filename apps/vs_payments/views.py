@@ -7,7 +7,7 @@ Two kinds of endpoint:
   use the platform envelope + RBAC (``payments.<resource>.<action>``), exactly like
   ``vs_finance``.  # All tenant-scoped writes and reads go through RBAC.
 * A **public webhook receiver** (``/webhooks/<provider>/``) that takes the raw signed
-  body from the PSP. It is ``AllowAny`` because the PSP can't carry a JWT — authenticity
+  body from the PSP. It is ``AllowAny`` because the PSP can't carry a JWT - authenticity
   comes from the body signature, verified inside :func:`vs_payments.webhooks.ingest_webhook`.  # Webhooks authenticate by signature, not JWT.
 
 Domain errors raised by the services/webhooks render through the shared typed-exception
@@ -66,7 +66,7 @@ def _entity_obj(entity, model, ref, field):
     if str(ref).isdigit():  # Numeric refs might be pks or codes.
         obj = qs.filter(pk=ref).first()
     # Account (and other) codes are themselves numeric strings, so a digit ref may
-    # be a *code*, not a pk — fall back to a code match before giving up.  # Handle numeric codes defensively.
+    # be a *code*, not a pk - fall back to a code match before giving up.  # Handle numeric codes defensively.
     if obj is None and has_code:  # Only try a code lookup when the model supports one.
         obj = qs.filter(code__iexact=str(ref)).first()
     if obj is None:  # Nothing matched the entity-scoped lookup.
@@ -147,7 +147,7 @@ class CollectionListCreateView(APIView):
 
 # Group endpoint behavior for Collection Summary View.
 class CollectionSummaryView(APIView):
-    """GET /payments/collections/summary/ — KPI totals (kobo) + status-group counts over
+    """GET /payments/collections/summary/ - KPI totals (kobo) + status-group counts over
     ALL rows, so the header stays accurate while the list paginates. Honors ?provider.
 
     docstring-name: Collections summary
@@ -384,7 +384,7 @@ class PayoutListCreateView(APIView):
             if not body.get(field):
                 raise ValidationError({field: "This field is required."})
         # A payout settles a vendor's payable, so a vendor is required (it is what
-        # confirmation books — Dr the vendor's AP control / Cr bank).  # Vendor is needed for AP posting.
+        # confirmation books - Dr the vendor's AP control / Cr bank).  # Vendor is needed for AP posting.
         if not body.get("vendor"):
             raise ValidationError({"vendor": "A payout must be linked to a vendor."})
         from django.db.models import Q
@@ -410,7 +410,7 @@ class PayoutListCreateView(APIView):
 
 # Group endpoint behavior for Payout Summary View.
 class PayoutSummaryView(APIView):
-    """GET /payments/payouts/summary/ — KPI totals + status-group counts over ALL rows.
+    """GET /payments/payouts/summary/ - KPI totals + status-group counts over ALL rows.
     Honors ?provider.
 
     docstring-name: Payouts summary
@@ -452,7 +452,7 @@ class PayoutSummaryView(APIView):
 class PayoutBatchListCreateView(APIView):
     """GET (list) / POST (assemble a bulk batch of payouts) for an entity.
 
-    POST creates the batch and its child instructions in ``DRAFT`` — it does **not**
+    POST creates the batch and its child instructions in ``DRAFT`` - it does **not**
     submit. Pass ``{"submit": true}`` to dispatch immediately after assembly.
 
     docstring-name: Payout batches
@@ -494,7 +494,7 @@ class PayoutBatchListCreateView(APIView):
                 if not raw.get(field):
                     raise ValidationError({f"items[{idx}].{field}": "This field is required."})
             # Each line settles a vendor's payable on confirmation, so a vendor is
-            # required (resolved by code or id — the picker emits codes).  # Vendor drives the AP posting later.
+            # required (resolved by code or id - the picker emits codes).  # Vendor drives the AP posting later.
             if not raw.get("vendor"):
                 raise ValidationError({f"items[{idx}].vendor": "Each line must be linked to a vendor."})
             from django.db.models import Q
@@ -538,7 +538,7 @@ class PayoutBatchListCreateView(APIView):
 
 # Group endpoint behavior for Payout Batch Summary View.
 class PayoutBatchSummaryView(APIView):
-    """GET /payments/payout-batches/summary/ — batch KPI totals over ALL rows.
+    """GET /payments/payout-batches/summary/ - batch KPI totals over ALL rows.
 
     docstring-name: Payout batches summary
     """
@@ -564,7 +564,7 @@ class PayoutBatchSummaryView(APIView):
             drafts=Count("id", filter=Q(status="DRAFT")),
         )
         # "queued" money must reflect only genuinely in-flight child instructions, not the
-        # batch total — a PROCESSING batch can carry FAILED children that never left.  # Sum child amounts, not batch totals.
+        # batch total - a PROCESSING batch can carry FAILED children that never left.  # Sum child amounts, not batch totals.
         queued_kobo = PayoutInstruction.objects.filter(
             entity=entity, batch__isnull=False,
             status__in=[PayoutStatus.PENDING, PayoutStatus.PROCESSING],
@@ -626,7 +626,7 @@ class PayoutBatchDetailView(APIView):
 
 # Group endpoint behavior for Payout Batch Submit-For-Approval View.
 class PayoutBatchSubmitForApprovalView(APIView):
-    """POST /payments/payout-batches/<id>/submit-for-approval/ — route a batch through approval.
+    """POST /payments/payout-batches/<id>/submit-for-approval/ - route a batch through approval.
 
     Hands the batch to the vs_workflow engine; the handler's ``validate_document``
     runs the submit preflight (draft batch with pending instructions) and records the
@@ -739,7 +739,7 @@ class SettlementReconciliationView(APIView):
 class TransactionsLogView(APIView):
     """GET the append-only gateway action log (the transactions log) for an entity.
 
-    Reads :class:`~vs_payments.models.PaymentEvent` — the immutable record of every
+    Reads :class:`~vs_payments.models.PaymentEvent` - the immutable record of every
     gateway action (collections, payouts, virtual accounts, webhooks) including failed
     and rejected attempts. Filterable by ``?action=``, ``?provider=`` and
     ``?succeeded=true|false``; paginated.
@@ -767,7 +767,7 @@ class TransactionsLogView(APIView):
 
 
 # --------------------------------------------------------------------------- #
-# Movements — unified money-in (collections) + money-out (payouts) feed        #
+# Movements - unified money-in (collections) + money-out (payouts) feed        #
 # --------------------------------------------------------------------------- #
 
 # Unified status groups across both gateways (collections + payouts).  # Shared movement filters.
@@ -820,7 +820,7 @@ def _movement_querysets(entity, *, provider=None, group=None):
 
 # Group endpoint behavior for Movements View.
 class MovementsView(APIView):
-    """GET /payments/movements/ — unified, paginated money-movement feed: confirmed-or-
+    """GET /payments/movements/ - unified, paginated money-movement feed: confirmed-or-
     pending collections (in) + payouts (out), newest first. Filters: ``?direction=in|out``,
     ``?group=SETTLED|PENDING|FAILED|REFUNDED``, ``?provider=``. Payout beneficiary
     name/account are FLS-masked without payments.payout.view_sensitive.
@@ -865,7 +865,7 @@ class MovementsView(APIView):
 
 # Group endpoint behavior for Movements Summary View.
 class MovementsSummaryView(APIView):
-    """GET /payments/movements/summary/ — money-in (7d) / money-out (7d) / pending / failed
+    """GET /payments/movements/summary/ - money-in (7d) / money-out (7d) / pending / failed
     across both gateways, for the Transactions Log header.
 
     docstring-name: Movements summary
@@ -913,7 +913,7 @@ class MovementsSummaryView(APIView):
 
 # Group endpoint behavior for Webhook View.
 class WebhookView(APIView):
-    """POST /webhooks/<provider>/ — raw signed PSP event. No JWT; signature is the auth.
+    """POST /webhooks/<provider>/ - raw signed PSP event. No JWT; signature is the auth.
 
     docstring-name: PSP webhook receiver
     """
@@ -928,7 +928,7 @@ class WebhookView(APIView):
                 provider=provider, raw_body=request.body, headers=dict(request.headers),
             )
         except DuplicateWebhookError:  # Already processed; acknowledge so the provider stops retrying.
-            # Already handled — acknowledge so the provider stops retrying.
+            # Already handled - acknowledge so the provider stops retrying.
             return success_response("Duplicate event ignored.", data={"duplicate": True})
         return success_response(
             "Webhook processed.", data={"id": event.id, "status": event.status},

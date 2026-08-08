@@ -1,6 +1,6 @@
 # finance_expense_claims
 
-Staff **expense claims** — an employee acts as a one-off "vendor" to be reimbursed.
+Staff **expense claims** - an employee acts as a one-off "vendor" to be reimbursed.
 Posting recognises the cost and a liability owed to them; settling pays them from a
 bank account. A mini accounts-payable cycle that never involves the procurement
 vendor tables.
@@ -17,7 +17,7 @@ Routes (mounted at `/v1/finance/`): `expense-claims/`, `expense-claims/summary/`
   **lines** (`ExpenseClaimLine`, `:329`). The claimant is either a platform user
   (`claimant` FK) or free text (`claimant_name`).
 - **Posting** (`post_expense_claim`) raises `Dr expense(s) (+ Dr input VAT), Cr
-  accrued reimbursement (2400)` — the liability owed to the employee. **Settling**
+  accrued reimbursement (2400)` - the liability owed to the employee. **Settling**
   (`settle_expense_claim`) pays it: `Dr accrued reimbursement, Cr bank`.
 - Two status axes, like an invoice: document `status` (`DRAFT/POSTED/CANCELLED`) and
   `payment_status` (`UNPAID/PARTIAL/PAID`) for how much has been reimbursed.
@@ -49,16 +49,16 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 
 | Method + path | permission key | what it does | request body | response |
 |---|---|---|---|---|
-| `GET /expense-claims/` | `finance.expenseclaim.view` | List (paginated). Query: `status`, `payment_status`, `display_status` (DRAFT/APPROVED/PAID/REJECTED), `q` | — | paginated `ExpenseClaimSerializer` |
+| `GET /expense-claims/` | `finance.expenseclaim.view` | List (paginated). Query: `status`, `payment_status`, `display_status` (DRAFT/APPROVED/PAID/REJECTED), `q` | - | paginated `ExpenseClaimSerializer` |
 | `POST /expense-claims/` | `finance.expenseclaim.create` | Create a **DRAFT** (priced) | `claimant_name?`, `claim_date`, `title?`, `lines:[{expense_account, quantity?, unit_price, tax_code?, cost_center?}]` | `201` claim |
-| `GET /expense-claims/summary/` | `finance.expenseclaim.view` | Header KPIs over **all** claims | — | `success_response` |
-| `GET /expense-claims/<pk>/` | `finance.expenseclaim.view` | Claim + lines (+ receipt urls) | — | detail |
-| `POST /expense-claims/<pk>/post/` | `finance.expenseclaim.post` | DRAFT → POSTED (raise the liability journal) | — | claim |
-| `POST /expense-claims/<pk>/reject/` | `finance.expenseclaim.post` | DRAFT → CANCELLED (approver's call) | — | claim |
+| `GET /expense-claims/summary/` | `finance.expenseclaim.view` | Header KPIs over **all** claims | - | `success_response` |
+| `GET /expense-claims/<pk>/` | `finance.expenseclaim.view` | Claim + lines (+ receipt urls) | - | detail |
+| `POST /expense-claims/<pk>/post/` | `finance.expenseclaim.post` | DRAFT → POSTED (raise the liability journal) | - | claim |
+| `POST /expense-claims/<pk>/reject/` | `finance.expenseclaim.post` | DRAFT → CANCELLED (approver's call) | - | claim |
 | `POST /expense-claims/<pk>/settle/` | `finance.expenseclaim.settle` | Reimburse (full or partial) | `bank_account`, `pay_date`, `amount?` | claim |
-| `POST /expense-claims/<pk>/void/` | `finance.expenseclaim.post` | Void a **posted, un-reimbursed** claim (reverses its journal → CANCELLED) | — | claim |
+| `POST /expense-claims/<pk>/void/` | `finance.expenseclaim.post` | Void a **posted, un-reimbursed** claim (reverses its journal → CANCELLED) | - | claim |
 | `POST /expense-claims/<pk>/lines/<line_id>/receipt/` | `finance.expenseclaim.create` | Attach a receipt (multipart `file`) | `file` | `201` claim |
-| `DELETE …/lines/<line_id>/receipt/` | `finance.expenseclaim.create` | Remove a receipt | — | claim |
+| `DELETE …/lines/<line_id>/receipt/` | `finance.expenseclaim.create` | Remove a receipt | - | claim |
 
 > **Field note:** create reads `unit_price`×`quantity` (there is **no** `amount`
 > field on a line). `cost_center` on a line now survives posting (see
@@ -75,7 +75,7 @@ DRAFT ──post──▶ POSTED ──settle (×N, partial ok)──▶ payment
 - **Create** makes a priced DRAFT. **post/** raises the liability; **reject/** cancels
   a DRAFT only. **settle/** reimburses (repeatable until `balance_due` hits 0).
 - **void/** undoes a *posted* claim booked in error: it reverses the posting journal
-  and marks the claim CANCELLED — but **only while `amount_paid == 0`**; once cash has
+  and marks the claim CANCELLED - but **only while `amount_paid == 0`**; once cash has
   been reimbursed you must reverse that reimbursement first.
 - Approve-vs-reject is one decision by one role: both `post/` and `reject/` use
   `finance.expenseclaim.post` (§9).
@@ -92,7 +92,7 @@ settle.pay = min(amount or balance_due, balance_due)   # capped; partials allowe
 
 ## 6. What posting does to the ledger
 
-**Post** — `_post_expense_claim_atomic` (`expenses.py:63`), atomic, DRAFT + positive total:
+**Post** - `_post_expense_claim_atomic` (`expenses.py:63`), atomic, DRAFT + positive total:
 ```
 Dr  expense  (per (account, cost centre))   Σ net     ← P&L, carries the cost centre
 Dr  input tax (per tax account)             Σ tax     ← recoverable VAT (1300-type)
@@ -102,7 +102,7 @@ Then `post_journal` (all the `finance_journals_posting` guards), link `journal`,
 stamp POSTED, refresh payment status, audit. A `FinanceError` writes a **durable
 rejection** row and re-raises.
 
-**Settle** — `_settle_expense_claim_atomic` (`expenses.py:174`):
+**Settle** - `_settle_expense_claim_atomic` (`expenses.py:174`):
 ```
 Dr  accrued reimbursement (2400)   pay
 Cr  bank (the bank account's GL cash account)   pay
@@ -111,7 +111,7 @@ Cr  bank (the bank account's GL cash account)   pay
 `amount_paid` bumps and `payment_status` re-derives.
 
 > Cost centres: expense lines carry the cost centre to the GL (the propagation fix);
-> the input-tax and reimbursement lines do not — they're not P&L analytics.
+> the input-tax and reimbursement lines do not - they're not P&L analytics.
 
 ## 7. Worked example
 
@@ -128,27 +128,27 @@ A receipt PDF attaches to the line via `lines/<id>/receipt/` (multipart `file`).
 
 ## 8. Gotchas / known limitations
 
-- **`reject/` reuses `finance.expenseclaim.post`** — no separate reject verb; the
+- **`reject/` reuses `finance.expenseclaim.post`** - no separate reject verb; the
   approver who can post can also reject (approve-or-reject is one decision).
-- **Receipt endpoints use `finance.expenseclaim.create`** — the creator/claimant
+- **Receipt endpoints use `finance.expenseclaim.create`** - the creator/claimant
   attaches receipts, not the approver.
-- ✅ **Posted claims can be voided** (`void/`) — but only while un-reimbursed; it
+- ✅ **Posted claims can be voided** (`void/`) - but only while un-reimbursed; it
   reverses the posting journal and cancels the claim. Once reimbursed, the cash has
   left, so the reimbursement must be reversed first (guarded).
-- **Free-text claimant** — `claimant` FK is optional; `claimant_name` is unvalidated,
+- **Free-text claimant** - `claimant` FK is optional; `claimant_name` is unvalidated,
   so reporting "by employee" needs the FK to be set.
 - **Receipt files use capability URLs.** The media endpoint (`/media/<name>`,
-  `core.views.MediaView`) authenticates the caller but can't authorise per file — so
+  `core.views.MediaView`) authenticates the caller but can't authorise per file - so
   every stored file's name now carries a high-entropy token
   (`core.storage.DatabaseStorage.get_available_name`), making receipt URLs
   unguessable and only handed to callers already allowed to see the claim. Note this
-  is capability-based, not object-level auth — a *leaked* URL is still fetchable by
+  is capability-based, not object-level auth - a *leaked* URL is still fetchable by
   any authenticated user. (Files uploaded before this change keep their old,
   guessable names.)
 
 ## 9. Permissions & tenant isolation
 
-- Verbs: `finance.expenseclaim.{view, create, post, settle}` — note `post` also
+- Verbs: `finance.expenseclaim.{view, create, post, settle}` - note `post` also
   gates **reject**, and `create` also gates **receipt** upload/delete.
 - Every action resolves the entity then `filter(entity=…, pk=…)` (`_claim`), and the
   receipt sub-resource filters the line by `claim.lines.filter(pk=line_id)`, so a

@@ -4,11 +4,11 @@
 # ViewSets for vs_notifications.
 #
 # Endpoint groups:
-#   NotificationViewSet          — user feed, mark-read, unread count
-#   NotificationHistoryViewSet   — admin history log
-#   NotificationSettingViewSet   — effective settings matrix (read) + upsert
-#   NotificationTemplateViewSet  — Vision Staff template management
-#   NotificationEventTypeViewSet — event type catalogue (read-only, all users)
+#   NotificationViewSet          - user feed, mark-read, unread count
+#   NotificationHistoryViewSet   - admin history log
+#   NotificationSettingViewSet   - effective settings matrix (read) + upsert
+#   NotificationTemplateViewSet  - Vision Staff template management
+#   NotificationEventTypeViewSet - event type catalogue (read-only, all users)
 #
 # Scoping model (the platform is global; school is optional):
 #   * School-scoped users act on their own school. Supplying ?school= for a
@@ -18,7 +18,7 @@
 #     ?school=<id> to view/write a specific school's rows.
 #
 # NOTE on managers: view scoping is done EXPLICITLY (recipient=… / school=… /
-# all_objects) rather than relying on the ambient TenantAwareManager — the
+# all_objects) rather than relying on the ambient TenantAwareManager - the
 # tenant thread-local is not reliably set for DRF-authenticated requests, and
 # explicit scoping is the security-critical contract here.
 # =============================================================================
@@ -78,15 +78,15 @@ class NotificationViewSet(viewsets.GenericViewSet):
     """
     Handles the authenticated user's in-app notification feed.
 
-    Every queryset is scoped to the requesting user — no cross-user access.
+    Every queryset is scoped to the requesting user - no cross-user access.
 
     Routes:
-        GET  /notifications/              — paginated feed (in-app only)
-        GET  /notifications/unread-count/ — bell badge count
-        POST /notifications/mark-read/    — mark list of IDs as read
-        POST /notifications/mark-all-read/— mark all unread as read
-        POST /notifications/acknowledge-route/ — mark viewed destination events
-        GET  /notifications/{id}/         — single record detail
+        GET  /notifications/              - paginated feed (in-app only)
+        GET  /notifications/unread-count/ - bell badge count
+        POST /notifications/mark-read/    - mark list of IDs as read
+        POST /notifications/mark-all-read/- mark all unread as read
+        POST /notifications/acknowledge-route/ - mark viewed destination events
+        GET  /notifications/{id}/         - single record detail
 
     docstring-name: My notifications
     """
@@ -110,7 +110,7 @@ class NotificationViewSet(viewsets.GenericViewSet):
         )
 
     def list(self, request):
-        """GET /notifications/ — paginated in-app feed with optional filters."""
+        """GET /notifications/ - paginated in-app feed with optional filters."""
         qs = self.get_queryset()
 
         is_read = request.query_params.get("is_read")
@@ -139,10 +139,10 @@ class NotificationViewSet(viewsets.GenericViewSet):
 
     def retrieve(self, request, pk=None):
         """
-        GET /notifications/{id}/ — single in-app notification detail.
+        GET /notifications/{id}/ - single in-app notification detail.
 
         Strictly scoped to the requesting user's IN_APP notifications. Anything
-        else (another user's record, an email record, a bad id) returns 404 —
+        else (another user's record, an email record, a bad id) returns 404 -
         we never leak existence with a 403, and staff use the history endpoint.
         """
         try:
@@ -176,7 +176,7 @@ class NotificationViewSet(viewsets.GenericViewSet):
         """
         POST /notifications/mark-read/
         Mark a list of notification IDs as read. Only the requesting user's
-        IN_APP notifications are updated — foreign or EMAIL ids are skipped.
+        IN_APP notifications are updated - foreign or EMAIL ids are skipped.
         """
         serializer = MarkReadSerializer(data=request.data)
         if not serializer.is_valid():
@@ -257,8 +257,8 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
                    ``scope=platform`` to filter to platform rows (school IS NULL).
 
     Routes:
-        GET /notifications/history/      — paginated log
-        GET /notifications/history/{id}/ — full detail record
+        GET /notifications/history/      - paginated log
+        GET /notifications/history/{id}/ - full detail record
 
     docstring-name: Notification history
     """
@@ -361,10 +361,10 @@ class NotificationHistoryViewSet(viewsets.GenericViewSet):
 
 class NotificationSettingViewSet(viewsets.GenericViewSet):
     """
-    Notification settings — the EFFECTIVE matrix and per-scope overrides.
+    Notification settings - the EFFECTIVE matrix and per-scope overrides.
 
-    GET   /notifications/settings/        — full effective matrix for the scope.
-    PATCH /notifications/settings/update/ — upsert override rows by
+    GET   /notifications/settings/        - full effective matrix for the scope.
+    PATCH /notifications/settings/update/ - upsert override rows by
                                             (event_type_key, channel).
 
     Scope resolution (same for GET and PATCH):
@@ -374,7 +374,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
         ?school=<id> targets that school's effective matrix / rows.
 
     Transactional event types appear in the matrix flagged
-    ``is_transactional: true`` and are read-only (they bypass settings) — a
+    ``is_transactional: true`` and are read-only (they bypass settings) - a
     PATCH touching one is rejected.
 
     Permission: communication.communication_permissions.enforce (RBAC).
@@ -391,7 +391,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
         Resolve the settings scope from the asserted tenant.
 
         A business tenant manages its own override rows. A PLATFORM-kind tenant
-        (Codex staff) manages the platform DEFAULT layer — the tenant-NULL rows
+        (Codex staff) manages the platform DEFAULT layer - the tenant-NULL rows
         every school inherits. Writing codex-tenant rows here would be inert for
         schools: dispatch resolution only reads (tenant IS NULL | own tenant).
         Returns (tenant_or_none, None); None means the platform layer.
@@ -437,7 +437,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
             else:
                 school_rows.add(key)
 
-        # Layering rules live in the service — pass the pre-fetched rows through.
+        # Layering rules live in the service - pass the pre-fetched rows through.
         resolved_by_et = resolve_channels_bulk(event_types, tenant=tenant, rows=rows)
 
         matrix = []
@@ -467,7 +467,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
     # ── Read ───────────────────────────────────────────────────────────────
 
     def list(self, request):
-        """GET /notifications/settings/ — the effective matrix for the scope."""
+        """GET /notifications/settings/ - the effective matrix for the scope."""
         tenant, denied = self._resolve_scope(request)
         if denied is not None:
             return denied
@@ -545,7 +545,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
                     "error_code": NotificationErrorCode.TRANSACTIONAL_NOT_CONFIGURABLE,
                     "message": (
                         f"'{key}' is a transactional event and cannot be "
-                        "configured — it always dispatches."
+                        "configured - it always dispatches."
                     ),
                 })
                 continue
@@ -565,7 +565,7 @@ class NotificationSettingViewSet(viewsets.GenericViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # All valid — upsert override rows by (school, event_type, channel).
+        # All valid - upsert override rows by (school, event_type, channel).
         with transaction.atomic():
             # The full PATCH is all-or-nothing so settings cannot partially apply.
             for item in updates:
@@ -601,11 +601,11 @@ class NotificationTemplateViewSet(viewsets.GenericViewSet):
     """
     Notification template management.
 
-    GET   /notifications/templates/             — list all templates
-    POST  /notifications/templates/             — create template
-    GET   /notifications/templates/{id}/        — retrieve single
-    PATCH /notifications/templates/{id}/        — update
-    POST  /notifications/templates/{id}/preview/— render preview (incl. html_body)
+    GET   /notifications/templates/             - list all templates
+    POST  /notifications/templates/             - create template
+    GET   /notifications/templates/{id}/        - retrieve single
+    PATCH /notifications/templates/{id}/        - update
+    POST  /notifications/templates/{id}/preview/- render preview (incl. html_body)
 
     Permission: communication.notification_templates.configure (RBAC).
 
@@ -746,8 +746,8 @@ class NotificationEventTypeViewSet(viewsets.GenericViewSet):
     Read-only event type catalogue.
     Accessible to all authenticated users.
 
-    GET /notifications/event-types/      — list all active event types
-    GET /notifications/event-types/{id}/ — retrieve single event type
+    GET /notifications/event-types/      - list all active event types
+    GET /notifications/event-types/{id}/ - retrieve single event type
 
     docstring-name: Notification event types
     """

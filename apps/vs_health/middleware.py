@@ -6,7 +6,7 @@ collector. It deliberately:
 
   * records the *resolved route pattern* (not the raw path) to bound cardinality,
   * skips unmatched paths and its own metrics endpoints, and
-  * never raises — a metrics failure must not affect the response.
+  * never raises - a metrics failure must not affect the response.
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ class RequestMetricsMiddleware:
     def _route_for(request) -> str | None:
         match = getattr(request, "resolver_match", None)
         if match is None:
-            return None  # unmatched (404 on no route) — skip to avoid path-cardinality noise
+            return None  # unmatched (404 on no route) - skip to avoid path-cardinality noise
         # ``route`` is the pattern string on Django 2.2+ (e.g. "v1/finance/invoices/").
         route = getattr(match, "route", None)
         if route:

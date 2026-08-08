@@ -104,7 +104,7 @@ class BranchStatsView(generics.GenericAPIView):
             "closed":    4
         }
 
-    One DB query using conditional aggregation — no N+1.
+    One DB query using conditional aggregation - no N+1.
 
     docstring-name: Branch statistics
     """

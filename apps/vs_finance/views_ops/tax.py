@@ -137,7 +137,7 @@ class TaxObligationDetailView(_FinanceBase):
 
 # Group endpoint behavior for Tax Obligation Outstanding View.
 class TaxObligationOutstandingView(_FinanceBase):
-    """GET — per-obligation unremitted balance sitting in each control account.
+    """GET - per-obligation unremitted balance sitting in each control account.
 
     docstring-name: Outstanding tax obligations
     """
@@ -169,7 +169,7 @@ class TaxObligationOutstandingView(_FinanceBase):
 
 # Group endpoint behavior for Tax Filing Summary View.
 class TaxFilingSummaryView(_FinanceBase):
-    """GET — header KPIs over **all** tax filings (accurate under pagination).
+    """GET - header KPIs over **all** tax filings (accurate under pagination).
 
     docstring-name: Tax filings
     """
@@ -272,7 +272,7 @@ class TaxFilingDetailView(_TaxFilingActionBase):
 
 # Group endpoint behavior for Tax Filing File View.
 class TaxFilingFileView(_TaxFilingActionBase):
-    """POST — submit a draft return (net input VAT, book any penalty).
+    """POST - submit a draft return (net input VAT, book any penalty).
 
     docstring-name: File a tax return
     """
@@ -304,7 +304,7 @@ class TaxFilingFileView(_TaxFilingActionBase):
 
 # Group endpoint behavior for Tax Filing Unfile View.
 class TaxFilingUnfileView(_TaxFilingActionBase):
-    """POST — revert a filed return to draft (reverse its netting/penalty journal).
+    """POST - revert a filed return to draft (reverse its netting/penalty journal).
 
     docstring-name: Un-file a tax return
     """
@@ -326,7 +326,7 @@ class TaxFilingUnfileView(_TaxFilingActionBase):
 
 # Group endpoint behavior for Tax Filing Pay View.
 class TaxFilingPayView(_TaxFilingActionBase):
-    """POST — remit a filed return (Dr liability, Cr bank).
+    """POST - remit a filed return (Dr liability, Cr bank).
 
     docstring-name: Pay a tax filing
     """

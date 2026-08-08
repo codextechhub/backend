@@ -11,7 +11,7 @@ from django.forms.models import model_to_dict
 logger = logging.getLogger("vs_audit")
 
 # ---------------------------------------------------------------------------
-# Summary templates — used when the caller doesn't supply a summary string.
+# Summary templates - used when the caller doesn't supply a summary string.
 # Keys match AuditActionType values.
 # Placeholders: {actor} {entity} {entity_type}
 # ---------------------------------------------------------------------------
@@ -117,7 +117,7 @@ def emit_audit_event(
 
     - actor_user: pass a User instance; if None the event is attributed to SYSTEM.
     - summary: auto-generated from action_type + entity context when not provided.
-    - Never raises — audit failures must never block business logic.
+    - Never raises - audit failures must never block business logic.
     - Returns the created AuditEvent, or None on failure.
     """
     from .models import AuditEvent, AuditActorType, EntityAuditTrail

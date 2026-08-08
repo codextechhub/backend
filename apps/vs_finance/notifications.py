@@ -1,19 +1,19 @@
 """Customer-facing finance notifications, routed through vs_notifications.
 
-Fire-and-forget delivery of AR lifecycle events — an invoice or account-adjustment
-note was issued, a receipt was recorded — to the customer's billing email. Everything
+Fire-and-forget delivery of AR lifecycle events - an invoice or account-adjustment
+note was issued, a receipt was recorded - to the customer's billing email. Everything
 goes through the platform notification system; vs_finance never sends email itself.
 
 Delivery is **best-effort**. These run on the *success path* of a money-posting
 service (:func:`vs_finance.receivables.post_invoice` / ``post_payment``), so a
-notification problem — a misconfigured/inactive event, a missing template, or the
-notifications app being absent — must never raise back into the posting and roll the
+notification problem - a misconfigured/inactive event, a missing template, or the
+notifications app being absent - must never raise back into the posting and roll the
 ledger back. Every entry point swallows and logs its own errors.
 
 Notifications are **recipient-centric** (per the vs_notifications overhaul): the
-customer's billing email is the recipient (an ``UnregisteredRecipient`` — a payer
+customer's billing email is the recipient (an ``UnregisteredRecipient`` - a payer
 need not have a portal account), and the school (from ``entity.tenant.school_profile``) is an
-*optional scope*, not a gate — platform/product books deliver just the same.
+*optional scope*, not a gate - platform/product books deliver just the same.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)  # Module logger for notification failures.
 
 # Format integer kobo for notification templates.
 def _naira(kobo) -> str:
-    """Thousands-separated naira string, no symbol — the templates prepend ₦."""
+    """Thousands-separated naira string, no symbol - the templates prepend ₦."""
     return f"{to_naira(int(kobo or 0)):,.2f}"  # Normalize missing values to zero and format with commas.
 
 
@@ -49,7 +49,7 @@ def _account_position(kobo: int) -> tuple[str, str]:
 def notify_invoice_issued(invoice, *, actor_user=None):
     """Best-effort: email the customer that an invoice was issued.
 
-    Skips opening-balance invoices (``source == OPENING``) — those are migration
+    Skips opening-balance invoices (``source == OPENING``) - those are migration
     artefacts, not real charges the customer should be emailed about. Never raises:
     a delivery problem must not roll back the invoice posting.
     """
@@ -66,7 +66,7 @@ def notify_invoice_issued(invoice, *, actor_user=None):
             "customer_name": customer.name,  # Customer display name.
             "invoice_number": invoice.document_number,  # Posted invoice document number.
             "invoice_amount": _naira(invoice.total),  # Human-readable invoice total.
-            "due_date": invoice.due_date.isoformat() if invoice.due_date else "—",  # ISO due date or dash.
+            "due_date": invoice.due_date.isoformat() if invoice.due_date else "-",  # ISO due date or dash.
             "school_name": school.name if school else "",  # Optional school name.
             # No standing hosted pay page yet; fall back to the configured callback.  # Keep link configurable.
             "payment_link": getattr(settings, "PAYMENTS_CALLBACK_URL", "") or "",  # Optional payment URL.
@@ -80,7 +80,7 @@ def notify_invoice_issued(invoice, *, actor_user=None):
                 UnregisteredRecipient(email=customer.billing_email or "", name=customer.name),  # Customer email/name payload.
             ],
         )
-    except Exception:  # best-effort — never break the posting
+    except Exception:  # best-effort - never break the posting
         logger.warning(  # Log failure with stack trace for operations.
             "invoice_issued notification failed for invoice %s",  # Include invoice primary key.
             getattr(invoice, "pk", None), exc_info=True,  # Avoid attribute errors while logging.
@@ -143,7 +143,7 @@ def notify_credit_note_issued(note, *, actor_user=None):
         context = {
             "customer_name": customer.name,
             "note_number": note.document_number,
-            "note_date": note.note_date.isoformat() if note.note_date else "—",
+            "note_date": note.note_date.isoformat() if note.note_date else "-",
             "note_amount": _naira(note.total),
             "reason": note.reason or "Account adjustment",
             "related_invoice": related_invoice,
@@ -168,7 +168,7 @@ def notify_credit_note_issued(note, *, actor_user=None):
                 "document_number": note.document_number,
             },
         )
-    except Exception:  # best-effort — never break the posting
+    except Exception:  # best-effort - never break the posting
         logger.warning(
             "credit_note_issued notification failed for note %s",
             getattr(note, "pk", None), exc_info=True,
@@ -195,7 +195,7 @@ def notify_payment_received(payment, *, actor_user=None):
             "customer_name": customer.name,  # Customer display name.
             "invoice_number": invoice_number,  # First allocated invoice number, if available.
             "amount_paid": _naira(payment.amount),  # Human-readable receipt amount.
-            "payment_date": payment.payment_date.isoformat() if payment.payment_date else "—",  # ISO date or dash.
+            "payment_date": payment.payment_date.isoformat() if payment.payment_date else "-",  # ISO date or dash.
             "receipt_number": payment.document_number,  # Posted receipt document number.
             "school_name": school.name if school else "",  # Optional school name.
         }
@@ -208,7 +208,7 @@ def notify_payment_received(payment, *, actor_user=None):
                 UnregisteredRecipient(email=customer.billing_email or "", name=customer.name),  # Customer email/name payload.
             ],
         )
-    except Exception:  # best-effort — never break the posting
+    except Exception:  # best-effort - never break the posting
         logger.warning(  # Log failure with stack trace for operations.
             "payment_received notification failed for payment %s",  # Include payment primary key.
             getattr(payment, "pk", None), exc_info=True,  # Avoid attribute errors while logging.

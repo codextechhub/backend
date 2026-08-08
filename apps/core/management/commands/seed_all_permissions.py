@@ -1,5 +1,5 @@
 """
-Master foundation seed — runs permission and required reference seeds in dependency order.
+Master foundation seed - runs permission and required reference seeds in dependency order.
 
 Run this on any environment (local or cloud) after migrations to ensure
 all permission keys, module/resource definitions, and role grants are in sync.
@@ -8,33 +8,33 @@ all permission keys, module/resource definitions, and role grants are in sync.
 
 Prerequisites (must exist before running):
     - Database is migrated  (python manage.py migrate)
-    - Platform roles exist  (python manage.py create_superuser  — first-time only)
+    - Platform roles exist  (python manage.py create_superuser  - first-time only)
 
 All individual seeds are idempotent, so this command is safe to re-run.
 
 Seed order
 ----------
-1. seed_actions              — global PermissionAction vocabulary (verbs)
-2. seed_prebuilt_role_templates — school_admin / branch_admin / teacher prebuilt roles
-2b. seed_school_permissions  — school + academics modules → prebuilt-role defaults
+1. seed_actions              - global PermissionAction vocabulary (verbs)
+2. seed_prebuilt_role_templates - school_admin / branch_admin / teacher prebuilt roles
+2b. seed_school_permissions  - school + academics modules → prebuilt-role defaults
                                + backfill existing school role templates
-3. seed_platform_permissions — platform module (registry, roles, team, staff,
+3. seed_platform_permissions - platform module (registry, roles, team, staff,
                                organogram, schools, branches, audit, dashboard)
                                → both platform roles
-4. seed_import_permissions   — all import permissions → super-admin;
+4. seed_import_permissions   - all import permissions → super-admin;
                                template management only → platform-admin
-4b. seed_import              — canonical bulk-upload templates, including CX staff
-5. seed_workflow_permissions — workflow engine permissions → both platform roles
-6. seed_config_permissions   — vs_config permissions → both platform roles
-7. seed_finance_permissions  — vs_finance permissions → both platform roles
-8. seed_procurement_permissions — vs_procurement permissions → both platform roles
-9. seed_payments_permissions — vs_payments permissions → both platform roles
-9b. seed_exports_permissions — vs_exports (Export Centre) permissions → both platform
+4b. seed_import              - canonical bulk-upload templates, including CX staff
+5. seed_workflow_permissions - workflow engine permissions → both platform roles
+6. seed_config_permissions   - vs_config permissions → both platform roles
+7. seed_finance_permissions  - vs_finance permissions → both platform roles
+8. seed_procurement_permissions - vs_procurement permissions → both platform roles
+9. seed_payments_permissions - vs_payments permissions → both platform roles
+9b. seed_exports_permissions - vs_exports (Export Centre) permissions → both platform
                                roles, except the sensitive-field and admin-activity
                                keys, which go to super-admin only
-10. seed_todo_permissions    — vs_todo permissions → both platform roles
-11. seed_ticket_permissions  — vs_tickets permissions → platform and school roles
-12. seed_notification_permissions — communication keys enforced by vs_notifications
+10. seed_todo_permissions    - vs_todo permissions → both platform roles
+11. seed_ticket_permissions  - vs_tickets permissions → platform and school roles
+12. seed_notification_permissions - communication keys enforced by vs_notifications
                                → platform roles + school admin defaults
 """
 from django.core.management import call_command

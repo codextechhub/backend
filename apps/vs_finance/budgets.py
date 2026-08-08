@@ -1,4 +1,4 @@
-"""Budget services — planning figures and approval locking.
+"""Budget services - planning figures and approval locking.
 
 A budget never posts to the ledger; it is the *plan* that actuals are measured against
 (see :func:`vs_finance.reports.budget_vs_actual`). The one rule with teeth here is the
@@ -25,11 +25,11 @@ def _ensure_editable(budget):
 
 # Validate that a budget line targets P&L.
 def _ensure_pl_account(account):
-    """A budget line is only meaningful for an income/expense account — variance is
+    """A budget line is only meaningful for an income/expense account - variance is
     measured against P&L movement, so balance-sheet accounts are rejected."""
     if account.account_type not in (AccountType.INCOME, AccountType.EXPENSE):  # Balance-sheet accounts are not budgeted.
         raise BudgetError(
-            f"Budgets cover income and expense accounts only — "
+            f"Budgets cover income and expense accounts only - "
             f"'{account.code} {account.name}' is {account.get_account_type_display()}.",
         )
 
@@ -99,7 +99,7 @@ def update_budget(budget, *, name=None, actor_user=None):
 def add_budget_line(budget, *, account, period_no, amount, cost_center=None):
     """Add or update one (account, cost-centre, period) cell of a draft budget.
 
-    Refuses to mutate an approved/locked budget — that's the whole point of the lock.
+    Refuses to mutate an approved/locked budget - that's the whole point of the lock.
     Returns the :class:`BudgetLine`.
     """
     from .models import BudgetLine
@@ -141,7 +141,7 @@ def set_budget_lines(budget, lines):
         key = (account.id, cost_center.id if cost_center else None, period_no)  # Unique cell identity.
         if key in seen:  # Duplicate cells would overwrite each other.
             raise BudgetError(
-                f"Duplicate line for {account.code} / period {period_no} — "
+                f"Duplicate line for {account.code} / period {period_no} - "
                 f"each account × cost centre × period appears once.",
             )
         seen.add(key)  # Remember this cell to catch later duplicates.
@@ -169,8 +169,8 @@ def delete_budget_line(budget, line_id):
 def delete_budget(budget, *, actor_user=None):
     """Delete a DRAFT budget (its lines cascade). Refuses an approved/locked budget.
 
-    The audit row is written **before** the delete — capturing the document fields the
-    record needs while the row still exists — then the budget is removed.
+    The audit row is written **before** the delete - capturing the document fields the
+    record needs while the row still exists - then the budget is removed.
     """
     _ensure_editable(budget)  # Refuse deletion once locked.
     entity = budget.entity  # Capture entity before deleting the row.

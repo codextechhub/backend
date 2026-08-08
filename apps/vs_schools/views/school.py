@@ -87,7 +87,7 @@ class SchoolStatsView(generics.GenericAPIView):
             "inactive": 7
         }
 
-    One DB query using conditional aggregation — no N+1.
+    One DB query using conditional aggregation - no N+1.
 
     docstring-name: School statistics
     """

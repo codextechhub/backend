@@ -24,7 +24,7 @@ from .base import (
 
 # List/filter finance audit log entries.
 class FinanceAuditLogListView(_FinanceBase):
-    """GET — the append-only finance audit trail for an entity.
+    """GET - the append-only finance audit trail for an entity.
 
     Filterable by ``action``, ``status``, ``target_type``, ``actor`` (user id)
     and a ``date_from``/``date_to`` (YYYY-MM-DD, inclusive on ``created_at``).
@@ -56,10 +56,10 @@ class FinanceAuditLogListView(_FinanceBase):
 
 # Return filter facet values for audit UI.
 class FinanceAuditFacetsView(_FinanceBase):
-    """GET — distinct filter options for this entity's audit trail.
+    """GET - distinct filter options for this entity's audit trail.
 
     Powers the Audit Trail filter dropdowns with only the values that actually
-    occur for the entity (actors, target types, actions) — cheaper and more
+    occur for the entity (actors, target types, actions) - cheaper and more
     useful than listing the whole ~70-value action enum.
 
     docstring-name: Finance audit filters

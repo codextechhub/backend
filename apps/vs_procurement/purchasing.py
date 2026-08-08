@@ -1,8 +1,8 @@
-"""Purchasing services — the procure side of Procure-to-Pay.
+"""Purchasing services - the procure side of Procure-to-Pay.
 
 Covers the steps *before* a bill exists: approving a requisition, turning it into a
 purchase order, and receiving goods. Only the goods receipt touches the General
-Ledger — and it does so through :func:`vs_finance.posting.post_journal`, so the same
+Ledger - and it does so through :func:`vs_finance.posting.post_journal`, so the same
 period-lock and balance guards that protect every other posting apply here too.
 
 The receipt journal is the first half of the GR/IR control:
@@ -138,11 +138,11 @@ def approve_requisition(requisition, *, actor_user=None):
 
 
 def approve_purchase_order(po, *, actor_user=None):
-    """Mark a purchase order APPROVED — the state the spend workflow drives to.
+    """Mark a purchase order APPROVED - the state the spend workflow drives to.
 
     Like :func:`approve_requisition`, the *routing* by amount lives in ``vs_workflow``;
     this is the ledger-status change its on-approved callback applies. A commitment,
-    not a posting, so no GL effect — recorded in the finance audit log.
+    not a posting, so no GL effect - recorded in the finance audit log.
     """
     if po.status not in (DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL):
         raise RequisitionError(
@@ -212,7 +212,7 @@ def create_po_from_requisition(requisition, *, vendor, order_date, actor_user=No
         if expense is None:
             raise RequisitionError(
                 f"Requisition line '{rline.description}' has no expense account and the "
-                f"vendor has no default — set one before raising the PO.",
+                f"vendor has no default - set one before raising the PO.",
             )
         PurchaseOrderLine.objects.create(
             purchase_order=po, requisition_line=rline,
@@ -235,7 +235,7 @@ def post_grn(grn, *, actor_user=None):
     """Post a goods receipt, recognising the cost and parking the GR/IR liability.
 
     Wrapper that records a durable rejection audit on any :class:`FinanceError`, then
-    re-raises — mirroring the journal posting contract.
+    re-raises - mirroring the journal posting contract.
     """
     caller_grn = grn
     try:

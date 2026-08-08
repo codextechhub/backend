@@ -2,8 +2,8 @@
 and backfill already-onboarded schools.
 
 This is the single source of truth for the school-facing permission keys used by
-school-fe (the XVS school-facing app). It registers two modules — ``school``
-(administration / people) and ``academics`` (sessions / calendar / classes) —
+school-fe (the XVS school-facing app). It registers two modules - ``school``
+(administration / people) and ``academics`` (sessions / calendar / classes) -
 then attaches sensible defaults to the ``school_admin`` / ``branch_admin`` /
 ``teacher`` PrebuiltRoleTemplates and, critically, backfills those defaults into
 any existing tenant role template that was provisioned from one of those prebuilt
@@ -22,9 +22,9 @@ Three idempotent phases:
   3. Backfill: for every native tenant role template whose key matches one of the
      three prebuilt roles, get_or_create a GRANTED TenantRolePermission row for each
      of that prebuilt role's default keys. get_or_create never flips an existing
-     explicit deny (granted=False) — admin customisations survive.
+     explicit deny (granted=False) - admin customisations survive.
 
-Safe to re-run — everything uses get_or_create. Supports ``--dry-run``.
+Safe to re-run - everything uses get_or_create. Supports ``--dry-run``.
 """
 import re
 
@@ -90,7 +90,7 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     ("school", "roles", "delete",              _SENSITIVE, (ROLE_SCHOOL_ADMIN,)),
 
     # School-scoped proxy (impersonation). Deliberately a SEPARATE namespace
-    # from platform.impersonation.* — a school role must never carry a key that
+    # from platform.impersonation.* - a school role must never carry a key that
     # the platform tiering would read as cross-tenant reach. Holding
     # school.impersonation.start lets an actor proxy ANY active user in their
     # OWN tenant (self excluded); cross-tenant is impossible by construction.
@@ -99,7 +99,7 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
     # Per-user permission exceptions (overrides) on school user profiles.
     # CRITICAL + restricted: an ALLOW override hands a single person a key their
     # role does not carry, so this is school_admin-only by default. `.view` is
-    # equally restricted on purpose — without it a user must never be able to
+    # equally restricted on purpose - without it a user must never be able to
     # learn that exceptions exist on their own account.
     ("school", "user_overrides", "view",       _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
     ("school", "user_overrides", "manage",     _CRITICAL,  (ROLE_SCHOOL_ADMIN,)),
@@ -127,8 +127,8 @@ SCHOOL_PERMISSIONS: list[tuple[str, str, str, str, tuple[str, ...]]] = [
 ]
 
 MODULES: dict[str, str] = {
-    "school": "School administration — branches, people, fees, settings, roles.",
-    "academics": "Academic operations — sessions, calendar, classes.",
+    "school": "School administration - branches, people, fees, settings, roles.",
+    "academics": "Academic operations - sessions, calendar, classes.",
 }
 
 # Short descriptions per resource (for PermissionResource rows).
@@ -195,7 +195,7 @@ class Command(BaseCommand):
 
         # ── Phase 1: register modules, resources, permissions ─────────────────
         self.stdout.write(self.style.MIGRATE_HEADING(
-            "\n  Phase 1 — registering school + academics permissions...\n"
+            "\n  Phase 1 - registering school + academics permissions...\n"
         ))
 
         modules: dict[str, PermissionModule] = {}
@@ -231,7 +231,7 @@ class Command(BaseCommand):
             action = PermissionAction.objects.filter(name=action_name).first()
             if not action:
                 self.stdout.write(self.style.WARNING(
-                    f"  ⚠  Action '{action_name}' not found — run seed_actions first. "
+                    f"  ⚠  Action '{action_name}' not found - run seed_actions first. "
                     f"Skipping {module_name}.{resource_name}.{action_name}."
                 ))
                 continue
@@ -259,7 +259,7 @@ class Command(BaseCommand):
 
         # ── Phase 2: attach prebuilt-role defaults ────────────────────────────
         self.stdout.write(self.style.MIGRATE_HEADING(
-            "\n  Phase 2 — attaching prebuilt-role defaults...\n"
+            "\n  Phase 2 - attaching prebuilt-role defaults...\n"
         ))
 
         # Build role -> [keys] from the table.
@@ -274,7 +274,7 @@ class Command(BaseCommand):
             role = PrebuiltRoleTemplate.objects.filter(key=role_key).first()
             if role is None:
                 self.stdout.write(self.style.WARNING(
-                    f"  ⚠  Prebuilt role '{role_key}' not found — run "
+                    f"  ⚠  Prebuilt role '{role_key}' not found - run "
                     f"seed_prebuilt_role_templates first. Skipping its defaults."
                 ))
                 continue
@@ -302,7 +302,7 @@ class Command(BaseCommand):
         # back to its prebuilt by its native key: key=<prebuilt.key> or
         # key=<prebuilt.key>-<branch pk>.
         self.stdout.write(self.style.MIGRATE_HEADING(
-            "\n  Phase 3 — backfilling existing tenant role templates...\n"
+            "\n  Phase 3 - backfilling existing tenant role templates...\n"
         ))
 
         prebuilt_for_role: dict[int, str] = {}

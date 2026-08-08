@@ -42,7 +42,7 @@ class NotificationStatus:
         (FAILED,  "Failed"),
     ]
 
-    # Terminal states — no further transitions allowed
+    # Terminal states - no further transitions allowed
     TERMINAL = {SENT, FAILED}
 
 
@@ -83,7 +83,7 @@ class NotificationConfigKey:
 
 # ---------------------------------------------------------------------------
 # Permission keys
-# (must match entries in the vs_rbac seed — communication.* namespace)
+# (must match entries in the vs_rbac seed - communication.* namespace)
 # ---------------------------------------------------------------------------
 
 # RBAC keys that protect notification administration and history endpoints.
@@ -104,21 +104,21 @@ class NotificationPermission:
 #
 # Each entry defines one NotificationEventType row.
 # Fields:
-#   key               — unique dot-notation string; never changes post-seed
-#   label             — human-readable name shown in School Admin settings
-#   description       — when does this event fire?
-#   source_module     — the vs_* app that owns this event
-#   supported_channels— list of channel strings this event supports
-#   default_enabled   — principled fallback when no setting row exists; also
+#   key               - unique dot-notation string; never changes post-seed
+#   label             - human-readable name shown in School Admin settings
+#   description       - when does this event fire?
+#   source_module     - the vs_* app that owns this event
+#   supported_channels- list of channel strings this event supports
+#   default_enabled   - principled fallback when no setting row exists; also
 #                       the value used to seed platform rows
-#   is_transactional  — (optional, default False) True bypasses all
+#   is_transactional  - (optional, default False) True bypasses all
 #                       NotificationSetting checks; the event always dispatches
 #                       on its supported channels (is_active still wins). Use for
 #                       password resets, invites, and similar must-send mail.
-#   is_active         — (optional, default True) False registers the event but
+#   is_active         - (optional, default True) False registers the event but
 #                       keeps it OUT of the settings matrix, the admin catalogue
 #                       and dispatch. Honesty flag: an event stays inactive until
-#                       a domain module actually emits it — flip it on in the
+#                       a domain module actually emits it - flip it on in the
 #                       same change that adds the send_notification call.
 # ---------------------------------------------------------------------------
 
@@ -372,7 +372,7 @@ EVENT_TYPE_REGISTRY = [
         "key": "user.invited",
         "label": "User invited",
         "description": (
-            "Fires when a staff invitation email is dispatched. EMAIL channel only — "
+            "Fires when a staff invitation email is dispatched. EMAIL channel only - "
             "the recipient has no in-app account yet. Transactional: always sent."
         ),
         "source_module": "vs_user",
@@ -520,7 +520,7 @@ EVENT_TYPE_REGISTRY = [
 
     {
         "key": "todo.task_completed",
-        "label": "Task completed — review requested",
+        "label": "Task completed - review requested",
         "description": "Fires when a self-completed task awaits its reviewer's review.",
         "source_module": "vs_todo",
         "supported_channels": [ChannelChoices.IN_APP, ChannelChoices.EMAIL],

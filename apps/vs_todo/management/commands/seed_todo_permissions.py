@@ -5,7 +5,7 @@ Run order:
     python manage.py create_superuser         # ensures the platform roles exist
     python manage.py seed_todo_permissions
 
-Safe to re-run — all operations use get_or_create.
+Safe to re-run - all operations use get_or_create.
 """
 from django.core.management.base import BaseCommand
 from django.db import transaction
@@ -47,7 +47,7 @@ class Command(BaseCommand):
 
         module, created = PermissionModule.objects.get_or_create(
             name="todo",
-            defaults={"description": "ToDo — org accountability permissions", "is_active": True},
+            defaults={"description": "ToDo - org accountability permissions", "is_active": True},
         )
         if created:
             self.stdout.write("  Created module: todo")
@@ -66,7 +66,7 @@ class Command(BaseCommand):
                 action = PermissionAction.objects.filter(name=action_name).first()
                 if not action:
                     self.stdout.write(self.style.WARNING(
-                        f"  ⚠  Action '{action_name}' not found — run seed_actions first."
+                        f"  ⚠  Action '{action_name}' not found - run seed_actions first."
                     ))
                     continue
 
@@ -96,7 +96,7 @@ class Command(BaseCommand):
         codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
         if codex is None:
             self.stdout.write(self.style.WARNING(
-                "  ⚠  Codex platform tenant not found — run migrations first; grants skipped."
+                "  ⚠  Codex platform tenant not found - run migrations first; grants skipped."
             ))
         else:
             for role_id in PLATFORM_ROLE_IDS:

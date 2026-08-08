@@ -5,7 +5,7 @@ external PSPs (Paystack) to **collect** money from customers and **pay out** mon
 to vendors/beneficiaries, then hands the confirmed cash movement to the existing finance
 services (``vs_finance.receivables.post_payment`` for receipts;
 ``vs_procurement.payables.post_vendor_payment`` for payouts). Money is always integer
-**kobo** here too — never float.  # Keep gateway values aligned with the ledger.
+**kobo** here too - never float.  # Keep gateway values aligned with the ledger.
 """
 from __future__ import annotations
 

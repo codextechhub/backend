@@ -157,7 +157,7 @@ class TicketAttachmentCreateSerializer(serializers.Serializer):
         ext = os.path.splitext(value.name or "")[1].lower()
         if ext not in ALLOWED_EXTENSIONS:
             raise serializers.ValidationError(
-                f"File type '{ext or 'unknown'}' is not accepted — only "
+                f"File type '{ext or 'unknown'}' is not accepted - only "
                 f"spreadsheets (csv/xlsx), images and PDFs."
             )
         if value.size > MAX_ATTACHMENT_BYTES:

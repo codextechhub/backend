@@ -1,9 +1,9 @@
-# payment_webhooks_providers — webhook ingestion & PSP adapters
+# payment_webhooks_providers - webhook ingestion & PSP adapters
 
 > Slice 3 (final) of `vs_payments`. Covers the **inbound edge**: the public webhook
 > receiver, the ingest pipeline (verify → dedupe → store → dispatch → re-verify),
 > and the provider adapters (Paystack, OPay, Fake) behind the neutral `Provider`
-> interface — plus the registry, the HTTP transport, and the typed exceptions.
+> interface - plus the registry, the HTTP transport, and the typed exceptions.
 > Collections/VAs are slice 1; payouts/batches/reconciliation are slice 2. This
 > slice is where an external PSP event first touches the system.
 
@@ -17,9 +17,9 @@ that receives it safely and the per-provider adapters that translate each PSP's
 wire format into the app's neutral vocabulary.
 
 Two hard rules (`webhooks.py:1-15`):
-1. **Authenticity** — the raw body's signature must verify against the provider
+1. **Authenticity** - the raw body's signature must verify against the provider
    secret, else 401 and no action.
-2. **Idempotency** — every event is stored under a unique `dedupe_key`; a retry of
+2. **Idempotency** - every event is stored under a unique `dedupe_key`; a retry of
    an already-processed event does nothing.
 
 A third, security-critical rule was added since slice 1: **the webhook's claimed
@@ -29,25 +29,25 @@ authoritative status/amount against the PSP's API before booking anything
 (`webhooks.py:92-101`; §4).
 
 This does **NOT**:
-- carry a JWT — the webhook endpoint is `AllowAny`; the **signature** is the auth
+- carry a JWT - the webhook endpoint is `AllowAny`; the **signature** is the auth
   (`views.py:895-916`).
-- trust the event body's status/amount — it re-verifies (§4/§8).
-- book the ledger here — it delegates to `confirm_collection` / `confirm_payout`
+- trust the event body's status/amount - it re-verifies (§4/§8).
+- book the ledger here - it delegates to `confirm_collection` / `confirm_payout`
   (slices 1/2), and does so **off the request path** on a Celery worker (§4/§8.1).
-- hold per-entity PSP credentials — one platform-level secret per provider (§8).
-- make live network calls in tests — all HTTP funnels through one patchable
+- hold per-entity PSP credentials - one platform-level secret per provider (§8).
+- make live network calls in tests - all HTTP funnels through one patchable
   function (`providers/http.py`).
 
 ## 2. Domain model
 
 The only persisted model in this slice is **`WebhookEvent`** (`models.py:302-348`)
-— the idempotency backbone + raw audit/replay store:
+- the idempotency backbone + raw audit/replay store:
 - `provider`, `event_type`, `provider_reference`.
-- `dedupe_key` (**unique**) — the provider's event id, else `"<PROVIDER>:<sha256(body)>"`
+- `dedupe_key` (**unique**) - the provider's event id, else `"<PROVIDER>:<sha256(body)>"`
   (`webhooks.py:57`).
 - `signature`, `verified` (bool), `status` (`WebhookStatus`: RECEIVED / PROCESSED /
   IGNORED / FAILED, `constants.py:108-114`).
-- `headers`, `payload` (parsed JSON), `raw_body` (verbatim text) — persisted
+- `headers`, `payload` (parsed JSON), `raw_body` (verbatim text) - persisted
   **before** any processing, so an event is always replayable.
 - `error`, `processed_at`, and nullable `collection` / `payout` FKs linking the
   event to the record it settled.
@@ -66,7 +66,7 @@ Notes (`views.py:895-916`):
 - `<provider>` is the URL segment (`paystack` / `opay` / `fake`), upper-cased and
   resolved via the registry; an unknown/unconfigured provider raises
   `ProviderNotConfiguredError` (503).
-- `authentication_classes = []`, `permission_classes = [AllowAny]` — deliberately
+- `authentication_classes = []`, `permission_classes = [AllowAny]` - deliberately
   unauthenticated; authenticity is the body signature.
 - `request.body` (raw bytes) + `dict(request.headers)` are handed to
   `ingest_webhook`. A `DuplicateWebhookError` is caught and turned into a **200**
@@ -118,12 +118,12 @@ flips it to `PROCESSED`/`IGNORED`/`FAILED`.
 The **re-verify** step is the security spine: `_dispatch` calls
 `confirm_collection(intent)` / `confirm_payout(payout)` with **no** status, so those
 services poll `verify_collection` / `verify_transfer` and act on the PSP's own
-answer — a forged-but-signed `charge.success` (Paystack sets that regardless of the
+answer - a forged-but-signed `charge.success` (Paystack sets that regardless of the
 inner txn state) can't book money unless the PSP's API also confirms it. Pinned by
 `test_webhook_does_not_book_when_provider_verify_disagrees`.
 
 **Matching** (`_find_collection` / `_find_payout`, `webhooks.py:135-160`): by our
-`reference` first, then `provider_reference`; unscoped across entities (safe —
+`reference` first, then `provider_reference`; unscoped across entities (safe -
 `reference` is globally unique; the entity is taken from the matched record).
 
 ## 5. Provider interface & the three adapters
@@ -159,7 +159,7 @@ injected from settings and an unset path raises rather than guessing
 settings-built client, unless a test `register()`d an override (the suite points
 `PAYSTACK` at a `FakeProvider`, so no live keys/network are ever used).
 
-**Transport** (`providers/http.py`): one stdlib `request_json` — a non-2xx, a
+**Transport** (`providers/http.py`): one stdlib `request_json` - a non-2xx, a
 transport failure, or a non-JSON body all become a typed `ProviderError` (→ 502).
 Tests patch this single function.
 
@@ -208,10 +208,10 @@ Paystack collection webhook (from `test_webhook_confirms_collection`,
    `created` (`webhooks.py:82-89`), so a provider retry of a not-yet-processed event
    no longer adds a second `PaymentEvent`. The self-heal remains: a `DuplicateWebhookError`
    short-circuit fires only for a `PROCESSED` event, so an IGNORED/FAILED event is
-   still reprocessed (and can now match) on re-delivery — just without the duplicate
+   still reprocessed (and can now match) on re-delivery - just without the duplicate
    audit line. Test: `test_ingest_is_idempotent_and_audits_once`.
 
-3. **One platform-level PSP secret per provider — no per-entity credentials.**
+3. **One platform-level PSP secret per provider - no per-entity credentials.**
    `get_provider(provider)` builds the client from global settings
    (`registry.py:33-62`), so every entity's webhooks verify against the same
    Paystack/OPay account. **By design** (single merchant account per PSP); revisit
@@ -220,7 +220,7 @@ Paystack collection webhook (from `test_webhook_confirms_collection`,
 4. **OPay virtual-account provisioning is unsupported.**
    `OPayProvider.create_virtual_account` raises `ProviderError`
    (`opay.py:127-134`), so `POST /virtual-accounts/ {provider: OPAY}` returns 502.
-   **By design/config** — checkout is the OPay collection path; wire the dedicated
+   **By design/config** - checkout is the OPay collection path; wire the dedicated
    OPay VA endpoint before offering OPay NUBANs.
 
 5. **OPay webhook direction/field mapping is heuristic and defensive.** Direction is
@@ -228,11 +228,11 @@ Paystack collection webhook (from `test_webhook_confirms_collection`,
    (`opay.py:204-214`), and amounts read a nested `{"total": kobo}` shape; the
    adapter's own header NOTE warns field names vary by OPay product
    (`opay.py:14-16`). An unusual event shape could misroute or read amount 0
-   (0 never overrides on confirm — slice 2 §8.3). **Known** — validate against
+   (0 never overrides on confirm - slice 2 §8.3). **Known** - validate against
    onboarding docs before OPay go-live.
 
 6. **Paystack VA creation mints a customer with a placeholder email** when none is
-   supplied (`{reference}@example.com`, `paystack.py:102`). **Low severity** —
+   supplied (`{reference}@example.com`, `paystack.py:102`). **Low severity** -
    data-quality only; pass a real `billing_email` upstream (the collections view
    already defaults it from the customer).
 
@@ -244,37 +244,37 @@ Paystack collection webhook (from `test_webhook_confirms_collection`,
 
 ## 9. Permissions & tenant isolation
 
-- **The receiver has no RBAC** — it is `AllowAny` by necessity (a PSP can't carry a
+- **The receiver has no RBAC** - it is `AllowAny` by necessity (a PSP can't carry a
   JWT). Authenticity is the **signature**; a bad/absent signature is a 401 and is
   audited as `WEBHOOK_REJECTED` (`webhooks.py:45-50`). Signature checks are
   constant-time on both real adapters.
 - **No entity in the URL/body is trusted.** The tenant is derived from the matched
   collection/payout, whose own `entity` scoping governs the downstream booking; a
-  webhook cannot direct money into an arbitrary entity — it can only advance the
+  webhook cannot direct money into an arbitrary entity - it can only advance the
   specific record its `reference` maps to.
 - **Replay/duplication** can't double-book: unique `dedupe_key` + PROCESSED
   short-circuit + the `confirm_*` terminal-state guard (three independent layers).
 - **Forged-but-signed status** can't book: the re-verify against the PSP API is the
   source of truth, not the event payload (§4).
 - The bad-signature `WEBHOOK_REJECTED` audit intentionally carries `entity=None`
-  (the payload is untrusted, so no entity can be attributed — slice 2 §8.2).
+  (the payload is untrusted, so no entity can be attributed - slice 2 §8.2).
 
 ## 10. Code map
 
-- `webhooks.py` — `ingest_webhook` (verify/dedupe/store/enqueue), `_enqueue`,
+- `webhooks.py` - `ingest_webhook` (verify/dedupe/store/enqueue), `_enqueue`,
   `process_stored_event` (the worker step), `_dispatch`, `_find_record`/
   `_find_collection`/`_find_payout`.
-- `tasks.py` — `process_webhook_event` Celery task (auto-discovered; enqueued via
+- `tasks.py` - `process_webhook_event` Celery task (auto-discovered; enqueued via
   `on_commit`).
-- `views.py:895-916` — `WebhookView` (public receiver).
-- `providers/base.py` — neutral interface + result dataclasses.
-- `providers/registry.py` — `get_provider` / `register` / `unregister`.
-- `providers/http.py` — `request_json` (the single patchable network surface).
-- `providers/paystack.py`, `providers/opay.py`, `providers/fake.py` — the adapters.
-- `exceptions.py` — `ProviderError` (502), `ProviderNotConfiguredError` (503),
+- `views.py:895-916` - `WebhookView` (public receiver).
+- `providers/base.py` - neutral interface + result dataclasses.
+- `providers/registry.py` - `get_provider` / `register` / `unregister`.
+- `providers/http.py` - `request_json` (the single patchable network surface).
+- `providers/paystack.py`, `providers/opay.py`, `providers/fake.py` - the adapters.
+- `exceptions.py` - `ProviderError` (502), `ProviderNotConfiguredError` (503),
   `WebhookSignatureError` (401), `DuplicateWebhookError` (200), `PaymentStateError`
   (409).
-- `constants.py:108-131` — `WebhookStatus`, `PaymentAuditAction`.
+- `constants.py:108-131` - `WebhookStatus`, `PaymentAuditAction`.
 
 ## 11. Test coverage & gaps
 
@@ -291,16 +291,16 @@ Baseline after hardening: **70 green** (`python manage.py test vs_payments
 - **`PaystackAdapterTests`** (6) and **`OPayAdapterTests`** (7): drive the real
   adapters with recorded PSP payloads by patching `request_json` *at the point of
   use* (`providers.paystack.request_json` / `providers.opay.request_json`, since the
-  adapters bind it via `from .http import`) — checkout, verify collection/transfer,
+  adapters bind it via `from .http import`) - checkout, verify collection/transfer,
   non-ok → `ProviderError`, OPay VA unsupported, signature verify (pos/neg),
   `parse_webhook` direction routing.
 - `WebhookProviderResolutionTests` (1): unknown provider → `ProviderNotConfiguredError`.
-- `PaymentsAPITests.test_webhook_endpoint_processes_and_dedupes` — the public
+- `PaymentsAPITests.test_webhook_endpoint_processes_and_dedupes` - the public
   endpoint processes then dedupes to a 200.
 
 Gaps still open:
 - **Transport error paths** (`http.request_json`: non-2xx, non-JSON, URLError →
   `ProviderError`/502) are not directly tested.
-- **The IGNORED self-heal-on-retry path** (§8.7 — an event that matched nothing on
+- **The IGNORED self-heal-on-retry path** (§8.7 - an event that matched nothing on
   first delivery, then succeeds once the intent exists) is not pinned by a test.
 </content>

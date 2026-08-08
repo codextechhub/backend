@@ -70,10 +70,10 @@ class Migration(migrations.Migration):
                     "severity",
                     models.IntegerField(
                         choices=[
-                            (1, "SEV1 — Critical"),
-                            (2, "SEV2 — Major"),
-                            (3, "SEV3 — Minor"),
-                            (4, "SEV4 — Low"),
+                            (1, "SEV1 - Critical"),
+                            (2, "SEV2 - Major"),
+                            (3, "SEV3 - Minor"),
+                            (4, "SEV4 - Low"),
                         ],
                         default=2,
                     ),
@@ -188,10 +188,10 @@ class Migration(migrations.Migration):
                     "severity",
                     models.IntegerField(
                         choices=[
-                            (1, "SEV1 — Critical"),
-                            (2, "SEV2 — Major"),
-                            (3, "SEV3 — Minor"),
-                            (4, "SEV4 — Low"),
+                            (1, "SEV1 - Critical"),
+                            (2, "SEV2 - Major"),
+                            (3, "SEV3 - Minor"),
+                            (4, "SEV4 - Low"),
                         ],
                         db_index=True,
                         default=3,
@@ -669,10 +669,10 @@ class Migration(migrations.Migration):
                     "severity",
                     models.IntegerField(
                         choices=[
-                            (1, "SEV1 — Critical"),
-                            (2, "SEV2 — Major"),
-                            (3, "SEV3 — Minor"),
-                            (4, "SEV4 — Low"),
+                            (1, "SEV1 - Critical"),
+                            (2, "SEV2 - Major"),
+                            (3, "SEV3 - Minor"),
+                            (4, "SEV4 - Low"),
                         ],
                         default=2,
                     ),

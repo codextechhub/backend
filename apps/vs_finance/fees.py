@@ -2,7 +2,7 @@
 
 A :class:`~vs_finance.models.FeeStructure` is a reusable template of charges
 (:class:`~vs_finance.models.FeeItem` lines). :func:`generate_invoices` materialises one
-posted :class:`~vs_finance.models.Invoice` per selected customer from that template — the
+posted :class:`~vs_finance.models.Invoice` per selected customer from that template - the
 only place a fee structure becomes money owed. Each generated invoice is posted through the
 normal AR path (:func:`vs_finance.receivables.post_invoice`), so it raises the usual
 Dr Accounts Receivable / Cr Revenue (+ output tax) journal and shows up everywhere invoices

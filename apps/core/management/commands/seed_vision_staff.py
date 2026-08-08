@@ -31,7 +31,7 @@ VISION_STAFF = [
     {"first_name": "Chibundo", "last_name": "Okeke",      "email": "chibundo.okeke@vision.edu"},
     {"first_name": "Shade",    "last_name": "Coker",      "email": "shade.coker@vision.edu"},
     {"first_name": "Lanre",    "last_name": "Odunbaku",   "email": "lanre.odunbaku@vision.edu"},
-    # Additional 15 — brings total to 40 to fill the 7-level organogram
+    # Additional 15 - brings total to 40 to fill the 7-level organogram
     {"first_name": "Biodun",   "last_name": "Akerele",   "email": "biodun.akerele@vision.edu"},
     {"first_name": "Chiamaka", "last_name": "Ejike",     "email": "chiamaka.ejike@vision.edu"},
     {"first_name": "Dapo",     "last_name": "Adeoye",    "email": "dapo.adeoye@vision.edu"},
@@ -55,7 +55,7 @@ DEFAULT_PASSWORD = "Vision@2025"
 class Command(BaseCommand):
     help = (
         "Seeds 40 Vision Staff user accounts. "
-        "Safe to run multiple times — uses update_or_create on email."
+        "Safe to run multiple times - uses update_or_create on email."
     )
 
     def add_arguments(self, parser):

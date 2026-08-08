@@ -1,4 +1,4 @@
-"""vs_health model registry — re-exported for ``from vs_health.models import X``."""
+"""vs_health model registry - re-exported for ``from vs_health.models import X``."""
 from .registry import MonitoredService, ServiceKind, Deployment, SLO
 from .request_metrics import RequestMetric
 from .uptime import UptimeCheck, UptimeCheckResult, UptimeDailyRollup, CheckType

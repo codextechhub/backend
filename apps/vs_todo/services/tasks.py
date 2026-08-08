@@ -47,7 +47,7 @@ def create_task(
     """Create a task.
 
     If ``assignee`` is omitted or is ``actor``, the task is self-set. Otherwise
-    it is an assignment and ``actor`` must manage ``assignee`` — assignment only
+    it is an assignment and ``actor`` must manage ``assignee`` - assignment only
     ever flows down the organogram.
     """
     is_assignment = assignee is not None and assignee.pk != actor.pk
@@ -82,7 +82,7 @@ def set_done(task: Task, *, done: bool, actor: Optional[User] = None) -> Task:
 
     When the ASSIGNEE completes their own task (actor == assignee), a review
     request to their reviewer (the assigner, else their direct line manager) is
-    queued with a short countdown — the undo window. The Celery task re-checks
+    queued with a short countdown - the undo window. The Celery task re-checks
     the row at send time, so reopening within the window cancels the email.
     A manager toggling a report's task never triggers the flow.
     """

@@ -2,7 +2,7 @@
 
 A `PermissionDependency` record says: **"holding permission A is only valid if you also hold permission B."**
 
-The system does not auto-grant B when you assign A — you must grant both explicitly.
+The system does not auto-grant B when you assign A - you must grant both explicitly.
 The dependency is a validation rule: a role that holds A without B is misconfigured.
 
 ---
@@ -47,12 +47,12 @@ before thinking about anything custom.
 | `generate`           | `view`                 | You access the record before generating a doc.  |
 | `report`             | `view`                 | You access the data before summarising it.      |
 
-**`manage` and `view` never have dependencies** — they are the base level.
+**`manage` and `view` never have dependencies** - they are the base level.
 `manage` implies full control; `view` is the foundation everything else builds on.
 
 ---
 
-## Mapping a resource — worksheet
+## Mapping a resource - worksheet
 
 Use this for every resource you create. Fill in each row before writing any
 `PermissionDependency` records for that resource.
@@ -63,11 +63,11 @@ Resource: <resource>
 
 Action        | Exists? | Depends on (same resource unless noted)
 --------------+---------+------------------------------------------
-view          |         | — (no deps)
+view          |         | - (no deps)
 create        |         | view
 update        |         | view
 delete        |         | view
-manage        |         | — (no deps)
+manage        |         | - (no deps)
 approve       |         | view
 reject        |         | view
 export        |         | view
@@ -85,7 +85,7 @@ Leave actions blank if you did not create a Permission record for them.
 ## Cross-resource dependencies
 
 These are the ones people forget. They arise when an action on resource A
-requires access to resource B — usually in the same module.
+requires access to resource B - usually in the same module.
 
 **How to spot them:**
 
@@ -140,12 +140,12 @@ assessments.results.export
   └── assessments.results.publish ← results must be published before exporting
 ```
 
-When you see a chain, each step depends only on the step directly above it —
+When you see a chain, each step depends only on the step directly above it -
 not the whole chain. The dependency graph is transitive by implication.
 
 ---
 
-## Audit checklist — run this after defining all permissions for a module
+## Audit checklist - run this after defining all permissions for a module
 
 For each resource in the module:
 
@@ -163,7 +163,7 @@ For each resource in the module:
 
 ## Writing the records
 
-After completing the worksheet, write deps in a single pass per resource —
+After completing the worksheet, write deps in a single pass per resource -
 all intra-resource deps first, then cross-resource:
 
 ```python
@@ -187,5 +187,5 @@ dep("finance.payment.reverse", "finance.payment.view")
 dep("finance.payment.reverse", "finance.payment.record") # chain
 ```
 
-Always call deps in one place per module — not scattered across multiple scripts.
+Always call deps in one place per module - not scattered across multiple scripts.
 This makes it easy to audit the full dependency map for a module in one read.

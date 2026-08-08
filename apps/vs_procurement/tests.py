@@ -1,4 +1,4 @@
-"""Phase 3 tests — Procure-to-Pay / Accounts Payable.
+"""Phase 3 tests - Procure-to-Pay / Accounts Payable.
 
 Exercises the acceptance criteria: the full PR→PO→GRN→VendorInvoice→VendorPayment
 chain posts correct journals, GR/IR nets to zero on a clean three-way match, the AP
@@ -167,7 +167,7 @@ class _P2PFixtureMixin:
         return po
 
     def make_grn(self, entity, vendor, po, accepts):
-        """accepts: [(po_line, accepted_qty)] — unit price taken from the PO line."""
+        """accepts: [(po_line, accepted_qty)] - unit price taken from the PO line."""
         grn = GoodsReceivedNote.objects.create(
             entity=entity, vendor=vendor, purchase_order=po,
             received_date=datetime.date(2026, 1, 8),
@@ -1142,7 +1142,7 @@ class GoodsReceiptTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(created.status_code, 201)
         grn_id = created.json()["data"]["id"]
 
-        # Edit adjusts the first line AND adds a line that was never on the receipt —
+        # Edit adjusts the first line AND adds a line that was never on the receipt -
         # the old edit path rejected new lines; the rewrite helper accepts them.
         edited = client.patch(
             f"/v1/procurement/goods-receipts/{grn_id}/?entity={entity.code}",
@@ -2494,7 +2494,7 @@ class RequisitionConsoleAPITests(_P2PFixtureMixin, TestCase):
                 period_no=period_no, amount=amount,
             )
 
-        # A directly-raised PO (no requisition) whose line is classified to IT — it
+        # A directly-raised PO (no requisition) whose line is classified to IT - it
         # must still count, proving the commitment join uses the line's own centre.
         in_year = PurchaseOrder.objects.create(
             entity=entity, vendor=vendor, order_date=datetime.date(2026, 3, 4),
@@ -3454,7 +3454,7 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         entity, _, vendor, _, _ = self.build_p2p()
         rfq = self._make_rfq(entity)
         quo = self._make_quotation(entity, rfq, vendor, lines=[("Mesh chair", 10, 200_000)])
-        # RFQ still DRAFT — cannot submit.
+        # RFQ still DRAFT - cannot submit.
         with self.assertRaises(SourcingError):
             submit_quotation(quo)
         issue_rfq(rfq)
@@ -3649,7 +3649,7 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         issue_rfq(rfq)
         quo = self._make_quotation(entity, rfq, vendor, lines=[("Mesh chair", 10, 200_000)])
         submit_quotation(quo)
-        # A validity date in the past makes the offer stale — award must refuse it.
+        # A validity date in the past makes the offer stale - award must refuse it.
         VendorQuotation.objects.filter(pk=quo.pk).update(
             valid_until=datetime.date.today() - datetime.timedelta(days=1),
         )
@@ -3715,7 +3715,7 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         rfq = self._make_rfq(entity, invite=[vendor])
         issue_rfq(rfq)
         quo = self._make_quotation(entity, rfq, vendor, lines=[("Mesh chair", 10, 200_000)])
-        # Withdraw the invitation directly (the API can't on an issued RFQ) — submit must
+        # Withdraw the invitation directly (the API can't on an issued RFQ) - submit must
         # then refuse the now-uninvited vendor's quote.
         RfqInvitation.objects.filter(rfq=rfq, vendor=vendor).delete()
         with self.assertRaises(SourcingError):
@@ -4666,13 +4666,13 @@ class VendorContractTests(_P2PFixtureMixin, TestCase):
 
     def test_expiring_and_mark_expired(self):
         entity, _, vendor, _, _ = self.build_p2p()
-        # Ends soon, 30-day notice — inside window as of 2026-12-15.
+        # Ends soon, 30-day notice - inside window as of 2026-12-15.
         soon = self._contract(
             entity, vendor, ref="C-SOON", start=datetime.date(2026, 1, 1),
             end=datetime.date(2026, 12, 31), notice=30,
         )
         activate_contract(soon)
-        # Ends far away — not yet in window.
+        # Ends far away - not yet in window.
         later = self._contract(
             entity, vendor, ref="C-LATER", start=datetime.date(2026, 1, 1),
             end=datetime.date(2027, 6, 30), notice=30,
@@ -4923,7 +4923,7 @@ class ContractConsoleAPITests(_P2PFixtureMixin, TestCase):
         client = self._client(entity)
         e = f"?entity={entity.code}"
         # Reading/acting on another entity's contract id inside my entity → 404. (GETs are
-        # called without a body — a data dict on .get() would fold into the query string and
+        # called without a body - a data dict on .get() would fold into the query string and
         # drop ?entity.)
         self.assertEqual(client.get(f"/v1/procurement/contracts/{foreign.pk}/{e}").status_code, 404)
         self.assertEqual(
@@ -5722,7 +5722,7 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(stages[1].inclusion_condition.get("op"), "gte")
         self.assertEqual(stages[1].inclusion_condition.get("field"), "estimated_total")
 
-        # Re-running upserts in place — still exactly four templates / two stages.
+        # Re-running upserts in place - still exactly four templates / two stages.
         ensure_default_approval_templates()
         self.assertEqual(
             WorkflowTemplate.objects.filter(code=WF_DEFAULT_TEMPLATE_CODE).count(), 4,
@@ -6121,7 +6121,7 @@ class StockLedgerTests(_P2PFixtureMixin, TestCase):
         item = self._stock_item(entity)
         grn = self._receive_via_grn(entity, vendor, item, qty=10, unit_price=100_000)
 
-        # GL: Dr inventory (1400), Cr GR/IR (2150) — not the line expense account.
+        # GL: Dr inventory (1400), Cr GR/IR (2150) - not the line expense account.
         lines = {l.account.code: l for l in grn.journal.lines.all()}
         self.assertEqual(lines["1400"].debit, 1_000_000)
         self.assertEqual(lines["2150"].credit, 1_000_000)
@@ -6479,7 +6479,7 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
         self.assertEqual(
             client.post(f"/v1/procurement/stock-items/{item.pk}/adjust/{e}",
                         {"quantity_delta": 1, "unit_cost": 1000}, format="json").status_code, 403)
-        # reports resolve on report.view — denied even when stock.view is held.
+        # reports resolve on report.view - denied even when stock.view is held.
         mock_has.side_effect = _deny_keys("procurement.report.view")
         self.assertEqual(
             client.get(f"/v1/procurement/reports/stock-reorder/{e}").status_code, 403)
@@ -6604,10 +6604,10 @@ class StockConsoleAPITests(_P2PFixtureMixin, TestCase):
         entity, _, _, _, _ = self.build_p2p()
         client = self._client(entity)
         base = f"/v1/procurement/stock-items/?entity={entity.code}"
-        # inventory_account must be ASSET — 2100 is a LIABILITY.
+        # inventory_account must be ASSET - 2100 is a LIABILITY.
         self.assertEqual(client.post(base, {
             "code": "A", "name": "A", "inventory_account": "2100"}, format="json").status_code, 400)
-        # default_expense_account must be EXPENSE — 1400 is an ASSET.
+        # default_expense_account must be EXPENSE - 1400 is an ASSET.
         self.assertEqual(client.post(base, {
             "code": "B", "name": "B", "inventory_account": "1400",
             "default_expense_account": "1400"}, format="json").status_code, 400)

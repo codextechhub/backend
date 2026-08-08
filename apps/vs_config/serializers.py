@@ -95,7 +95,7 @@ class ConfigurationValueSerializer(serializers.ModelSerializer):
 
 class SetConfigurationValueSerializer(serializers.Serializer):
     # Scope (tenant/branch) is resolved once per request from request.tenant
-    # and the branch query/payload — never per item, so it is not declared here.
+    # and the branch query/payload - never per item, so it is not declared here.
     key = serializers.RegexField(
         r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$", max_length=200
     )

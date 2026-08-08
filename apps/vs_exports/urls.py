@@ -1,4 +1,4 @@
-"""URL map for the Export Centre — mounted at ``/v1/exports/``.
+"""URL map for the Export Centre - mounted at ``/v1/exports/``.
 
 Routes mirror the capabilities the handoff lists (D10·1): catalogue, preview and
 estimate, quick export, definitions, runs, files, deliveries, capabilities,
@@ -18,7 +18,7 @@ urlpatterns = [
     # Preview and estimate
     path("preview/", views.PreviewView.as_view(), name="export-preview"),
 
-    # Quick export — run a configuration that was never saved
+    # Quick export - run a configuration that was never saved
     path("quick/", views.QuickExportView.as_view(), name="export-quick"),
 
     # Definitions
@@ -39,7 +39,7 @@ urlpatterns = [
     path("files/<int:pk>/download/", views.FileDownloadView.as_view(), name="export-file-download"),
     path("files/<int:pk>/downloads/", views.FileDownloadLogView.as_view(), name="export-file-downloads"),
 
-    # Product analytics — a separate pipeline from the audit trail
+    # Product analytics - a separate pipeline from the audit trail
     path("analytics/", views.AnalyticsIngestView.as_view(), name="export-analytics"),
     path("analytics/summary/", views.AnalyticsSummaryView.as_view(), name="export-analytics-summary"),
 

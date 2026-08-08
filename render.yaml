@@ -1,4 +1,4 @@
-# Render Blueprint (B7) — web + Celery worker + Key Value (Redis).
+# Render Blueprint (B7) - web + Celery worker + Key Value (Redis).
 #
 # Two ways to use this:
 #   a) Blueprint adoption: Render Dashboard → New → Blueprint → point at this
@@ -40,7 +40,7 @@ services:
     plan: starter
     buildCommand: "pip install -r requirements.txt"
     # -B embeds the beat scheduler in the worker (single-service shape).
-    # If you ever scale to multiple workers, move beat to its own service —
+    # If you ever scale to multiple workers, move beat to its own service -
     # two embedded beats would double-fire every periodic task.
     startCommand: "cd apps && celery -A apps worker -B --loglevel=info --concurrency=2"
     envVars:
@@ -55,10 +55,10 @@ services:
           type: keyvalue
           name: xvs-redis
           property: connectionString
-      # Share the same dashboard env group as the web service — the worker
+      # Share the same dashboard env group as the web service - the worker
       # needs the DB and email credentials too.
 
   - type: keyvalue
     name: xvs-redis
-    plan: free          # 25 MB — plenty for a task broker at this volume
+    plan: free          # 25 MB - plenty for a task broker at this volume
     ipAllowList: []     # internal-only access

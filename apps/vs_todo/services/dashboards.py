@@ -2,11 +2,11 @@
 
 Two shapes, matching the design's screens:
 
-  * ``node_dashboard`` — one person's view (My Tasks / a drilled-into report):
+  * ``node_dashboard`` - one person's view (My Tasks / a drilled-into report):
     their own task list and headline, their *area* headline (self + everyone
     beneath), a card per direct report, and the breadcrumb up to the root.
 
-  * ``org_rollup`` — the organogram tree rooted at a person, every node carrying
+  * ``org_rollup`` - the organogram tree rooted at a person, every node carrying
     its own + area completion stats. Built from a single task fetch and one pass
     over the position tree so it stays cheap regardless of depth.
 """
@@ -47,7 +47,7 @@ def org_rollup(root: User) -> Optional[dict]:
     """The organogram subtree rooted at ``root`` with per-node roll-up stats."""
     root_pos = TodoHierarchy.primary_position(root)
     if root_pos is None:
-        # No seat in the org — fall back to a single self node.
+        # No seat in the org - fall back to a single self node.
         own = list(own_tasks_qs(root))
         return {
             "person": root, "is_manager": False,

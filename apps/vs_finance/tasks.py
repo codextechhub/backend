@@ -3,7 +3,7 @@
 Currently home to the daily dunning run: the scheduled job that makes automated
 reminders actually *active*. It generates the day's dunning notices and dispatches
 every PENDING notice through **vs_notifications** (delivery never leaves vs_finance
-directly — see :func:`vs_finance.dunning.mark_notice_sent`).
+directly - see :func:`vs_finance.dunning.mark_notice_sent`).
 
 Autodiscovered by Celery via ``app.autodiscover_tasks()`` in ``apps/apps/celery.py``
 (which scans ``tasks`` in every installed app); wired to beat as
@@ -66,7 +66,7 @@ def run_daily_dunning():
     (platform/product books have no school to scope notifications to and are skipped),
     this:
 
-      1. runs :func:`~vs_finance.dunning.generate_dunning` — creating the day's new
+      1. runs :func:`~vs_finance.dunning.generate_dunning` - creating the day's new
          PENDING notices (skips the entity, logging, if it has no active policy); then
       2. dispatches **all** the entity's PENDING notices via
          :func:`~vs_finance.dunning.mark_notice_sent`, which delivers through
@@ -91,7 +91,7 @@ def run_daily_dunning():
         except Exception as exc:  # noqa: BLE001 - no policy / config; log and skip entity
             skipped += 1  # Track that this entity could not generate notices.
             logger.info(  # Log at info because missing policy/config can be expected.
-                "run_daily_dunning: skipping entity %s (%s) — %s",  # Include entity code, id, and reason.
+                "run_daily_dunning: skipping entity %s (%s) - %s",  # Include entity code, id, and reason.
                 entity.code, entity.id, exc,  # Log context values.
             )
             # Still attempt to dispatch any pre-existing PENDING notices below.  # Dispatch is independent of generation.
@@ -105,12 +105,12 @@ def run_daily_dunning():
                 sent += 1  # Count successful dispatches.
             except Exception as exc:  # noqa: BLE001 - one bad notice must not abort the run
                 logger.warning(  # Warn because this notice failed after generation.
-                    "run_daily_dunning: failed to dispatch notice %s (entity %s) — %s",  # Include notice and entity context.
+                    "run_daily_dunning: failed to dispatch notice %s (entity %s) - %s",  # Include notice and entity context.
                     notice.document_number or notice.pk, entity.code, exc,  # Prefer document number, fallback to pk.
                 )
 
     logger.info(  # Emit one summary event for monitoring.
-        "run_daily_dunning complete — generated=%d, sent=%d, skipped=%d",  # Summary log template.
+        "run_daily_dunning complete - generated=%d, sent=%d, skipped=%d",  # Summary log template.
         generated, sent, skipped,  # Summary counts.
     )
     return {"generated": generated, "sent": sent, "skipped": skipped}  # Return task result for Celery history.

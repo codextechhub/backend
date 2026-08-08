@@ -1,8 +1,8 @@
 """
 Backing model for the database-backed media storage (core.storage).
 
-The platform only ever receives two kinds of uploads — import spreadsheets
-(CSV/XLSX) and images (school logos, staff photos) — all small. Storing them
+The platform only ever receives two kinds of uploads - import spreadsheets
+(CSV/XLSX) and images (school logos, staff photos) - all small. Storing them
 in the database means uploads survive ephemeral-disk redeploys, ride along
 with normal DB backups, and need no object-storage account. If volume ever
 outgrows this, point STORAGES["default"] at S3 and migrate the rows out.
@@ -31,7 +31,7 @@ class StoredFile(models.Model):
 class BackgroundJob(models.Model):
     """User-facing record of one asynchronous operation (the "queue" row).
 
-    Whoever triggers an async task — CX staff or school user — gets a row
+    Whoever triggers an async task - CX staff or school user - gets a row
     here they can track: when it started, when it finished, what came out.
     System/scheduled runs are recorded with owner=None so admins see the
     full queue. Created/updated automatically by core.tasks_base.TrackedTask.
@@ -48,7 +48,7 @@ class BackgroundJob(models.Model):
         "vs_user.User", on_delete=models.SET_NULL, null=True, blank=True,
         related_name="background_jobs",
         help_text=(
-            "The ACTOR who triggered the task — never the subject the task acts "
+            "The ACTOR who triggered the task - never the subject the task acts "
             "on. An invitation email to Jane queued by admin Ada is owned by Ada. "
             "Null for system/scheduled runs."
         ),
@@ -83,7 +83,7 @@ class BackgroundJob(models.Model):
             "Whether the owner gets an in-app notification when the task ends. "
             "False for per-recipient fan-out plumbing (one invitation email per "
             "imported row), where one notification per job would spam the actor "
-            "— the row is still tracked in View Queues."
+            "- the row is still tracked in View Queues."
         ),
     )
     created_at = models.DateTimeField(auto_now_add=True)

@@ -99,7 +99,7 @@ class DestroyModelMixin:
 
 
 # ---------------------------------------------------------------------------
-# Convenience combos — mirrors the common DRF generic view combinations
+# Convenience combos - mirrors the common DRF generic view combinations
 # ---------------------------------------------------------------------------
 
 class XVSModelViewSetMixin(
@@ -109,7 +109,7 @@ class XVSModelViewSetMixin(
     DestroyModelMixin,
 ):
     """
-    Mixin for ModelViewSet — covers retrieve, create, update, destroy.
+    Mixin for ModelViewSet - covers retrieve, create, update, destroy.
     List is handled by XVSPagination.get_paginated_response() automatically.
 
     Usage:

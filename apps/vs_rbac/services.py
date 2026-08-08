@@ -76,7 +76,7 @@ def provision_role_from_prebuilt(*, tenant, branch=None, prebuilt_key: str, crea
         name = prebuilt.name
     else:
         key = f"{prebuilt.key}-{branch.pk}"
-        name = f"{prebuilt.name} — {branch.name}"
+        name = f"{prebuilt.name} - {branch.name}"
 
     role, created = TenantRoleTemplate.objects.get_or_create(
         tenant=tenant,
@@ -144,7 +144,7 @@ def apply_role_change_request(obj: TenantRoleChangeRequest, reviewer, notes: str
             elif item.operation == TenantRoleChangeDeltaItem.Operation.REMOVE:
                 current_keys.discard(item.permission_id)
 
-        # Validate final permission set — include group-derived permissions so
+        # Validate final permission set - include group-derived permissions so
         # dependency checks pass for permissions provided via groups.
         final_keys = sorted(current_keys)
         attached_group_ids = list(

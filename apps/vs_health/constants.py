@@ -10,7 +10,7 @@ from django.db import models
 
 
 # ---------------------------------------------------------------------------
-# Status vocabulary — semantic, paired with shape/icon in the UI (never colour
+# Status vocabulary - semantic, paired with shape/icon in the UI (never colour
 # alone). Mirrors the design's --status-* tokens.
 # ---------------------------------------------------------------------------
 
@@ -69,7 +69,7 @@ HISTOGRAM_SIZE = len(LATENCY_BUCKETS_MS) + 1
 # report request flips p95 past any latency threshold and opens a SEV2, and one
 # 500 makes a 20% error rate. Below this floor we have no statistically usable
 # signal, so percentile/ratio-driven statuses report UNKNOWN and alert rules
-# skip evaluation entirely — never a claimed green, never a noisy red.
+# skip evaluation entirely - never a claimed green, never a noisy red.
 # 30 is the conventional smallest sample at which a tail estimate is worth
 # quoting at all (at n=30 the p95 still rests on the top ~2 observations, so
 # treat it as a floor, not a guarantee).
@@ -84,7 +84,7 @@ METRIC_BUCKET_SECONDS = 60
 KNOWN_QUEUES = ["imports", "exports", "notifications", "provisioning", "reports", "celery"]
 
 # Module "services" are route groups of the Django monolith, not separate
-# processes — their status is DERIVED from real request metrics on these
+# processes - their status is DERIVED from real request metrics on these
 # route prefixes (tasks.refresh_module_service_statuses), never probed.
 ROUTE_PREFIX_SERVICES = {
     "schools": ("/v1/i/",),

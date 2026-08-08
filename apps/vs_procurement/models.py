@@ -1,8 +1,8 @@
-"""Procurement models (vs_procurement) — Phase 3, Procure-to-Pay.
+"""Procurement models (vs_procurement) - Phase 3, Procure-to-Pay.
 
 The purchasing side of the ledger and the Accounts-Payable sub-ledger. **Procurement
 depends on finance, never the reverse:** every document is scoped to a
-:class:`vs_finance.models.LedgerEntity` (the tenant — never a School), money is integer
+:class:`vs_finance.models.LedgerEntity` (the tenant - never a School), money is integer
 kobo via :class:`vs_finance.money.MoneyField`, and the posting documents (GRN, vendor
 invoice, vendor payment) raise journals through the finance posting service so the same
 period-lock and balance guards apply.
@@ -13,13 +13,13 @@ The chain modelled here:
 
 and the AP sub-ledger (:class:`Vendor` + :class:`VendorInvoice` + :class:`VendorPayment`)
 that mirrors the AR sub-ledger in :mod:`vs_finance.models`. The classic three-document
-control — **GR/IR clearing** — sits between receipt and invoice: receiving debits the
+control - **GR/IR clearing** - sits between receipt and invoice: receiving debits the
 expense and credits GR/IR; the matched invoice debits GR/IR (clearing it) and credits
 AP. When goods are both received and billed, GR/IR nets to zero.
 
 The sourcing overlay (RFQ → VendorQuotation → award), the item :class:`CatalogItem` and
 :class:`VendorContract` (with :class:`ContractMilestone`) sit off the journal-posting
-path and add no GL behaviour — they feed the same chain. The full double-entry P2P chain
+path and add no GL behaviour - they feed the same chain. The full double-entry P2P chain
 is here.
 """
 from __future__ import annotations
@@ -102,7 +102,7 @@ class _AutoMasterCodeMixin:
 
 
 # --------------------------------------------------------------------------- #
-# Master data — vendors                                                       #
+# Master data - vendors                                                       #
 # --------------------------------------------------------------------------- #
 
 class VendorCategory(TimeStampedModel):
@@ -154,7 +154,7 @@ class VendorCategory(TimeStampedModel):
 
 
 class Vendor(_AutoMasterCodeMixin, TimeStampedModel):
-    """A payable party — the AP sub-ledger account — for one entity.
+    """A payable party - the AP sub-ledger account - for one entity.
 
     The mirror image of :class:`vs_finance.models.Customer`: ``payable_account`` is the
     AP control account this vendor's balance rolls into, and the optional
@@ -261,18 +261,18 @@ class Vendor(_AutoMasterCodeMixin, TimeStampedModel):
 
 
 # --------------------------------------------------------------------------- #
-# Master data — item catalog                                                  #
+# Master data - item catalog                                                  #
 # --------------------------------------------------------------------------- #
 
 class CatalogItem(_AutoMasterCodeMixin, TimeStampedModel):
-    """A reusable purchasable item — pre-set buying defaults so lines aren't retyped.
+    """A reusable purchasable item - pre-set buying defaults so lines aren't retyped.
 
     Pure master data with **no GL effect**: a catalog item names a good/service and
     carries the defaults a buyer would otherwise pick by hand on every requisition / RFQ
-    / PO line — a ``preferred_vendor``, the GL ``default_expense_account`` the cost lands
+    / PO line - a ``preferred_vendor``, the GL ``default_expense_account`` the cost lands
     in, a ``default_tax_code``, an indicative ``standard_unit_price`` (kobo) and a
     ``lead_time_days`` planning hint. :meth:`line_defaults` returns those as a dict the
-    line-building views can splat in. None of it is binding — every value is overridable
+    line-building views can splat in. None of it is binding - every value is overridable
     per line.
     """
 
@@ -368,11 +368,11 @@ class CatalogItem(_AutoMasterCodeMixin, TimeStampedModel):
 # --------------------------------------------------------------------------- #
 
 class StockItem(_AutoMasterCodeMixin, TimeStampedModel):
-    """A physically stocked good — carries live on-hand quantity and its GL value.
+    """A physically stocked good - carries live on-hand quantity and its GL value.
 
     Distinct from :class:`CatalogItem`: a catalog item is *buying* master data (defaults
     that pre-fill purchase lines, including services you never hold), whereas a stock item
-    is *inventory* state — what is physically held, counted, and carried on the balance
+    is *inventory* state - what is physically held, counted, and carried on the balance
     sheet. The optional :attr:`catalog_item` link joins a stocked good to its buying
     defaults when one exists.
 
@@ -523,11 +523,11 @@ class StockMovement(TimeStampedModel):
 
 
 # --------------------------------------------------------------------------- #
-# Vendor contracts (master data — no GL effect)                               #
+# Vendor contracts (master data - no GL effect)                               #
 # --------------------------------------------------------------------------- #
 
 class VendorContract(TimeStampedModel):
-    """A term agreement with a vendor — the basis for renewal/expiry alerts.
+    """A term agreement with a vendor - the basis for renewal/expiry alerts.
 
     Pure master data with **no GL effect**: a contract records the commercial envelope
     (period, value, payment terms) and an optional list of :class:`ContractMilestone` s.
@@ -619,11 +619,11 @@ class ContractMilestone(TimeStampedModel):
 
 
 # --------------------------------------------------------------------------- #
-# Purchase requisition (intent to buy — no GL effect)                         #
+# Purchase requisition (intent to buy - no GL effect)                         #
 # --------------------------------------------------------------------------- #
 
 class PurchaseRequisition(FinanceDocument):
-    """An internal request to buy — the start of the procurement chain.
+    """An internal request to buy - the start of the procurement chain.
 
     No GL effect: a requisition is intent, approved (via ``vs_workflow``) and then
     converted into one or more :class:`PurchaseOrder` s. ``status`` uses the shared
@@ -631,7 +631,7 @@ class PurchaseRequisition(FinanceDocument):
     """
 
     DOC_TYPE = DocType.PURCHASE_REQUISITION
-    #: vs_workflow integration — see vs_procurement.workflow_handlers / .approvals.
+    #: vs_workflow integration - see vs_procurement.workflow_handlers / .approvals.
     workflow_document_type = WF_DOCTYPE_REQUISITION
     workflow_amount_field = "estimated_total"
 
@@ -711,11 +711,11 @@ class PurchaseRequisitionLine(TimeStampedModel):
 
 
 # --------------------------------------------------------------------------- #
-# Sourcing — RFQ → vendor quotations → award (no GL effect)                   #
+# Sourcing - RFQ → vendor quotations → award (no GL effect)                   #
 # --------------------------------------------------------------------------- #
 
 class RequestForQuotation(FinanceDocument):
-    """A request inviting vendors to quote — competitive sourcing before a PO.
+    """A request inviting vendors to quote - competitive sourcing before a PO.
 
     A sourcing overlay with no GL effect: an RFQ (optionally raised off an approved
     :class:`PurchaseRequisition`) is issued to vendors who reply with
@@ -754,7 +754,7 @@ class RequestForQuotation(FinanceDocument):
 
 
 class RfqInvitation(TimeStampedModel):
-    """A vendor invited to quote on an RFQ — the RFQ's addressee list.
+    """A vendor invited to quote on an RFQ - the RFQ's addressee list.
 
     An RFQ is fundamentally a *request for quotation sent to invited vendors*, so this
     join row records exactly which vendors were asked to bid. Invited-vendor semantics:
@@ -779,7 +779,7 @@ class RfqInvitation(TimeStampedModel):
     )
 
     class Meta:
-        # A vendor is either invited to an RFQ or not — never invited twice.
+        # A vendor is either invited to an RFQ or not - never invited twice.
         unique_together = (("rfq", "vendor"),)
         ordering = ["rfq", "id"]
         indexes = [models.Index(fields=["rfq"])]
@@ -913,7 +913,7 @@ class VendorQuotationLine(TimeStampedModel):
 
 
 # --------------------------------------------------------------------------- #
-# Purchase order (commitment — no GL effect until receipt)                    #
+# Purchase order (commitment - no GL effect until receipt)                    #
 # --------------------------------------------------------------------------- #
 
 class PurchaseOrder(FinanceDocument):
@@ -925,7 +925,7 @@ class PurchaseOrder(FinanceDocument):
     """
 
     DOC_TYPE = DocType.PURCHASE_ORDER
-    #: vs_workflow integration — see vs_procurement.workflow_handlers / .approvals.
+    #: vs_workflow integration - see vs_procurement.workflow_handlers / .approvals.
     workflow_document_type = WF_DOCTYPE_PURCHASE_ORDER
     workflow_amount_field = "total"
 
@@ -1071,7 +1071,7 @@ class PurchaseOrderLine(TimeStampedModel):
 # --------------------------------------------------------------------------- #
 
 class GoodsReceivedNote(FinanceDocument):
-    """A record that goods/services arrived — the first GL event in the chain.
+    """A record that goods/services arrived - the first GL event in the chain.
 
     Posting (:func:`vs_procurement.purchasing.post_grn`) debits the expense/inventory
     account and credits **GR/IR clearing** for the accepted value (ex-tax): the cost is
@@ -1170,7 +1170,7 @@ class GoodsReceivedNoteLine(TimeStampedModel):
 # --------------------------------------------------------------------------- #
 
 class VendorInvoice(FinanceDocument):
-    """A bill from a :class:`Vendor` — the AP-side mirror of a sales invoice.
+    """A bill from a :class:`Vendor` - the AP-side mirror of a sales invoice.
 
     Posting (:func:`vs_procurement.payables.post_vendor_invoice`) runs the three-way
     match, then raises the AP journal: **Dr GR/IR clearing** (clearing what receipt
@@ -1180,7 +1180,7 @@ class VendorInvoice(FinanceDocument):
     """
 
     DOC_TYPE = DocType.VENDOR_INVOICE
-    #: vs_workflow integration — see vs_procurement.workflow_handlers / .approvals.
+    #: vs_workflow integration - see vs_procurement.workflow_handlers / .approvals.
     workflow_document_type = WF_DOCTYPE_VENDOR_INVOICE
     workflow_amount_field = "total"
 
@@ -1333,7 +1333,7 @@ class VendorInvoiceLine(TimeStampedModel):
 # --------------------------------------------------------------------------- #
 
 class VendorPayment(FinanceDocument):
-    """Money out to a :class:`Vendor`, settling one or more bills — with WHT.
+    """Money out to a :class:`Vendor`, settling one or more bills - with WHT.
 
     Posting (:func:`vs_procurement.payables.post_vendor_payment`) debits AP for the
     **gross** settled, credits the bank/cash for the **net** actually paid, and credits
@@ -1342,7 +1342,7 @@ class VendorPayment(FinanceDocument):
     """
 
     DOC_TYPE = DocType.VENDOR_PAYMENT
-    #: vs_workflow integration — approval is separate from posting status.
+    #: vs_workflow integration - approval is separate from posting status.
     workflow_document_type = WF_DOCTYPE_VENDOR_PAYMENT
     workflow_amount_field = "gross_amount"
 
@@ -1405,7 +1405,7 @@ class VendorPayment(FinanceDocument):
 
     @property
     def unallocated_amount(self) -> int:
-        """Gross not yet applied to any bill — an open debit on the vendor."""
+        """Gross not yet applied to any bill - an open debit on the vendor."""
         # Unallocated cash remains the gross payment less allocations already attached to invoices.
         return self.gross_amount - self.allocated_amount
 
@@ -1452,7 +1452,7 @@ class VendorPaymentAllocation(TimeStampedModel):
 
 
 # --------------------------------------------------------------------------- #
-# Vendor assessment (point-in-time scorecard — immutable audit record)         #
+# Vendor assessment (point-in-time scorecard - immutable audit record)         #
 # --------------------------------------------------------------------------- #
 
 #: Fixed scorecard weights (sum to 1.0). Weighted overall = Σ (score × weight).
@@ -1465,13 +1465,13 @@ VENDOR_ASSESSMENT_WEIGHTS = {
 
 
 class VendorAssessment(TimeStampedModel):
-    """A point-in-time vendor scorecard — an immutable audit record.
+    """A point-in-time vendor scorecard - an immutable audit record.
 
     Captures four 0–100 criteria (on-time delivery, quality acceptance, invoice
     accuracy, responsiveness) scored by an ``assessor`` on a date. ``overall_score``
     and the letter ``grade`` are **computed** from :data:`VENDOR_ASSESSMENT_WEIGHTS`,
     never stored, so the banding can evolve without a data migration. Create-only:
-    an assessment is never edited or deleted — a newer one supersedes it.
+    an assessment is never edited or deleted - a newer one supersedes it.
     """
 
     entity = models.ForeignKey(

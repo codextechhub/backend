@@ -54,7 +54,7 @@ def provision_admin_user(
 
     try:
         from vs_rbac.models import TenantRoleTemplate, TenantUserRoleAssignment
-        with transaction.atomic():  # savepoint — rollback here if anything fails
+        with transaction.atomic():  # savepoint - rollback here if anything fails
             # Idempotent: if the user already exists just stamp the link as sent.
             existing = User.objects.filter(email=email).first()
             if existing:
@@ -79,7 +79,7 @@ def provision_admin_user(
             # A school admin or branch admin without a role is a half-broken
             # account: they receive the invitation email, activate it, and
             # then can do nothing. Fail loud here instead of silently creating
-            # the user and dispatching the email — the outer savepoint will
+            # the user and dispatching the email - the outer savepoint will
             # roll back, and the admin link stays in QUEUED so the operator
             # can investigate (typically: the prebuilt role template wasn't
             # seeded, or the tenant's TenantRoleTemplate is missing).
@@ -114,7 +114,7 @@ def provision_admin_user(
                 assigned_by=invited_by,
             )
 
-            # Invitation record — expiry gate for the activation link.
+            # Invitation record - expiry gate for the activation link.
             InvitationService.create(user=user, invited_by=invited_by or user)
 
             send_invitation_email_task.delay(
@@ -141,10 +141,10 @@ def provision_admin_user(
             return user
 
     except Exception as exc:  # noqa: BLE001
-        # Log but do not re-raise — admin provisioning failure must never
+        # Log but do not re-raise - admin provisioning failure must never
         # abort the school/branch creation that triggered it.
         logger.error(
-            "provision_admin_user: failed for %s — %s",
+            "provision_admin_user: failed for %s - %s",
             email,
             exc,
             exc_info=True,

@@ -85,7 +85,7 @@ class Migration(migrations.Migration):
                             ("STUDENT", "Student"),
                             ("PARENT", "Parent/Guardian"),
                         ],
-                        help_text="Inert domain marker for the person's persona. Migrates into the future profile models and MUST NEVER drive authorization — all access decisions run through tenant RBAC, not this field.",
+                        help_text="Inert domain marker for the person's persona. Migrates into the future profile models and MUST NEVER drive authorization - all access decisions run through tenant RBAC, not this field.",
                         max_length=32,
                     ),
                 ),

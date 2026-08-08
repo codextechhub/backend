@@ -94,7 +94,7 @@ class GoldenSignalsTests(TestCase):
 class CollectorFlushTests(TestCase):
     def setUp(self):
         # The collector buffer is process-global and the request middleware
-        # feeds it during the whole suite — drain it so this test sees only
+        # feeds it during the whole suite - drain it so this test sees only
         # its own records.
         collectors._drain()
 
@@ -118,7 +118,7 @@ class AlertEvaluationTests(TestCase):
     def setUp(self):
         self.svc = MonitoredService.objects.create(key="api", name="API · DRF", sort_order=1)
         now = timezone.now().replace(second=0, microsecond=0)
-        # 50% error rate over the recent window — well past a 5% threshold.
+        # 50% error rate over the recent window - well past a 5% threshold.
         RequestMetric.objects.create(
             bucket_start=now, route="/v1/i/", method="GET", tenant_id=None,
             request_count=100, status_2xx=50, status_5xx=50,
@@ -190,7 +190,7 @@ class SmallSampleGuardTests(TestCase):
         self.assertEqual(svc.current_status, HealthStatus.UNKNOWN)
 
     def test_zero_traffic_window_leaves_module_status_unknown(self):
-        """No traffic is no signal — a previously green module must not stay green."""
+        """No traffic is no signal - a previously green module must not stay green."""
         from vs_health.tasks import refresh_module_service_statuses
 
         svc = MonitoredService.objects.create(
@@ -243,7 +243,7 @@ class SmallSampleGuardTests(TestCase):
         self.assertFalse(Incident.objects.exists())
 
     def test_below_floor_window_does_not_breach_error_rate_rule(self):
-        """One 500 out of five requests is 20% — noise, not a 5% SLO breach."""
+        """One 500 out of five requests is 20% - noise, not a 5% SLO breach."""
         from vs_health.tasks import evaluate_alert_rules_task
 
         AlertRule.objects.create(
@@ -309,7 +309,7 @@ class SmallSampleGuardTests(TestCase):
         rows = services.endpoint_stats(tr)
 
         self.assertEqual(rows[0]["status"], HealthStatus.UNKNOWN)
-        # The percentile itself stays visible — the number is informational.
+        # The percentile itself stays visible - the number is informational.
         self.assertGreater(rows[0]["p95"], 0)
 
     def test_window_status_boundary_is_the_shared_floor(self):

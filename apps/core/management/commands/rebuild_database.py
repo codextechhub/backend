@@ -2,7 +2,7 @@
 
 Written for the tenant-refactor cutover: the migration history was squashed to
 fresh 0001 chains, so any database that carries the old django_migrations rows
-must be rebuilt rather than migrated forward. DESTROYS ALL DATA — guarded twice
+must be rebuilt rather than migrated forward. DESTROYS ALL DATA - guarded twice
 (the --yes flag AND the RESET_DB env var must both be present) so a stray
 invocation in a build pipeline can never wipe an environment by accident.
 """

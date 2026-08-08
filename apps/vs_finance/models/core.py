@@ -4,16 +4,16 @@ Foundational models for the finance engine (Phase 0).
 
 This module holds only the *foundations* every later model leans on:
 
-* :class:`TimeStampedModel` — shared created/updated stamps (matches the ``vs_*``
+* :class:`TimeStampedModel` - shared created/updated stamps (matches the ``vs_*``
   convention).
-* :class:`LedgerEntity` — the **accounting entity** that owns a set of books. This is
+* :class:`LedgerEntity` - the **accounting entity** that owns a set of books. This is
   the tenant of every finance/procurement document, and the key decoupling: the
   ledger belongs to an *entity*, not to a school. A customer School maps to one (or
   more) entities; Codex's own platform books are an entity with **no school**; future
   products plug in the same way.
-* :class:`DocumentSequence` — the concurrency-safe, gap-free counter behind every
+* :class:`DocumentSequence` - the concurrency-safe, gap-free counter behind every
   human-facing document number.
-* :class:`FinanceDocument` — the abstract base for numbered, entity-scoped,
+* :class:`FinanceDocument` - the abstract base for numbered, entity-scoped,
   status-bearing documents (invoices, POs, journals …).
 
 The ledger proper (Account, JournalEntry, FiscalPeriod …) arrives in Phase 1 and
@@ -77,11 +77,11 @@ def derive_number_code(code: str, taken) -> str:
         candidate = (stem + suffix)[:3]
         if candidate not in taken:
             return candidate
-    return base  # exhausted — the DB unique constraint is the final guard
+    return base  # exhausted - the DB unique constraint is the final guard
 
 
 class LedgerEntity(TimeStampedModel):
-    """A distinct set of books — the tenant of every finance/procurement document.
+    """A distinct set of books - the tenant of every finance/procurement document.
 
     The accounting `entity concept` made concrete: books are kept for an entity, and
     an entity may be a customer organisation, Codex itself, or a future product. A
@@ -101,7 +101,7 @@ class LedgerEntity(TimeStampedModel):
         base_currency: FK to the :class:`Currency` this entity keeps its primary
             ledger in (its reporting currency). Defaults to NGN. Because
             ``Currency``'s PK is the 3-letter code, the column still stores ``"NGN"``
-            — the FK just adds referential integrity over the old free-text code.
+            - the FK just adds referential integrity over the old free-text code.
         is_active / activated_at / deleted_at: lifecycle.
     """
 
@@ -218,8 +218,8 @@ class FinanceDocument(TimeStampedModel):
     document number on first save.
 
     Tenancy: every document belongs to a :class:`LedgerEntity` (the accounting entity
-    that keeps the books) and optionally a ``branch`` sub-scope. The entity — not a
-    school — is the unit of ownership, so Codex's own books and future products are
+    that keeps the books) and optionally a ``branch`` sub-scope. The entity - not a
+    school - is the unit of ownership, so Codex's own books and future products are
     first-class. ``vs_rbac`` scoping (for school entities) keys off these; platform
     books are governed by platform-level access, not school boundaries.
 

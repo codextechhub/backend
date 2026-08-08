@@ -2,8 +2,8 @@
 
 The *task table* on the Background Jobs screen reads ``core.models.BackgroundJob``
 directly (every task is tracked there). This model only stores the periodic
-queue-level snapshot — depth (from the Redis broker) plus failure/throughput
-aggregates — so the live depth-trend bars have history to draw.
+queue-level snapshot - depth (from the Redis broker) plus failure/throughput
+aggregates - so the live depth-trend bars have history to draw.
 """
 from __future__ import annotations
 

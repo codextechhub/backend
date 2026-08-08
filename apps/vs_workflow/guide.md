@@ -1,12 +1,12 @@
-# vs_workflow — Study Guide
+# vs_workflow - Study Guide
 
 ## Table of Contents
 1. [What is a Workflow Engine?](#1-what-is-a-workflow-engine)
-2. [Big Picture — How the Pieces Fit](#2-big-picture--how-the-pieces-fit)
+2. [Big Picture - How the Pieces Fit](#2-big-picture--how-the-pieces-fit)
 3. [Data Models](#3-data-models)
 4. [Lifecycle & State Machine](#4-lifecycle--state-machine)
-5. [How Decisions Are Made — Routing & Conditions](#5-how-decisions-are-made--routing--conditions)
-6. [Integration Guide — Wiring Up a New Module](#6-integration-guide--wiring-up-a-new-module)
+5. [How Decisions Are Made - Routing & Conditions](#5-how-decisions-are-made--routing--conditions)
+6. [Integration Guide - Wiring Up a New Module](#6-integration-guide--wiring-up-a-new-module)
 7. [API Endpoints](#7-api-endpoints)
 8. [Errors & What They Mean](#8-errors--what-they-mean)
 
@@ -19,13 +19,13 @@ A workflow engine automates the question: *"Who needs to approve this, and in wh
 Instead of hardcoding approval logic inside each feature (e.g. procurement, leave requests, staff onboarding), you define reusable **templates** that describe the stages and route a document through them automatically.
 
 **Example scenario:**
-> A staff member raises a purchase requisition. It must first be approved by a Line Manager, then by the Finance Officer. If the amount exceeds ₦500k, it also requires the School Principal. The engine handles all of this — including notifying approvers, recording votes, and calling back into procurement when a final decision is reached.
+> A staff member raises a purchase requisition. It must first be approved by a Line Manager, then by the Finance Officer. If the amount exceeds ₦500k, it also requires the School Principal. The engine handles all of this - including notifying approvers, recording votes, and calling back into procurement when a final decision is reached.
 
 `vs_workflow` is that engine for the entire platform. Any module can plug in.
 
 ---
 
-## 2. Big Picture — How the Pieces Fit
+## 2. Big Picture - How the Pieces Fit
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -54,7 +54,7 @@ Instead of hardcoding approval logic inside each feature (e.g. procurement, leav
                            ▼
 ┌─────────────────────────────────────────────────────────┐
 │                     Your Module                         │
-│   (handler callback fires — update your document)       │
+│   (handler callback fires - update your document)       │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -62,7 +62,7 @@ There are three layers:
 
 | Layer | What it is |
 |---|---|
-| **Template** | The blueprint — defines stages, order, rules. Created once by an admin. |
+| **Template** | The blueprint - defines stages, order, rules. Created once by an admin. |
 | **Instance** | One live execution of a template against one document. Created per submission. |
 | **Handler** | Your module's code. The engine calls it at lifecycle events (submitted, approved, etc.). |
 
@@ -95,7 +95,7 @@ WorkflowAuditLog                      ← append-only event log per instance
 
 ### WorkflowTemplate
 
-The **blueprint**. Think of it like a form template — it defines the shape, not the data.
+The **blueprint**. Think of it like a form template - it defines the shape, not the data.
 
 | Field | Meaning |
 |---|---|
@@ -113,14 +113,14 @@ One **step** in a template. There are two kinds:
 | `kind` | What it does |
 |---|---|
 | `APPROVAL` | Waits for approvers to vote. The engine pauses here until the advance rule is satisfied. |
-| `BRANCH` | Never shown to approvers. Exists only as a routing decision point — the engine passes through it instantly to evaluate routes. |
+| `BRANCH` | Never shown to approvers. Exists only as a routing decision point - the engine passes through it instantly to evaluate routes. |
 
 Key fields:
 
 | Field | Meaning |
 |---|---|
 | `approver_permission_key` | RBAC permission key used to resolve who can approve this stage. |
-| `approver_scope` | `BRANCH`, `SCHOOL`, or `PLATFORM` — narrows the RBAC query to branch-level, school-level, or all users platform-wide. |
+| `approver_scope` | `BRANCH`, `SCHOOL`, or `PLATFORM` - narrows the RBAC query to branch-level, school-level, or all users platform-wide. |
 | `advance_rule` | `UNANIMOUS` (everyone must approve), `QUORUM` (N of M), or `ANY` (first approver wins). |
 | `quorum_count` | Only used when `advance_rule = QUORUM`. Minimum approvals needed. |
 | `on_rejection` | What happens when someone rejects: `TERMINAL` (ends the workflow) or `RETURN_TO_REQUESTER`. |
@@ -136,7 +136,7 @@ A **directed edge** between stages. If a template has no routes, the engine uses
 | Field | Meaning |
 |---|---|
 | `from_stage` | Source stage. `null` means this is an entry edge (fires first). |
-| `to_stage` | Destination stage. `null` means exit — instance terminates as APPROVED. |
+| `to_stage` | Destination stage. `null` means exit - instance terminates as APPROVED. |
 | `condition` | JSON condition evaluated against the document. First matching route wins. |
 | `order` | Routes are evaluated in ascending order until one matches. |
 
@@ -144,20 +144,20 @@ A **directed edge** between stages. If a template has no routes, the engine uses
 
 ### WorkflowInstance
 
-**One live execution** — created the moment a document is submitted.
+**One live execution** - created the moment a document is submitted.
 
 ```
 DRAFT ──► SUBMITTED ──► IN_PROGRESS ──► APPROVED   (terminal)
                      │              └──► REJECTED   (terminal)
-                     └──► RETURNED  ──► WITHDRAWN   (terminal — requester gave up)
+                     └──► RETURNED  ──► WITHDRAWN   (terminal - requester gave up)
                           (requester amends & resubmits)
-                                     └──► CANCELLED  (terminal — admin killed it)
+                                     └──► CANCELLED  (terminal - admin killed it)
 ```
 
 | Field | Meaning |
 |---|---|
 | `document_content_type` + `document_object_id` | Generic FK to your document (any model). |
-| `document_type` | Denormalised copy of the type string — for fast filtering without a join. |
+| `document_type` | Denormalised copy of the type string - for fast filtering without a join. |
 | `current_stage` | The stage the engine is waiting on right now. `null` when terminal. |
 | `status` | See state machine above. |
 | `state_version` | Incremented on every transition. Useful for detecting stale reads. |
@@ -179,7 +179,7 @@ Created for each stage the engine **reaches** during a given instance. If the sa
 
 ### WorkflowStageApprover
 
-A **snapshot** of who was eligible to act when a stage was activated. Never updated — historical record.
+A **snapshot** of who was eligible to act when a stage was activated. Never updated - historical record.
 
 > Why a snapshot? Because RBAC roles can change. The audit trail must reflect who was eligible *at the time*, not who has the role today.
 
@@ -239,7 +239,7 @@ Append-only. Every material engine event writes a row. Never updated or deleted.
     - else: activate stage, set status=IN_PROGRESS, STOP     │
           │                                                  │
           ▼                                                  │
-  [Stage ACTIVE — waiting for votes]                         │
+  [Stage ACTIVE - waiting for votes]                         │
           │                                                  │
     approver calls record_action(APPROVED/REJECTED/RETURNED) │
           │                                                  │
@@ -295,7 +295,7 @@ Attempt 2:
 
 ---
 
-## 5. How Decisions Are Made — Routing & Conditions
+## 5. How Decisions Are Made - Routing & Conditions
 
 ### Linear routing (no routes defined)
 
@@ -315,7 +315,7 @@ Routes are evaluated in `order` ascending. First route whose condition matches w
                     └─── Route B: condition={amount >= 500000} ─► Stage: Finance + Principal
 ```
 
-A `BRANCH` stage is just a decision point — it is always skipped and never shown to approvers. Its purpose is to give the route evaluator a `from_stage` to branch from.
+A `BRANCH` stage is just a decision point - it is always skipped and never shown to approvers. Its purpose is to give the route evaluator a `from_stage` to branch from.
 
 ### Conditions
 
@@ -345,7 +345,7 @@ Supported: `all` (AND), `any` (OR), `not`.
 ```
 The function must be registered via `@register_condition("procurement.is_urgent")` in your module's `workflow_conditions.py`.
 
-**No condition (`null`):** always matches — used for unconditional routes.
+**No condition (`null`):** always matches - used for unconditional routes.
 
 ### Inclusion conditions
 
@@ -354,15 +354,15 @@ The function must be registered via `@register_condition("procurement.is_urgent"
 ```json
 { "op": "gte", "field": "amount", "value": 500000 }
 ```
-If this evaluates to `False`, the stage is **skipped** entirely — not shown to any approver.
+If this evaluates to `False`, the stage is **skipped** entirely - not shown to any approver.
 
 ---
 
-## 6. Integration Guide — Wiring Up a New Module
+## 6. Integration Guide - Wiring Up a New Module
 
 To connect a new module (e.g. `vs_leave`), you need four things:
 
-### Step 1 — Declare `workflow_document_type` on your model
+### Step 1 - Declare `workflow_document_type` on your model
 
 ```python
 # vs_leave/models.py
@@ -371,7 +371,7 @@ class LeaveRequest(models.Model):
     workflow_document_type = "leave.request"  # class attribute, not a DB field
 ```
 
-### Step 2 — Create `workflow_handlers.py` in your app
+### Step 2 - Create `workflow_handlers.py` in your app
 
 ```python
 # vs_leave/workflow_handlers.py
@@ -414,7 +414,7 @@ class LeaveRequestHandler(BaseWorkflowHandler):
 
 The engine auto-discovers `workflow_handlers.py` in every installed app on startup (via `autodiscover_modules("workflow_handlers")` in `VsWorkflowConfig.ready()`).
 
-### Step 3 — Optionally create `workflow_conditions.py`
+### Step 3 - Optionally create `workflow_conditions.py`
 
 Only needed if your routes or stages use custom `fn` conditions.
 
@@ -428,9 +428,9 @@ def is_long_leave(document, args):
     return document.duration_days >= threshold
 ```
 
-### Step 4 — Publish or update a template via the API
+### Step 4 - Publish or update a template via the API
 
-Templates are created-or-updated in place — calling publish again with the same `(school, document_type, code)` key updates the existing template rather than creating a new version. There is no versioning. Stages are upserted by `code`; routes are replaced entirely.
+Templates are created-or-updated in place - calling publish again with the same `(school, document_type, code)` key updates the existing template rather than creating a new version. There is no versioning. Stages are upserted by `code`; routes are replaced entirely.
 
 ```
 POST /v1/workflow/templates/publish/
@@ -464,9 +464,9 @@ POST /v1/workflow/templates/publish/
 }
 ```
 
-No `routes` needed for a simple linear flow — stages run in `order` order. Calling this endpoint again with the same `document_type` + `code` will update the template in place.
+No `routes` needed for a simple linear flow - stages run in `order` order. Calling this endpoint again with the same `document_type` + `code` will update the template in place.
 
-### Step 5 — Submit a document
+### Step 5 - Submit a document
 
 ```python
 from vs_workflow.services.submission import submit_for_approval
@@ -545,7 +545,7 @@ All errors come back as:
 | Error code | When it happens |
 |---|---|
 | `TEMPLATE_NOT_FOUND` | No active template exists for this `(school, document_type, code)` combination. |
-| `TEMPLATE_INVALID` | Template configuration is broken — e.g. no stages, a cycle, or unmatched routes. |
+| `TEMPLATE_INVALID` | Template configuration is broken - e.g. no stages, a cycle, or unmatched routes. |
 | `UNKNOWN_DOCUMENT_TYPE` | `submit_for_approval` was called but no handler was registered for this document type. |
 | `INVALID_INSTANCE_STATE` | Action attempted on an instance in the wrong status (e.g. resubmit on a non-RETURNED instance). |
 | `INSTANCE_TERMINAL` | Action attempted on an instance that already finished (APPROVED, REJECTED, etc.). |

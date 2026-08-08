@@ -39,7 +39,7 @@ class CurrentUserView(APIView):
     docstring-name: Current user profile
     """
     permission_classes = [IsAuthenticatedAndActive]
-    # Operates purely on request.user — home tenant is derived from the token,
+    # Operates purely on request.user - home tenant is derived from the token,
     # so ?tenant= is not required. request.tenant is still bound by auth.
     tenant_param_required = False
 
@@ -65,7 +65,7 @@ class CurrentUserView(APIView):
 class MySecurityStatsView(APIView):
     """
     GET /user/auth/me/stats/
-    Returns security stats scoped to the requesting user — accessible by any
+    Returns security stats scoped to the requesting user - accessible by any
     authenticated user without staff permissions.
 
     docstring-name: My security stats

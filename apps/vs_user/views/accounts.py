@@ -54,13 +54,13 @@ def _is_truthy(value) -> bool:
 
 class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
     """
-    GET    /users/          — list users scoped to requesting admin's school
-    POST   /users/          — create user + dispatch invitation email
-    GET    /users/{id}/     — retrieve full user profile
-    PATCH  /users/{id}/     — update profile fields (not email, not status)
-    DELETE /users/{id}/     — soft-deactivate (never hard-delete)
+    GET    /users/          - list users scoped to requesting admin's school
+    POST   /users/          - create user + dispatch invitation email
+    GET    /users/{id}/     - retrieve full user profile
+    PATCH  /users/{id}/     - update profile fields (not email, not status)
+    DELETE /users/{id}/     - soft-deactivate (never hard-delete)
 
-    Permission matrix (TODO — wire up RBAC):
+    Permission matrix (TODO - wire up RBAC):
       list:           IsAuthenticatedAndActive, HasRBACPermission
                       RBAC: identity.user_account.create (read access implied by create)
       create:         IsAuthenticatedAndActive, HasRBACPermission
@@ -108,7 +108,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
         # (the endpoint's RBAC keys are the gate); everyone else is scoped to
         # the asserted request tenant.
         if getattr(getattr(user, 'tenant', None), 'kind', None) == Tenant.Kind.PLATFORM:
-            pass  # platform tenant — sees all users
+            pass  # platform tenant - sees all users
         else:
             qs = qs.filter(tenant=getattr(self.request, 'tenant', None) or user.tenant)
 
@@ -231,7 +231,7 @@ class UserAccountViewSet(XVSModelViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"], url_path="submit")
     def submit(self, request, *args, **kwargs):
-        """POST /user/users/<id>/submit/ — promote a DRAFT into the normal flow.
+        """POST /user/users/<id>/submit/ - promote a DRAFT into the normal flow.
 
         Optionally accepts a ``role`` key to assign the role at submit time when
         the draft doesn't already have one. CX drafts must already have a position

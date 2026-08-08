@@ -1,4 +1,4 @@
-"""Per-request rollup metric — the backbone of the golden signals.
+"""Per-request rollup metric - the backbone of the golden signals.
 
 One row aggregates every request that shares a (1-minute bucket, route,
 method, tenant). Latency is folded into a fixed histogram so percentiles can
@@ -26,7 +26,7 @@ class RequestMetric(models.Model):
         * ``route`` is the *resolved* URL pattern (e.g. ``v1/finance/invoices/``),
           never the raw path, to keep cardinality bounded.
         * ``tenant`` is nullable: unauthenticated / platform-anonymous requests
-          have no asserted tenant. This column is for slicing, not isolation — the
+          have no asserted tenant. This column is for slicing, not isolation - the
           table is global observability data gated by platform RBAC.
     """
 
@@ -52,7 +52,7 @@ class RequestMetric(models.Model):
     latency_hist = models.JSONField(default=_empty_hist, help_text="Counts per LATENCY_BUCKETS_MS bucket (+overflow).")
 
     class Meta:
-        # One canonical row per dimension tuple — collectors upsert into it.
+        # One canonical row per dimension tuple - collectors upsert into it.
         unique_together = ("bucket_start", "route", "method", "tenant")
         indexes = [
             models.Index(fields=["bucket_start", "route"]),

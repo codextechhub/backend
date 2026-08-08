@@ -243,7 +243,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         if target_user:
             # all_objects: the target is explicitly authorized via RBAC and may
             # live outside the ambient tenant (platform actor acting on a
-            # school user) — every one of their sessions must end.
+            # school user) - every one of their sessions must end.
             ended = LoginSession.all_objects.filter(user=target_user, is_active=True).update(
                 is_active=False,
                 ended_at=timezone.now(),
@@ -369,7 +369,7 @@ class RevokePasswordResetView(APIView):
 class AccountLockoutViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     GET /account-lockouts/
-    Vision Staff only — lists all locked accounts.
+    Vision Staff only - lists all locked accounts.
 
     POST /account-lockouts/unlock/
     School Admins and Vision Staff can unlock accounts.

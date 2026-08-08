@@ -36,7 +36,7 @@ def _normalize_tenant(user, tenant=None):
 def _active_override_qs(tenant=None):
     """Overrides that are in force right now (expiry is evaluated lazily).
 
-    ``expires_at`` is never swept by a cron — an expired row simply stops
+    ``expires_at`` is never swept by a cron - an expired row simply stops
     matching this filter, so it stops applying the moment it lapses.
     """
     qs = UserPermissionOverride.objects.filter(
@@ -64,7 +64,7 @@ def get_user_override_keys(user, tenant) -> Tuple[Set[str], Set[str]]:
 
 
 def get_role_permissions(user, tenant=None, branch=None) -> Set[str]:
-    """Role-derived permissions only — personal overrides are NOT applied.
+    """Role-derived permissions only - personal overrides are NOT applied.
 
     Used by the overrides API to answer "does a role currently grant this key?"
     for each override row. Never use it for authorisation.
@@ -188,7 +188,7 @@ def resolve_users_with_permission(tenant, branch, permission_key: str):
     user_ids = set(assignments.values_list("user_id", flat=True))
 
     # Personal overrides are part of the effective set, so routing must honour
-    # them too — otherwise a user denied the key would still be picked as an
+    # them too - otherwise a user denied the key would still be picked as an
     # approver/recipient while has_permission() says no.
     overrides = _active_override_qs(tenant).filter(permission_id=permission_key)
     user_ids |= set(

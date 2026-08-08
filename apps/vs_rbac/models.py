@@ -212,12 +212,12 @@ class PermissionDependency(TimeStampedModel):
 
 
 # -----------------------------------------------------------------------------
-# Permission Groups (shared — attachable to both school and platform roles)
+# Permission Groups (shared - attachable to both school and platform roles)
 # -----------------------------------------------------------------------------
 class PermissionGroup(TimeStampedModel):
     """Named, reusable bundle of permissions.
 
-    Groups are containers only — they grant nothing on their own. Role
+    Groups are containers only - they grant nothing on their own. Role
     templates (school and platform) can attach one or more groups and the
     runtime evaluator flattens group permissions into the effective set.
 
@@ -532,9 +532,9 @@ class UserPermissionOverride(TimeStampedModel):
     Roles remain the way access is *designed*; this table is the escape hatch
     for the two cases a role edit cannot express without collateral damage:
 
-    * ``DENY`` — take one key away from one person while their role keeps it
+    * ``DENY`` - take one key away from one person while their role keeps it
       for everyone else.
-    * ``ALLOW`` — hand one extra key to one person without minting a role.
+    * ``ALLOW`` - hand one extra key to one person without minting a role.
 
     Evaluation order lives in :func:`vs_rbac.evaluator.get_effective_permissions`
     and is *later wins*::
@@ -553,7 +553,7 @@ class UserPermissionOverride(TimeStampedModel):
     Attributes:
         tenant: Tenant that owns both the override and the user.
         user: The person the exception applies to.
-        permission: Permission key (``to_field="key"`` — ``permission_id`` IS
+        permission: Permission key (``to_field="key"`` - ``permission_id`` IS
             the dotted key, matching every other RBAC link table).
         mode: ``ALLOW`` or ``DENY``.
         reason: Required justification, surfaced in the audit trail and UI.
@@ -771,13 +771,13 @@ class TenantRoleChangeDeltaItem(TimeStampedModel):
 
 
 # ---------------------------------------------------------------------------
-# RBACAuditLog — authoritative, append-only audit for RBAC actions
+# RBACAuditLog - authoritative, append-only audit for RBAC actions
 # ---------------------------------------------------------------------------
 
 class RBACAuditLog(models.Model):
     """Append-only audit log for RBAC actions (B21 hybrid-audit pattern).
 
-    The central ``vs_audit.emit_audit_event`` is best-effort by contract — it
+    The central ``vs_audit.emit_audit_event`` is best-effort by contract - it
     swallows failures so it can never break business logic. That is the wrong
     durability contract for permission/role changes, which are security
     system-of-record events. This table is written transactionally with the
@@ -797,7 +797,7 @@ class RBACAuditLog(models.Model):
         on_delete=models.SET_NULL,
         related_name="rbac_audit_entries",
     )
-    # Loose school reference (slug) — survives school deletion, no FK cascade.
+    # Loose school reference (slug) - survives school deletion, no FK cascade.
     school_id = models.CharField(max_length=80, blank=True, default="")
 
     entity_type = models.CharField(max_length=80)

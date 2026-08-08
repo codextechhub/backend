@@ -3,7 +3,7 @@
 Thin wrapper over :class:`vs_payments.models.PaymentEvent` (append-only, immutable). The
 ledger postings done downstream already write their own ``vs_finance`` audit rows; this
 captures the gateway-side actions (initiation, confirmation, webhook receipt) and, just
-as importantly, **rejected** attempts — written in their own committed transaction so a
+as importantly, **rejected** attempts - written in their own committed transaction so a
 rollback of the failed action doesn't erase the record of it.  # Keep gateway events durable even on rollback.
 """
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Vendor-contract services — term agreements, milestones and renewal alerts.
+"""Vendor-contract services - term agreements, milestones and renewal alerts.
 
 A master-data overlay with **no GL effect**: a :class:`~vs_procurement.models.VendorContract`
 records the commercial envelope (period, value, payment terms) and an optional list of
@@ -29,7 +29,7 @@ def next_contract_reference(entity):
     """Allocate a tenant-level daily contract reference (e.g. ``CT-12607221``).
 
     Reuses finance's :func:`~vs_finance.numbering.next_document_number`, which locks the
-    tenant/code/date counter row with ``select_for_update`` — so two concurrent creates
+    tenant/code/date counter row with ``select_for_update`` - so two concurrent creates
     can never be handed the same number.
     The unique-per-entity ``reference`` constraint remains the final safety net.
     """
@@ -88,7 +88,7 @@ def activate_contract(contract, *, actor_user=None):
 def terminate_contract(contract, *, reason="", actor_user=None):
     """End a contract early. Idempotent on terminal states; refuses on DRAFT.
 
-    Termination changes commercial lifecycle only—there is no journal or retroactive
+    Termination changes commercial lifecycle only-there is no journal or retroactive
     effect on POs/invoices already raised under the agreement. Re-reading the locked
     row serializes this transition with renewal and makes stale callers idempotent.
     """
@@ -122,7 +122,7 @@ def renew_contract(contract, *, reference, start_date, end_date, contract_value=
                    copy_milestones=False, actor_user=None):
     """Create a successor contract that replaces ``contract`` and mark the old one RENEWED.
 
-    The new contract starts ACTIVE (carrying the vendor, terms and — unless overridden —
+    The new contract starts ACTIVE (carrying the vendor, terms and - unless overridden -
     the same value), points its ``renews`` back at the original, and optionally copies the
     PENDING milestones forward. The original flips to RENEWED. Contract then vendor are
     locked in the same order as activation, so governance changes and competing renewals
@@ -245,7 +245,7 @@ def mark_expired(entity, *, as_of=None):
 
 
 def expiring_contracts(entity, *, as_of=None, within_days=None):
-    """ACTIVE contracts due for renewal — i.e. inside their renewal-notice window.
+    """ACTIVE contracts due for renewal - i.e. inside their renewal-notice window.
 
     A contract qualifies when ``as_of`` has reached its ``renewal_window_start`` (i.e.
     ``end_date - renewal_notice_days``) and it has not yet lapsed. Pass ``within_days`` to

@@ -1,6 +1,6 @@
 # finance_payment_plans
 
-Installment **payment plans** — a scheduling overlay that spreads a receivable over
+Installment **payment plans** - a scheduling overlay that spreads a receivable over
 dated installments so reminders, dunning and progress tracking have a schedule to
 measure against. **A plan never touches the General Ledger**: the invoice already
 sits in AR; the plan only records *when* and *how much* the customer is expected to
@@ -11,7 +11,7 @@ Routes (mounted at `/v1/finance/`): `payment-plans/`, `payment-plans/<pk>/`,
 
 > **Adjacent:** receipts that actually settle invoices are `finance_invoicing_ar`;
 > reminders are `finance_dunning`; concessions live in `finance_ar_adjustments`
-> (posting a concession also refreshes a linked plan — §4).
+> (posting a concession also refreshes a linked plan - §4).
 
 ---
 
@@ -19,21 +19,21 @@ Routes (mounted at `/v1/finance/`): `payment-plans/`, `payment-plans/<pk>/`,
 
 - A **`PaymentPlan`** (`models/adjustments.py:276`) spreads `total_amount` over
   `installment_count` dated **`PaymentPlanInstallment`** rows
-  (`models/adjustments.py:333`). It usually references an `invoice` (optional — a
+  (`models/adjustments.py:333`). It usually references an `invoice` (optional - a
   standalone plan is allowed).
 - It is a **pure overlay**: `plan_status` walks `DRAFT → ACTIVE → COMPLETED /
   CANCELLED`; settlement is *reflected*, never *caused*, by the plan.
 
 **This does NOT:**
 - **Post to the GL.** No journal, ever (`models/adjustments.py:277` docstring;
-  `refresh_plan_progress` "No GL effect"). Don't look for a `journal` FK — there
+  `refresh_plan_progress` "No GL effect"). Don't look for a `journal` FK - there
   isn't one.
 - **Move money or settle invoices.** Paying an installment is just paying the
   underlying invoice via a receipt (`finance_invoicing_ar`); the plan only
   *displays* that progress.
 - **Cause settlement.** But it *does* now **track** it automatically: any change to
-  the linked invoice's settled amount — a receipt, credit-note allocation or
-  write-off — pushes a refresh of the plan (§4/§8). The manual `refresh/` endpoint
+  the linked invoice's settled amount - a receipt, credit-note allocation or
+  write-off - pushes a refresh of the plan (§4/§8). The manual `refresh/` endpoint
   remains for standalone plans and explicit overrides.
 
 ## 2. Domain model
@@ -58,17 +58,17 @@ All require `?entity=`. Gate: `IsAuthenticatedAndActive & HasRBACPermission`.
 
 | Method + path | permission key | what it does | request body | response |
 |---|---|---|---|---|
-| `GET /payment-plans/` | `finance.paymentplan.view` | List (paginated). Query: `status`, `customer`, `search` | — | paginated `PaymentPlanSerializer` |
+| `GET /payment-plans/` | `finance.paymentplan.view` | List (paginated). Query: `status`, `customer`, `search` | - | paginated `PaymentPlanSerializer` |
 | `POST /payment-plans/` | `finance.paymentplan.create` | Create a **DRAFT** + build the schedule | `customer`, `invoice?`, `total_amount?` (defaults to invoice `balance_due`), `installment_count`, `start_date`, `frequency?`, `amounts?`, `notes?` | `201` `PaymentPlanSerializer` |
-| `GET /payment-plans/<pk>/` | `finance.paymentplan.view` | Plan + its installments | — | detail |
-| `POST /payment-plans/<pk>/activate/` | `finance.paymentplan.activate` | DRAFT → ACTIVE (validates schedule, syncs settlement) | — | `PaymentPlanSerializer` |
+| `GET /payment-plans/<pk>/` | `finance.paymentplan.view` | Plan + its installments | - | detail |
+| `POST /payment-plans/<pk>/activate/` | `finance.paymentplan.activate` | DRAFT → ACTIVE (validates schedule, syncs settlement) | - | `PaymentPlanSerializer` |
 | `POST /payment-plans/<pk>/refresh/` | `finance.paymentplan.activate` | Re-distribute settlement across installments | `settled_amount?` (override) | `PaymentPlanSerializer` |
-| `POST /payment-plans/<pk>/cancel/` | `finance.paymentplan.cancel` | → CANCELLED (idempotent on terminal) | — | `PaymentPlanSerializer` |
+| `POST /payment-plans/<pk>/cancel/` | `finance.paymentplan.cancel` | → CANCELLED (idempotent on terminal) | - | `PaymentPlanSerializer` |
 
 > **Field/authz notes:** `refresh/` reuses the **`finance.paymentplan.activate`**
 > key (no dedicated `refresh` verb). `total_amount` defaults to the invoice's
 > `balance_due` when omitted and an `invoice` is given. `amounts` (optional) is an
-> explicit per-installment kobo list — must match `installment_count` and sum to
+> explicit per-installment kobo list - must match `installment_count` and sum to
 > `total_amount`.
 
 ## 4. Lifecycle / state machine
@@ -81,7 +81,7 @@ DRAFT ──activate──▶ ACTIVE ──(settlement reaches total)──▶ C
 any non-terminal ──cancel──▶ CANCELLED
 ```
 - **Create** (`POST /payment-plans/`) makes a DRAFT and immediately
-  `build_installments` (`installments.py:98`) — which **replaces** any existing
+  `build_installments` (`installments.py:98`) - which **replaces** any existing
   rows and only works on a DRAFT.
 - **Activate** (`installments.py:156`): requires installments exist and
   `scheduled_total == total_amount`, else rejects; then runs `refresh_plan_progress`.
@@ -97,7 +97,7 @@ any non-terminal ──cancel──▶ CANCELLED
 
 ## 5. Calculations
 
-**Even split** — `split_amount` (`installments.py:81`), integer-exact kobo:
+**Even split** - `split_amount` (`installments.py:81`), integer-exact kobo:
 ```
 base = round_half_up(total / count)
 each of the first count−1 installments = base
@@ -105,12 +105,12 @@ last installment = total − base × (count−1)      # absorbs the remainder
 ```
 Example: ₦100,000 over 3 → `[33333, 33333, 33334]` (sums back to 100000).
 
-**Due dates** — `_due_date` (`installments.py:70`): installment 0 is on
+**Due dates** - `_due_date` (`installments.py:70`): installment 0 is on
 `start_date`; thereafter `WEEKLY=+7d`, `FORTNIGHTLY=+14d` per index, or
 `MONTHLY=+1mo`, `QUARTERLY=+3mo` via `_add_months`, which **clamps the day** to the
 target month's last day (31 → 30/28).
 
-**Progress distribution** — `refresh_plan_progress` (`installments.py:199`),
+**Progress distribution** - `refresh_plan_progress` (`installments.py:199`),
 oldest-first, no GL:
 ```
 remaining = settled_amount (override) or invoice.settled_amount (cash + credits)
@@ -124,14 +124,14 @@ A standalone plan (no invoice) with no `settled_amount` override is left as-is.
 
 ## 6. What posting does to the ledger
 
-**Nothing — by design.** Payment plans never raise a journal; `build_installments`,
+**Nothing - by design.** Payment plans never raise a journal; `build_installments`,
 `activate_payment_plan`, `refresh_plan_progress` and `cancel_payment_plan` only
 write the plan/installment rows and audit events. The money they track was (or
 will be) posted by the invoice and its receipts (`finance_invoicing_ar`). The
 plan's job is purely *when/how-much* reporting.
 
 (For contrast, the one thing in this code file that *does* post is `post_concession`
-— documented in `finance_ar_adjustments`, not here.)
+- documented in `finance_ar_adjustments`, not here.)
 
 ## 7. Worked example
 
@@ -152,15 +152,15 @@ fully settled, a final `refresh/` flips the plan to COMPLETED.
 
 - ✅ **Progress now auto-syncs on settlement** (was a gotcha): receipts, credit-note
   allocations and write-offs push `refresh_plans_for_invoice`; concession posting
-  refreshes directly. `refresh/` is no longer required after a normal payment — it
+  refreshes directly. `refresh/` is no longer required after a normal payment - it
   remains for standalone plans and explicit `settled_amount` overrides.
-- **`refresh/` is gated on `finance.paymentplan.activate`**, not a `refresh` verb —
+- **`refresh/` is gated on `finance.paymentplan.activate`**, not a `refresh` verb -
   worth knowing when assigning permissions.
-- **Schedule edits are DRAFT-only** — `build_installments` rejects a non-DRAFT plan;
+- **Schedule edits are DRAFT-only** - `build_installments` rejects a non-DRAFT plan;
   to re-shape an ACTIVE plan you cancel and recreate.
 - **`amounts` must sum exactly** to `total_amount` and match `installment_count`
   (all positive), else `400`.
-- **Standalone plans don't self-progress** — with no invoice you must pass
+- **Standalone plans don't self-progress** - with no invoice you must pass
   `settled_amount` to `refresh/`.
 - No "skip/defer installment" or partial-reschedule action; it's create / activate
   / refresh / cancel only.
@@ -172,7 +172,7 @@ fully settled, a final `refresh/` flips the plan to COMPLETED.
 - Every action resolves the entity then `filter(entity=…, pk=…)` (`_plan`,
   `views_ar.py:1540`); `_resolve_customer`/`_resolve_invoice` are entity-scoped →
   another tenant's plan/customer/invoice id → 404. ✅
-- `PaymentPlanSerializer` exposes ids/codes/money/dates/status only — no secrets.
+- `PaymentPlanSerializer` exposes ids/codes/money/dates/status only - no secrets.
 
 ## 10. Code map
 

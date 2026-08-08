@@ -49,8 +49,8 @@ class WebhookSignatureError(PaymentError):
 class DuplicateWebhookError(PaymentError):
     """A webhook event we have already processed arrived again (idempotency guard).
 
-    This is *not* an error condition for the caller — it means "already handled, do
-    nothing" — but it is raised internally so the dispatch path can short-circuit
+    This is *not* an error condition for the caller - it means "already handled, do
+    nothing" - but it is raised internally so the dispatch path can short-circuit
     without double-booking. The view turns it into a 200 OK acknowledgement.
     """
 

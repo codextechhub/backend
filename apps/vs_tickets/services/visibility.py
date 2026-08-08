@@ -13,7 +13,7 @@ from ..models import Ticket
 # Decide whether a user can operate the cross-tenant support desk.
 def is_support_user(user) -> bool:
     """Cross-tenant support console access: PLATFORM-tenant staff holding the
-    manage grant. The kind check is load-bearing — a school user granted
+    manage grant. The kind check is load-bearing - a school user granted
     tickets.ticket.manage manages tickets inside their own tenant only and
     must never inherit the cross-tenant span."""
     if not user or not getattr(user, "is_authenticated", False):
@@ -77,7 +77,7 @@ def visible_tickets_qs(user):
         return qs.none()
 
     # Platform support (tickets.ticket.manage on the platform tenant) works the
-    # cross-tenant support console — the one deliberate span over all tenants.
+    # cross-tenant support console - the one deliberate span over all tenants.
     if is_support_user(user):
         return qs
 

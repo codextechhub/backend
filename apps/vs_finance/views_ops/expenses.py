@@ -167,7 +167,7 @@ class ExpenseClaimPostView(_ExpenseClaimActionBase):
 
 # Group endpoint behavior for Expense Claim Reject View.
 class ExpenseClaimRejectView(_ExpenseClaimActionBase):
-    """POST — reject (cancel) a draft expense claim. docstring-name: Reject an expense claim"""
+    """POST - reject (cancel) a draft expense claim. docstring-name: Reject an expense claim"""
     rbac_permission = "finance.expenseclaim.post"  # the approver decides approve OR reject
 
     # Handle POST requests for this endpoint.
@@ -258,7 +258,7 @@ class ExpenseClaimSettleView(_ExpenseClaimActionBase):
 
 # Group endpoint behavior for Expense Claim Void View.
 class ExpenseClaimVoidView(_ExpenseClaimActionBase):
-    """POST — void a posted, un-reimbursed claim (reverses its journal, marks CANCELLED).
+    """POST - void a posted, un-reimbursed claim (reverses its journal, marks CANCELLED).
 
     docstring-name: Void an expense claim
     """
@@ -279,7 +279,7 @@ class ExpenseClaimVoidView(_ExpenseClaimActionBase):
 
 # Group endpoint behavior for Expense Claim Summary View.
 class ExpenseClaimSummaryView(_FinanceBase):
-    """GET — header KPIs over **all** expense claims (accurate under pagination).
+    """GET - header KPIs over **all** expense claims (accurate under pagination).
 
     docstring-name: Expense claims
     """

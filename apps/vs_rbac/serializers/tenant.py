@@ -4,7 +4,7 @@ These operate exclusively on the canonical tenant RBAC tables
 (``TenantRoleTemplate`` / ``TenantRolePermission`` / ``TenantRoleGroup`` /
 ``TenantUserRoleAssignment`` / ``TenantRoleChangeRequest``).
 
-Scope (tenant / branch) never comes from the request body — it is injected by
+Scope (tenant / branch) never comes from the request body - it is injected by
 the view from the URL / ``request.tenant``. Serializers validate that any
 referenced user, role, or branch belongs to that tenant.
 """

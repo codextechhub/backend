@@ -1,8 +1,8 @@
-"""Console overview aggregate — security matrix first, then per-section numbers.
+"""Console overview aggregate - security matrix first, then per-section numbers.
 
 The security-critical tests are the FIRST group: this endpoint requires nothing
 but an active account, so every number inside it has to be gated individually.
-A section the caller cannot otherwise fetch must be ABSENT from the payload —
+A section the caller cannot otherwise fetch must be ABSENT from the payload -
 absent, not zero, because a zero would read as real data on the screen.
 
 The second group pins each section's arithmetic against data built for the case,
@@ -237,7 +237,7 @@ class OverviewSectionTests(OverviewTestBase):
 
 
 class OverviewSetupFlagTests(OverviewTestBase):
-    """The "Getting started" flags — each gated by the screen it describes.
+    """The "Getting started" flags - each gated by the screen it describes.
 
     These back a checklist, so a wrong answer is cosmetic; a leaked one is not.
     Each flag has to be absent without its own key, and present-and-correct with

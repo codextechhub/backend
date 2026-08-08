@@ -1,4 +1,4 @@
-# Branch Import Template — Reference Document
+# Branch Import Template - Reference Document
 
 *Refreshed 2026-06-12. The original version carried a known-bugs checklist;
 every item on it is now fixed in code, so this version documents current
@@ -46,13 +46,13 @@ an existing school via `School Slug`.
 
 ## Column Definitions (13 columns)
 
-### Group 1 — School Linkage
+### Group 1 - School Linkage
 
 | # | Column Name | target_field | data_type | required | notes |
 |---|---|---|---|---|---|
 | 1 | School Slug | `school_slug` | string | ✅ | Cross-references `School.slug` (`reference_model=School`, `reference_lookup_field=slug`) |
 
-### Group 2 — Branch Identity
+### Group 2 - Branch Identity
 
 | # | Column Name | target_field | data_type | required | notes |
 |---|---|---|---|---|---|
@@ -60,7 +60,7 @@ an existing school via `School Slug`.
 | 3 | Branch Type | `_type` | string | ❌ | Free-form: Primary, Secondary, Nursery, Combined… max 80. Defaults to "Combined" |
 | 4 | Is Main Branch | `is_main` | boolean | ✅ | One TRUE per school. Executor accepts "true"/"1"/"yes" (case-insensitive) |
 
-### Group 3 — Contact & Location
+### Group 3 - Contact & Location
 
 | # | Column Name | target_field | data_type | required | notes |
 |---|---|---|---|---|---|
@@ -69,13 +69,13 @@ an existing school via `School Slug`.
 | 7 | Country | `country` | string | ❌ | default Nigeria, max 80 |
 | 8 | State | `state` | string | ❌ | max 120 |
 
-### Group 4 — Lifecycle
+### Group 4 - Lifecycle
 
 | # | Column Name | target_field | data_type | required | notes |
 |---|---|---|---|---|---|
-| 9 | Opened Date | `opened_at` | date | ❌ | YYYY-MM-DD; defaults to now() when blank. (A former "Status" column was removed — branches are always created PENDING and activated through the lifecycle flow.) |
+| 9 | Opened Date | `opened_at` | date | ❌ | YYYY-MM-DD; defaults to now() when blank. (A former "Status" column was removed - branches are always created PENDING and activated through the lifecycle flow.) |
 
-### Group 5 — Branch Admin
+### Group 5 - Branch Admin
 
 | # | Column Name | target_field | data_type | required | unique | notes |
 |---|---|---|---|---|---|---|
@@ -101,7 +101,7 @@ File: `vs_import_data/services/import_executor.py`
    User → FAIL; missing `primary_admin_data` → FAIL
 5. **Atomic create**: Branch (status PENDING, integer code auto-allocated per
    school) + BranchLifecycle + branch_admin RBAC role + ContactInfo +
-   BranchPrimaryAdmin + `provision_admin_user` (creates User, queues invite —
+   BranchPrimaryAdmin + `provision_admin_user` (creates User, queues invite -
    the invite email appears in the sender's queue page as a tracked job)
 
 ---

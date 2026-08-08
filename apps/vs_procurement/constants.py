@@ -1,7 +1,7 @@
 """Enumerations and well-known account codes for the procurement engine (Phase 3).
 
 Procurement depends on finance, never the reverse, so procurement-specific vocabulary
-lives here — not in :mod:`vs_finance.constants`. The few *audit* actions are the
+lives here - not in :mod:`vs_finance.constants`. The few *audit* actions are the
 exception: they belong to finance's authoritative log and are named in
 ``vs_finance.constants.FinanceAuditAction`` (string constants only; no import cycle).
 
@@ -51,7 +51,7 @@ PAYMENT_TERM_DAYS = {
 
 
 class RfqStatus(models.TextChoices):
-    """Lifecycle of a request for quotation (a sourcing overlay — no GL effect).
+    """Lifecycle of a request for quotation (a sourcing overlay - no GL effect).
 
     DRAFT     -> being prepared; lines editable.
     ISSUED    -> sent to vendors; quotations may be submitted against it.
@@ -83,7 +83,7 @@ class QuotationStatus(models.TextChoices):
 
 
 class ContractStatus(models.TextChoices):
-    """Lifecycle of a vendor contract (a master-data overlay — no GL effect).
+    """Lifecycle of a vendor contract (a master-data overlay - no GL effect).
 
     DRAFT      -> being prepared; not yet in force.
     ACTIVE     -> in force between start_date and end_date.
@@ -156,7 +156,7 @@ PROCUREMENT_APPROVAL_TYPES = (
 WF_DEFAULT_TEMPLATE_CODE = "standard"
 
 #: Default amount (kobo) at/above which the second (senior) approval stage is included.
-#: ₦500,000.00 — overridable per call to ``ensure_default_approval_templates``.
+#: ₦500,000.00 - overridable per call to ``ensure_default_approval_templates``.
 WF_DEFAULT_SENIOR_THRESHOLD = 50_000_000
 
 #: Default RBAC permission keys the seeded approval stages resolve approvers against.
@@ -169,9 +169,9 @@ class MatchStatus(models.TextChoices):
 
     NOT_MATCHED    -> not yet run.
     AUTO_MATCHED   -> quantities and prices agree within tolerance; safe to post.
-    UNDER_RECEIVED -> billed for more than has been received (GRN short) — blocked.
-    OVER_BILLED    -> billed beyond the PO quantity/price — blocked.
-    PRICE_VARIANCE -> received OK but unit price differs from the PO — flag/approve.
+    UNDER_RECEIVED -> billed for more than has been received (GRN short) - blocked.
+    OVER_BILLED    -> billed beyond the PO quantity/price - blocked.
+    PRICE_VARIANCE -> received OK but unit price differs from the PO - flag/approve.
     """
     NOT_MATCHED = "NOT_MATCHED", "Not matched"
     AUTO_MATCHED = "AUTO_MATCHED", "Auto-matched"

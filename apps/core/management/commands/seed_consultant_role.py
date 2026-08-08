@@ -4,7 +4,7 @@ The role holds every active ``*.view`` permission and nothing else. The
 seeder re-syncs on every run (build.sh runs it on each deploy): newly
 registered view permissions are granted automatically, and any non-view
 grant that crept in is stripped, so the role's read-only contract holds.
-The role is locked so it can't be edited from the console — edits would be
+The role is locked so it can't be edited from the console - edits would be
 silently undone by the next deploy anyway.
 """
 from django.core.management.base import BaseCommand
@@ -23,14 +23,14 @@ ROLE_DESCRIPTION = (
 class Command(BaseCommand):
     help = (
         "Seed the view-only Consultant platform role (codex tenant): grants all "
-        "active *.view permissions, strips everything else. Idempotent — safe every deploy."
+        "active *.view permissions, strips everything else. Idempotent - safe every deploy."
     )
 
     def handle(self, *args, **options):
         codex = Tenant.objects.filter(slug="codex", kind=Tenant.Kind.PLATFORM).first()
         if codex is None:
             self.stdout.write(self.style.WARNING(
-                "  ⚠  Codex platform tenant not found — run migrations first. Skipping."
+                "  ⚠  Codex platform tenant not found - run migrations first. Skipping."
             ))
             return
 
@@ -56,7 +56,7 @@ class Command(BaseCommand):
             if link_created:
                 granted += 1
 
-        # The role's contract is view-only — anything else is stripped so a
+        # The role's contract is view-only - anything else is stripped so a
         # manual grant can't widen it between deploys.
         stripped, _ = (
             TenantRolePermission.objects.filter(role=role)

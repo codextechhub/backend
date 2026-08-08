@@ -25,11 +25,11 @@ class UserCreationWorkflowHandler(BaseWorkflowHandler):
             "title": full_name or email or "New platform user",
             "subtitle": "Platform user creation",
             "fields": [
-                {"label": "Email", "value": email or "—"},
-                {"label": "User type", "value": display("user_type") or "—"},
-                {"label": "Role", "value": getattr(document, "role", "") or "—"},
-                {"label": "Status", "value": display("status") or "—"},
-                {"label": "Phone", "value": getattr(document, "phone", "") or "—"},
+                {"label": "Email", "value": email or "-"},
+                {"label": "User type", "value": display("user_type") or "-"},
+                {"label": "Role", "value": getattr(document, "role", "") or "-"},
+                {"label": "Status", "value": display("status") or "-"},
+                {"label": "Phone", "value": getattr(document, "phone", "") or "-"},
             ],
         }
 
@@ -69,7 +69,7 @@ class UserCreationWorkflowHandler(BaseWorkflowHandler):
         user.is_active = False
         user.save(update_fields=["status", "is_active", "updated_at"])
 
-        # Vacate any seat reserved for this hire at creation time — a rejected
+        # Vacate any seat reserved for this hire at creation time - a rejected
         # hire must not keep occupying an organogram position.
         for assignment in PositionAssignment.objects.filter(user=user, end_date__isnull=True):
             OrganogramService.end_assignment(assignment)

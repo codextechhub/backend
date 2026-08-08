@@ -2,9 +2,9 @@
 Management command: delete_user
 ================================
 Hard-deletes one or more users and every trace of their existence.
-Intended for local testing only — never expose this as an API endpoint.
+Intended for local testing only - never expose this as an API endpoint.
 
-Relationship handling is fully automatic — no need to update this command
+Relationship handling is fully automatic - no need to update this command
 when new models are added. Django's _meta.related_objects is used to discover
 all FK relationships to User at runtime:
 
@@ -20,20 +20,20 @@ Usage
 
 Note
 ----
-    Render gives you a shell into your running service. Two ways:                                                                                     
-                                                                                                                                                            
-    Option 1 — Render Dashboard Shell                                                                                                                      
-    1. Go to your web service on render.com                                                                                                                
-    2. Click the Shell tab                                                                                                                                 
-    3. Run it directly:                                                                                                                                    
-    python manage.py delete_user --email user@example.com --force                                                                                          
-    
-    Option 2 — Render CLI                                                                                                                                  
-    render ssh <your-service-name>                            
-    # then inside:                                                                                                                                         
-    python manage.py delete_user --email user@example.com --force                                                                                          
-                                                                
-    The command will run against whatever DATABASE_URL / DB env vars Render has configured for that service — so it hits the live Render DB.   
+    Render gives you a shell into your running service. Two ways:
+
+    Option 1 - Render Dashboard Shell
+    1. Go to your web service on render.com
+    2. Click the Shell tab
+    3. Run it directly:
+    python manage.py delete_user --email user@example.com --force
+
+    Option 2 - Render CLI
+    render ssh <your-service-name>
+    # then inside:
+    python manage.py delete_user --email user@example.com --force
+
+    The command will run against whatever DATABASE_URL / DB env vars Render has configured for that service - so it hits the live Render DB.
 """
 
 from django.core.management.base import BaseCommand, CommandError
@@ -45,8 +45,8 @@ def _related_querysets(user):
     Inspect all FK/O2O relationships pointing at the User model and return
     two lists of (label, queryset) pairs:
 
-      protect_qs  — on_delete=PROTECT: must be deleted before user.delete()
-      set_null_qs — on_delete=SET_NULL: orphaned records; deleted for full wipe
+      protect_qs  - on_delete=PROTECT: must be deleted before user.delete()
+      set_null_qs - on_delete=SET_NULL: orphaned records; deleted for full wipe
     """
     protect_qs = []
     set_null_qs = []
@@ -90,7 +90,7 @@ class Command(BaseCommand):
 
         emails = [e.strip().lower() for e in options["email"]]
 
-        # Resolve all emails — collect not-found ones to report at the end.
+        # Resolve all emails - collect not-found ones to report at the end.
         users, not_found = [], []
         for email in emails:
             try:
@@ -104,7 +104,7 @@ class Command(BaseCommand):
         self.stdout.write(f"\n  {len(users)} user(s) to delete:\n")
         for u in users:
             self.stdout.write(
-                f"    • {u.full_name or '—'} <{u.email}>"
+                f"    • {u.full_name or '-'} <{u.email}>"
                 f"  [{u.user_type} | {u.status}"
                 f"{' | ' + s.name if (s := getattr(u.tenant, 'school_profile', None)) else ''}]\n"
             )
@@ -136,12 +136,12 @@ class Command(BaseCommand):
     def _delete_one(self, user, counts: dict):
         protect_qs, set_null_qs = _related_querysets(user)
 
-        # ── 1. PROTECT relations — delete first so user.delete() isn't blocked ──
+        # ── 1. PROTECT relations - delete first so user.delete() isn't blocked ──
         for label, qs in protect_qs:
             n, _ = qs.delete()
             counts[label] = counts.get(label, 0) + n
 
-        # ── 2. SET_NULL relations — delete for full trace wipe ─────────────────
+        # ── 2. SET_NULL relations - delete for full trace wipe ─────────────────
         for label, qs in set_null_qs:
             n, _ = qs.delete()
             counts[label] = counts.get(label, 0) + n

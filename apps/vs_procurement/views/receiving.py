@@ -80,8 +80,8 @@ def _resolve_stock_item(entity, ref):
 def _write_grn_lines(entity, grn, po, lines):
     """Replace a draft receipt's lines from validated, entity-scoped input.
 
-    Shared by create and draft-edit so both enforce the same rules — whole-unit
-    counts, per-line PO membership, and the accepted+rejected ≤ PO-remainder cap —
+    Shared by create and draft-edit so both enforce the same rules - whole-unit
+    counts, per-line PO membership, and the accepted+rejected ≤ PO-remainder cap -
     and so an edit can freely add, drop, or re-key lines (including a direct GRN's
     own lines). A draft never advances the PO's ``received_qty``, so that remainder
     is the same baseline whether the receipt is being created or re-edited, and the
@@ -245,7 +245,7 @@ class GoodsReceiptDetailView(_ProcBase):
             grn.narration = str(body.get("narration", ""))
         grn.save(update_fields=["received_date", "reference", "narration", "updated_at"])
         if "lines" in body:
-            # Same rewrite path as create — an edit may add, drop, or adjust lines.
+            # Same rewrite path as create - an edit may add, drop, or adjust lines.
             _write_grn_lines(entity, grn, grn.purchase_order, _require_lines(body))
         # Re-read so the response reflects the rewritten lines, not the pre-edit prefetch cache.
         return success_response(
@@ -255,7 +255,7 @@ class GoodsReceiptDetailView(_ProcBase):
 
 
 class GoodsReceiptPostView(_ProcBase):
-    """POST — post the GRN (Dr expense, Cr GR/IR clearing).
+    """POST - post the GRN (Dr expense, Cr GR/IR clearing).
 
     docstring-name: Post a goods receipt
     """
@@ -292,7 +292,7 @@ def _invoice_queryset(entity):
 
 
 def _invoice_list_queryset(entity):
-    """Lighter source for the paginated list — the list serializer drops line/journal
+    """Lighter source for the paginated list - the list serializer drops line/journal
     arrays, so only the vendor + PO needed for the row headline are joined."""
     return VendorInvoice.objects.filter(entity=entity).select_related("vendor", "purchase_order")
 
@@ -634,7 +634,7 @@ class VendorInvoiceDetailView(_ProcBase):
 
 
 class VendorInvoiceMatchView(_ProcBase):
-    """POST — run the three-way match (PO ↔ GRN ↔ bill) and return the status.
+    """POST - run the three-way match (PO ↔ GRN ↔ bill) and return the status.
 
     docstring-name: Match a vendor invoice (3-way)
     """
@@ -657,7 +657,7 @@ class VendorInvoiceMatchView(_ProcBase):
 
 
 class VendorInvoicePostView(_ProcBase):
-    """POST — post the bill (Dr GR/IR + input VAT, Cr AP). ``allow_variance`` overrides a flag.
+    """POST - post the bill (Dr GR/IR + input VAT, Cr AP). ``allow_variance`` overrides a flag.
 
     docstring-name: Post a vendor invoice
     """

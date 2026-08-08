@@ -1,8 +1,8 @@
 """Celery tasks for vs_todo.
 
-send_completion_review_request — fired (with a short countdown) when a user
-marks their OWN task as done. Notifies the reviewer — the manager who assigned
-the task, or the assignee's direct line manager for self-set tasks — via the
+send_completion_review_request - fired (with a short countdown) when a user
+marks their OWN task as done. Notifies the reviewer - the manager who assigned
+the task, or the assignee's direct line manager for self-set tasks - via the
 vs_notifications engine on both the email and in-app channels (the bell picks
 up the in-app record).
 
@@ -25,7 +25,7 @@ def _first_name(user) -> str:
 
 
 def _fmt_dt(dt) -> str:
-    return timezone.localtime(dt).strftime("%d %b %Y, %H:%M") if dt else "—"
+    return timezone.localtime(dt).strftime("%d %b %Y, %H:%M") if dt else "-"
 
 
 @shared_task(bind=True, name="vs_todo.send_completion_review_request")
@@ -40,7 +40,7 @@ def send_completion_review_request(self, task_id: int, completed_at: str = ""):
 
     Dispatch goes through the vs_notifications engine (todo.task_completed,
     seeded via the event registry). An unseeded registry would raise
-    UnknownEventTypeError — swallowed and reported as a skip so a missing seed
+    UnknownEventTypeError - swallowed and reported as a skip so a missing seed
     never crashes the task.
     """
     from vs_notifications.exceptions import UnknownEventTypeError
@@ -72,8 +72,8 @@ def send_completion_review_request(self, task_id: int, completed_at: str = ""):
         "assignee_first":   _first_name(assignee) or "your team",
         "task_title":       task.title,
         "task_description": task.description or "",
-        "task_metric":      task.metric or "—",
-        "task_target":      task.target or "—",
+        "task_metric":      task.metric or "-",
+        "task_target":      task.target or "-",
         "task_priority":    task.get_priority_display(),
         "task_deadline":    task.deadline.strftime("%d %b %Y"),
         "task_completed":   _fmt_dt(task.completed_at),
@@ -91,7 +91,7 @@ def send_completion_review_request(self, task_id: int, completed_at: str = ""):
         )
     except UnknownEventTypeError:
         logger.error(
-            "send_completion_review_request: event %s is not seeded — skipping task %s.",
+            "send_completion_review_request: event %s is not seeded - skipping task %s.",
             EVENT_TASK_COMPLETED, task.pk,
         )
         return {"skipped": "event-not-seeded"}

@@ -1,22 +1,22 @@
 """
-seed_dev_data — one command that fills a fresh dev database with a connected
+seed_dev_data - one command that fills a fresh dev database with a connected
 world covering every module EXCEPT finance/procurement/payments.
 
-FOCUS: CX (Codex) staff are the main subjects — the platform currently runs
+FOCUS: CX (Codex) staff are the main subjects - the platform currently runs
 as the Codex staff intranet. The seeder builds a complete 40-seat company
 (7-level classic corporate hierarchy: MD → C-Suite → Directors → Managers →
 Team Leads → Seniors → ICs; rich HR profiles, platform roles, todo board,
 login/security history, impersonation sessions). The schools exist as the
 CUSTOMER BASE those staff manage, not as the protagonists.
 
-What it creates (idempotent — safe to re-run):
+What it creates (idempotent - safe to re-run):
   1. Codex organogram: Division → Departments → Team, positions with
      reports_to, the 25 seeded vision staff in seats, staff profiles.
      (Powers the organogram APIs and vs_todo's assign-down rules.)
   2. Three ACTIVE schools with branches, contact info, branding rows,
      package setup (PackagePlan from seed_package), primary admins.
   3. School users per school: school admin, branch admins, teachers,
-     students, parents — all ACTIVE with login passwords.
+     students, parents - all ACTIVE with login passwords.
   4. RBAC: per-school role templates (Administrator / Branch Administrator /
      Teacher) with real permission grants, assigned to the users.
   5. One PENDING role-change request per school (fills approval queues).
@@ -123,7 +123,7 @@ class Command(BaseCommand):
             .order_by("email")
         )
         if not staff:
-            self.stdout.write(self.style.ERROR("  No vision staff — run seed_vision_staff first."))
+            self.stdout.write(self.style.ERROR("  No vision staff - run seed_vision_staff first."))
             return
 
         def node(code, name, kind, parent=None):
@@ -156,32 +156,32 @@ class Command(BaseCommand):
         # L1
         md = seat("CX-MD", "Managing Director", exec_office)
 
-        # L2 — C-Suite (report to MD)
+        # L2 - C-Suite (report to MD)
         cto = seat("CX-CTO", "Chief Technology Officer",   exec_office, md)
         coo = seat("CX-COO", "Chief Operating Officer",    exec_office, md)
         cfo = seat("CX-CFO", "Chief Financial Officer",    exec_office, md)
         cpo = seat("CX-CPO", "Chief Partnerships Officer", exec_office, md)
 
-        # L3 — Directors (report to respective C-Suite)
+        # L3 - Directors (report to respective C-Suite)
         dir_eng    = seat("CX-DIR-ENG",    "Director of Engineering",      technology,  cto)
         dir_cs     = seat("CX-DIR-CS",     "Director of Customer Success", cs_dept,     coo)
         dir_growth = seat("CX-DIR-GROWTH", "Director of Growth",           growth_dept, cpo)
         dir_people = seat("CX-DIR-PEOPLE", "Director of People",           people_dept, cfo)
 
-        # L4 — Managers (report to respective Directors)
+        # L4 - Managers (report to respective Directors)
         mgr_eng    = seat("CX-MGR-ENG",    "Engineering Manager",      technology,  dir_eng)
         mgr_cs     = seat("CX-MGR-CS",     "CS Manager",               cs_dept,     dir_cs)
         mgr_growth = seat("CX-MGR-GROWTH", "Growth Manager",           growth_dept, dir_growth)
         mgr_people = seat("CX-MGR-PEOPLE", "People Manager",           people_dept, dir_people)
 
-        # L5 — Team Leads (report to respective Managers)
+        # L5 - Team Leads (report to respective Managers)
         lead_plat   = seat("CX-LEAD-PLAT",   "Platform Team Lead",   platform_team,   mgr_eng)
         lead_prod   = seat("CX-LEAD-PROD",   "Product Team Lead",    product_team,    mgr_eng)
         lead_onb    = seat("CX-LEAD-ONB",    "Onboarding Team Lead", onboarding_team, mgr_cs)
         lead_sup    = seat("CX-LEAD-SUP",    "Support Team Lead",    support_team,    mgr_cs)
         lead_growth = seat("CX-LEAD-GROWTH", "Growth Team Lead",     growth_team,     mgr_growth)
 
-        # L6 — Seniors (report to respective Team Leads or People Manager)
+        # L6 - Seniors (report to respective Team Leads or People Manager)
         sr_plat1   = seat("CX-SR-PLAT-1",   "Senior Platform Engineer I",      platform_team,   lead_plat)
         sr_plat2   = seat("CX-SR-PLAT-2",   "Senior Platform Engineer II",     platform_team,   lead_plat)
         sr_prod1   = seat("CX-SR-PROD-1",   "Senior Product Designer",         product_team,    lead_prod)
@@ -193,7 +193,7 @@ class Command(BaseCommand):
         sr_hr1     = seat("CX-SR-HR-1",     "Senior HR Officer",               people_dept,     mgr_people)
         sr_ops1    = seat("CX-SR-OPS-1",    "Senior Operations Officer",       people_dept,     mgr_people)
 
-        # L7 — Individual Contributors (report to their respective Senior)
+        # L7 - Individual Contributors (report to their respective Senior)
         plat1   = seat("CX-PLAT-1",   "Platform Engineer I",      platform_team,   sr_plat1)
         plat2   = seat("CX-PLAT-2",   "Platform Engineer II",     platform_team,   sr_plat1)
         plat3   = seat("CX-PLAT-3",   "Platform Engineer III",    platform_team,   sr_plat2)
@@ -331,7 +331,7 @@ class Command(BaseCommand):
                 ),
             )
             for bname, btag, is_main in spec["branches"]:
-                # Branch.code is an auto-allocated integer (per school) — key
+                # Branch.code is an auto-allocated integer (per school) - key
                 # on the name and let save() assign the code.
                 Branch.all_objects.get_or_create(
                     school=school, name=bname,
@@ -504,7 +504,7 @@ class Command(BaseCommand):
             or NotificationEventType.objects.first()
         )
         if event is None:
-            self.stdout.write(self.style.WARNING("  No event types — run seed_notification_event_types."))
+            self.stdout.write(self.style.WARNING("  No event types - run seed_notification_event_types."))
             return
         channel_field = Notification._meta.get_field("channel")
         in_app = next(
@@ -538,7 +538,7 @@ class Command(BaseCommand):
         from vs_todo.models import Task
         from vs_user.models import PositionAssignment
 
-        self.stdout.write(self.style.MIGRATE_HEADING("ToDo board (CX staff — all 7 levels)..."))
+        self.stdout.write(self.style.MIGRATE_HEADING("ToDo board (CX staff - all 7 levels)..."))
         seats = {
             pa.position.code: (pa.user, pa.position)
             for pa in PositionAssignment.objects.select_related("user", "position__org_node")
@@ -554,7 +554,7 @@ class Command(BaseCommand):
 
         D = timedelta
         # (assigner_code, assignee_code, title, priority, deadline-offset-days, done)
-        # Spans all 7 levels — every manager assigns at least one task to each direct report.
+        # Spans all 7 levels - every manager assigns at least one task to each direct report.
         specs = [
             # L1 → L2 (MD assigns to C-Suite)
             ("CX-MD",  "CX-CTO", "Finalise the Q3 product and engineering roadmap",   "HIGH",   21, False),
@@ -704,7 +704,7 @@ class Command(BaseCommand):
                 entity_label=school.name,
                 summary=f"Seeded school {school.name}.",
             )
-            # emit_audit_event is best-effort and returns None on failure —
+            # emit_audit_event is best-effort and returns None on failure -
             # count real successes so this line can't overstate.
             emitted += int(event is not None)
         self.stdout.write(f"  {emitted}/{len(schools)} events emitted.")

@@ -159,7 +159,7 @@ class SchoolPackageSetupWriteSerializer(serializers.Serializer):
     """
     Write-only structure for submitting package setup during school creation.
 
-    Accepts `package_plan` as the PackagePlan `code` (slug) — more stable
+    Accepts `package_plan` as the PackagePlan `code` (slug) - more stable
     than a numeric PK and matches what the dropdown naturally emits.
     Accepts `enabled_modules` as a list of Capability `key` strings.
 
@@ -604,7 +604,7 @@ class SchoolListSerializer(serializers.ModelSerializer):
         model = School
         fields = [
             # pk is what scoped endpoints (vs_config entitlements/overrides,
-            # notification settings ?school=) take — pickers need it.
+            # notification settings ?school=) take - pickers need it.
             "id",
             "name",
             "slug",
@@ -671,7 +671,7 @@ class BranchInlineCreateSerializer(serializers.Serializer):
     Represents a single branch entry submitted inline during school creation.
 
     This is intentionally a plain Serializer (not ModelSerializer) because it is
-    used as a nested write structure — the actual Branch model creation happens
+    used as a nested write structure - the actual Branch model creation happens
     inside SchoolCreateSerializer.create(), not here.
 
     Each branch entry must include primary_admin_data.
@@ -933,7 +933,7 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
                     invite_sent_at=None,
                 )
                 if school_admin_email and branch_admin_email == school_admin_email:
-                    # Same person as school admin — link is recorded but no new user or email
+                    # Same person as school admin - link is recorded but no new user or email
                     branch_admin_link.invite_status = InviteStatus.SENT
                     branch_admin_link.invite_sent_at = timezone.now()
                     branch_admin_link.save(update_fields=["invite_status", "invite_sent_at"])

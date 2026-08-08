@@ -219,7 +219,7 @@ class Command(BaseCommand):
 
         if active_contract.status == "DRAFT":
             activate_contract(active_contract, actor_user=actor)
-        # Milestones on the standing active contract (one delivered, two ahead) — added once.
+        # Milestones on the standing active contract (one delivered, two ahead) - added once.
         if not active_contract.milestones.exists():
             m1 = ContractMilestone.objects.create(
                 contract=active_contract, line_no=1, name="Onboarding & migration",
@@ -233,7 +233,7 @@ class Command(BaseCommand):
                 due_date=active_contract.end_date - datetime.timedelta(days=30), amount=0)
 
         today_c = timezone.localdate()
-        # A draft contract (never activated) — exercises the DRAFT list/edit/activate path.
+        # A draft contract (never activated) - exercises the DRAFT list/edit/activate path.
         VendorContract.objects.update_or_create(
             entity=entity, reference="CODEX-DEMO-CONTRACT-DRAFT",
             defaults={
@@ -529,7 +529,7 @@ class Command(BaseCommand):
                     rfq=rfq, description=description, quantity=quantity,
                     expense_account=expense, line_no=line_no,
                 )
-            # Invite the addressee vendors while the RFQ is still a draft — issuing now
+            # Invite the addressee vendors while the RFQ is still a draft - issuing now
             # requires at least one invitation.
             if invited:
                 set_rfq_invitations(rfq, list(invited), actor_user=actor)
@@ -564,7 +564,7 @@ class Command(BaseCommand):
 
         rfq_count = 0
         _, created = seed_rfq(
-            "Demo sourcing — office laptops (draft)",
+            "Demo sourcing - office laptops (draft)",
             [("15-inch business laptop", 25), ("Docking station", 25), ("3-year onsite warranty", 25)],
             invited=eligible[:2], budget=95_000_000,
         )
@@ -573,7 +573,7 @@ class Command(BaseCommand):
         # An issued RFQ with three competing submitted quotes plus a fourth invited vendor
         # who does not respond (so the Vendors Invited tab shows a real "Awaited" row).
         issued_rfq, created = seed_rfq(
-            "Demo sourcing — data-centre switches",
+            "Demo sourcing - data-centre switches",
             [("48-port managed switch", 6), ("10G SFP+ transceiver", 24)],
             issue=True, invited=eligible[:4], budget=48_000_000,
         )
@@ -586,8 +586,8 @@ class Command(BaseCommand):
 
         # An awarded RFQ: the cheaper quote wins (real DRAFT PO), the sibling is rejected.
         awarded_rfq, created = seed_rfq(
-            "Demo sourcing — managed cloud (awarded)",
-            [("Managed cloud support — annual", 1)],
+            "Demo sourcing - managed cloud (awarded)",
+            [("Managed cloud support - annual", 1)],
             issue=True, invited=eligible[:2], budget=110_000_000,
         )
         if created and len(eligible) >= 2:
@@ -598,7 +598,7 @@ class Command(BaseCommand):
 
         # A cancelled RFQ with one live quote, so the reject-on-cancel path is seeded too.
         cancelled_rfq, created = seed_rfq(
-            "Demo sourcing — cancelled pilot",
+            "Demo sourcing - cancelled pilot",
             [("Pilot hardware bundle", 2)],
             issue=True, invited=eligible[:1],
         )
@@ -609,7 +609,7 @@ class Command(BaseCommand):
 
         # ── Inventory: stock items + a real receipt→issue→adjustment history ──────
         # Items are master data (always created); on-hand balances only ever move through
-        # the real ledger services (issue/adjust/GRN post) — never a raw quantity write. The
+        # the real ledger services (issue/adjust/GRN post) - never a raw quantity write. The
         # movement blocks are guarded on the item having no movements yet, so a re-run neither
         # double-posts nor drifts the weighted-average valuation.
         inventory_acc = Account.objects.filter(entity=entity, code="1400").first()
@@ -643,7 +643,7 @@ class Command(BaseCommand):
 
             # In stock (well above reorder), low stock (at/below reorder but > 0), and
             # out of stock (never received). Opening quantities are booked as a real
-            # positive adjustment (an opening stock count) — a genuine journal, not a write.
+            # positive adjustment (an opening stock count) - a genuine journal, not a write.
             for code, name, uom, rl, rq, opening, unit_cost in (
                 ("SRV-R760", "Dell PowerEdge R760 Server", "Unit", 2, 5, 6, 41_800_000),
                 ("LTO-9", "LTO-9 Backup Tape (20-pack)", "Pack", 20, 50, 15, 1_850_000),
@@ -659,7 +659,7 @@ class Command(BaseCommand):
 
             # One item carries a full lifecycle: goods received into stock (Dr inventory,
             # Cr GR/IR via the GRN journal), then an issue (Dr COS, Cr inventory), then a
-            # small shrinkage adjustment — populating valuation and the movement ledger.
+            # small shrinkage adjustment - populating valuation and the movement ledger.
             scanner = ensure_stock_item(
                 "SCN-I4850", "Kodak i4850 Production Scanner", "Unit", 3, 10,
             )

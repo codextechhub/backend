@@ -1,4 +1,4 @@
-"""Product analytics for the Export Centre — a second pipeline, deliberately separate.
+"""Product analytics for the Export Centre - a second pipeline, deliberately separate.
 
 **Why it is not the audit trail.** The two answer different questions and have opposite
 requirements, so merging them damages both:
@@ -26,8 +26,8 @@ name into telemetry by adding a keyword argument. Continuous quantities are buck
 act as a fingerprint for a particular query.
 
 **What is measured here versus computed from the database.** Two of the four headline
-metrics are already facts in :class:`~vs_exports.models.ExportRun` — reuse is
-``definition_id IS NOT NULL`` and the failure share is a status count — so they are
+metrics are already facts in :class:`~vs_exports.models.ExportRun` - reuse is
+``definition_id IS NOT NULL`` and the failure share is a status count - so they are
 computed directly rather than duplicated into events that could disagree with the runs
 they describe. This module exists for what the database genuinely cannot know: how far
 people get through the builder before giving up, and how long a failure takes to
@@ -159,7 +159,7 @@ def record(name, *, tenant, actor=None, properties=None, session_key=""):
     opposite of the audit trail's contract, and it is deliberate.
     """
     if name not in SCHEMA:
-        logger.warning("Unknown export analytics event %r — dropped.", name)
+        logger.warning("Unknown export analytics event %r - dropped.", name)
         return None
     try:
         from .models import ExportAnalyticsEvent
@@ -182,10 +182,10 @@ def record(name, *, tenant, actor=None, properties=None, session_key=""):
 def summary(tenant, *, since=None) -> dict:
     """The four numbers the handoff says decide whether this shipped well.
 
-    1. **Reuse** — share of runs started from a saved definition rather than rebuilt.
-    2. **Builder abandonment by step** — where people give up.
-    3. **Time to resolve a failure** — median from viewing a failure to a good run.
-    4. **Unhappy runs** — share ending failed or completed-with-omissions.
+    1. **Reuse** - share of runs started from a saved definition rather than rebuilt.
+    2. **Builder abandonment by step** - where people give up.
+    3. **Time to resolve a failure** - median from viewing a failure to a good run.
+    4. **Unhappy runs** - share ending failed or completed-with-omissions.
 
     1 and 4 are counted from :class:`~vs_exports.models.ExportRun` because they are
     already facts there; duplicating them into events would only create two numbers

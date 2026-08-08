@@ -45,7 +45,7 @@ class LoginView(APIView):
     POST /auth/login/
     Authenticates a user and returns a JWT token pair.
     Handles lockout checks, school context, session creation,
-    and audit logging — all via LoginService.
+    and audit logging - all via LoginService.
 
     Permission: AllowAny (public endpoint).
     RBAC: identity.school_aware_login.enforce
@@ -104,7 +104,7 @@ class SpecialLoginPreviewView(APIView):
     404  No user with that email
     400  email query param missing
 
-    Permission: AllowAny — the barcode scanner carries no credentials.
+    Permission: AllowAny - the barcode scanner carries no credentials.
 
     docstring-name: Barcode login preview
     """
@@ -149,7 +149,7 @@ class LogoutView(APIView):
     """
     POST /auth/logout/
     Blacklists the submitted refresh token, ending the current session.
-    Idempotent — always returns 200 even if the token is already blacklisted.
+    Idempotent - always returns 200 even if the token is already blacklisted.
 
     Permission: IsAuthenticated (any logged-in user can log themselves out).
     RBAC: system.session.access.authenticate
@@ -157,7 +157,7 @@ class LogoutView(APIView):
     docstring-name: Log out
     """
     permission_classes = [IsAuthenticated]
-    # Logs the caller out of their own session — no tenant-scoped input, so
+    # Logs the caller out of their own session - no tenant-scoped input, so
     # ?tenant= is not required.
     tenant_param_required = False
 
@@ -177,13 +177,13 @@ class LogoutView(APIView):
 
         # Scope the logout to THIS session only: blacklist the submitted
         # refresh token and end the session that carries its JTI. Other
-        # devices stay logged in — the all-device revocation lives in the
+        # devices stay logged in - the all-device revocation lives in the
         # admin force-logout / suspend flows (blacklist_all_user_tokens).
         with transaction.atomic():
             try:
                 token.blacklist()
             except TokenError:
-                pass  # already blacklisted — logout stays idempotent
+                pass  # already blacklisted - logout stays idempotent
             LoginSession.objects.filter(
                 user=request.user, refresh_jti=str(jti), is_active=True,
             ).update(
@@ -210,13 +210,13 @@ class TokenRefreshView(APIView):
     POST /auth/token/refresh/
     Issues a new access token using a valid refresh token.
 
-    Permission: AllowAny (public endpoint — token validity is the gate).
+    Permission: AllowAny (public endpoint - token validity is the gate).
     RBAC: identity.access_token.refresh
 
     docstring-name: Refresh access token
     """
     permission_classes = [AllowAny]
-    # Operates purely on the submitted refresh token — token validity is the
+    # Operates purely on the submitted refresh token - token validity is the
     # gate, so ?tenant= is not required (clients send a Bearer header here,
     # which would otherwise trip the mandatory tenant assertion).
     tenant_param_required = False
@@ -225,7 +225,7 @@ class TokenRefreshView(APIView):
         ser = TokenRefreshSerializer(data=request.data)
 
         # SimpleJWT's TokenRefreshSerializer.validate() raises TokenError /
-        # InvalidToken when the refresh token is bad — they are not DRF
+        # InvalidToken when the refresh token is bad - they are not DRF
         # ValidationErrors. Catch them here so the response is a clean 401
         # instead of bubbling up to a 500.
         try:
@@ -256,7 +256,7 @@ class TokenRefreshView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED,
             )
         except ValidationError:
-            # Missing/empty 'refresh' field — treat as invalid.
+            # Missing/empty 'refresh' field - treat as invalid.
             return error_response(
                 message="Invalid token. Please log in again.",
                 error={'error_code': 'TOKEN_INVALID'},
@@ -284,7 +284,7 @@ class TokenRefreshView(APIView):
                         'expires_at': datetime_from_epoch(exp),
                     },
                 )
-                # Keep LoginSession in sync with the new JTI — only the session
+                # Keep LoginSession in sync with the new JTI - only the session
                 # that owned the OLD token; other devices keep their own JTIs.
                 old_jti = ''
                 try:
@@ -300,7 +300,7 @@ class TokenRefreshView(APIView):
                     last_seen_at=timezone.now(),
                 )
             except (TokenError, User.DoesNotExist):
-                # Bookkeeping failed but the new tokens are valid — the client
+                # Bookkeeping failed but the new tokens are valid - the client
                 # can still use them. Don't fail the whole request.
                 pass
             response_data['refresh'] = new_refresh_str
@@ -316,9 +316,9 @@ class ActivationPreviewView(APIView):
     """
     Called when the user lands on the activation page.
     Returns their name and email so the frontend can pre-fill
-    them as read-only fields — the user only needs to set a password.
+    them as read-only fields - the user only needs to set a password.
 
-    Permission: AllowAny (public — user hasn't logged in yet).
+    Permission: AllowAny (public - user hasn't logged in yet).
 
     docstring-name: Activation preview
     """
@@ -344,9 +344,9 @@ class ActivationView(APIView):
     POST /auth/activate/{user_id}/
     User submits password + confirm_password.
     On success: account is activated and JWT tokens are returned
-    so the user is logged in immediately — no separate login step.
+    so the user is logged in immediately - no separate login step.
 
-    Permission: AllowAny (public — user hasn't logged in yet).
+    Permission: AllowAny (public - user hasn't logged in yet).
     RBAC: identity.user_account.activate
 
     docstring-name: Activate account
@@ -384,8 +384,8 @@ class InvitationResendView(APIView):
     """
     POST /users/{user_id}/invite/resend/
     Resets the 7-day expiry and sends a new invitation email.
-    The URL the user receives stays the same —
-    vision.codexng.com/invite/{user_id}/ — only the expiry window refreshes.
+    The URL the user receives stays the same -
+    vision.codexng.com/invite/{user_id}/ - only the expiry window refreshes.
     Only valid for accounts with status=PENDING.
 
     Permission: IsAuthenticatedAndActive, HasRBACPermission

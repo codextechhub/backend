@@ -46,7 +46,7 @@ urlpatterns += [
     path("media/<path:name>", MediaView.as_view(), name="stored-media"),
 ]
 
-# API docs — generated from code (drf-spectacular). Enabled in DEBUG by
+# API docs - generated from code (drf-spectacular). Enabled in DEBUG by
 # default; set API_DOCS_ENABLED=true to expose temporarily on a deployed tier.
 _docs_enabled = settings.API_DOCS_ENABLED
 if _docs_enabled is None:
