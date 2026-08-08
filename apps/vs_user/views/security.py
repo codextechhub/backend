@@ -15,6 +15,7 @@ from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status, viewsets, mixins
 from rest_framework.decorators import action
+from rest_framework.filters import SearchFilter
 from rest_framework.views import APIView
 from vs_rbac.permissions import IsAuthenticatedAndActive, IsVisionStaff, HasRBACPermission
 from vs_tenants.models import Tenant
@@ -54,6 +55,17 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     """
     serializer_class = LoginSessionReadSerializer
     pagination_class = XVSPagination
+    filter_backends = [SearchFilter]
+    search_fields = (
+        'user__email',
+        'user__first_name',
+        'user__last_name',
+        'ip_address',
+        'device_label',
+        'user_agent',
+        'tenant__name',
+        'tenant__slug',
+    )
 
     def get_permissions(self):
         if self.action in {'mine', 'end_mine', 'end_all_mine'}:
