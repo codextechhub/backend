@@ -11,6 +11,7 @@
 #   SECURITY   - SessionViewSet, AuthAttemptViewSet, AccountLockoutViewSet, AuthEventLogViewSet
 
 from __future__ import annotations
+from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
 from rest_framework import status, viewsets, mixins
@@ -26,11 +27,14 @@ from ..models import (
     AuthEventLog, PasswordResetRequest,
 )
 from ..serializers import (
-    LoginSessionReadSerializer, ForceLogoutSerializer, AuthAttemptReadSerializer, AccountLockoutReadSerializer,
+    LoginSessionReadSerializer, EndOtherSessionsSerializer, ForceLogoutSerializer, AuthAttemptReadSerializer, AccountLockoutReadSerializer,
     UnlockAccountSerializer, PasswordResetAdminSerializer,
 )
 from ..services.password   import PasswordService
-from ..services.audit      import log_auth_event, blacklist_all_user_tokens, blacklist_token_by_jti
+from ..services.audit      import (
+    log_auth_event, blacklist_all_user_tokens, blacklist_token_by_jti,
+    blacklist_tokens_by_jti, expire_stale_login_sessions,
+)
 
 
 from .me import _get_date_param
@@ -68,7 +72,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     )
 
     def get_permissions(self):
-        if self.action in {'mine', 'end_mine', 'end_all_mine'}:
+        if self.action in {'mine', 'end_mine', 'end_other_mine', 'end_all_mine'}:
             return [IsAuthenticatedAndActive()]
         if self.action == 'force_logout':
             self.rbac_permission = 'platform.team.suspend'
@@ -78,14 +82,17 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        qs   = LoginSession.objects.select_related('user', 'tenant').order_by('-last_seen_at')
 
         # Platform-kind actors see every session in the asserted tenant scope
         # (the TenantAwareManager applies request.tenant); everyone else sees
         # only their own sessions.
         if getattr(getattr(user, 'tenant', None), 'kind', None) == Tenant.Kind.PLATFORM:
-            pass
+            expire_stale_login_sessions(tenant=getattr(self.request, 'tenant', None))
         else:
+            expire_stale_login_sessions(user=user)
+
+        qs = LoginSession.objects.select_related('user', 'tenant').order_by('-last_seen_at')
+        if getattr(getattr(user, 'tenant', None), 'kind', None) != Tenant.Kind.PLATFORM:
             qs = qs.filter(user=user)
 
         if is_active := self.request.query_params.get('is_active'):
@@ -99,6 +106,7 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
     @action(detail=False, methods=['get'], url_path='mine')
     def mine(self, request):
         """List only the signed-in user's sessions (self-service)."""
+        expire_stale_login_sessions(user=request.user)
         queryset = (
             LoginSession.objects
             .filter(user=request.user)
@@ -159,6 +167,53 @@ class SessionViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         )
         return success_response(
             message="All sessions ended.", data={'ended_sessions': ended},
+        )
+
+    @action(detail=False, methods=['post'], url_path='end-other-mine')
+    def end_other_mine(self, request):
+        """End every active session owned by the caller except this device."""
+        serializer = EndOtherSessionsSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        current_session_id = serializer.validated_data['current_session_id']
+        expire_stale_login_sessions(user=request.user)
+
+        with transaction.atomic():
+            active_sessions = list(
+                LoginSession.all_objects
+                .select_for_update()
+                .filter(user=request.user, is_active=True)
+                .values_list('pk', 'refresh_jti')
+            )
+            if not any(pk == current_session_id for pk, _ in active_sessions):
+                return error_response(
+                    message="Current session not found.",
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            other_sessions = [
+                session for session in active_sessions
+                if session[0] != current_session_id
+            ]
+            other_ids = [session_id for session_id, _ in other_sessions]
+            ended = LoginSession.all_objects.filter(pk__in=other_ids).update(
+                is_active=False,
+                ended_at=timezone.now(),
+                end_reason='FORCE_LOGOUT',
+            )
+            blacklist_tokens_by_jti(
+                refresh_jti for _, refresh_jti in other_sessions
+            )
+
+        log_auth_event(
+            actor=request.user,
+            subject=request.user,
+            tenant=request.user.tenant,
+            event=AuthEventLog.Event.FORCE_LOGOUT,
+            request=request,
+            metadata={'ended_sessions': ended, 'reason': 'SELF_SIGNOUT_OTHERS'},
+        )
+        return success_response(
+            message="Other sessions ended.", data={'ended_sessions': ended},
         )
 
     @action(detail=False, methods=['post'], url_path='force-logout')

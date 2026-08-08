@@ -607,6 +607,10 @@ class LoginSessionReadSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class EndOtherSessionsSerializer(serializers.Serializer):
+    current_session_id = serializers.IntegerField(min_value=1)
+
+
 class ForceLogoutSerializer(serializers.Serializer):
     user_id    = serializers.PrimaryKeyRelatedField(queryset=User.objects.all(), required=False, default=None)
     session_id = serializers.PrimaryKeyRelatedField(queryset=LoginSession.objects.all(), required=False, default=None)

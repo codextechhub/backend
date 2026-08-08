@@ -8,11 +8,14 @@ Covers the security-review fixes:
 - B11: refresh rotation updates only the matching session's JTI.
 """
 from io import StringIO
+from datetime import timedelta
 from unittest import mock
 
 from django.core.management import call_command
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
+from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken, OutstandingToken
 
 from vs_user.models import AccountLockout, AuthAttempt, LoginSession, User
 from vs_user.services.auth import LoginService
@@ -777,6 +780,21 @@ class SelfServiceSecurityScopeTests(TestCase):
         returned_users = {item["user"]["id"] for item in response.json()["data"]}
         self.assertEqual(returned_users, {self.user.id})
 
+    def test_my_active_sessions_excludes_and_closes_expired_refresh_tokens(self):
+        session = LoginSession.all_objects.get(pk=self.own_login["session_id"])
+        OutstandingToken.objects.filter(jti=session.refresh_jti).update(
+            expires_at=timezone.now() - timedelta(seconds=1),
+        )
+
+        response = self.client.get("/v1/user/sessions/mine/?is_active=true&page_size=50")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        returned_ids = {item["id"] for item in response.json()["data"]}
+        self.assertNotIn(str(session.id), {str(pk) for pk in returned_ids})
+        session.refresh_from_db()
+        self.assertFalse(session.is_active)
+        self.assertEqual(session.end_reason, "EXPIRED")
+
     def test_my_auth_attempts_lists_only_the_caller(self):
         response = self.client.get("/v1/user/auth-attempts/mine/?page_size=50")
 
@@ -808,6 +826,44 @@ class SelfServiceSecurityScopeTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertFalse(LoginSession.all_objects.get(pk=self.own_login["session_id"]).is_active)
         self.assertTrue(LoginSession.all_objects.get(pk=self.other_login["session_id"]).is_active)
+
+    def test_end_other_mine_preserves_current_session_and_revokes_the_rest(self):
+        second_own_login = LoginService.login(self.user.email, self.password)
+
+        response = self.client.post(
+            "/v1/user/sessions/end-other-mine/",
+            {"current_session_id": self.own_login["session_id"]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["data"]["ended_sessions"], 1)
+        self.assertTrue(
+            LoginSession.all_objects.get(pk=self.own_login["session_id"]).is_active,
+        )
+        ended_session = LoginSession.all_objects.get(pk=second_own_login["session_id"])
+        self.assertFalse(ended_session.is_active)
+        self.assertTrue(
+            BlacklistedToken.objects.filter(token__jti=ended_session.refresh_jti).exists(),
+        )
+        self.assertTrue(
+            LoginSession.all_objects.get(pk=self.other_login["session_id"]).is_active,
+        )
+
+    def test_end_other_mine_rejects_a_session_not_owned_by_the_caller(self):
+        response = self.client.post(
+            "/v1/user/sessions/end-other-mine/",
+            {"current_session_id": self.other_login["session_id"]},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertTrue(
+            LoginSession.all_objects.get(pk=self.own_login["session_id"]).is_active,
+        )
+        self.assertTrue(
+            LoginSession.all_objects.get(pk=self.other_login["session_id"]).is_active,
+        )
 
 
 # =============================================================================

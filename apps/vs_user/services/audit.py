@@ -135,6 +135,42 @@ def blacklist_token_by_jti(jti: str) -> bool:
     return True
 
 
+def blacklist_tokens_by_jti(jtis) -> int:
+    """Blacklist a collection of refresh JTIs in a fixed number of queries."""
+    clean_jtis = {str(jti) for jti in jtis if jti}
+    if not clean_jtis:
+        return 0
+    tokens = list(OutstandingToken.objects.filter(jti__in=clean_jtis))
+    BlacklistedToken.objects.bulk_create(
+        [BlacklistedToken(token=token) for token in tokens],
+        ignore_conflicts=True,
+    )
+    return len(tokens)
+
+
+def expire_stale_login_sessions(*, user=None, tenant=None) -> int:
+    """Mark sessions whose current refresh token has expired as inactive."""
+    from django.utils import timezone
+    from ..models import LoginSession
+
+    expired_jtis = OutstandingToken.objects.filter(
+        expires_at__lte=timezone.now(),
+    ).values_list('jti', flat=True)
+    sessions = LoginSession.all_objects.filter(
+        is_active=True,
+        refresh_jti__in=expired_jtis,
+    )
+    if user is not None:
+        sessions = sessions.filter(user=user)
+    if tenant is not None:
+        sessions = sessions.filter(tenant=tenant)
+    return sessions.update(
+        is_active=False,
+        ended_at=timezone.now(),
+        end_reason='EXPIRED',
+    )
+
+
 def get_client_ip(request) -> str | None:
     """
     Extracts the real client IP, handling reverse proxy X-Forwarded-For headers.
