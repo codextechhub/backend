@@ -260,8 +260,14 @@ class PettyCashStatusView(_FinanceBase):
         from ..petty_cash import fund_status
 
         entity = resolve_entity(request)
+        from ..banking_settings import resolve_finance_banking_settings
+
+        policy = resolve_finance_banking_settings(entity)
         threshold = _int(
-            request.query_params.get("threshold_bps", 2500), "threshold_bps", minimum=0,
+            request.query_params.get(
+                "threshold_bps", policy.petty_cash_low_balance_threshold_bps,
+            ),
+            "threshold_bps", minimum=0, maximum=10000,
         )
         rows = fund_status(entity, threshold_bps=threshold)
         return success_response(
@@ -416,4 +422,3 @@ class PettyCashVoucherVoidView(_PettyCashVoucherActionBase):
             f"Petty cash voucher {voucher.document_number} voided.",
             data=PettyCashVoucherSerializer(voucher).data,
         )
-

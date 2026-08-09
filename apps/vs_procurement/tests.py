@@ -50,6 +50,7 @@ from vs_procurement.models import (
     PurchaseOrderLine,
     PurchaseRequisition,
     PurchaseRequisitionLine,
+    ProcurementSettings,
     RequestForQuotation,
     RfqInvitation,
     RfqLine,
@@ -452,6 +453,11 @@ class SeedProcurementPermissionsTests(TestCase):
         override = Permission.objects.get(key="procurement.vendor_invoice.override_variance")
         self.assertEqual(override.sensitivity_level, Permission.Sensitivity.CRITICAL)
         self.assertTrue(override.is_restricted)
+        competition_override = Permission.objects.get(key="procurement.competition.override")
+        self.assertEqual(
+            competition_override.sensitivity_level, Permission.Sensitivity.CRITICAL,
+        )
+        self.assertTrue(competition_override.is_restricted)
         settings_update = Permission.objects.get(key="procurement.settings.update")
         self.assertEqual(settings_update.sensitivity_level, Permission.Sensitivity.SENSITIVE)
         self.assertTrue(settings_update.is_restricted)
@@ -464,6 +470,10 @@ class SeedProcurementPermissionsTests(TestCase):
             self.assertEqual(TenantRolePermission.objects.filter(
                 role__key=role_key, role__tenant__kind="PLATFORM",
                 permission=override, granted=True,
+            ).count(), 1, role_key)
+            self.assertEqual(TenantRolePermission.objects.filter(
+                role__key=role_key, role__tenant__kind="PLATFORM",
+                permission=competition_override, granted=True,
             ).count(), 1, role_key)
 
 
@@ -3453,6 +3463,30 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(rfq.rfq_status, RfqStatus.ISSUED)
         self.assertTrue(rfq.document_number)
 
+    def test_issue_enforces_competitive_minimum_and_audits_exception(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        ProcurementSettings.objects.create(
+            entity=entity, minimum_rfq_invited_vendors=2,
+        )
+        rfq = self._make_rfq(entity, invite=[vendor])
+
+        with self.assertRaises(SourcingError):
+            issue_rfq(rfq)
+        rfq.refresh_from_db()
+        self.assertEqual(rfq.rfq_status, RfqStatus.DRAFT)
+
+        issue_rfq(rfq, competition_exception_reason="Only qualified local supplier")
+        audit = FinanceAuditLog.objects.get(
+            entity=entity, action=FinanceAuditAction.RFQ_ISSUED,
+        )
+        self.assertTrue(audit.metadata["competition_exception"])
+        self.assertEqual(audit.metadata["invited_vendor_count"], 1)
+        self.assertEqual(audit.metadata["minimum_invited_vendors"], 2)
+        self.assertEqual(
+            audit.metadata["competition_exception_reason"],
+            "Only qualified local supplier",
+        )
+
     def test_quotation_only_submits_against_issued_rfq(self):
         entity, _, vendor, _, _ = self.build_p2p()
         rfq = self._make_rfq(entity)
@@ -3509,6 +3543,37 @@ class SourcingTests(_P2PFixtureMixin, TestCase):
         ).message
         self.assertIn("₦", message)
         self.assertNotIn("kobo", message.lower())
+
+    def test_award_enforces_submitted_bid_minimum_and_audits_exception(self):
+        entity, _, vendor, _, _ = self.build_p2p()
+        ProcurementSettings.objects.create(
+            entity=entity, minimum_submitted_quotations_before_award=2,
+        )
+        rfq = self._make_rfq(entity)
+        issue_rfq(rfq)
+        winning = self._make_quotation(
+            entity, rfq, vendor, lines=[("Mesh chair", 10, 200_000)],
+        )
+        submit_quotation(winning)
+
+        with self.assertRaises(SourcingError):
+            award_quotation(winning)
+        winning.refresh_from_db()
+        self.assertEqual(winning.quotation_status, QuotationStatus.SUBMITTED)
+
+        award_quotation(
+            winning, competition_exception_reason="Emergency replacement purchase",
+        )
+        audit = FinanceAuditLog.objects.get(
+            entity=entity, action=FinanceAuditAction.QUOTATION_AWARDED,
+        )
+        self.assertTrue(audit.metadata["competition_exception"])
+        self.assertEqual(audit.metadata["submitted_quotation_count"], 1)
+        self.assertEqual(audit.metadata["minimum_submitted_quotations"], 2)
+        self.assertEqual(
+            audit.metadata["competition_exception_reason"],
+            "Emergency replacement purchase",
+        )
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_award_carries_lineage_cost_centers_into_budget_commitments(self, _permission):
@@ -3930,6 +3995,72 @@ class SourcingConsoleAPITests(_P2PFixtureMixin, TestCase):
         return quo
 
     # --- permission gating ------------------------------------------------- #
+
+    @patch("vs_procurement.views.orders.is_vision_super_admin", return_value=False)
+    @patch("vs_procurement.views.orders.user_has_rbac_permission", return_value=False)
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_competition_exception_requires_dedicated_permission(
+        self, _ordinary_permission, _competition_permission, _super_admin,
+    ):
+        entity, _, vendor, _, _ = self.build_p2p()
+        ProcurementSettings.objects.create(
+            entity=entity, minimum_rfq_invited_vendors=2,
+        )
+        rfq = RequestForQuotation.objects.create(
+            entity=entity, title="Limited market", issue_date=datetime.date(2026, 1, 3),
+        )
+        RfqLine.objects.create(
+            rfq=rfq, description="Switch", quantity=1, line_no=1,
+            expense_account=self.acc(entity, "5300"),
+        )
+        set_rfq_invitations(rfq, [vendor])
+
+        response = self._client(entity).post(
+            f"/v1/procurement/rfqs/{rfq.pk}/issue/?entity={entity.code}",
+            {"competition_exception_reason": "Only qualified vendor"}, format="json",
+        )
+        self.assertEqual(response.status_code, 403)
+        rfq.refresh_from_db()
+        self.assertEqual(rfq.rfq_status, RfqStatus.DRAFT)
+        self.assertFalse(FinanceAuditLog.objects.filter(
+            entity=entity, action=FinanceAuditAction.RFQ_ISSUED,
+        ).exists())
+
+    @patch("vs_procurement.views.orders.is_vision_super_admin", return_value=False)
+    @patch("vs_procurement.views.orders.user_has_rbac_permission", return_value=True)
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_authorized_competition_exception_is_passed_to_issue_service(
+        self, _ordinary_permission, competition_permission, _super_admin,
+    ):
+        entity, _, vendor, _, _ = self.build_p2p()
+        ProcurementSettings.objects.create(
+            entity=entity, minimum_rfq_invited_vendors=2,
+        )
+        rfq = RequestForQuotation.objects.create(
+            entity=entity, title="Limited market", issue_date=datetime.date(2026, 1, 3),
+        )
+        RfqLine.objects.create(
+            rfq=rfq, description="Switch", quantity=1, line_no=1,
+            expense_account=self.acc(entity, "5300"),
+        )
+        set_rfq_invitations(rfq, [vendor])
+
+        response = self._client(entity).post(
+            f"/v1/procurement/rfqs/{rfq.pk}/issue/?entity={entity.code}",
+            {"competition_exception_reason": "Only qualified vendor"}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        competition_permission.assert_called_once()
+        self.assertEqual(
+            competition_permission.call_args.args[1],
+            "procurement.competition.override",
+        )
+        audit = FinanceAuditLog.objects.get(
+            entity=entity, action=FinanceAuditAction.RFQ_ISSUED,
+        )
+        self.assertEqual(
+            audit.metadata["competition_exception_reason"], "Only qualified vendor",
+        )
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=False)
     def test_every_endpoint_is_rbac_gated(self, _perm):

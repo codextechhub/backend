@@ -251,6 +251,7 @@ class FinanceBankingSettingsAPITests(TestCase):
         self.assertEqual(values["default_bank_reconciliation_tolerance_days"], 4)
         self.assertTrue(values["default_group_reconciliation_matches"])
         self.assertEqual(values["default_receipt_allocation_strategy"], "oldest")
+        self.assertEqual(values["petty_cash_low_balance_threshold_bps"], 2500)
         self.assertFalse(FinanceBankingSettings.objects.filter(entity=self.entity).exists())
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
@@ -259,12 +260,14 @@ class FinanceBankingSettingsAPITests(TestCase):
             "default_bank_reconciliation_tolerance_days": 0,
             "default_group_reconciliation_matches": False,
             "default_receipt_allocation_strategy": "largest",
+            "petty_cash_low_balance_threshold_bps": 4000,
         }, format="json")
         self.assertEqual(response.status_code, 200)
         settings = FinanceBankingSettings.objects.get(entity=self.entity)
         self.assertEqual(settings.default_bank_reconciliation_tolerance_days, 0)
         self.assertFalse(settings.default_group_reconciliation_matches)
         self.assertEqual(settings.default_receipt_allocation_strategy, "largest")
+        self.assertEqual(settings.petty_cash_low_balance_threshold_bps, 4000)
         audit = FinanceAuditLog.objects.get(
             action=FinanceAuditAction.FINANCE_BANKING_SETTINGS_UPDATED,
         )
@@ -294,6 +297,30 @@ class FinanceBankingSettingsAPITests(TestCase):
         self.assertEqual(self.client.patch(self.url, {
             "default_receipt_allocation_strategy": "fifo",
         }, format="json").status_code, 400)
+        self.assertEqual(self.client.patch(self.url, {
+            "petty_cash_low_balance_threshold_bps": 10001,
+        }, format="json").status_code, 400)
+
+    @patch("vs_finance.petty_cash.fund_status", return_value=[])
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_saved_petty_cash_threshold_drives_status_alerts(
+        self, _permission, fund_status,
+    ):
+        FinanceBankingSettings.objects.create(
+            entity=self.entity, petty_cash_low_balance_threshold_bps=4000,
+        )
+        response = self.client.get(
+            f"/v1/finance/petty-cash-status/?entity={self.entity.code}",
+        )
+        self.assertEqual(response.status_code, 200)
+        fund_status.assert_called_once_with(self.entity, threshold_bps=4000)
+
+        fund_status.reset_mock()
+        override = self.client.get(
+            f"/v1/finance/petty-cash-status/?entity={self.entity.code}&threshold_bps=1500",
+        )
+        self.assertEqual(override.status_code, 200)
+        fund_status.assert_called_once_with(self.entity, threshold_bps=1500)
 
     @patch("vs_finance.banking.auto_reconcile", return_value=[])
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)

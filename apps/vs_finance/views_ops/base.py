@@ -265,7 +265,7 @@ def _require_lines(body):
 
 
 # Parse integer request value.
-def _int(value, field, *, required=False, minimum=None):
+def _int(value, field, *, required=False, minimum=None, maximum=None):
     if value in (None, ""):  # Blank integer input.
         if required:  # Required integer missing.
             raise ValidationError({field: "An integer is required."})
@@ -276,6 +276,8 @@ def _int(value, field, *, required=False, minimum=None):
         raise ValidationError({field: "Expected an integer."})
     if minimum is not None and out < minimum:  # Enforce optional lower bound.
         raise ValidationError({field: f"Must be ≥ {minimum}."})
+    if maximum is not None and out > maximum:  # Enforce optional upper bound.
+        raise ValidationError({field: f"Must be ≤ {maximum}."})
     return out  # Return parsed integer.
 
 

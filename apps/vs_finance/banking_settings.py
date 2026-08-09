@@ -13,6 +13,7 @@ SETTING_FIELDS = (
     "default_bank_reconciliation_tolerance_days",
     "default_group_reconciliation_matches",
     "default_receipt_allocation_strategy",
+    "petty_cash_low_balance_threshold_bps",
 )
 
 
@@ -37,6 +38,9 @@ def serialize_finance_banking_settings(settings):
             FinanceBankingSettings.ReceiptAllocationStrategy(
                 settings.default_receipt_allocation_strategy,
             ).label
+        ),
+        "petty_cash_low_balance_threshold_bps": (
+            settings.petty_cash_low_balance_threshold_bps
         ),
         "updated_at": settings.updated_at.isoformat() if settings.pk else None,
         "updated_by": settings.updated_by.email if settings.pk and settings.updated_by else None,
@@ -75,6 +79,19 @@ def _validated_values(data):
         value = str(data[field] or "").lower()
         if value not in FinanceBankingSettings.ReceiptAllocationStrategy.values:
             raise ValidationError({field: "Select a supported allocation strategy."})
+        values[field] = value
+
+    field = "petty_cash_low_balance_threshold_bps"
+    if field in data:
+        value = data[field]
+        if isinstance(value, bool):
+            raise ValidationError({field: "Enter a whole number of basis points."})
+        try:
+            value = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({field: "Enter a whole number of basis points."}) from exc
+        if value < 0 or value > 10000:
+            raise ValidationError({field: "Use a value from 0 to 10,000 basis points."})
         values[field] = value
     return values
 

@@ -13,6 +13,8 @@ Procurement Settings is the entity-scoped control surface for purchasing default
 - default requisition lead time;
 - default RFQ response time;
 - the RFQ closing-soon reporting horizon;
+- competitive invitation and submitted-bid minimums;
+- permission-gated, reason-required competitive exceptions;
 - default contract renewal notice and contract-specific expiry visibility.
 
 This document explains how these settings are stored, validated, audited, and enforced in Procurement workflows. It also calls out policies that intentionally remain fixed and Finance-owned configuration that Procurement consumes without duplicating.
@@ -31,6 +33,7 @@ This default-without-row behavior matters for new entities. Procurement can oper
 | --- | --- | --- |
 | View Procurement Settings | `procurement.settings.view` | `PROC_VIEW_SETTINGS` |
 | Update Procurement Settings | `procurement.settings.update` | `PROC_UPDATE_SETTINGS` |
+| Override a competitive minimum | `procurement.competition.override` | `PROC_OVERRIDE_COMPETITION` |
 
 Accounting integration displays Finance-owned mappings. A user also needs the Finance Settings view permission to inspect that section. Procurement Settings update permission does not grant permission to change Finance account mappings.
 
@@ -51,6 +54,8 @@ Read and update permissions are separate. All writes are authorized on the backe
 | `default_rfq_response_days` | 14 | Whole number from 0 to 365 | New RFQ response due date when the caller omits it. |
 | `rfq_closing_soon_days` | 7 | Whole number from 0 to 365 | RFQ summary closing-soon horizon. |
 | `contract_renewal_notice_days` | 30 | Whole number from 0 to 365 | New contract renewal reminder. |
+| `minimum_rfq_invited_vendors` | 1 | Whole number from 1 to 50 | RFQ issue gate. |
+| `minimum_submitted_quotations_before_award` | 1 | Whole number from 1 to 50 | Quotation award gate. |
 
 All values are backend-owned and typed. The frontend may format them for usability but must send the documented API representation.
 
@@ -91,6 +96,24 @@ Contract expiry views respect each contract's stored `renewal_notice_days`. A co
 `rfq_closing_soon_days` controls the RFQ summary horizon. It is deliberately separate from the response default: one determines a new record's due date, while the other determines which existing RFQs the dashboard calls closing soon.
 
 Changing either value does not rewrite existing RFQ due dates. The closing-soon horizon affects later summary reads immediately because it is a reporting policy.
+
+## Competitive bidding governance
+
+The two competitive minimums preserve the previous behavior at their default value of one. An entity can raise them without changing RFQ creation: the checks run at the decision boundaries where sourcing evidence becomes operative.
+
+`minimum_rfq_invited_vendors` is checked under the RFQ row lock when a draft RFQ is issued. The service counts persisted, distinct invitation rows. A frontend count or duplicate vendor input cannot satisfy the rule.
+
+`minimum_submitted_quotations_before_award` is checked under the same RFQ-first lock order used by award, close, cancel, and quotation submission. Only quotations still in `SUBMITTED` status count. Draft, rejected, expired, or already-awarded records do not manufacture competition.
+
+When the actual count is below policy, the operation fails unless all of the following are true:
+
+- the request supplies a nonblank `competition_exception_reason` of at most 1,000 characters;
+- the actor holds `procurement.competition.override` in the request's tenant and branch scope, or is the active Vision super admin;
+- the ordinary issue or award permission also succeeds.
+
+Settings update permission does not grant exception authority. Issue permission does not grant award permission, and neither grants the exception permission. This separation allows administrators to set policy without giving themselves a way around it.
+
+Successful exceptions use the normal `RFQ_ISSUED` or `QUOTATION_AWARDED` audit action, with structured metadata containing the actual count, required minimum, exception flag, and written reason. This keeps the business event and its exception evidence in one immutable record. A reason sent when the minimum is already met is not recorded as an exception.
 
 ## Invoice matching tolerances
 
@@ -227,6 +250,8 @@ Example:
   "default_requisition_lead_days": 7,
   "default_rfq_response_days": 21,
   "rfq_closing_soon_days": 10,
+  "minimum_rfq_invited_vendors": 3,
+  "minimum_submitted_quotations_before_award": 2,
   "contract_renewal_notice_days": 45
 }
 ```
@@ -268,6 +293,9 @@ Database support was introduced and extended by:
 - `apps/vs_procurement/migrations/0016_alter_vendorinvoice_match_status_procurementsettings.py`;
 - `apps/vs_procurement/migrations/0017_procurementsettings_contract_renewal_notice_days_and_more.py`;
 - `apps/vs_procurement/migrations/0018_procurementsettings_default_rfq_response_days_and_more.py`.
+- `apps/vs_procurement/migrations/0019_procurementsettings_competitive_bidding.py`.
+
+After deploying the competitive-governance increment, run `seed_actions` followed by `seed_procurement_permissions`. The first registers the canonical `override` action description. The second registers `procurement.competition.override` as a critical permission and additively grants it to the platform administrator roles without reversing any existing denied role link.
 
 The main implementation files are:
 
@@ -300,6 +328,9 @@ The focused settings tests cover:
 - RFQ response-date defaults and explicit overrides;
 - configurable RFQ closing-soon summaries;
 - contract-specific renewal windows in list and summary views.
+- invitation and submitted-bid minimum enforcement;
+- denied and authorized competitive exception paths;
+- structured exception evidence on issue and award audit events.
 
 When extending Procurement Settings, test the endpoint and the real workflow consumer. A green settings endpoint test does not prove that purchase orders, receipts, invoices, vendors, or contracts obey the policy.
 

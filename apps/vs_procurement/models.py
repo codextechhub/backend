@@ -145,6 +145,14 @@ class ProcurementSettings(TimeStampedModel):
         default=7, validators=[MaxValueValidator(365)],
         help_text="Horizon used by the RFQ closing-soon summary.",
     )
+    minimum_rfq_invited_vendors = models.PositiveSmallIntegerField(
+        default=1, validators=[MinValueValidator(1), MaxValueValidator(50)],
+        help_text="Minimum distinct vendors required before an RFQ can be issued.",
+    )
+    minimum_submitted_quotations_before_award = models.PositiveSmallIntegerField(
+        default=1, validators=[MinValueValidator(1), MaxValueValidator(50)],
+        help_text="Minimum submitted quotations required before an RFQ can be awarded.",
+    )
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="procurement_settings_updates", null=True, blank=True,

@@ -12,11 +12,12 @@ import datetime
 from django.db import transaction
 from django.db.models import Count, F, Prefetch, Q, Sum
 from django.utils import timezone
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from core.response import success_response
 from vs_finance.constants import DocumentStatus
 from vs_finance.views import resolve_entity
+from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 from vs_workflow.models import WorkflowInstance
 
 from .. import purchasing, sourcing
@@ -67,6 +68,35 @@ _CLOSED_PO_STATUSES = (DocumentStatus.CANCELLED, DocumentStatus.REVERSED)
 # Not-yet-issued documents: excluded from the pipeline KPIs (they are not orders a
 # vendor is fulfilling), and never eligible for the derived PARTIAL/RECEIVED stages.
 _UNISSUED_PO_STATUSES = (DocumentStatus.DRAFT, DocumentStatus.PENDING_APPROVAL)
+
+
+def _competition_exception_reason(request):
+    """Return a permission-gated competitive-bidding exception reason."""
+    raw = request.data.get("competition_exception_reason", "")
+    if raw in (None, ""):
+        return ""
+    if not isinstance(raw, str):
+        raise ValidationError({
+            "competition_exception_reason": "Enter a written exception reason.",
+        })
+    reason = raw.strip()
+    if len(reason) > 1000:
+        raise ValidationError({
+            "competition_exception_reason": "Use 1,000 characters or fewer.",
+        })
+    if not reason:
+        return ""
+    tenant = getattr(request, "rbac_tenant", None) or getattr(request, "tenant", None)
+    allowed = is_vision_super_admin(request.user) or user_has_rbac_permission(
+        request.user, "procurement.competition.override",
+        tenant=tenant or getattr(request.user, "tenant", None),
+        branch=getattr(request, "branch", None),
+    )
+    if not allowed:
+        raise PermissionDenied(
+            "You do not have permission to override competitive-bidding policy.",
+        )
+    return reason
 
 
 def _po_base_queryset(entity):
@@ -563,7 +593,11 @@ class RfqIssueView(_ProcBase):
         rfq = RequestForQuotation.objects.filter(entity=entity, pk=pk).first()
         if rfq is None:
             raise NotFound("No such RFQ in this entity.")
-        sourcing.issue_rfq(rfq, actor_user=request.user)
+        sourcing.issue_rfq(
+            rfq,
+            competition_exception_reason=_competition_exception_reason(request),
+            actor_user=request.user,
+        )
         rfq = _rfq_detail_queryset(entity).get(pk=rfq.pk)
         return success_response("RFQ issued.", data=RfqDetailSerializer(rfq).data)
 
@@ -842,6 +876,7 @@ class QuotationAwardView(_ProcBase):
         po = sourcing.award_quotation(
             quotation,
             order_date=_date(request.data.get("order_date"), "order_date"),
+            competition_exception_reason=_competition_exception_reason(request),
             actor_user=request.user,
         )
         return success_response(

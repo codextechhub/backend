@@ -134,6 +134,10 @@ class FinanceBankingSettings(TimeStampedModel):
         max_length=8, choices=ReceiptAllocationStrategy.choices,
         default=ReceiptAllocationStrategy.OLDEST,
     )
+    petty_cash_low_balance_threshold_bps = models.PositiveSmallIntegerField(
+        default=2500, validators=[MaxValueValidator(10000)],
+        help_text="Petty-cash balance percentage that triggers a replenishment alert.",
+    )
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="finance_banking_settings_updates", null=True, blank=True,

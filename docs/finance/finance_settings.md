@@ -10,6 +10,7 @@ Finance Settings is the entity-scoped control surface for defaults and policies 
 - identifying the primary collection bank account;
 - defining bank-reconciliation defaults;
 - choosing the default customer-receipt allocation strategy;
+- setting the entity-wide petty-cash replenishment alert threshold;
 - exposing related finance configuration areas without duplicating their ownership.
 
 This document explains the backend contract, why each setting exists, where it is enforced, and the rules to preserve when extending it.
@@ -163,12 +164,19 @@ The settings response shows only the explicitly flagged account as selected. Its
 | `default_bank_reconciliation_tolerance_days` | 4 | Whole number from 0 to 30 | Supplies the date window for automatic reconciliation when a request omits `tolerance_days`. |
 | `default_group_reconciliation_matches` | `true` | Boolean | Supplies the grouped-matching choice when a request omits `group`. |
 | `default_receipt_allocation_strategy` | `oldest` | `oldest` or `largest` | Chooses which open customer invoice is allocated first when a receipt request omits a strategy. |
+| `petty_cash_low_balance_threshold_bps` | 2,500 (25%) | Whole number from 0 to 10,000 | Flags an active petty-cash fund when live cash on hand reaches or falls below this share of its imprest float. |
 
 Explicit operational input wins. A caller can use a different reconciliation window, turn grouping on or off, or choose a supported receipt strategy for one operation without changing the entity default. An explicit tolerance of zero is meaningful and must not be replaced by the saved default.
 
 The allocation setting changes the order in which an automatically allocated receipt settles open invoices. It does not enable or disable automatic allocation. The current receipt flows keep their established automatic-allocation behavior, and only the strategy default has moved into settings.
 
 Changing these settings affects later reconciliation and receipt operations. It does not recalculate reconciliations or allocations already recorded.
+
+The petty-cash threshold is stored in basis points so percentages remain exact. The screen converts it to a percentage for editing. The petty-cash status endpoint uses the saved value when `threshold_bps` is omitted, while an explicit query value wins for one report. It validates both saved and explicit values from 0 to 10,000.
+
+The threshold is an alerting rule, not authority to replenish or post cash. Status calculations read live cash on hand from the petty-cash GL account, compare it with the fund's imprest float, and return `needs_replenish`. Establishing, spending, and replenishing a fund retain their existing permissions and posting controls.
+
+Automatic receipt allocation itself intentionally remains fixed. This increment only controls allocation order. A toggle that changes whether receipts allocate automatically would change transaction behavior and requires a separate product and control decision.
 
 ## Related sections and ownership boundaries
 
@@ -245,7 +253,8 @@ Example:
 {
   "default_bank_reconciliation_tolerance_days": 2,
   "default_group_reconciliation_matches": false,
-  "default_receipt_allocation_strategy": "largest"
+  "default_receipt_allocation_strategy": "largest",
+  "petty_cash_low_balance_threshold_bps": 4000
 }
 ```
 
@@ -284,6 +293,7 @@ Database support was introduced by:
 - `apps/vs_finance/migrations/0013_alter_financeauditlog_action_financeaccountmapping.py`;
 - `apps/vs_finance/migrations/0014_alter_financeauditlog_action_financedocumentsettings.py`;
 - `apps/vs_finance/migrations/0015_alter_financeauditlog_action_financebankingsettings.py`.
+- `apps/vs_finance/migrations/0016_financebankingsettings_petty_cash_threshold.py`.
 
 The main implementation files are:
 
@@ -312,6 +322,7 @@ The focused settings tests cover:
 - banking-policy validation and no-row defaults;
 - saved and explicit bank-reconciliation behavior;
 - saved and explicit customer-receipt allocation strategy.
+- saved petty-cash threshold and explicit report-override precedence.
 
 When extending settings, add tests at both boundaries: the settings endpoint and at least one real consumer that proves the policy is enforced outside the settings screen.
 

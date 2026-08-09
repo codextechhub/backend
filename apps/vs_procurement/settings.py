@@ -23,6 +23,8 @@ SETTING_FIELDS = (
     "contract_renewal_notice_days",
     "default_rfq_response_days",
     "rfq_closing_soon_days",
+    "minimum_rfq_invited_vendors",
+    "minimum_submitted_quotations_before_award",
 )
 
 
@@ -49,6 +51,10 @@ def serialize_procurement_settings(settings):
         "contract_renewal_notice_days": settings.contract_renewal_notice_days,
         "default_rfq_response_days": settings.default_rfq_response_days,
         "rfq_closing_soon_days": settings.rfq_closing_soon_days,
+        "minimum_rfq_invited_vendors": settings.minimum_rfq_invited_vendors,
+        "minimum_submitted_quotations_before_award": (
+            settings.minimum_submitted_quotations_before_award
+        ),
         "updated_at": settings.updated_at.isoformat() if settings.pk else None,
         "updated_by": settings.updated_by.email if settings.pk and settings.updated_by else None,
     }
@@ -113,6 +119,22 @@ def _validated_values(data):
             raise ValidationError({field: "Enter a whole number of days."}) from exc
         if value < 0 or value > 365:
             raise ValidationError({field: "Use a value from 0 to 365 days."})
+        values[field] = value
+    for field in (
+        "minimum_rfq_invited_vendors",
+        "minimum_submitted_quotations_before_award",
+    ):
+        if field not in data:
+            continue
+        value = data[field]
+        if isinstance(value, bool):
+            raise ValidationError({field: "Enter a whole number of vendors."})
+        try:
+            value = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError({field: "Enter a whole number of vendors."}) from exc
+        if value < 1 or value > 50:
+            raise ValidationError({field: "Use a value from 1 to 50 vendors."})
         values[field] = value
     return values
 

@@ -94,6 +94,7 @@ ACTIONS: list[tuple[str, str]] = [
     ("issue",      "Issue a document to its counterparty (RFQ, stock issue)."),
     ("match",      "Perform a multi-way match (PO ↔ GRN ↔ invoice)."),
     ("override_variance", "Override a blocking vendor-invoice match variance for an audited post."),
+    ("override",   "Override a policy control through a dedicated, audited exception."),
     ("adjust",     "Record a manual adjustment (stock revaluation, corrections)."),
 
     # ── Library-specific ──────────────────────────────────────────────────────

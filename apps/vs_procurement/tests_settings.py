@@ -56,6 +56,11 @@ class ProcurementSettingsAPITests(TestCase):
         self.assertEqual(response.data["data"]["settings"]["default_payment_terms"], "NET_30")
         self.assertEqual(response.data["data"]["settings"]["default_rfq_response_days"], 14)
         self.assertEqual(response.data["data"]["settings"]["rfq_closing_soon_days"], 7)
+        self.assertEqual(response.data["data"]["settings"]["minimum_rfq_invited_vendors"], 1)
+        self.assertEqual(
+            response.data["data"]["settings"]["minimum_submitted_quotations_before_award"],
+            1,
+        )
         self.assertFalse(ProcurementSettings.objects.filter(entity=self.entity).exists())
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
@@ -72,6 +77,8 @@ class ProcurementSettingsAPITests(TestCase):
             "contract_renewal_notice_days": 45,
             "default_rfq_response_days": 21,
             "rfq_closing_soon_days": 5,
+            "minimum_rfq_invited_vendors": 3,
+            "minimum_submitted_quotations_before_award": 2,
         }, format="json")
         self.assertEqual(response.status_code, 200)
         settings = ProcurementSettings.objects.get(entity=self.entity)
@@ -83,6 +90,8 @@ class ProcurementSettingsAPITests(TestCase):
         self.assertEqual(settings.contract_renewal_notice_days, 45)
         self.assertEqual(settings.default_rfq_response_days, 21)
         self.assertEqual(settings.rfq_closing_soon_days, 5)
+        self.assertEqual(settings.minimum_rfq_invited_vendors, 3)
+        self.assertEqual(settings.minimum_submitted_quotations_before_award, 2)
         audit = FinanceAuditLog.objects.get(action=FinanceAuditAction.PROCUREMENT_SETTINGS_UPDATED)
         self.assertEqual(audit.before["default_payment_terms"], "NET_30")
         self.assertEqual(audit.after["default_payment_terms"], "NET_60")
@@ -93,6 +102,8 @@ class ProcurementSettingsAPITests(TestCase):
         self.assertEqual(self.client.patch(self.url, {"quantity_tolerance_bps": 10001}, format="json").status_code, 400)
         self.assertEqual(self.client.patch(self.url, {"default_requisition_lead_days": 366}, format="json").status_code, 400)
         self.assertEqual(self.client.patch(self.url, {"default_rfq_response_days": 366}, format="json").status_code, 400)
+        self.assertEqual(self.client.patch(self.url, {"minimum_rfq_invited_vendors": 0}, format="json").status_code, 400)
+        self.assertEqual(self.client.patch(self.url, {"minimum_submitted_quotations_before_award": 51}, format="json").status_code, 400)
         self.assertEqual(self.client.patch(self.url, {"vendor_purchase_kyc_requirement": "ANY"}, format="json").status_code, 400)
         other = School.objects.create(name="Other Proc", slug="other-proc", code="OPRSC", status="ACTIVE")
         other_entity = LedgerEntity.objects.create(name="Other Proc Books", code="OPRBK", kind=LedgerEntity.Kind.TENANT, tenant=other.tenant)

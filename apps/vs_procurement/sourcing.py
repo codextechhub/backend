@@ -85,7 +85,7 @@ def set_rfq_invitations(rfq, vendors, *, actor_user=None):
 # --------------------------------------------------------------------------- #
 
 @transaction.atomic
-def issue_rfq(rfq, *, actor_user=None):
+def issue_rfq(rfq, *, competition_exception_reason="", actor_user=None):
     """Move a DRAFT RFQ to ISSUED so vendors can quote against it.
 
     Requires at least one line **and** at least one invited vendor - an RFQ is a request
@@ -104,14 +104,28 @@ def issue_rfq(rfq, *, actor_user=None):
     line_count = rfq.lines.count()
     if not line_count:
         raise SourcingError("An RFQ needs at least one line before it can be issued.")
-    if not rfq.invitations.exists():
-        raise SourcingError("An RFQ must invite at least one vendor before it can be issued.")
+    from .settings import resolve_procurement_settings
+    policy = resolve_procurement_settings(rfq.entity)
+    invited_count = rfq.invitations.count()
+    required_count = policy.minimum_rfq_invited_vendors
+    exception_reason = str(competition_exception_reason or "").strip()
+    competition_exception = invited_count < required_count
+    if competition_exception and not exception_reason:
+        raise SourcingError(
+            f"This RFQ has {invited_count} invited vendor(s), but policy requires "
+            f"at least {required_count}. A user with the competition override permission "
+            f"must provide an exception reason before it can be issued.",
+        )
     rfq.rfq_status = RfqStatus.ISSUED
     rfq.save(update_fields=["rfq_status", "updated_at"])
     record(
         entity=rfq.entity, action=FinanceAuditAction.RFQ_ISSUED,
         actor_user=actor_user, target=rfq,
         message=f"Issued RFQ {rfq.document_number} ({line_count} line(s)).",
+        invited_vendor_count=invited_count,
+        minimum_invited_vendors=required_count,
+        competition_exception=competition_exception,
+        competition_exception_reason=exception_reason if competition_exception else "",
     )
     # Preserve the historical caller contract: mutate and return the object supplied.
     supplied_rfq.rfq_status = rfq.rfq_status
@@ -285,7 +299,9 @@ def submit_quotation(quotation, *, actor_user=None):
 
 
 @transaction.atomic
-def award_quotation(quotation, *, order_date=None, actor_user=None):
+def award_quotation(
+    quotation, *, order_date=None, competition_exception_reason="", actor_user=None,
+):
     """Award a SUBMITTED quotation: build a DRAFT PO from it and reject the losers.
 
     Sets the quotation AWARDED, links the new :class:`PurchaseOrder` it produced, marks
@@ -320,6 +336,20 @@ def award_quotation(quotation, *, order_date=None, actor_user=None):
         raise SourcingError(
             f"RFQ {rfq.document_number} is '{rfq.rfq_status}'; only an issued RFQ "
             f"can be awarded.",
+        )
+    from .settings import resolve_procurement_settings
+    policy = resolve_procurement_settings(quotation.entity)
+    submitted_count = rfq.quotations.filter(
+        quotation_status=QuotationStatus.SUBMITTED,
+    ).count()
+    required_count = policy.minimum_submitted_quotations_before_award
+    exception_reason = str(competition_exception_reason or "").strip()
+    competition_exception = submitted_count < required_count
+    if competition_exception and not exception_reason:
+        raise SourcingError(
+            f"This RFQ has {submitted_count} submitted quotation(s), but policy requires "
+            f"at least {required_count}. A user with the competition override permission "
+            f"must provide an exception reason before a quotation can be awarded.",
         )
     if not quotation.lines.exists():
         raise SourcingError("Cannot award a quotation with no lines.")
@@ -402,5 +432,9 @@ def award_quotation(quotation, *, order_date=None, actor_user=None):
         message=f"Awarded quotation {quotation.document_number} from {vendor.code} → "
                 f"PO {po.document_number} ({format_naira(po.total)}).",
         rfq_id=rfq.pk, purchase_order_id=po.pk, total=po.total,
+        submitted_quotation_count=submitted_count,
+        minimum_submitted_quotations=required_count,
+        competition_exception=competition_exception,
+        competition_exception_reason=exception_reason if competition_exception else "",
     )
     return po
