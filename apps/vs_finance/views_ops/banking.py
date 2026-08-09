@@ -858,8 +858,21 @@ class BankAutoReconcileView(_FinanceBase):
         if bank is None:
             raise NotFound("Bank account not found for this entity.")
         body = request.data or {}
-        tolerance = _int(body.get("tolerance_days", 4), "tolerance_days", minimum=0) or 4
-        group = _bool(body.get("group", True), default=True)
+        from ..banking_settings import resolve_finance_banking_settings
+        policy = resolve_finance_banking_settings(entity)
+        if "tolerance_days" in body:
+            supplied_tolerance = _int(
+                body.get("tolerance_days"), "tolerance_days", minimum=0,
+            )
+            tolerance = (
+                policy.default_bank_reconciliation_tolerance_days
+                if supplied_tolerance is None else supplied_tolerance
+            )
+        else:
+            tolerance = policy.default_bank_reconciliation_tolerance_days
+        group = _bool(
+            body.get("group"), default=policy.default_group_reconciliation_matches,
+        )
         matched = auto_reconcile(
             bank, tolerance_days=tolerance, group=group, actor_user=request.user)
         return success_response(

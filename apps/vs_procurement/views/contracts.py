@@ -7,8 +7,6 @@ one consistent state machine.
 """
 from __future__ import annotations
 
-import datetime
-
 from django.db import models, transaction
 from django.db.models import Count
 from django.utils import timezone
@@ -139,11 +137,11 @@ class ContractListCreateView(_ProcBase):
         )
         if (status_ := request.query_params.get("status")):
             qs = qs.filter(status=status_)
-        # ``?expiring=1`` - ACTIVE contracts whose end_date falls in [today, today+30].
+        # ``?expiring=1`` uses each contract's stored renewal-notice window.
         if request.query_params.get("expiring") in ("1", "true", "True"):
+            due = contracts.expiring_contracts(entity, as_of=today)
             qs = qs.filter(
-                status=ContractStatus.ACTIVE, end_date__isnull=False,
-                end_date__gte=today, end_date__lte=today + datetime.timedelta(days=30),
+                pk__in=due.values("pk"),
             )
         if (vendor := request.query_params.get("vendor")):
             qs = qs.filter(vendor_id=vendor) if str(vendor).isdigit() \
@@ -266,6 +264,7 @@ class ContractSummaryView(_ProcBase):
         entity = resolve_entity(request)
         today = timezone.localdate()
         qs = VendorContract.objects.filter(entity=entity)
+        expiring_soon = contracts.expiring_contracts(entity, as_of=today).count()
         # A single aggregate over the contract table. Expiry is derived from dates (honest
         # without a sweep): "active" excludes ACTIVE rows already past their end_date, which
         # instead count as "expired" alongside the persisted EXPIRED status.
@@ -273,10 +272,6 @@ class ContractSummaryView(_ProcBase):
             active=Count("id", filter=models.Q(
                 status=ContractStatus.ACTIVE,
             ) & (models.Q(end_date__isnull=True) | models.Q(end_date__gte=today))),
-            expiring_soon=Count("id", filter=models.Q(
-                status=ContractStatus.ACTIVE, end_date__isnull=False,
-                end_date__gte=today, end_date__lte=today + datetime.timedelta(days=30),
-            )),
             expired=Count("id", filter=models.Q(status=ContractStatus.EXPIRED) | models.Q(
                 status=ContractStatus.ACTIVE, end_date__isnull=False, end_date__lt=today,
             )),
@@ -286,7 +281,7 @@ class ContractSummaryView(_ProcBase):
         )
         return success_response("Contract summary retrieved.", data={
             "active": agg["active"] or 0,
-            "expiring_soon": agg["expiring_soon"] or 0,
+            "expiring_soon": expiring_soon,
             "expired": agg["expired"] or 0,
             "total_active_value": agg["total_active_value"] or 0,
             "total_active_value_naira": format_naira(agg["total_active_value"] or 0),

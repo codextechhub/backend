@@ -765,7 +765,7 @@ class TenantUserRoleAssignmentReplaceView(TenantScopedRBACMixin, APIView):
         try:
             assignment = (
                 TenantUserRoleAssignment.objects
-                .select_for_update()
+                .select_for_update(of=("self",))
                 .select_related("user", "role", "assigned_by", "revoked_by", "tenant", "branch")
                 .get(id=id, tenant=tenant)
             )

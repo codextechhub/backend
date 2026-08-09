@@ -11,6 +11,11 @@ from .account_mappings import (
     account_mapping_snapshot,
     update_account_mappings,
 )
+from .banking_settings import (
+    resolve_finance_banking_settings,
+    serialize_finance_banking_settings,
+    update_finance_banking_settings,
+)
 from .constants import FinanceAuditAction
 from .document_settings import (
     resolve_finance_document_settings,
@@ -113,6 +118,49 @@ class FinanceDocumentSettingsView(APIView):
                 "settings": serialize_finance_document_settings(settings),
                 "history": _settings_history(
                     entity, FinanceAuditAction.FINANCE_DOCUMENT_SETTINGS_UPDATED,
+                ),
+            },
+        )
+
+
+class FinanceBankingSettingsView(APIView):
+    """Read or update reconciliation and receipt-allocation defaults."""
+
+    permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
+
+    @property
+    def rbac_permission(self):
+        return (
+            "finance.settings.update"
+            if self.request.method == "PATCH"
+            else "finance.settings.view"
+        )
+
+    def get(self, request):
+        entity = resolve_entity(request)
+        return success_response(
+            "Finance banking settings retrieved.",
+            data={
+                "settings": serialize_finance_banking_settings(
+                    resolve_finance_banking_settings(entity),
+                ),
+                "history": _settings_history(
+                    entity, FinanceAuditAction.FINANCE_BANKING_SETTINGS_UPDATED,
+                ),
+            },
+        )
+
+    def patch(self, request):
+        entity = resolve_entity(request)
+        settings = update_finance_banking_settings(
+            entity=entity, data=request.data or {}, actor_user=request.user,
+        )
+        return success_response(
+            "Finance banking settings saved.",
+            data={
+                "settings": serialize_finance_banking_settings(settings),
+                "history": _settings_history(
+                    entity, FinanceAuditAction.FINANCE_BANKING_SETTINGS_UPDATED,
                 ),
             },
         )

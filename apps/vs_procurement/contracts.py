@@ -12,6 +12,7 @@ from __future__ import annotations
 import datetime
 
 from django.db import transaction
+from django.db.models import DateField, ExpressionWrapper, F
 
 from vs_finance.audit import record
 from vs_finance.constants import FinanceAuditAction
@@ -261,11 +262,16 @@ def expiring_contracts(entity, *, as_of=None, within_days=None):
 
     if within_days is not None:
         horizon = as_of + datetime.timedelta(days=int(within_days))
-        qs = qs.filter(end_date__gte=as_of, end_date__lte=horizon)
-        return list(qs.order_by("end_date", "reference"))
+        return qs.filter(
+            end_date__gte=as_of, end_date__lte=horizon,
+        ).order_by("end_date", "reference")
 
     # Per-contract notice window: end_date - renewal_notice_days <= as_of <= end_date.
-    return [
-        c for c in qs.order_by("end_date", "reference")
-        if c.end_date >= as_of and c.renewal_window_start() <= as_of
-    ]
+    return qs.annotate(
+        effective_renewal_window_start=ExpressionWrapper(
+            F("end_date") - F("renewal_notice_days"), output_field=DateField(),
+        ),
+    ).filter(
+        end_date__gte=as_of,
+        effective_renewal_window_start__lte=as_of,
+    ).order_by("end_date", "reference")

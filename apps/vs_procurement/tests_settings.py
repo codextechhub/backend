@@ -15,6 +15,7 @@ from vs_procurement.models import (
     PurchaseOrder,
     PurchaseOrderLine,
     PurchaseRequisition,
+    RequestForQuotation,
     Vendor,
     VendorContract,
     VendorInvoice,
@@ -53,6 +54,8 @@ class ProcurementSettingsAPITests(TestCase):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["data"]["settings"]["default_payment_terms"], "NET_30")
+        self.assertEqual(response.data["data"]["settings"]["default_rfq_response_days"], 14)
+        self.assertEqual(response.data["data"]["settings"]["rfq_closing_soon_days"], 7)
         self.assertFalse(ProcurementSettings.objects.filter(entity=self.entity).exists())
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
@@ -67,6 +70,8 @@ class ProcurementSettingsAPITests(TestCase):
             "require_purchase_order_for_receipts": True,
             "default_requisition_lead_days": 7,
             "contract_renewal_notice_days": 45,
+            "default_rfq_response_days": 21,
+            "rfq_closing_soon_days": 5,
         }, format="json")
         self.assertEqual(response.status_code, 200)
         settings = ProcurementSettings.objects.get(entity=self.entity)
@@ -76,6 +81,8 @@ class ProcurementSettingsAPITests(TestCase):
         self.assertTrue(settings.require_purchase_order_for_receipts)
         self.assertEqual(settings.default_requisition_lead_days, 7)
         self.assertEqual(settings.contract_renewal_notice_days, 45)
+        self.assertEqual(settings.default_rfq_response_days, 21)
+        self.assertEqual(settings.rfq_closing_soon_days, 5)
         audit = FinanceAuditLog.objects.get(action=FinanceAuditAction.PROCUREMENT_SETTINGS_UPDATED)
         self.assertEqual(audit.before["default_payment_terms"], "NET_30")
         self.assertEqual(audit.after["default_payment_terms"], "NET_60")
@@ -85,6 +92,7 @@ class ProcurementSettingsAPITests(TestCase):
     def test_invalid_tolerance_and_other_tenant_are_rejected(self, _permission):
         self.assertEqual(self.client.patch(self.url, {"quantity_tolerance_bps": 10001}, format="json").status_code, 400)
         self.assertEqual(self.client.patch(self.url, {"default_requisition_lead_days": 366}, format="json").status_code, 400)
+        self.assertEqual(self.client.patch(self.url, {"default_rfq_response_days": 366}, format="json").status_code, 400)
         self.assertEqual(self.client.patch(self.url, {"vendor_purchase_kyc_requirement": "ANY"}, format="json").status_code, 400)
         other = School.objects.create(name="Other Proc", slug="other-proc", code="OPRSC", status="ACTIVE")
         other_entity = LedgerEntity.objects.create(name="Other Proc Books", code="OPRBK", kind=LedgerEntity.Kind.TENANT, tenant=other.tenant)
@@ -199,3 +207,80 @@ class ProcurementSettingsAPITests(TestCase):
         contract = VendorContract.objects.get(pk=contract_response.data["data"]["id"])
         self.assertEqual(contract.payment_terms, "NET_60")
         self.assertEqual(contract.renewal_notice_days, 45)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_saved_sourcing_defaults_drive_rfq_dates_and_summary(self, _permission):
+        ProcurementSettings.objects.create(
+            entity=self.entity,
+            default_rfq_response_days=14,
+            rfq_closing_soon_days=7,
+        )
+        create_url = f"/v1/procurement/rfqs/?entity={self.entity.code}"
+        created = self.client.post(create_url, {
+            "title": "Default response window",
+            "issue_date": "2026-08-01",
+            "lines": [{
+                "description": "Paper", "quantity": 1,
+                "expense_account": "5300",
+            }],
+        }, format="json")
+        self.assertEqual(created.status_code, 201, created.content)
+        rfq = RequestForQuotation.objects.get(pk=created.data["data"]["id"])
+        self.assertEqual(str(rfq.response_due_date), "2026-08-15")
+
+        explicit = self.client.post(create_url, {
+            "title": "Explicit response window",
+            "issue_date": "2026-08-01",
+            "response_due_date": "2026-08-03",
+            "lines": [{
+                "description": "Ink", "quantity": 1,
+                "expense_account": "5300",
+            }],
+        }, format="json")
+        self.assertEqual(explicit.status_code, 201, explicit.content)
+        explicit_rfq = RequestForQuotation.objects.get(pk=explicit.data["data"]["id"])
+        self.assertEqual(str(explicit_rfq.response_due_date), "2026-08-03")
+
+        today = datetime.date.today()
+        RequestForQuotation.objects.create(
+            entity=self.entity, title="Within horizon", issue_date=today,
+            response_due_date=today + datetime.timedelta(days=7), rfq_status="ISSUED",
+        )
+        RequestForQuotation.objects.create(
+            entity=self.entity, title="Outside horizon", issue_date=today,
+            response_due_date=today + datetime.timedelta(days=8), rfq_status="ISSUED",
+        )
+        summary = self.client.get(
+            f"/v1/procurement/rfqs/summary/?entity={self.entity.code}",
+        )
+        self.assertEqual(summary.status_code, 200)
+        self.assertEqual(summary.data["data"]["closing_soon"], 1)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_contract_expiring_filter_uses_each_contract_notice_window(self, _permission):
+        vendor = Vendor.objects.create(
+            entity=self.entity, code="NOTICE", name="Notice Vendor",
+            payable_account=Account.objects.get(entity=self.entity, code="2100"),
+            default_expense_account=Account.objects.get(entity=self.entity, code="5300"),
+            kyc_status=VendorKycStatus.VERIFIED,
+        )
+        today = datetime.date.today()
+        VendorContract.objects.create(
+            entity=self.entity, vendor=vendor, reference="LONG-NOTICE",
+            title="Long notice", start_date=today - datetime.timedelta(days=30),
+            end_date=today + datetime.timedelta(days=60), renewal_notice_days=90,
+            status="ACTIVE",
+        )
+        VendorContract.objects.create(
+            entity=self.entity, vendor=vendor, reference="SHORT-NOTICE",
+            title="Short notice", start_date=today - datetime.timedelta(days=30),
+            end_date=today + datetime.timedelta(days=10), renewal_notice_days=5,
+            status="ACTIVE",
+        )
+        response = self.client.get(
+            f"/v1/procurement/contracts/?expiring=1&entity={self.entity.code}",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [row["reference"] for row in response.data["data"]], ["LONG-NOTICE"],
+        )

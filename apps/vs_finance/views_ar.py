@@ -11,6 +11,8 @@ which own every posting. Money is integer kobo.
 """
 from __future__ import annotations
 
+import datetime
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.validators import validate_email
 from django.db import transaction
@@ -153,11 +155,11 @@ def _allocation_plan(entity, raw_allocations):
 
 
 # Support the allocation strategy workflow.
-def _allocation_strategy(raw):
-    """Validate an optional ``allocation_strategy`` request value (default 'oldest')."""
+def _allocation_strategy(raw, *, default="oldest"):
+    """Validate an optional allocation strategy using the supplied entity default."""
     from .receivables import ALLOCATION_STRATEGIES
 
-    val = (raw or "oldest").lower()
+    val = str(raw or default).lower()
     if val not in ALLOCATION_STRATEGIES:
         raise ValidationError(
             {"allocation_strategy": f"Must be one of: {', '.join(ALLOCATION_STRATEGIES)}."})
@@ -605,8 +607,13 @@ class CustomerReceiptView(_FinanceBase):
         auto = body.get("auto_allocate", True)
         if isinstance(auto, str):
             auto = auto.lower() not in ("false", "0", "no")
+        from .banking_settings import resolve_finance_banking_settings
+        policy = resolve_finance_banking_settings(entity)
         post_payment(payment, actor_user=request.user, auto_allocate=bool(auto),
-                     strategy=_allocation_strategy(body.get("allocation_strategy")))
+                     strategy=_allocation_strategy(
+                         body.get("allocation_strategy"),
+                         default=policy.default_receipt_allocation_strategy,
+                     ))
         return success_response(
             f"Receipt {payment.document_number} recorded for {customer.code}.",
             data={
@@ -918,8 +925,13 @@ class PaymentAllocateView(_FinanceBase):
         if plan:
             allocate_payment(p, allocations=plan, actor_user=request.user)
         elif body.get("auto_allocate"):
+            from .banking_settings import resolve_finance_banking_settings
+            policy = resolve_finance_banking_settings(entity)
             allocate_payment(p, actor_user=request.user,
-                             strategy=_allocation_strategy(body.get("allocation_strategy")))
+                             strategy=_allocation_strategy(
+                                 body.get("allocation_strategy"),
+                                 default=policy.default_receipt_allocation_strategy,
+                             ))
         else:
             raise ValidationError({"allocations": "Provide allocations or auto_allocate=true."})
         p.refresh_from_db()

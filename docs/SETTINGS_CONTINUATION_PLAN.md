@@ -34,7 +34,7 @@ The next agent should begin with these steps:
 3. Check `git status --short` in both repositories and preserve unrelated user changes.
 4. Confirm the four baseline commits are present in local history.
 5. Inspect current code before relying on this handoff because later commits may have changed it.
-6. Continue Phase 1 only after the owner confirms which candidate policies should be editable.
+6. The owner approved the recommended first Finance and Procurement increments on 8 August 2026. Continue from the implementation status below rather than requesting that approval again.
 7. Treat Phase 2 as discussion-first work. Present the platform research in the same finding, proposal, readiness, locked-control, and exclusion format used for the original Finance and Procurement research.
 8. Do not perform new visual research for Platform Settings. Reuse the Finance and Procurement settings design exactly, with only module-appropriate content and shared-component refactoring.
 
@@ -50,6 +50,8 @@ The Finance settings console uses a sectioned settings layout with an overview a
 - automatic posting behavior for manual invoices;
 - customer opening-balance policy;
 - primary collection bank-account selection;
+- bank-reconciliation date tolerance and grouped-match defaults;
+- customer-receipt allocation strategy default;
 - permission-controlled saves;
 - recent immutable audit history.
 
@@ -58,6 +60,7 @@ Account mappings are enforced by real posting consumers. They are not display-on
 The main files are:
 
 - `apps/vs_finance/account_mappings.py`
+- `apps/vs_finance/banking_settings.py`
 - `apps/vs_finance/document_settings.py`
 - `apps/vs_finance/views_settings.py`
 - `apps/vs_finance/models/core.py`
@@ -78,11 +81,15 @@ The Procurement settings console uses the same sectioned visual language. The im
 - vendor purchase KYC requirement;
 - purchase-order requirement for goods receipts;
 - default requisition lead days;
+- default RFQ response days;
+- RFQ closing-soon reporting horizon;
 - contract renewal notice days;
 - permission-controlled saves;
 - recent immutable audit history.
 
 These values are enforced in vendor eligibility, requisitions, receipts, contracts, and invoice matching. Finance-owned posting accounts remain owned by Finance Settings and are only displayed or linked from Procurement.
+
+RFQ creation now uses the saved response period only when a request omits its due date. RFQ summary reporting uses its own saved closing-soon horizon. Contract-expiry lists and summary counts use each contract's stored renewal-notice period rather than a fixed 30-day window.
 
 The main files are:
 
@@ -159,7 +166,7 @@ Settings may show their status and deep-link to them. It should not maintain par
 
 ## Candidate Finance settings discovered in the code
 
-These candidates require product approval before implementation.
+The first three candidates were approved and implemented on 8 August 2026. The remaining candidates still require a separate product decision.
 
 | Candidate | Current behavior | Recommendation | Risk |
 | --- | --- | --- | --- |
@@ -170,17 +177,17 @@ These candidates require product approval before implementation.
 | Petty-cash low-balance threshold | Status reporting currently defaults to 2,500 basis points, or 25 percent, but accepts a query override. | Make entity-wide only if alerts and dashboards need one common threshold. Otherwise leave it as a report filter. | Low to medium. |
 | Fiscal close relaxations | Close and posting services contain force or restricted-access paths. | Do not expose these as ordinary toggles. Keep permission-controlled operational actions. | Critical. |
 
-### Recommended first Finance increment
+### Implemented first Finance increment
 
-The safest coherent increment is a new Banking and Cash Policy section containing:
+The Banking and Cash Policy section now contains:
 
 1. `default_bank_reconciliation_tolerance_days`, with a conservative bounded range.
 2. `default_group_reconciliation_matches`, a boolean.
 3. `default_receipt_allocation_strategy`, limited to the supported values.
 
-Do not include `auto_allocate_receipts` in that first increment unless the owner explicitly approves the operational change.
+`auto_allocate_receipts` was intentionally excluded. Adding it still requires explicit owner approval because disabling automatic allocation changes operating procedures.
 
-Implementation should extend a typed Finance policy model or introduce a clearly named one-to-one entity policy model. Do not place these entity settings in the generic platform `vs_config` catalogue.
+The implementation uses the typed, one-to-one `FinanceBankingSettings` entity policy model and does not put entity settings in the generic platform `vs_config` catalogue.
 
 ## Candidate Procurement settings discovered in the code
 
@@ -194,15 +201,15 @@ Implementation should extend a typed Finance policy model or introduce a clearly
 | Contract expiry list horizon | Contract list filters currently use a fixed 30-day window even though new contracts have `contract_renewal_notice_days`. | First fix the inconsistency: use each contract's own reminder date or a clearly documented list parameter. This may be a defect rather than a new setting. | Low. |
 | Senior approval threshold | A seeded fallback workflow uses a fixed threshold. | Keep this in Workflow templates. Do not duplicate it in Procurement Settings. | High if duplicated. |
 
-### Recommended first Procurement increment
+### Implemented first Procurement increment
 
-The safest coherent increment is a Sourcing and Lifecycle section containing:
+The Sourcing and Lifecycle section now contains:
 
 1. a default RFQ response period for new RFQs;
-2. a clearly named closing-soon reporting horizon, if the owner wants it configurable;
+2. a separate closing-soon reporting horizon;
 3. correction of the contract-expiry list so it respects contract-level renewal notice behavior.
 
-The competitive-bidding minimums should be a separate governance increment because they require exception permissions, audit reasons, and careful treatment of existing RFQs.
+The competitive-bidding minimums remain a separate governance increment because they require exception permissions, audit reasons, and careful treatment of existing RFQs.
 
 ## Backend implementation pattern for Phase 1
 
@@ -279,6 +286,8 @@ Phase 1 is complete when:
 - desktop and phone views have been driven against the real backend;
 - the Finance and Procurement settings guides are updated;
 - commits are created separately in the affected repositories.
+
+At 8 August 2026, implementation, focused backend coverage, the two module guides, frontend checks, real-backend screen verification, and responsive inspection are complete for the approved increment. The changed routes were driven with a temporary populated entity at desktop, 390px, and 820px with no browser errors or horizontal overflow; the fixture and login trail were removed afterward. Separate repository commits remain before the Phase 1 completion gate can be closed.
 
 # Phase 2: Future platform-settings discovery and revamp
 

@@ -21,6 +21,8 @@ SETTING_FIELDS = (
     "require_purchase_order_for_receipts",
     "default_requisition_lead_days",
     "contract_renewal_notice_days",
+    "default_rfq_response_days",
+    "rfq_closing_soon_days",
 )
 
 
@@ -45,6 +47,8 @@ def serialize_procurement_settings(settings):
         "require_purchase_order_for_receipts": settings.require_purchase_order_for_receipts,
         "default_requisition_lead_days": settings.default_requisition_lead_days,
         "contract_renewal_notice_days": settings.contract_renewal_notice_days,
+        "default_rfq_response_days": settings.default_rfq_response_days,
+        "rfq_closing_soon_days": settings.rfq_closing_soon_days,
         "updated_at": settings.updated_at.isoformat() if settings.pk else None,
         "updated_by": settings.updated_by.email if settings.pk and settings.updated_by else None,
     }
@@ -92,7 +96,12 @@ def _validated_values(data):
                 "vendor_purchase_kyc_requirement": "Select a valid KYC requirement.",
             })
         values["vendor_purchase_kyc_requirement"] = value
-    for field in ("default_requisition_lead_days", "contract_renewal_notice_days"):
+    for field in (
+        "default_requisition_lead_days",
+        "contract_renewal_notice_days",
+        "default_rfq_response_days",
+        "rfq_closing_soon_days",
+    ):
         if field not in data:
             continue
         value = data[field]

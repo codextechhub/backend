@@ -464,7 +464,14 @@ class RfqListCreateView(_ProcBase):
             if requisition is None:
                 raise ValidationError({"requisition": "No such requisition in this entity."})
         issue_date = _date(body.get("issue_date"), "issue_date", required=True)
-        response_due_date = _date(body.get("response_due_date"), "response_due_date")
+        if "response_due_date" in body:
+            response_due_date = _date(body.get("response_due_date"), "response_due_date")
+        else:
+            from ..settings import resolve_procurement_settings
+            policy = resolve_procurement_settings(entity)
+            response_due_date = issue_date + datetime.timedelta(
+                days=policy.default_rfq_response_days,
+            )
         _validate_rfq_dates(issue_date, response_due_date)
         rfq = RequestForQuotation.objects.create(
             entity=entity, requisition=requisition,
@@ -602,6 +609,8 @@ class RfqSummaryView(_ProcBase):
         """Return entity-wide sourcing KPIs, never page-local approximations."""
         entity = resolve_entity(request)
         today = timezone.localdate()
+        from ..settings import resolve_procurement_settings
+        policy = resolve_procurement_settings(entity)
         # One aggregate over the RFQ table for the three RFQ-status counts.
         counts = RequestForQuotation.objects.filter(entity=entity).aggregate(
             draft=Count("id", filter=Q(rfq_status=RfqStatus.DRAFT)),
@@ -609,7 +618,9 @@ class RfqSummaryView(_ProcBase):
             closing_soon=Count("id", filter=Q(
                 rfq_status=RfqStatus.ISSUED,
                 response_due_date__gte=today,
-                response_due_date__lte=today + datetime.timedelta(days=7),
+                response_due_date__lte=today + datetime.timedelta(
+                    days=policy.rfq_closing_soon_days,
+                ),
             )),
         )
         # A second cheap query: submitted responses currently sitting on issued RFQs.

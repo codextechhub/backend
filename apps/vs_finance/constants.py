@@ -459,6 +459,9 @@ class FinanceAuditAction(models.TextChoices):
     FINANCE_DOCUMENT_SETTINGS_UPDATED = (
         "FIN_DOCUMENT_SETTINGS_UPDATED", "Finance document settings updated"
     )
+    FINANCE_BANKING_SETTINGS_UPDATED = (
+        "FIN_BANK_SETTINGS_UPDATED", "Finance banking settings updated"
+    )
     PROCUREMENT_SETTINGS_UPDATED = "PROCUREMENT_SETTINGS_UPDATED", "Procurement settings updated"
     # Procure-to-Pay. The vendor/PO/GRN documents live in vs_procurement,
     # but their audit vocabulary belongs to finance's authoritative log (finance does

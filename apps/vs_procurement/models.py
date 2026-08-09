@@ -137,6 +137,14 @@ class ProcurementSettings(TimeStampedModel):
     contract_renewal_notice_days = models.PositiveSmallIntegerField(
         default=30, validators=[MaxValueValidator(365)],
     )
+    default_rfq_response_days = models.PositiveSmallIntegerField(
+        default=14, validators=[MaxValueValidator(365)],
+        help_text="Default number of days allowed for responses to a new RFQ.",
+    )
+    rfq_closing_soon_days = models.PositiveSmallIntegerField(
+        default=7, validators=[MaxValueValidator(365)],
+        help_text="Horizon used by the RFQ closing-soon summary.",
+    )
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
         related_name="procurement_settings_updates", null=True, blank=True,

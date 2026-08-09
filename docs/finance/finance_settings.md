@@ -8,6 +8,8 @@ Finance Settings is the entity-scoped control surface for defaults and policies 
 - choosing the accounts used by automated posting flows;
 - defining invoice and document defaults;
 - identifying the primary collection bank account;
+- defining bank-reconciliation defaults;
+- choosing the default customer-receipt allocation strategy;
 - exposing related finance configuration areas without duplicating their ownership.
 
 This document explains the backend contract, why each setting exists, where it is enforced, and the rules to preserve when extending it.
@@ -152,6 +154,22 @@ The explicit primary flag wins even if that account later becomes inactive. The 
 
 The settings response shows only the explicitly flagged account as selected. Its selector payload is safe and does not expose sensitive details that the screen does not need, such as the full account number. Invoice and receipt rendering uses the fallback resolver above and accesses the selected model directly because it has a separate business need and authorization path.
 
+## Banking and cash policy
+
+`FinanceBankingSettings` is a separate one-to-one entity policy record. Banking behavior is kept separate from invoice and document defaults because the values govern reconciliation and receipt allocation rather than document creation.
+
+| Field | Default | Validation | Effect |
+| --- | --- | --- | --- |
+| `default_bank_reconciliation_tolerance_days` | 4 | Whole number from 0 to 30 | Supplies the date window for automatic reconciliation when a request omits `tolerance_days`. |
+| `default_group_reconciliation_matches` | `true` | Boolean | Supplies the grouped-matching choice when a request omits `group`. |
+| `default_receipt_allocation_strategy` | `oldest` | `oldest` or `largest` | Chooses which open customer invoice is allocated first when a receipt request omits a strategy. |
+
+Explicit operational input wins. A caller can use a different reconciliation window, turn grouping on or off, or choose a supported receipt strategy for one operation without changing the entity default. An explicit tolerance of zero is meaningful and must not be replaced by the saved default.
+
+The allocation setting changes the order in which an automatically allocated receipt settles open invoices. It does not enable or disable automatic allocation. The current receipt flows keep their established automatic-allocation behavior, and only the strategy default has moved into settings.
+
+Changing these settings affects later reconciliation and receipt operations. It does not recalculate reconciliations or allocations already recorded.
+
 ## Related sections and ownership boundaries
 
 Some Finance Settings sections link to established modules rather than duplicating their models or APIs:
@@ -211,9 +229,29 @@ Example:
 
 The response envelope follows the finance API convention and returns the effective saved settings.
 
+### Banking and cash policy
+
+`GET /v1/finance/settings/banking/`
+
+Returns the complete effective banking policy and recent banking-settings audit events. Typed defaults are returned without creating a row.
+
+`PATCH /v1/finance/settings/banking/`
+
+Accepts a partial policy object. Omitted fields remain unchanged.
+
+Example:
+
+```json
+{
+  "default_bank_reconciliation_tolerance_days": 2,
+  "default_group_reconciliation_matches": false,
+  "default_receipt_allocation_strategy": "largest"
+}
+```
+
 ## Save, concurrency, and audit behavior
 
-Settings writes run in a database transaction. Document-default updates lock the existing one-to-one settings row before applying a change. Mapping updates use atomic `update_or_create` and delete operations under the entity-and-key uniqueness constraint. The current mapping implementation does not lock the whole mapping set, so clients should save one coherent partial payload rather than coordinating independent edits to the same keys.
+Settings writes run in a database transaction. Document-default and banking-policy updates lock their existing one-to-one settings row before applying a change. Mapping updates use atomic `update_or_create` and delete operations under the entity-and-key uniqueness constraint. The current mapping implementation does not lock the whole mapping set, so clients should save one coherent partial payload rather than coordinating independent edits to the same keys.
 
 Writes are partial. The backend validates only supplied fields but returns the complete effective state after saving. Unknown mapping keys and invalid field values return a validation error.
 
@@ -222,7 +260,8 @@ Every successful change records before and after snapshots in `FinanceAuditLog`,
 Audit actions are:
 
 - account mappings: `FINANCE_SETTINGS_UPDATED`;
-- document defaults: stored value `FIN_DOCUMENT_SETTINGS_UPDATED`, displayed label `Finance document settings updated`.
+- document defaults: stored value `FIN_DOCUMENT_SETTINGS_UPDATED`, displayed label `Finance document settings updated`;
+- banking and cash policy: stored value `FIN_BANK_SETTINGS_UPDATED`, displayed label `Finance banking settings updated`.
 
 The shortened stored value for document settings is intentional because the audit action column has a 32-character limit.
 
@@ -243,11 +282,13 @@ Opening a page, issuing a read, or saving values that do not change the effectiv
 Database support was introduced by:
 
 - `apps/vs_finance/migrations/0013_alter_financeauditlog_action_financeaccountmapping.py`;
-- `apps/vs_finance/migrations/0014_alter_financeauditlog_action_financedocumentsettings.py`.
+- `apps/vs_finance/migrations/0014_alter_financeauditlog_action_financedocumentsettings.py`;
+- `apps/vs_finance/migrations/0015_alter_financeauditlog_action_financebankingsettings.py`.
 
 The main implementation files are:
 
 - `apps/vs_finance/account_mappings.py`;
+- `apps/vs_finance/banking_settings.py`;
 - `apps/vs_finance/document_settings.py`;
 - `apps/vs_finance/views_settings.py`;
 - `apps/vs_finance/models/core.py`;
@@ -267,7 +308,10 @@ The focused settings tests cover:
 - partial updates and reset-to-default behavior;
 - document default validation;
 - audit before and after snapshots;
-- enforcement of due dates, auto-posting, and opening-balance policy.
+- enforcement of due dates, auto-posting, and opening-balance policy;
+- banking-policy validation and no-row defaults;
+- saved and explicit bank-reconciliation behavior;
+- saved and explicit customer-receipt allocation strategy.
 
 When extending settings, add tests at both boundaries: the settings endpoint and at least one real consumer that proves the policy is enforced outside the settings screen.
 

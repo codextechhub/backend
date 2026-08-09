@@ -115,6 +115,34 @@ class FinanceDocumentSettings(TimeStampedModel):
         return f"Finance document settings for {self.entity_id}"
 
 
+class FinanceBankingSettings(TimeStampedModel):
+    """Entity defaults for reconciliation and receipt allocation."""
+
+    class ReceiptAllocationStrategy(models.TextChoices):
+        OLDEST = "oldest", "Oldest due first"
+        LARGEST = "largest", "Largest balance first"
+
+    entity = models.OneToOneField(
+        LedgerEntity, on_delete=models.CASCADE, related_name="finance_banking_settings",
+    )
+    default_bank_reconciliation_tolerance_days = models.PositiveSmallIntegerField(
+        default=4, validators=[MaxValueValidator(30)],
+        help_text="Default date distance allowed by automatic bank reconciliation.",
+    )
+    default_group_reconciliation_matches = models.BooleanField(default=True)
+    default_receipt_allocation_strategy = models.CharField(
+        max_length=8, choices=ReceiptAllocationStrategy.choices,
+        default=ReceiptAllocationStrategy.OLDEST,
+    )
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT,
+        related_name="finance_banking_settings_updates", null=True, blank=True,
+    )
+
+    def __str__(self) -> str:
+        return f"Finance banking settings for {self.entity_id}"
+
+
 class BankStatementLine(TimeStampedModel):
     """One line of an imported bank statement, awaiting reconciliation.
 

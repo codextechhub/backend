@@ -52,6 +52,7 @@ class SeedImportConfigurationTests(TestCase):
                 DatasetTypeChoices.SCHOOLS,
                 DatasetTypeChoices.BRANCHES,
                 DatasetTypeChoices.CX_USERS,
+                DatasetTypeChoices.BANK_STATEMENTS,
             },
         )
 

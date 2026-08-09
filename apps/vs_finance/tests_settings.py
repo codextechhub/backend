@@ -11,6 +11,7 @@ from vs_finance.models import (
     BankAccount,
     Customer,
     FinanceAuditLog,
+    FinanceBankingSettings,
     FinanceDocumentSettings,
     Invoice,
     LedgerEntity,
@@ -208,3 +209,132 @@ class FinanceDocumentSettingsAPITests(TestCase):
         )
         self.assertEqual(customer_response.status_code, 400)
         self.assertFalse(Customer.objects.filter(name="Imported Customer").exists())
+
+
+class FinanceBankingSettingsAPITests(TestCase):
+    def setUp(self):
+        seed_currencies()
+        self.school = School.objects.create(
+            name="Banking Settings School", slug="banking-settings-school",
+            code="BNKSC", status="ACTIVE",
+        )
+        self.entity = LedgerEntity.objects.create(
+            name="Banking Settings Books", code="BNKBK",
+            kind=LedgerEntity.Kind.TENANT, tenant=self.school.tenant,
+        )
+        seed_chart_of_accounts(self.entity)
+        self.user = get_user_model().objects.create_user(
+            email="banking-settings@test.com", password="pw",
+            tenant=self.school.tenant, user_type="CX_STAFF", status="ACTIVE",
+            first_name="Banking", last_name="Settings",
+        )
+        self.client = TenantAPIClient(user=self.user)
+        self.url = f"/v1/finance/settings/banking/?entity={self.entity.code}"
+        self.bank = BankAccount.objects.create(
+            entity=self.entity,
+            gl_account=Account.objects.get(entity=self.entity, code="1100"),
+            name="Operating Bank",
+        )
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=False)
+    def test_read_and_update_require_settings_permission(self, _permission):
+        self.assertEqual(self.client.get(self.url).status_code, 403)
+        self.assertEqual(self.client.patch(
+            self.url, {"default_group_reconciliation_matches": False}, format="json",
+        ).status_code, 403)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_defaults_are_returned_without_creating_a_row(self, _permission):
+        response = self.client.get(self.url)
+        self.assertEqual(response.status_code, 200)
+        values = response.data["data"]["settings"]
+        self.assertEqual(values["default_bank_reconciliation_tolerance_days"], 4)
+        self.assertTrue(values["default_group_reconciliation_matches"])
+        self.assertEqual(values["default_receipt_allocation_strategy"], "oldest")
+        self.assertFalse(FinanceBankingSettings.objects.filter(entity=self.entity).exists())
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_update_is_typed_and_audited(self, _permission):
+        response = self.client.patch(self.url, {
+            "default_bank_reconciliation_tolerance_days": 0,
+            "default_group_reconciliation_matches": False,
+            "default_receipt_allocation_strategy": "largest",
+        }, format="json")
+        self.assertEqual(response.status_code, 200)
+        settings = FinanceBankingSettings.objects.get(entity=self.entity)
+        self.assertEqual(settings.default_bank_reconciliation_tolerance_days, 0)
+        self.assertFalse(settings.default_group_reconciliation_matches)
+        self.assertEqual(settings.default_receipt_allocation_strategy, "largest")
+        audit = FinanceAuditLog.objects.get(
+            action=FinanceAuditAction.FINANCE_BANKING_SETTINGS_UPDATED,
+        )
+        self.assertEqual(
+            audit.before["default_bank_reconciliation_tolerance_days"], 4,
+        )
+        self.assertEqual(
+            audit.after["default_receipt_allocation_strategy"], "largest",
+        )
+        self.assertEqual(response.data["data"]["history"][0]["id"], audit.id)
+
+        audit_count = FinanceAuditLog.objects.count()
+        same = self.client.patch(self.url, {
+            "default_receipt_allocation_strategy": "largest",
+        }, format="json")
+        self.assertEqual(same.status_code, 200)
+        self.assertEqual(FinanceAuditLog.objects.count(), audit_count)
+
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_invalid_ranges_and_strategy_are_rejected(self, _permission):
+        self.assertEqual(self.client.patch(self.url, {
+            "default_bank_reconciliation_tolerance_days": 31,
+        }, format="json").status_code, 400)
+        self.assertEqual(self.client.patch(self.url, {
+            "default_group_reconciliation_matches": "false",
+        }, format="json").status_code, 400)
+        self.assertEqual(self.client.patch(self.url, {
+            "default_receipt_allocation_strategy": "fifo",
+        }, format="json").status_code, 400)
+
+    @patch("vs_finance.banking.auto_reconcile", return_value=[])
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_saved_reconciliation_defaults_drive_auto_match(
+        self, _permission, auto_reconcile,
+    ):
+        FinanceBankingSettings.objects.create(
+            entity=self.entity,
+            default_bank_reconciliation_tolerance_days=0,
+            default_group_reconciliation_matches=False,
+        )
+        response = self.client.post(
+            f"/v1/finance/bank-accounts/{self.bank.id}/auto-reconcile/"
+            f"?entity={self.entity.code}",
+            {}, format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        auto_reconcile.assert_called_once_with(
+            self.bank, tolerance_days=0, group=False, actor_user=self.user,
+        )
+
+    @patch("vs_finance.receivables.post_payment")
+    @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
+    def test_saved_allocation_strategy_drives_customer_receipts(
+        self, _permission, post_payment,
+    ):
+        FinanceBankingSettings.objects.create(
+            entity=self.entity, default_receipt_allocation_strategy="largest",
+        )
+        customer = Customer.objects.create(
+            entity=self.entity, code="BANK-CUST", name="Banking Customer",
+            receivable_account=Account.objects.get(entity=self.entity, code="1200"),
+        )
+        response = self.client.post(
+            f"/v1/finance/customers/{customer.code}/receipt/?entity={self.entity.code}",
+            {
+                "amount": 10000,
+                "payment_date": "2026-08-01",
+                "deposit_account": "1100",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(post_payment.call_args.kwargs["strategy"], "largest")

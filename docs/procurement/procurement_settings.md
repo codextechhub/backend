@@ -11,7 +11,9 @@ Procurement Settings is the entity-scoped control surface for purchasing default
 - vendor KYC eligibility for purchasing;
 - whether a purchase order is required before receiving goods;
 - default requisition lead time;
-- default contract renewal notice.
+- default RFQ response time;
+- the RFQ closing-soon reporting horizon;
+- default contract renewal notice and contract-specific expiry visibility.
 
 This document explains how these settings are stored, validated, audited, and enforced in Procurement workflows. It also calls out policies that intentionally remain fixed and Finance-owned configuration that Procurement consumes without duplicating.
 
@@ -46,6 +48,8 @@ Read and update permissions are separate. All writes are authorized on the backe
 | `vendor_purchase_kyc_requirement` | `PENDING_OR_VERIFIED` | Supported KYC requirement | Vendor eligibility across purchasing. |
 | `require_purchase_order_for_receipts` | `false` | Boolean | Goods-receipt creation. |
 | `default_requisition_lead_days` | 0 | Whole number from 0 to 365 | New requisition required-by date. |
+| `default_rfq_response_days` | 14 | Whole number from 0 to 365 | New RFQ response due date when the caller omits it. |
+| `rfq_closing_soon_days` | 7 | Whole number from 0 to 365 | RFQ summary closing-soon horizon. |
 | `contract_renewal_notice_days` | 30 | Whole number from 0 to 365 | New contract renewal reminder. |
 
 All values are backend-owned and typed. The frontend may format them for usability but must send the documented API representation.
@@ -77,6 +81,16 @@ The setting is a creation default, not a rule that continually moves an existing
 ### Contract renewal notice
 
 `contract_renewal_notice_days` supplies the renewal-notice period for new contracts when the caller omits it. It does not retroactively alter existing contracts.
+
+Contract expiry views respect each contract's stored `renewal_notice_days`. A contract becomes due for renewal attention when today reaches its own end date minus its notice period. This replaces the previous fixed 30-day list window and keeps list and summary counts consistent with the contract record.
+
+### RFQ response and reporting windows
+
+`default_rfq_response_days` supplies a response due date for a new RFQ only when the request omits the `response_due_date` key. The date is calculated from the RFQ issue date. Explicit input wins, including an explicit null where the API permits no due date.
+
+`rfq_closing_soon_days` controls the RFQ summary horizon. It is deliberately separate from the response default: one determines a new record's due date, while the other determines which existing RFQs the dashboard calls closing soon.
+
+Changing either value does not rewrite existing RFQ due dates. The closing-soon horizon affects later summary reads immediately because it is a reporting policy.
 
 ## Invoice matching tolerances
 
@@ -211,6 +225,8 @@ Example:
   "vendor_purchase_kyc_requirement": "VERIFIED_ONLY",
   "require_purchase_order_for_receipts": true,
   "default_requisition_lead_days": 7,
+  "default_rfq_response_days": 21,
+  "rfq_closing_soon_days": 10,
   "contract_renewal_notice_days": 45
 }
 ```
@@ -250,7 +266,8 @@ Opening the page, issuing a GET, or saving values that do not change the effecti
 Database support was introduced and extended by:
 
 - `apps/vs_procurement/migrations/0016_alter_vendorinvoice_match_status_procurementsettings.py`;
-- `apps/vs_procurement/migrations/0017_procurementsettings_contract_renewal_notice_days_and_more.py`.
+- `apps/vs_procurement/migrations/0017_procurementsettings_contract_renewal_notice_days_and_more.py`;
+- `apps/vs_procurement/migrations/0018_procurementsettings_default_rfq_response_days_and_more.py`.
 
 The main implementation files are:
 
@@ -259,6 +276,9 @@ The main implementation files are:
 - `apps/vs_procurement/views/settings.py`;
 - `apps/vs_procurement/payables.py`;
 - `apps/vs_procurement/purchasing.py`;
+- `apps/vs_procurement/contracts.py`;
+- `apps/vs_procurement/views/contracts.py`;
+- `apps/vs_procurement/views/orders.py`;
 - `apps/vs_procurement/views/vendors.py`;
 - `apps/vs_procurement/tests_settings.py`.
 
@@ -276,7 +296,10 @@ The focused settings tests cover:
 - quantity and price matching behavior;
 - non-PO invoice blocking;
 - KYC eligibility policy;
-- receipt, requisition, and contract default enforcement.
+- receipt, requisition, and contract default enforcement;
+- RFQ response-date defaults and explicit overrides;
+- configurable RFQ closing-soon summaries;
+- contract-specific renewal windows in list and summary views.
 
 When extending Procurement Settings, test the endpoint and the real workflow consumer. A green settings endpoint test does not prove that purchase orders, receipts, invoices, vendors, or contracts obey the policy.
 
