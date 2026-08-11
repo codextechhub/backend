@@ -6410,8 +6410,8 @@ class ProcurementDashboardTests(_P2PFixtureMixin, TestCase):
 class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
     """Spend approvals are routed through vs_workflow (threshold-gated stages).
 
-    Covers: default-template provisioning + idempotency, the auto-skip path (no
-    eligible approvers → the requisition is approved synchronously on submit),
+    Covers: default-template provisioning + idempotency, the unstaffed path (no
+    eligible approvers → the requisition parks, it is never approved on submit),
     threshold gating of the senior stage, a real APPROVED vote driving the document
     to APPROVED, and a REJECTED vote cancelling the requisition.
     """
@@ -6477,10 +6477,20 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         )
         self.assertEqual(WorkflowStage.objects.filter(template=req_tmpl).count(), 2)
 
-    # -- auto-skip (no approvers) ------------------------------------------- #
+    # -- no approvers: park, never self-approve ----------------------------- #
 
-    def test_submit_without_approvers_auto_approves(self):
+    def test_submit_without_approvers_parks_instead_of_approving(self):
+        """Spend must never approve itself when nobody holds the approving permission.
+
+        Inverted from the original ``test_submit_without_approvers_auto_approves``,
+        which asserted the defect as correct behaviour: both seeded stages carried
+        ``skip_if_no_approvers=True``, so an unstaffed ladder skipped every stage and the
+        engine reached a terminal APPROVED decision synchronously on submit. The stages
+        now block, so the document stays PENDING on an ACTIVE stage with an empty
+        approver snapshot.
+        """
         from vs_workflow.constants import WorkflowInstanceStatus
+        from vs_procurement.approval_parking import is_document_parked
         from vs_procurement.approvals import (
             ensure_default_approval_templates, submit_for_approval,
         )
@@ -6493,10 +6503,11 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
 
         instance = submit_for_approval(req, actor_user=actor)
         req.refresh_from_db()
-        # Both stages skip (no eligible approvers) → terminal APPROVED on submit.
-        self.assertEqual(instance.status, WorkflowInstanceStatus.APPROVED)
-        self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
-        self.assertEqual(req.status, DocumentStatus.APPROVED)
+        self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        self.assertEqual(req.approval_state, ProcApprovalState.PENDING)
+        self.assertEqual(req.status, DocumentStatus.PENDING_APPROVAL)
+        self.assertNotEqual(req.status, DocumentStatus.APPROVED)
+        self.assertTrue(is_document_parked(req))
 
     def test_double_submit_is_rejected(self):
         from vs_procurement.approvals import (
@@ -6508,7 +6519,7 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         ensure_default_approval_templates()
         req = self._make_requisition(entity, unit_price=10_000)
         actor = self._user("actor2@t.com")
-        submit_for_approval(req, actor_user=actor)  # → APPROVED
+        submit_for_approval(req, actor_user=actor)  # → PENDING (parked, no approvers)
         with self.assertRaises(ApprovalWorkflowError):
             submit_for_approval(req, actor_user=actor)
 
@@ -6623,6 +6634,479 @@ class WorkflowApprovalTests(_P2PFixtureMixin, TestCase):
         self.assertEqual(instance.status, WorkflowInstanceStatus.REJECTED)
         self.assertEqual(req.approval_state, ProcApprovalState.REJECTED)
         self.assertEqual(req.status, DocumentStatus.CANCELLED)
+
+
+class ParkedApprovalTests(_P2PFixtureMixin, TestCase):
+    """Parked spend: nobody can approve it, and the repair that makes it reachable.
+
+    ``vs_workflow`` freezes eligibility once, at stage activation. A stage activated
+    with zero eligible approvers is therefore unreachable for that attempt no matter how
+    RBAC changes afterwards, so blocking self-approval without a repair would simply
+    trade one bug for another. These tests pin both halves: the block, and the repair
+    that lets a newly permissioned approver pick the work up with no resubmission.
+    """
+
+    # -- fixtures ------------------------------------------------------------ #
+
+    @staticmethod
+    def _user(email, tenant=None, **extra):
+        from django.contrib.auth import get_user_model
+
+        return get_user_model().objects.create_user(
+            email=email, password="pw", tenant=tenant, user_type="CX_STAFF",
+            status="ACTIVE", first_name=email.split("@")[0], last_name="Tester",
+            **extra,
+        )
+
+    @staticmethod
+    def _grant(user, permission_key, *, tenant, role_key="proc-approver"):
+        """Give ``user`` a real RBAC grant for ``permission_key`` in ``tenant``.
+
+        Goes through the registry the way ``seed_procurement_permissions`` does rather
+        than patching ``resolve_approvers``: the point of these tests is that the *live*
+        RBAC answer changes after the stage has already been frozen.
+        """
+        from vs_rbac.models import (
+            Permission, PermissionAction, PermissionModule, PermissionResource,
+            TenantRolePermission, TenantRoleTemplate, TenantUserRoleAssignment,
+        )
+
+        module_name, resource_name, action_name = permission_key.split(".")
+        module, _ = PermissionModule.objects.get_or_create(name=module_name)
+        resource, _ = PermissionResource.objects.get_or_create(
+            module=module, name=resource_name,
+        )
+        action, _ = PermissionAction.objects.get_or_create(name=action_name)
+        permission, _ = Permission.objects.get_or_create(
+            key=permission_key,
+            defaults={"module": module, "resource": resource, "action": action},
+        )
+        role, _ = TenantRoleTemplate.objects.get_or_create(
+            tenant=tenant, key=role_key, defaults={"name": role_key, "status": "ACTIVE"},
+        )
+        TenantRolePermission.objects.get_or_create(
+            role=role, permission=permission, defaults={"granted": True},
+        )
+        TenantUserRoleAssignment.objects.get_or_create(
+            tenant=tenant, user=user, role=role,
+            defaults={"assignment_status": "ACTIVE"},
+        )
+
+    def _requisition(self, entity, requester, *, unit_price=10_000):
+        from vs_procurement.models import PurchaseRequisition, PurchaseRequisitionLine
+
+        req = PurchaseRequisition.objects.create(
+            entity=entity, request_date=datetime.date(2026, 1, 3), requested_by=requester,
+            title="Parked test",
+        )
+        PurchaseRequisitionLine.objects.create(
+            requisition=req, line_no=1, description="thing", quantity=1,
+            estimated_unit_price=unit_price, expense_account=self.acc(entity, "5300"),
+        )
+        req.recompute_total(save=True)
+        return req
+
+    def _park(self, entity, *, requester_email="parked-requester@t.com"):
+        """Submit a requisition into a template nobody can currently approve."""
+        from vs_procurement.approvals import (
+            ensure_default_approval_templates, submit_for_approval,
+        )
+
+        ensure_default_approval_templates()
+        requester = self._user(requester_email, tenant=entity.tenant)
+        req = self._requisition(entity, requester)
+        instance = submit_for_approval(req, actor_user=requester)
+        return req, instance, requester
+
+    # -- no template is a refusal, not a park -------------------------------- #
+
+    def test_submit_without_any_template_refuses_and_creates_nothing(self):
+        """A missing route is a configuration failure; the submit must leave no trace."""
+        from vs_workflow.models import WorkflowInstance
+        from vs_procurement.approvals import submit_for_approval
+        from vs_procurement.constants import ProcApprovalState
+        from vs_procurement.exceptions import ApprovalTemplateMissingError
+
+        entity, _, _, _, _ = self.build_p2p()
+        requester = self._user("no-template@t.com", tenant=entity.tenant)
+        req = self._requisition(entity, requester)  # no templates provisioned at all
+
+        with self.assertRaises(ApprovalTemplateMissingError) as caught:
+            submit_for_approval(req, actor_user=requester)
+
+        message = str(caught.exception)
+        self.assertIn("requisition", message)
+        # The engine's own wording names internal tokens; it must not reach the client.
+        self.assertNotIn("document_type", message)
+        self.assertNotIn("procurement.requisition", message)
+        self.assertNotIn("school", message.lower())
+        # Nothing was written: no instance, and the PENDING flip rolled back.
+        req.refresh_from_db()
+        self.assertEqual(req.approval_state, ProcApprovalState.NOT_SUBMITTED)
+        self.assertEqual(req.status, DocumentStatus.DRAFT)
+        self.assertFalse(WorkflowInstance.all_objects.for_document(req).exists())
+
+    # -- the repair ---------------------------------------------------------- #
+
+    def test_granting_permission_makes_parked_request_approvable_without_resubmission(self):
+        """The whole point of the repair, end to end through the real API.
+
+        Park a requisition, then grant somebody the approving permission. Without the
+        repair the frozen snapshot stays empty forever and the inbox stays empty; with
+        it the request appears and can be decided, with no resubmit and no new attempt.
+        """
+        from core.test_utils import TenantAPIClient
+        from vs_workflow.constants import WorkflowInstanceStatus
+        from vs_workflow.models import WorkflowStageInstance
+        from vs_procurement.constants import (
+            ProcApprovalState, WF_DEFAULT_MANAGER_PERMISSION,
+        )
+
+        entity, _, _, _, _ = self.build_p2p()
+        req, instance, _ = self._park(entity)
+        approver = self._user("late-approver@t.com", tenant=entity.tenant)
+        client = TenantAPIClient(user=approver)
+        queue_url = f"/v1/procurement/approvals/?entity={entity.code}"
+
+        # Before the grant: parked, and invisible to everyone.
+        self.assertEqual(client.get(queue_url).data["data"], [])
+
+        self._grant(approver, WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant)
+
+        listed = client.get(queue_url)
+        self.assertEqual(listed.status_code, 200)
+        rows = listed.data["data"]
+        self.assertEqual([row["document_id"] for row in rows], [req.pk])
+        self.assertEqual(rows[0]["id"], instance.id)
+
+        decided = client.post(
+            f"/v1/procurement/approvals/{instance.id}/actions/?entity={entity.code}",
+            {"action": "APPROVED"}, format="json",
+        )
+        self.assertEqual(decided.status_code, 200)
+        instance.refresh_from_db()
+        req.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.APPROVED)
+        self.assertEqual(req.approval_state, ProcApprovalState.APPROVED)
+        self.assertEqual(req.status, DocumentStatus.APPROVED)
+        # Repaired in place: still the original attempt, no resubmission cycle.
+        attempts = set(
+            WorkflowStageInstance.objects.filter(instance=instance)
+            .values_list("attempt", flat=True)
+        )
+        self.assertEqual(attempts, {1})
+
+    def test_repair_never_rewrites_a_populated_snapshot(self):
+        """The freeze guarantee: an approver mid-review is never swapped out."""
+        from unittest.mock import patch
+
+        from vs_workflow.models import WorkflowStageApprover, WorkflowStageInstance
+        from vs_workflow.services.approvers import EligibleApprover
+        from vs_procurement.approval_parking import repair_workflows
+        from vs_procurement.approvals import (
+            ensure_default_approval_templates, submit_for_approval,
+        )
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_PERMISSION
+
+        entity, _, _, _, _ = self.build_p2p()
+        ensure_default_approval_templates()
+        requester = self._user("frozen-requester@t.com", tenant=entity.tenant)
+        original = self._user("frozen-approver@t.com", tenant=entity.tenant)
+        req = self._requisition(entity, requester)
+        with patch(
+            "vs_workflow.services.approvers.resolve_approvers",
+            return_value=[EligibleApprover(user=original)],
+        ):
+            instance = submit_for_approval(req, actor_user=requester)
+
+        stage_instance = WorkflowStageInstance.objects.get(
+            instance=instance, status="ACTIVE",
+        )
+        # Somebody else is granted the permission after the snapshot was frozen.
+        newcomer = self._user("newcomer@t.com", tenant=entity.tenant)
+        self._grant(newcomer, WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant)
+
+        self.assertEqual(repair_workflows(tenant=entity.tenant), 0)
+        self.assertEqual(
+            list(
+                WorkflowStageApprover.objects
+                .filter(stage_instance=stage_instance).values_list("user_id", flat=True)
+            ),
+            [original.pk],
+        )
+
+    def test_repair_does_not_approve_advance_or_skip(self):
+        """Restoring reachability is not a decision: state must be untouched."""
+        from vs_workflow.constants import WorkflowInstanceStatus
+        from vs_procurement.approval_parking import repair_workflows
+        from vs_procurement.constants import (
+            ProcApprovalState, WF_DEFAULT_MANAGER_PERMISSION,
+        )
+
+        entity, _, _, _, _ = self.build_p2p()
+        req, instance, _ = self._park(entity)
+        approver = self._user("passive-approver@t.com", tenant=entity.tenant)
+        self._grant(approver, WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant)
+
+        self.assertEqual(repair_workflows(tenant=entity.tenant), 1)
+        instance.refresh_from_db()
+        req.refresh_from_db()
+        self.assertEqual(instance.status, WorkflowInstanceStatus.IN_PROGRESS)
+        self.assertEqual(req.approval_state, ProcApprovalState.PENDING)
+        self.assertEqual(req.status, DocumentStatus.PENDING_APPROVAL)
+        # Re-running is a no-op; the snapshot is populated now.
+        self.assertEqual(repair_workflows(tenant=entity.tenant), 0)
+
+    def test_requester_as_sole_permission_holder_stays_parked(self):
+        """``resolve_approvers`` excludes the requester, so self-approval cannot sneak in."""
+        from vs_procurement.approval_parking import is_document_parked, repair_workflows
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_PERMISSION
+
+        entity, _, _, _, _ = self.build_p2p()
+        req, _, requester = self._park(entity)
+        self._grant(requester, WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant)
+
+        self.assertEqual(repair_workflows(tenant=entity.tenant), 0)
+        self.assertTrue(is_document_parked(req))
+
+    def test_repair_is_tenant_isolated(self):
+        """A repair pass for one tenant never touches another tenant's parked work."""
+        from vs_finance.models import LedgerEntity
+        from vs_finance.seed import seed_chart_of_accounts
+        from vs_tenants.models import Tenant
+        from vs_workflow.models import WorkflowStageApprover
+        from vs_procurement.approval_parking import repair_workflows
+        from vs_procurement.constants import WF_DEFAULT_MANAGER_PERMISSION
+
+        entity, _, _, _, _ = self.build_p2p()
+        other_tenant = Tenant.objects.create(name="Other Tenant", slug="other-tenant")
+        other_entity = LedgerEntity.objects.create(
+            name="Other Books", code="OTHERBK", kind=LedgerEntity.Kind.TENANT,
+            tenant=other_tenant,
+        )
+        seed_chart_of_accounts(other_entity)
+
+        own_req, own_instance, _ = self._park(entity)
+        other_req, other_instance, _ = self._park(
+            other_entity, requester_email="other-requester@t.com",
+        )
+        # Both tenants staff the same permission key.
+        self._grant(
+            self._user("own-approver@t.com", tenant=entity.tenant),
+            WF_DEFAULT_MANAGER_PERMISSION, tenant=entity.tenant,
+        )
+        self._grant(
+            self._user("other-approver@t.com", tenant=other_tenant),
+            WF_DEFAULT_MANAGER_PERMISSION, tenant=other_tenant,
+        )
+
+        self.assertEqual(repair_workflows(tenant=entity.tenant), 1)
+        self.assertTrue(
+            WorkflowStageApprover.objects.filter(
+                stage_instance__instance=own_instance).exists(),
+        )
+        self.assertFalse(
+            WorkflowStageApprover.objects.filter(
+                stage_instance__instance=other_instance).exists(),
+        )
+
+    # -- is_parked on the API ------------------------------------------------ #
+
+    def test_requisition_list_exposes_is_parked_and_filters_on_it(self):
+        from unittest.mock import patch
+
+        from core.test_utils import TenantAPIClient
+        from vs_workflow.services.approvers import EligibleApprover
+        from vs_procurement.approvals import (
+            ensure_default_approval_templates, submit_for_approval,
+        )
+
+        entity, _, _, _, _ = self.build_p2p()
+        ensure_default_approval_templates()
+        requester = self._user("list-requester@t.com", tenant=entity.tenant)
+        parked = self._requisition(entity, requester)
+        submit_for_approval(parked, actor_user=requester)
+
+        covered = self._requisition(entity, requester)
+        approver = self._user("list-approver@t.com", tenant=entity.tenant)
+        with patch(
+            "vs_workflow.services.approvers.resolve_approvers",
+            return_value=[EligibleApprover(user=approver)],
+        ):
+            submit_for_approval(covered, actor_user=requester)
+        draft = self._requisition(entity, requester)  # never submitted
+
+        client = TenantAPIClient(user=requester)
+        url = f"/v1/procurement/requisitions/?entity={entity.code}"
+        with patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True):
+            rows = client.get(url).data["data"]
+            by_id = {row["id"]: row["is_parked"] for row in rows}
+            self.assertEqual(
+                by_id, {parked.pk: True, covered.pk: False, draft.pk: False},
+            )
+            self.assertEqual(
+                [row["id"] for row in client.get(f"{url}&parked=1").data["data"]],
+                [parked.pk],
+            )
+            self.assertEqual(
+                sorted(row["id"] for row in client.get(f"{url}&parked=0").data["data"]),
+                sorted([covered.pk, draft.pk]),
+            )
+            # An entity with nothing parked still returns a JSON array, not {}.
+            self.assertEqual(
+                client.get(
+                    f"{url}&parked=1&status={DocumentStatus.DRAFT}",
+                ).data["data"], [],
+            )
+            detail = client.get(
+                f"/v1/procurement/requisitions/{parked.pk}/?entity={entity.code}",
+            )
+            self.assertIs(detail.data["data"]["is_parked"], True)
+
+    def test_requisition_list_is_parked_does_not_leak_across_entities(self):
+        from unittest.mock import patch
+
+        from core.test_utils import TenantAPIClient
+        from vs_finance.models import LedgerEntity
+        from vs_finance.seed import seed_chart_of_accounts
+
+        entity, _, _, _, _ = self.build_p2p()
+        other = LedgerEntity.objects.create(
+            name="Sibling Books", code="SIBBK", kind=LedgerEntity.Kind.TENANT,
+            tenant=entity.tenant,
+        )
+        seed_chart_of_accounts(other)
+        own_parked, _, requester = self._park(entity)
+        other_parked, _, _ = self._park(other, requester_email="sibling-req@t.com")
+
+        client = TenantAPIClient(user=requester)
+        with patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True):
+            rows = client.get(
+                f"/v1/procurement/requisitions/?parked=1&entity={entity.code}",
+            ).data["data"]
+        self.assertEqual([row["id"] for row in rows], [own_parked.pk])
+        self.assertNotIn(other_parked.pk, [row["id"] for row in rows])
+
+    def test_parked_filter_requires_requisition_view_permission(self):
+        from unittest.mock import patch
+
+        from core.test_utils import TenantAPIClient
+
+        entity, _, _, _, _ = self.build_p2p()
+        self._park(entity)
+        client = TenantAPIClient(user=self._user("no-grant@t.com", tenant=entity.tenant))
+        with patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=False):
+            response = client.get(
+                f"/v1/procurement/requisitions/?parked=1&entity={entity.code}",
+            )
+        self.assertEqual(response.status_code, 403)
+
+    def test_parked_page_costs_no_rbac_resolution_when_healthy(self):
+        """A page with nothing parked must not resolve a single permission holder."""
+        from unittest.mock import patch
+
+        from vs_procurement.approval_parking import parked_document_ids
+        from vs_procurement.approvals import (
+            ensure_default_approval_templates, submit_for_approval,
+        )
+
+        entity, _, _, _, _ = self.build_p2p()
+        ensure_default_approval_templates()
+        requester = self._user("healthy-requester@t.com", tenant=entity.tenant)
+        approver = self._user("healthy-approver@t.com", tenant=entity.tenant)
+        from vs_workflow.services.approvers import EligibleApprover
+
+        rows = [self._requisition(entity, requester) for _ in range(3)]
+        with patch(
+            "vs_workflow.services.approvers.resolve_approvers",
+            return_value=[EligibleApprover(user=approver)],
+        ):
+            for row in rows:
+                submit_for_approval(row, actor_user=requester)
+        for row in rows:
+            row.refresh_from_db()
+
+        with patch("vs_rbac.evaluator.resolve_users_with_permission") as resolver:
+            with self.assertNumQueries(1):
+                self.assertEqual(parked_document_ids(rows), set())
+        resolver.assert_not_called()
+
+    def test_is_parked_query_count_does_not_scale_with_page_size(self):
+        """``is_parked`` must cost the same for a big page as for a small one.
+
+        Asserting a *constant* rather than a magic number is the point: the number
+        itself moves whenever an unrelated part of the list view changes, but "the cost
+        does not grow per row" is the property that keeps the feature safe, and it is
+        exactly what a per-row lookup (or a per-stage lock on a fully parked page) would
+        break. Measured at two page sizes for both a healthy page and an all-parked one.
+        """
+        from unittest.mock import patch
+
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from core.test_utils import TenantAPIClient
+        from vs_workflow.models import WorkflowStageApprover
+        from vs_workflow.services.approvers import EligibleApprover
+        from vs_procurement.approvals import (
+            ensure_default_approval_templates, submit_for_approval,
+        )
+
+        from vs_procurement.models import PurchaseRequisition
+
+        entity, _, _, _, _ = self.build_p2p()
+        ensure_default_approval_templates()
+        requester = self._user("scale-requester@t.com", tenant=entity.tenant)
+        approver = self._user("scale-approver@t.com", tenant=entity.tenant)
+        client = TenantAPIClient(user=requester)
+
+        # Line-free on purpose: the requisition line serializer resolves each line's
+        # expense account individually, a pre-existing N+1 unrelated to parking that
+        # would otherwise swamp the signal this test measures.
+        with patch(
+            "vs_workflow.services.approvers.resolve_approvers",
+            return_value=[EligibleApprover(user=approver)],
+        ):
+            for index in range(15):
+                submit_for_approval(
+                    PurchaseRequisition.objects.create(
+                        entity=entity, request_date=datetime.date(2026, 1, 3),
+                        requested_by=requester, title=f"Scale {index}",
+                    ),
+                    actor_user=requester,
+                )
+
+        def measure(page_size):
+            """Query count for one list page, with per-process caches already warmed."""
+            url = f"/v1/procurement/requisitions/?entity={entity.code}&page_size={page_size}"
+            with patch(
+                "vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True,
+            ):
+                client.get(url)  # warm content-type and auth caches
+                with CaptureQueriesContext(connection) as captured:
+                    response = client.get(url)
+            return len(captured.captured_queries), response.data["data"]
+
+        healthy_small, small_rows = measure(5)
+        healthy_large, large_rows = measure(15)
+        self.assertEqual([row["is_parked"] for row in small_rows], [False] * 5)
+        self.assertEqual([row["is_parked"] for row in large_rows], [False] * 15)
+        self.assertEqual(
+            healthy_large, healthy_small,
+            "is_parked on a healthy page must not cost more as the page grows.",
+        )
+
+        # Strip every snapshot: every row on the page is now parked, the case that
+        # used to take one row lock and one transaction per stage.
+        WorkflowStageApprover.objects.all().delete()
+        parked_small, parked_small_rows = measure(5)
+        parked_large, parked_large_rows = measure(15)
+        self.assertEqual([row["is_parked"] for row in parked_small_rows], [True] * 5)
+        self.assertEqual([row["is_parked"] for row in parked_large_rows], [True] * 15)
+        self.assertEqual(
+            parked_large, parked_small,
+            "an all-parked page must not cost more as the page grows: no per-stage lock.",
+        )
 
 
 class ProcurementApprovalQueueTests(_P2PFixtureMixin, TestCase):

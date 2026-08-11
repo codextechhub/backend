@@ -21,7 +21,7 @@ from vs_finance.views import resolve_entity
 from vs_workflow.models import WorkflowInstance
 from vs_rbac.permissions import is_vision_super_admin, user_has_rbac_permission
 
-from .. import approvals
+from .. import approval_parking, approvals
 from ..constants import ProcApprovalState
 from ..models import (
     PurchaseOrder,
@@ -77,12 +77,29 @@ def _write_requisition_lines(req, entity, lines):
     req.recompute_total(save=True)
 
 
+def _bool_param(value):
+    """Parse a permissive truthy/falsey query-string flag, or None when absent/blank."""
+    text = str(value or "").strip().lower()
+    if text in ("1", "true", "yes"):
+        return True
+    if text in ("0", "false", "no"):
+        return False
+    return None
+
+
 def _filter_requisitions(qs, params):
     """Apply the list/export filters from one shared source of truth."""
     if (status_ := params.get("status")):
         # A rejected workflow is stored as CANCELLED in the ledger, so the approval overlay disambiguates it.
         qs = qs.filter(approval_state=ProcApprovalState.REJECTED) if status_ == "REJECTED" \
             else qs.filter(status=status_)
+    parked = _bool_param(params.get("parked"))
+    if parked is not None:
+        # Parked = submitted but its active approval stage has an empty approver
+        # snapshot, so no one can decide it. Expressed as a subquery so the filter
+        # stays bounded however many documents a misconfigured tenant has parked.
+        parked_pks = approval_parking.parked_document_id_subquery(PurchaseRequisition)
+        qs = qs.filter(pk__in=parked_pks) if parked else qs.exclude(pk__in=parked_pks)
     if (search := params.get("search", "").strip()):
         qs = qs.filter(
             Q(document_number__icontains=search) | Q(title__icontains=search)
@@ -119,7 +136,14 @@ class RequisitionListCreateView(_ProcBase):
             "requested_by", "cost_center",
         ).prefetch_related("lines")
         qs = _filter_requisitions(qs, request.query_params)
-        return self.paginate(request, qs.order_by("-id"), RequisitionSerializer)
+        return self.paginate(
+            request, qs.order_by("-id"), RequisitionSerializer,
+            # One pass per page: repair anything repairable, then report what is
+            # still parked. Rows that are not PENDING approval cost nothing.
+            page_context=lambda page: {
+                "parked_requisition_ids": approval_parking.parked_document_ids(page),
+            },
+        )
 
     @transaction.atomic
     def post(self, request):

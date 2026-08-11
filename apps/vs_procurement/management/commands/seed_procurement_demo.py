@@ -28,7 +28,10 @@ from vs_procurement.models import (
     VendorCategory, VendorContract, VendorInvoice, VendorInvoiceLine, VendorPayment,
     VendorPaymentAllocation, VendorQuotation, VendorQuotationLine,
 )
-from vs_procurement.constants import ProcApprovalState, RfqStatus
+from vs_procurement.constants import (
+    ProcApprovalState, RfqStatus,
+    WF_DEFAULT_MANAGER_PERMISSION, WF_DEFAULT_SENIOR_PERMISSION,
+)
 from vs_procurement.contracts import (
     activate_contract, complete_milestone, mark_expired, renew_contract,
 )
@@ -43,6 +46,7 @@ from vs_procurement.sourcing import (
     submit_quotation,
 )
 from vs_workflow.constants import WorkflowInstanceStatus, WorkflowStageAction
+from vs_workflow.models import WorkflowStageApprover
 from vs_workflow.services import actions as workflow_actions
 
 
@@ -448,6 +452,20 @@ class Command(BaseCommand):
             for _ in range(3):
                 if instance.status != WorkflowInstanceStatus.IN_PROGRESS:
                     break
+                # Procurement stages no longer auto-skip when unstaffed, so a seed actor
+                # without the approving permission now parks the payment here instead of
+                # silently self-approving it. Say so plainly rather than failing deep
+                # inside the engine's eligibility check.
+                if not WorkflowStageApprover.objects.filter(
+                    stage_instance__instance=instance,
+                    stage_instance__status="ACTIVE", user=actor,
+                ).exists():
+                    raise CommandError(
+                        f"{payment.document_number or payment.reference} is parked: "
+                        f"{actor.email} cannot approve it. Grant "
+                        f"'{WF_DEFAULT_MANAGER_PERMISSION}' (and "
+                        f"'{WF_DEFAULT_SENIOR_PERMISSION}' for high-value spend) first.",
+                    )
                 workflow_actions.record_action(
                     instance.id, actor, action,
                     comment="Seeded verification rejection" if action == WorkflowStageAction.REJECTED else "",

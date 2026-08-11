@@ -33,7 +33,7 @@ from .constants import (
     WF_DEFAULT_SENIOR_THRESHOLD,
     WF_DEFAULT_TEMPLATE_CODE,
 )
-from .exceptions import ApprovalWorkflowError
+from .exceptions import ApprovalTemplateMissingError, ApprovalWorkflowError
 
 
 # --------------------------------------------------------------------------- #
@@ -74,6 +74,13 @@ def ensure_default_approval_templates(
     * **senior**  - gated by ``inclusion_condition`` ``amount >= threshold`` (kobo), so
       only high-value documents escalate to a holder of ``senior_permission``.
 
+    Both stages set ``skip_if_no_approvers=False``: spend must never approve itself.
+    When nobody currently holds the approving permission the engine activates the stage
+    with an empty approver snapshot and the document *parks* at IN_PROGRESS instead of
+    reaching a terminal APPROVED decision with no human involved. Parked work is made
+    reachable again by :mod:`vs_procurement.approval_parking` once the permission is
+    granted.
+
     Templates are platform-scoped (``school=None, branch=None``) so they act as the
     universal fallback; a branch- or school-specific template still wins via the engine's
     branch → school → platform cascade. Re-running upserts in place (safe to seed often).
@@ -97,7 +104,9 @@ def ensure_default_approval_templates(
                 "approver_scope": "PLATFORM",
                 "advance_rule": "ANY",
                 "on_rejection": "TERMINAL",
-                "skip_if_no_approvers": True,
+                # Never auto-skip: an unstaffed stage must park the document, not
+                # let it approve itself.
+                "skip_if_no_approvers": False,
             },
             {
                 "code": "senior",
@@ -108,7 +117,8 @@ def ensure_default_approval_templates(
                 "approver_scope": "PLATFORM",
                 "advance_rule": "ANY",
                 "on_rejection": "TERMINAL",
-                "skip_if_no_approvers": True,
+                # Never auto-skip - see the manager stage above.
+                "skip_if_no_approvers": False,
                 "inclusion_condition": {
                     "op": "gte", "field": amount_field, "value": int(threshold),
                 },
@@ -133,19 +143,47 @@ def _label(document) -> str:
     return f"{type(document).__name__} {document.document_number or document.pk}"
 
 
+def _no_template_message(document) -> str:
+    """Explain a missing approval route in the submitter's language, not the engine's.
+
+    Names the document kind from :data:`_TEMPLATE_META` and the remedy. Deliberately
+    free of engine vocabulary (template codes, ``document_type`` tokens) and of any
+    domain vocabulary a non-procurement product would not share.
+    """
+    document_type = getattr(document, "workflow_document_type", "")
+    label = _TEMPLATE_META.get(document_type, ("document", ""))[0]
+    return (
+        f"No approval route is set up for a {label}, so it cannot be submitted. "
+        f"Ask an administrator to configure procurement approvals first."
+    )
+
+
 @transaction.atomic
 def submit_for_approval(document, *, actor_user, template_code: str | None = None):
     """Hand ``document`` to ``vs_workflow`` for approval and mark it PENDING.
 
     Flips ``approval_state`` to PENDING (and, for a requisition, the ledger ``status``
-    DRAFT → PENDING_APPROVAL for parity), then creates the workflow instance. If the
-    seeded template's stages all auto-skip (no eligible approvers), the engine may reach
-    a terminal decision synchronously and the on-approved callback runs before this
-    returns. Raises :class:`ApprovalWorkflowError` if the document is already PENDING or
-    APPROVED. The document update and workflow submission share this transaction, so a
-    template/routing failure cannot leave a document marked PENDING without an instance.
+    DRAFT → PENDING_APPROVAL for parity), then creates the workflow instance. Raises
+    :class:`ApprovalWorkflowError` if the document is already PENDING or APPROVED.
+
+    This is the single choke point every procurement submit view funnels through
+    (requisition, purchase order, vendor invoice, vendor payment), so the two
+    configuration outcomes are separated here once rather than in four views:
+
+    * **No template at all** - a genuine configuration failure. The engine's
+      :class:`~vs_workflow.exceptions.TemplateNotFoundError` names internal template
+      codes and document-type tokens, so it is translated into
+      :class:`ApprovalTemplateMissingError`. Because it is raised inside this atomic
+      block *after* the document write, the PENDING flip rolls back: a refused submit
+      creates nothing.
+    * **A template exists but nobody holds the approving permission** - not an error.
+      The document is submitted and parks on its unstaffed stage at IN_PROGRESS until
+      an approver is granted the permission (see
+      :mod:`vs_procurement.approval_parking`). Spend never approves itself.
+
     Returns the :class:`~vs_workflow.models.WorkflowInstance`.
     """
+    from vs_workflow.exceptions import TemplateNotFoundError
     from vs_workflow.services.submission import submit_for_approval as wf_submit
 
     state = getattr(document, "approval_state", None)
@@ -169,7 +207,10 @@ def submit_for_approval(document, *, actor_user, template_code: str | None = Non
         update_fields += ["status", "estimated_total"]
 
     document.save(update_fields=update_fields)
-    return wf_submit(document, actor_user, template_code=template_code)
+    try:
+        return wf_submit(document, actor_user, template_code=template_code)
+    except TemplateNotFoundError as exc:
+        raise ApprovalTemplateMissingError(_no_template_message(document)) from exc
 
 
 # --------------------------------------------------------------------------- #

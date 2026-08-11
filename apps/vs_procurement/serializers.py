@@ -483,18 +483,20 @@ class RequisitionSerializer(serializers.ModelSerializer):
 
     ``status`` is the shared finance-document lifecycle while ``approval_state`` is the
     spend-workflow overlay. Clients receive both and must not infer one from the other.
+    ``is_parked`` is a third, derived signal: PENDING but nobody can act on it.
     """
 
     lines = RequisitionLineSerializer(many=True, read_only=True)
     estimated_total_naira = serializers.SerializerMethodField()
     requested_by_name = serializers.SerializerMethodField()
+    is_parked = serializers.SerializerMethodField()
     cost_center_code = serializers.CharField(source="cost_center.code", read_only=True, default=None)
     cost_center_name = serializers.CharField(source="cost_center.name", read_only=True, default=None)
 
     class Meta:
         model = PurchaseRequisition
         fields = [
-            "id", "document_number", "status", "approval_state", "title",
+            "id", "document_number", "status", "approval_state", "is_parked", "title",
             "request_date", "needed_by", "requested_by_id", "requested_by_name",
             "cost_center_id", "cost_center_code", "cost_center_name",
             "justification", "estimated_total", "estimated_total_naira", "created_at", "lines",
@@ -502,6 +504,22 @@ class RequisitionSerializer(serializers.ModelSerializer):
 
     def get_estimated_total_naira(self, obj) -> str:
         return format_naira(obj.estimated_total)
+
+    def get_is_parked(self, obj) -> bool:
+        """Submitted, but its approval stage has nobody eligible to decide it.
+
+        List endpoints resolve the whole page once and pass the answer in through
+        ``parked_requisition_ids`` so this stays free of per-row queries. Single-document
+        responses (create, patch, submit) have no such context and fall back to the
+        one-document check, which short-circuits without a query unless the document is
+        actually PENDING approval.
+        """
+        parked_ids = self.context.get("parked_requisition_ids")
+        if parked_ids is None:
+            from .approval_parking import is_document_parked
+
+            return is_document_parked(obj)
+        return obj.pk in parked_ids
 
     def get_requested_by_name(self, obj) -> str:
         user = obj.requested_by

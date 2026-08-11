@@ -307,9 +307,16 @@ class _ProcBase(APIView):
     # HasRBACPermission; entity isolation is then applied in every endpoint query.
     permission_classes = [IsAuthenticatedAndActive & HasRBACPermission]
 
-    def paginate(self, request, qs, serializer_cls, **ser_kwargs):
+    def paginate(self, request, qs, serializer_cls, *, page_context=None, **ser_kwargs):
         """List response through the platform's XVSPagination envelope ({pagination, data}).
-        Fixed page size 25 (override per-request with ?page_size=, capped at 100)."""
+        Fixed page size 25 (override per-request with ?page_size=, capped at 100).
+
+        ``page_context`` is an optional callable receiving the materialised page and
+        returning extra serializer context. It exists so a derived field that needs one
+        query for the whole page (rather than one per row) can be resolved after
+        pagination has bounded the row set, without each list view re-implementing
+        pagination.
+        """
         from core.pagination import XVSPagination
 
         paginator = XVSPagination()
@@ -317,4 +324,6 @@ class _ProcBase(APIView):
         # preloaded relations supplied by their endpoint-specific queryset.
         paginator.page_size = 25
         page = paginator.paginate_queryset(qs, request, view=self)
+        if page_context is not None:
+            ser_kwargs["context"] = {**ser_kwargs.get("context", {}), **page_context(page)}
         return paginator.get_paginated_response(serializer_cls(page, many=True, **ser_kwargs).data)

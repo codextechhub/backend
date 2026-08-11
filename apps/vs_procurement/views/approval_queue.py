@@ -25,6 +25,7 @@ from vs_workflow.serializers import StageActionWriteSerializer
 from vs_workflow.services import actions as workflow_actions
 from vs_workflow.services.routing import preview_next_approval_stage
 
+from .. import approval_parking
 from ..constants import (
     PROCUREMENT_APPROVAL_TYPES,
     WF_DOCTYPE_PURCHASE_ORDER,
@@ -247,6 +248,10 @@ class ProcurementApprovalListView(APIView):
     def get(self, request):
         """Return entity-verified, currently actionable snapshots for this actor."""
         entity = resolve_entity(request)
+        # A stage that activated while nobody held its permission has an empty frozen
+        # snapshot and would never appear here, however the permissions changed since.
+        # Restore reachability first, then read; one indexed query when nothing is parked.
+        approval_parking.repair_workflows(tenant=entity.tenant)
         usable, documents = _document_map(entity, _pending_snapshots(request.user))
         rows = []
         for snapshot, object_id in usable:
@@ -281,6 +286,7 @@ class ProcurementApprovalDetailView(APIView):
     def get(self, request, workflow_id):
         """Return the prefetched stage timeline for an eligible entity document."""
         entity = resolve_entity(request)
+        approval_parking.repair_workflows(tenant=entity.tenant, instance_id=workflow_id)
         instance, snapshot, document, object_id = _pending_context(
             entity, request.user, workflow_id,
         )
@@ -314,6 +320,9 @@ class ProcurementApprovalActionView(APIView):
     def post(self, request, workflow_id):
         """Validate a decision payload and delegate the state transition atomically."""
         entity = resolve_entity(request)
+        # Eligibility is read from the frozen snapshot, so repair a parked stage before
+        # the check rather than after it; the repair itself never records a decision.
+        approval_parking.repair_workflows(tenant=entity.tenant, instance_id=workflow_id)
         instance, _, _, _ = _pending_context(entity, request.user, workflow_id)
         serializer = StageActionWriteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)

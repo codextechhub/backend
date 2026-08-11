@@ -43,6 +43,20 @@ class ApprovalWorkflowError(ProcurementError):
     http_status = 409
 
 
+class ApprovalTemplateMissingError(ApprovalWorkflowError):
+    """Raised when no approval template exists for a document type being submitted.
+
+    Deliberately distinct from "a template exists but nobody currently holds the
+    approving permission". The second case is not an error: the document is
+    submitted and parks on its stage until an approver is granted the permission.
+    Only *this* case is a configuration failure the submitter must be told about,
+    and the engine's own ``TemplateNotFoundError`` message names internal template
+    codes and document-type tokens, so it is translated here rather than surfaced.
+    """
+    error_code = "APPROVAL_TEMPLATE_MISSING"
+    default_message = "No approval route is configured for this document."
+
+
 class StockError(PostingError):
     """Raised for stock-ledger violations (issue, adjustment, valuation)."""
     error_code = "STOCK_ERROR"
