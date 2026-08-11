@@ -405,7 +405,7 @@ class CustomerDetailView(_FinanceBase):
 
         from .constants import CreditNoteKind, DocumentStatus, InvoicePaymentStatus
         from .models import Concession, CreditNote, Invoice, Payment, Refund
-        from .reports import customer_account_movements
+        from .reports import VOID_MOVEMENT_TYPE, customer_account_movements
 
         entity = resolve_entity(request)
         customer = _resolve_customer(entity, pk)
@@ -413,24 +413,34 @@ class CustomerDetailView(_FinanceBase):
         net = led.get("outstanding", 0) - led.get("credit", 0)
         today = datetime.date.today()
 
+        # A voided document is still part of the account's history: it moved the
+        # balance on its own date and was undone on the reversal's date, and
+        # ``customer_account_movements`` renders both rows. Load REVERSED alongside
+        # POSTED so it can - the open-item panels below re-filter to POSTED, because a
+        # voided invoice is history but is not something the customer still owes.
+        history = (DocumentStatus.POSTED, DocumentStatus.REVERSED)
         invoices = list(Invoice.objects.filter(
-            entity=entity, customer=customer, status=DocumentStatus.POSTED,
+            entity=entity, customer=customer, status__in=history,
         ).order_by("invoice_date", "id")[:500])
         payments = list(Payment.objects.filter(
-            entity=entity, customer=customer, status=DocumentStatus.POSTED,
+            entity=entity, customer=customer, status__in=history,
         ).order_by("payment_date", "id")[:500])
         credit_notes = list(CreditNote.objects.filter(
-            entity=entity, customer=customer, status=DocumentStatus.POSTED,
+            entity=entity, customer=customer, status__in=history,
         ).order_by("note_date", "id")[:500])
         # DEBIT notes are supplementary AR charges - their unsettled balance is an
         # open item, just like an invoice. CREDIT notes remain account movements but
         # are value returned to the customer, not amounts the customer still owes.
-        debit_notes = [n for n in credit_notes if n.kind == CreditNoteKind.DEBIT]
+        debit_notes = [
+            n for n in credit_notes
+            if n.kind == CreditNoteKind.DEBIT and n.status == DocumentStatus.POSTED
+        ]
+        open_invoice_pool = [i for i in invoices if i.status == DocumentStatus.POSTED]
         refunds = list(Refund.objects.filter(
-            entity=entity, customer=customer, status=DocumentStatus.POSTED,
+            entity=entity, customer=customer, status__in=history,
         ).order_by("refund_date", "id")[:500])
         concessions = list(Concession.objects.filter(
-            entity=entity, customer=customer, status=DocumentStatus.POSTED,
+            entity=entity, customer=customer, status__in=history,
         ).order_by("concession_date", "id")[:500])
 
         # Handle the inv status workflow.
@@ -459,7 +469,7 @@ class CustomerDetailView(_FinanceBase):
                 "total": _money_obj(i.total), "balance": _money_obj(i.balance_due),
                 "status": inv_status(i),
             }
-            for i in invoices if i.balance_due > 0
+            for i in open_invoice_pool if i.balance_due > 0
         ]
         open_debit_notes = [
             {
@@ -491,17 +501,21 @@ class CustomerDetailView(_FinanceBase):
         }
         transaction_statuses = {
             **{("Invoice", invoice.document_number): inv_status(invoice)
-               for invoice in invoices},
+               for invoice in open_invoice_pool},
             **{("Debit note", note.document_number): dn_status(note)
                for note in debit_notes},
         }
         transactions = [
             {
                 "date": date.isoformat(),
-                "type": transaction_types.get(doc_type, "ADJUSTMENT"),
+                "type": ("VOID" if doc_type == VOID_MOVEMENT_TYPE
+                         else transaction_types.get(doc_type, "ADJUSTMENT")),
                 "reference": number,
                 "amount": _money_obj(debit or credit),
-                "status": transaction_statuses.get((doc_type, number), "POSTED"),
+                # A void row is the undo, not the document, so it never inherits the
+                # document's settlement status.
+                "status": ("REVERSED" if doc_type == VOID_MOVEMENT_TYPE
+                           else transaction_statuses.get((doc_type, number), "POSTED")),
             }
             for date, _order, doc_type, number, _description, debit, credit
             in sorted(movements, key=lambda movement: movement[0], reverse=True)

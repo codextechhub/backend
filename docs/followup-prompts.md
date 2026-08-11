@@ -5,20 +5,19 @@ assume no memory of the conversation that produced them, and each ends by removi
 its own entry from the root `todo.md`.
 
 Started 2026-07-30 after the accounting-date class-fix (backend `8b576eb`, console-fe
-`f8038a8`, payments follow-up `d8eaeb9`). Three of the original five are now done and
-their prompts have been removed: backdated expense/payroll/tax settlements and the
-sub-ledger journal-reversal drift (both 2026-08-01), and AR "as at" reporting
-(2026-08-11). See the `## Done` section of `todo.md` for what each one actually did.
+`f8038a8`, payments follow-up `d8eaeb9`). Four are now done and their prompts have
+been removed: backdated expense/payroll/tax settlements and the sub-ledger
+journal-reversal drift (both 2026-08-01), then AR "as at" reporting and voided
+documents in statement history (both 2026-08-11). See the `## Done` section of
+`todo.md` for what each one actually did.
 
 | # | Title | Size | Why now |
 |---|-------|------|---------|
 | 1 | Vendor advances | Small | Latent - still zero vendor prepayments in the books |
 | 2 | Unbookable gateway receipts are invisible | Medium | Real customer money can vanish from view |
-| 3 | Voided documents vanish from statement history | Small | Past balances change when anything is voided |
 
-Suggested order: **3 → 2 → 1**. Prompt 3 is small and closes a hole the void work
-opened; prompt 2 is operational; prompt 1 can wait until you actually pay a supplier
-in advance.
+Suggested order: **2 → 1**. Prompt 2 is operational; prompt 1 can wait until you
+actually pay a supplier in advance.
 
 ---
 
@@ -178,70 +177,4 @@ FINALLY
 Delete the "A gateway receipt that cannot be booked disappears silently" bullet from
 "## Undone" in the backend root todo.md and add a "# ..." entry to "## Done". Commit
 to main in both repos (do not push), staging files explicitly.
-```
-
----
-
-## Prompt 3 - Keep voided documents in the customer statement
-
-```
-Fix the "Voided documents vanish from statement history" item under "## Undone" in
-the backend repo's root todo.md.
-
-BACKGROUND - verified, and a consequence of the void work rather than a new bug
-
-`customer_account_movements` (apps/vs_finance/reports.py) loads each document type
-with `status=DocumentStatus.POSTED`. The void services added on 2026-08-01
-(apps/vs_finance/voids.py) set the document to REVERSED. Before voids existed nothing
-ever reached that status, so the filter was harmless.
-
-Now it is not. Void a receipt and it disappears from the customer statement and from
-the customer drawer's transaction list entirely - and because the statement's running
-balance is computed from those movements, every balance printed for a date BEFORE the
-void silently changes. That is the same defect class the AR "as at" work just closed
-everywhere else: history must not be rewritten by something that happened later.
-
-The movement genuinely happened on its own date and was undone on the reversal date.
-The statement should show both lines, not neither.
-
-WHAT TO DO
-
-  * Load `status__in=(POSTED, REVERSED)` in `customer_account_movements`, and when
-    `document.journal.reversed_by` exists emit a second, offsetting movement dated at
-    the reversal's date (`document.journal.reversed_by.date`) with a description that
-    makes the reversal obvious. Select-related the journal and its reversal so this
-    does not become an N+1 over the statement.
-  * The customer detail drawer (apps/vs_finance/views_ar.py, CustomerDetailView -
-    around the `Invoice.objects.filter(... status=DocumentStatus.POSTED)` block) builds
-    its own pre-loaded lists and passes them into the same helper, so it needs the same
-    widening. Its "open invoices" and "open debit notes" panels must STAY POSTED-only:
-    a voided invoice is not an open receivable. Filter those explicitly rather than
-    relying on the shared lists.
-
-ALREADY CORRECT, DO NOT CHANGE
-
-Aging, reconciliation and the statement's own aging block already handle this: they
-key effectiveness off the journal through `_effective_on`, which includes REVERSED
-entries and excludes them only once the reversal date has passed. Read that helper
-before writing anything - the movement list should agree with it, not invent a second
-rule.
-
-TESTS
-
-Void a receipt, then assert: the statement for a date before the void still shows the
-receipt and the same closing balance it showed before the void; the statement for a
-date after the void shows both the receipt and its reversal and nets to the right
-balance; the customer drawer's open-invoice panel does not list a voided invoice.
-
-VERIFY
-
-cd apps && ../cx/bin/python manage.py test vs_finance --noinput
-
-FINALLY
-
-Delete the "Voided documents vanish from statement history" bullet from "## Undone" in
-the backend root todo.md and add a "# ..." entry to "## Done" in the existing style.
-Also remove the "A voided document disappears from the statement's movement list"
-bullet from §8 of docs/finance/finance_reports_statements.md. Commit to main (do not
-push), staging files explicitly - never `git add -A`.
 ```

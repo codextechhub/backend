@@ -6826,6 +6826,35 @@ class CustomerEndpointTests(_ARFixtureMixin, TestCase):
         self.assertTrue(d["statement"])
         self.assertEqual(d["statement"][-1]["balance"]["kobo"], inv.total)
 
+    # A voided invoice is history, but it is not something the customer still owes.
+    def test_detail_keeps_a_voided_invoice_in_history_but_not_in_open_items(self):
+        import json
+        from rest_framework.test import APIRequestFactory, force_authenticate
+        from vs_finance.views_ar import CustomerDetailView
+        from vs_finance.voids import void_invoice
+
+        entity, customer, inv = self._fixture()
+        void_invoice(inv)
+
+        u = self._super_admin("cust-void-detail@test.com")
+        req = APIRequestFactory().get(
+            f"/v1/finance/customers/{customer.pk}/", {"entity": entity.code})
+        force_authenticate(req, user=u)
+        req.tenant = u.tenant  # factory requests bypass the auth layer
+        resp = CustomerDetailView.as_view()(req, pk=str(customer.pk)); resp.render()
+        self.assertEqual(resp.status_code, 200)
+        d = json.loads(resp.content)["data"]
+
+        self.assertEqual(d["open_invoices"], [])  # nothing is owed any more
+        self.assertEqual(d["summary"]["current_balance"]["kobo"], 0)
+        # The invoice and its void both remain on the account's record.
+        types = [t["type"] for t in d["transactions"]]
+        self.assertIn("INVOICE", types)
+        self.assertIn("VOID", types)
+        void_row = next(t for t in d["transactions"] if t["type"] == "VOID")
+        self.assertEqual(void_row["status"], "REVERSED")
+        self.assertEqual(d["statement"][-1]["balance"]["kobo"], 0)
+
     # Posted credit notes must be visible everywhere their balance effect is visible.
     def test_detail_includes_credit_note_in_transactions_and_statement(self):
         import json
@@ -9495,3 +9524,113 @@ class HistoricalARReportingTests(_ARFixtureMixin, TestCase):
         ensure_default_policy(entity)
 
         self.assertEqual(generate_dunning(entity), [])  # settled, so nothing to chase
+
+
+class VoidedDocumentHistoryTests(_ARFixtureMixin, TestCase):
+    """A void undoes a document from its reversal date, not from the beginning of time.
+
+    The movement list filtered on ``status=POSTED`` while the void services set
+    REVERSED, so voiding a receipt deleted it from the customer's history and every
+    running balance printed for a date *before* the void silently changed. The
+    document really did move the account on its own date; the void is a second,
+    later movement, and the statement has to show both.
+    """
+
+    def _ledger(self):
+        entity, jan = self.build_ledger()
+        FiscalPeriod.objects.create(
+            entity=entity, fiscal_year=jan.fiscal_year, period_no=2, name="Feb 2026",
+            start_date=datetime.date(2026, 2, 1), end_date=datetime.date(2026, 2, 28),
+            status=PeriodStatus.OPEN,
+        )
+        customer = Customer.objects.create(
+            entity=entity, code="CUST1", name="Acme Ltd",
+            receivable_account=Account.objects.get(entity=entity, code="1200"),
+        )
+        return entity, customer
+
+    def _setup(self):
+        """A ₦5,000 invoice on 5 Jan, settled by a receipt on 20 Jan."""
+        from vs_finance.reports import customer_account_movements  # noqa: F401
+
+        entity, customer = self._ledger()
+        invoice = self.make_invoice(
+            entity, customer, lines=[("4100", 1, 500000, None)],
+            date=datetime.date(2026, 1, 5), due=datetime.date(2026, 1, 5))
+        post_invoice(invoice)
+        payment = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=datetime.date(2026, 1, 20),
+            amount=500000, deposit_account=Account.objects.get(entity=entity, code="1100"),
+        )
+        post_payment(payment)
+        return entity, customer, invoice, payment
+
+    def test_a_void_does_not_change_a_balance_printed_before_it(self):
+        """The headline case: January's statement must not move when February voids."""
+        from vs_finance.voids import void_payment
+
+        _entity, customer, _invoice, payment = self._setup()
+        january = customer_statement(customer, end_date=datetime.date(2026, 1, 31))
+        before = january.closing_balance
+        self.assertEqual(before, 0)  # invoice raised and settled within January
+
+        void_payment(payment, date=datetime.date(2026, 2, 10))
+
+        reprinted = customer_statement(customer, end_date=datetime.date(2026, 1, 31))
+        self.assertEqual(reprinted.closing_balance, before)
+        # The receipt is still in January's history, exactly as it was.
+        self.assertIn("Receipt", [entry.doc_type for entry in reprinted.entries])
+
+    def test_the_void_appears_as_its_own_dated_movement(self):
+        from vs_finance.reports import VOID_MOVEMENT_TYPE
+        from vs_finance.voids import void_payment
+
+        _entity, customer, _invoice, payment = self._setup()
+        void_payment(payment, date=datetime.date(2026, 2, 10))
+
+        february = customer_statement(customer, end_date=datetime.date(2026, 2, 28))
+        voids = [e for e in february.entries if e.doc_type == VOID_MOVEMENT_TYPE]
+        self.assertEqual(len(voids), 1)
+        self.assertEqual(voids[0].date, datetime.date(2026, 2, 10))
+        # The receipt credited the account, so its void debits it back.
+        self.assertEqual(voids[0].debit, 500000)
+        self.assertEqual(voids[0].credit, 0)
+        # And the invoice is owed again by the end of February.
+        self.assertEqual(february.closing_balance, 500000)
+
+    def test_a_voided_invoice_leaves_the_account_flat(self):
+        """Both sides of a fully-voided pair net out, at every date after the void."""
+        from vs_finance.voids import void_invoice, void_payment
+
+        _entity, customer, invoice, payment = self._setup()
+        void_payment(payment, date=datetime.date(2026, 2, 10))
+        void_invoice(invoice, date=datetime.date(2026, 2, 10))
+
+        statement = customer_statement(customer, end_date=datetime.date(2026, 2, 28))
+        self.assertEqual(statement.closing_balance, 0)
+        self.assertEqual(statement.total_debits, statement.total_credits)
+
+    def test_a_voided_invoice_is_not_an_open_item(self):
+        """History keeps it; the open-receivables view must not."""
+        from vs_finance.voids import void_invoice, void_payment
+
+        entity, customer, invoice, payment = self._setup()
+        void_payment(payment, date=datetime.date(2026, 2, 10))
+        void_invoice(invoice, date=datetime.date(2026, 2, 10))
+
+        aging = ar_aging(entity)
+        self.assertEqual(aging.total_outstanding, 0)
+        statement = customer_statement(customer, end_date=datetime.date(2026, 2, 28))
+        self.assertEqual(sum(statement.aging.values()), 0)
+
+    def test_movements_do_not_query_per_document(self):
+        """The reversal lookup is one query, not one per row of the history."""
+        from vs_finance.reports import customer_account_movements
+        from vs_finance.voids import void_payment
+
+        _entity, customer, _invoice, payment = self._setup()
+        void_payment(payment, date=datetime.date(2026, 2, 10))
+
+        # Five document queries (one per type) plus one bulk reversal lookup.
+        with self.assertNumQueries(6):
+            customer_account_movements(customer)

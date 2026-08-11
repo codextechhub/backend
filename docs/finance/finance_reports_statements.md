@@ -138,12 +138,14 @@ depreciation posted, checklist green, period CLOSED.
   the current period's end date, so it now takes the `_ar_snapshot` rebuild path
   (roughly ten queries) rather than two aggregates - fine for a dashboard, but it is
   the heaviest caller.
-- **A voided document disappears from the statement's movement list.**
-  `customer_account_movements` still filters `status=POSTED` while the void services
-  set REVERSED, so voiding a receipt removes it from the statement and the customer
-  drawer, and every running balance printed for a date before the void changes. The
-  aging, reconciliation and statement-aging blocks are unaffected - they key off the
-  journal via `_effective_on`, which handles reversal dates. Tracked in `todo.md`.
+- ✅ **A voided document stays in the movement list.** `customer_account_movements`
+  loads POSTED *and* REVERSED and gives a voided document two rows: the original on
+  its own date, and an offsetting `Void` row (`VOID_MOVEMENT_TYPE`) dated when the
+  reversal posted - so a balance printed for a date before the void does not change
+  when the void happens. Reversal dates come from one bulk `JournalEntry.reverses`
+  lookup, not from touching `journal.reversed_by` per document. The customer drawer
+  loads the same widened set for history while its open-item panels re-filter to
+  POSTED: a voided invoice is history but is not owed.
 - **Cash-flow buckets are heuristic** - verify against a customised chart.
 - Reports return live JSON; nothing is cached/persisted (a snapshot per close could
   be a future need for auditors).

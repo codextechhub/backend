@@ -752,67 +752,111 @@ class CustomerStatement:
     aging: dict = field(default_factory=lambda: {b: 0 for b in AGING_BUCKETS})
 
 
+#: Movement type used for the offsetting row a voided document contributes, and the
+#: order that sorts it after every ordinary movement sharing its date.
+VOID_MOVEMENT_TYPE = "Void"
+VOID_TYPE_ORDER = 9
+
+
+# Find which of these journals have been reversed, and when.
+def _reversal_dates(journal_ids) -> dict[int, object]:
+    """``{original journal id: reversal date}`` in one query.
+
+    Resolved in bulk rather than by touching ``journal.reversed_by`` per document:
+    that is a reverse one-to-one, so it raises when absent and costs a query per row
+    when present - an N+1 down the length of a customer's whole history.
+    """
+    from .models import JournalEntry
+
+    ids = {journal_id for journal_id in journal_ids if journal_id}
+    if not ids:
+        return {}
+    return dict(
+        JournalEntry.objects.filter(reverses_id__in=ids)
+        .values_list("reverses_id", "date")
+    )
+
+
 def customer_account_movements(
     customer, *, invoices=None, credit_notes=None, refunds=None, payments=None,
     concessions=None,
 ):
-    """Return every posted movement that changes a customer's account balance.
+    """Return every movement that changes a customer's account balance.
 
     The customer detail drawer and the exportable statement both consume this source
     so account history cannot silently omit an adjustment that the balance includes.
     Callers that already loaded documents may pass them to avoid duplicate queries.
     Each row is ``(date, type_order, type, number, description, debit, credit)``.
+
+    **Voided documents stay in the history.** A document that has been voided really
+    did move the account on its own date, and was undone on the reversal's date, so it
+    contributes two rows: the original, and an offsetting :data:`VOID_MOVEMENT_TYPE`
+    row dated when the reversal posted. Dropping it instead (which is what filtering on
+    ``status=POSTED`` did once the void services started writing REVERSED) rewrote
+    every running balance printed for a date before the void.
     """
-    from .constants import CreditNoteKind, DocumentStatus
+    from .constants import CreditNoteKind
     from .models import Concession, CreditNote, Invoice, Payment, Refund
 
+    live = (DocumentStatus.POSTED, DocumentStatus.REVERSED)
     if invoices is None:
-        invoices = Invoice.objects.filter(customer=customer, status=DocumentStatus.POSTED)
+        invoices = Invoice.objects.filter(customer=customer, status__in=live)
     if credit_notes is None:
-        credit_notes = CreditNote.objects.filter(
-            customer=customer, status=DocumentStatus.POSTED)
+        credit_notes = CreditNote.objects.filter(customer=customer, status__in=live)
     if refunds is None:
-        refunds = Refund.objects.filter(customer=customer, status=DocumentStatus.POSTED)
+        refunds = Refund.objects.filter(customer=customer, status__in=live)
     if payments is None:
-        payments = Payment.objects.filter(customer=customer, status=DocumentStatus.POSTED)
+        payments = Payment.objects.filter(customer=customer, status__in=live)
     if concessions is None:
-        concessions = Concession.objects.filter(
-            customer=customer, status=DocumentStatus.POSTED)
+        concessions = Concession.objects.filter(customer=customer, status__in=live)
 
-    # Each movement: (date, type_order, doc_type, number, description, debit, credit).
-    movements: list = []
-
+    # (date, type_order, doc_type, number, description, debit, credit, journal_id).
+    rows: list = []
     for inv in invoices:
-        movements.append((
+        rows.append((
             inv.invoice_date, 0, "Invoice", inv.document_number,
-            inv.narration or "Invoice", inv.total, 0,
+            inv.narration or "Invoice", inv.total, 0, inv.journal_id,
         ))
     for note in credit_notes:
         if note.kind == CreditNoteKind.DEBIT:
-            movements.append((
+            rows.append((
                 note.note_date, 1, "Debit note", note.document_number,
-                note.reason or "Debit note", note.total, 0,
+                note.reason or "Debit note", note.total, 0, note.journal_id,
             ))
         else:
-            movements.append((
+            rows.append((
                 note.note_date, 3, "Credit note", note.document_number,
-                note.reason or "Credit note", 0, note.total,
+                note.reason or "Credit note", 0, note.total, note.journal_id,
             ))
     for refund in refunds:
-        movements.append((
+        rows.append((
             refund.refund_date, 2, "Refund", refund.document_number,
-            refund.narration or "Refund", refund.amount, 0,
+            refund.narration or "Refund", refund.amount, 0, refund.journal_id,
         ))
     for pay in payments:
-        movements.append((
+        rows.append((
             pay.payment_date, 4, "Receipt", pay.document_number,
-            pay.narration or "Receipt", 0, pay.amount,
+            pay.narration or "Receipt", 0, pay.amount, pay.journal_id,
         ))
     for con in concessions:
-        movements.append((
+        rows.append((
             con.concession_date, 5, con.get_kind_display(), con.document_number,
-            con.reason or con.get_kind_display(), 0, con.amount,
+            con.reason or con.get_kind_display(), 0, con.amount, con.journal_id,
         ))
+
+    reversed_on = _reversal_dates(row[7] for row in rows)
+
+    # Each movement: (date, type_order, doc_type, number, description, debit, credit).
+    movements: list = []
+    for date_, order, doc_type, number, description, debit, credit, journal_id in rows:
+        movements.append((date_, order, doc_type, number, description, debit, credit))
+        void_date = reversed_on.get(journal_id)
+        if void_date is not None:  # The document was voided; show the undo, dated.
+            movements.append((
+                void_date, VOID_TYPE_ORDER, VOID_MOVEMENT_TYPE, number,
+                f"Void of {doc_type.lower()} {number}",
+                credit, debit,  # Sides swapped: the reversal undoes the original.
+            ))
 
     movements.sort(key=lambda m: (m[0], m[1], m[3]))
     return movements
