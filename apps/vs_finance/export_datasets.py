@@ -14,6 +14,7 @@ from vs_exports.catalogue import (
     FILTER_CHOICE,
     FILTER_DATE_RANGE,
     FILTER_NUMBER_RANGE,
+    FILTER_SEARCH,
     FILTER_TEXT,
     KIND_CHOICE,
     KIND_DATE,
@@ -119,6 +120,11 @@ def register_datasets():
                       description="Required so an export can never mean 'every invoice ever'."),
             FilterDef("status", "Status", FILTER_CHOICE, choices=_DOC_STATUS),
             FilterDef("payment_status", "Payment status", FILTER_CHOICE, choices=_PAY_STATUS),
+            FilterDef("search", "Search", FILTER_SEARCH, searches=(
+                ("document_number", "Invoice number"),
+                ("customer__name", "Customer"),
+                ("customer__code", "Customer code"),
+            ), description="Matches any one of these, the way the search box does."),
             FilterDef("due_date", "Due date", FILTER_DATE_RANGE,
                       description="Used by the invoice screen's Overdue tab."),
             FilterDef("customer", "Customer", FILTER_TEXT, source="customer__name"),
@@ -264,6 +270,9 @@ def register_datasets():
         ),
         filters=(
             FilterDef("created_at", "Created", FILTER_DATE_RANGE, is_primary_date=True),
+            FilterDef("search", "Search", FILTER_SEARCH, searches=(
+                ("code", "Customer code"), ("name", "Name"),
+            ), description="Matches either one, the way the search box does."),
             FilterDef("name", "Name", FILTER_TEXT),
         ),
     ))
@@ -303,12 +312,7 @@ def _translate_invoices(params):
         else:
             filters.append({"id": "customer_code", "value": str(value).upper()})
     if value := params.get("search"):
-        unmapped.append(Unmapped(
-            "search", value,
-            "Search looks across invoice number, customer name and customer code at "
-            "once, which an export filter cannot express. Without it the file covers "
-            "every invoice the other filters allow.",
-        ))
+        filters.append({"id": "search", "value": value})
 
     bucket = (params.get("bucket") or "").lower()
     if bucket == "draft":
@@ -339,7 +343,7 @@ def _translate_customers(params):
 
     filters, unmapped = [], []
     if value := params.get("search"):
-        filters.append({"id": "name", "value": value})
+        filters.append({"id": "search", "value": value})
     if (value := params.get("is_active")) is not None:
         unmapped.append(Unmapped(
             "is_active", value,

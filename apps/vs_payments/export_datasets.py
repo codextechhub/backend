@@ -12,6 +12,7 @@ from __future__ import annotations
 from vs_exports.catalogue import (
     FILTER_CHOICE,
     FILTER_DATE_RANGE,
+    FILTER_SEARCH,
     FILTER_TEXT,
     KIND_CHOICE,
     KIND_DATETIME,
@@ -83,6 +84,11 @@ def register_datasets():
                       is_primary_date=True),
             FilterDef("status", "Status", FILTER_CHOICE, choices=_COLLECTION_STATUS),
             FilterDef("provider", "Provider", FILTER_CHOICE, choices=_PROVIDER),
+            FilterDef("search", "Search", FILTER_SEARCH, searches=(
+                ("reference", "Our reference"),
+                ("provider_reference", "Provider reference"),
+                ("customer__name", "Customer"),
+            ), description="Matches any one of these, the way the search box does."),
             FilterDef("reference", "Reference", FILTER_TEXT),
         ),
     ))
@@ -136,7 +142,7 @@ def _translate_collections(params):
     if value := params.get("provider"):
         filters.append({"id": "provider", "values": [value]})
     if value := params.get("search"):
-        filters.append({"id": "reference", "value": value})
+        filters.append({"id": "search", "value": value})
     if value := params.get("customer"):
         unmapped.append(Unmapped(
             "customer", value,

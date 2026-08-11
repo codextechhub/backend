@@ -13,6 +13,7 @@ from __future__ import annotations
 from vs_exports.catalogue import (
     FILTER_CHOICE,
     FILTER_DATE_RANGE,
+    FILTER_SEARCH,
     FILTER_TEXT,
     KIND_CHOICE,
     KIND_DATETIME,
@@ -80,6 +81,10 @@ def register_datasets():
             FilterDef("action_type", "Action", FILTER_CHOICE, choices=_ACTION),
             FilterDef("severity", "Severity", FILTER_CHOICE, choices=_SEVERITY),
             FilterDef("status", "Outcome", FILTER_CHOICE, choices=_STATUS),
+            FilterDef("search", "Search", FILTER_SEARCH, searches=(
+                ("summary", "Summary"), ("actor_label", "Actor"),
+                ("entity_label", "Object"),
+            ), description="Matches any one of these, the way console search does."),
             FilterDef("entity_type", "Object type", FILTER_TEXT),
             FilterDef("entity_label", "Object", FILTER_TEXT),
         ),
@@ -111,11 +116,7 @@ def _translate_events(params):
     if window:
         filters.append({"id": "event_at", **window})
     if value := params.get("search"):
-        unmapped.append(Unmapped(
-            "search", value,
-            "Console search spans the summary, the actor and the object at once, "
-            "which an export filter cannot express.",
-        ))
+        filters.append({"id": "search", "value": value})
     if value := params.get("actor"):
         unmapped.append(Unmapped(
             "actor", value,

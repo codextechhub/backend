@@ -12,6 +12,7 @@ from __future__ import annotations
 from vs_exports.catalogue import (
     FILTER_CHOICE,
     FILTER_DATE_RANGE,
+    FILTER_SEARCH,
     FILTER_TEXT,
     KIND_CHOICE,
     KIND_DATETIME,
@@ -84,6 +85,10 @@ def register_datasets():
             FilterDef("created_at", "Created", FILTER_DATE_RANGE, is_primary_date=True),
             FilterDef("user_type", "Type", FILTER_CHOICE, choices=_USER_TYPE),
             FilterDef("status", "Status", FILTER_CHOICE, choices=_USER_STATUS),
+            FilterDef("search", "Search", FILTER_SEARCH, searches=(
+                ("email", "Email"), ("first_name", "First name"),
+                ("last_name", "Last name"),
+            ), description="Matches any one of these, the way the search box does."),
             FilterDef("email", "Email", FILTER_TEXT),
         ),
     ))
@@ -170,7 +175,8 @@ def _translate_users(params):
         filters.append({"id": "status", "values": [value]})
     for key in ("q", "search"):
         if value := params.get(key):
-            filters.append({"id": "email", "value": value})
+            filters.append({"id": "search", "value": value})
+            break
     if (value := params.get("branch")) is not None:
         unmapped.append(Unmapped(
             "branch", value,

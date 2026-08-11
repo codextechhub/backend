@@ -1416,9 +1416,11 @@ class CatalogueRegistrationTests(TestCase):
                     broken.append(f"{dataset.key}.{field.id} -> {field.path}: {exc}")
             for spec in dataset.filters:
                 try:
-                    model.objects.none().filter(**{f"{spec.path}__isnull": True})
+                    # A search filter touches several columns, so check them all.
+                    for path in spec.paths:
+                        model.objects.none().filter(**{f"{path}__isnull": True})
                 except Exception as exc:
-                    broken.append(f"{dataset.key}!{spec.id} -> {spec.path}: {exc}")
+                    broken.append(f"{dataset.key}!{spec.id} -> {spec.paths}: {exc}")
         self.assertEqual(broken, [], "\n".join(broken))
 
     def test_every_dataset_names_a_permission_and_a_locked_column(self):
@@ -1490,18 +1492,31 @@ class FromScreenTests(_ExportFixture, TestCase):
         self.assertIn("due_date", by_id)
         self.assertTrue(data["exact"])
 
-    def test_a_filter_that_cannot_be_carried_is_named_not_dropped(self):
-        """The whole point: search spans three columns, so it cannot become a filter
-        spec. Saying so is what stops the user exporting every invoice by accident."""
+    def test_a_search_box_is_carried_across_all_its_columns(self):
+        """A search box means "mentioned anywhere", so the export filter has to be an
+        OR across the same columns. Anything less would hand back the whole table."""
         response = self._get(
             f"screen=finance.invoices&entity={self.entity.code}&search=northgate"
         )
         data = response.json()["data"]
+        self.assertTrue(data["exact"])
+        self.assertEqual(data["unmapped"], [])
+        self.assertIn("search", data["carried"])
+        self.assertIn(
+            {"id": "search", "value": "northgate"}, data["config"]["filters"],
+        )
+
+    def test_a_filter_that_cannot_be_carried_is_still_named_not_dropped(self):
+        """Search is handled now, but the honesty machinery has to keep working for
+        the filters that genuinely have no equivalent."""
+        response = self._get(
+            f"screen=finance.invoices&entity={self.entity.code}&customer=1742"
+        )
+        data = response.json()["data"]
         self.assertFalse(data["exact"])
-        self.assertEqual(data["unmapped"][0]["param"], "search")
-        self.assertEqual(data["unmapped"][0]["value"], "northgate")
+        self.assertEqual(data["unmapped"][0]["param"], "customer")
         self.assertIn("more rows than the table shows", data["warning"])
-        self.assertNotIn("search", data["carried"])
+        self.assertNotIn("customer", data["carried"])
 
     def test_paging_parameters_are_not_treated_as_filters(self):
         response = self._get(
@@ -1957,3 +1972,138 @@ class ScheduleLifecycleTests(_ExportFixture, TestCase):
         self.assertEqual(run.status, RunStatus.COMPLETED)
         self.assertIsNone(run.schedule_id)
         self.assertTrue(ExportFile.objects.filter(run=run).exists())
+
+
+# --------------------------------------------------------------------------- #
+# Search filters                                                              #
+# --------------------------------------------------------------------------- #
+class SearchFilterTests(_ExportFixture, TestCase):
+    """A search box matches "any of these columns". The export filter must too."""
+
+    def setUp(self):
+        self.build()
+        self.client = TenantAPIClient(user=self.admin)
+        self.window = {
+            "id": "invoice_date",
+            "start": (self.today - datetime.timedelta(days=30)).isoformat(),
+            "end": (self.today + datetime.timedelta(days=1)).isoformat(),
+        }
+
+    def _preview(self, filters):
+        return self.client.post(
+            f"/v1/exports/preview/?entity={self.entity.code}",
+            {"dataset_key": DATASET, "columns": COLUMNS, "filters": filters},
+            format="json",
+        ).json()["data"]
+
+    def test_a_search_term_compiles_to_an_or_not_an_and(self):
+        """ANDing the columns would ask for a row whose invoice number AND customer
+        name both contain the term, which is essentially never true."""
+        from django.db.models import Q
+
+        from vs_exports.catalogue import compile_filter, get_dataset
+
+        compiled = compile_filter(
+            get_dataset(DATASET), {"id": "search", "value": "northgate"},
+        )
+        self.assertEqual(compiled.connector, Q.OR)
+        self.assertEqual(len(compiled.children), 3)
+
+    def test_a_term_in_any_one_column_matches(self):
+        """The fixture's customer is Northgate Logistics; its invoice numbers are not."""
+        by_customer = self._preview([self.window, {"id": "search", "value": "northgate"}])
+        self.assertEqual(by_customer["matching_rows"], 4)
+
+        invoice_number = Invoice.objects.filter(entity=self.entity).first().document_number
+        by_number = self._preview([self.window, {"id": "search", "value": invoice_number}])
+        self.assertEqual(by_number["matching_rows"], 1)
+
+    def test_search_is_case_insensitive(self):
+        self.assertEqual(
+            self._preview([self.window, {"id": "search", "value": "NORTHGATE"}])["matching_rows"],
+            4,
+        )
+
+    def test_a_term_matching_nothing_returns_nothing(self):
+        """The filter has to actually narrow, or the count in the drawer is a lie."""
+        self.assertEqual(
+            self._preview([self.window, {"id": "search", "value": "zzz-no-match"}])["matching_rows"],
+            0,
+        )
+
+    def test_an_empty_term_does_not_narrow(self):
+        self.assertEqual(
+            self._preview([self.window, {"id": "search", "value": ""}])["matching_rows"],
+            4,
+        )
+
+    def test_the_catalogue_says_which_columns_are_searched(self):
+        response = self.client.get(f"/v1/exports/catalogue/{DATASET}/")
+        search = next(
+            f for f in response.json()["data"]["filters"] if f["id"] == "search"
+        )
+        self.assertEqual(search["type"], "search")
+        self.assertEqual(
+            search["searches"], ["Invoice number", "Customer", "Customer code"],
+        )
+
+    def test_a_search_filter_reads_back_in_plain_language(self):
+        from vs_exports.catalogue import describe_filter, get_dataset
+
+        sentence = describe_filter(
+            get_dataset(DATASET), {"id": "search", "value": "northgate"},
+        )
+        self.assertIn("Invoice number, Customer, Customer code", sentence)
+        self.assertIn("northgate", sentence)
+
+    def test_a_run_started_from_a_search_produces_the_narrowed_file(self):
+        """End to end: the file has to contain what the screen showed, not more."""
+        response = self.client.post(
+            f"/v1/exports/quick/?entity={self.entity.code}",
+            {
+                "dataset_key": DATASET, "columns": COLUMNS,
+                "filters": [self.window, {"id": "search", "value": "zzz-no-match"}],
+                "format": ExportFormat.CSV, "values_mode": ValuesMode.SYSTEM,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        run = ExportRun.objects.get(reference=response.json()["data"]["reference"])
+        self.assertEqual(run.status, RunStatus.COMPLETED)
+        self.assertEqual(run.row_count, 0)
+
+    def test_every_search_filter_names_real_columns(self):
+        """A search filter with a typo'd path would only fail when someone searched."""
+        from vs_exports.catalogue import FILTER_SEARCH, all_datasets
+
+        class _Scope:
+            tenant = None
+            entity = None
+
+        broken = []
+        for dataset in all_datasets():
+            model = dataset.base(_Scope()).model
+            for spec in dataset.filters:
+                if spec.kind != FILTER_SEARCH:
+                    continue
+                self.assertTrue(spec.searches, f"{dataset.key}: search names no columns")
+                for path, _label in spec.searches:
+                    try:
+                        model.objects.none().filter(**{f"{path}__icontains": "x"})
+                    except Exception as exc:
+                        broken.append(f"{dataset.key}!search -> {path}: {exc}")
+        self.assertEqual(broken, [], "\n".join(broken))
+
+    def test_every_screen_with_a_search_box_now_carries_it(self):
+        """The point of the change: search should be the common case, not the warning."""
+        from vs_exports.catalogue import all_screens, resolve_screen
+
+        still_unmapped = []
+        for screen in all_screens():
+            for param in ("search", "q"):
+                if param not in screen.handles:
+                    continue
+                resolved = resolve_screen(screen, {param: "probe"})
+                if any(u["param"] == param for u in resolved["unmapped"]):
+                    still_unmapped.append(f"{screen.key}.{param}")
+        self.assertEqual(still_unmapped, [], "; ".join(still_unmapped))

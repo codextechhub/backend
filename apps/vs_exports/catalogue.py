@@ -148,6 +148,10 @@ FILTER_CHOICE = "choice"        # "is any of" over a fixed value set
 FILTER_TEXT = "text"            # case-insensitive contains
 FILTER_BOOLEAN = "boolean"
 FILTER_NUMBER_RANGE = "number_range"
+#: "Matches any of these columns" - what a screen's search box actually does. It is a
+#: separate kind rather than several text filters because a search box means OR across
+#: columns, while two text filters would mean AND, and would match nothing.
+FILTER_SEARCH = "search"
 
 
 @dataclass(frozen=True)
@@ -163,10 +167,21 @@ class FilterDef:
     description: str = ""
     #: Marks the filter the dataset's ``max_date_span_days`` is measured against.
     is_primary_date: bool = False
+    #: For :data:`FILTER_SEARCH` only - the ORM paths a search term is matched against,
+    #: as ``(path, label)`` pairs. The labels are published so the UI can say which
+    #: columns are being searched instead of leaving it to guesswork.
+    searches: tuple = ()
 
     @property
     def path(self) -> str:
         return self.source or self.id
+
+    @property
+    def paths(self) -> tuple:
+        """Every ORM path this filter touches - one for most kinds, several for search."""
+        if self.kind == FILTER_SEARCH:
+            return tuple(path for path, _ in self.searches)
+        return (self.path,)
 
     # Serialise for the catalogue endpoint.
     def describe(self) -> dict:
@@ -178,6 +193,7 @@ class FilterDef:
             "choices": [{"value": k, "label": v} for k, v in self.choices.items()],
             "description": self.description,
             "is_primary_date": self.is_primary_date,
+            "searches": [label for _, label in self.searches],
         }
 
 
@@ -591,6 +607,22 @@ def compile_filter(dataset: Dataset, spec: dict) -> Q:
             )
         return Q(**{f"{path}__in": values}) if values else Q()
 
+    if fdef.kind == FILTER_SEARCH:
+        value = spec.get("value")
+        if not value:
+            return Q()
+        if not fdef.searches:
+            raise FilterError(
+                f"“{fdef.label}” does not say which columns to search.",
+                filter_id=filter_id,
+            )
+        # OR, not AND: a search box means "mentioned anywhere", and ANDing the columns
+        # would return nothing at all.
+        combined = Q()
+        for search_path, _ in fdef.searches:
+            combined |= Q(**{f"{search_path}__icontains": value})
+        return combined
+
     if fdef.kind == FILTER_TEXT:
         value = spec.get("value")
         return Q(**{f"{path}__icontains": value}) if value else Q()
@@ -625,6 +657,10 @@ def describe_filter(dataset: Dataset, spec: dict) -> str:
     if fdef.kind == FILTER_CHOICE:
         values = [fdef.choices.get(str(v), str(v)) for v in (spec.get("values") or [])]
         return f"{fdef.label} is any of {', '.join(values)}" if values else f"{fdef.label} is any"
+    if fdef.kind == FILTER_SEARCH:
+        columns = ", ".join(label for _, label in fdef.searches)
+        return f"{columns} mentions “{spec.get('value')}”"
+
     if fdef.kind == FILTER_TEXT:
         return f"{fdef.label} contains “{spec.get('value')}”"
     if fdef.kind == FILTER_BOOLEAN:

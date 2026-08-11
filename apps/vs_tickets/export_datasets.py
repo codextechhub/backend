@@ -12,6 +12,7 @@ from __future__ import annotations
 from vs_exports.catalogue import (
     FILTER_CHOICE,
     FILTER_DATE_RANGE,
+    FILTER_SEARCH,
     FILTER_TEXT,
     KIND_CHOICE,
     KIND_DATETIME,
@@ -74,6 +75,10 @@ def register_datasets():
             FilterDef("status", "Status", FILTER_CHOICE, choices=_STATUS),
             FilterDef("priority", "Priority", FILTER_CHOICE, choices=_PRIORITY),
             FilterDef("category", "Category", FILTER_CHOICE, choices=_CATEGORY),
+            FilterDef("search", "Search", FILTER_SEARCH, searches=(
+                ("ticket_number", "Ticket"), ("title", "Title"),
+            ), description="Matches either one, the way the search box does. The "
+                           "ticket body is deliberately not searched or exported."),
             FilterDef("title", "Title", FILTER_TEXT),
         ),
     ))
@@ -108,7 +113,7 @@ def _translate_tickets(params):
         filters.append(window)
 
     if value := params.get("q"):
-        filters.append({"id": "title", "value": value})
+        filters.append({"id": "search", "value": value})
     for param, reason in (
         ("assignee", "The ticket export does not filter by assignee yet."),
         ("requester", "The ticket export does not filter by who raised it."),

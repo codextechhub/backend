@@ -13,6 +13,7 @@ from vs_exports.catalogue import (
     FILTER_BOOLEAN,
     FILTER_CHOICE,
     FILTER_DATE_RANGE,
+    FILTER_SEARCH,
     FILTER_TEXT,
     KIND_CHOICE,
     KIND_DATE,
@@ -93,6 +94,10 @@ def register_datasets():
             Field("created_at", "Created", "Record", KIND_DATETIME),
         ),
         filters=(
+            FilterDef("search", "Search", FILTER_SEARCH, searches=(
+                ("document_number", "PO number"), ("vendor__name", "Vendor"),
+                ("reference", "Reference"),
+            ), description="Matches any one of these, the way the search box does."),
             FilterDef("order_date", "Order date", FILTER_DATE_RANGE, required=True,
                       is_primary_date=True),
             FilterDef("status", "Status", FILTER_CHOICE, choices=_DOC_STATUS),
@@ -129,6 +134,10 @@ def register_datasets():
             Field("created_at", "Created", "Record", KIND_DATETIME),
         ),
         filters=(
+            FilterDef("search", "Search", FILTER_SEARCH, searches=(
+                ("document_number", "Invoice number"), ("vendor__name", "Vendor"),
+                ("vendor_reference", "Vendor's reference"),
+            ), description="Matches any one of these, the way the search box does."),
             FilterDef("invoice_date", "Invoice date", FILTER_DATE_RANGE, required=True,
                       is_primary_date=True),
             FilterDef("status", "Status", FILTER_CHOICE, choices=_DOC_STATUS),
@@ -179,6 +188,9 @@ def register_datasets():
         filters=(
             FilterDef("created_at", "Created", FILTER_DATE_RANGE, is_primary_date=True),
             FilterDef("kyc_status", "KYC status", FILTER_CHOICE, choices=_KYC_STATUS),
+            FilterDef("search", "Search", FILTER_SEARCH, searches=(
+                ("code", "Vendor code"), ("name", "Name"),
+            ), description="Matches either one, the way the search box does."),
             FilterDef("is_active", "Active", FILTER_BOOLEAN),
             FilterDef("on_hold", "On hold", FILTER_BOOLEAN),
             FilterDef("name", "Name", FILTER_TEXT),
@@ -231,11 +243,8 @@ def _translate_purchase_orders(params):
         filters.append({"id": "vendor", "value": value})
     for key in ("q", "search"):
         if value := params.get(key):
-            unmapped.append(Unmapped(
-                key, value,
-                "Search spans the PO number and the vendor at once, which an export "
-                "filter cannot express.",
-            ))
+            filters.append({"id": "search", "value": value})
+            break
     if value := params.get("rfq"):
         unmapped.append(Unmapped(
             "rfq", value,
@@ -255,7 +264,8 @@ def _translate_vendors(params):
         filters.append({"id": "kyc_status", "values": [value]})
     for key in ("q", "search"):
         if value := params.get(key):
-            filters.append({"id": "name", "value": value})
+            filters.append({"id": "search", "value": value})
+            break
     for key in ("is_active", "on_hold"):
         raw = params.get(key)
         if raw is None:
@@ -277,8 +287,6 @@ def _translate_vendors(params):
 
 # Translate the vendor-invoice list screen's filters into export filters.
 def _translate_vendor_invoices(params):
-    from vs_exports.catalogue import Unmapped
-
     filters, unmapped = [], []
     if value := params.get("status"):
         filters.append({"id": "status", "values": [value]})
@@ -288,9 +296,8 @@ def _translate_vendor_invoices(params):
         filters.append({"id": "vendor", "value": value})
     for key in ("q", "search"):
         if value := params.get(key):
-            unmapped.append(Unmapped(
-                key, value, "Search spans several columns at once.",
-            ))
+            filters.append({"id": "search", "value": value})
+            break
     return filters, unmapped
 
 
