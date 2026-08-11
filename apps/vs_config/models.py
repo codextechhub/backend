@@ -489,6 +489,10 @@ class CapabilityEntitlement(models.Model):
                 fields=["capability", "scope_key"], name="uniq_capability_entitlement_scope",
             )
         ]
+        indexes = [
+            models.Index(fields=["state", "ends_at"], name="config_ent_state_end_idx"),
+            models.Index(fields=["state", "starts_at"], name="config_ent_state_start_idx"),
+        ]
 
     def save(self, *args, **kwargs):
         self.scope_key = f"tenant:{self.tenant_id}" if self.tenant_id else "platform"
@@ -651,3 +655,81 @@ class ConfigurationAuditEvent(ScopedModel):
 
     def delete(self, *args, **kwargs):
         raise ValueError("ConfigurationAuditEvent rows are immutable.")
+
+
+class ConfigurationAuditSavedView(ScopedModel):
+    """A personal, reusable set of configuration-audit filters."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    owner = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="configuration_audit_saved_views",
+    )
+    name = models.CharField(max_length=80)
+    filters = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name", "created_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["owner", "name"],
+                name="uniq_config_audit_saved_view_owner_name",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["owner", "updated_at"], name="config_saved_owner_time_idx",
+            )
+        ]
+
+
+class ConfigurationAuditExportJob(ScopedModel):
+    """Queued configuration-audit export with temporary stored output."""
+
+    class Status(models.TextChoices):
+        QUEUED = "QUEUED", "Queued"
+        RUNNING = "RUNNING", "Running"
+        COMPLETED = "COMPLETED", "Completed"
+        FAILED = "FAILED", "Failed"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    requested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="configuration_audit_export_jobs",
+    )
+    filters = models.JSONField(default=dict, blank=True)
+    client_key = models.CharField(max_length=64, blank=True, default="")
+    status = models.CharField(
+        max_length=12,
+        choices=Status.choices,
+        default=Status.QUEUED,
+        db_index=True,
+    )
+    file_name = models.CharField(max_length=255, blank=True)
+    storage_name = models.CharField(max_length=500, blank=True)
+    row_count = models.PositiveIntegerField(default=0)
+    failure_message = models.CharField(max_length=500, blank=True)
+    requested_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    available_until = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ["-requested_at"]
+        indexes = [
+            models.Index(
+                fields=["requested_by", "-requested_at"],
+                name="config_job_request_time_idx",
+            ),
+            models.Index(
+                fields=["scope_key", "-requested_at"],
+                name="config_job_scope_time_idx",
+            ),
+            models.Index(fields=["client_key"], name="config_job_client_idx"),
+        ]

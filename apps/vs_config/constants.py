@@ -13,14 +13,20 @@ class ConfigPermissions:
     OVERRIDE_VIEW = "config.override.view"
     OVERRIDE_MANAGE = "config.override.manage"
     AUDIT_VIEW = "config.audit.view"
+    AUDIT_EXPORT = "config.audit.export"
     EXPORT_CREATE = "config.export.create"
+    SECURITY_VIEW = "config.security.view"
+    SECURITY_MANAGE = "config.security.manage"
+    INTEGRATION_VIEW = "config.integration.view"
+    INTEGRATION_MANAGE = "config.integration.manage"
 
     # Seeding uses this list as the complete RBAC contract for the config module.
     ALL = [
         DEFINITION_VIEW, DEFINITION_CREATE, DEFINITION_UPDATE, DEFINITION_ARCHIVE,
         VALUE_VIEW, VALUE_UPDATE, CAPABILITY_VIEW, CAPABILITY_MANAGE,
         ENTITLEMENT_VIEW, ENTITLEMENT_MANAGE, OVERRIDE_VIEW, OVERRIDE_MANAGE,
-        AUDIT_VIEW, EXPORT_CREATE,
+        AUDIT_VIEW, AUDIT_EXPORT, EXPORT_CREATE,
+        SECURITY_VIEW, SECURITY_MANAGE, INTEGRATION_VIEW, INTEGRATION_MANAGE,
     ]
 
 

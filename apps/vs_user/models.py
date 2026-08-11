@@ -333,13 +333,10 @@ class User(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
 # UserInvitation
 # =============================================================================
 
-INVITATION_EXPIRY_DAYS = 7
-
-
 class UserInvitation(TimeStampedModel):
     """
     One record per user. Tracks whether the invitation link is still
-    valid (unused and within the 7-day window).
+    valid (unused and within the configured invitation window).
 
     OneToOneField enforces one active invitation per user at all times.
     On resend, the existing record is reset rather than a new one created.
@@ -365,7 +362,7 @@ class UserInvitation(TimeStampedModel):
         related_name='sent_invitations',
     )
 
-    # 7 days from creation. Reset to 7 days from now on resend.
+    # Configured number of days from creation or the most recent resend.
     expires_at = models.DateTimeField()
 
     # Flipped to True on successful activation. Once True the activation link is dead.
@@ -405,11 +402,17 @@ class UserInvitation(TimeStampedModel):
 
     def reset(self, invited_by=None):
         """
-        Reset for a resend. Gives the user a fresh 7-day window from now.
+        Reset for a resend. Gives the user a fresh configured window from now.
         Updates invited_by if a new admin triggered the resend.
         """
+        from vs_config.runtime_settings import get_security_value
+
         self.is_used         = False
-        self.expires_at      = timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS)
+        self.expires_at      = timezone.now() + timedelta(
+            days=get_security_value(
+                "invitation_expiry_days", tenant=self.user.tenant, branch=self.user.branch,
+            )
+        )
         self.email_status    = self.EmailStatus.PENDING
         self.email_sent_at   = None
         self.email_last_error = ''

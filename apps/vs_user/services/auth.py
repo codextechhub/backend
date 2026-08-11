@@ -14,11 +14,6 @@ from ..tokens import CodeXRefreshToken
 from ..serializers import UserReadSerializer, school_public_info
 from .audit import log_auth_event, record_attempt, blacklist_all_user_tokens, get_client_ip, get_device_label
 
-# TODO: Default lockout threshold - overridable per school via System Config (Module 6).
-DEFAULT_LOCK_THRESHOLD = 5
-DEFAULT_LOCK_MINUTES   = 15
-
-
 class LoginService:
 
     @staticmethod
@@ -195,12 +190,18 @@ class LoginService:
         """
         just_locked = False
         if user:
+            from vs_config.runtime_settings import get_security_settings
+
+            security_settings = get_security_settings(
+                tenant=user.tenant, branch=user.branch,
+            )
+
             with transaction.atomic():
                 lockout, _ = AccountLockout.objects.select_for_update().get_or_create(user=user)
                 lockout.register_failure(
                     ip=get_client_ip(request),
-                    lock_threshold=DEFAULT_LOCK_THRESHOLD,
-                    lock_minutes=DEFAULT_LOCK_MINUTES,
+                    lock_threshold=security_settings["failed_login_threshold"],
+                    lock_minutes=security_settings["account_lock_minutes"],
                 )
                 lockout.save(update_fields=[
                     'failure_count', 'locked_until', 'locked_reason',

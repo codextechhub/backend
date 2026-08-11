@@ -190,13 +190,19 @@ Some Finance Settings sections link to established modules rather than duplicati
 
 Those modules remain their own source of truth. A future editable settings section should integrate with the existing owner rather than create a parallel setting with similar meaning.
 
+## Consumer ownership metadata
+
+Every live Finance setting now returns code-owned consumer metadata beside its effective value. The registry covers all 13 account mappings, all five document defaults, and all four banking and cash controls. Each entry names the backend service, the concrete code path, and the operational impact of changing the field.
+
+The registry lives in `apps/vs_finance/settings_ownership.py`. Settings endpoints return it as `consumers`; clients display it but cannot edit it. Tests compare the registry keys with the supported mapping and field specifications, so adding a setting without declaring its consumer fails the focused settings suite. The metadata is explanatory only. Runtime enforcement remains in the shared account, document, banking, reconciliation, receipt, and petty-cash services.
+
 ## API contract
 
 ### Account mappings
 
 `GET /v1/finance/settings/account-mappings/`
 
-Returns every supported mapping, its starter code, expected account type, effective account, and whether the value is a default or override. It also returns eligible account choices scoped to the entity.
+Returns every supported mapping, its starter code, expected account type, effective account, whether the value is a default or override, and the complete `consumers` registry. It also returns eligible account choices scoped to the entity.
 
 `PATCH /v1/finance/settings/account-mappings/`
 

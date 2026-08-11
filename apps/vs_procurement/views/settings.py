@@ -12,6 +12,7 @@ from ..settings import (
     serialize_procurement_settings,
     update_procurement_settings,
 )
+from ..settings_ownership import PROCUREMENT_SETTING_CONSUMERS
 from .base import _ProcBase
 
 
@@ -44,6 +45,7 @@ class ProcurementSettingsView(_ProcBase):
                 "settings": serialize_procurement_settings(
                     resolve_procurement_settings(entity),
                 ),
+                "consumers": PROCUREMENT_SETTING_CONSUMERS,
                 "history": _history(entity),
             },
         )
@@ -57,6 +59,7 @@ class ProcurementSettingsView(_ProcBase):
             "Procurement settings saved.",
             data={
                 "settings": serialize_procurement_settings(settings),
+                "consumers": PROCUREMENT_SETTING_CONSUMERS,
                 "history": _history(entity),
             },
         )

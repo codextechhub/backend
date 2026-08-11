@@ -73,6 +73,11 @@ class PaystackProvider(Provider):
                                 provider="PAYSTACK")  # Tag the error with the provider name.
         return resp.get("data", {})
 
+    def healthcheck(self) -> bool:
+        # Balance is authenticated and read-only. Do not return its financial data.
+        self._require_ok(self._get("/balance"))
+        return True
+
     # -- collection --------------------------------------------------------- #  # Collection-side operations.
     def create_checkout(self, *, reference, amount, currency, customer_email="",
                         customer_name="", narration="", callback_url="", metadata=None):

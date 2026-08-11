@@ -16,6 +16,101 @@ DEFINITIONS = [
         "Base backoff in seconds between email delivery retries.",
         "INTEGER", 60, {"min": 1, "max": 3600},
     ),
+    (
+        "security.failed_login_threshold", "Failed Login Threshold",
+        "Failed password attempts allowed before the account is locked.",
+        "INTEGER", 5, {"min": 3, "max": 20},
+    ),
+    (
+        "security.account_lock_minutes", "Account Lock Duration",
+        "Minutes an account remains locked after reaching the failed-login threshold.",
+        "INTEGER", 15, {"min": 5, "max": 1440},
+    ),
+    (
+        "security.self_reset_expiry_hours", "Self-service Reset Lifetime",
+        "Hours a self-service password reset link remains valid.",
+        "INTEGER", 1, {"min": 1, "max": 24},
+    ),
+    (
+        "security.admin_reset_expiry_hours", "Admin Reset Lifetime",
+        "Hours an administrator-triggered password reset link remains valid.",
+        "INTEGER", 24, {"min": 1, "max": 168},
+    ),
+    (
+        "security.invitation_expiry_days", "Invitation Lifetime",
+        "Days a new-user invitation remains valid, including after resend.",
+        "INTEGER", 7, {"min": 1, "max": 30},
+    ),
+    (
+        "security.proxy_idle_timeout_minutes", "Proxy Session Idle Timeout",
+        "Minutes an open-ended proxy session may remain idle before it expires.",
+        "INTEGER", 30, {"min": 5, "max": 120},
+    ),
+    (
+        "integrations.email.sender_name", "Default Email Sender Name",
+        "Display name used for platform email when a message does not provide its own sender name.",
+        "STRING", None, {},
+    ),
+    (
+        "integrations.email.sender_address", "Default Email Sender Address",
+        "From address used for platform email. SMTP credentials remain deployment-owned.",
+        "STRING", None, {},
+    ),
+    (
+        "platform.profile.name", "Platform Name",
+        "Name printed when the platform is the issuer of a Finance document.",
+        "STRING", None, {},
+    ),
+    (
+        "platform.profile.tagline", "Platform Tagline",
+        "Short line printed below the platform name on issued documents.",
+        "STRING", None, {},
+    ),
+    (
+        "platform.profile.address", "Platform Address",
+        "Contact address printed on platform-issued Finance documents.",
+        "STRING", None, {},
+    ),
+    (
+        "platform.profile.email", "Platform Email",
+        "Contact email printed on platform-issued Finance documents.",
+        "STRING", None, {},
+    ),
+    (
+        "platform.profile.phone", "Platform Phone",
+        "Contact phone printed on platform-issued Finance documents.",
+        "STRING", None, {},
+    ),
+    (
+        "platform.profile.website", "Platform Website",
+        "Website printed on platform-issued Finance documents.",
+        "STRING", None, {},
+    ),
+    (
+        "platform.profile.logo_url", "Platform Logo URL",
+        "Public logo URL used on platform-issued Finance documents.",
+        "STRING", None, {},
+    ),
+    (
+        "platform.onboarding.default_ownership_type", "Default School Ownership",
+        "Ownership type preselected when a new school omits the field.",
+        "CHOICE", "PUBLIC", {"choices": ["PUBLIC", "PRIVATE", "FAITH_BASED", "NGO"]},
+    ),
+    (
+        "platform.onboarding.default_term_structure", "Default Academic Structure",
+        "Academic calendar structure used when a new school omits the field.",
+        "CHOICE", "3_TERMS", {"choices": ["2_SEMESTERS", "3_TERMS"]},
+    ),
+    (
+        "platform.onboarding.default_currency", "Default School Currency",
+        "Billing currency used when a new school omits the field.",
+        "CHOICE", "NGN", {"choices": ["NGN", "USD"]},
+    ),
+    (
+        "platform.onboarding.default_branch_country", "Default Branch Country",
+        "Country used when a new branch omits the field.",
+        "STRING", "Nigeria", {},
+    ),
 ]
 
 CAPABILITIES = [

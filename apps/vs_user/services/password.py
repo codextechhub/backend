@@ -17,11 +17,6 @@ from .audit import log_auth_event, blacklist_all_user_tokens, get_client_ip
 
 logger = logging.getLogger(__name__)
 
-# Self-service reset: 1 hour. Admin-triggered reset: 24 hours.
-RESET_EXPIRY_SELF_HOURS  = 1
-RESET_EXPIRY_ADMIN_HOURS = 24
-
-
 class PasswordService:
 
     @staticmethod
@@ -66,7 +61,7 @@ class PasswordService:
     def admin_reset(target_user, requesting_user, request=None):
         """
         Admin triggers a password reset for another user.
-        Creates a 24-hour window and emails it to the user.
+        Uses the configured admin-reset window and emails it to the user.
         """
         sender_name = requesting_user.full_name if requesting_user else "CodeX System"
         PasswordService._create_and_send_reset(
@@ -137,7 +132,13 @@ class PasswordService:
         notification - the requesting admin for ADMIN origin, the user
         themselves for SELF. It is never the target user on an admin reset.
         """
-        expiry_hours = RESET_EXPIRY_SELF_HOURS if origin == "SELF" else RESET_EXPIRY_ADMIN_HOURS
+        from vs_config.runtime_settings import get_security_value
+
+        expiry_hours = get_security_value(
+            "self_reset_expiry_hours" if origin == "SELF" else "admin_reset_expiry_hours",
+            tenant=user.tenant,
+            branch=user.branch,
+        )
 
         # Expire any existing unused reset so the unique constraint doesn't block a new request
         PasswordResetRequest.objects.filter(user=user, used_at__isnull=True).update(used_at=timezone.now())

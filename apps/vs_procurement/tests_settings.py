@@ -23,6 +23,8 @@ from vs_procurement.models import (
 )
 from vs_procurement.payables import match_vendor_invoice
 from vs_procurement.purchasing import vendor_purchase_block_reason
+from vs_procurement.settings import SETTING_FIELDS
+from vs_procurement.settings_ownership import PROCUREMENT_SETTING_CONSUMERS
 from vs_schools.models import School
 
 
@@ -61,6 +63,8 @@ class ProcurementSettingsAPITests(TestCase):
             response.data["data"]["settings"]["minimum_submitted_quotations_before_award"],
             1,
         )
+        self.assertEqual(set(response.data["data"]["consumers"]), set(SETTING_FIELDS))
+        self.assertEqual(set(PROCUREMENT_SETTING_CONSUMERS), set(SETTING_FIELDS))
         self.assertFalse(ProcurementSettings.objects.filter(entity=self.entity).exists())
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)

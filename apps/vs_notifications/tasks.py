@@ -184,19 +184,15 @@ def _read_retry_config() -> tuple[int, int]:
     Read max retries and backoff seconds from vs_config.
     Falls back to hardcoded defaults if vs_config is unavailable.
     """
-    from .constants import NotificationConfigKey
-
     try:
-        from vs_config.conf import get_config
-        max_retries = int(get_config(
-            NotificationConfigKey.EMAIL_MAX_RETRIES,
-            default=NotificationConfigKey.DEFAULTS[NotificationConfigKey.EMAIL_MAX_RETRIES],
-        ))
-        retry_backoff = int(get_config(
-            NotificationConfigKey.EMAIL_RETRY_BACKOFF_SEC,
-            default=NotificationConfigKey.DEFAULTS[NotificationConfigKey.EMAIL_RETRY_BACKOFF_SEC],
-        ))
+        from vs_config.runtime_settings import get_integration_settings
+
+        integration_settings = get_integration_settings()
+        max_retries = int(integration_settings["email_max_retries"])
+        retry_backoff = int(integration_settings["email_retry_backoff_seconds"])
     except Exception:
+        from .constants import NotificationConfigKey
+
         max_retries = NotificationConfigKey.DEFAULTS[NotificationConfigKey.EMAIL_MAX_RETRIES]
         retry_backoff = NotificationConfigKey.DEFAULTS[NotificationConfigKey.EMAIL_RETRY_BACKOFF_SEC]
 

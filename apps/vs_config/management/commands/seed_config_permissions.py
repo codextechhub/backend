@@ -8,8 +8,10 @@ RESOURCES = [
     ("capability", [("view", "NORMAL"), ("manage", "SENSITIVE")]),
     ("entitlement", [("view", "SENSITIVE"), ("manage", "CRITICAL")]),
     ("override", [("view", "NORMAL"), ("manage", "SENSITIVE")]),
-    ("audit", [("view", "SENSITIVE")]),
+    ("audit", [("view", "SENSITIVE"), ("export", "SENSITIVE")]),
     ("export", [("create", "SENSITIVE")]),
+    ("security", [("view", "SENSITIVE"), ("manage", "CRITICAL")]),
+    ("integration", [("view", "SENSITIVE"), ("manage", "CRITICAL")]),
 ]
 PLATFORM_ROLE_IDS = ["xvs_super_admin", "xvs_platform_admin"]
 _PLATFORM_ROLE_NAMES = {"xvs_super_admin": "XVS Super Admin", "xvs_platform_admin": "XVS Platform Admin"}

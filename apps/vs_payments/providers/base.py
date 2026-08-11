@@ -172,3 +172,7 @@ class PayoutProvider(WebhookCapable):
 # Group behavior for Provider.
 class Provider(CollectionProvider, PayoutProvider):
     """A provider that can do both directions (Paystack, Fake all do)."""
+
+    def healthcheck(self) -> bool:
+        """Verify configured credentials using a read-only provider operation."""
+        raise NotImplementedError("This payment provider does not expose a safe connection test.")

@@ -25,9 +25,6 @@ from ..tokens import CodeXRefreshToken
 logger = logging.getLogger(__name__)
 
 
-INVITATION_EXPIRY_DAYS = 7
-
-
 class InvitationService:
 
     # ── Create ────────────────────────────────────────────────────────────────
@@ -42,6 +39,8 @@ class InvitationService:
         if a record already exists it is reset instead of duplicated.
         """
         with transaction.atomic():
+            from vs_config.runtime_settings import get_security_value
+
             invitation = UserInvitation.objects.select_for_update().filter(user=user).first()
             if invitation:
                 invitation.reset(invited_by=invited_by)
@@ -49,7 +48,13 @@ class InvitationService:
                 invitation = UserInvitation.objects.create(
                     user=user,
                     invited_by=invited_by,
-                    expires_at=timezone.now() + timedelta(days=INVITATION_EXPIRY_DAYS),
+                    expires_at=timezone.now() + timedelta(
+                        days=get_security_value("invitation_expiry_days")
+                        if user.tenant_id is None
+                        else get_security_value(
+                            "invitation_expiry_days", tenant=user.tenant, branch=user.branch,
+                        )
+                    ),
                     is_used=False,
                 )
                 
@@ -179,7 +184,7 @@ class InvitationService:
         """
         Resets the invitation and dispatches a new invitation email.
         The URL stays the same - vision.codexng.com/invite/{user.id}/ -
-        but the expiry is extended to 7 days from now.
+        but the expiry is extended using the live platform security setting.
 
         Only valid for PENDING accounts. Caller must check status before
         calling this.

@@ -38,6 +38,9 @@ class FakeProvider(Provider):
         # Lets a test force the provider-reported settled amount (kobo) per reference.  # Override the verified amount.
         self.forced_amount: dict[str, int] = {}
 
+    def healthcheck(self) -> bool:
+        return True
+
     # -- collection --------------------------------------------------------- #  # Money-in behavior.
     def create_checkout(self, *, reference, amount, currency, customer_email="",
                         customer_name="", narration="", callback_url="", metadata=None):

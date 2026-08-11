@@ -38,9 +38,13 @@ class TenantJWTAuthentication(JWTAuthentication):
         )
         if not expired and impersonation.ends_at is None:
             # Open-ended sessions stay alive only while they are used.
-            from django.conf import settings
+            from vs_config.runtime_settings import get_security_value
             idle_limit = timezone.timedelta(
-                minutes=settings.IMPERSONATION_IDLE_TIMEOUT_MINUTES,
+                minutes=get_security_value(
+                    "proxy_idle_timeout_minutes",
+                    tenant=impersonation.tenant,
+                    branch=impersonation.target_user.branch,
+                ),
             )
             last_seen = impersonation.last_activity_at or impersonation.started_at
             expired = last_seen + idle_limit <= now

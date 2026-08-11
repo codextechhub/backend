@@ -1,5 +1,8 @@
 import re
+from collections import defaultdict
+from uuid import UUID
 
+from django.utils import timezone
 from rest_framework import serializers
 
 from .constants import VALID_SCOPES
@@ -8,27 +11,37 @@ from .models import (
     CapabilityEntitlement,
     CapabilityOverride,
     ConfigurationAuditEvent,
+    ConfigurationAuditExportJob,
+    ConfigurationAuditSavedView,
     ConfigurationDefinition,
     ConfigurationValue,
 )
 from .services.resolution import validate_value
+from vs_schools.models import Currency, OwnershipType, TermStructure
 
 
 class ActorSerializer(serializers.Serializer):
-    id = serializers.UUIDField(read_only=True)
+    id = serializers.CharField(read_only=True)
     email = serializers.EmailField(read_only=True)
     full_name = serializers.CharField(read_only=True)
 
 
 class ConfigurationDefinitionSerializer(serializers.ModelSerializer):
+    consumer = serializers.SerializerMethodField()
+
     class Meta:
         model = ConfigurationDefinition
         fields = [
             "id", "key", "label", "description", "value_type", "default_value",
             "validation_rules", "allowed_scopes", "sensitivity", "is_active",
-            "created_by", "created_at", "updated_at",
+            "consumer", "created_by", "created_at", "updated_at",
         ]
         read_only_fields = ["id", "created_by", "created_at", "updated_at"]
+
+    def get_consumer(self, obj):
+        from .runtime_settings import get_setting_consumer
+
+        return get_setting_consumer(obj.key)
 
     def validate_allowed_scopes(self, value):
         scopes = list(dict.fromkeys(value))
@@ -100,6 +113,95 @@ class SetConfigurationValueSerializer(serializers.Serializer):
         r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$", max_length=200
     )
     value = serializers.JSONField()
+    reason = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class PlatformProfileSettingsSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=160, required=False)
+    tagline = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    address = serializers.CharField(max_length=255, required=False, allow_blank=True)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    phone = serializers.CharField(max_length=80, required=False, allow_blank=True)
+    website = serializers.URLField(required=False, allow_blank=True)
+    logo_url = serializers.URLField(required=False, allow_blank=True)
+
+
+class SchoolOnboardingSettingsSerializer(serializers.Serializer):
+    ownership_type = serializers.ChoiceField(choices=OwnershipType.choices, required=False)
+    term_structure = serializers.ChoiceField(choices=TermStructure.choices, required=False)
+    currency = serializers.ChoiceField(choices=Currency.choices, required=False)
+    branch_country = serializers.CharField(max_length=80, required=False)
+
+
+class PlatformSettingsUpdateSerializer(serializers.Serializer):
+    profile = PlatformProfileSettingsSerializer(required=False)
+    onboarding = SchoolOnboardingSettingsSerializer(required=False)
+    reason = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate(self, attrs):
+        if not attrs.get("profile") and not attrs.get("onboarding"):
+            raise serializers.ValidationError(
+                "Provide at least one platform profile or onboarding setting."
+            )
+        return attrs
+
+
+class SecuritySettingsUpdateSerializer(serializers.Serializer):
+    failed_login_threshold = serializers.IntegerField(
+        min_value=3, max_value=20, required=False, allow_null=True
+    )
+    account_lock_minutes = serializers.IntegerField(
+        min_value=5, max_value=1440, required=False, allow_null=True
+    )
+    self_reset_expiry_hours = serializers.IntegerField(
+        min_value=1, max_value=24, required=False, allow_null=True
+    )
+    admin_reset_expiry_hours = serializers.IntegerField(
+        min_value=1, max_value=168, required=False, allow_null=True
+    )
+    invitation_expiry_days = serializers.IntegerField(
+        min_value=1, max_value=30, required=False, allow_null=True
+    )
+    proxy_idle_timeout_minutes = serializers.IntegerField(
+        min_value=5, max_value=120, required=False, allow_null=True
+    )
+    reason = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate(self, attrs):
+        if not any(field in attrs for field in self.fields if field != "reason"):
+            raise serializers.ValidationError("Provide at least one security setting.")
+        return attrs
+
+
+class IntegrationSettingsUpdateSerializer(serializers.Serializer):
+    email_sender_name = serializers.CharField(
+        max_length=160, required=False, allow_null=True
+    )
+    email_sender_address = serializers.EmailField(required=False, allow_null=True)
+    email_max_retries = serializers.IntegerField(
+        min_value=0, max_value=10, required=False, allow_null=True
+    )
+    email_retry_backoff_seconds = serializers.IntegerField(
+        min_value=1, max_value=3600, required=False, allow_null=True
+    )
+    reason = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate_email_sender_name(self, value):
+        if value is not None and not value.strip():
+            raise serializers.ValidationError("Use a sender name or reset to deployment default.")
+        return value.strip() if value is not None else None
+
+    def validate(self, attrs):
+        if not any(field in attrs for field in self.fields if field != "reason"):
+            raise serializers.ValidationError("Provide at least one integration setting.")
+        return attrs
+
+
+class IntegrationConnectionTestSerializer(serializers.Serializer):
+    connection = serializers.ChoiceField(choices=["email", "payments"])
+
+
+class ClearConfigurationValueSerializer(serializers.Serializer):
     reason = serializers.CharField(required=False, allow_blank=True, default="")
 
 
@@ -197,7 +299,53 @@ class SetEntitlementSerializer(serializers.Serializer):
     capability = serializers.SlugField(max_length=100)
     state = serializers.ChoiceField(choices=CapabilityEntitlement.State.choices)
     source = serializers.ChoiceField(choices=CapabilityEntitlement.Source.choices)
+    starts_at = serializers.DateTimeField(required=False, allow_null=True)
+    ends_at = serializers.DateTimeField(required=False, allow_null=True)
     reason = serializers.CharField(required=False, allow_blank=True, default="")
+
+    def validate(self, attrs):
+        starts_at = attrs.get("starts_at")
+        ends_at = attrs.get("ends_at")
+        if attrs.get("state") == CapabilityEntitlement.State.DENIED and (starts_at or ends_at):
+            raise serializers.ValidationError(
+                "Scheduling applies to granted entitlements. Clear the dates for a denial."
+            )
+        if ends_at and ends_at <= timezone.now():
+            raise serializers.ValidationError({"ends_at": "Expiry must be in the future."})
+        if starts_at and ends_at and starts_at >= ends_at:
+            raise serializers.ValidationError({"ends_at": "Expiry must be after activation."})
+        return attrs
+
+
+class BulkEntitlementTargetSerializer(serializers.Serializer):
+    capability = serializers.SlugField(max_length=100)
+    tenant = serializers.SlugField(max_length=80, required=False, allow_blank=True)
+
+
+class BulkSetEntitlementSerializer(serializers.Serializer):
+    items = BulkEntitlementTargetSerializer(many=True, min_length=1, max_length=100)
+    starts_at = serializers.DateTimeField(required=False, allow_null=True)
+    ends_at = serializers.DateTimeField(required=False, allow_null=True)
+    reason = serializers.CharField(min_length=3, max_length=500)
+
+    def validate(self, attrs):
+        if "starts_at" not in self.initial_data and "ends_at" not in self.initial_data:
+            raise serializers.ValidationError(
+                "Provide an activation time, an expiry time, or both."
+            )
+        starts_at = attrs.get("starts_at")
+        ends_at = attrs.get("ends_at")
+        if ends_at and ends_at <= timezone.now():
+            raise serializers.ValidationError({"ends_at": "Expiry must be in the future."})
+        if starts_at and ends_at and starts_at >= ends_at:
+            raise serializers.ValidationError({"ends_at": "Expiry must be after activation."})
+        keys = [
+            (item["capability"], item.get("tenant", ""))
+            for item in attrs["items"]
+        ]
+        if len(keys) != len(set(keys)):
+            raise serializers.ValidationError({"items": "Select each entitlement once."})
+        return attrs
 
 
 class CapabilityOverrideSerializer(serializers.ModelSerializer):
@@ -219,6 +367,107 @@ class SetOverrideSerializer(serializers.Serializer):
     branch = serializers.CharField(required=False, allow_null=True)
     state = serializers.ChoiceField(choices=CapabilityOverride.State.choices)
     reason = serializers.CharField(required=False, allow_blank=True, default="")
+
+
+class ConfigurationAuditFilterSerializer(serializers.Serializer):
+    action = serializers.CharField(required=False, allow_blank=True, max_length=80)
+    target_type = serializers.CharField(required=False, allow_blank=True, max_length=80)
+    target_id = serializers.CharField(required=False, allow_blank=True, max_length=200)
+    actor = serializers.CharField(required=False, allow_blank=True, max_length=80)
+    created_after = serializers.DateTimeField(required=False, allow_null=True)
+    created_before = serializers.DateTimeField(required=False, allow_null=True)
+
+    def validate_actor(self, value):
+        if not value:
+            return value
+        valid = value.isdigit() and int(value) > 0
+        if not valid:
+            try:
+                UUID(value)
+                valid = True
+            except (ValueError, TypeError):
+                valid = False
+        if not valid:
+            raise serializers.ValidationError("Use a valid actor ID.")
+        return value
+
+    def validate(self, attrs):
+        after = attrs.get("created_after")
+        before = attrs.get("created_before")
+        if after and before and after >= before:
+            raise serializers.ValidationError({
+                "created_before": "The end of the window must be after the start."
+            })
+        return attrs
+
+
+class ConfigurationAuditSavedFiltersSerializer(serializers.Serializer):
+    window_days = serializers.ChoiceField(
+        choices=[7, 30, 90, "all"], required=False, default=30,
+    )
+    action = serializers.CharField(required=False, allow_blank=True, max_length=80)
+    actor = serializers.CharField(required=False, allow_blank=True, max_length=80)
+    target_type = serializers.CharField(required=False, allow_blank=True, max_length=80)
+    target_id = serializers.CharField(required=False, allow_blank=True, max_length=200)
+
+    def validate_actor(self, value):
+        return ConfigurationAuditFilterSerializer().validate_actor(value)
+
+    def validate(self, attrs):
+        if bool(attrs.get("target_type")) != bool(attrs.get("target_id")):
+            raise serializers.ValidationError(
+                "Target type and target id must be saved together."
+            )
+        return attrs
+
+
+class ConfigurationAuditSavedViewWriteSerializer(serializers.Serializer):
+    name = serializers.CharField(min_length=1, max_length=80, trim_whitespace=True)
+    filters = ConfigurationAuditSavedFiltersSerializer()
+
+
+class ConfigurationAuditSavedViewSerializer(serializers.ModelSerializer):
+    tenant_slug = serializers.CharField(source="tenant.slug", read_only=True, allow_null=True)
+    tenant_name = serializers.CharField(source="tenant.name", read_only=True, allow_null=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True, allow_null=True)
+
+    class Meta:
+        model = ConfigurationAuditSavedView
+        fields = [
+            "id", "name", "filters", "scope_key", "tenant_slug", "tenant_name",
+            "branch", "branch_name", "created_at", "updated_at",
+        ]
+        read_only_fields = fields
+
+
+class ConfigurationAuditExportCreateSerializer(serializers.Serializer):
+    filters = ConfigurationAuditFilterSerializer(required=False, default=dict)
+    client_key = serializers.CharField(required=False, allow_blank=True, max_length=64)
+
+
+class ConfigurationAuditExportJobSerializer(serializers.ModelSerializer):
+    tenant_slug = serializers.CharField(source="tenant.slug", read_only=True, allow_null=True)
+    tenant_name = serializers.CharField(source="tenant.name", read_only=True, allow_null=True)
+    branch_name = serializers.CharField(source="branch.name", read_only=True, allow_null=True)
+    download_available = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ConfigurationAuditExportJob
+        fields = [
+            "id", "status", "filters", "scope_key", "tenant_slug", "tenant_name",
+            "branch", "branch_name", "file_name", "row_count", "failure_message",
+            "requested_at", "started_at", "completed_at", "available_until",
+            "download_available",
+        ]
+        read_only_fields = fields
+
+    def get_download_available(self, obj):
+        return bool(
+            obj.status == obj.Status.COMPLETED
+            and obj.storage_name
+            and obj.available_until
+            and obj.available_until > timezone.now()
+        )
 
 
 class ConfigurationAuditEventSerializer(serializers.ModelSerializer):
@@ -273,8 +522,78 @@ class ConfigurationAuditEventSerializer(serializers.ModelSerializer):
                     .filter(pk=obj.target_id).first()
                 )
                 label = row.capability.label if row else ""
+            elif obj.target_type == "IntegrationConnection":
+                label = f"{obj.target_id.title()} connection"
+            elif obj.target_type == "ConfigurationAuditExportJob":
+                row = ConfigurationAuditExportJob.objects.filter(pk=obj.target_id).first()
+                label = row.file_name or "Queued audit export" if row else ""
         except (ValueError, TypeError):
             label = ""
 
         cache[key] = label
         return label
+
+
+def build_configuration_target_labels(events):
+    """Resolve audit target labels in a bounded number of queries.
+
+    Audit lists, facets and CSV exports can contain hundreds or thousands of
+    rows. Grouping immutable target references by model avoids one lookup per
+    event while preserving the serializer's deleted-target fallback.
+    """
+    grouped = defaultdict(set)
+    labels = {}
+    for event in events:
+        key = (event.target_type, event.target_id)
+        labels[key] = ""
+        if event.target_type == "IntegrationConnection":
+            labels[key] = f"{event.target_id.title()} connection"
+        else:
+            grouped[event.target_type].add(event.target_id)
+
+    model_queries = {
+        "ConfigurationDefinition": (
+            ConfigurationDefinition.objects,
+            lambda row: row.label,
+        ),
+        "ConfigurationValue": (
+            ConfigurationValue.all_objects.select_related("definition"),
+            lambda row: row.definition.label,
+        ),
+        "Capability": (
+            Capability.objects,
+            lambda row: row.label,
+        ),
+        "CapabilityEntitlement": (
+            CapabilityEntitlement.all_objects.select_related("capability"),
+            lambda row: row.capability.label,
+        ),
+        "CapabilityOverride": (
+            CapabilityOverride.all_objects.select_related("capability"),
+            lambda row: row.capability.label,
+        ),
+        "ConfigurationAuditExportJob": (
+            ConfigurationAuditExportJob.objects,
+            lambda row: row.file_name or "Queued audit export",
+        ),
+    }
+    for target_type, raw_ids in grouped.items():
+        query = model_queries.get(target_type)
+        if not query:
+            continue
+        valid_ids = []
+        canonical_to_raw = defaultdict(list)
+        for raw_id in raw_ids:
+            try:
+                canonical = str(UUID(str(raw_id)))
+            except (ValueError, TypeError, AttributeError):
+                continue
+            valid_ids.append(canonical)
+            canonical_to_raw[canonical].append(raw_id)
+        if not valid_ids:
+            continue
+        manager, label_for = query
+        for row in manager.filter(pk__in=valid_ids):
+            for raw_id in canonical_to_raw[str(row.pk)]:
+                labels[(target_type, raw_id)] = label_for(row)
+    return labels

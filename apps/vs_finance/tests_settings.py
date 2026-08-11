@@ -4,7 +4,8 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from core.test_utils import TenantAPIClient
-from vs_finance.account_mappings import resolve_mapped_account
+from vs_finance.account_mappings import ACCOUNT_MAPPING_SPECS, resolve_mapped_account
+from vs_finance.banking_settings import SETTING_FIELDS as BANKING_SETTING_FIELDS
 from vs_finance.constants import AccountMappingKey, FinanceAuditAction
 from vs_finance.models import (
     Account,
@@ -16,7 +17,13 @@ from vs_finance.models import (
     Invoice,
     LedgerEntity,
 )
+from vs_finance.document_settings import SETTING_FIELDS as DOCUMENT_SETTING_FIELDS
 from vs_finance.seed import seed_chart_of_accounts, seed_currencies
+from vs_finance.settings_ownership import (
+    ACCOUNT_MAPPING_CONSUMERS,
+    BANKING_SETTING_CONSUMERS,
+    DOCUMENT_SETTING_CONSUMERS,
+)
 from vs_schools.models import School
 
 
@@ -51,6 +58,8 @@ class FinanceAccountSettingsAPITests(TestCase):
         self.assertEqual(cash["account"]["code"], "1100")
         self.assertEqual(cash["source"], "DEFAULT")
         self.assertTrue(all(row["account_type"] for row in response.data["data"]["account_options"]))
+        self.assertEqual(set(response.data["data"]["consumers"]), set(ACCOUNT_MAPPING_CONSUMERS))
+        self.assertEqual(set(ACCOUNT_MAPPING_CONSUMERS), set(ACCOUNT_MAPPING_SPECS))
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
     def test_update_changes_runtime_resolution_and_writes_audit(self, _permission):
@@ -120,6 +129,8 @@ class FinanceDocumentSettingsAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["data"]["settings"]["default_invoice_due_days"], 30)
         self.assertTrue(response.data["data"]["settings"]["auto_post_manual_invoices"])
+        self.assertEqual(set(response.data["data"]["consumers"]), set(DOCUMENT_SETTING_CONSUMERS))
+        self.assertEqual(set(DOCUMENT_SETTING_CONSUMERS), set(DOCUMENT_SETTING_FIELDS))
         self.assertFalse(FinanceDocumentSettings.objects.filter(entity=self.entity).exists())
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)
@@ -252,6 +263,8 @@ class FinanceBankingSettingsAPITests(TestCase):
         self.assertTrue(values["default_group_reconciliation_matches"])
         self.assertEqual(values["default_receipt_allocation_strategy"], "oldest")
         self.assertEqual(values["petty_cash_low_balance_threshold_bps"], 2500)
+        self.assertEqual(set(response.data["data"]["consumers"]), set(BANKING_SETTING_CONSUMERS))
+        self.assertEqual(set(BANKING_SETTING_CONSUMERS), set(BANKING_SETTING_FIELDS))
         self.assertFalse(FinanceBankingSettings.objects.filter(entity=self.entity).exists())
 
     @patch("vs_rbac.permissions.HasRBACPermission.has_permission", return_value=True)

@@ -24,6 +24,11 @@ from .document_settings import (
 )
 from .models import FinanceAuditLog
 from .serializers import FinanceAuditLogSerializer
+from .settings_ownership import (
+    ACCOUNT_MAPPING_CONSUMERS,
+    BANKING_SETTING_CONSUMERS,
+    DOCUMENT_SETTING_CONSUMERS,
+)
 from .views import resolve_entity
 
 
@@ -54,6 +59,7 @@ class FinanceAccountSettingsView(APIView):
             "Finance account settings retrieved.",
             data={
                 "mappings": account_mapping_snapshot(entity),
+                "consumers": ACCOUNT_MAPPING_CONSUMERS,
                 "account_options": account_mapping_options(entity),
                 "history": _settings_history(
                     entity, FinanceAuditAction.FINANCE_SETTINGS_UPDATED,
@@ -72,6 +78,7 @@ class FinanceAccountSettingsView(APIView):
             "Finance account settings saved.",
             data={
                 "mappings": mappings,
+                "consumers": ACCOUNT_MAPPING_CONSUMERS,
                 "account_options": account_mapping_options(entity),
                 "history": _settings_history(
                     entity, FinanceAuditAction.FINANCE_SETTINGS_UPDATED,
@@ -101,6 +108,7 @@ class FinanceDocumentSettingsView(APIView):
                 "settings": serialize_finance_document_settings(
                     resolve_finance_document_settings(entity),
                 ),
+                "consumers": DOCUMENT_SETTING_CONSUMERS,
                 "history": _settings_history(
                     entity, FinanceAuditAction.FINANCE_DOCUMENT_SETTINGS_UPDATED,
                 ),
@@ -116,6 +124,7 @@ class FinanceDocumentSettingsView(APIView):
             "Finance document settings saved.",
             data={
                 "settings": serialize_finance_document_settings(settings),
+                "consumers": DOCUMENT_SETTING_CONSUMERS,
                 "history": _settings_history(
                     entity, FinanceAuditAction.FINANCE_DOCUMENT_SETTINGS_UPDATED,
                 ),
@@ -144,6 +153,7 @@ class FinanceBankingSettingsView(APIView):
                 "settings": serialize_finance_banking_settings(
                     resolve_finance_banking_settings(entity),
                 ),
+                "consumers": BANKING_SETTING_CONSUMERS,
                 "history": _settings_history(
                     entity, FinanceAuditAction.FINANCE_BANKING_SETTINGS_UPDATED,
                 ),
@@ -159,6 +169,7 @@ class FinanceBankingSettingsView(APIView):
             "Finance banking settings saved.",
             data={
                 "settings": serialize_finance_banking_settings(settings),
+                "consumers": BANKING_SETTING_CONSUMERS,
                 "history": _settings_history(
                     entity, FinanceAuditAction.FINANCE_BANKING_SETTINGS_UPDATED,
                 ),

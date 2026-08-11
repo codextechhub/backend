@@ -56,9 +56,9 @@ def _issuer_block(entity, *, branch=None) -> dict:
 
     * A **school-owned** entity prints the *school's* own branding (name, motto, logo,
       address, website) - a school billing its parents shows its own letterhead.
-    * The **platform (CodeX)** entity prints CodeX's identity from ``PLATFORM_ISSUER``
-      settings - when CodeX bills a school (its customer), the school sees CodeX's
-      details.
+    * The **platform (CodeX)** entity prints the audited Platform Settings identity,
+      with ``PLATFORM_ISSUER`` deployment values as fallback. When CodeX bills a
+      school (its customer), the school sees CodeX's details.
     * Any other school-less entity falls back to the ledger entity's name.
 
     The pay-to bank is always the entity's primary collection account regardless of
@@ -83,9 +83,11 @@ def _issuer_block(entity, *, branch=None) -> dict:
         address = branch_address or getattr(school, "address", "") or ""  # Branch address wins, else school address.
         website = getattr(school, "website", "") or ""  # School website if present.
     elif entity.is_platform:  # CodeX billing its customers (the schools) → CodeX's own identity.
-        from django.conf import settings  # PLATFORM_ISSUER is deploy-configured, read lazily.
+        from vs_config.platform_settings import get_platform_profile
 
-        issuer = getattr(settings, "PLATFORM_ISSUER", {}) or {}  # CodeX letterhead config (may be partly blank).
+        # Admin-saved identity wins, with the deployment environment retained
+        # as the fallback for fields that have not been configured yet.
+        issuer = get_platform_profile()
         name = issuer.get("name") or entity.name  # Configured CodeX name, else the ledger entity name.
         tag = issuer.get("tagline", "") or ""  # CodeX tagline.
         address = issuer.get("address", "") or branch_address  # CodeX address, else any branch address.

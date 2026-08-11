@@ -6437,6 +6437,26 @@ class FinanceDocumentEndpointTests(_ARFixtureMixin, TestCase):
         self.assertIn("12 Marina, Lagos", html)       # CodeX address from PLATFORM_ISSUER
         self.assertIn("Crestfield Academy", html)     # the school is the customer here
 
+    @override_settings(PLATFORM_ISSUER={"name": "Environment CodeX"})
+    def test_platform_document_issuer_prefers_saved_profile(self):
+        from vs_config.models import ConfigurationDefinition
+        from vs_config.services.resolution import set_value
+        from vs_finance.documents import _issuer_block
+
+        actor = self._user("saved-platform-profile@test.com")
+        set_value(
+            definition=ConfigurationDefinition.objects.get(key="platform.profile.name"),
+            value="Saved CodeX Identity",
+            actor=actor,
+        )
+        platform = LedgerEntity.objects.create(
+            name="Platform Books", code="PLATSET", kind=LedgerEntity.Kind.PLATFORM,
+        )
+
+        issuer = _issuer_block(platform)
+
+        self.assertEqual(issuer["name"], "Saved CodeX Identity")
+
 
 # Group tests for Finance Migration State Tests.
 class FinanceMigrationStateTests(TestCase):

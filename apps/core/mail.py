@@ -1,4 +1,4 @@
-from email.utils import formataddr, parseaddr
+from email.utils import formataddr
 
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
@@ -19,7 +19,11 @@ def build_from_email(display_name: str | None = None) -> str:
         build_from_email()
         → "CodeX System <system@codexng.com>"
     """
-    default_name, address = parseaddr(settings.DEFAULT_FROM_EMAIL)
+    from vs_config.runtime_settings import get_integration_settings
+
+    integration_settings = get_integration_settings()
+    default_name = integration_settings["email_sender_name"]
+    address = integration_settings["email_sender_address"]
     return formataddr((display_name or default_name or 'CodeX System', address))
 
 

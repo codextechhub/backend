@@ -4,7 +4,9 @@
 
 This file is the handoff for continuing the settings work when the current Codex task is no longer available. It records what has already been built, what should happen next, what was discovered about the existing platform settings, and the order in which the work should continue.
 
-The future platform-settings request described later in this document has been researched only. It has not been implemented. Its visual direction is already decided: it must reuse the exact sectioned settings design established by Finance and Procurement. Do not source another design, redesign the visual language, or start implementation until the owner has reviewed the proposed settings scope and approved a plan.
+The owner approved the first Platform Settings release on 9 August 2026. Its implementation now reuses the exact sectioned settings design established by Finance and Procurement and adds curated platform profile and school-onboarding defaults backed by real runtime consumers. Read `docs/platform/platform_settings.md` for the current contract before extending it.
+
+The next Platform Settings increments are also implemented in the current worktree: entitlement inheritance reset and schedules, scoped security overrides with non-weakening compliance rules, safe SMTP/payment connection tests, audit facets, personal audit views, direct and asynchronous filtered export, Advanced consumer ownership labels, Finance and Procurement consumer ownership labels, renewal warnings and calendar, atomic bulk entitlement scheduling, and fixed-query bulk capability evaluation. The platform, Finance, and Procurement guides are authoritative for those contracts and remaining decisions.
 
 ## Repositories and baseline
 
@@ -35,8 +37,8 @@ The next agent should begin with these steps:
 4. Confirm the four baseline commits are present in local history.
 5. Inspect current code before relying on this handoff because later commits may have changed it.
 6. The owner approved the recommended first Finance and Procurement increments on 8 August 2026. Continue from the implementation status below rather than requesting that approval again.
-7. Treat Phase 2 as discussion-first work. Present the platform research in the same finding, proposal, readiness, locked-control, and exclusion format used for the original Finance and Procurement research.
-8. Do not perform new visual research for Platform Settings. Reuse the Finance and Procurement settings design exactly, with only module-appropriate content and shared-component refactoring.
+7. Phase 2 was approved on 9 August 2026. Continue from the implemented first release instead of repeating discovery or requesting approval again.
+8. Do not perform new visual research for Platform Settings. Reuse the Finance and Procurement settings design exactly, with only module-appropriate content.
 
 ## What is already complete
 
@@ -104,9 +106,9 @@ The main files are:
 
 ### Shared settings design
 
-The shared frontend building blocks currently live in:
+The shared frontend building blocks now live in:
 
-- `console-fe/src/components/finance-ui/settings-layout.tsx`
+- `console-fe/src/components/settings/settings-layout.tsx`
 
 They provide:
 
@@ -117,7 +119,7 @@ They provide:
 - policy-state badges;
 - recent audit history.
 
-The component is already used by both Finance and Procurement. Its `finance-ui` location is now misleading. A future platform-settings revamp should first move it to a neutral shared location, such as `src/components/settings/`, while preserving its public API and existing screens.
+The component is used by Finance, Procurement, and Platform Settings. It was moved from the misleading `finance-ui` location without changing the established visual API.
 
 # Phase 1: Expand Finance and Procurement policies
 
@@ -289,13 +291,11 @@ Phase 1 is complete when:
 
 At 8 August 2026, implementation, focused backend coverage, the two module guides, frontend checks, real-backend screen verification, and responsive inspection are complete for the approved increment. The changed routes were driven with a temporary populated entity at desktop, 390px, and 820px with no browser errors or horizontal overflow; the fixture and login trail were removed afterward. Separate repository commits remain before the Phase 1 completion gate can be closed.
 
-# Phase 2: Future platform-settings discovery and revamp
+# Phase 2: Platform-settings first release and future expansion
 
 ## User intent to preserve
 
-After the Finance and Procurement expansion is complete, the owner wants to discuss a complete revamp of the dashboard's Platform Settings. The new experience must use the same sectioned settings design already established by Finance and Procurement. This is a fixed design requirement, not a request for new Dribbble, Figma, or web design research. The work should replace the current platform page's product structure, while preserving useful backend capabilities. It must identify real defaults and policies that platform administrators need to manage, agree on an implementation plan, and only then be built.
-
-This phase is not approved for implementation yet.
+The owner approved the recommended first release on 9 August 2026. The implementation uses the same sectioned settings design as Finance and Procurement, preserves the typed configuration engine, and exposes only values with verified runtime consumers. Platform profile, school-onboarding defaults, generic value reset, richer configuration audit detail, runtime security, and safe integration delivery controls are now implemented. Security and integration changes use dedicated view/manage permissions and do not create approval requests.
 
 ## Platform Settings research brief
 
@@ -328,9 +328,9 @@ The backend already provides typed definitions, platform-to-school-to-branch inh
 
 | Section | Contents | Current readiness |
 | --- | --- | --- |
-| Overview | Configuration health, current scope, customized-value count, active feature summary, recent sensitive changes, export, and links to specialist admin consoles. | New UI required. Most source data exists, but a bounded summary endpoint may be preferable to many list requests. |
-| Platform profile | Platform and Finance-document issuer name, tagline, address, contact email, phone, website, logo, and public support identity. | Values exist in deployment settings and are already consumed by document rendering. Database-backed audited settings and fallback rules are new work. |
-| School onboarding defaults | Default ownership type, academic term structure, currency, branch country, starter package or onboarding checklist, and administrator invitation lifetime where approved. | Defaults exist across models, forms, and invitation services. There is no central policy or clear new-record-only contract. |
+| Overview | Configuration health, customized profile count, protected boundaries, export, and links to specialist admin consoles. | Implemented in the first release. Richer bounded summaries remain optional future work. |
+| Platform profile | Platform and Finance-document issuer name, tagline, address, contact email, phone, website, and logo. | Implemented with audited database values and deployment fallback. Finance documents consume the resolved profile. |
+| School onboarding defaults | Default ownership type, academic term structure, currency, and branch country. | Implemented for newly created schools and branches only. Explicit creation input wins. Starter packages and invitation policy remain future decisions. |
 | Access and security | Failed-login threshold, lock duration, self-service and administrator reset lifetimes, invitation lifetime, and proxy-session timeout. | Real consumers exist, but values are hard-coded or deployment-backed. This requires guarded settings, strict validation, and security-flow tests. |
 | Communications | Existing email retry and backoff settings, safe sender identity, and a link to Notifications Administration for templates, event routing, and delivery history. | Retry settings work today. Sender identity needs a safe contract. Specialist notification tools already exist and should not be duplicated. |
 | Features and access | Effective feature state, entitlements, runtime overrides, dependencies, source, inheritance reset, and optional scheduling if approved. | Backend foundations are strong. The frontend lacks complete permissions, provenance, reset behavior, scheduling, and scalable catalogue loading. |
@@ -379,7 +379,7 @@ Keep records, operational queues, and specialist policy designers in their exist
 
 Platform Settings may summarize these areas and link to them. It must not create parallel sources of truth.
 
-## Current platform-settings implementation
+## Current Platform Settings implementation
 
 The frontend page is:
 
@@ -402,11 +402,17 @@ The backend is the `vs_config` application:
 - `apps/vs_config/management/commands/seed_config_catalogue.py`
 - `apps/vs_config/tests.py`
 
-The current frontend has three tabs:
+The current frontend has seven nested sections:
 
-1. System Settings
-2. Features
-3. Audit Trail
+1. Overview
+2. Platform profile
+3. School onboarding
+4. Features and access
+5. Administration
+6. Audit and compliance
+7. Advanced catalogue
+
+The first release is documented in `docs/platform/platform_settings.md`.
 
 The backend already has strong foundations:
 
@@ -426,14 +432,14 @@ These foundations should be preserved. The revamp should improve the product mod
 
 ## Important findings and gaps
 
-### 1. The settings catalogue is almost empty
+### 1. The settings catalogue remains intentionally small
 
-Only two configuration definitions are currently seeded:
+The original two notification definitions remain:
 
 - `notifications.email_max_retries`
 - `notifications.email_retry_backoff_seconds`
 
-Both are consumed by notification delivery tasks. Most of the current System Settings page is therefore a generic framework rather than a mature set of real administrative controls.
+The first release adds eleven consumed platform definitions: seven issuer fields and four onboarding defaults. Advanced catalogue remains a framework for carefully reviewed keys, not a promise that arbitrary definitions create behavior.
 
 ### 2. Creating a definition does not create behavior
 
@@ -451,9 +457,9 @@ Recommended separation:
 - advanced platform engineers manage definitions, validation rules, and capability metadata;
 - each area has separate permissions and explanations.
 
-### 4. Scoped values cannot be reset cleanly
+### 4. Generic scoped values cannot be reset cleanly
 
-Configuration values can be upserted but there is no reset endpoint that removes the current scope's physical row and returns to the inherited or definition default value. This becomes essential once the UI exposes school or branch inheritance.
+The curated profile form can clear an optional database override and return to its deployment fallback, with audit. The generic catalogue still has no public reset endpoint for school or branch inheritance.
 
 Recommended backend addition: an audited reset operation that deletes only the authorized scope row and returns the newly effective value plus its source.
 
@@ -480,11 +486,9 @@ Current frontend behavior includes these gaps:
 
 Feature entitlements, feature overrides, and boolean settings save on toggle or selection with generic hard-coded reasons. High-impact platform changes should use an explicit review or confirmation step and capture a meaningful reason.
 
-### 9. Permission composition needs correction
+### 9. Permission composition was corrected for the first-release page
 
-The Features tab is visible with capability-view permission, but it also loads entitlement and override lists, which have their own backend view permissions. A user with only capability visibility can trigger forbidden subrequests and see incomplete state.
-
-The revamped page should load each data source only when its permission is present and clearly label protected information.
+Features loads entitlement and override lists only when the matching view permission is present. Protected records and controls are labelled instead of inferred from missing data. School pickers are also skipped when the user cannot browse schools. Continue applying this rule to future sections.
 
 ### 10. Scope support is incomplete in the UI
 
@@ -657,7 +661,7 @@ The dashboard may report safe configuration status, but it must not expose secre
 
 The Platform Settings design is already selected. Reuse the exact design implemented for Finance and Procurement. Do not source new visual references, introduce a competing settings shell, or reinterpret the request as a visual exploration.
 
-The implementation should reuse these existing building blocks from `console-fe/src/components/finance-ui/settings-layout.tsx`:
+The implementation reuses these existing building blocks from `console-fe/src/components/settings/settings-layout.tsx`:
 
 - `ConsoleSettingsLayout` for the desktop section sidebar and responsive section selector;
 - `SettingsSectionHeader` for section titles, descriptions, and actions;
@@ -679,28 +683,21 @@ The resulting Platform Settings should therefore have the same:
 
 Platform-only additions, such as a scope selector, source or inheritance labels, confirmation reason, and configuration-health summaries, must be composed inside that established system. They are content and behavior additions, not a new visual direction.
 
-Before platform adoption, move the shared implementation from `finance-ui` to a neutral location such as `src/components/settings/settings-layout.tsx`, then update Finance and Procurement imports. Preserve the component API and rendered appearance during that move. The refactor is successful only if all three settings consoles share one visual source of truth.
+The shared implementation has been moved from `finance-ui` to `src/components/settings/settings-layout.tsx`, and Finance and Procurement imports were updated. All three settings consoles now share one visual source of truth.
 
-## Decisions to discuss before Phase 2 implementation
+## Decisions locked for the first release
 
-The next conversation with the owner should answer these questions:
+1. Curated Platform Settings is platform-staff only.
+2. First-release profile and onboarding values are platform-only.
+3. Issuer identity is database-backed with environment fallback.
+4. Onboarding defaults affect new records only, and explicit input wins.
+5. Runtime security controls use dedicated `config.security.view/manage` permissions, with no approval workflow.
+6. Definition and capability authoring remains under Advanced.
+7. Specialist administration records stay in their existing consoles and are linked.
 
-1. Is Platform Settings only for CodeX platform staff, or should school administrators see a scoped version?
-2. Which scope should each proposed setting support: platform only, school override, or branch override?
-3. Which five to ten settings are genuinely needed in the first release?
-4. Should platform issuer identity move from environment variables to audited database settings?
-5. Should school onboarding defaults apply only to newly created schools?
-6. Which security controls may be changed at runtime, and which must remain deployment-owned?
-7. Should changing a sensitive setting require a typed reason, confirmation, or second approval?
-8. Should definitions and capability catalogue editing remain in the main UI or move to Advanced?
-9. Should tenant entitlements support reset to platform inheritance and scheduled start or expiry?
-10. Does the first revamp include branch-level configuration, or only platform and school?
-11. Which specialist consoles should appear as links on the overview?
-12. Is JSON export sufficient, or is filtered CSV audit export required?
+Entitlement reset, scheduling, branch-level runtime security, richer audit export, and connection-test actions still require separate decisions.
 
-Do not infer these answers from the existing generic page. The owner asked to discuss and agree on the plan first.
-
-## Proposed Phase 2 implementation sequence after approval
+## Future Platform Settings implementation sequence
 
 ### Step 1: Product and control specification
 
@@ -784,9 +781,9 @@ Before shipping the platform revamp, prove:
 
 ## Suggested prompt for the next Codex task
 
-Use this prompt to restore context without authorizing the future platform revamp:
+Use this prompt to restore context and continue from the implemented first release:
 
-> Read `/Users/mac/Documents/Dev-Projects/GitHub/backend/docs/SETTINGS_CONTINUATION_PLAN.md`, `/Users/mac/Documents/Dev-Projects/GitHub/backend/docs/finance/finance_settings.md`, and `/Users/mac/Documents/Dev-Projects/GitHub/backend/docs/procurement/procurement_settings.md`. Inspect both repositories and confirm the documented baseline still matches the code. Do not implement the Platform Settings revamp yet. For Platform Settings, reuse the exact Finance and Procurement settings design. Do not source a new design. First present the platform research in the same format as the original work: What I found, Proposed Platform Settings with contents and readiness, highest-value additions, visible but locked safeguards, and what must remain outside Settings. Use the Phase 2 findings in the continuation plan as the starting evidence, report any code changes since the handoff, and agree with me on the exact first-release controls before implementation.
+> Read `/Users/mac/Documents/Dev-Projects/GitHub/backend/docs/SETTINGS_CONTINUATION_PLAN.md`, `/Users/mac/Documents/Dev-Projects/GitHub/backend/docs/platform/platform_settings.md`, `/Users/mac/Documents/Dev-Projects/GitHub/backend/docs/finance/finance_settings.md`, and `/Users/mac/Documents/Dev-Projects/GitHub/backend/docs/procurement/procurement_settings.md`. Inspect both repositories and confirm the documented implementation still matches the code. Continue from the implemented Platform Settings first release. Reuse the exact shared Finance and Procurement settings design and do not source a new design. Before adding another editable field, identify its real backend consumer, scope, fallback, permission, audit behavior, and explicit-input precedence. Present the proposed next increment for approval before implementing high-risk security or integration controls.
 
 ## Future request preserved for discussion
 
@@ -796,4 +793,4 @@ The owner's future request, normalized without changing its intent, is:
 
 ## Final handoff rule
 
-The next safe action is a decision, not a broad build. Confirm the exact Phase 1 policy bundle first. Complete and verify that work. Then return to the owner for the Phase 2 Platform Settings discussion using the research and questions in this file. When Phase 2 begins, keep the Finance and Procurement design unchanged and discuss only the platform content, behavior, scope, permissions, and rollout plan.
+Continue from the implemented Platform Settings expansion. Generic value reset, audit detail, runtime security, and safe integration delivery controls are complete. The next unblocked work is entitlement reset, audit facets and filtered export, Advanced consumer ownership labels, and capability-query improvements. Entitlement scheduling, branch-level security overrides, and active connection-test actions remain discussion-first because they can materially change protection, commercial access, or external traffic.

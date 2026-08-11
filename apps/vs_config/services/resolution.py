@@ -131,3 +131,35 @@ def set_value(*, definition, value, actor, tenant=None, branch=None, reason=""):
         reason=reason,
     )
     return row
+
+
+# Remove a scoped override so resolution falls back to the next available source.
+@transaction.atomic
+def clear_value(*, definition, actor, tenant=None, branch=None, reason=""):
+    tenant, branch = normalize_scope(tenant=tenant, branch=branch)
+    requested_scope = scope_name(tenant, branch)
+    if requested_scope not in set(definition.allowed_scopes or []):
+        raise InvalidConfigurationScope(
+            f"'{definition.key}' cannot be configured at {requested_scope} scope."
+        )
+    scope_key = (
+        f"branch:{branch.pk}" if branch else f"tenant:{tenant.pk}" if tenant else "platform"
+    )
+    row = ConfigurationValue.all_objects.filter(
+        definition=definition, scope_key=scope_key
+    ).first()
+    if row is None:
+        return False
+    before = row.value
+    row.delete()
+    record_configuration_event(
+        action="config.value.cleared",
+        target=definition,
+        actor=actor,
+        tenant=tenant,
+        branch=branch,
+        before={"value": _redacted(definition, before)},
+        after={"value": None},
+        reason=reason,
+    )
+    return True

@@ -337,6 +337,7 @@ class BranchListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Branch
         fields = [
+            "id",
             "code",
             "school_slug",
             "name",
@@ -356,6 +357,7 @@ class BranchDetailSerializer(serializers.ModelSerializer):
     class Meta:
         model = Branch
         fields = [
+            "id",
             "code",
             "school_slug",
             "name",
@@ -413,6 +415,11 @@ class BranchCreateSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+        from vs_config.platform_settings import get_school_onboarding_defaults
+
+        attrs.setdefault(
+            "country", get_school_onboarding_defaults()["branch_country"]
+        )
         school = self.context.get("school")
         is_main = attrs.get("is_main", False)
         if school and is_main:
@@ -682,7 +689,7 @@ class BranchInlineCreateSerializer(serializers.Serializer):
     _type = serializers.CharField(max_length=80)
     address = serializers.CharField(max_length=255, required=False, allow_blank=True, default="")
     email = serializers.EmailField(required=False, allow_blank=True, default="")
-    country = serializers.CharField(max_length=80, default="Nigeria")
+    country = serializers.CharField(max_length=80, required=False)
     state = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
     is_main = serializers.BooleanField(default=False)
     opened_at = serializers.DateTimeField(required=False, allow_null=True, default=None)
@@ -754,6 +761,15 @@ class SchoolCreateSerializer(serializers.ModelSerializer):
         return normalized
 
     def validate(self, attrs: Dict[str, Any]) -> Dict[str, Any]:
+        from vs_config.platform_settings import get_school_onboarding_defaults
+
+        onboarding_defaults = get_school_onboarding_defaults()
+        attrs.setdefault("ownership_type", onboarding_defaults["ownership_type"])
+        attrs.setdefault("term_structure", onboarding_defaults["term_structure"])
+        attrs.setdefault("currency", onboarding_defaults["currency"])
+        for branch in attrs.get("branches", []):
+            branch.setdefault("country", onboarding_defaults["branch_country"])
+
         # --- Slug auto-generation (unchanged from before) ---
         raw_slug = (attrs.get("slug") or "").strip()
         if not raw_slug:
