@@ -210,17 +210,24 @@ class CreditNoteAllocation(TimeStampedModel):
         Invoice, on_delete=models.PROTECT, related_name="credit_allocations",
     )
     amount = MoneyField(help_text="Amount of the note applied to this invoice, in kobo.")
+    effective_date = models.DateField(
+        null=True, blank=True,
+        help_text="Accounting date this settlement took effect - the date of the "
+                  "journal that credited AR for it. Null only on rows predating the "
+                  "column, where it is reconstructed as max(note date, invoice date).",
+    )
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(
-                fields=["note", "invoice"], name="uniq_finance_cnalloc_note_invoice",
-            ),
             models.CheckConstraint(
                 check=models.Q(amount__gte=0), name="ck_finance_cnalloc_non_negative",
             ),
         ]
-        indexes = [models.Index(fields=["invoice"]), models.Index(fields=["note"])]
+        indexes = [
+            models.Index(fields=["invoice"]),
+            models.Index(fields=["note"]),
+            models.Index(fields=["effective_date"]),
+        ]
         ordering = ["note", "id"]
 
     def __str__(self) -> str:
@@ -244,17 +251,24 @@ class DebitNoteAllocation(TimeStampedModel):
         CreditNote, on_delete=models.PROTECT, related_name="settlements",
     )
     amount = MoneyField(help_text="Amount of the payment applied to this debit note, in kobo.")
+    effective_date = models.DateField(
+        null=True, blank=True,
+        help_text="Accounting date this settlement took effect - the date of the "
+                  "journal that credited AR for it. Null only on rows predating the "
+                  "column, where it is reconstructed as max(receipt date, note date).",
+    )
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(
-                fields=["payment", "note"], name="uniq_finance_dnalloc_payment_note",
-            ),
             models.CheckConstraint(
                 check=models.Q(amount__gte=0), name="ck_finance_dnalloc_non_negative",
             ),
         ]
-        indexes = [models.Index(fields=["note"]), models.Index(fields=["payment"])]
+        indexes = [
+            models.Index(fields=["note"]),
+            models.Index(fields=["payment"]),
+            models.Index(fields=["effective_date"]),
+        ]
         ordering = ["payment", "id"]
 
     def __str__(self) -> str:

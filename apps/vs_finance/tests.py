@@ -9297,3 +9297,201 @@ class AccountingDateIntegrityTests(_ARFixtureMixin, TestCase):
         self.assertEqual(reclass.period_id, feb.pk)
         jan_ar = AccountBalance.objects.filter(account__code="1200", period=jan).first()
         self.assertIsNone(jan_ar)  # nothing ever hit AR in January
+
+
+class HistoricalARReportingTests(_ARFixtureMixin, TestCase):
+    """An "as at" report must describe that date, not today with a date printed on it.
+
+    These reports used ``as_of`` only as the aging clock: balances came from the live
+    documents, so a September settlement rewrote what a June report said and the same
+    report gave a different answer every month. Nothing historical could be reproduced
+    twice, and ``reconcile_ar`` compared a partly-dated sub-ledger against an undated
+    GL, so it disagreed with itself whenever a future-dated document existed.
+    """
+
+    def _ledger(self):
+        """A ledger with Jan, Feb and Mar open, so movements can span months."""
+        entity, jan = self.build_ledger()
+        for period_no, name, start, end in (
+            (2, "Feb 2026", datetime.date(2026, 2, 1), datetime.date(2026, 2, 28)),
+            (3, "Mar 2026", datetime.date(2026, 3, 1), datetime.date(2026, 3, 31)),
+        ):
+            FiscalPeriod.objects.create(
+                entity=entity, fiscal_year=jan.fiscal_year, period_no=period_no,
+                name=name, start_date=start, end_date=end, status=PeriodStatus.OPEN,
+            )
+        customer = Customer.objects.create(
+            entity=entity, code="CUST1", name="Acme Ltd",
+            receivable_account=Account.objects.get(entity=entity, code="1200"),
+        )
+        return entity, customer
+
+    def _invoice(self, entity, customer, *, amount, date, due=None):
+        inv = self.make_invoice(
+            entity, customer, lines=[("4100", 1, amount, None)],
+            date=date, due=due or date,
+        )
+        post_invoice(inv)
+        inv.refresh_from_db()
+        return inv
+
+    def _receipt(self, entity, customer, *, amount, date, auto_allocate=True):
+        pay = Payment.objects.create(
+            entity=entity, customer=customer, payment_date=date, amount=amount,
+            deposit_account=Account.objects.get(entity=entity, code="1100"),
+        )
+        post_payment(pay, auto_allocate=auto_allocate)
+        pay.refresh_from_db()
+        return pay
+
+    # --- aging --------------------------------------------------------------- #
+
+    def test_aging_at_a_past_date_still_shows_a_since_settled_invoice(self):
+        """The headline case: paid in March must not erase what was owed in January."""
+        entity, customer = self._ledger()
+        self._invoice(entity, customer, amount=500000,
+                      date=datetime.date(2026, 1, 5), due=datetime.date(2026, 1, 15))
+        self._receipt(entity, customer, amount=500000, date=datetime.date(2026, 3, 20))
+
+        historical = ar_aging(entity, as_of=datetime.date(2026, 1, 31))
+        self.assertEqual(historical.total_outstanding, 500000)
+        self.assertEqual(historical.rows[0].buckets["1-30"], 500000)
+
+        # And the live view still reports it settled.
+        self.assertEqual(ar_aging(entity).total_outstanding, 0)
+
+    def test_aging_at_a_past_date_excludes_a_later_invoice(self):
+        entity, customer = self._ledger()
+        self._invoice(entity, customer, amount=100000, date=datetime.date(2026, 1, 5))
+        self._invoice(entity, customer, amount=700000, date=datetime.date(2026, 3, 4))
+
+        historical = ar_aging(entity, as_of=datetime.date(2026, 1, 31))
+        self.assertEqual(historical.total_outstanding, 100000)  # the March one had not happened
+        self.assertEqual(ar_aging(entity).total_outstanding, 800000)
+
+    def test_the_same_cutoff_survives_a_later_settlement(self):
+        """Run it, settle, run it again - an "as at" figure must be reproducible."""
+        entity, customer = self._ledger()
+        self._invoice(entity, customer, amount=250000, date=datetime.date(2026, 1, 10))
+        cutoff = datetime.date(2026, 1, 31)
+        before = ar_aging(entity, as_of=cutoff).total_outstanding
+
+        self._receipt(entity, customer, amount=250000, date=datetime.date(2026, 2, 14))
+
+        self.assertEqual(ar_aging(entity, as_of=cutoff).total_outstanding, before)
+
+    def test_a_partly_settled_invoice_ages_by_what_was_owed_on_each_date(self):
+        entity, customer = self._ledger()
+        self._invoice(entity, customer, amount=300000, date=datetime.date(2026, 1, 10))
+        self._receipt(entity, customer, amount=120000, date=datetime.date(2026, 2, 10))
+
+        self.assertEqual(
+            ar_aging(entity, as_of=datetime.date(2026, 1, 31)).total_outstanding, 300000)
+        self.assertEqual(
+            ar_aging(entity, as_of=datetime.date(2026, 2, 28)).total_outstanding, 180000)
+
+    def test_credit_received_later_does_not_net_down_an_earlier_date(self):
+        entity, customer = self._ledger()
+        self._invoice(entity, customer, amount=200000, date=datetime.date(2026, 1, 10))
+        # Standalone receipt with no open invoice to settle → sits as customer credit.
+        self._receipt(entity, customer, amount=90000, date=datetime.date(2026, 3, 2),
+                      auto_allocate=False)
+
+        january = ar_aging(entity, as_of=datetime.date(2026, 1, 31))
+        self.assertEqual(january.total_unallocated_credit, 0)
+        self.assertEqual(january.total_net, 200000)
+
+    # --- reconciliation ------------------------------------------------------ #
+
+    def test_reconciliation_balances_at_a_historical_cutoff(self):
+        entity, customer = self._ledger()
+        self._invoice(entity, customer, amount=400000, date=datetime.date(2026, 1, 10))
+        self._receipt(entity, customer, amount=150000, date=datetime.date(2026, 2, 5))
+
+        for cutoff in (datetime.date(2026, 1, 31), datetime.date(2026, 2, 28), None):
+            with self.subTest(cutoff=cutoff):
+                self.assertTrue(reconcile_ar(entity, as_of=cutoff).is_reconciled)
+
+    def test_reconciliation_holds_with_a_document_dated_after_the_cutoff(self):
+        """The trap that made a one-sided date filter worse than no filter at all."""
+        entity, customer = self._ledger()
+        self._invoice(entity, customer, amount=400000, date=datetime.date(2026, 1, 10))
+        self._invoice(entity, customer, amount=999000, date=datetime.date(2026, 3, 15))
+
+        january = reconcile_ar(entity, as_of=datetime.date(2026, 1, 31))
+        self.assertTrue(january.is_reconciled, january.difference)
+        self.assertEqual(january.subledger_total, 400000)
+
+    # --- statement ----------------------------------------------------------- #
+
+    def test_statement_aging_matches_its_own_closing_balance(self):
+        """The aging block used to contradict the running balance printed above it."""
+        entity, customer = self._ledger()
+        self._invoice(entity, customer, amount=500000, date=datetime.date(2026, 1, 5))
+        self._receipt(entity, customer, amount=500000, date=datetime.date(2026, 3, 20))
+
+        statement = customer_statement(customer, end_date=datetime.date(2026, 1, 31))
+        self.assertEqual(statement.closing_balance, 500000)
+        self.assertEqual(sum(statement.aging.values()), 500000)
+
+    # --- allocation dating --------------------------------------------------- #
+
+    def test_each_settlement_is_its_own_dated_row(self):
+        """Two tranches against one invoice credit AR twice, so they are two rows."""
+        entity, customer = self._ledger()
+        invoice = self._invoice(entity, customer, amount=300000,
+                                date=datetime.date(2026, 1, 10))
+        first = self._receipt(entity, customer, amount=100000,
+                              date=datetime.date(2026, 1, 20))
+        second = self._receipt(entity, customer, amount=200000,
+                               date=datetime.date(2026, 2, 20))
+
+        dates = sorted(
+            row.effective_date for row in invoice.allocations.all()
+        )
+        self.assertEqual(dates, [datetime.date(2026, 1, 20), datetime.date(2026, 2, 20)])
+        self.assertEqual(first.allocations.count(), 1)
+        self.assertEqual(second.allocations.count(), 1)
+        # Each tranche is only outstanding until its own date.
+        self.assertEqual(
+            ar_aging(entity, as_of=datetime.date(2026, 1, 31)).total_outstanding, 200000)
+
+    def test_stored_credit_applied_later_is_dated_at_the_application(self):
+        """Credit sits unapplied until it is used; the aging must show that gap."""
+        entity, customer = self._ledger()
+        receipt = self._receipt(entity, customer, amount=500000,
+                                date=datetime.date(2026, 1, 5), auto_allocate=False)
+        invoice = self._invoice(entity, customer, amount=500000,
+                                date=datetime.date(2026, 2, 10))
+        allocate_payment(receipt)
+
+        allocation = invoice.allocations.get()
+        self.assertEqual(allocation.effective_date, datetime.date(2026, 2, 10))
+        # Between the receipt and the invoice the customer was simply in credit.
+        january = ar_aging(entity, as_of=datetime.date(2026, 1, 31))
+        self.assertEqual(january.total_outstanding, 0)
+        self.assertEqual(january.total_unallocated_credit, 500000)
+        self.assertTrue(reconcile_ar(entity, as_of=datetime.date(2026, 1, 31)).is_reconciled)
+
+    # --- dunning ------------------------------------------------------------- #
+
+    def test_a_dunning_run_for_a_past_date_ignores_a_later_settlement(self):
+        entity, customer = self._ledger()
+        self._invoice(entity, customer, amount=200000,
+                      date=datetime.date(2026, 1, 5), due=datetime.date(2026, 1, 10))
+        self._receipt(entity, customer, amount=200000, date=datetime.date(2026, 3, 20))
+        ensure_default_policy(entity)
+
+        notices = generate_dunning(entity, as_of=datetime.date(2026, 2, 1))
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0].amount_due, 200000)  # what was owed on 1 Feb
+
+    def test_a_dunning_run_today_is_unaffected_by_the_rebuild(self):
+        """The daily path must behave exactly as before."""
+        entity, customer = self._ledger()
+        self._invoice(entity, customer, amount=200000,
+                      date=datetime.date(2026, 1, 5), due=datetime.date(2026, 1, 10))
+        self._receipt(entity, customer, amount=200000, date=datetime.date(2026, 3, 20))
+        ensure_default_policy(entity)
+
+        self.assertEqual(generate_dunning(entity), [])  # settled, so nothing to chase

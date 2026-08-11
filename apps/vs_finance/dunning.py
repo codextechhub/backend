@@ -112,7 +112,7 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
     been settled are flipped to RESOLVED. Returns the list of newly created notices.
     """
     from collections import defaultdict
-    from .models import DunningNotice, Invoice
+    from .models import DunningNotice
 
     as_of = as_of or timezone.now().date()
     policy = _resolve_policy(entity, policy)  # Choose the policy for this run.
@@ -120,26 +120,33 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
     if not stages:  # A policy with no ladder cannot generate notices.
         raise PostingError(f"Dunning policy '{policy.name}' has no stages defined.")
 
-    # Narrow to overdue, still-owing invoices in SQL (not in Python): balance_due is a
-    # property, so annotate it and the effective due date and filter on them - the loop
-    # then only loads invoices that can actually qualify for a stage.  # Keep the scan efficient.
-    from django.db.models import F
-    from django.db.models.functions import Coalesce
+    # What was owed **on the run date**, not what is owed now. A dunning run for a past
+    # date used to read live balances, so a settlement made after that date suppressed
+    # the reminder that should have gone out - and a re-run of the same date produced a
+    # different answer. The AR snapshot rebuilds each invoice's balance as at ``as_of``
+    # from dated evidence; for a run dated today it returns exactly the live figures,
+    # so the ordinary daily path is unchanged.
+    from .reports import _ar_snapshot
 
-    balance = F("total") - F("amount_paid") - F("amount_credited")
-    invoices = (  # Base overdue invoice queryset.
-        Invoice.objects.filter(entity=entity, status=DocumentStatus.POSTED)
-        .annotate(_balance=balance, _due=Coalesce("due_date", "invoice_date"))
-        .filter(_balance__gt=0, _due__lt=as_of)
-        .select_related("customer")
+    today = timezone.now().date()
+    cutoff = None if as_of >= today else as_of  # Only rebuild when looking backwards.
+    snapshot_invoices, _dns, settled_by_invoice, _sn, _credit = _ar_snapshot(
+        entity, as_of=cutoff, customer=customer,
     )
-    if customer is not None:  # Optional targeted customer run.
-        invoices = invoices.filter(customer=customer)
+    invoice_list = []  # Overdue, still-owing invoices as at the run date.
+    for invoice in snapshot_invoices:
+        balance = int(invoice.total) - settled_by_invoice.get(invoice.pk, 0)
+        if balance <= 0:  # Nothing owed on the run date.
+            continue
+        due = invoice.due_date or invoice.invoice_date
+        if due >= as_of:  # Not yet overdue on the run date.
+            continue
+        invoice.dunning_balance = balance  # Carry the as-at balance onto the notice.
+        invoice_list.append(invoice)
 
     # Resolve any outstanding reminders whose invoice is now fully settled.  # Keeps notice lifecycle current.
-    _resolve_settled(entity, actor_user=actor_user)  # Mark settled invoice notices resolved.
+    _resolve_settled(entity, actor_user=actor_user, as_of=as_of)  # Mark settled invoice notices resolved.
 
-    invoice_list = list(invoices)  # Materialize once for reuse in bulk notice lookups.
     # Pre-load (two queries, no per-invoice N+1): which levels each invoice has already
     # been issued, and which invoices were already advanced on this run date.  # Preserve idempotency.
     issued_levels: dict[int, set] = defaultdict(set)  # Map invoice id to previously issued levels.
@@ -171,7 +178,10 @@ def generate_dunning(entity, *, as_of=None, policy=None, customer=None, actor_us
         notice = DunningNotice.objects.create(
             entity=entity, branch=invoice.branch, customer=invoice.customer,  # Scope and recipient context.
             invoice=invoice, policy=policy, stage=stage, level=stage.level,  # Link invoice and selected policy stage.
-            notice_date=as_of, days_overdue=days_overdue, amount_due=invoice.balance_due,  # Store run date, age, and balance.
+            # The balance as at the run date, not today's - a reminder must chase what
+            # was owed when it was raised.
+            notice_date=as_of, days_overdue=days_overdue,
+            amount_due=getattr(invoice, "dunning_balance", invoice.balance_due),
             channel=stage.channel, message=stage.message,  # Copy delivery channel and stage wording.
             notice_status=DunningNoticeStatus.PENDING,  # Delivery has not happened yet.
             created_by=actor_user,  # Attribute notice creation to the caller.
@@ -243,16 +253,38 @@ def remind_invoice(invoice, *, actor_user=None, send=True, message=""):
 
 
 # Resolve open notices for invoices now fully paid.
-def _resolve_settled(entity, *, actor_user=None):
-    """Flip any PENDING/SENT notice whose invoice is now fully paid to RESOLVED."""
-    from .models import DunningNotice
+def _resolve_settled(entity, *, actor_user=None, as_of=None):
+    """Flip any PENDING/SENT notice whose invoice was fully paid by ``as_of``.
 
-    open_notices = DunningNotice.objects.filter(
+    ``as_of`` defaults to today, which is the ordinary daily run. It matters only when
+    re-running a past date: a settlement made *after* that date must not retrospectively
+    close a reminder that was legitimately open then.
+    """
+    from .models import DunningNotice
+    from .reports import _ar_snapshot
+
+    today = timezone.now().date()
+    as_of = as_of or today
+    open_notices = list(DunningNotice.objects.filter(
         entity=entity,  # Scope by entity.
         notice_status__in=[DunningNoticeStatus.PENDING, DunningNoticeStatus.SENT],  # Only active reminders can resolve.
-    ).select_related("invoice")
-    for notice in open_notices:  # Check each notice's linked invoice balance.
-        if notice.invoice.balance_due <= 0:  # Fully settled invoice no longer needs reminders.
+    ).select_related("invoice"))
+    if not open_notices:
+        return
+
+    if as_of >= today:  # Live run: the stored balances are already the answer.
+        balances = {n.invoice_id: n.invoice.balance_due for n in open_notices}
+    else:  # Historical run: rebuild each invoice's balance as at the run date.
+        invoices, _dns, settled, _sn, _credit = _ar_snapshot(entity, as_of=as_of)
+        balances = {
+            inv.pk: int(inv.total) - settled.get(inv.pk, 0) for inv in invoices
+        }
+
+    for notice in open_notices:  # Check each notice's balance as at the run date.
+        # An invoice absent from the snapshot did not exist on that date, so it cannot
+        # be "settled" then; leave the notice alone rather than resolving it.
+        balance = balances.get(notice.invoice_id)
+        if balance is not None and balance <= 0:  # Fully settled by the run date.
             notice.notice_status = DunningNoticeStatus.RESOLVED  # Mark the notice resolved.
             notice.save(update_fields=["notice_status", "updated_at"])
 

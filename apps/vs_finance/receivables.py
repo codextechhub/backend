@@ -477,22 +477,22 @@ def _apply_payment_subledger(payment, plan, *, remaining):
         if apply_amount <= 0:  # Skip zero-value allocations.
             continue
 
+        # One row per settlement event, never a running total. The caller stamps each
+        # row with the date of the journal that credited AR for it, and a second
+        # tranche against the same target credits AR on a different date - merging
+        # them would leave one row that cannot honestly carry either date.
         if isinstance(target, CreditNote):  # Debit notes settle through their own allocation table.
-            alloc, _was = DebitNoteAllocation.objects.get_or_create(
-                payment=payment, note=target, defaults={"amount": 0},
+            alloc = DebitNoteAllocation.objects.create(
+                payment=payment, note=target, amount=apply_amount,
             )
-            alloc.amount += apply_amount  # Extend the allocation row by the new amount.
-            alloc.save(update_fields=["amount", "updated_at"])
 
             target.amount_paid += apply_amount  # Increase the debit note's paid amount.
             target.refresh_settlement_status(save=False)  # Recompute the debit note settlement state.
             target.save(update_fields=["amount_paid", "settlement_status", "updated_at"])
         else:  # Invoices use the normal payment allocation table.
-            alloc, _was = PaymentAllocation.objects.get_or_create(
-                payment=payment, invoice=target, defaults={"amount": 0},
+            alloc = PaymentAllocation.objects.create(
+                payment=payment, invoice=target, amount=apply_amount,
             )
-            alloc.amount += apply_amount  # Extend the invoice allocation row.
-            alloc.save(update_fields=["amount", "updated_at"])
 
             target.amount_paid += apply_amount  # Increase the invoice's paid amount.
             target.refresh_payment_status(save=False)  # Recompute the invoice payment status.
@@ -503,11 +503,31 @@ def _apply_payment_subledger(payment, plan, *, remaining):
 
         remaining -= apply_amount  # Reduce the remaining unapplied cash.
         applied += apply_amount  # Track the total applied amount.
-        created.append(alloc)  # Collect the allocation rows created or extended.
+        created.append(alloc)  # Collect the allocation rows created by this run.
         target_date = accounting_date(target)  # Date of the document just settled.
         if target_date is not None and (latest is None or target_date > latest):
             latest = target_date  # Track the newest settled document date.
     return applied, created, latest  # Settled amount, allocation rows, newest settled date.
+
+
+# Stamp a run's allocation rows with the date its journal credited AR.
+def stamp_allocation_effective_date(rows, effective):
+    """Record ``effective`` on every allocation row a settlement run just wrote.
+
+    The sub-ledger and the GL have to agree at every point on the timeline, so an
+    allocation's effective date is not "when someone clicked" and not the crediting
+    document's own date - it is the date of the journal that actually credited AR for
+    it. One run raises one journal, so every row it wrote shares that date, and an
+    "as at" reconstruction that sums rows effective on or before a cutoff lands on
+    exactly the figure the ledger shows.
+    """
+    if effective is None or not rows:  # Nothing to stamp.
+        return
+    for row in rows:
+        row.effective_date = effective
+    # One statement for the whole run: a large receipt can settle many invoices, and
+    # a save per row would put that many round-trips inside the posting transaction.
+    type(rows[0]).objects.bulk_update(rows, ["effective_date"], batch_size=500)
 
 
 @transaction.atomic
@@ -571,8 +591,12 @@ def _post_payment_atomic(payment, *, actor_user=None, auto_allocate=True, alloca
                                 include_debit_notes=True, as_of=payment.payment_date,
                                 settlement=f"Receipt {payment.document_number or payment.pk}")
             if (allocations is not None or auto_allocate) else [])  # Skip the plan when no allocation is requested.
-    applied, _created, _latest = _apply_payment_subledger(payment, plan, remaining=payment.amount)  # Apply the plan to AR.
+    applied, created_rows, _latest = _apply_payment_subledger(payment, plan, remaining=payment.amount)  # Apply the plan to AR.
     excess = payment.amount - applied  # Any leftover cash becomes customer credit.
+    # The receipt's own journal (raised below, dated payment_date) is what credits AR
+    # for everything this run settled, so that is these rows' effective date. The plan
+    # was filtered to targets already raised by then, so no target post-dates it.
+    stamp_allocation_effective_date(created_rows, payment.payment_date)
 
     period = resolve_period(payment.entity, payment.payment_date)  # Find the open accounting period.
     entry = JournalEntry.objects.create(
@@ -655,6 +679,7 @@ def allocate_payment(payment, *, allocations=None, actor_user=None, strategy="ol
         return []
 
     effective = effective_allocation_date(payment.payment_date, [latest])  # Later of receipt and settled docs.
+    stamp_allocation_effective_date(created, effective)  # Rows carry the date this run credits AR.
     period = resolve_period(payment.entity, effective)  # Find the open accounting period.
     entry = JournalEntry.objects.create(
         entity=payment.entity, branch=payment.branch,

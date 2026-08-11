@@ -313,11 +313,18 @@ class Payment(FinanceDocument):
 
 
 class PaymentAllocation(TimeStampedModel):
-    """Links a slice of a :class:`Payment` to a specific :class:`Invoice`.
+    """One act of applying a slice of a :class:`Payment` to a specific :class:`Invoice`.
 
     The GL already moved when the payment posted (Dr bank, Cr AR); allocation is the
     *sub-ledger* act of saying which invoices that AR credit settles. This keeps
     partial payments and unallocated credit first-class without further GL postings.
+
+    A row is an immutable **event**, not a running total. A receipt applied to the
+    same invoice in two goes writes two rows, because the two tranches credited AR on
+    two different dates and an "as at" report has to be able to tell them apart. The
+    row used to be unique per (payment, invoice) and accumulate, which meant its
+    single ``effective_date`` could only describe one of the tranches - and whichever
+    it described, the reconstruction disagreed with the ledger for the days between.
     """
 
     payment = models.ForeignKey(
@@ -327,17 +334,24 @@ class PaymentAllocation(TimeStampedModel):
         Invoice, on_delete=models.PROTECT, related_name="allocations",
     )
     amount = MoneyField(help_text="Amount of the payment applied to this invoice, in kobo.")
+    effective_date = models.DateField(
+        null=True, blank=True,
+        help_text="Accounting date this settlement took effect - the date of the "
+                  "journal that credited AR for it. Null only on rows predating the "
+                  "column, where it is reconstructed as max(receipt date, invoice date).",
+    )
 
     class Meta:
         constraints = [
-            models.UniqueConstraint(
-                fields=["payment", "invoice"], name="uniq_finance_alloc_payment_invoice",
-            ),
             models.CheckConstraint(
                 check=models.Q(amount__gte=0), name="ck_finance_alloc_non_negative",
             ),
         ]
-        indexes = [models.Index(fields=["invoice"]), models.Index(fields=["payment"])]
+        indexes = [
+            models.Index(fields=["invoice"]),
+            models.Index(fields=["payment"]),
+            models.Index(fields=["effective_date"]),
+        ]
         ordering = ["payment", "id"]
 
     def __str__(self) -> str:

@@ -38,7 +38,12 @@ from .constants import (
 from .exceptions import FinanceError, PostingError
 from .money import format_naira
 from .posting import post_journal, resolve_period
-from .receivables import _build_invoice_plan, compute_line_net, compute_tax
+from .receivables import (
+    _build_invoice_plan,
+    compute_line_net,
+    compute_tax,
+    stamp_allocation_effective_date,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -237,7 +242,11 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
             customer, allocations, as_of=note.note_date,
             settlement=f"Credit note {note.document_number or note.pk}",
         ) if (allocations is not None or auto_allocate) else [])
-        applied, _created, _latest = _apply_creditnote_subledger(note, plan, remaining=note.total)  # Apply credit to invoices.
+        applied, created_rows, _latest = _apply_creditnote_subledger(note, plan, remaining=note.total)  # Apply credit to invoices.
+        # The note's own journal (this entry, dated note_date) credits AR for what it
+        # settled, so that is these rows' effective date. The plan was bounded to
+        # invoices already raised by then, so none post-dates it.
+        stamp_allocation_effective_date(created_rows, note.note_date)
         excess = note.total - applied  # Unapplied credit becomes customer-credit liability.
         if applied > 0:  # Applied credit reduces AR.
             line_no += 1  # Advance line number.
@@ -275,9 +284,12 @@ def _post_credit_note_atomic(note, *, actor_user=None, auto_allocate=False, allo
 
 # Apply credit-note value to invoice subledger.
 def _apply_creditnote_subledger(note, plan, *, remaining):
-    """Create/extend CreditNoteAllocation rows + bump invoice ``amount_credited`` for
-    the plan, capped at each invoice balance and ``remaining``. GL-agnostic - the
-    caller posts the journal.
+    """Write CreditNoteAllocation rows + bump invoice ``amount_credited`` for the plan,
+    capped at each invoice balance and ``remaining``. GL-agnostic - the caller posts
+    the journal and stamps the rows with its date.
+
+    One row per settlement event, never a running total: two tranches against the same
+    invoice credit AR on two dates, and a merged row could not carry both.
 
     Returns ``(applied_total, created_rows, latest_invoice_date)``; the caller needs
     that last date to book its reclassification on or after the invoice it clears."""
@@ -291,11 +303,9 @@ def _apply_creditnote_subledger(note, plan, *, remaining):
         apply_amount = min(int(requested), invoice.balance_due, remaining)  # Cap by request, balance, and remaining credit.
         if apply_amount <= 0:  # Skip zero/negative allocations.
             continue
-        alloc, _was = CreditNoteAllocation.objects.get_or_create(
-            note=note, invoice=invoice, defaults={"amount": 0},  # Unique note/invoice allocation.
+        alloc = CreditNoteAllocation.objects.create(
+            note=note, invoice=invoice, amount=apply_amount,  # One row per settlement event.
         )
-        alloc.amount += apply_amount  # Increase allocated amount.
-        alloc.save(update_fields=["amount", "updated_at"])
 
         invoice.amount_credited += apply_amount  # Increase non-cash settlement on invoice.
         invoice.refresh_payment_status(save=False)  # Recompute paid/partial/unpaid state.
@@ -349,6 +359,7 @@ def allocate_credit_note(note, *, allocations=None, actor_user=None):
         return []
 
     effective = effective_allocation_date(note.note_date, [latest])  # Later of note and settled invoices.
+    stamp_allocation_effective_date(created, effective)  # Rows carry the date this run credits AR.
     period = resolve_period(note.entity, effective)  # Resolve allocation period.
     entry = JournalEntry.objects.create(
         entity=note.entity, branch=note.branch,  # Scope entity and optional branch.

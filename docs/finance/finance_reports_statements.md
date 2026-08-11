@@ -49,9 +49,9 @@ close uses `finance.period.close`.
 | `reports/cash-flow/` | `cash_flow_statement` | indirect-ish classification via `_classify_cash_flow` heuristics |
 | `reports/changes-in-equity/` | `statement_of_changes_in_equity` | equity movements + net income |
 | `reports/statutory-pack/` | `statutory_pack` | IFRS-for-SMEs lines via `Account.ifrs_line` (blank falls back to type default) |
-| `reports/ar-aging/` | `ar_aging` | buckets by days overdue (document-level) |
-| `reports/ar-reconciliation/` | `reconcile_ar` | AR sub-ledger vs control account |
-| `reports/customer-statement/` | `customer_statement` | `?customer=&start=&end=`; running balance |
+| `reports/ar-aging/` | `ar_aging` | buckets open invoices **and open DEBIT notes** by days overdue; `?as_of=` is both the aging clock and the accounting-effectiveness cutoff (§7) |
+| `reports/ar-reconciliation/` | `reconcile_ar` | AR sub-ledger vs control account; `?as_of=` applies to **both** sides |
+| `reports/customer-statement/` | `customer_statement` | `?customer=&start=&end=`; running balance, and an aging block rebuilt as at `end` |
 | `reports/analytics-slice/` | `analytics_slice` | `?axis=cost_center|<dimension>`; reads posted JournalLines |
 | `reports/dashboard/` | `dashboard.py` | KPI cards + sparklines + AR blocks in one payload |
 | `GET periods/<id>/checklist/` | `close_checklist` | preview, no side effects |
@@ -92,6 +92,24 @@ injectable `extra_checks` from other apps (procurement AP/GR-IR).
   codes to follow the seeded ranges to classify well.
 - **Statutory pack**: groups by `Account.ifrs_line`, falling back to a per-type
   default line when blank.
+- **AR "as at" is a rebuild, not a filter** (`_ar_snapshot` / `_effective_on`,
+  `reports.py`). Passing `as_of` reconstructs AR from dated evidence rather than
+  reading today's balances: a document counts only if its **journal** had posted by
+  the cutoff and had not been reversed by then (so a document voided later still
+  appears in a report dated before the void), and a settlement counts only if its
+  allocation row's `effective_date` - the date of the journal that credited AR - is
+  on or before the cutoff. All four settlement sources are covered: cash allocations,
+  credit-note allocations, concessions, and write-offs (the last read from the
+  journal's AR credit, because a `WriteOffRequest.amount` may be blank meaning "the
+  whole balance"). Passing **no** cutoff keeps the current-state contract and reads
+  the stored totals, so the default path is unchanged. Mirrors
+  `vs_procurement.reports._ap_snapshot`, which solved this first.
+- **`reconcile_ar` takes the cutoff on both sides.** The sub-ledger is the aging's
+  `total_outstanding` (invoices *and* open debit notes, which the aging now ages
+  together) and the control is `_account_gl_net_as_of`, which sums journal *lines*
+  through the cutoff rather than per-period `AccountBalance` aggregates - a cutoff
+  falls mid-period as often as on a boundary. Dating one side only made the control
+  disagree with itself whenever a future-dated document existed.
 
 ## 6. What posting does to the ledger
 
@@ -116,7 +134,16 @@ depreciation posted, checklist green, period CLOSED.
   (unbalanced TB included). It's audited, but treat `finance.period.close` as a
   highly privileged key.
 - **Dashboard + several AR reports are Python-heavy** (walk documents/lines);
-  acceptable at current scale, same O(n) caveat as dunning had.
+  acceptable at current scale, same O(n) caveat as dunning had. The dashboard passes
+  the current period's end date, so it now takes the `_ar_snapshot` rebuild path
+  (roughly ten queries) rather than two aggregates - fine for a dashboard, but it is
+  the heaviest caller.
+- **A voided document disappears from the statement's movement list.**
+  `customer_account_movements` still filters `status=POSTED` while the void services
+  set REVERSED, so voiding a receipt removes it from the statement and the customer
+  drawer, and every running balance printed for a date before the void changes. The
+  aging, reconciliation and statement-aging blocks are unaffected - they key off the
+  journal via `_effective_on`, which handles reversal dates. Tracked in `todo.md`.
 - **Cash-flow buckets are heuristic** - verify against a customised chart.
 - Reports return live JSON; nothing is cached/persisted (a snapshot per close could
   be a future need for auditors).

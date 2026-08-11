@@ -1,135 +1,28 @@
 # Follow-up prompts - finance / payments / procurement
 
-Five self-contained prompts, written 2026-07-30 after the accounting-date class-fix
-(backend `8b576eb`, console-fe `f8038a8`, payments follow-up `d8eaeb9`).
+Self-contained prompts, each meant to be **pasted whole into a fresh session**. They
+assume no memory of the conversation that produced them, and each ends by removing
+its own entry from the root `todo.md`.
 
-Each one is meant to be **pasted whole into a fresh session**. They assume no memory
-of the conversation that produced them, and each ends by removing its own entry from
-the root `todo.md`.
-
-Suggested order: **3 → 4 → 1 → 5 → 2**. Prompt 3 is small and closes a live hole;
-prompt 4 protects the books from silent drift; prompt 1 is the largest; prompt 5 is
-operational; prompt 2 can wait until you actually pay a supplier in advance.
+Started 2026-07-30 after the accounting-date class-fix (backend `8b576eb`, console-fe
+`f8038a8`, payments follow-up `d8eaeb9`). Three of the original five are now done and
+their prompts have been removed: backdated expense/payroll/tax settlements and the
+sub-ledger journal-reversal drift (both 2026-08-01), and AR "as at" reporting
+(2026-08-11). See the `## Done` section of `todo.md` for what each one actually did.
 
 | # | Title | Size | Why now |
 |---|-------|------|---------|
-| 1 | AR "as at" reporting | Large | Historical reports are wrong; needed before any audit or board pack |
-| 2 | Vendor advances | Small | Latent - zero prepayments in the books today |
-| 3 | Backdated expense / payroll / tax settlements | Small | Live hole, same class as the refund bug |
-| 4 | Journal reversal desynchronises the sub-ledger | Medium | Silent, unclearable ledger drift |
-| 5 | Unbookable gateway receipts are invisible | Medium | Real customer money can vanish from view |
+| 1 | Vendor advances | Small | Latent - still zero vendor prepayments in the books |
+| 2 | Unbookable gateway receipts are invisible | Medium | Real customer money can vanish from view |
+| 3 | Voided documents vanish from statement history | Small | Past balances change when anything is voided |
+
+Suggested order: **3 → 2 → 1**. Prompt 3 is small and closes a hole the void work
+opened; prompt 2 is operational; prompt 1 can wait until you actually pay a supplier
+in advance.
 
 ---
 
-## Prompt 1 - Make AR "as at" reports actually mean "as at"
-
-```
-Fix the AR "as at" reporting gap recorded as the first item under "## Undone" in the
-backend repo's root todo.md.
-
-BACKGROUND - what is wrong
-
-A report headed "as at 30 June" must show the books as they stood on 30 June. Today
-these reports show current numbers with a June date printed on them.
-
-Concretely: a customer is invoiced ₦500,000 on 1 June, does not pay, and settles on
-20 September. Run "AR Aging as at 30 June" in October and that customer is absent
-entirely - ar_aging (apps/vs_finance/reports.py, ar_aging) excludes any invoice whose
-payment_status is currently PAID, and buckets off the CURRENT balance_due. It also
-runs the other way: an invoice dated 10 September appears on the June report, because
-nothing compares invoice_date to the cutoff. `as_of` is used only to compute
-days_overdue. The same shape affects customer_statement in the same module, and
-generate_dunning (apps/vs_finance/dunning.py) where a later-dated settlement can
-suppress or resolve a reminder for an earlier as-of date.
-
-The posting side of this problem is already fixed - see apps/vs_finance/chronology.py
-and its docstring. Do not re-do that work. This is the reporting side only.
-
-THERE IS ALREADY A CORRECT IMPLEMENTATION IN THIS CODEBASE - COPY IT
-
-apps/vs_procurement/reports.py solved exactly this for AP. Read it before writing
-anything:
-  * _ap_snapshot(entity, as_of=...) reconstructs settlement from posted journals with
-    journal__date__lte=as_of, and correctly handles reversals via
-    journal__reversed_by__date__gt=as_of;
-  * _account_gl_net_as_of(account, as_of) filters journal lines by entry__date__lte;
-  * ap_aging passes the cutoff as BOTH the aging clock and the effectiveness cutoff;
-  * reconcile_ap passes as_of to BOTH sides, so the control report stays consistent.
-
-Mirror that structure on the AR side. Keep the naming parallel so the two read as one
-system.
-
-THE ONE PLACE AR CANNOT SIMPLY COPY AP
-
-AP can reconstruct per-invoice settlement from journals because each vendor payment
-journals against its bills. AR cannot: _post_payment_atomic credits AR for the applied
-TOTAL in a single line, and allocate_payment journals Dr 2140 / Cr AR at customer
-level. There is no per-invoice journal, so per-invoice aging buckets cannot be
-rebuilt from the GL alone.
-
-So this half needs a stored date. Add an effective date to the three allocation
-tables - PaymentAllocation and CreditNoteAllocation (apps/vs_finance/models/ar.py and
-models/adjustments.py) and DebitNoteAllocation - set to
-chronology.effective_allocation_date(credit_date, [target_date]), i.e. the later of
-the crediting document and the document it settles. receivables.allocate_payment and
-credit_notes.allocate_credit_note ALREADY compute exactly this value (they use it to
-date the reclassification journal) and then discard it; persist it instead of
-recomputing. _apply_payment_subledger / _apply_creditnote_subledger are where the rows
-are written.
-
-Backfill in the migration: for existing rows use max(payment_date/note_date,
-invoice_date/note_date of the target). State in the migration docstring that this is
-a reconstruction, not a record - the true date was never captured.
-
-WHY THIS MUST BE DONE AS ONE PIECE
-
-reconcile_ar compares ar_aging's total_net against _account_gl_net, which sums
-AccountBalance across ALL periods with no cutoff. If you date-filter the aging side
-alone, the two disagree whenever a future-dated document exists and the control report
-starts crying wolf - worse than the current state, because a control report people
-learn to ignore is no control at all. Give reconcile_ar the same cutoff, using
-procurement's _account_gl_net_as_of as the model.
-
-SCOPE
-
-  * ar_aging: exclude documents dated after the cutoff; rebuild balance at the cutoff
-    from allocations effective on or before it, rather than reading balance_due.
-    Keep the no-cutoff call path behaving exactly as today (current state) - check how
-    _ap_snapshot preserves that contract.
-  * customer_statement: same treatment.
-  * reconcile_ar: cutoff on both sides.
-  * generate_dunning: measure overdue against the state at as_of, and do not resolve a
-    notice on the strength of a settlement dated after the run date.
-  * Frontend: if any screen presents these as historical, make sure the date it sends
-    and the basis it displays now agree. Check
-    console-fe/src/pages/protected/finance for the aging/statement/dunning screens.
-
-TESTS
-
-Follow the style of AccountingDateIntegrityTests in apps/vs_finance/tests.py. At
-minimum: the ₦500,000 June/September case above; an invoice raised after the cutoff
-absent from the earlier report; a partially-allocated receipt aging correctly at two
-different cutoffs; reconcile_ar balanced at a historical cutoff with a future-dated
-document present; a dunning run for a past date unaffected by a later settlement.
-
-VERIFY
-
-Run the vs_finance, vs_procurement and vs_payments suites (cd apps &&
-../cx/bin/python manage.py test vs_finance vs_procurement vs_payments --noinput).
-They were 723 green plus 64 payments at the time of writing. If you touch a screen,
-run the /verify-design skill and LOOK at the screenshots.
-
-FINALLY
-
-Delete the "As at reports still read current mutable balances" bullet from the
-"## Undone" list in the backend root todo.md, and add a "# ..." line to the "## Done"
-section following the style of the entries already there. Commit to main (do not
-push), staging files explicitly - never `git add -A`.
-```
-
----
-
-## Prompt 2 - Give vendor prepayments somewhere to live
+## Prompt 1 - Give vendor prepayments somewhere to live
 
 ```
 Fix the vendor-prepayment gap recorded under "## Undone" in the backend repo's root
@@ -218,163 +111,7 @@ Commit to main (do not push), staging files explicitly.
 
 ---
 
-## Prompt 3 - Stop expense, payroll and tax settlements predating their obligation
-
-```
-Fix the third "## Undone" item in the backend repo's root todo.md - expense, payroll
-and tax settlements can be dated before the obligation they settle.
-
-BACKGROUND
-
-apps/vs_finance/chronology.py already holds the shared guard for this class of bug.
-Read its module docstring first - it explains why "is this period open?" and "could
-this have happened by then?" are different questions, and why only the first was ever
-being asked. The AR side (refunds, write-offs, concessions, allocations) is fixed. The
-audit that produced this item found three more services with the identical shape: each
-takes a caller-supplied pay date, validates only current status/balance plus an open
-period, and then debits a liability on that date.
-
-  1. _settle_expense_claim_atomic - apps/vs_finance/expenses.py:179
-     Never compares pay_date to claim.claim_date. Reimbursing before the claim was
-     accrued debits accrued-reimbursement before anything credited it.
-  2. _pay_payroll_atomic - apps/vs_finance/payroll.py:280
-     Never compares pay_date to run.pay_date. A disbursement can predate the accrual
-     it clears, so net-wages-payable goes debit for the gap.
-  3. _pay_filing_atomic - apps/vs_finance/tax_filing.py:403
-     Never compares pay_date to filing.filed_date. A remittance can predate the
-     return being filed.
-
-WHAT TO DO
-
-Call chronology.ensure_on_or_after in each, passing a subject/source pair that reads
-as a sentence and a `remedy` that names the date the user should pick instead. Follow
-exactly how credit_notes._write_off_invoice_atomic and
-installments._post_concession_atomic already call it - same phrasing style, same level
-of helpfulness in the message. It raises BackdatedPostingError (409,
-POSTING_BACKDATED).
-
-Then check for a matching workflow preflight for each document type in
-apps/vs_finance/workflow_handlers.py and mirror the guard there, the way WriteOffHandler
-does - a preflight that disagrees with the posting service means an approval queue
-fills with items that cannot post.
-
-Also check the API layer for each (apps/vs_finance/views.py and views_ops/) and decide
-whether a batch or list endpoint should pre-validate per item rather than failing
-mid-loop, the way ARAdjustmentBatchView does for write-offs.
-
-FRONTEND
-
-console-fe's PostingDateField already supports this constraint: pass `notBefore` (and
-`notBeforeLabel`) and the calendar stops offering earlier days, with a message naming
-the floor. See how refunds-tab.tsx and concessions-tab.tsx use it. Apply it to the
-expense-claim settle, payroll pay and tax remit screens under
-console-fe/src/pages/protected/finance - settle/pay dates only, never to due dates or
-report filters.
-
-TESTS
-
-Follow AccountingDateIntegrityTests in apps/vs_finance/tests.py - one rejection test
-and one "on the boundary date it is allowed" test per service, asserting the document
-is left untouched on rejection.
-
-VERIFY
-
-cd apps && ../cx/bin/python manage.py test vs_finance --noinput
-For the frontend, npx tsc --noEmit && npx vitest run, then the /verify-design skill on
-any screen you change, and LOOK at the screenshots.
-
-FINALLY
-
-Delete the "Expense, payroll and tax settlements can be dated before the obligation"
-bullet from "## Undone" in the backend root todo.md and add a "# ..." entry to
-"## Done". Commit to main in both repos (do not push), staging files explicitly.
-```
-
----
-
-## Prompt 4 - Stop journal reversal from silently desynchronising the sub-ledger
-
-```
-Fix the "Reversing a sub-ledger-backed journal silently desynchronises the sub-ledger"
-item under "## Undone" in the backend repo's root todo.md.
-
-BACKGROUND - verified, not theoretical
-
-POST /finance/journals/<id>/reverse/ (JournalReverseView, apps/vs_finance/views.py:1253,
-gated by finance.journal.reverse) accepts ANY posted journal belonging to the entity -
-including the journal a receipt, invoice, credit note, concession or refund raised.
-
-reverse_journal (apps/vs_finance/posting.py:351) is purely GL-level: it mirrors the
-lines into a new entry and marks the original REVERSED. Nothing else reacts. There are
-no signals on JournalEntry, and no document-level void service exists anywhere in
-vs_finance - the only sub-ledger reversal in the codebase is
-vs_procurement.payables.reverse_vendor_payment.
-
-So after reversing a receipt's journal:
-  * the GL says the cash never arrived;
-  * Payment stays POSTED with its allocated_amount intact;
-  * the PaymentAllocation rows stand;
-  * Invoice.amount_paid is unchanged, so the invoice still looks paid;
-  * for a refund, refunded_amount stays consumed on the credit lot, so the customer's
-    credit is still shown as spent.
-
-reconcile_ar then reports a difference that nobody can clear, because there is no
-operation that would clear it.
-
-DECIDE, THEN IMPLEMENT
-
-Two defensible answers. Pick one, state which and why in the commit message, and check
-with the user first if you think the choice is theirs:
-
-  (a) Refuse. Make reverse_journal (or the view) reject a journal that a sub-ledger
-      document points at, with an error naming the document and directing the user to
-      a document-level void. Cheap, immediately stops the drift, but leaves a genuine
-      need unmet - people do mis-key receipts and must be able to undo them.
-
-  (b) Add real void services per document type - void_payment, void_invoice,
-      void_credit_note, void_refund, void_concession - each unwinding the sub-ledger
-      and raising the reversal in ONE transaction, then refuse (a) for anything that
-      has one. This is the honest answer.
-
-If (b): reverse_vendor_payment is the closest existing model - read it for the lock
-ordering (payment, then allocation rows by invoice id, then invoices by pk) and for
-the convention that allocation rows remain as history while the authoritative
-settlement totals are rolled back. Note what a refund void additionally has to do:
-release RefundAllocation rows and decrement refunded_amount on each source lot, or the
-customer's credit stays permanently consumed. See apps/vs_finance/chronology.py and
-credit_notes._attribute_refund_to_lots for how that attribution is built.
-
-Also decide what a void does about DATES. The reversal must not be dated before the
-document it reverses - use chronology.ensure_on_or_after, and note that reverse_journal
-already falls back to today when the original period has since closed.
-
-TESTS
-
-Per document type: void unwinds both halves; reconcile_ar balances afterwards; a
-voided receipt's invoice returns to unpaid; a voided refund returns the credit to its
-lot and the receipt reports it as available again; voiding twice is refused; whichever
-of (a)/(b) you chose, reversing the raw journal of a sub-ledger document behaves as
-decided.
-
-VERIFY
-
-cd apps && ../cx/bin/python manage.py test vs_finance vs_procurement vs_payments --noinput
-
-Also check the frontend: console-fe may expose a reverse action on the journal screen
-(search for journals/.../reverse). If your answer is (a), that action needs to explain
-the refusal rather than surface a raw 409; if (b), the document screens likely want a
-Void action.
-
-FINALLY
-
-Delete the "Reversing a sub-ledger-backed journal" bullet from "## Undone" in the
-backend root todo.md and add a "# ..." entry to "## Done". Commit to main (do not
-push), staging files explicitly.
-```
-
----
-
-## Prompt 5 - Surface gateway receipts that could not be booked
+## Prompt 2 - Surface gateway receipts that could not be booked
 
 ```
 Fix the "A gateway receipt that cannot be booked disappears silently" item under
@@ -441,4 +178,70 @@ FINALLY
 Delete the "A gateway receipt that cannot be booked disappears silently" bullet from
 "## Undone" in the backend root todo.md and add a "# ..." entry to "## Done". Commit
 to main in both repos (do not push), staging files explicitly.
+```
+
+---
+
+## Prompt 3 - Keep voided documents in the customer statement
+
+```
+Fix the "Voided documents vanish from statement history" item under "## Undone" in
+the backend repo's root todo.md.
+
+BACKGROUND - verified, and a consequence of the void work rather than a new bug
+
+`customer_account_movements` (apps/vs_finance/reports.py) loads each document type
+with `status=DocumentStatus.POSTED`. The void services added on 2026-08-01
+(apps/vs_finance/voids.py) set the document to REVERSED. Before voids existed nothing
+ever reached that status, so the filter was harmless.
+
+Now it is not. Void a receipt and it disappears from the customer statement and from
+the customer drawer's transaction list entirely - and because the statement's running
+balance is computed from those movements, every balance printed for a date BEFORE the
+void silently changes. That is the same defect class the AR "as at" work just closed
+everywhere else: history must not be rewritten by something that happened later.
+
+The movement genuinely happened on its own date and was undone on the reversal date.
+The statement should show both lines, not neither.
+
+WHAT TO DO
+
+  * Load `status__in=(POSTED, REVERSED)` in `customer_account_movements`, and when
+    `document.journal.reversed_by` exists emit a second, offsetting movement dated at
+    the reversal's date (`document.journal.reversed_by.date`) with a description that
+    makes the reversal obvious. Select-related the journal and its reversal so this
+    does not become an N+1 over the statement.
+  * The customer detail drawer (apps/vs_finance/views_ar.py, CustomerDetailView -
+    around the `Invoice.objects.filter(... status=DocumentStatus.POSTED)` block) builds
+    its own pre-loaded lists and passes them into the same helper, so it needs the same
+    widening. Its "open invoices" and "open debit notes" panels must STAY POSTED-only:
+    a voided invoice is not an open receivable. Filter those explicitly rather than
+    relying on the shared lists.
+
+ALREADY CORRECT, DO NOT CHANGE
+
+Aging, reconciliation and the statement's own aging block already handle this: they
+key effectiveness off the journal through `_effective_on`, which includes REVERSED
+entries and excludes them only once the reversal date has passed. Read that helper
+before writing anything - the movement list should agree with it, not invent a second
+rule.
+
+TESTS
+
+Void a receipt, then assert: the statement for a date before the void still shows the
+receipt and the same closing balance it showed before the void; the statement for a
+date after the void shows both the receipt and its reversal and nets to the right
+balance; the customer drawer's open-invoice panel does not list a voided invoice.
+
+VERIFY
+
+cd apps && ../cx/bin/python manage.py test vs_finance --noinput
+
+FINALLY
+
+Delete the "Voided documents vanish from statement history" bullet from "## Undone" in
+the backend root todo.md and add a "# ..." entry to "## Done" in the existing style.
+Also remove the "A voided document disappears from the statement's movement list"
+bullet from §8 of docs/finance/finance_reports_statements.md. Commit to main (do not
+push), staging files explicitly - never `git add -A`.
 ```

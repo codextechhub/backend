@@ -10,8 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from django.db.models import Q, Sum
 from django.utils import timezone
 
+from .constants import DocumentStatus
 from .money import format_naira
 
 
@@ -294,19 +296,245 @@ class AgingReport:
     total_net: int = 0
 
 
+# Restrict a document queryset to what was effective on an accounting date.
+def _effective_on(queryset, as_of):
+    """Documents whose journal had landed by ``as_of`` and was not yet reversed.
+
+    Effectiveness is keyed on the **journal**, not the document's own date field or
+    its current status, for two reasons. The journal date is what actually moved the
+    ledger, so a sub-ledger reconstruction built on it can agree with the GL. And a
+    document voided later must still appear in a report dated before the void - its
+    current status says REVERSED, but on that earlier date it was live. Filtering on
+    status alone silently rewrites history the moment anything is voided.
+
+    Mirrors :func:`vs_procurement.reports._ap_snapshot`, which solved this first.
+    """
+    return queryset.filter(
+        journal__status__in=(DocumentStatus.POSTED, DocumentStatus.REVERSED),
+        journal__date__lte=as_of,
+    ).filter(
+        Q(journal__reversed_by__isnull=True)
+        | Q(journal__reversed_by__date__gt=as_of)
+    )
+
+
+# Sum allocation rows that had taken effect by a cutoff.
+def _allocated_by(queryset, target_field, *, as_of):
+    """``{target_id: kobo}`` for allocation rows effective on or before ``as_of``.
+
+    Rows with no ``effective_date`` are excluded rather than assumed: a null means
+    the date is genuinely unknown (a row written before the column existed and not
+    reachable by the backfill), and guessing would put a settlement on the timeline
+    at a date nobody can defend.
+    """
+    rows = queryset.filter(effective_date__isnull=False, effective_date__lte=as_of)
+    return {
+        row[target_field]: int(row["amount"] or 0)
+        for row in rows.values(target_field).annotate(amount=Sum("amount"))
+    }
+
+
+# Reconstruct AR as it stood on an accounting date.
+def _ar_snapshot(entity, *, as_of=None, customer=None):
+    """Effective AR documents, settlement applied by the cutoff, and unspent credit.
+
+    With no cutoff this returns the stored current-state figures unchanged, so the
+    default call path behaves exactly as it always has. With ``as_of`` every figure is
+    rebuilt from dated evidence: which documents had posted, which settlements had
+    taken effect, and how much credit was still unspent on that day.
+
+    Returns ``(invoices, debit_notes, settled_by_invoice, settled_by_note,
+    credit_by_customer)``. ``settled_*`` maps a document id to the kobo cleared
+    against it by the cutoff, from all four AR settlement sources: cash allocations,
+    credit-note allocations, concessions and bad-debt write-offs.
+    """
+    from .constants import CreditNoteKind
+    from .models import (
+        Concession,
+        CreditNote,
+        CreditNoteAllocation,
+        DebitNoteAllocation,
+        Invoice,
+        Payment,
+        PaymentAllocation,
+        Refund,
+        RefundAllocation,
+        WriteOffRequest,
+    )
+
+    invoices = Invoice.objects.filter(entity=entity)
+    debit_notes = CreditNote.objects.filter(entity=entity, kind=CreditNoteKind.DEBIT)
+    credit_notes = CreditNote.objects.filter(entity=entity, kind=CreditNoteKind.CREDIT)
+    payments = Payment.objects.filter(entity=entity)
+    if customer is not None:
+        invoices = invoices.filter(customer=customer)
+        debit_notes = debit_notes.filter(customer=customer)
+        credit_notes = credit_notes.filter(customer=customer)
+        payments = payments.filter(customer=customer)
+
+    if as_of is None:  # Current-state contract: read the stored, maintained totals.
+        invoices = list(
+            invoices.filter(status=DocumentStatus.POSTED).select_related("customer"))
+        debit_notes = list(
+            debit_notes.filter(status=DocumentStatus.POSTED).select_related("customer"))
+        settled_by_invoice = {inv.pk: inv.settled_amount for inv in invoices}
+        settled_by_note = {note.pk: note.amount_paid for note in debit_notes}
+        credit_by_customer: dict[int, int] = {}
+        for source in (
+            payments.filter(status=DocumentStatus.POSTED).select_related("customer"),
+            credit_notes.filter(status=DocumentStatus.POSTED).select_related("customer"),
+        ):
+            for document in source:
+                remaining = document.credit_remaining
+                if remaining > 0:
+                    credit_by_customer[document.customer_id] = (
+                        credit_by_customer.get(document.customer_id, 0) + remaining)
+        return invoices, debit_notes, settled_by_invoice, settled_by_note, credit_by_customer
+
+    invoices = list(_effective_on(invoices, as_of).select_related("customer"))
+    debit_notes = list(_effective_on(debit_notes, as_of).select_related("customer"))
+    credit_notes = list(_effective_on(credit_notes, as_of).select_related("customer"))
+    payments = list(_effective_on(payments, as_of).select_related("customer"))
+
+    invoice_ids = [inv.pk for inv in invoices]
+    note_ids = [note.pk for note in debit_notes]
+    credit_note_ids = [note.pk for note in credit_notes]
+    payment_ids = [pay.pk for pay in payments]
+
+    # --- what had been settled against each receivable by the cutoff --------- #
+    settled_by_invoice = _allocated_by(
+        PaymentAllocation.objects.filter(
+            invoice_id__in=invoice_ids, payment_id__in=payment_ids),
+        "invoice_id", as_of=as_of,
+    )
+    for invoice_id, amount in _allocated_by(
+        CreditNoteAllocation.objects.filter(
+            invoice_id__in=invoice_ids, note_id__in=credit_note_ids),
+        "invoice_id", as_of=as_of,
+    ).items():
+        settled_by_invoice[invoice_id] = settled_by_invoice.get(invoice_id, 0) + amount
+
+    # Concessions and write-offs clear an invoice directly rather than through an
+    # allocation row, so they are dated by their own effective journal.
+    for row in _effective_on(
+        Concession.objects.filter(invoice_id__in=invoice_ids), as_of,
+    ).values("invoice_id").annotate(amount=Sum("amount")):
+        settled_by_invoice[row["invoice_id"]] = (
+            settled_by_invoice.get(row["invoice_id"], 0) + int(row["amount"] or 0))
+    for invoice_id, amount in _written_off_by_invoice(
+        WriteOffRequest.objects.filter(invoice_id__in=invoice_ids), as_of,
+    ).items():
+        settled_by_invoice[invoice_id] = settled_by_invoice.get(invoice_id, 0) + amount
+
+    settled_by_note = _allocated_by(
+        DebitNoteAllocation.objects.filter(
+            note_id__in=note_ids, payment_id__in=payment_ids),
+        "note_id", as_of=as_of,
+    )
+
+    # --- credit that was still unspent on the cutoff date -------------------- #
+    applied_by_payment = _allocated_by(
+        PaymentAllocation.objects.filter(payment_id__in=payment_ids),
+        "payment_id", as_of=as_of,
+    )
+    for payment_id, amount in _allocated_by(
+        DebitNoteAllocation.objects.filter(payment_id__in=payment_ids),
+        "payment_id", as_of=as_of,
+    ).items():
+        applied_by_payment[payment_id] = applied_by_payment.get(payment_id, 0) + amount
+    applied_by_note = _allocated_by(
+        CreditNoteAllocation.objects.filter(note_id__in=credit_note_ids),
+        "note_id", as_of=as_of,
+    )
+
+    # A refund only consumed credit once its own journal had landed.
+    effective_refund_ids = list(
+        _effective_on(Refund.objects.filter(entity=entity), as_of)
+        .values_list("pk", flat=True))
+    refunded_by_payment = {
+        row["payment_id"]: int(row["amount"] or 0)
+        for row in RefundAllocation.objects
+        .filter(refund_id__in=effective_refund_ids, payment_id__in=payment_ids)
+        .values("payment_id").annotate(amount=Sum("amount"))
+    }
+    refunded_by_note = {
+        row["note_id"]: int(row["amount"] or 0)
+        for row in RefundAllocation.objects
+        .filter(refund_id__in=effective_refund_ids, note_id__in=credit_note_ids)
+        .values("note_id").annotate(amount=Sum("amount"))
+    }
+
+    credit_by_customer = {}
+    for pay in payments:
+        remaining = (int(pay.amount)
+                     - applied_by_payment.get(pay.pk, 0)
+                     - refunded_by_payment.get(pay.pk, 0))
+        if remaining > 0:
+            credit_by_customer[pay.customer_id] = (
+                credit_by_customer.get(pay.customer_id, 0) + remaining)
+    for note in credit_notes:
+        remaining = (int(note.total)
+                     - applied_by_note.get(note.pk, 0)
+                     - refunded_by_note.get(note.pk, 0))
+        if remaining > 0:
+            credit_by_customer[note.customer_id] = (
+                credit_by_customer.get(note.customer_id, 0) + remaining)
+
+    return invoices, debit_notes, settled_by_invoice, settled_by_note, credit_by_customer
+
+
+# Sum what each invoice's write-offs actually credited to AR by a cutoff.
+def _written_off_by_invoice(queryset, as_of) -> dict[int, int]:
+    """``{invoice_id: kobo}`` written off by ``as_of``, read from the GL.
+
+    A :class:`WriteOffRequest` may carry a blank ``amount`` meaning "the whole
+    outstanding balance", which is only resolved at posting time - so the request row
+    is not a reliable source for how much was cleared. The journal it raised is: its
+    credit to the customer's receivable control is exactly what left AR.
+    """
+    from .models import JournalLine
+
+    requests = list(
+        _effective_on(queryset, as_of)
+        .select_related("invoice__customer")
+        .values("invoice_id", "journal_id", "invoice__customer__receivable_account_id")
+    )
+    if not requests:
+        return {}
+    credit_by_journal: dict[int, int] = {}
+    for row in (
+        JournalLine.objects
+        .filter(entry_id__in=[r["journal_id"] for r in requests])
+        .values("entry_id", "account_id").annotate(amount=Sum("credit"))
+    ):
+        credit_by_journal[(row["entry_id"], row["account_id"])] = int(row["amount"] or 0)
+    written: dict[int, int] = {}
+    for row in requests:
+        amount = credit_by_journal.get(
+            (row["journal_id"], row["invoice__customer__receivable_account_id"]), 0)
+        if amount:
+            written[row["invoice_id"]] = written.get(row["invoice_id"], 0) + amount
+    return written
+
+
 # Handle the ar aging workflow.
 def ar_aging(entity, *, as_of=None) -> AgingReport:
     """Age each customer's open invoices into current/1-30/31-60/61-90/90+ buckets.
 
-    An invoice ages off its ``due_date`` (falling back to ``invoice_date``). Only
-    POSTED, not-fully-paid invoices contribute, by their ``balance_due``. Each
+    An invoice ages off its ``due_date`` (falling back to ``invoice_date``). Each
     customer's unallocated payment credit is reported and netted for the customer's
     overall position.  That credit lives in the separate 2140 liability, so
     :func:`reconcile_ar` compares ``total_outstanding`` (plus open debit notes), not
     ``total_net``, with the AR control account.
-    """
-    from .models import Invoice, Payment
 
+    ``as_of`` is both the aging clock **and** the accounting-effectiveness cutoff, so
+    the report reads as a statement about that date rather than about today. It used
+    to be only the clock: balances came from the live documents, so an invoice raised
+    after the cutoff still appeared, one settled after it had already vanished, and
+    the same June report gave a different answer every month. Passing no cutoff keeps
+    the current-state contract exactly as before.
+    """
+    cutoff = as_of  # None means "current state"; a date means "rebuild at that date".
     as_of = as_of or timezone.now().date()
     report = AgingReport(entity_id=entity.id, as_of=as_of)
     rows: dict[int, AgingRow] = {}
@@ -322,14 +550,12 @@ def ar_aging(entity, *, as_of=None) -> AgingReport:
             rows[customer.id] = r
         return r
 
-    posted_invoices = (
-        Invoice.objects
-        .filter(entity=entity, status="POSTED")
-        .exclude(payment_status="PAID")
-        .select_related("customer")
+    invoices, debit_notes, settled_by_invoice, settled_by_note, credit_by_customer = (
+        _ar_snapshot(entity, as_of=cutoff)
     )
-    for inv in posted_invoices:
-        due = inv.balance_due
+
+    for inv in invoices:
+        due = int(inv.total) - settled_by_invoice.get(inv.pk, 0)
         if due <= 0:
             continue
         ref_date = inv.due_date or inv.invoice_date
@@ -339,18 +565,28 @@ def ar_aging(entity, *, as_of=None) -> AgingReport:
         r.buckets[bucket] += due
         r.outstanding += due
 
-    # Unallocated payment credit reduces a customer's net balance - but only the part
-    # still there. ``unallocated_amount`` is refund-blind, so a refunded receipt used to
-    # go on netting down the customer's AR long after the cash had been handed back.
-    posted_payments = (
-        Payment.objects.filter(entity=entity, status="POSTED").select_related("customer")
-    )
-    for pay in posted_payments:
-        credit = pay.credit_remaining
-        if credit <= 0:
+    # An open DEBIT note is a supplementary AR charge and ages exactly like an
+    # invoice; leaving it out understated both the buckets and the reconciliation.
+    for note in debit_notes:
+        due = int(note.total) - settled_by_note.get(note.pk, 0)
+        if due <= 0:
             continue
-        r = row_for(pay.customer)
-        r.unallocated_credit += credit
+        days_overdue = (as_of - note.note_date).days
+        r = row_for(note.customer)
+        r.buckets[_bucket_for(days_overdue)] += due
+        r.outstanding += due
+
+    # Unspent customer credit nets down the customer's overall position. Only the part
+    # still there counts: cash already refunded back out has left 2140.
+    customers_by_id = {
+        inv.customer_id: inv.customer for inv in invoices
+    } | {note.customer_id: note.customer for note in debit_notes}
+    missing = [cid for cid in credit_by_customer if cid not in customers_by_id]
+    if missing:  # In credit with nothing outstanding - fetch them in one query, not N.
+        from .models import Customer
+        customers_by_id |= {c.pk: c for c in Customer.objects.filter(pk__in=missing)}
+    for customer_id, credit in credit_by_customer.items():
+        row_for(customers_by_id[customer_id]).unallocated_credit += credit
 
     for r in rows.values():
         r.net = r.outstanding - r.unallocated_credit
@@ -385,6 +621,29 @@ def _accounts_gl_net(account_ids, normal_balance) -> int:
     return net if normal_balance == NormalBalance.DEBIT else -net
 
 
+# Support the dated account gl net workflow.
+def _account_gl_net_as_of(account, as_of) -> int:
+    """Posted journal-line movement through ``as_of``, signed to normal balance.
+
+    Reads the lines rather than the per-period :class:`AccountBalance` aggregates,
+    because a cutoff falls inside a period as often as on its boundary and the
+    aggregates cannot be split. The twin of
+    :func:`vs_procurement.reports._account_gl_net_as_of`; REVERSED entries are
+    included because their own reversal is a separate dated entry that nets them off
+    only from the reversal date onwards.
+    """
+    from .constants import NormalBalance
+    from .models import JournalLine
+
+    totals = JournalLine.objects.filter(
+        account=account,
+        entry__status__in=(DocumentStatus.POSTED, DocumentStatus.REVERSED),
+        entry__date__lte=as_of,
+    ).aggregate(debit=Sum("debit"), credit=Sum("credit"))
+    net = int(totals["debit"] or 0) - int(totals["credit"] or 0)
+    return net if account.normal_balance == NormalBalance.DEBIT else -net
+
+
 @dataclass
 # Group behavior for A R Reconciliation.
 class ARReconciliation:
@@ -406,34 +665,31 @@ def reconcile_ar(entity, *, as_of=None) -> ARReconciliation:
     The cardinal AR control: the sum of what every customer owes must equal the
     balance of the receivable control account(s) in the ledger. Any drift means a
     posting bypassed the sub-ledger (or vice-versa) and must be investigated.
-    """
-    from django.db.models import F, Sum
-    from django.db.models.functions import Coalesce
 
-    from .constants import CreditNoteKind, DocumentStatus
-    from .models import CreditNote, Customer
+    ``as_of`` applies to **both** sides. That is the whole point of the argument: a
+    cutoff on the sub-ledger alone made the control disagree with itself the moment a
+    future-dated document existed, and a control report that cries wolf is one people
+    learn to ignore.
+    """
+    from .models import Customer
 
     aging = ar_aging(entity, as_of=as_of)
     # Customer credit is booked to the dedicated 2140 liability, not the AR control
     # account.  It belongs on the aging screen's customer *net* position, but not in
-    # this control-account reconciliation.  Debit notes, conversely, debit AR exactly
-    # like invoices and must be included in the sub-ledger total.
-    debit_notes = CreditNote.objects.filter(
-        entity=entity, status=DocumentStatus.POSTED, kind=CreditNoteKind.DEBIT,
-    )
-    if as_of is not None:
-        debit_notes = debit_notes.filter(note_date__lte=as_of)
-    debit_total = debit_notes.aggregate(
-        amount=Coalesce(Sum(F("total") - F("amount_paid")), 0),
-    )["amount"]
-    subledger_total = aging.total_outstanding + int(debit_total or 0)
+    # this control-account reconciliation.  Open debit notes are already inside
+    # ``total_outstanding`` - they debit AR exactly like invoices and the aging ages
+    # them alongside; adding them again here would double-count.
+    subledger_total = aging.total_outstanding
 
     control_accounts = {
         c.receivable_account
         for c in Customer.objects.filter(entity=entity).select_related("receivable_account")
         if c.receivable_account_id is not None
     }
-    control_total = sum(_account_gl_net(acc) for acc in control_accounts)
+    control_total = sum(
+        (_account_gl_net_as_of(acc, as_of) if as_of is not None else _account_gl_net(acc))
+        for acc in control_accounts
+    )
 
     return ARReconciliation(
         entity_id=entity.id,
@@ -607,16 +863,25 @@ def customer_statement(customer, *, start_date=None, end_date=None) -> CustomerS
         - statement.total_credits  # Subtract period credit movement.
     )
 
-    # Aging of the customer's still-open invoices as at end_date.
-    for inv in (
-        Invoice.objects.filter(customer=customer, status=DocumentStatus.POSTED)
-        .exclude(payment_status="PAID")
-    ):
-        due = inv.balance_due
-        if due <= 0 or inv.invoice_date > end_date:
+    # Aging of the customer's open receivables as at end_date, rebuilt from dated
+    # evidence rather than today's balances. It used to skip anything currently marked
+    # PAID and age off the live balance, so a statement for a closed month changed
+    # every time a later payment landed - and disagreed with the running balance
+    # printed directly above it, which was correctly dated all along.
+    invoices, debit_notes, settled_by_invoice, settled_by_note, _credit = _ar_snapshot(
+        customer.entity, as_of=end_date, customer=customer,
+    )
+    for inv in invoices:
+        due = int(inv.total) - settled_by_invoice.get(inv.pk, 0)
+        if due <= 0:
             continue
         ref_date = inv.due_date or inv.invoice_date
         statement.aging[_bucket_for((end_date - ref_date).days)] += due
+    for note in debit_notes:
+        due = int(note.total) - settled_by_note.get(note.pk, 0)
+        if due <= 0:
+            continue
+        statement.aging[_bucket_for((end_date - note.note_date).days)] += due
 
     return statement
 
